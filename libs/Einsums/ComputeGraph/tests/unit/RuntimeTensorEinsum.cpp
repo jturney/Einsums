@@ -15,6 +15,9 @@
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
+
+#include <limits>
 
 #include <Einsums/Testing.hpp>
 
@@ -163,49 +166,47 @@ TEST_CASE("cg::einsum — rank-4 outer product (ijab <- ia ; jb)", "[ComputeGrap
     }
 }
 
-TEST_CASE("cg::einsum — RuntimeTensor batched-GEMM via PackedGemm (bij;bjk->bik)", "[ComputeGraph][RuntimeTensor][PackedGemm]") {
+TEMPLATE_LIST_TEST_CASE("cg::einsum — RuntimeTensor batched-GEMM via PackedGemm (bij;bjk->bik)",
+                        "[ComputeGraph][RuntimeTensor][PackedGemm]", testing::AllScalarTypes) {
+    using T = TestType;
     // C[b,i,k] = sum_j A[b,i,j] * B[b,j,k]. Has a Hadamard index (b) and
     // a link index (j), exactly the shape PackedGemm specializes for.
     // Previously this would have fallen through to the generic nested-loop
     // kernel for RuntimeTensor; now it should reach try_packed_gemm via
     // the runtime ContractionSpec entry point.
-    constexpr size_t Bd = 3, I = 2, J = 4, K = 3;
+    constexpr size_t                  Bd = 3, I = 2, J = 4, K = 3;
+    double const                      eps = 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
+    einsums::testing::Tolerance const tol{.rtol = eps, .atol = eps};
 
-    auto A_typed = create_random_tensor<double>("A", Bd, I, J);
-    auto B_typed = create_random_tensor<double>("B", Bd, J, K);
-    auto C_typed = create_zero_tensor<double>("C", Bd, I, K);
+    auto A_typed = create_random_tensor<T>("A", Bd, I, J);
+    auto B_typed = create_random_tensor<T>("B", Bd, J, K);
+    auto C_typed = create_zero_tensor<T>("C", Bd, I, K);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("bik <- bij ; bjk", &C_typed, A_typed, B_typed);
 
-    auto C_ref = create_zero_tensor<double>("Cr", Bd, I, K);
+    auto C_ref = create_zero_tensor<T>("Cr", Bd, I, K);
     for (size_t b = 0; b < Bd; ++b)
         for (size_t i = 0; i < I; ++i)
             for (size_t k = 0; k < K; ++k) {
-                double sum = 0.0;
+                T sum{};
                 for (size_t j = 0; j < J; ++j)
                     sum += A_typed(b, i, j) * B_typed(b, j, k);
                 C_ref(b, i, k) = sum;
             }
 
-    for (size_t b = 0; b < Bd; ++b)
-        for (size_t i = 0; i < I; ++i)
-            for (size_t k = 0; k < K; ++k)
-                REQUIRE(std::abs(C_typed(b, i, k) - C_ref(b, i, k)) < 1e-12);
+    einsums::testing::require_tensors_close(C_typed, C_ref, tol);
 
-    RuntimeTensor<double> const A_rt(A_typed);
-    RuntimeTensor<double> const B_rt(B_typed);
-    RuntimeTensor<double>       C_rt("C", {Bd, I, K});
+    RuntimeTensor<T> const A_rt(A_typed);
+    RuntimeTensor<T> const B_rt(B_typed);
+    RuntimeTensor<T>       C_rt("C", {Bd, I, K});
     C_rt.zero();
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("bik <- bij ; bjk", &C_rt, A_rt, B_rt);
 
     REQUIRE(C_rt.rank() == 3);
-    for (size_t b = 0; b < Bd; ++b)
-        for (size_t i = 0; i < I; ++i)
-            for (size_t k = 0; k < K; ++k)
-                REQUIRE(std::abs(C_rt(b, i, k) - C_ref(b, i, k)) < 1e-12);
+    einsums::testing::require_tensors_close(C_rt, C_ref, tol);
 }
 
 TEST_CASE("cg::einsum — operand rank vs spec mismatch throws", "[ComputeGraph][RuntimeTensor][SpecCheck]") {

@@ -10,12 +10,24 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <limits>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
 namespace cg = einsums::compute_graph;
+
+namespace {
+
+/// Within 1000 epsilon of @p want, relative to it and absolute near zero: a solve's roundoff on
+/// these small well-conditioned systems, for any element type.
+template <typename T>
+bool solved(T got, T want) {
+    return std::abs(got - want) <= 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon() * (1.0 + std::abs(want));
+}
+
+} // namespace
 
 TEMPLATE_TEST_CASE("Graph - getrf + getrs round trip matches gesv", "[ComputeGraph][LU]", float, double) {
     using T = TestType;
@@ -137,14 +149,15 @@ TEST_CASE("Graph - eager getrs leaves the factorization alone", "[ComputeGraph][
     }
 }
 
-TEST_CASE("Graph - getrs against a rank-1 right-hand side", "[ComputeGraph][LU]") {
+TEMPLATE_LIST_TEST_CASE("Graph - getrs against a rank-1 right-hand side", "[ComputeGraph][LU]", testing::AllScalarTypes) {
+    using T            = TestType;
     constexpr size_t n = 5;
 
-    auto A = create_random_definite<double>("A", n, n);
-    auto b = create_random_tensor<double>("b", n);
+    auto A = create_random_definite<T>("A", n, n);
+    auto b = create_random_tensor<T>("b", n);
 
-    auto A_ref = Tensor<double, 2>(A);
-    auto b_ref = Tensor<double, 1>(b);
+    auto A_ref = Tensor<T, 2>(A);
+    auto b_ref = Tensor<T, 1>(b);
     REQUIRE(linear_algebra::gesv(&A_ref, &b_ref) == 0);
 
     cg::LuPivots pivots;
@@ -157,20 +170,21 @@ TEST_CASE("Graph - getrs against a rank-1 right-hand side", "[ComputeGraph][LU]"
     graph.execute();
 
     for (size_t i = 0; i < n; i++) {
-        REQUIRE_THAT(b(i), Catch::Matchers::WithinAbs(b_ref(i), 1e-10));
+        REQUIRE(solved<T>(b(i), b_ref(i)));
     }
 }
 
-TEST_CASE("Graph - getrs through a view of the right-hand sides", "[ComputeGraph][LU]") {
+TEMPLATE_LIST_TEST_CASE("Graph - getrs through a view of the right-hand sides", "[ComputeGraph][LU]", testing::AllScalarTypes) {
+    using T = TestType;
     // The DLPNO (T0) fit solves against COLUMN SLICES of one right-hand-side store, so the non-owning path is the one the
     // production caller takes.
     constexpr size_t n = 4;
 
-    auto A     = create_random_definite<double>("A", n, n);
-    auto store = create_random_tensor<double>("store", n, 6);
+    auto A     = create_random_definite<T>("A", n, n);
+    auto store = create_random_tensor<T>("store", n, 6);
 
-    auto A_ref     = Tensor<double, 2>(A);
-    auto store_ref = Tensor<double, 2>(store);
+    auto A_ref     = Tensor<T, 2>(A);
+    auto store_ref = Tensor<T, 2>(store);
     REQUIRE(linear_algebra::gesv(&A_ref, &store_ref) == 0);
 
     auto columns = store(AllT{}, Range{2, 5});
@@ -186,7 +200,7 @@ TEST_CASE("Graph - getrs through a view of the right-hand sides", "[ComputeGraph
 
     for (size_t i = 0; i < n; i++) {
         for (size_t j = 2; j < 5; j++) {
-            REQUIRE_THAT(store(i, j), Catch::Matchers::WithinAbs(store_ref(i, j), 1e-10));
+            REQUIRE(solved<T>(store(i, j), store_ref(i, j)));
         }
     }
 }
@@ -243,19 +257,20 @@ TEST_CASE("Graph - getrs refuses a pivot array too short for the order", "[Compu
     REQUIRE_THROWS_AS(std::ignore = linear_algebra::getrs(A, stunted, &B), std::length_error);
 }
 
-TEST_CASE("Graph - a captured LU replays against the same pivots", "[ComputeGraph][LU]") {
+TEMPLATE_LIST_TEST_CASE("Graph - a captured LU replays against the same pivots", "[ComputeGraph][LU]", testing::AllScalarTypes) {
+    using T = TestType;
     // The pivot buffer is baked into both executors as a shared_ptr, so it outlives the handle the caller held and every
     // replay sees the array the factorization node just wrote.
     constexpr size_t n = 4;
 
-    auto A = create_random_definite<double>("A", n, n);
-    auto B = create_random_tensor<double>("B", n, 2);
+    auto A = create_random_definite<T>("A", n, n);
+    auto B = create_random_tensor<T>("B", n, 2);
 
-    auto A_source = Tensor<double, 2>(A);
-    auto B_source = Tensor<double, 2>(B);
+    auto A_source = Tensor<T, 2>(A);
+    auto B_source = Tensor<T, 2>(B);
 
-    auto A_ref = Tensor<double, 2>(A);
-    auto B_ref = Tensor<double, 2>(B);
+    auto A_ref = Tensor<T, 2>(A);
+    auto B_ref = Tensor<T, 2>(B);
     REQUIRE(linear_algebra::gesv(&A_ref, &B_ref) == 0);
 
     cg::Graph graph("lu-replay");
@@ -273,7 +288,7 @@ TEST_CASE("Graph - a captured LU replays against the same pivots", "[ComputeGrap
 
         for (size_t i = 0; i < n; i++) {
             for (size_t j = 0; j < 2; j++) {
-                REQUIRE_THAT(B(i, j), Catch::Matchers::WithinAbs(B_ref(i, j), 1e-10));
+                REQUIRE(solved<T>(B(i, j), B_ref(i, j)));
             }
         }
     }

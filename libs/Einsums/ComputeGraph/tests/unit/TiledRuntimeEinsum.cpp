@@ -14,6 +14,7 @@
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -26,8 +27,8 @@ namespace {
 using Grid = std::vector<std::vector<int>>;
 
 // Fill every grid tile of a 2-D tiled tensor from a global (row, col) function.
-template <typename F>
-void fill_tiled(TiledRuntimeTensor<double> &T, F &&f) {
+template <typename V, typename F>
+void fill_tiled(TiledRuntimeTensor<V> &T, F &&f) {
     auto const &off = T.tile_offsets();
     auto const &sz  = T.tile_sizes();
     for (int ti = 0; ti < static_cast<int>(sz[0].size()); ++ti) {
@@ -44,10 +45,11 @@ void fill_tiled(TiledRuntimeTensor<double> &T, F &&f) {
 }
 
 // Reconstruct a dense R×C matrix from a 2-D tiled tensor (absent tiles read 0).
-std::vector<std::vector<double>> gather(TiledRuntimeTensor<double> const &T, int R, int C) {
-    std::vector<std::vector<double>> M(R, std::vector<double>(C, 0.0));
-    auto const                      &off = T.tile_offsets();
-    auto const                      &sz  = T.tile_sizes();
+template <typename V>
+std::vector<std::vector<V>> gather(TiledRuntimeTensor<V> const &T, int R, int C) {
+    std::vector<std::vector<V>> M(R, std::vector<V>(C, V{}));
+    auto const                 &off = T.tile_offsets();
+    auto const                 &sz  = T.tile_sizes();
     for (auto const &[coord, tile] : T.tiles()) {
         int const ti = coord[0];
         int const tj = coord[1];
@@ -60,16 +62,24 @@ std::vector<std::vector<double>> gather(TiledRuntimeTensor<double> const &T, int
     return M;
 }
 
+/// Within 100 epsilon of @p want, relative to it and absolute near zero, for any element type.
+template <typename V>
+bool near(V got, V want) {
+    return std::abs(got - want) <= 100.0 * std::numeric_limits<RemoveComplexT<V>>::epsilon() * (1.0 + std::abs(want));
+}
+
 } // namespace
 
-TEST_CASE("TiledRuntimeTensor - tiled einsum GEMM (eager) matches dense", "[ComputeGraph][TiledRuntime]") {
+TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - tiled einsum GEMM (eager) matches dense", "[ComputeGraph][TiledRuntime]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // i:{1,2}=3, k:{2,1}=3, j:{1,1}=2 ; contracted k partition matches in A and B.
-    TiledRuntimeTensor<double> A("A", Grid{{1, 2}, {2, 1}});
-    TiledRuntimeTensor<double> B("B", Grid{{2, 1}, {1, 1}});
-    TiledRuntimeTensor<double> C("C", Grid{{1, 2}, {1, 1}});
+    TiledRuntimeTensor<T> A("A", Grid{{1, 2}, {2, 1}});
+    TiledRuntimeTensor<T> B("B", Grid{{2, 1}, {1, 1}});
+    TiledRuntimeTensor<T> C("C", Grid{{1, 2}, {1, 1}});
 
-    auto af = [](int r, int c) { return 1.0 + 3 * r + c; };
-    auto bf = [](int r, int c) { return 0.5 + r - 2 * c; };
+    auto af = [](int r, int c) { return testing::prefactor<T>(1.0 + 3 * r + c, 0.5 * r - c); };
+    auto bf = [](int r, int c) { return testing::prefactor<T>(0.5 + r - 2 * c, 1.0 - 0.25 * r); };
     fill_tiled(A, af);
     fill_tiled(B, bf);
 
@@ -78,24 +88,26 @@ TEST_CASE("TiledRuntimeTensor - tiled einsum GEMM (eager) matches dense", "[Comp
     auto Cg = gather(C, 3, 2);
     for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 2; ++j) {
-            double expected = 0.0;
+            T expected{};
             for (int k = 0; k < 3; ++k) {
                 expected += af(i, k) * bf(k, j);
             }
-            REQUIRE(std::abs(Cg[i][j] - expected) < 1e-12);
+            REQUIRE(near<T>(Cg[i][j], expected));
         }
     }
     // Infer-and-create: every output grid cell received a contribution.
     REQUIRE(C.num_filled_tiles() == 4);
 }
 
-TEST_CASE("TiledRuntimeTensor - tiled einsum GEMM inside a captured graph", "[ComputeGraph][TiledRuntime]") {
-    TiledRuntimeTensor<double> A("A", Grid{{1, 2}, {2, 1}});
-    TiledRuntimeTensor<double> B("B", Grid{{2, 1}, {1, 1}});
-    TiledRuntimeTensor<double> C("C", Grid{{1, 2}, {1, 1}});
+TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - tiled einsum GEMM inside a captured graph", "[ComputeGraph][TiledRuntime]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    TiledRuntimeTensor<T> A("A", Grid{{1, 2}, {2, 1}});
+    TiledRuntimeTensor<T> B("B", Grid{{2, 1}, {1, 1}});
+    TiledRuntimeTensor<T> C("C", Grid{{1, 2}, {1, 1}});
 
-    auto af = [](int r, int c) { return 2.0 - r + 0.25 * c; };
-    auto bf = [](int r, int c) { return 1.0 + 0.5 * r * c; };
+    auto af = [](int r, int c) { return testing::prefactor<T>(2.0 - r + 0.25 * c, 0.75 * c - 0.5); };
+    auto bf = [](int r, int c) { return testing::prefactor<T>(1.0 + 0.5 * r * c, r - 0.5 * c); };
     fill_tiled(A, af); // inputs must be materialized before execute
     fill_tiled(B, bf);
 
@@ -109,22 +121,24 @@ TEST_CASE("TiledRuntimeTensor - tiled einsum GEMM inside a captured graph", "[Co
     auto Cg = gather(C, 3, 2);
     for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 2; ++j) {
-            double expected = 0.0;
+            T expected{};
             for (int k = 0; k < 3; ++k) {
                 expected += af(i, k) * bf(k, j);
             }
-            REQUIRE(std::abs(Cg[i][j] - expected) < 1e-12);
+            REQUIRE(near<T>(Cg[i][j], expected));
         }
     }
 }
 
-TEST_CASE("TiledRuntimeTensor - sparse inputs: missing tiles contribute zero", "[ComputeGraph][TiledRuntime]") {
-    TiledRuntimeTensor<double> A("A", Grid{{1, 2}, {2, 1}});
-    TiledRuntimeTensor<double> B("B", Grid{{2, 1}, {1, 1}});
-    TiledRuntimeTensor<double> C("C", Grid{{1, 2}, {1, 1}});
+TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - sparse inputs: missing tiles contribute zero", "[ComputeGraph][TiledRuntime]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    TiledRuntimeTensor<T> A("A", Grid{{1, 2}, {2, 1}});
+    TiledRuntimeTensor<T> B("B", Grid{{2, 1}, {1, 1}});
+    TiledRuntimeTensor<T> C("C", Grid{{1, 2}, {1, 1}});
 
-    auto af = [](int r, int c) { return 1.0 + 3 * r + c; };
-    auto bf = [](int r, int c) { return 0.5 + r - 2 * c; };
+    auto af = [](int r, int c) { return testing::prefactor<T>(1.0 + 3 * r + c, 0.5 * r - c); };
+    auto bf = [](int r, int c) { return testing::prefactor<T>(0.5 + r - 2 * c, 1.0 - 0.25 * r); };
 
     // Populate only a subset of A's tiles (off-diagonal/rectangular pattern):
     // present: (0,0)=1x2, (1,1)=2x1.  Absent: (0,1), (1,0).
@@ -149,13 +163,13 @@ TEST_CASE("TiledRuntimeTensor - sparse inputs: missing tiles contribute zero", "
     auto Cg        = gather(C, 3, 2);
     for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 2; ++j) {
-            double expected = 0.0;
+            T expected{};
             for (int k = 0; k < 3; ++k) {
                 if (a_present(i, k)) {
                     expected += af(i, k) * bf(k, j);
                 }
             }
-            REQUIRE(std::abs(Cg[i][j] - expected) < 1e-12);
+            REQUIRE(near<T>(Cg[i][j], expected));
         }
     }
 }

@@ -16,6 +16,7 @@
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 #include <Einsums/Testing/TensorCompare.hpp>
 
+#include <algorithm>
 #include <limits>
 
 #include <Einsums/Testing.hpp>
@@ -27,8 +28,14 @@ namespace cg = einsums::compute_graph;
 
 namespace {
 
+/// The default bound: 1e-10, the file's float64 tolerance, or a hundred ulps for a narrower type.
+template <typename T>
+double default_tol() {
+    return std::max(1e-10, 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon());
+}
+
 template <typename T, size_t Rank>
-void require_close(Tensor<T, Rank> const &got, Tensor<T, Rank> const &want, double tol = 1e-10) {
+void require_close(Tensor<T, Rank> const &got, Tensor<T, Rank> const &want, double tol = default_tol<T>()) {
     einsums::testing::require_tensors_close(got, want, {.rtol = tol, .atol = tol});
 }
 
@@ -53,15 +60,16 @@ void require_close(Tensor<T, Rank> const &got, Tensor<T, Rank> const &want, doub
 // routing repeated-letter specs to the (now repeat-aware) generic loop.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("cg parity - Hadamard diagonal outer ij<-ii;jj", "[ComputeGraph][EagerParity][hadamard]") {
+TEMPLATE_LIST_TEST_CASE("cg parity - Hadamard diagonal outer ij<-ii;jj", "[ComputeGraph][EagerParity][hadamard]", testing::AllScalarTypes) {
+    using T            = TestType;
     constexpr size_t N = 5;
-    auto             A = create_random_tensor<double>("A", N, N);
-    auto             B = create_random_tensor<double>("B", N, N);
+    auto             A = create_random_tensor<T>("A", N, N);
+    auto             B = create_random_tensor<T>("B", N, N);
 
-    auto C_ref = create_zero_tensor<double>("Cr", N, N);
+    auto C_ref = create_zero_tensor<T>("Cr", N, N);
     reference_einsum("ij <- ii ; jj", &C_ref, A, B);
 
-    auto      C_graph = create_zero_tensor<double>("Cg", N, N);
+    auto      C_graph = create_zero_tensor<T>("Cg", N, N);
     cg::Graph graph("hadamard_ii_jj");
     {
         cg::CaptureGuard const guard(graph);
@@ -72,15 +80,17 @@ TEST_CASE("cg parity - Hadamard diagonal outer ij<-ii;jj", "[ComputeGraph][Eager
     require_close(C_graph, C_ref);
 }
 
-TEST_CASE("cg parity - Hadamard rank-3 operands ij<-iij;jji", "[ComputeGraph][EagerParity][hadamard]") {
+TEMPLATE_LIST_TEST_CASE("cg parity - Hadamard rank-3 operands ij<-iij;jji", "[ComputeGraph][EagerParity][hadamard]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
     constexpr size_t N = 4;
-    auto             A = create_random_tensor<double>("A", N, N, N);
-    auto             B = create_random_tensor<double>("B", N, N, N);
+    auto             A = create_random_tensor<T>("A", N, N, N);
+    auto             B = create_random_tensor<T>("B", N, N, N);
 
-    auto C_ref = create_zero_tensor<double>("Cr", N, N);
+    auto C_ref = create_zero_tensor<T>("Cr", N, N);
     reference_einsum("ij <- iij ; jji", &C_ref, A, B);
 
-    auto      C_graph = create_zero_tensor<double>("Cg", N, N);
+    auto      C_graph = create_zero_tensor<T>("Cg", N, N);
     cg::Graph graph("hadamard_iij_jji");
     {
         cg::CaptureGuard const guard(graph);
@@ -91,15 +101,17 @@ TEST_CASE("cg parity - Hadamard rank-3 operands ij<-iij;jji", "[ComputeGraph][Ea
     require_close(C_graph, C_ref);
 }
 
-TEST_CASE("cg parity - Hadamard repeated output index iji<-iji;jij", "[ComputeGraph][EagerParity][hadamard]") {
+TEMPLATE_LIST_TEST_CASE("cg parity - Hadamard repeated output index iji<-iji;jij", "[ComputeGraph][EagerParity][hadamard]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
     constexpr size_t N = 4;
-    auto             A = create_random_tensor<double>("A", N, N, N);
-    auto             B = create_random_tensor<double>("B", N, N, N);
+    auto             A = create_random_tensor<T>("A", N, N, N);
+    auto             B = create_random_tensor<T>("B", N, N, N);
 
-    auto C_ref = create_zero_tensor<double>("Cr", N, N, N);
+    auto C_ref = create_zero_tensor<T>("Cr", N, N, N);
     reference_einsum("iji <- iji ; jij", &C_ref, A, B);
 
-    auto      C_graph = create_zero_tensor<double>("Cg", N, N, N);
+    auto      C_graph = create_zero_tensor<T>("Cg", N, N, N);
     cg::Graph graph("hadamard_iji");
     {
         cg::CaptureGuard const guard(graph);
@@ -110,15 +122,17 @@ TEST_CASE("cg parity - Hadamard repeated output index iji<-iji;jij", "[ComputeGr
     require_close(C_graph, C_ref);
 }
 
-TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGraph][EagerParity][hadamard]") {
+TEMPLATE_LIST_TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGraph][EagerParity][hadamard]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
     constexpr size_t N = 4;
-    auto             A = create_random_tensor<double>("A", N, N, N);
-    auto             B = create_random_tensor<double>("B", N, N, N);
+    auto             A = create_random_tensor<T>("A", N, N, N);
+    auto             B = create_random_tensor<T>("B", N, N, N);
 
-    auto C_ref = create_zero_tensor<double>("Cr", N, N);
+    auto C_ref = create_zero_tensor<T>("Cr", N, N);
     reference_einsum("ii <- ijk ; jik", &C_ref, A, B);
 
-    auto      C_graph = create_zero_tensor<double>("Cg", N, N);
+    auto      C_graph = create_zero_tensor<T>("Cg", N, N);
     cg::Graph graph("hadamard_ii_sum");
     {
         cg::CaptureGuard const guard(graph);
@@ -145,11 +159,12 @@ TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGra
 namespace {
 
 // C(i,j) = (sum_k S(i,j,k)) * W(i,j)  -- empty link, lone k summed in A (P1).
-Tensor<double, 2> lone_empty_link_reference(Tensor<double, 3> const &S, Tensor<double, 2> const &W) {
-    Tensor<double, 2> ref{"ref", S.dim(0), S.dim(1)};
+template <typename T>
+Tensor<T, 2> lone_empty_link_reference(Tensor<T, 3> const &S, Tensor<T, 2> const &W) {
+    Tensor<T, 2> ref{"ref", S.dim(0), S.dim(1)};
     for (size_t a = 0; a < S.dim(0); ++a)
         for (size_t b = 0; b < S.dim(1); ++b) {
-            double s = 0.0;
+            T s{};
             for (size_t c = 0; c < S.dim(2); ++c)
                 s += S(a, b, c);
             ref(a, b) = s * W(a, b);
@@ -158,11 +173,12 @@ Tensor<double, 2> lone_empty_link_reference(Tensor<double, 3> const &S, Tensor<d
 }
 
 // C(j,k) = sum_l sum_p A(j,l) * B(p,l,k)  -- shared link l, lone p summed in B.
-Tensor<double, 2> link_plus_lone_reference(Tensor<double, 2> const &A, Tensor<double, 3> const &B) {
-    Tensor<double, 2> ref{"ref", A.dim(0), B.dim(2)};
+template <typename T>
+Tensor<T, 2> link_plus_lone_reference(Tensor<T, 2> const &A, Tensor<T, 3> const &B) {
+    Tensor<T, 2> ref{"ref", A.dim(0), B.dim(2)};
     for (size_t jj = 0; jj < A.dim(0); ++jj)
         for (size_t kk = 0; kk < B.dim(2); ++kk) {
-            double s = 0.0;
+            T s{};
             for (size_t ll = 0; ll < A.dim(1); ++ll)
                 for (size_t pp = 0; pp < B.dim(0); ++pp)
                     s += A(jj, ll) * B(pp, ll, kk);
@@ -173,12 +189,14 @@ Tensor<double, 2> link_plus_lone_reference(Tensor<double, 2> const &A, Tensor<do
 
 } // namespace
 
-TEST_CASE("cg parity - lone summed index empty link ij<-ijk;ij", "[ComputeGraph][EagerParity][lone-summed]") {
-    auto S   = create_random_tensor<double>("S", 3, 4, 5);
-    auto W   = create_random_tensor<double>("W", 3, 4);
+TEMPLATE_LIST_TEST_CASE("cg parity - lone summed index empty link ij<-ijk;ij", "[ComputeGraph][EagerParity][lone-summed]",
+                        testing::AllScalarTypes) {
+    using T  = TestType;
+    auto S   = create_random_tensor<T>("S", 3, 4, 5);
+    auto W   = create_random_tensor<T>("W", 3, 4);
     auto ref = lone_empty_link_reference(S, W);
 
-    auto      C_graph = create_zero_tensor<double>("Cg", 3, 4);
+    auto      C_graph = create_zero_tensor<T>("Cg", 3, 4);
     cg::Graph graph("lone_empty_link");
     {
         cg::CaptureGuard const guard(graph);
@@ -189,12 +207,14 @@ TEST_CASE("cg parity - lone summed index empty link ij<-ijk;ij", "[ComputeGraph]
     require_close(C_graph, ref);
 }
 
-TEST_CASE("cg parity - lone summed index with shared link jk<-jl;plk", "[ComputeGraph][EagerParity][lone-summed]") {
-    auto A   = create_random_tensor<double>("A", 3, 4);
-    auto B   = create_random_tensor<double>("B", 2, 4, 5);
+TEMPLATE_LIST_TEST_CASE("cg parity - lone summed index with shared link jk<-jl;plk", "[ComputeGraph][EagerParity][lone-summed]",
+                        testing::AllScalarTypes) {
+    using T  = TestType;
+    auto A   = create_random_tensor<T>("A", 3, 4);
+    auto B   = create_random_tensor<T>("B", 2, 4, 5);
     auto ref = link_plus_lone_reference(A, B);
 
-    auto      C_graph = create_zero_tensor<double>("Cg", 3, 5);
+    auto      C_graph = create_zero_tensor<T>("Cg", 3, 5);
     cg::Graph graph("link_plus_lone");
     {
         cg::CaptureGuard const guard(graph);
@@ -246,9 +266,9 @@ TEMPLATE_TEST_CASE("cg parity - Khatri-Rao einsum imr<-ir;mr", "[ComputeGraph][E
 namespace {
 
 // Hand-rolled outer-product oracle: C(perm of a,b indices) = A * B.
-template <typename Fill>
-Tensor<double, 3> outer3_reference(Tensor<double, 2> const &A, Tensor<double, 1> const &B, Fill fill) {
-    Tensor<double, 3> ref{"ref", A.dim(0), B.dim(0), A.dim(1)};
+template <typename T, typename Fill>
+Tensor<T, 3> outer3_reference(Tensor<T, 2> const &A, Tensor<T, 1> const &B, Fill fill) {
+    Tensor<T, 3> ref{"ref", A.dim(0), B.dim(0), A.dim(1)};
     for (size_t a = 0; a < A.dim(0); ++a)
         for (size_t b = 0; b < B.dim(0); ++b)
             for (size_t c = 0; c < A.dim(1); ++c)
@@ -258,14 +278,16 @@ Tensor<double, 3> outer3_reference(Tensor<double, 2> const &A, Tensor<double, 1>
 
 } // namespace
 
-TEST_CASE("cg parity - outer product contiguous control ijk<-ij;k", "[ComputeGraph][EagerParity][outer-product]") {
-    auto A = create_random_tensor<double>("A", 3, 4);
-    auto B = create_random_tensor<double>("B", 5);
+TEMPLATE_LIST_TEST_CASE("cg parity - outer product contiguous control ijk<-ij;k", "[ComputeGraph][EagerParity][outer-product]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 4);
+    auto B  = create_random_tensor<T>("B", 5);
 
-    auto C_ref = create_zero_tensor<double>("Cr", 3, 4, 5);
+    auto C_ref = create_zero_tensor<T>("Cr", 3, 4, 5);
     reference_einsum("ijk <- ij ; k", &C_ref, A, B);
 
-    auto      C_graph = create_zero_tensor<double>("Cg", 3, 4, 5);
+    auto      C_graph = create_zero_tensor<T>("Cg", 3, 4, 5);
     cg::Graph graph("outer_contig");
     {
         cg::CaptureGuard const guard(graph);
@@ -276,13 +298,15 @@ TEST_CASE("cg parity - outer product contiguous control ijk<-ij;k", "[ComputeGra
     require_close(C_graph, C_ref);
 }
 
-TEST_CASE("cg parity - #283 non-contiguous outer abc<-ac;b", "[ComputeGraph][EagerParity][outer-product]") {
-    auto A = create_random_tensor<double>("A", 3, 4);
-    auto B = create_random_tensor<double>("B", 5);
+TEMPLATE_LIST_TEST_CASE("cg parity - #283 non-contiguous outer abc<-ac;b", "[ComputeGraph][EagerParity][outer-product]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 4);
+    auto B  = create_random_tensor<T>("B", 5);
 
-    auto ref = outer3_reference(A, B, [](auto &t, size_t a, size_t b, size_t c, double v) { t(a, b, c) = v; });
+    auto ref = outer3_reference(A, B, [](auto &t, size_t a, size_t b, size_t c, auto v) { t(a, b, c) = v; });
 
-    auto      C_graph = create_zero_tensor<double>("Cg", 3, 5, 4);
+    auto      C_graph = create_zero_tensor<T>("Cg", 3, 5, 4);
     cg::Graph graph("outer_noncontig_acb");
     {
         cg::CaptureGuard const guard(graph);
@@ -293,18 +317,20 @@ TEST_CASE("cg parity - #283 non-contiguous outer abc<-ac;b", "[ComputeGraph][Eag
     require_close(C_graph, ref);
 }
 
-TEST_CASE("cg parity - #283 non-contiguous outer abcd<-ad;bc", "[ComputeGraph][EagerParity][outer-product]") {
-    auto A = create_random_tensor<double>("A", 3, 4);
-    auto B = create_random_tensor<double>("B", 5, 2);
+TEMPLATE_LIST_TEST_CASE("cg parity - #283 non-contiguous outer abcd<-ad;bc", "[ComputeGraph][EagerParity][outer-product]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 4);
+    auto B  = create_random_tensor<T>("B", 5, 2);
 
-    Tensor<double, 4> ref{"ref", 3, 5, 2, 4};
+    Tensor<T, 4> ref{"ref", 3, 5, 2, 4};
     for (size_t a = 0; a < 3; ++a)
         for (size_t b = 0; b < 5; ++b)
             for (size_t c = 0; c < 2; ++c)
                 for (size_t d = 0; d < 4; ++d)
                     ref(a, b, c, d) = A(a, d) * B(b, c);
 
-    auto      C_graph = create_zero_tensor<double>("Cg", 3, 5, 2, 4);
+    auto      C_graph = create_zero_tensor<T>("Cg", 3, 5, 2, 4);
     cg::Graph graph("outer_noncontig_adbc");
     {
         cg::CaptureGuard const guard(graph);
@@ -336,11 +362,13 @@ TEST_CASE("cg aliasing - contraction with C as input throws", "[ComputeGraph][Ea
     REQUIRE_THROWS_AS(graph.execute(), std::invalid_argument);
 }
 
-TEST_CASE("cg aliasing - elementwise in-place update is allowed", "[ComputeGraph][EagerParity][aliasing]") {
-    auto C = create_random_tensor<double>("C", 3, 3);
-    auto D = create_random_tensor<double>("D", 3, 3);
+TEMPLATE_LIST_TEST_CASE("cg aliasing - elementwise in-place update is allowed", "[ComputeGraph][EagerParity][aliasing]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto C  = create_random_tensor<T>("C", 3, 3);
+    auto D  = create_random_tensor<T>("D", 3, 3);
 
-    auto expected = create_zero_tensor<double>("E", 3, 3);
+    auto expected = create_zero_tensor<T>("E", 3, 3);
     for (size_t a = 0; a < 3; ++a)
         for (size_t b = 0; b < 3; ++b)
             expected(a, b) = C(a, b) * D(a, b);
@@ -363,14 +391,16 @@ TEST_CASE("cg aliasing - elementwise in-place update is allowed", "[ComputeGraph
 // zeros and the whole result is zero, silently, with no throw. Each spec below
 // takes a different generic route: broadcast against a lower-rank operand
 // (either axis), a lone summed index in B, and a repeated letter in B.
-TEST_CASE("cg aliasing - in-place update survives the generic loop routes", "[ComputeGraph][EagerParity][aliasing]") {
-    auto const A0 = create_random_tensor<double>("A0", 3, 4);
-    auto const u  = create_random_tensor<double>("u", 3);
-    auto const v  = create_random_tensor<double>("v", 4);
-    auto const w  = create_random_tensor<double>("w", 5);
-    auto const M  = create_random_tensor<double>("M", 4, 4);
+TEMPLATE_LIST_TEST_CASE("cg aliasing - in-place update survives the generic loop routes", "[ComputeGraph][EagerParity][aliasing]",
+                        testing::AllScalarTypes) {
+    using T       = TestType;
+    auto const A0 = create_random_tensor<T>("A0", 3, 4);
+    auto const u  = create_random_tensor<T>("u", 3);
+    auto const v  = create_random_tensor<T>("v", 4);
+    auto const w  = create_random_tensor<T>("w", 5);
+    auto const M  = create_random_tensor<T>("M", 4, 4);
 
-    auto expected = create_zero_tensor<double>("E", 3, 4);
+    auto expected = create_zero_tensor<T>("E", 3, 4);
 
     SECTION("broadcast against B's trailing axis: ij <- ij ; j") {
         for (size_t a = 0; a < 3; ++a)
@@ -395,7 +425,7 @@ TEST_CASE("cg aliasing - in-place update survives the generic loop routes", "[Co
     }
 
     SECTION("lone summed index in B: ij <- ij ; k") {
-        double sum_w = 0.0;
+        T sum_w{};
         for (size_t k = 0; k < 5; ++k)
             sum_w += w(k);
         for (size_t a = 0; a < 3; ++a)
@@ -446,13 +476,15 @@ TEST_CASE("cg aliasing - in-place update survives the generic loop routes", "[Co
     }
 }
 
-TEST_CASE("cg aliasing - A and B sharing a tensor is allowed", "[ComputeGraph][EagerParity][aliasing]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
+TEMPLATE_LIST_TEST_CASE("cg aliasing - A and B sharing a tensor is allowed", "[ComputeGraph][EagerParity][aliasing]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 3);
 
-    auto expected = create_zero_tensor<double>("E", 3, 3);
+    auto expected = create_zero_tensor<T>("E", 3, 3);
     reference_einsum("ij <- ik ; kj", &expected, A, A);
 
-    auto      C = create_zero_tensor<double>("C", 3, 3);
+    auto      C = create_zero_tensor<T>("C", 3, 3);
     cg::Graph graph("alias_ab");
     {
         cg::CaptureGuard const guard(graph);
@@ -958,15 +990,17 @@ TEMPLATE_LIST_TEST_CASE("cg dispatch route - every route in the cascade fires wh
 // statistically but not these orderings).
 // ---------------------------------------------------------------------------
 
-TEST_CASE("cg parity - sort-gemm batch scrambled pilj<-pjki;plk", "[ComputeGraph][EagerParity][sort-gemm]") {
+TEMPLATE_LIST_TEST_CASE("cg parity - sort-gemm batch scrambled pilj<-pjki;plk", "[ComputeGraph][EagerParity][sort-gemm]",
+                        testing::AllScalarTypes) {
+    using T         = TestType;
     size_t const dp = 3, di = 4, dj = 5, dk = 6, dl = 3;
-    auto         A = create_random_tensor<double>("A", dp, dj, dk, di);
-    auto         B = create_random_tensor<double>("B", dp, dl, dk);
+    auto         A = create_random_tensor<T>("A", dp, dj, dk, di);
+    auto         B = create_random_tensor<T>("B", dp, dl, dk);
 
-    auto C_ref = create_zero_tensor<double>("Cr", dp, di, dl, dj);
+    auto C_ref = create_zero_tensor<T>("Cr", dp, di, dl, dj);
     reference_einsum("pilj <- pjki ; plk", &C_ref, A, B);
 
-    auto      C_graph = create_zero_tensor<double>("Cg", dp, di, dl, dj);
+    auto      C_graph = create_zero_tensor<T>("Cg", dp, di, dl, dj);
     cg::Graph graph("sort_gemm_scrambled");
     {
         cg::CaptureGuard const guard(graph);
@@ -977,8 +1011,9 @@ TEST_CASE("cg parity - sort-gemm batch scrambled pilj<-pjki;plk", "[ComputeGraph
     require_close(C_graph, C_ref);
 }
 
-TEST_CASE("cg parity - sort-gemm combined conjugation ilj<-conj(jki);conj(lk)", "[ComputeGraph][EagerParity][sort-gemm]") {
-    using T         = std::complex<double>;
+TEMPLATE_LIST_TEST_CASE("cg parity - sort-gemm combined conjugation ilj<-conj(jki);conj(lk)", "[ComputeGraph][EagerParity][sort-gemm]",
+                        testing::ComplexScalarTypes) {
+    using T         = TestType;
     size_t const di = 3, dj = 4, dk = 5, dl = 3;
     auto         A = create_random_tensor<T>("A", dj, dk, di);
     auto         B = create_random_tensor<T>("B", dl, dk);
@@ -994,10 +1029,7 @@ TEST_CASE("cg parity - sort-gemm combined conjugation ilj<-conj(jki);conj(lk)", 
     }
     graph.execute();
 
-    auto const n = C_graph.size();
-    for (size_t flat = 0; flat < n; ++flat) {
-        REQUIRE(std::abs(C_graph.data()[flat] - C_ref.data()[flat]) <= 1e-10 * (1.0 + std::abs(C_ref.data()[flat])));
-    }
+    require_close(C_graph, C_ref);
 }
 
 // ---------------------------------------------------------------------------

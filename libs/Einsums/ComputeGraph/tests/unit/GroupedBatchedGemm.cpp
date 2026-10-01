@@ -62,10 +62,15 @@ std::vector<Tensor<T, 2>> reference(std::vector<Member<T>> const &batch, T alpha
     return out;
 }
 
+/// The absolute bound a GEMM of these sizes holds to, by the element type's precision.
+template <typename T>
+double gemm_tol() {
+    return std::is_same_v<RemoveComplexT<T>, float> ? 1.0e-4 : 1.0e-11;
+}
+
 template <typename T>
 void require_close(Tensor<T, 2> const &got, Tensor<T, 2> const &ref) {
-    double const tol = std::is_same_v<RemoveComplexT<T>, float> ? 1.0e-4 : 1.0e-11;
-    einsums::testing::require_tensors_close(got, ref, {.rtol = 0, .atol = tol});
+    einsums::testing::require_tensors_close(got, ref, {.rtol = 0, .atol = gemm_tol<T>()});
 }
 
 /// Pointer lists over a batch, in the order the caller wrote it.
@@ -124,9 +129,11 @@ TEMPLATE_TEST_CASE("grouped_batched_gemm: eager matches member-by-member", "[Com
     }
 }
 
-TEST_CASE("grouped_batched_gemm: capture and replay match eager", "[ComputeGraph][GroupedBatchedGemm]") {
-    auto batch = mixed_batch<double>(true, false);
-    auto ref   = reference<double>(batch, 1.5, 0.5, true, false);
+TEMPLATE_TEST_CASE("grouped_batched_gemm: capture and replay match eager", "[ComputeGraph][GroupedBatchedGemm]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using T    = TestType;
+    auto batch = mixed_batch<T>(true, false);
+    auto ref   = reference<T>(batch, T(1.5), T(0.5), true, false);
 
     auto      l = lists_of(batch);
     cg::Graph graph("grouped");
@@ -211,11 +218,13 @@ TEST_CASE("grouped_batched_gemm: one shape is bit-for-bit cg::batched_gemm", "[C
     }
 }
 
-TEST_CASE("grouped_batched_gemm: survives a rebind", "[ComputeGraph][GroupedBatchedGemm][Rebind]") {
+TEMPLATE_TEST_CASE("grouped_batched_gemm: survives a rebind", "[ComputeGraph][GroupedBatchedGemm][Rebind]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using T = TestType;
     // The one test a node that baked its pointers in would fail. rebind() and
     // the MemoryPlanning arena both move storage between executions, so the
     // executor has to read through the slot every time.
-    auto batch = mixed_batch<double>(false, false);
+    auto batch = mixed_batch<T>(false, false);
     auto l     = lists_of(batch);
 
     cg::Graph graph("grouped_rebind");
@@ -226,8 +235,8 @@ TEST_CASE("grouped_batched_gemm: survives a rebind", "[ComputeGraph][GroupedBatc
 
     // Swap one destination for a different tensor and replay; the result has to
     // land in the NEW tensor and match what the old one would have received.
-    auto              expected = reference<double>(batch, 1.0, 0.0, false, false);
-    Tensor<double, 2> fresh    = create_zero_tensor<double>("fresh", batch[3].c.dim(0), batch[3].c.dim(1));
+    auto         expected = reference<T>(batch, T(1.0), T(0.0), false, false);
+    Tensor<T, 2> fresh    = create_zero_tensor<T>("fresh", batch[3].c.dim(0), batch[3].c.dim(1));
     graph.rebind(batch[3].c, fresh);
     graph.execute();
 
@@ -255,31 +264,33 @@ TEST_CASE("grouped_batched_gemm: beta != 0 records the read of every destination
     REQUIRE(beta_one.nodes()[0].inputs.size() == 18);
 }
 
-TEST_CASE("grouped_batched_gemm_blocked: blocks of several bases, several shapes", "[ComputeGraph][GroupedBatchedGemm]") {
+TEMPLATE_TEST_CASE("grouped_batched_gemm_blocked: blocks of several bases, several shapes", "[ComputeGraph][GroupedBatchedGemm]", float,
+                   double, std::complex<float>, std::complex<double>) {
+    using T = TestType;
     // The DLPNO overlap build's shape exactly: one destination tensor per shape
     // class, every member a column range of its class's tensor, and the classes
     // disagreeing on shape. Neither the blocked form nor the grouped form alone
     // expresses it.
     constexpr size_t k = 6;
     // Class 0: 4x5 blocks, three of them. Class 1: 7x3 blocks, two of them.
-    auto base0 = create_zero_tensor<double>("base0", 4, 5 * 3);
-    auto base1 = create_zero_tensor<double>("base1", 7, 3 * 2);
+    auto base0 = create_zero_tensor<T>("base0", 4, 5 * 3);
+    auto base1 = create_zero_tensor<T>("base1", 7, 3 * 2);
 
-    std::vector<Tensor<double, 2>>   a_store, b_store;
-    std::vector<size_t>              offsets;
-    std::vector<Tensor<double, 2> *> bases;
+    std::vector<Tensor<T, 2>>   a_store, b_store;
+    std::vector<size_t>         offsets;
+    std::vector<Tensor<T, 2> *> bases;
     a_store.reserve(5);
     b_store.reserve(5);
     for (int i = 0; i < 3; i++) {
-        a_store.push_back(create_random_tensor<double>(fmt::format("a0{}", i), 4, k));
-        b_store.push_back(create_random_tensor<double>(fmt::format("b0{}", i), k, 5));
+        a_store.push_back(create_random_tensor<T>(fmt::format("a0{}", i), 4, k));
+        b_store.push_back(create_random_tensor<T>(fmt::format("b0{}", i), k, 5));
     }
     for (int i = 0; i < 2; i++) {
-        a_store.push_back(create_random_tensor<double>(fmt::format("a1{}", i), 7, k));
-        b_store.push_back(create_random_tensor<double>(fmt::format("b1{}", i), k, 3));
+        a_store.push_back(create_random_tensor<T>(fmt::format("a1{}", i), 7, k));
+        b_store.push_back(create_random_tensor<T>(fmt::format("b1{}", i), k, 3));
     }
 
-    std::vector<Tensor<double, 2> const *> a_list, b_list;
+    std::vector<Tensor<T, 2> const *> a_list, b_list;
     for (size_t i = 0; i < a_store.size(); i++) {
         a_list.push_back(&a_store[i]);
         b_list.push_back(&b_store[i]);
@@ -315,11 +326,11 @@ TEST_CASE("grouped_batched_gemm_blocked: blocks of several bases, several shapes
         auto const *got  = (i < 3 ? base0 : base1).data() + offsets[i];
         for (size_t c = 0; c < cols; c++) {
             for (size_t r = 0; r < rows; r++) {
-                double ref = 0.0;
+                T ref{};
                 for (size_t p = 0; p < k; p++) {
                     ref += a_store[i](r, p) * b_store[i](p, c);
                 }
-                REQUIRE(std::abs(got[r + c * rows] - ref) < 1e-11);
+                REQUIRE(std::abs(got[r + c * rows] - ref) < gemm_tol<T>());
             }
         }
     }
@@ -348,13 +359,15 @@ TEST_CASE("grouped_batched_gemm_blocked: rejects overlapping blocks of one base"
     REQUIRE_NOTHROW(cg::grouped_batched_gemm_blocked(1.0, a_list, b_list, 0.0, bases, good));
 }
 
-TEST_CASE("grouped_batched_gemm: group profiling computes the same answer", "[ComputeGraph][GroupedBatchedGemm]") {
+TEMPLATE_TEST_CASE("grouped_batched_gemm: group profiling computes the same answer", "[ComputeGraph][GroupedBatchedGemm]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using T = TestType;
     // `einsums:graph:profile-groups` deliberately runs a DIFFERENT execution -
     // one uniform call per group under its own profiler zone, so the per-shape
     // breakdown is recoverable. Different timing is the point; a different
     // answer would be a bug, and this is the only thing that would catch it.
-    auto batch = mixed_batch<double>(true, true);
-    auto ref   = reference<double>(batch, 2.0, -1.0, true, true);
+    auto batch = mixed_batch<T>(true, true);
+    auto ref   = reference<T>(batch, T(2.0), T(-1.0), true, true);
 
     bool const prev = config::get(option::GraphProfileGroups);
     config::set(option::GraphProfileGroups, true);
@@ -475,7 +488,9 @@ TEST_CASE("batched gemm: an operand BLAS cannot address is refused, not guessed 
     }
 }
 
-TEST_CASE("batched gemm: a strided operand BLAS CAN address is still accepted", "[ComputeGraph][GroupedBatchedGemm][BatchedGemm]") {
+TEMPLATE_TEST_CASE("batched gemm: a strided operand BLAS CAN address is still accepted", "[ComputeGraph][GroupedBatchedGemm][BatchedGemm]",
+                   float, double, std::complex<float>, std::complex<double>) {
+    using T = TestType;
     // The guard's other half, and the reason it tests addressability rather
     // than contiguity. Fixing a MIDDLE axis leaves the unit stride in place and
     // inflates only the leading dimension, which is exactly what `lda` is for.
@@ -485,7 +500,7 @@ TEST_CASE("batched gemm: a strided operand BLAS CAN address is still accepted", 
     // operand rather than a corner.
     constexpr size_t P = 3, M = 5, K = 4, N = 6;
 
-    auto parent  = create_random_tensor<double>("parent", M, P, K);
+    auto parent  = create_random_tensor<T>("parent", M, P, K);
     auto strided = parent(All, 1, All);
     REQUIRE(strided.dim(0) == M);
     REQUIRE(strided.dim(1) == K);
@@ -493,21 +508,23 @@ TEST_CASE("batched gemm: a strided operand BLAS CAN address is still accepted", 
     // Not contiguous: the columns step over the fixed middle axis.
     REQUIRE(strided.impl().stride(1) != M);
 
-    auto b = create_random_tensor<double>("b", K, N);
+    auto b = create_random_tensor<T>("b", K, N);
 
-    Tensor<double, 2> expected = create_zero_tensor<double>("expected", M, N);
-    linear_algebra::gemm('N', 'N', 1.0, strided, b, 0.0, &expected);
+    Tensor<T, 2> expected = create_zero_tensor<T>("expected", M, N);
+    linear_algebra::gemm('N', 'N', T(1.0), strided, b, T(0.0), &expected);
 
-    auto                                             c = create_zero_tensor<double>("c", M, N);
-    std::vector<TensorView<double, 2> const *> const a_list{&strided};
-    std::vector<Tensor<double, 2> const *> const     b_list{&b};
-    std::vector<Tensor<double, 2> *> const           c_list{&c};
+    auto                                        c = create_zero_tensor<T>("c", M, N);
+    std::vector<TensorView<T, 2> const *> const a_list{&strided};
+    std::vector<Tensor<T, 2> const *> const     b_list{&b};
+    std::vector<Tensor<T, 2> *> const           c_list{&c};
     cg::grouped_batched_gemm(1.0, a_list, b_list, 0.0, c_list);
 
     require_close(c, expected);
 }
 
-TEST_CASE("batched gemm: a single-row operand is addressable whatever its row stride", "[ComputeGraph][GroupedBatchedGemm][BatchedGemm]") {
+TEMPLATE_TEST_CASE("batched gemm: a single-row operand is addressable whatever its row stride",
+                   "[ComputeGraph][GroupedBatchedGemm][BatchedGemm]", float, double, std::complex<float>, std::complex<double>) {
+    using T = TestType;
     // An axis of extent one is never traversed, so it constrains nothing: for a
     // 1 x n operand BLAS only ever steps by the leading dimension and the row
     // stride is dead. A guard that asks "does the minor axis step by one" without
@@ -519,21 +536,21 @@ TEST_CASE("batched gemm: a single-row operand is addressable whatever its row st
     // fixed construction so it does not depend on a fuzz draw to stay fixed.
     constexpr size_t Lda = 8, N = 3, K = 3, Cols = 4;
 
-    auto parent  = create_random_tensor<double>("parent", Lda, N);
+    auto parent  = create_random_tensor<T>("parent", Lda, N);
     auto one_row = parent(Range{0, 1}, All);
     REQUIRE(one_row.dim(0) == 1);
     REQUIRE(one_row.dim(1) == N);
     REQUIRE(one_row.impl().stride(1) == Lda);
 
-    auto b = create_random_tensor<double>("b", K, Cols);
+    auto b = create_random_tensor<T>("b", K, Cols);
 
-    Tensor<double, 2> expected = create_zero_tensor<double>("expected", 1, Cols);
-    linear_algebra::gemm('N', 'N', 1.0, one_row, b, 0.0, &expected);
+    Tensor<T, 2> expected = create_zero_tensor<T>("expected", 1, Cols);
+    linear_algebra::gemm('N', 'N', T(1.0), one_row, b, T(0.0), &expected);
 
-    auto                                             c = create_zero_tensor<double>("c", 1, Cols);
-    std::vector<TensorView<double, 2> const *> const a_list{&one_row};
-    std::vector<Tensor<double, 2> const *> const     b_list{&b};
-    std::vector<Tensor<double, 2> *> const           c_list{&c};
+    auto                                        c = create_zero_tensor<T>("c", 1, Cols);
+    std::vector<TensorView<T, 2> const *> const a_list{&one_row};
+    std::vector<Tensor<T, 2> const *> const     b_list{&b};
+    std::vector<Tensor<T, 2> *> const           c_list{&c};
     cg::grouped_batched_gemm(1.0, a_list, b_list, 0.0, c_list);
 
     require_close(c, expected);

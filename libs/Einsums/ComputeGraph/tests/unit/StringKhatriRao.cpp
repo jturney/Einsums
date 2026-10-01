@@ -70,17 +70,18 @@ TEST_CASE("khatri_rao - index lists follow the einsum operand grammar", "[Comput
     }
 }
 
-TEST_CASE("khatri_rao - the general form", "[ComputeGraph][khatri-rao]") {
+TEMPLATE_LIST_TEST_CASE("khatri_rao - the general form", "[ComputeGraph][khatri-rao]", testing::AllScalarTypes) {
+    using T = TestType;
     SECTION("two shared indices make two column axes") {
         size_t const I = 3, M = 2, R = 4, S = 2;
-        auto const   A = create_random_tensor<double>("A", I, R, S);
-        auto const   B = create_random_tensor<double>("B", M, R, S);
+        auto const   A = create_random_tensor<T>("A", I, R, S);
+        auto const   B = create_random_tensor<T>("B", M, R, S);
 
         auto const KR = cg::khatri_rao("irs", A, "mrs", B);
         REQUIRE(KR.dim(0) == I * M);
         REQUIRE(KR.dim(1) == R * S);
 
-        auto expected = create_zero_tensor<double>("expected", I, M, R, S);
+        auto expected = create_zero_tensor<T>("expected", I, M, R, S);
         reference_einsum("imrs <- irs ; mrs", &expected, A, B);
         for (size_t i = 0; i < I; ++i) {
             for (size_t m = 0; m < M; ++m) {
@@ -95,8 +96,8 @@ TEST_CASE("khatri_rao - the general form", "[ComputeGraph][khatri-rao]") {
 
     SECTION("no shared index is the outer product, as one column") {
         size_t const I = 3, M = 4;
-        auto const   A = create_random_tensor<double>("A", I);
-        auto const   B = create_random_tensor<double>("B", M);
+        auto const   A = create_random_tensor<T>("A", I);
+        auto const   B = create_random_tensor<T>("B", M);
 
         auto const KR = cg::khatri_rao("i", A, "m", B);
         REQUIRE(KR.dim(0) == I * M);
@@ -110,8 +111,8 @@ TEST_CASE("khatri_rao - the general form", "[ComputeGraph][khatri-rao]") {
 
     SECTION("an operand of higher rank contributes all its own axes to the rows") {
         size_t const I = 2, J = 3, M = 2, R = 3;
-        auto const   A = create_random_tensor<double>("A", I, J, R);
-        auto const   B = create_random_tensor<double>("B", M, R);
+        auto const   A = create_random_tensor<T>("A", I, J, R);
+        auto const   B = create_random_tensor<T>("B", M, R);
 
         auto const KR = cg::khatri_rao("ijr", A, "mr", B);
         REQUIRE(KR.dim(0) == I * J * M);

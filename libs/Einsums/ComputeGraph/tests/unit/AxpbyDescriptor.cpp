@@ -13,6 +13,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <limits>
 #include <variant>
 #include <vector>
 
@@ -44,6 +45,12 @@ size_t axpby_input_count(cg::Graph &graph) {
     return 0;
 }
 
+/// Within 100 epsilon of @p want, relative to it and absolute near zero, for any element type.
+template <typename T>
+bool near(T got, T want) {
+    return std::abs(got - want) <= 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon() * (1.0 + std::abs(want));
+}
+
 } // namespace
 
 TEST_CASE("AxpbyDescriptor - snapshot exposes alpha/beta", "[ComputeGraph][Axpby][descriptor]") {
@@ -65,12 +72,16 @@ TEST_CASE("AxpbyDescriptor - snapshot exposes alpha/beta", "[ComputeGraph][Axpby
     CHECK(cg::as<double>(d->params->beta) == 3.0);
 }
 
-TEST_CASE("AxpbyDescriptor - executor reads live params (single source of truth)", "[ComputeGraph][Axpby][descriptor]") {
-    auto X = create_random_tensor<double>("X", 4);
-    auto Y = create_random_tensor<double>("Y", 4);
+TEMPLATE_LIST_TEST_CASE("AxpbyDescriptor - executor reads live params (single source of truth)", "[ComputeGraph][Axpby][descriptor]",
+                        testing::AllScalarTypes) {
+    using T       = TestType;
+    T const alpha = testing::prefactor<T>(2.0, 0.5);
+    T const beta  = testing::prefactor<T>(3.0, -1.0);
+    auto    X     = create_random_tensor<T>("X", 4);
+    auto    Y     = create_random_tensor<T>("Y", 4);
 
-    std::vector<double> x0(4);
-    std::vector<double> y0(4);
+    std::vector<T> x0(4);
+    std::vector<T> y0(4);
     for (size_t i = 0; i < 4; ++i) {
         x0[i] = X(i);
         y0[i] = Y(i);
@@ -79,27 +90,27 @@ TEST_CASE("AxpbyDescriptor - executor reads live params (single source of truth)
     cg::Graph graph("axpby-live");
     {
         cg::CaptureGuard const guard(graph);
-        cg::axpby(2.0, X, 3.0, &Y); // Y = 2*X + 3*Y
+        cg::axpby(alpha, X, beta, &Y); // Y = alpha*X + beta*Y
     }
 
     graph.execute();
     for (size_t i = 0; i < 4; ++i) {
-        CHECK(Y(i) == Catch::Approx(2.0 * x0[i] + 3.0 * y0[i]));
+        CHECK(near<T>(Y(i), alpha * x0[i] + beta * y0[i]));
     }
 
     // Fold beta -> 0 through the shared params. If the executor still used the
-    // baked value it would keep accumulating (Y += 3*Y); reading live params it
-    // overwrites: Y = 2*X.
+    // baked value it would keep accumulating (Y += beta*Y); reading live params it
+    // overwrites: Y = alpha*X.
     auto *d = find_axpby_desc(graph);
     REQUIRE(d != nullptr);
     d->params->beta = cg::PrefactorScalar{0.0};
 
     graph.execute();
     for (size_t i = 0; i < 4; ++i) {
-        CHECK(Y(i) == Catch::Approx(2.0 * x0[i]));
+        CHECK(near<T>(Y(i), alpha * x0[i]));
     }
     // The at-capture snapshot is unchanged by the params mutation.
-    CHECK(cg::as<double>(d->beta) == 3.0);
+    CHECK(cg::as<T>(d->beta) == beta);
 }
 
 TEST_CASE("AxpbyDescriptor - inputs encode accumulate vs overwrite", "[ComputeGraph][Axpby][descriptor]") {

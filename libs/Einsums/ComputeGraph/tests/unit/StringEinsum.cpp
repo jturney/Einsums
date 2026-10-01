@@ -9,6 +9,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <array>
 #include <cmath>
@@ -33,13 +34,20 @@ double route_tolerance() {
     return 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
 }
 
+/// Within route_tolerance of @p want, relative to it and absolute near zero, for any element type.
+template <typename T>
+bool near(T got, T want) {
+    return std::abs(got - want) <= route_tolerance<T>() * (1.0 + std::abs(want));
+}
+
 } // namespace
 
-TEST_CASE("String einsum - arrow notation, direct execute", "[ComputeGraph][StringEinsum]") {
-    auto A          = create_random_tensor<double>("A", 4, 3);
-    auto B          = create_random_tensor<double>("B", 3, 5);
-    auto C          = create_zero_tensor<double>("C", 4, 5);
-    auto C_expected = create_zero_tensor<double>("Ce", 4, 5);
+TEMPLATE_LIST_TEST_CASE("String einsum - arrow notation, direct execute", "[ComputeGraph][StringEinsum]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 4, 3);
+    auto B          = create_random_tensor<T>("B", 3, 5);
+    auto C          = create_zero_tensor<T>("C", 4, 5);
+    auto C_expected = create_zero_tensor<T>("Ce", 4, 5);
 
     // Reference via template-based einsum
     reference_einsum("ij <- ik ; kj", &C_expected, A, B);
@@ -48,54 +56,45 @@ TEST_CASE("String einsum - arrow notation, direct execute", "[ComputeGraph][Stri
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ik ; kj", &C, A, B);
 
-    for (size_t ii = 0; ii < 4; ii++) {
-        for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - numpy notation, direct execute", "[ComputeGraph][StringEinsum]") {
-    auto A          = create_random_tensor<double>("A", 4, 3);
-    auto B          = create_random_tensor<double>("B", 3, 5);
-    auto C          = create_zero_tensor<double>("C", 4, 5);
-    auto C_expected = create_zero_tensor<double>("Ce", 4, 5);
+TEMPLATE_LIST_TEST_CASE("String einsum - numpy notation, direct execute", "[ComputeGraph][StringEinsum]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 4, 3);
+    auto B          = create_random_tensor<T>("B", 3, 5);
+    auto C          = create_zero_tensor<T>("C", 4, 5);
+    auto C_expected = create_zero_tensor<T>("Ce", 4, 5);
 
     reference_einsum("ij <- ik ; kj", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ik;kj -> ij", &C, A, B);
 
-    for (size_t ii = 0; ii < 4; ii++) {
-        for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - with prefactors", "[ComputeGraph][StringEinsum]") {
-    auto A          = create_random_tensor<double>("A", 3, 4);
-    auto B          = create_random_tensor<double>("B", 4, 3);
-    auto C          = create_random_tensor<double>("C", 3, 3);
-    auto C_expected = Tensor<double, 2>(C);
+TEMPLATE_LIST_TEST_CASE("String einsum - with prefactors", "[ComputeGraph][StringEinsum]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 3, 4);
+    auto B          = create_random_tensor<T>("B", 4, 3);
+    auto C          = create_random_tensor<T>("C", 3, 3);
+    auto C_expected = Tensor<T, 2>(C);
 
-    reference_einsum("ij <- ik ; kj", 2.0, &C_expected, 3.0, A, B);
+    reference_einsum("ij <- ik ; kj", T(2.0), &C_expected, T(3.0), A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("ij <- ik ; kj", 2.0, &C, 3.0, A, B);
+    cg::einsum("ij <- ik ; kj", T(2.0), &C, T(3.0), A, B);
 
-    for (size_t ii = 0; ii < 3; ii++) {
-        for (size_t jj = 0; jj < 3; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - graph capture and execute", "[ComputeGraph][StringEinsum]") {
-    auto A          = create_random_tensor<double>("A", 5, 3);
-    auto B          = create_random_tensor<double>("B", 3, 4);
-    auto C          = create_zero_tensor<double>("C", 5, 4);
-    auto C_expected = create_zero_tensor<double>("Ce", 5, 4);
+TEMPLATE_LIST_TEST_CASE("String einsum - graph capture and execute", "[ComputeGraph][StringEinsum]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 5, 3);
+    auto B          = create_random_tensor<T>("B", 3, 4);
+    auto C          = create_zero_tensor<T>("C", 5, 4);
+    auto C_expected = create_zero_tensor<T>("Ce", 5, 4);
 
     reference_einsum("ij <- ik ; kj", &C_expected, A, B);
 
@@ -108,21 +107,18 @@ TEST_CASE("String einsum - graph capture and execute", "[ComputeGraph][StringEin
     REQUIRE(graph.num_nodes() == 1);
     graph.execute();
 
-    for (size_t ii = 0; ii < 5; ii++) {
-        for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - chain in graph", "[ComputeGraph][StringEinsum]") {
-    auto A      = create_random_tensor<double>("A", 4, 3);
-    auto B      = create_random_tensor<double>("B", 3, 5);
-    auto D      = create_random_tensor<double>("D", 5, 2);
-    auto T1     = create_zero_tensor<double>("T1", 4, 5);
-    auto E      = create_zero_tensor<double>("E", 4, 2);
-    auto T1_ref = create_zero_tensor<double>("T1r", 4, 5);
-    auto E_ref  = create_zero_tensor<double>("Er", 4, 2);
+TEMPLATE_LIST_TEST_CASE("String einsum - chain in graph", "[ComputeGraph][StringEinsum]", testing::AllScalarTypes) {
+    using T     = TestType;
+    auto A      = create_random_tensor<T>("A", 4, 3);
+    auto B      = create_random_tensor<T>("B", 3, 5);
+    auto D      = create_random_tensor<T>("D", 5, 2);
+    auto T1     = create_zero_tensor<T>("T1", 4, 5);
+    auto E      = create_zero_tensor<T>("E", 4, 2);
+    auto T1_ref = create_zero_tensor<T>("T1r", 4, 5);
+    auto E_ref  = create_zero_tensor<T>("Er", 4, 2);
 
     reference_einsum("ij <- ik ; kj", &T1_ref, A, B);
     reference_einsum("il <- ij ; jl", &E_ref, T1_ref, D);
@@ -137,27 +133,24 @@ TEST_CASE("String einsum - chain in graph", "[ComputeGraph][StringEinsum]") {
     REQUIRE(graph.num_nodes() == 2);
     graph.execute();
 
-    for (size_t ii = 0; ii < 4; ii++) {
-        for (size_t ll = 0; ll < 2; ll++) {
-            REQUIRE(std::abs(E(ii, ll) - E_ref(ii, ll)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(E, E_ref, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - works with optimization passes", "[ComputeGraph][StringEinsum]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
-    auto C = create_random_tensor<double>("C", 4, 5);
+TEMPLATE_LIST_TEST_CASE("String einsum - works with optimization passes", "[ComputeGraph][StringEinsum]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
+    auto C  = create_random_tensor<T>("C", 4, 5);
 
-    auto C_ref = Tensor<double, 2>(C);
+    auto C_ref = Tensor<T, 2>(C);
     linear_algebra::scale(2.0, &C_ref);
-    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, A, B);
+    reference_einsum("ij <- ik ; kj", T(0.0), &C_ref, T(1.0), A, B);
 
     cg::Graph graph("string_with_passes");
     {
         cg::CaptureGuard const guard(graph);
         cg::scale(2.0, &C);
-        cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);
+        cg::einsum("ij <- ik ; kj", T(0.0), &C, T(1.0), A, B);
     }
 
     REQUIRE(graph.num_nodes() == 2);
@@ -169,19 +162,16 @@ TEST_CASE("String einsum - works with optimization passes", "[ComputeGraph][Stri
 
     graph.execute();
 
-    for (size_t ii = 0; ii < 4; ii++) {
-        for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_ref, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - pipeline with loop", "[ComputeGraph][StringEinsum]") {
-    auto A   = create_random_tensor<double>("A", 3, 3);
-    auto B   = create_random_tensor<double>("B", 3, 3);
-    auto acc = create_zero_tensor<double>("acc", 3, 3);
+TEMPLATE_LIST_TEST_CASE("String einsum - pipeline with loop", "[ComputeGraph][StringEinsum]", testing::AllScalarTypes) {
+    using T  = TestType;
+    auto A   = create_random_tensor<T>("A", 3, 3);
+    auto B   = create_random_tensor<T>("B", 3, 3);
+    auto acc = create_zero_tensor<T>("acc", 3, 3);
 
-    auto C = create_zero_tensor<double>("C", 3, 3);
+    auto C = create_zero_tensor<T>("C", 3, 3);
 
     cg::Pipeline pipeline("string_pipeline");
 
@@ -206,21 +196,22 @@ TEST_CASE("String einsum - pipeline with loop", "[ComputeGraph][StringEinsum]") 
     REQUIRE(count == 3);
 
     // acc = 3 * C = 3 * A * B
-    auto C_ref = create_zero_tensor<double>("Cref", 3, 3);
+    auto C_ref = create_zero_tensor<T>("Cref", 3, 3);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {
-            REQUIRE(std::abs(acc(ii, jj) - 3.0 * C_ref(ii, jj)) < 1e-12);
+            REQUIRE(near<T>(acc(ii, jj), T(3.0) * C_ref(ii, jj)));
         }
     }
 }
 
-TEST_CASE("String einsum - transposed A", "[ComputeGraph][StringEinsum]") {
-    auto A          = create_random_tensor<double>("A", 3, 4);
-    auto B          = create_random_tensor<double>("B", 3, 5);
-    auto C          = create_zero_tensor<double>("C", 4, 5);
-    auto C_expected = create_zero_tensor<double>("Ce", 4, 5);
+TEMPLATE_LIST_TEST_CASE("String einsum - transposed A", "[ComputeGraph][StringEinsum]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 3, 4);
+    auto B          = create_random_tensor<T>("B", 3, 5);
+    auto C          = create_zero_tensor<T>("C", 4, 5);
+    auto C_expected = create_zero_tensor<T>("Ce", 4, 5);
 
     // C[i,j] = A[k,i] * B[k,j]  (A is transposed)
     reference_einsum("ij <- ki ; kj", &C_expected, A, B);
@@ -228,11 +219,7 @@ TEST_CASE("String einsum - transposed A", "[ComputeGraph][StringEinsum]") {
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ki ; kj", &C, A, B);
 
-    for (size_t ii = 0; ii < 4; ii++) {
-        for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -413,89 +400,81 @@ TEMPLATE_LIST_TEST_CASE("String einsum - GER in graph capture", "[ComputeGraph][
     }
 }
 
-TEST_CASE("String einsum - multi-char indices with GEMM", "[ComputeGraph][StringEinsum][Phase2]") {
-    auto A          = create_random_tensor<double>("A", 4, 3);
-    auto B          = create_random_tensor<double>("B", 3, 5);
-    auto C          = create_zero_tensor<double>("C", 4, 5);
-    auto C_expected = create_zero_tensor<double>("Ce", 4, 5);
+TEMPLATE_LIST_TEST_CASE("String einsum - multi-char indices with GEMM", "[ComputeGraph][StringEinsum][Phase2]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 4, 3);
+    auto B          = create_random_tensor<T>("B", 3, 5);
+    auto C          = create_zero_tensor<T>("C", 4, 5);
+    auto C_expected = create_zero_tensor<T>("Ce", 4, 5);
 
     reference_einsum("ij <- ik ; kj", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("mu,nu <- mu,rho ; rho,nu", &C, A, B);
 
-    for (size_t ii = 0; ii < 4; ii++) {
-        for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Higher-rank contractions (rank 3+)
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("String einsum - rank-3 contraction to rank-2", "[ComputeGraph][StringEinsum][HighRank]") {
+TEMPLATE_LIST_TEST_CASE("String einsum - rank-3 contraction to rank-2", "[ComputeGraph][StringEinsum][HighRank]", testing::AllScalarTypes) {
+    using T = TestType;
     // C[i,l] = A[i,j,k] * B[j,k,l]  (contract over j,k)
-    auto A          = create_random_tensor<double>("A", 3, 4, 5);
-    auto B          = create_random_tensor<double>("B", 4, 5, 2);
-    auto C          = create_zero_tensor<double>("C", 3, 2);
-    auto C_expected = create_zero_tensor<double>("Ce", 3, 2);
+    auto A          = create_random_tensor<T>("A", 3, 4, 5);
+    auto B          = create_random_tensor<T>("B", 4, 5, 2);
+    auto C          = create_zero_tensor<T>("C", 3, 2);
+    auto C_expected = create_zero_tensor<T>("Ce", 3, 2);
 
     reference_einsum("il <- ijk ; jkl", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("il <- ijk ; jkl", &C, A, B);
 
-    for (size_t ii = 0; ii < 3; ii++) {
-        for (size_t ll = 0; ll < 2; ll++) {
-            REQUIRE(std::abs(C(ii, ll) - C_expected(ii, ll)) < 1e-10);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - rank-3 contraction to rank-1", "[ComputeGraph][StringEinsum][HighRank]") {
+TEMPLATE_LIST_TEST_CASE("String einsum - rank-3 contraction to rank-1", "[ComputeGraph][StringEinsum][HighRank]", testing::AllScalarTypes) {
+    using T = TestType;
     // C[i] = A[i,j,k] * B[j,i,k]  (contract over j,k)
-    auto A          = create_random_tensor<double>("A", 3, 4, 5);
-    auto B          = create_random_tensor<double>("B", 4, 3, 5);
-    auto C          = create_zero_tensor<double>("C", 3);
-    auto C_expected = create_zero_tensor<double>("Ce", 3);
+    auto A          = create_random_tensor<T>("A", 3, 4, 5);
+    auto B          = create_random_tensor<T>("B", 4, 3, 5);
+    auto C          = create_zero_tensor<T>("C", 3);
+    auto C_expected = create_zero_tensor<T>("Ce", 3);
 
     reference_einsum("i <- ijk ; jik", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("i <- ijk ; jik", &C, A, B);
 
-    for (size_t ii = 0; ii < 3; ii++) {
-        REQUIRE(std::abs(C(ii) - C_expected(ii)) < 1e-10);
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - rank-3 × rank-2 contraction", "[ComputeGraph][StringEinsum][HighRank]") {
+TEMPLATE_LIST_TEST_CASE("String einsum - rank-3 × rank-2 contraction", "[ComputeGraph][StringEinsum][HighRank]", testing::AllScalarTypes) {
+    using T = TestType;
     // C[i,j] = A[i,j,k] * B[k,j]  (contract over k)
     // Note: j appears in A, B, and C, it's a target index, not a link
-    auto A          = create_random_tensor<double>("A", 3, 4, 5);
-    auto B          = create_random_tensor<double>("B", 5, 4);
-    auto C          = create_zero_tensor<double>("C", 3, 4);
-    auto C_expected = create_zero_tensor<double>("Ce", 3, 4);
+    auto A          = create_random_tensor<T>("A", 3, 4, 5);
+    auto B          = create_random_tensor<T>("B", 5, 4);
+    auto C          = create_zero_tensor<T>("C", 3, 4);
+    auto C_expected = create_zero_tensor<T>("Ce", 3, 4);
 
     reference_einsum("ij <- ijk ; kj", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ijk ; kj", &C, A, B);
 
-    for (size_t ii = 0; ii < 3; ii++) {
-        for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-10);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - rank-3 × rank-3 to rank-2 in graph", "[ComputeGraph][StringEinsum][HighRank]") {
-    auto A          = create_random_tensor<double>("A", 3, 4, 5);
-    auto B          = create_random_tensor<double>("B", 4, 5, 2);
-    auto C          = create_zero_tensor<double>("C", 3, 2);
-    auto C_expected = create_zero_tensor<double>("Ce", 3, 2);
+TEMPLATE_LIST_TEST_CASE("String einsum - rank-3 × rank-3 to rank-2 in graph", "[ComputeGraph][StringEinsum][HighRank]",
+                        testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 3, 4, 5);
+    auto B          = create_random_tensor<T>("B", 4, 5, 2);
+    auto C          = create_zero_tensor<T>("C", 3, 2);
+    auto C_expected = create_zero_tensor<T>("Ce", 3, 2);
 
     reference_einsum("il <- ijk ; jkl", &C_expected, A, B);
 
@@ -507,98 +486,79 @@ TEST_CASE("String einsum - rank-3 × rank-3 to rank-2 in graph", "[ComputeGraph]
 
     graph.execute();
 
-    for (size_t ii = 0; ii < 3; ii++) {
-        for (size_t ll = 0; ll < 2; ll++) {
-            REQUIRE(std::abs(C(ii, ll) - C_expected(ii, ll)) < 1e-10);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - rank-4 contraction", "[ComputeGraph][StringEinsum][HighRank]") {
+TEMPLATE_LIST_TEST_CASE("String einsum - rank-4 contraction", "[ComputeGraph][StringEinsum][HighRank]", testing::AllScalarTypes) {
+    using T = TestType;
     // C[i,j,k,l] = A[i,j,p] * B[k,l,p]  (contract over p)
-    auto A          = create_random_tensor<double>("A", 2, 3, 4);
-    auto B          = create_random_tensor<double>("B", 2, 3, 4);
-    auto C          = create_zero_tensor<double>("C", 2, 3, 2, 3);
-    auto C_expected = create_zero_tensor<double>("Ce", 2, 3, 2, 3);
+    auto A          = create_random_tensor<T>("A", 2, 3, 4);
+    auto B          = create_random_tensor<T>("B", 2, 3, 4);
+    auto C          = create_zero_tensor<T>("C", 2, 3, 2, 3);
+    auto C_expected = create_zero_tensor<T>("Ce", 2, 3, 2, 3);
 
     reference_einsum("ijkl <- ijp ; klp", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ijkl <- ijp ; klp", &C, A, B);
 
-    for (size_t ii = 0; ii < 2; ii++) {
-        for (size_t jj = 0; jj < 3; jj++) {
-            for (size_t kk = 0; kk < 2; kk++) {
-                for (size_t ll = 0; ll < 3; ll++) {
-                    REQUIRE(std::abs(C(ii, jj, kk, ll) - C_expected(ii, jj, kk, ll)) < 1e-10);
-                }
-            }
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - higher-rank with prefactors", "[ComputeGraph][StringEinsum][HighRank]") {
-    auto A          = create_random_tensor<double>("A", 3, 4, 5);
-    auto B          = create_random_tensor<double>("B", 4, 5, 2);
-    auto C          = create_random_tensor<double>("C", 3, 2);
-    auto C_expected = Tensor<double, 2>(C);
+TEMPLATE_LIST_TEST_CASE("String einsum - higher-rank with prefactors", "[ComputeGraph][StringEinsum][HighRank]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 3, 4, 5);
+    auto B          = create_random_tensor<T>("B", 4, 5, 2);
+    auto C          = create_random_tensor<T>("C", 3, 2);
+    auto C_expected = Tensor<T, 2>(C);
 
-    reference_einsum("il <- ijk ; jkl", 2.0, &C_expected, 3.0, A, B);
+    reference_einsum("il <- ijk ; jkl", T(2.0), &C_expected, T(3.0), A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("il <- ijk ; jkl", 2.0, &C, 3.0, A, B);
+    cg::einsum("il <- ijk ; jkl", T(2.0), &C, T(3.0), A, B);
 
-    for (size_t ii = 0; ii < 3; ii++) {
-        for (size_t ll = 0; ll < 2; ll++) {
-            REQUIRE(std::abs(C(ii, ll) - C_expected(ii, ll)) < 1e-10);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
 // String-based permute tests
 // ═════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("String permute - matrix transpose, direct execute", "[ComputeGraph][StringPermute]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto C = create_zero_tensor<double>("C", 3, 4);
+TEMPLATE_LIST_TEST_CASE("String permute - matrix transpose, direct execute", "[ComputeGraph][StringPermute]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto C  = create_zero_tensor<T>("C", 3, 4);
 
-    auto C_expected = create_zero_tensor<double>("Ce", 3, 4);
-    reference_permute("ji <- ij", 0.0, &C_expected, 1.0, A);
+    auto C_expected = create_zero_tensor<T>("Ce", 3, 4);
+    reference_permute("ji <- ij", T(0.0), &C_expected, T(1.0), A);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::permute("ji <- ij", &C, A);
 
-    for (size_t ii = 0; ii < 3; ii++) {
-        for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String permute - with prefactors", "[ComputeGraph][StringPermute]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto C = create_random_tensor<double>("C", 3, 4);
+TEMPLATE_LIST_TEST_CASE("String permute - with prefactors", "[ComputeGraph][StringPermute]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto C  = create_random_tensor<T>("C", 3, 4);
 
-    auto C_expected = Tensor<double, 2>(C);
-    reference_permute("ji <- ij", 2.0, &C_expected, 3.0, A);
+    auto C_expected = Tensor<T, 2>(C);
+    reference_permute("ji <- ij", T(2.0), &C_expected, T(3.0), A);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::permute("ji <- ij", 2.0, &C, 3.0, A);
+    cg::permute("ji <- ij", T(2.0), &C, T(3.0), A);
 
-    for (size_t ii = 0; ii < 3; ii++) {
-        for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String permute - rank-3 transpose", "[ComputeGraph][StringPermute]") {
-    auto A = create_random_tensor<double>("A", 3, 4, 5);
-    auto C = create_zero_tensor<double>("C", 5, 3, 4);
+TEMPLATE_LIST_TEST_CASE("String permute - rank-3 transpose", "[ComputeGraph][StringPermute]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 4, 5);
+    auto C  = create_zero_tensor<T>("C", 5, 3, 4);
 
-    auto C_expected = create_zero_tensor<double>("Ce", 5, 3, 4);
-    reference_permute("kij <- ijk", 0.0, &C_expected, 1.0, A);
+    auto C_expected = create_zero_tensor<T>("Ce", 5, 3, 4);
+    reference_permute("kij <- ijk", T(0.0), &C_expected, T(1.0), A);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::permute("kij <- ijk", &C, A);
@@ -606,15 +566,16 @@ TEST_CASE("String permute - rank-3 transpose", "[ComputeGraph][StringPermute]") 
     for (size_t ii = 0; ii < 5; ii++)
         for (size_t jj = 0; jj < 3; jj++)
             for (size_t kk = 0; kk < 4; kk++)
-                REQUIRE(std::abs(C(ii, jj, kk) - C_expected(ii, jj, kk)) < 1e-12);
+                REQUIRE(near<T>(C(ii, jj, kk), C_expected(ii, jj, kk)));
 }
 
-TEST_CASE("String permute - graph capture and execute", "[ComputeGraph][StringPermute]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto C = create_zero_tensor<double>("C", 3, 4);
+TEMPLATE_LIST_TEST_CASE("String permute - graph capture and execute", "[ComputeGraph][StringPermute]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto C  = create_zero_tensor<T>("C", 3, 4);
 
-    auto C_expected = create_zero_tensor<double>("Ce", 3, 4);
-    reference_permute("ji <- ij", 0.0, &C_expected, 1.0, A);
+    auto C_expected = create_zero_tensor<T>("Ce", 3, 4);
+    reference_permute("ji <- ij", T(0.0), &C_expected, T(1.0), A);
 
     cg::Graph graph("string_permute_test");
     {
@@ -625,23 +586,20 @@ TEST_CASE("String permute - graph capture and execute", "[ComputeGraph][StringPe
     REQUIRE(graph.num_nodes() == 1);
     graph.execute();
 
-    for (size_t ii = 0; ii < 3; ii++) {
-        for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(C, C_expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String permute - identity (no reorder)", "[ComputeGraph][StringPermute]") {
-    auto A = create_random_tensor<double>("A", 3, 4);
-    auto C = create_zero_tensor<double>("C", 3, 4);
+TEMPLATE_LIST_TEST_CASE("String permute - identity (no reorder)", "[ComputeGraph][StringPermute]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 4);
+    auto C  = create_zero_tensor<T>("C", 3, 4);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture, einsums-redundant-permute)
     cg::permute("ij <- ij", &C, A);
 
     for (size_t ii = 0; ii < 3; ii++)
         for (size_t jj = 0; jj < 4; jj++)
-            REQUIRE(std::abs(C(ii, jj) - A(ii, jj)) < 1e-12);
+            REQUIRE(near<T>(C(ii, jj), A(ii, jj)));
 }
 
 namespace {
@@ -709,82 +667,88 @@ TEST_CASE("String einsum - repeated index within one operand must agree", "[Comp
 // these today, so a disagreement means the operator computes something other
 // than what the working CCSD(T) code computes.
 
-TEST_CASE("String einsum - P(ij) matches the hand-expanded pair", "[ComputeGraph][StringEinsum][Permutation]") {
+TEMPLATE_LIST_TEST_CASE("String einsum - P(ij) matches the hand-expanded pair", "[ComputeGraph][StringEinsum][Permutation]",
+                        testing::AllScalarTypes) {
+    using T         = TestType;
     size_t const no = 3, nv = 4;
-    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
-    auto         F  = create_random_tensor<double>("F", no, no);
+    auto         t2 = create_random_tensor<T>("t2", no, no, nv, nv);
+    auto         F  = create_random_tensor<T>("F", no, no);
 
     // C(i,j,a,b) = P(i/j) sum_m t2(i,m,a,b) F(m,j)
-    auto C = create_zero_tensor<double>("C", no, no, nv, nv);
+    auto C = create_zero_tensor<T>("C", no, no, nv, nv);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", 0.0, &C, 1.0, t2, F);
+    cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", T(0.0), &C, T(1.0), t2, F);
 
-    auto base = create_zero_tensor<double>("base", no, no, nv, nv);
+    auto base = create_zero_tensor<T>("base", no, no, nv, nv);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("i,j,a,b <- i,m,a,b ; m,j", 0.0, &base, 1.0, t2, F);
+    cg::einsum("i,j,a,b <- i,m,a,b ; m,j", T(0.0), &base, T(1.0), t2, F);
 
     for (size_t ii = 0; ii < no; ii++) {
         for (size_t jj = 0; jj < no; jj++) {
             for (size_t aa = 0; aa < nv; aa++) {
                 for (size_t bb = 0; bb < nv; bb++) {
-                    double const want = base(ii, jj, aa, bb) - base(jj, ii, aa, bb);
-                    REQUIRE_THAT(C(ii, jj, aa, bb), Catch::Matchers::WithinAbs(want, 1e-12));
+                    T const want = base(ii, jj, aa, bb) - base(jj, ii, aa, bb);
+                    REQUIRE(near<T>(C(ii, jj, aa, bb), want));
                 }
             }
         }
     }
 }
 
-TEST_CASE("String einsum - P(ij)P(ab) is the CCSD ring term", "[ComputeGraph][StringEinsum][Permutation]") {
+TEMPLATE_LIST_TEST_CASE("String einsum - P(ij)P(ab) is the CCSD ring term", "[ComputeGraph][StringEinsum][Permutation]",
+                        testing::AllScalarTypes) {
+    using T         = TestType;
     size_t const no = 3, nv = 4;
-    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
-    auto         W  = create_random_tensor<double>("W", no, nv, nv, no);
+    auto         t2 = create_random_tensor<T>("t2", no, no, nv, nv);
+    auto         W  = create_random_tensor<T>("W", no, nv, nv, no);
 
     // The slide: P(ij)P(ab) sum_{me} t2(i,m,a,e) W(m,b,e,j)
-    auto C = create_zero_tensor<double>("C", no, no, nv, nv);
+    auto C = create_zero_tensor<T>("C", no, no, nv, nv);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,e ; m,b,e,j", 0.0, &C, 1.0, t2, W);
+    cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,e ; m,b,e,j", T(0.0), &C, T(1.0), t2, W);
 
-    auto base = create_zero_tensor<double>("base", no, no, nv, nv);
+    auto base = create_zero_tensor<T>("base", no, no, nv, nv);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("i,j,a,b <- i,m,a,e ; m,b,e,j", 0.0, &base, 1.0, t2, W);
+    cg::einsum("i,j,a,b <- i,m,a,e ; m,b,e,j", T(0.0), &base, T(1.0), t2, W);
 
     for (size_t ii = 0; ii < no; ii++) {
         for (size_t jj = 0; jj < no; jj++) {
             for (size_t aa = 0; aa < nv; aa++) {
                 for (size_t bb = 0; bb < nv; bb++) {
-                    double const want = base(ii, jj, aa, bb) - base(jj, ii, aa, bb) - base(ii, jj, bb, aa) + base(jj, ii, bb, aa);
-                    REQUIRE_THAT(C(ii, jj, aa, bb), Catch::Matchers::WithinAbs(want, 1e-12));
+                    T const want = base(ii, jj, aa, bb) - base(jj, ii, aa, bb) - base(ii, jj, bb, aa) + base(jj, ii, bb, aa);
+                    REQUIRE(near<T>(C(ii, jj, aa, bb), want));
                 }
             }
         }
     }
 }
 
-TEST_CASE("String einsum - prefactors apply once, not once per term", "[ComputeGraph][StringEinsum][Permutation]") {
+TEMPLATE_LIST_TEST_CASE("String einsum - prefactors apply once, not once per term", "[ComputeGraph][StringEinsum][Permutation]",
+                        testing::AllScalarTypes) {
+    using T         = TestType;
     size_t const no = 3, nv = 4;
-    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
-    auto         F  = create_random_tensor<double>("F", no, no);
-    auto         C0 = create_random_tensor<double>("C0", no, no, nv, nv);
+    auto         t2 = create_random_tensor<T>("t2", no, no, nv, nv);
+    auto         F  = create_random_tensor<T>("F", no, no);
+    auto         C0 = create_random_tensor<T>("C0", no, no, nv, nv);
 
-    double const c_pf = 0.5, ab_pf = -1.5;
+    T const c_pf = 0.5, ab_pf = -1.5;
 
-    auto C = create_zero_tensor<double>("C", no, no, nv, nv);
+    auto C = create_zero_tensor<T>("C", no, no, nv, nv);
     C      = C0;
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", c_pf, &C, ab_pf, t2, F);
 
-    auto base = create_zero_tensor<double>("base", no, no, nv, nv);
+    auto base = create_zero_tensor<T>("base", no, no, nv, nv);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("i,j,a,b <- i,m,a,b ; m,j", 0.0, &base, 1.0, t2, F);
+    cg::einsum("i,j,a,b <- i,m,a,b ; m,j", T(0.0), &base, T(1.0), t2, F);
 
     for (size_t ii = 0; ii < no; ii++) {
         for (size_t jj = 0; jj < no; jj++) {
             for (size_t aa = 0; aa < nv; aa++) {
                 for (size_t bb = 0; bb < nv; bb++) {
                     // c_pf ONCE on the old C; ab_pf ONCE on the antisymmetrized sum.
-                    double const want = c_pf * C0(ii, jj, aa, bb) + ab_pf * (base(ii, jj, aa, bb) - base(jj, ii, aa, bb));
-                    REQUIRE_THAT(C(ii, jj, aa, bb), Catch::Matchers::WithinAbs(want, 1e-12));
+                    T const want = c_pf * C0(ii, jj, aa, bb) + ab_pf * (base(ii, jj, aa, bb) - base(jj, ii, aa, bb));
+                    REQUIRE(near<T>(C(ii, jj, aa, bb), want));
                 }
             }
         }
@@ -818,23 +782,25 @@ TEMPLATE_LIST_TEST_CASE("String einsum - the base contraction keeps its fast pat
     REQUIRE(bare != "generic_loop_repeated_indices");
 }
 
-TEST_CASE("String einsum - a zero-extent operand still scales C exactly once", "[ComputeGraph][StringEinsum][Permutation]") {
+TEMPLATE_LIST_TEST_CASE("String einsum - a zero-extent operand still scales C exactly once", "[ComputeGraph][StringEinsum][Permutation]",
+                        testing::AllScalarTypes) {
+    using T         = TestType;
     size_t const no = 3, nv = 4;
-    auto         t2 = create_random_tensor<double>("t2", no, no, nv, 0); // zero-extent link
-    auto         W  = create_random_tensor<double>("W", no, nv, 0, no);
-    auto         C0 = create_random_tensor<double>("C0", no, no, nv, nv);
+    auto         t2 = create_random_tensor<T>("t2", no, no, nv, 0); // zero-extent link
+    auto         W  = create_random_tensor<T>("W", no, nv, 0, no);
+    auto         C0 = create_random_tensor<T>("C0", no, no, nv, nv);
 
-    auto C = create_zero_tensor<double>("C", no, no, nv, nv);
+    auto C = create_zero_tensor<T>("C", no, no, nv, nv);
     C      = C0;
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,e ; m,b,e,j", 0.5, &C, 1.0, t2, W);
+    cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,e ; m,b,e,j", T(0.5), &C, T(1.0), t2, W);
 
-    // Four terms, but c_pf applies once: C = 0.5 * C0, not 0.5^4 * C0.
+    // Four terms, but c_pf applies once: C = T(0.5) * C0, not 0.5^4 * C0.
     for (size_t ii = 0; ii < no; ii++) {
         for (size_t jj = 0; jj < no; jj++) {
             for (size_t aa = 0; aa < nv; aa++) {
                 for (size_t bb = 0; bb < nv; bb++) {
-                    REQUIRE_THAT(C(ii, jj, aa, bb), Catch::Matchers::WithinAbs(0.5 * C0(ii, jj, aa, bb), 1e-12));
+                    REQUIRE(near<T>(C(ii, jj, aa, bb), T(0.5) * C0(ii, jj, aa, bb)));
                 }
             }
         }
@@ -851,17 +817,19 @@ TEST_CASE("String einsum - unequal extents under an operator are rejected", "[Co
     REQUIRE_THROWS_AS(cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &C, 1.0, A, B), std::invalid_argument);
 }
 
-TEST_CASE("String permute - P(i/jk)P(a/bc) matches the toy antisymmetrizer", "[ComputeGraph][StringEinsum][Permutation]") {
+TEMPLATE_LIST_TEST_CASE("String permute - P(i/jk)P(a/bc) matches the toy antisymmetrizer", "[ComputeGraph][StringEinsum][Permutation]",
+                        testing::AllScalarTypes) {
+    using T        = TestType;
     size_t const n = 3;
-    auto         X = create_random_tensor<double>("X", n, n, n, n, n, n);
+    auto         X = create_random_tensor<T>("X", n, n, n, n, n, n);
 
-    auto C = create_zero_tensor<double>("C", n, n, n, n, n, n);
+    auto C = create_zero_tensor<T>("C", n, n, n, n, n, n);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::permute("i,j,k,a,b,c <- P(i/jk) P(a/bc) i,j,k,a,b,c", 0.0, &C, 1.0, X);
+    cg::permute("i,j,k,a,b,c <- P(i/jk) P(a/bc) i,j,k,a,b,c", T(0.0), &C, T(1.0), X);
 
     // examples/toy/ccsd_t_spinorbital_toy.py:134, verbatim: the nine index
     // permutations of P(i/jk)P(a/bc) with their signs.
-    auto ref = create_zero_tensor<double>("ref", n, n, n, n, n, n);
+    auto ref = create_zero_tensor<T>("ref", n, n, n, n, n, n);
     struct Term {
         int    p[6];
         double sign;
@@ -884,38 +852,32 @@ TEST_CASE("String permute - P(i/jk)P(a/bc) matches the toy antisymmetrizer", "[C
                 for (idx[3] = 0; idx[3] < n; idx[3]++)
                     for (idx[4] = 0; idx[4] < n; idx[4]++)
                         for (idx[5] = 0; idx[5] < n; idx[5]++) {
-                            double acc = 0.0;
+                            T acc{};
                             for (auto const &t : terms) {
-                                acc += t.sign * X(idx[t.p[0]], idx[t.p[1]], idx[t.p[2]], idx[t.p[3]], idx[t.p[4]], idx[t.p[5]]);
+                                acc += T(t.sign) * X(idx[t.p[0]], idx[t.p[1]], idx[t.p[2]], idx[t.p[3]], idx[t.p[4]], idx[t.p[5]]);
                             }
                             ref(idx[0], idx[1], idx[2], idx[3], idx[4], idx[5]) = acc;
                         }
 
-    for (idx[0] = 0; idx[0] < n; idx[0]++)
-        for (idx[1] = 0; idx[1] < n; idx[1]++)
-            for (idx[2] = 0; idx[2] < n; idx[2]++)
-                for (idx[3] = 0; idx[3] < n; idx[3]++)
-                    for (idx[4] = 0; idx[4] < n; idx[4]++)
-                        for (idx[5] = 0; idx[5] < n; idx[5]++) {
-                            REQUIRE_THAT(C(idx[0], idx[1], idx[2], idx[3], idx[4], idx[5]),
-                                         Catch::Matchers::WithinAbs(ref(idx[0], idx[1], idx[2], idx[3], idx[4], idx[5]), 1e-12));
-                        }
+    einsums::testing::require_tensors_close(C, ref, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
 
-TEST_CASE("String einsum - an operator survives capture and replay", "[ComputeGraph][StringEinsum][Permutation]") {
+TEMPLATE_LIST_TEST_CASE("String einsum - an operator survives capture and replay", "[ComputeGraph][StringEinsum][Permutation]",
+                        testing::AllScalarTypes) {
+    using T         = TestType;
     size_t const no = 3, nv = 4;
-    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
-    auto         F  = create_random_tensor<double>("F", no, no);
+    auto         t2 = create_random_tensor<T>("t2", no, no, nv, nv);
+    auto         F  = create_random_tensor<T>("F", no, no);
 
-    auto eager = create_zero_tensor<double>("eager", no, no, nv, nv);
+    auto eager = create_zero_tensor<T>("eager", no, no, nv, nv);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", 0.0, &eager, 1.0, t2, F);
+    cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", T(0.0), &eager, T(1.0), t2, F);
 
-    auto      replayed = create_zero_tensor<double>("replayed", no, no, nv, nv);
+    auto      replayed = create_zero_tensor<T>("replayed", no, no, nv, nv);
     cg::Graph graph("perm-op");
     {
         cg::CaptureGuard const capture(graph);
-        cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", 0.0, &replayed, 1.0, t2, F);
+        cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", T(0.0), &replayed, T(1.0), t2, F);
     }
     graph.execute();
 
@@ -923,7 +885,7 @@ TEST_CASE("String einsum - an operator survives capture and replay", "[ComputeGr
         for (size_t jj = 0; jj < no; jj++) {
             for (size_t aa = 0; aa < nv; aa++) {
                 for (size_t bb = 0; bb < nv; bb++) {
-                    REQUIRE_THAT(replayed(ii, jj, aa, bb), Catch::Matchers::WithinAbs(eager(ii, jj, aa, bb), 1e-12));
+                    REQUIRE(near<T>(replayed(ii, jj, aa, bb), eager(ii, jj, aa, bb)));
                 }
             }
         }

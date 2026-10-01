@@ -302,31 +302,33 @@ TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: a conjugated real operand keeps the
 // Replay correctness
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("StridedBatchedGemm: forcing Target::GPU routes through gpu::blas dispatcher", "[ComputeGraph][StridedBatchedGemm][GPU]") {
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: forcing Target::GPU routes through gpu::blas dispatcher",
+                        "[ComputeGraph][StridedBatchedGemm][GPU]", testing::AllScalarTypes) {
+    using T = TestType;
     // Exercises the GPU dispatch path end-to-end. On CUDA/HIP builds this
     // hits cublas/hipblas ?gemmStridedBatched directly; on mock / MPS
     // builds it transparently falls back to the CPU pointer-array
     // gemm_batch inside gpu::blas::?gemm_strided_batched. Either way the
     // math is identical, so correctness is the assertion.
     constexpr size_t I = 4, J = 5, K = 3, B = 4;
-    auto             A     = create_random_tensor<double>("A", I, J, B);
-    auto             Bt    = create_random_tensor<double>("B", J, K, B);
-    auto             C_ref = create_zero_tensor<double>("C_ref", I, K, B);
+    auto             A     = create_random_tensor<T>("A", I, J, B);
+    auto             Bt    = create_random_tensor<T>("B", J, K, B);
+    auto             C_ref = create_zero_tensor<T>("C_ref", I, K, B);
 
     for (size_t b = 0; b < B; b++) {
-        double const *a_slice = A.data() + b * I * J;
-        double const *b_slice = Bt.data() + b * J * K;
-        double       *c_slice = C_ref.data() + b * I * K;
+        T const *a_slice = A.data() + b * I * J;
+        T const *b_slice = Bt.data() + b * J * K;
+        T       *c_slice = C_ref.data() + b * I * K;
         for (size_t k = 0; k < K; k++)
             for (size_t i = 0; i < I; i++) {
-                double s = 0.0;
+                T s{};
                 for (size_t j = 0; j < J; j++)
                     s += a_slice[i + j * I] * b_slice[j + k * J];
                 c_slice[i + k * I] = s;
             }
     }
 
-    auto      C = create_zero_tensor<double>("C", I, K, B);
+    auto      C = create_zero_tensor<T>("C", I, K, B);
     cg::Graph graph("gpu_path");
     {
         cg::CaptureGuard const guard(graph);
@@ -337,7 +339,7 @@ TEST_CASE("StridedBatchedGemm: forcing Target::GPU routes through gpu::blas disp
     // Force GPU placement by hand (bypassing the GPUPlacement pass's
     // cost-model decision). The graph's execute() sees target == GPU
     // and routes through try_gpu_blas_dispatch, which plans the einsum
-    // as a strided batch and issues gpu::blas::gemm_strided_batched<double>.
+    // as a strided batch and issues gpu::blas::gemm_strided_batched<T>.
     graph.nodes()[0].target = cg::Target::GPU;
 
     graph.execute();
@@ -348,33 +350,35 @@ TEST_CASE("StridedBatchedGemm: forcing Target::GPU routes through gpu::blas disp
 // Higher-rank batches: multiple batch indices flattened into one GEMM batch
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("StridedBatchedGemm: rank-4 with two batch indices (col-major, batches last)", "[ComputeGraph][StridedBatchedGemm]") {
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: rank-4 with two batch indices (col-major, batches last)", "[ComputeGraph][StridedBatchedGemm]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // "ijab;jkab->ikab", two batch indices (a, b) at positions [2, 3].
     // Col-major contiguous → batches are the outermost axes in memory.
     // Effective batch_count = A * B = 4 * 3 = 12.
     constexpr size_t I = 3, J = 4, K = 2, A_ = 4, B_ = 3;
-    auto             A  = create_random_tensor<double>("A", I, J, A_, B_);
-    auto             Bt = create_random_tensor<double>("B", J, K, A_, B_);
+    auto             A  = create_random_tensor<T>("A", I, J, A_, B_);
+    auto             Bt = create_random_tensor<T>("B", J, K, A_, B_);
 
-    auto C_ref = create_zero_tensor<double>("C_ref", I, K, A_, B_);
+    auto C_ref = create_zero_tensor<T>("C_ref", I, K, A_, B_);
     // Reference: iterate (a, b) jointly and slice-by-slice 2D GEMM.
     // Col-major storage: T(i,j,a,b) at offset i + j*I + a*I*J + b*I*J*A_.
     for (size_t b = 0; b < B_; b++)
         for (size_t a = 0; a < A_; a++) {
             std::size_t const ab_offset_a = (a + b * A_);
-            double const     *a_slice     = A.data() + ab_offset_a * I * J;
-            double const     *b_slice     = Bt.data() + ab_offset_a * J * K;
-            double           *c_slice     = C_ref.data() + ab_offset_a * I * K;
+            T const          *a_slice     = A.data() + ab_offset_a * I * J;
+            T const          *b_slice     = Bt.data() + ab_offset_a * J * K;
+            T                *c_slice     = C_ref.data() + ab_offset_a * I * K;
             for (size_t k = 0; k < K; k++)
                 for (size_t i = 0; i < I; i++) {
-                    double s = 0.0;
+                    T s{};
                     for (size_t j = 0; j < J; j++)
                         s += a_slice[i + j * I] * b_slice[j + k * J];
                     c_slice[i + k * I] = s;
                 }
         }
 
-    auto      C = create_zero_tensor<double>("C", I, K, A_, B_);
+    auto      C = create_zero_tensor<T>("C", I, K, A_, B_);
     cg::Graph graph("rank4_two_batch");
     {
         cg::CaptureGuard const guard(graph);
@@ -387,13 +391,15 @@ TEST_CASE("StridedBatchedGemm: rank-4 with two batch indices (col-major, batches
     require_close(C, C_ref);
 }
 
-TEST_CASE("StridedBatchedGemm: rank-5 with three batch indices", "[ComputeGraph][StridedBatchedGemm]") {
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: rank-5 with three batch indices", "[ComputeGraph][StridedBatchedGemm]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // "ijabc;jkabc->ikabc", three batch indices.
     // Flat batch = 2 * 3 * 2 = 12.
     constexpr size_t I = 3, J = 4, K = 2, A_ = 2, B_ = 3, C_ = 2;
-    auto             A  = create_random_tensor<double>("A", I, J, A_, B_, C_);
-    auto             Bt = create_random_tensor<double>("B", J, K, A_, B_, C_);
-    auto             C  = create_zero_tensor<double>("C", I, K, A_, B_, C_);
+    auto             A  = create_random_tensor<T>("A", I, J, A_, B_, C_);
+    auto             Bt = create_random_tensor<T>("B", J, K, A_, B_, C_);
+    auto             C  = create_zero_tensor<T>("C", I, K, A_, B_, C_);
 
     cg::Graph graph("rank5_three_batch");
     {
@@ -406,14 +412,14 @@ TEST_CASE("StridedBatchedGemm: rank-5 with three batch indices", "[ComputeGraph]
     graph.execute();
     CHECK(route() == kStrided);
 
-    auto C_ref = create_zero_tensor<double>("C_ref", I, K, A_, B_, C_);
+    auto C_ref = create_zero_tensor<T>("C_ref", I, K, A_, B_, C_);
     for (size_t flat = 0; flat < A_ * B_ * C_; flat++) {
-        double const *a_slice = A.data() + flat * I * J;
-        double const *b_slice = Bt.data() + flat * J * K;
-        double       *c_slice = C_ref.data() + flat * I * K;
+        T const *a_slice = A.data() + flat * I * J;
+        T const *b_slice = Bt.data() + flat * J * K;
+        T       *c_slice = C_ref.data() + flat * I * K;
         for (size_t k = 0; k < K; k++)
             for (size_t i = 0; i < I; i++) {
-                double s = 0.0;
+                T s{};
                 for (size_t j = 0; j < J; j++)
                     s += a_slice[i + j * I] * b_slice[j + k * J];
                 c_slice[i + k * I] = s;
@@ -440,11 +446,13 @@ TEST_CASE("StridedBatchedGemm: batch indices at non-matching positions fall thro
     CHECK(route() != kStrided);
 }
 
-TEST_CASE("StridedBatchedGemm: replay across multiple execute() calls", "[ComputeGraph][StridedBatchedGemm]") {
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: replay across multiple execute() calls", "[ComputeGraph][StridedBatchedGemm]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
     constexpr size_t I = 3, J = 3, K = 3, B = 4;
-    auto             A  = create_random_tensor<double>("A", I, J, B);
-    auto             Bt = create_random_tensor<double>("B", J, K, B);
-    auto             C  = create_zero_tensor<double>("C", I, K, B);
+    auto             A  = create_random_tensor<T>("A", I, J, B);
+    auto             Bt = create_random_tensor<T>("B", J, K, B);
+    auto             C  = create_zero_tensor<T>("C", I, K, B);
 
     cg::Graph graph("replay");
     {
@@ -453,7 +461,7 @@ TEST_CASE("StridedBatchedGemm: replay across multiple execute() calls", "[Comput
     }
     graph.execute();
     CHECK(route() == kStrided);
-    auto snap = Tensor<double, 3>(C);
+    auto snap = Tensor<T, 3>(C);
 
     C.zero();
     graph.execute();

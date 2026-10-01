@@ -13,6 +13,8 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <algorithm>
+#include <limits>
 #include <tuple>
 
 #include <Einsums/Testing.hpp>
@@ -22,58 +24,73 @@ using einsums::testing::reference_permute;
 using namespace einsums;
 namespace cg = einsums::compute_graph;
 
+namespace {
+
+/// Within @p for_double of @p want, relative to it and absolute near zero; a narrower type gets a
+/// hundred ulps of its own precision instead when that is looser.
+template <typename T>
+bool near(T got, T want, double for_double) {
+    double const tol = std::max(for_double, 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon());
+    return std::abs(got - want) <= tol * (1.0 + std::abs(want));
+}
+
+} // namespace
+
 // ── Capturable operations ──────────────────────────────────────────────
 
-TEST_CASE("Operation - ger (rank-1 update) in graph", "[ComputeGraph][Operations]") {
-    auto x = create_random_tensor<double>("x", 4);
-    auto y = create_random_tensor<double>("y", 5);
-    auto A = create_zero_tensor<double>("A", 4, 5);
+TEMPLATE_LIST_TEST_CASE("Operation - ger (rank-1 update) in graph", "[ComputeGraph][Operations]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto x  = create_random_tensor<T>("x", 4);
+    auto y  = create_random_tensor<T>("y", 5);
+    auto A  = create_zero_tensor<T>("A", 4, 5);
 
-    auto A_ref = create_zero_tensor<double>("A_ref", 4, 5);
-    linear_algebra::ger(1.0, x, y, &A_ref);
+    auto A_ref = create_zero_tensor<T>("A_ref", 4, 5);
+    linear_algebra::ger(T(1.0), x, y, &A_ref);
 
     cg::Graph graph("ger");
     {
         cg::CaptureGuard const guard(graph);
-        cg::ger(1.0, x, y, &A);
+        cg::ger(T(1.0), x, y, &A);
     }
     graph.execute();
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE_THAT(A(ii, jj), Catch::Matchers::WithinRel(A_ref(ii, jj), 1e-12));
+            REQUIRE(near<T>(A(ii, jj), A_ref(ii, jj), 1e-12));
         }
     }
 }
 
-TEST_CASE("Operation - direct product in graph", "[ComputeGraph][Operations]") {
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_random_tensor<double>("B", 4, 4);
-    auto C = create_zero_tensor<double>("C", 4, 4);
+TEMPLATE_LIST_TEST_CASE("Operation - direct product in graph", "[ComputeGraph][Operations]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 4);
+    auto B  = create_random_tensor<T>("B", 4, 4);
+    auto C  = create_zero_tensor<T>("C", 4, 4);
 
-    auto C_ref = create_zero_tensor<double>("C_ref", 4, 4);
-    linear_algebra::direct_product(1.0, A, B, 0.0, &C_ref);
+    auto C_ref = create_zero_tensor<T>("C_ref", 4, 4);
+    linear_algebra::direct_product(T(1.0), A, B, T(0.0), &C_ref);
 
     cg::Graph graph("direct_product");
     {
         cg::CaptureGuard const guard(graph);
-        cg::direct_product(1.0, A, B, 0.0, &C);
+        cg::direct_product(T(1.0), A, B, T(0.0), &C);
     }
     graph.execute();
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE_THAT(C(ii, jj), Catch::Matchers::WithinRel(C_ref(ii, jj), 1e-12));
+            REQUIRE(near<T>(C(ii, jj), C_ref(ii, jj), 1e-12));
         }
     }
 }
 
-TEST_CASE("Operation - transpose in graph", "[ComputeGraph][Operations]") {
-    auto A = create_random_tensor<double>("A", 4, 6);
-    auto B = create_zero_tensor<double>("B", 6, 4);
+TEMPLATE_LIST_TEST_CASE("Operation - transpose in graph", "[ComputeGraph][Operations]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 6);
+    auto B  = create_zero_tensor<T>("B", 6, 4);
 
-    auto B_ref = create_zero_tensor<double>("B_ref", 6, 4);
-    reference_permute("ij <- ji", 0.0, &B_ref, 1.0, A);
+    auto B_ref = create_zero_tensor<T>("B_ref", 6, 4);
+    reference_permute("ij <- ji", T(0.0), &B_ref, T(1.0), A);
 
     cg::Graph graph("transpose");
     {
@@ -84,14 +101,15 @@ TEST_CASE("Operation - transpose in graph", "[ComputeGraph][Operations]") {
 
     for (size_t ii = 0; ii < 6; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE_THAT(B(ii, jj), Catch::Matchers::WithinRel(B_ref(ii, jj), 1e-12));
+            REQUIRE(near<T>(B(ii, jj), B_ref(ii, jj), 1e-12));
         }
     }
 }
 
-TEST_CASE("Operation - gesv in graph", "[ComputeGraph][Operations]") {
-    auto A = Tensor<double, 2>("A", 3, 3);
-    auto B = Tensor<double, 2>("B", 3, 2);
+TEMPLATE_LIST_TEST_CASE("Operation - gesv in graph", "[ComputeGraph][Operations]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = Tensor<T, 2>("A", 3, 3);
+    auto B  = Tensor<T, 2>("B", 3, 2);
 
     A.zero();
     A(0, 0) = 4.0;
@@ -111,12 +129,12 @@ TEST_CASE("Operation - gesv in graph", "[ComputeGraph][Operations]") {
     B(2, 0) = 5.0;
     B(2, 1) = 6.0;
 
-    auto A_copy = Tensor<double, 2>(A);
-    auto B_ref  = Tensor<double, 2>(B);
+    auto A_copy = Tensor<T, 2>(A);
+    auto B_ref  = Tensor<T, 2>(B);
     std::ignore = linear_algebra::gesv(&A_copy, &B_ref);
 
-    auto B_graph = Tensor<double, 2>(B);
-    auto A_graph = Tensor<double, 2>(A);
+    auto B_graph = Tensor<T, 2>(B);
+    auto A_graph = Tensor<T, 2>(A);
 
     cg::Graph graph("gesv");
     {
@@ -127,7 +145,7 @@ TEST_CASE("Operation - gesv in graph", "[ComputeGraph][Operations]") {
 
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 2; jj++) {
-            REQUIRE_THAT(B_graph(ii, jj), Catch::Matchers::WithinRel(B_ref(ii, jj), 1e-10));
+            REQUIRE(near<T>(B_graph(ii, jj), B_ref(ii, jj), 1e-10));
         }
     }
 }
@@ -213,26 +231,27 @@ TEST_CASE("Operation - pow returning form throws during capture", "[ComputeGraph
 
 // ── Chain of operations ──────────────────────────────────────────────
 
-TEST_CASE("Operation - chain of mixed ops in graph", "[ComputeGraph][Operations]") {
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_random_tensor<double>("B", 4, 4);
-    auto C = create_zero_tensor<double>("C", 4, 4);
-    auto D = create_zero_tensor<double>("D", 4, 4);
+TEMPLATE_LIST_TEST_CASE("Operation - chain of mixed ops in graph", "[ComputeGraph][Operations]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 4);
+    auto B  = create_random_tensor<T>("B", 4, 4);
+    auto C  = create_zero_tensor<T>("C", 4, 4);
+    auto D  = create_zero_tensor<T>("D", 4, 4);
 
-    auto C_ref = create_zero_tensor<double>("C_ref", 4, 4);
-    auto D_ref = create_zero_tensor<double>("D_ref", 4, 4);
-    linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C_ref);
-    linear_algebra::scale(0.5, &C_ref);
-    reference_permute("ij <- ij", 0.0, &D_ref, 1.0, C_ref);
-    linear_algebra::axpy(1.0, A, &D_ref);
+    auto C_ref = create_zero_tensor<T>("C_ref", 4, 4);
+    auto D_ref = create_zero_tensor<T>("D_ref", 4, 4);
+    linear_algebra::gemm<false, false>(T(1.0), A, B, T(0.0), &C_ref);
+    linear_algebra::scale(T(0.5), &C_ref);
+    reference_permute("ij <- ij", T(0.0), &D_ref, T(1.0), C_ref);
+    linear_algebra::axpy(T(1.0), A, &D_ref);
 
     cg::Graph graph("mixed_chain");
     {
         cg::CaptureGuard const guard(graph);
-        cg::gemm<false, false>(1.0, A, B, 0.0, &C);
-        cg::scale(0.5, &C);
-        cg::permute("ij <- ij", 0.0, &D, 1.0, C);
-        cg::axpy(1.0, A, &D);
+        cg::gemm<false, false>(T(1.0), A, B, T(0.0), &C);
+        cg::scale(T(0.5), &C);
+        cg::permute("ij <- ij", T(0.0), &D, T(1.0), C);
+        cg::axpy(T(1.0), A, &D);
     }
 
     REQUIRE(graph.num_nodes() == 4);
@@ -240,36 +259,37 @@ TEST_CASE("Operation - chain of mixed ops in graph", "[ComputeGraph][Operations]
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE_THAT(D(ii, jj), Catch::Matchers::WithinRel(D_ref(ii, jj), 1e-12));
+            REQUIRE(near<T>(D(ii, jj), D_ref(ii, jj), 1e-12));
         }
     }
 }
 
-TEST_CASE("Operation - ger then gemm in graph", "[ComputeGraph][Operations]") {
-    auto x = create_random_tensor<double>("x", 4);
-    auto y = create_random_tensor<double>("y", 4);
-    auto A = create_zero_tensor<double>("A", 4, 4);
-    auto B = create_random_tensor<double>("B", 4, 4);
-    auto C = create_zero_tensor<double>("C", 4, 4);
+TEMPLATE_LIST_TEST_CASE("Operation - ger then gemm in graph", "[ComputeGraph][Operations]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto x  = create_random_tensor<T>("x", 4);
+    auto y  = create_random_tensor<T>("y", 4);
+    auto A  = create_zero_tensor<T>("A", 4, 4);
+    auto B  = create_random_tensor<T>("B", 4, 4);
+    auto C  = create_zero_tensor<T>("C", 4, 4);
 
     // Reference: A = x*y^T, then C = A*B
-    auto A_ref = create_zero_tensor<double>("A_ref", 4, 4);
-    auto C_ref = create_zero_tensor<double>("C_ref", 4, 4);
-    linear_algebra::ger(1.0, x, y, &A_ref);
-    linear_algebra::gemm<false, false>(1.0, A_ref, B, 0.0, &C_ref);
+    auto A_ref = create_zero_tensor<T>("A_ref", 4, 4);
+    auto C_ref = create_zero_tensor<T>("C_ref", 4, 4);
+    linear_algebra::ger(T(1.0), x, y, &A_ref);
+    linear_algebra::gemm<false, false>(T(1.0), A_ref, B, T(0.0), &C_ref);
 
     cg::Graph graph("ger_gemm");
     {
         cg::CaptureGuard const guard(graph);
-        cg::ger(1.0, x, y, &A);
-        cg::gemm<false, false>(1.0, A, B, 0.0, &C);
+        cg::ger(T(1.0), x, y, &A);
+        cg::gemm<false, false>(T(1.0), A, B, T(0.0), &C);
     }
 
     graph.execute();
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE_THAT(C(ii, jj), Catch::Matchers::WithinRel(C_ref(ii, jj), 1e-12));
+            REQUIRE(near<T>(C(ii, jj), C_ref(ii, jj), 1e-12));
         }
     }
 }

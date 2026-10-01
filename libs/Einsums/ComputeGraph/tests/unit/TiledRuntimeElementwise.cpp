@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -25,8 +26,8 @@ namespace {
 
 using Grid = std::vector<std::vector<int>>;
 
-template <typename F>
-void fill_tiled(TiledRuntimeTensor<double> &T, F &&f) {
+template <typename V, typename F>
+void fill_tiled(TiledRuntimeTensor<V> &T, F &&f) {
     auto const &off = T.tile_offsets();
     auto const &sz  = T.tile_sizes();
     for (int ti = 0; ti < static_cast<int>(sz[0].size()); ++ti) {
@@ -42,10 +43,11 @@ void fill_tiled(TiledRuntimeTensor<double> &T, F &&f) {
     }
 }
 
-std::vector<std::vector<double>> gather(TiledRuntimeTensor<double> const &T, int R, int C) {
-    std::vector<std::vector<double>> M(R, std::vector<double>(C, 0.0));
-    auto const                      &off = T.tile_offsets();
-    auto const                      &sz  = T.tile_sizes();
+template <typename V>
+std::vector<std::vector<V>> gather(TiledRuntimeTensor<V> const &T, int R, int C) {
+    std::vector<std::vector<V>> M(R, std::vector<V>(C, V{}));
+    auto const                 &off = T.tile_offsets();
+    auto const                 &sz  = T.tile_sizes();
     for (auto const &[coord, tile] : T.tiles()) {
         int const ti = coord[0];
         int const tj = coord[1];
@@ -56,6 +58,12 @@ std::vector<std::vector<double>> gather(TiledRuntimeTensor<double> const &T, int
         }
     }
     return M;
+}
+
+/// Within 100 epsilon of @p want, relative to it and absolute near zero, for any element type.
+template <typename V>
+bool near(V got, V want) {
+    return std::abs(got - want) <= 100.0 * std::numeric_limits<RemoveComplexT<V>>::epsilon() * (1.0 + std::abs(want));
 }
 
 } // namespace
@@ -221,37 +229,41 @@ TEST_CASE("TiledRuntimeTensor - tiled axpy in a loop is not hoisted", "[ComputeG
     }
 }
 
-TEST_CASE("TiledRuntimeTensor - tiled direct_division (eager + captured)", "[ComputeGraph][TiledRuntime]") {
-    auto af = [](int r, int c) { return 1.0 + r - c; };
-    auto bf = [](int r, int c) { return 2.5 + 0.5 * r + c; }; // never zero
-    auto cf = [](int r, int c) { return 0.25 * r - c; };
+TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - tiled direct_division (eager + captured)", "[ComputeGraph][TiledRuntime]",
+                        testing::AllScalarTypes) {
+    using T       = TestType;
+    T const alpha = testing::prefactor<T>(2.0, 0.5);
+    T const beta  = testing::prefactor<T>(0.5, -0.25);
+    auto    af    = [](int r, int c) { return testing::prefactor<T>(1.0 + r - c, 0.5 * c - r); };
+    auto    bf    = [](int r, int c) { return testing::prefactor<T>(2.5 + 0.5 * r + c, 0.25 * r); }; // never zero
+    auto    cf    = [](int r, int c) { return testing::prefactor<T>(0.25 * r - c, 1.0 - 0.5 * c); };
 
     // Eager, with beta != 0 so the destination is read.
-    TiledRuntimeTensor<double> A("A", Grid{{2, 3}, {4, 5}});
-    TiledRuntimeTensor<double> B("B", Grid{{2, 3}, {4, 5}});
-    TiledRuntimeTensor<double> C("C", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<T> A("A", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<T> B("B", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<T> C("C", Grid{{2, 3}, {4, 5}});
     fill_tiled(A, af);
     fill_tiled(B, bf);
     fill_tiled(C, cf);
-    cg::direct_division(2.0, A, B, 0.5, &C);
+    cg::direct_division(alpha, A, B, beta, &C);
     auto Cg = gather(C, 5, 9);
     for (int i = 0; i < 5; ++i) {
         for (int j = 0; j < 9; ++j) {
-            REQUIRE(std::abs(Cg[i][j] - (2.0 * af(i, j) / bf(i, j) + 0.5 * cf(i, j))) < 1e-12);
+            REQUIRE(near<T>(Cg[i][j], alpha * af(i, j) / bf(i, j) + beta * cf(i, j)));
         }
     }
 
     // Captured.
-    TiledRuntimeTensor<double> A2("A2", Grid{{2, 3}, {4, 5}});
-    TiledRuntimeTensor<double> B2("B2", Grid{{2, 3}, {4, 5}});
-    TiledRuntimeTensor<double> C2("C2", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<T> A2("A2", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<T> B2("B2", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<T> C2("C2", Grid{{2, 3}, {4, 5}});
     fill_tiled(A2, af);
     fill_tiled(B2, bf);
     fill_tiled(C2, cf);
     cg::Graph g("tiled_divide");
     {
         cg::CaptureGuard const guard(g);
-        cg::direct_division(2.0, A2, B2, 0.5, &C2);
+        cg::direct_division(alpha, A2, B2, beta, &C2);
     }
     // beta != 0 reads C, so C must appear among the inputs.
     REQUIRE(g.num_nodes() == 1);
@@ -261,7 +273,7 @@ TEST_CASE("TiledRuntimeTensor - tiled direct_division (eager + captured)", "[Com
     auto C2g = gather(C2, 5, 9);
     for (int i = 0; i < 5; ++i) {
         for (int j = 0; j < 9; ++j) {
-            REQUIRE(std::abs(C2g[i][j] - Cg[i][j]) < 1e-12);
+            REQUIRE(near<T>(C2g[i][j], Cg[i][j]));
         }
     }
 }

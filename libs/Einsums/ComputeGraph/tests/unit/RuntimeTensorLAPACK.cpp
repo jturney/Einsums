@@ -15,6 +15,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -29,6 +30,13 @@ RuntimeTensor<T> runtime_copy_of(Tensor<T, 2> const &t, bool row_major = false) 
     RuntimeTensor<T> out(t.name(), {t.dim(0), t.dim(1)}, row_major);
     std::memcpy(out.data(), t.data(), out.size() * sizeof(T));
     return out;
+}
+
+/// 1000 epsilon of @p T's real type: loose enough for a factorization's roundoff at these sizes,
+/// tight enough that a wrong factor is far outside it.
+template <typename T>
+double lapack_tol() {
+    return 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
 }
 
 } // namespace
@@ -63,8 +71,9 @@ TEST_CASE("RuntimeTensor cg::det - a strided view is read through its strides", 
     CHECK_THAT(cg::det(block), Catch::Matchers::WithinRel(cg::det(dense), 1e-10));
 }
 
-TEST_CASE("RuntimeTensor cg::qr — Q*R reconstructs the input", "[ComputeGraph][runtime]") {
-    auto Astatic = create_random_tensor<double>("A", 5, 3);
+TEMPLATE_LIST_TEST_CASE("RuntimeTensor cg::qr — Q*R reconstructs the input", "[ComputeGraph][runtime]", testing::AllScalarTypes) {
+    using T      = TestType;
+    auto Astatic = create_random_tensor<T>("A", 5, 3);
     auto Art     = runtime_copy_of(Astatic);
 
     auto [Qrt, Rrt] = cg::qr(Art);
@@ -73,18 +82,19 @@ TEST_CASE("RuntimeTensor cg::qr — Q*R reconstructs the input", "[ComputeGraph]
     REQUIRE(Rrt.rank() == 2);
 
     // Q @ R should reproduce A. Check elementwise.
-    RuntimeTensor<double> Acheck("Acheck", {Astatic.dim(0), Astatic.dim(1)}, /*row_major=*/false);
-    linear_algebra::gemm<false, false>(1.0, Qrt, Rrt, 0.0, &Acheck);
+    RuntimeTensor<T> Acheck("Acheck", {Astatic.dim(0), Astatic.dim(1)}, /*row_major=*/false);
+    linear_algebra::gemm<false, false>(T(1.0), Qrt, Rrt, T(0.0), &Acheck);
 
     for (size_t i = 0; i < Astatic.dim(0); ++i) {
         for (size_t j = 0; j < Astatic.dim(1); ++j) {
-            CHECK_THAT(Acheck(i, j), Catch::Matchers::WithinRel(Astatic(i, j), 1e-9));
+            CHECK(std::abs(Acheck(i, j) - Astatic(i, j)) <= lapack_tol<T>() * (1.0 + std::abs(Astatic(i, j))));
         }
     }
 }
 
-TEST_CASE("RuntimeTensor cg::svd — singular values match static SVD", "[ComputeGraph][runtime]") {
-    auto Astatic = create_random_tensor<double>("A", 4, 3);
+TEMPLATE_LIST_TEST_CASE("RuntimeTensor cg::svd — singular values match static SVD", "[ComputeGraph][runtime]", testing::AllScalarTypes) {
+    using T      = TestType;
+    auto Astatic = create_random_tensor<T>("A", 4, 3);
     auto Art     = runtime_copy_of(Astatic);
 
     auto const [Us_static, Sst, Vts_static] = cg::svd(Astatic);
@@ -96,7 +106,7 @@ TEST_CASE("RuntimeTensor cg::svd — singular values match static SVD", "[Comput
     // Singular values are unique (positive, sorted descending), so direct
     // elementwise comparison works. U / Vt may differ in sign per column.
     for (size_t i = 0; i < Sst.dim(0); ++i) {
-        CHECK_THAT(Srt(i), Catch::Matchers::WithinRel(Sst(i), 1e-9));
+        CHECK(std::abs(Srt(i) - Sst(i)) <= lapack_tol<T>() * (1.0 + std::abs(Sst(i))));
     }
 }
 
@@ -122,15 +132,18 @@ TEST_CASE("RuntimeTensor cg::trace — non-square throws", "[ComputeGraph][runti
     REQUIRE_THROWS(cg::trace(A));
 }
 
-TEST_CASE("RuntimeTensor cg::syev_eig — eigenvalues match numpy/static", "[ComputeGraph][runtime]") {
+// Real types only: syev_eig is the real symmetric eigensolver and has no complex instantiation; a
+// Hermitian matrix would need a heev-based returning form, which the library does not provide.
+TEMPLATE_TEST_CASE("RuntimeTensor cg::syev_eig — eigenvalues match numpy/static", "[ComputeGraph][runtime]", float, double) {
+    using T = TestType;
     // Build a known symmetric matrix.
-    auto Astatic = create_random_tensor<double>("A", 5, 5);
+    auto Astatic = create_random_tensor<T>("A", 5, 5);
     // Symmetrize.
     for (size_t i = 0; i < 5; ++i) {
         for (size_t j = i + 1; j < 5; ++j) {
-            double const m = 0.5 * (Astatic(i, j) + Astatic(j, i));
-            Astatic(i, j)  = m;
-            Astatic(j, i)  = m;
+            T const m     = T(0.5) * (Astatic(i, j) + Astatic(j, i));
+            Astatic(i, j) = m;
+            Astatic(j, i) = m;
         }
     }
     auto Art = runtime_copy_of(Astatic);
@@ -140,12 +153,12 @@ TEST_CASE("RuntimeTensor cg::syev_eig — eigenvalues match numpy/static", "[Com
     REQUIRE(evals_rt.dim(0) == 5);
 
     // Compare against linear_algebra::syev (the static path).
-    auto              a_copy = Astatic;
-    Tensor<double, 1> w{"w", 5};
+    auto         a_copy = Astatic;
+    Tensor<T, 1> w{"w", 5};
     linear_algebra::syev(&a_copy, &w);
 
     // Eigenvalues are sorted ascending by syev; both paths should agree.
     for (size_t i = 0; i < 5; ++i) {
-        CHECK_THAT(evals_rt(i), Catch::Matchers::WithinAbs(w(i), 1e-9));
+        CHECK(std::abs(evals_rt(i) - w(i)) <= lapack_tol<T>() * (1.0 + std::abs(w(i))));
     }
 }

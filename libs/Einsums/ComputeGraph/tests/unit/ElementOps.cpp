@@ -366,14 +366,15 @@ TEST_CASE("ElementOps - a captured node carries the parameter it was given, and 
     REQUIRE_FALSE(bare->param.has_value());
 }
 
-TEST_CASE("ElementOps - a captured parameter is what the rebuilt executor applies", "[ComputeGraph][ElementOps]") {
+TEMPLATE_TEST_CASE("ElementOps - a captured parameter is what the rebuilt executor applies", "[ComputeGraph][ElementOps]", float, double) {
+    using T = TestType;
     // Capture, replay: the eigenvalue below the threshold has to come back zero
     // rather than as the enormous reciprocal square root the bare guard lets
     // through, and it has to do so through the executor the builder made.
-    auto values = create_zero_tensor<double>("values", 3);
-    values(0)   = 4.0;
-    values(1)   = 1.0e-17;
-    values(2)   = -1.0;
+    auto values = create_zero_tensor<T>("values", 3);
+    values(0)   = T(4.0);
+    values(1)   = T(1.0e-17);
+    values(2)   = T(-1.0);
 
     cg::Graph graph("threshold_replay");
     {
@@ -382,18 +383,20 @@ TEST_CASE("ElementOps - a captured parameter is what the rebuilt executor applie
     }
     graph.execute();
 
-    REQUIRE_THAT(values(0), Catch::Matchers::WithinAbs(0.5, 1.0e-12));
-    REQUIRE(values(1) == 0.0);
-    REQUIRE(values(2) == 0.0);
+    REQUIRE_THAT(values(0), Catch::Matchers::WithinAbs(0.5, tol_for<T>()));
+    REQUIRE(values(1) == T(0));
+    REQUIRE(values(2) == T(0));
 }
 
-TEST_CASE("ElementOps - a named element_transform over a runtime-rank tensor works", "[ComputeGraph][ElementOps]") {
+TEMPLATE_LIST_TEST_CASE("ElementOps - a named element_transform over a runtime-rank tensor works", "[ComputeGraph][ElementOps]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The closure overload needs a compile-time rank; the named one walks the
     // operand's TensorImpl and so covers the runtime-rank types too.
-    RuntimeTensor<double> A("A", std::vector<size_t>{2, 3});
+    RuntimeTensor<T> A("A", std::vector<size_t>{2, 3});
     A.zero();
     for (size_t item = 0; item < A.size(); item++) {
-        A.data()[item] = static_cast<double>(item + 1);
+        A.data()[item] = T(static_cast<double>(item + 1));
     }
 
     cg::Graph graph("runtime_named");
@@ -404,16 +407,18 @@ TEST_CASE("ElementOps - a named element_transform over a runtime-rank tensor wor
     graph.execute();
 
     for (size_t item = 0; item < A.size(); item++) {
-        auto const expected = static_cast<double>(item + 1);
-        REQUIRE_THAT(A.data()[item], Catch::Matchers::WithinAbs(expected * expected, 1.0e-12));
+        auto const expected = T(static_cast<double>(item + 1));
+        REQUIRE(std::abs(A.data()[item] - expected * expected) <= tol_for<T>() * (1 + std::abs(expected * expected)));
     }
 }
 
-TEST_CASE("ElementOps - a named element_transform over a strided view touches only the view", "[ComputeGraph][ElementOps]") {
+TEMPLATE_LIST_TEST_CASE("ElementOps - a named element_transform over a strided view touches only the view", "[ComputeGraph][ElementOps]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The general walk is the odometer over dims and strides; a non-contiguous
     // destination is exactly what it exists for, and the elements OUTSIDE the
     // view have to come through untouched.
-    auto       parent = create_random_tensor<double>("parent", 4, 4);
+    auto       parent = create_random_tensor<T>("parent", 4, 4);
     auto const before = parent;
 
     auto column = parent(All, Range{1, 2});
@@ -427,9 +432,9 @@ TEST_CASE("ElementOps - a named element_transform over a strided view touches on
 
     for (size_t i = 0; i < 4; i++) {
         for (size_t j = 0; j < 4; j++) {
-            double const expected = j == 1 ? -before(i, j) : before(i, j);
+            T const expected = j == 1 ? T(-before(i, j)) : T(before(i, j));
             INFO("element (" << i << ", " << j << ")");
-            REQUIRE_THAT(parent(i, j), Catch::Matchers::WithinAbs(expected, 1.0e-12));
+            REQUIRE(std::abs(parent(i, j) - expected) <= tol_for<T>());
         }
     }
 }
@@ -457,11 +462,13 @@ TEST_CASE("ElementOps - is_dense_block recognizes packed layouts in any dimensio
     CHECK_FALSE(is_dense_block<2>(Dim<2>{4, 4}, Stride<2>{1, 2}));
 }
 
-TEST_CASE("ElementOps - dense_element_transform agrees on packed, permuted and strided operands", "[ComputeGraph][ElementOps]") {
-    auto const square = [](double x) { return x * x - 1.0; };
+TEMPLATE_LIST_TEST_CASE("ElementOps - dense_element_transform agrees on packed, permuted and strided operands",
+                        "[ComputeGraph][ElementOps]", testing::AllScalarTypes) {
+    using T           = TestType;
+    auto const square = [](T x) { return x * x - T(1.0); };
 
     SECTION("column-major owning tensor (flat walk)") {
-        auto       t      = create_random_tensor<double>("t", 5, 7, 3);
+        auto       t      = create_random_tensor<T>("t", 5, 7, 3);
         auto const before = t;
         cg::detail::dense_element_transform(&t, square);
         for (size_t i = 0; i < 5; i++)
@@ -471,38 +478,38 @@ TEST_CASE("ElementOps - dense_element_transform agrees on packed, permuted and s
     }
 
     SECTION("row-major owning tensor (flat walk over a permuted packing)") {
-        Tensor<double, 2> t(true, "t", 6, 9);
+        Tensor<T, 2> t(true, "t", 6, 9);
         for (size_t i = 0; i < 6; i++)
             for (size_t j = 0; j < 9; j++)
-                t(i, j) = static_cast<double>(i * 9 + j) * 0.5;
+                t(i, j) = T(static_cast<double>(i * 9 + j) * 0.5);
         cg::detail::dense_element_transform(&t, square);
         for (size_t i = 0; i < 6; i++)
             for (size_t j = 0; j < 9; j++)
-                REQUIRE(t(i, j) == square(static_cast<double>(i * 9 + j) * 0.5));
+                REQUIRE(t(i, j) == square(T(static_cast<double>(i * 9 + j) * 0.5)));
     }
 
     SECTION("strided view (odometer walk) leaves the rest of the parent alone") {
-        auto       parent = create_random_tensor<double>("parent", 6, 5);
+        auto       parent = create_random_tensor<T>("parent", 6, 5);
         auto const before = parent;
         auto       rows   = parent(Range{1, 4}, All);
         cg::detail::dense_element_transform(&rows, square);
         for (size_t i = 0; i < 6; i++)
             for (size_t j = 0; j < 5; j++) {
                 INFO("element (" << i << ", " << j << ")");
-                double const expected = (i >= 1 && i < 4) ? square(before(i, j)) : before(i, j);
+                T const expected = (i >= 1 && i < 4) ? square(before(i, j)) : T(before(i, j));
                 REQUIRE(parent(i, j) == expected);
             }
     }
 
     SECTION("contiguous view with an offset (flat walk from the view's own start)") {
-        auto       parent = create_random_tensor<double>("parent", 4, 6);
+        auto       parent = create_random_tensor<T>("parent", 4, 6);
         auto const before = parent;
         auto       cols   = parent(All, Range{2, 5});
         cg::detail::dense_element_transform(&cols, square);
         for (size_t i = 0; i < 4; i++)
             for (size_t j = 0; j < 6; j++) {
                 INFO("element (" << i << ", " << j << ")");
-                double const expected = (j >= 2 && j < 5) ? square(before(i, j)) : before(i, j);
+                T const expected = (j >= 2 && j < 5) ? square(before(i, j)) : T(before(i, j));
                 REQUIRE(parent(i, j) == expected);
             }
     }
