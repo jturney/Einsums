@@ -40,7 +40,7 @@ TEMPLATE_LIST_TEST_CASE("Graph - gemm operation", "[ComputeGraph][Phase2]", test
     auto C          = create_zero_tensor<T>("C", 4, 5);
     auto C_expected = create_zero_tensor<T>("Ce", 4, 5);
 
-    linear_algebra::gemm<false, false>(T(1.0), A, B, T(0.0), &C_expected);
+    reference_einsum("ij <- ik ; kj", &C_expected, A, B);
 
     cg::Graph graph("test_gemm");
     {
@@ -65,7 +65,7 @@ TEMPLATE_LIST_TEST_CASE("Graph - gemv operation", "[ComputeGraph][Phase2]", test
     auto y          = create_zero_tensor<T>("y", 4);
     auto y_expected = create_zero_tensor<T>("ye", 4);
 
-    linear_algebra::gemv<false>(T(1.0), A, x, T(0.0), &y_expected);
+    reference_einsum("i <- ik ; k", &y_expected, A, x);
 
     cg::Graph graph("test_gemv");
     {
@@ -91,13 +91,10 @@ TEST_CASE("Graph - syev returning form throws during capture", "[ComputeGraph][P
 }
 
 TEMPLATE_LIST_TEST_CASE("Graph - syev in-place form", "[ComputeGraph][Phase2]", testing::RealScalarTypes) {
-    using T    = TestType;
-    auto A     = create_random_definite<T>("A", 4, 4);
-    auto A_ref = Tensor<T, 2>(A);
-    auto W     = create_zero_tensor<T>("W", 4);
-    auto W_ref = create_zero_tensor<T>("Wref", 4);
-
-    linear_algebra::syev(&A_ref, &W_ref);
+    using T = TestType;
+    auto A  = create_random_definite<T>("A", 4, 4);
+    auto A0 = Tensor<T, 2>(A);
+    auto W  = create_zero_tensor<T>("W", 4);
 
     cg::Graph graph("test_syev_inplace");
     {
@@ -108,8 +105,23 @@ TEMPLATE_LIST_TEST_CASE("Graph - syev in-place form", "[ComputeGraph][Phase2]", 
     // syev does NOT execute during capture; must call execute()
     graph.execute();
 
-    for (size_t ii = 0; ii < 4; ii++) {
-        REQUIRE(near<T>(W(ii), W_ref(ii), 1e-10));
+    // A now holds the eigenvectors, one per column. Each pair is checked by its residual,
+    // A0 v_j = w_j v_j, and the vectors by orthonormality, neither of which needs a second solver.
+    for (size_t jj = 0; jj < 4; jj++) {
+        for (size_t ii = 0; ii < 4; ii++) {
+            T applied{0};
+            for (size_t kk = 0; kk < 4; kk++) {
+                applied += A0(ii, kk) * A(kk, jj);
+            }
+            REQUIRE(near<T>(applied, W(jj) * A(ii, jj), 1e-10));
+        }
+        for (size_t kk = 0; kk < 4; kk++) {
+            T overlap{0};
+            for (size_t ii = 0; ii < 4; ii++) {
+                overlap += A(ii, jj) * A(ii, kk);
+            }
+            REQUIRE(near<T>(overlap, T(jj == kk ? 1.0 : 0.0), 1e-10));
+        }
     }
 }
 
@@ -122,7 +134,7 @@ TEMPLATE_LIST_TEST_CASE("Graph - qr outside capture", "[ComputeGraph][Phase2]", 
 
     // Q should be orthogonal: Q^T * Q ≈ I
     auto QtQ = create_zero_tensor<T>("QtQ", 4, 4);
-    linear_algebra::gemm<true, false>(T(1.0), Q, Q, T(0.0), &QtQ);
+    reference_einsum("ij <- ki ; kj", &QtQ, Q, Q);
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
@@ -214,7 +226,9 @@ TEMPLATE_LIST_TEST_CASE("Graph - axpby operation", "[ComputeGraph][Phase2]", tes
     auto Y     = create_random_tensor<T>("Y", 5);
     auto Y_ref = Tensor<T, 1>(Y);
 
-    linear_algebra::axpby(T(2.0), X, T(3.0), &Y_ref);
+    for (size_t ii = 0; ii < 5; ii++) {
+        Y_ref(ii) = T(2.0) * X(ii) + T(3.0) * Y_ref(ii);
+    }
 
     cg::Graph graph("test_axpby");
     {
@@ -232,9 +246,6 @@ TEMPLATE_LIST_TEST_CASE("Graph - axpby operation", "[ComputeGraph][Phase2]", tes
 TEST_CASE("Graph - invert operation", "[ComputeGraph][Phase2]") {
     auto A      = create_random_definite<double>("A", 3, 3);
     auto A_copy = Tensor<double, 2>(A);
-    auto A_ref  = Tensor<double, 2>(A);
-
-    linear_algebra::invert(&A_ref);
 
     cg::Graph graph("test_invert");
     {
@@ -245,9 +256,14 @@ TEST_CASE("Graph - invert operation", "[ComputeGraph][Phase2]") {
     // invert does NOT execute during capture; must call execute()
     graph.execute();
 
+    // The inverse checked by its residual, A * A^-1 = I, rather than against a second inversion.
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {
-            REQUIRE(std::abs(A_copy(ii, jj) - A_ref(ii, jj)) < 1e-10);
+            double applied = 0.0;
+            for (size_t kk = 0; kk < 3; kk++) {
+                applied += A(ii, kk) * A_copy(kk, jj);
+            }
+            REQUIRE(std::abs(applied - (ii == jj ? 1.0 : 0.0)) < 1e-10);
         }
     }
 }

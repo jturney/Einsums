@@ -19,6 +19,7 @@
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
 using einsums::testing::reference_permute;
 
 using namespace einsums;
@@ -45,7 +46,11 @@ TEMPLATE_LIST_TEST_CASE("Operation - ger (rank-1 update) in graph", "[ComputeGra
     auto A  = create_zero_tensor<T>("A", 4, 5);
 
     auto A_ref = create_zero_tensor<T>("A_ref", 4, 5);
-    linear_algebra::ger(T(1.0), x, y, &A_ref);
+    for (size_t ii = 0; ii < A_ref.dim(0); ii++) {
+        for (size_t jj = 0; jj < A_ref.dim(1); jj++) {
+            A_ref(ii, jj) = x(ii) * y(jj);
+        }
+    }
 
     cg::Graph graph("ger");
     {
@@ -68,7 +73,11 @@ TEMPLATE_LIST_TEST_CASE("Operation - direct product in graph", "[ComputeGraph][O
     auto C  = create_zero_tensor<T>("C", 4, 4);
 
     auto C_ref = create_zero_tensor<T>("C_ref", 4, 4);
-    linear_algebra::direct_product(T(1.0), A, B, T(0.0), &C_ref);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            C_ref(ii, jj) = A(ii, jj) * B(ii, jj);
+        }
+    }
 
     cg::Graph graph("direct_product");
     {
@@ -129,10 +138,6 @@ TEMPLATE_LIST_TEST_CASE("Operation - gesv in graph", "[ComputeGraph][Operations]
     B(2, 0) = 5.0;
     B(2, 1) = 6.0;
 
-    auto A_copy = Tensor<T, 2>(A);
-    auto B_ref  = Tensor<T, 2>(B);
-    std::ignore = linear_algebra::gesv(&A_copy, &B_ref);
-
     auto B_graph = Tensor<T, 2>(B);
     auto A_graph = Tensor<T, 2>(A);
 
@@ -143,9 +148,14 @@ TEMPLATE_LIST_TEST_CASE("Operation - gesv in graph", "[ComputeGraph][Operations]
     }
     graph.execute();
 
+    // The solution checked by its residual, A * X = B, which holds however it was solved.
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 2; jj++) {
-            REQUIRE(near<T>(B_graph(ii, jj), B_ref(ii, jj), 1e-10));
+            T applied{0};
+            for (size_t kk = 0; kk < 3; kk++) {
+                applied += A(ii, kk) * B_graph(kk, jj);
+            }
+            REQUIRE(near<T>(applied, B(ii, jj), 1e-10));
         }
     }
 }
@@ -157,8 +167,11 @@ TEST_CASE("Operation - dot throws during capture", "[ComputeGraph][Operations]")
     auto B = create_random_tensor<double>("B", 10);
 
     // Eager use (outside capture) should work fine
-    double       result = cg::dot(A, B);
-    double const ref    = linear_algebra::dot(A, B);
+    double result = cg::dot(A, B);
+    double ref    = 0.0;
+    for (size_t ii = 0; ii < 10; ii++) {
+        ref += A(ii) * B(ii);
+    }
     REQUIRE_THAT(result, Catch::Matchers::WithinRel(ref, 1e-12));
 
     // During capture, should throw
@@ -174,8 +187,10 @@ TEST_CASE("Operation - det throws during capture", "[ComputeGraph][Operations]")
     auto A = create_random_tensor<double>("A", 3, 3);
 
     // Eager
-    double       result = cg::det(A);
-    double const ref    = linear_algebra::det(A);
+    double result = cg::det(A);
+    // Cofactor expansion along the first row.
+    double const ref = A(0, 0) * (A(1, 1) * A(2, 2) - A(1, 2) * A(2, 1)) - A(0, 1) * (A(1, 0) * A(2, 2) - A(1, 2) * A(2, 0)) +
+                       A(0, 2) * (A(1, 0) * A(2, 1) - A(1, 1) * A(2, 0));
     REQUIRE_THAT(result, Catch::Matchers::WithinRel(ref, 1e-10));
 
     // Capture should throw
@@ -240,10 +255,18 @@ TEMPLATE_LIST_TEST_CASE("Operation - chain of mixed ops in graph", "[ComputeGrap
 
     auto C_ref = create_zero_tensor<T>("C_ref", 4, 4);
     auto D_ref = create_zero_tensor<T>("D_ref", 4, 4);
-    linear_algebra::gemm<false, false>(T(1.0), A, B, T(0.0), &C_ref);
-    linear_algebra::scale(T(0.5), &C_ref);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            C_ref(ii, jj) *= T(0.5);
+        }
+    }
     reference_permute("ij <- ij", T(0.0), &D_ref, T(1.0), C_ref);
-    linear_algebra::axpy(T(1.0), A, &D_ref);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            D_ref(ii, jj) += A(ii, jj);
+        }
+    }
 
     cg::Graph graph("mixed_chain");
     {
@@ -275,8 +298,12 @@ TEMPLATE_LIST_TEST_CASE("Operation - ger then gemm in graph", "[ComputeGraph][Op
     // Reference: A = x*y^T, then C = A*B
     auto A_ref = create_zero_tensor<T>("A_ref", 4, 4);
     auto C_ref = create_zero_tensor<T>("C_ref", 4, 4);
-    linear_algebra::ger(T(1.0), x, y, &A_ref);
-    linear_algebra::gemm<false, false>(T(1.0), A_ref, B, T(0.0), &C_ref);
+    for (size_t ii = 0; ii < A_ref.dim(0); ii++) {
+        for (size_t jj = 0; jj < A_ref.dim(1); jj++) {
+            A_ref(ii, jj) = x(ii) * y(jj);
+        }
+    }
+    reference_einsum("ij <- ik ; kj", &C_ref, A_ref, B);
 
     cg::Graph graph("ger_gemm");
     {
