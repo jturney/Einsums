@@ -11,7 +11,7 @@
 // replaces the per-tile vendor blas::gemm calls (the stand-in left behind
 // when the MLIR-JIT micro-kernel was removed). The kernel bodies live in
 // MicroKernelBody.hpp and are compiled once per SIMD-dispatch rung by
-// einsums_add_simd_dispatch_sources() (see src/MicroKernelImpl.cpp); the
+// stripes_add_dispatch_sources() (see src/MicroKernelImpl.cpp); the
 // rung is resolved at runtime in src/MicroKernelDispatch.cpp, following the
 // same pattern HPTT uses for its transpose kernels. Without this, the MR=8
 // (AVX) and MR=16 (AVX-512) block shapes chosen by cpu_config() would be

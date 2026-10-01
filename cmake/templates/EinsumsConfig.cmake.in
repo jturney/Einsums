@@ -103,6 +103,19 @@ set(EINSUMS_CXX_COMPILER_VERSION
 # malloc/free that macOS libc++ no longer exposes through <cstdlib>.
 einsums_find_package(fmt 12...<13 REQUIRED)
 
+# Stripes, the SIMD library: public Einsums headers (HPTT, PackedGemm) include its headers. A
+# fetched Stripes is installed with Einsums, under the Einsums root; in a build tree it is in
+# FetchContent's _deps (or wherever an installed Stripes was found), which the build-tree variant
+# of this file substitutes, as for spdlog below.
+set(_einsums_stripes_dir "@EINSUMS_BUILD_TREE_STRIPES_DIR@")
+if(_einsums_stripes_dir)
+  set(Stripes_DIR "${_einsums_stripes_dir}")
+else()
+  set(Stripes_ROOT "${_einsums_root_dir}")
+endif()
+unset(_einsums_stripes_dir)
+einsums_find_package(Stripes 1 REQUIRED)
+
 # spdlog is VENDORED, not a system dependency. Einsums builds it from source and
 # folds the static archive into libEinsums (see Einsums_SetupSpdlog), but
 # Einsums/Logging.hpp is a PUBLIC header that includes <spdlog/...>, so a

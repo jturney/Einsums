@@ -331,11 +331,11 @@ extern template class TransposeImpl<FloatComplex>;
 extern template class TransposeImpl<DoubleComplex>;
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-extern template class TransposeImpl<einsums::simd::half_t>;
+extern template class TransposeImpl<stripes::half_t>;
 #endif
 
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-extern template class TransposeImpl<einsums::simd::bfloat16_t>;
+extern template class TransposeImpl<stripes::bfloat16_t>;
 #endif
 
 EINSUMS_NAMESPACE_END(hptt)

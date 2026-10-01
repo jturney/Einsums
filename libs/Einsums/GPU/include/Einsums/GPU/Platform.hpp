@@ -23,9 +23,9 @@ EINSUMS_NAMESPACE_BEGIN(gpu)
 // has_cuda == true and no device at all. For the second question, use
 // gpu_available() / device_capabilities() below.
 //
-// The split mirrors libs/Einsums/SIMD/include/Einsums/SIMD/RuntimeFeatures.hpp,
+// The split mirrors Stripes' <Stripes/RuntimeFeatures.hpp>,
 // where compile-time `has_*` constants describe the ISA baseline and
-// simd::cpu_features() describes the running machine.
+// stripes::cpu_features() describes the running machine.
 // ---------------------------------------------------------------------------
 
 inline constexpr bool has_cuda =

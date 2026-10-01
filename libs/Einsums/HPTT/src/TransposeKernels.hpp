@@ -4,7 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 // The boundary between HPTT's planner, compiled once, and its kernels, compiled once per SIMD
-// dispatch rung (TransposeKernels.cpp, through einsums_add_simd_dispatch_sources).
+// dispatch rung (TransposeKernels.cpp, through stripes_add_dispatch_sources).
 //
 // Everything a rung's copy defines must be its own: the linker keeps one definition per name, so a
 // std::vector member or a logging template instantiated in the kernels would be emitted by every rung
@@ -17,8 +17,8 @@
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
-#include <Einsums/SIMD/RungLadder.hpp>
 
+#include <Stripes/RungLadder.hpp>
 #include <cstddef>
 
 EINSUMS_NAMESPACE_BEGIN(hptt)
@@ -52,7 +52,7 @@ struct KernelArgs {
 template <typename floatType>
 struct TransposeKernels {
     int vector_bits; ///< Register width of the rung, which the plan file records.
-    int rung;        ///< einsums::simd::InstructionSet of the rung, for the plan file's messages.
+    int rung;        ///< stripes::InstructionSet of the rung, for the plan file's messages.
     int blocking;    ///< Edge of the macro-kernel tile, in elements: the plan's loop increment.
 
     /// Run the plan, spawning threads when there are several and streaming B when beta is zero.
@@ -68,7 +68,7 @@ struct TransposeKernels {
     TransposeKernels<floatType> const &transpose_kernels() noexcept;                                                                       \
     }
 
-EINSUMS_SIMD_FOR_EACH_BUILT_RUNG(EINSUMS_HPTT_DECLARE_RUNG_KERNELS)
+STRIPES_FOR_EACH_BUILT_RUNG(EINSUMS_HPTT_DECLARE_RUNG_KERNELS)
 
 #undef EINSUMS_HPTT_DECLARE_RUNG_KERNELS
 

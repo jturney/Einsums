@@ -16,8 +16,8 @@
 // AVX-512 BF16, which has no BF16 transpose to build a vector kernel from.
 
 #include <Einsums/HPTT/HPTT.hpp>
-#include <Einsums/SIMD/Vec.hpp>
 
+#include <Stripes/Vec.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -48,7 +48,7 @@ inline int hptt_test_threads() {
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
 
 TEST_CASE("HPTT half_t 2D transpose round-trip", "[hptt][half]") {
-    using half_t = einsums::simd::half_t;
+    using half_t = stripes::half_t;
 
     constexpr size_t N = 32;
 
@@ -77,7 +77,7 @@ TEST_CASE("HPTT half_t 2D transpose round-trip", "[hptt][half]") {
 }
 
 TEST_CASE("HPTT half_t 2D transpose with alpha", "[hptt][half]") {
-    using half_t = einsums::simd::half_t;
+    using half_t = stripes::half_t;
 
     constexpr size_t N = 32;
 
@@ -109,7 +109,7 @@ TEST_CASE("HPTT half_t 2D transpose with alpha", "[hptt][half]") {
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
 
 TEST_CASE("HPTT bfloat16_t 2D transpose round-trip", "[hptt][bfloat]") {
-    using bf16_t = einsums::simd::bfloat16_t;
+    using bf16_t = stripes::bfloat16_t;
 
     constexpr size_t N = 32;
 
@@ -138,7 +138,7 @@ TEST_CASE("HPTT bfloat16_t 2D transpose round-trip", "[hptt][bfloat]") {
 }
 
 TEST_CASE("HPTT bfloat16_t 2D transpose with alpha", "[hptt][bfloat]") {
-    using bf16_t = einsums::simd::bfloat16_t;
+    using bf16_t = stripes::bfloat16_t;
 
     constexpr size_t N = 32;
 
@@ -166,7 +166,7 @@ TEST_CASE("HPTT bfloat16_t 2D transpose with alpha", "[hptt][bfloat]") {
 }
 
 TEST_CASE("HPTT bfloat16_t 2D transpose accumulates beta * B", "[hptt][bfloat]") {
-    using bf16_t = einsums::simd::bfloat16_t;
+    using bf16_t = stripes::bfloat16_t;
 
     // Not a multiple of the eight-lane tile, so the scalar remainder runs beside the vector tiles.
     constexpr size_t N = 37;

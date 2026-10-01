@@ -6,8 +6,8 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Hardware/Options.hpp>
-#include <Einsums/SIMD/RuntimeFeatures.hpp>
 
+#include <Stripes/RuntimeFeatures.hpp>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -350,10 +350,10 @@ int compiled_simd_width_f64() {
 }
 
 /// SIMD width in doubles of the rung the process will dispatch to. Reads the
-/// same answer the kernel ladders read, so a pinned `EINSUMS_SIMD_ARCH` lowers
+/// same answer the kernel ladders read, so a pinned `--einsums:simd:arch` (or `STRIPES_ARCH`) lowers
 /// this too and the blocking built from it stays consistent with the kernel.
 int runtime_simd_width_f64() {
-    return einsums::simd::vector_bits(einsums::simd::selected_arch()) / 64;
+    return stripes::vector_bits(stripes::selected_arch()) / 64;
 }
 
 } // namespace

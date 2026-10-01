@@ -66,7 +66,7 @@ The SIMD width comes from the rung the process dispatches to, which CPUID, the
 operating system's vector state and :option:`--einsums:simd:arch` decide
 together. Only ``compiled_simd_width_f64`` comes from the compile-time ISA
 macros. For the runtime feature ladder and its psABI rungs, see
-:ref:`the SIMD module <modules_Einsums_SIMD>`.
+:ref:`SIMD <modules_Einsums_SIMD>`.
 
 The cost of a parallel region
 =============================

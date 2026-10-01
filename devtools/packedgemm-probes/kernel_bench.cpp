@@ -8,15 +8,15 @@
 #include <Einsums/BLAS.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
 #include <Einsums/Runtime.hpp>
-#include <Einsums/SIMD/Operations.hpp>
-#include <Einsums/SIMD/Vec.hpp>
 
+#include <Stripes/Operations.hpp>
+#include <Stripes/Vec.hpp>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
-namespace simd = einsums::simd;
+namespace simd = ::stripes;
 static double now() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }

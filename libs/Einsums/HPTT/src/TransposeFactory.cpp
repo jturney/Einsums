@@ -6,20 +6,20 @@
 // Arch-neutral plan factory: the one place the SIMD dispatch rung is chosen.
 //
 // The transpose kernels (TransposeKernels.cpp) are compiled once per
-// instruction-set rung by einsums_add_simd_dispatch_sources(), each copy in
+// instruction-set rung by stripes_add_dispatch_sources(), each copy in
 // its own namespace (hptt::arch_baseline, hptt::arch_v3, ...). The planner,
 // TransposeImpl in Transpose.cpp, is compiled once, as is this TU. It declares
-// each rung's kernel table (guarded by the EINSUMS_SIMD_HAS_RUNG_* definitions
+// each rung's kernel table (guarded by the STRIPES_HAS_RUNG_* definitions
 // the CMake helper emits), picks the best built one the machine supports,
-// starting from einsums::simd::selected_arch(), and hands it to TransposeImpl,
+// starting from stripes::selected_arch(), and hands it to TransposeImpl,
 // which plans around its tile size and calls its kernels.
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
 #include <Einsums/HPTT/Transpose.hpp>
-#include <Einsums/SIMD/RungLadder.hpp>
-#include <Einsums/SIMD/RuntimeFeatures.hpp>
 
+#include <Stripes/RungLadder.hpp>
+#include <Stripes/RuntimeFeatures.hpp>
 #include <cstdio>
 #include <memory>
 
@@ -31,7 +31,7 @@ EINSUMS_NAMESPACE_BEGIN(hptt)
 template <typename floatType>
 TransposeKernels<floatType> const &selected_transpose_kernels() {
     using Fn                                    = TransposeKernels<floatType> const &(*)() noexcept;
-    static TransposeKernels<floatType> const &k = einsums::simd::select<Fn>(EINSUMS_SIMD_LADDER(transpose_kernels<floatType>))();
+    static TransposeKernels<floatType> const &k = stripes::select<Fn>(STRIPES_LADDER(transpose_kernels<floatType>))();
     return k;
 }
 
@@ -58,11 +58,11 @@ template class EINSUMS_EXPORT Transpose<FloatComplex>;
 template class EINSUMS_EXPORT Transpose<DoubleComplex>;
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-template class EINSUMS_EXPORT Transpose<einsums::simd::half_t>;
+template class EINSUMS_EXPORT Transpose<stripes::half_t>;
 #endif
 
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-template class EINSUMS_EXPORT Transpose<einsums::simd::bfloat16_t>;
+template class EINSUMS_EXPORT Transpose<stripes::bfloat16_t>;
 #endif
 
 EINSUMS_NAMESPACE_END(hptt)

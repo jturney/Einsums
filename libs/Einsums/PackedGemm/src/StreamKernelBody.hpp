@@ -7,7 +7,7 @@
 // (src, not installed): it is included only by StreamKernelImpl.cpp,
 // which first defines EINSUMS_STREAM_KERNEL_NS to that rung's namespace
 // (arch_<rung>) and is itself compiled once per rung by
-// einsums_add_simd_dispatch_sources(). Each copy compiles at its rung's ISA,
+// stripes_add_dispatch_sources(). Each copy compiles at its rung's ISA,
 // so VecTraits<T>::lanes and the Vec ops resolve to that rung's vector width.
 
 #ifndef EINSUMS_STREAM_KERNEL_NS
@@ -15,12 +15,12 @@
 #endif
 
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/SIMD/ComplexVec.hpp>
-#include <Einsums/SIMD/Operations.hpp>
-#include <Einsums/SIMD/Partial.hpp>
-#include <Einsums/SIMD/Reduce.hpp>
-#include <Einsums/SIMD/Vec.hpp>
 
+#include <Stripes/ComplexVec.hpp>
+#include <Stripes/Operations.hpp>
+#include <Stripes/Partial.hpp>
+#include <Stripes/Reduce.hpp>
+#include <Stripes/Vec.hpp>
 #include <algorithm>
 #include <complex>
 #include <cstddef>
@@ -37,7 +37,7 @@ template <typename T>
 void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n, int64_t const co, int64_t const si, int64_t const wo,
                   int64_t const ds, int64_t const dc, int64_t const dw) {
     if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
-        using namespace einsums::simd;
+        using namespace stripes;
         constexpr int64_t L = VecTraits<T>::lanes;
 
         // (1,1,0) scaled AXPY: W is constant across the walk -> C[i] += coeff*S[i].
@@ -126,7 +126,7 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
         // complex products suffice. On NEON<double> L collapses to 1 (2 real
         // lanes = 1 complex), so the win here is on the wider x86 rungs.
         using U = typename T::value_type;
-        using namespace einsums::simd;
+        using namespace stripes;
         constexpr int64_t L = VecTraits<U>::lanes / 2;
 
         // (1,1,0) scaled AXPY: C[i] += (alpha*W) * S[i].
@@ -237,7 +237,7 @@ void stream_tile(T *cb, T const *sp, T const *w, T const alpha, int64_t const m,
     // difference is the whole cost once S sits in cache, where loads and stores,
     // not bandwidth, set the pace.
     if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
-        if (ds == 1 && dc == 1 && dw == 0 && dc2 == 0 && m > 1 && n > kRegisterRowLanes * einsums::simd::VecTraits<T>::lanes) {
+        if (ds == 1 && dc == 1 && dw == 0 && dc2 == 0 && m > 1 && n > kRegisterRowLanes * stripes::VecTraits<T>::lanes) {
             // A row longer than a few registers: C goes through L2 in chunks, and within a chunk
             // the rows go four at a time, so S is read as four sequential streams and C is loaded
             // and stored once per four rows. The chunk is as long as L2 allows, since each chunk
@@ -245,7 +245,7 @@ void stream_tile(T *cb, T const *sp, T const *w, T const alpha, int64_t const m,
             // scattered 8 KB pieces. Holding a column block of C in registers across all
             // m rows instead reads S in m interleaved streams, which at m = 100 is more than a
             // prefetcher follows.
-            using namespace einsums::simd;
+            using namespace stripes;
             constexpr int64_t L     = VecTraits<T>::lanes;
             constexpr int64_t chunk = int64_t{256 << 10} / static_cast<int64_t>(sizeof(T));
             T *const          c     = cb + co;
@@ -286,7 +286,7 @@ void stream_tile(T *cb, T const *sp, T const *w, T const alpha, int64_t const m,
             return;
         }
         if (ds == 1 && dc == 1 && dw == 0 && dc2 == 0 && m > 1) {
-            using namespace einsums::simd;
+            using namespace stripes;
             constexpr int64_t L = VecTraits<T>::lanes;
             T *const          c = cb + co;
             int64_t           i = 0;

@@ -4,8 +4,8 @@
 //----------------------------------------------------------------------------------------------
 
 // Per-rung micro-kernel translation unit. NOT compiled directly: it is
-// included by the thin wrappers einsums_add_simd_dispatch_sources() generates
-// (one per instruction-set rung), each of which defines EINSUMS_SIMD_ARCH_NS
+// included by the thin wrappers stripes_add_dispatch_sources() generates
+// (one per instruction-set rung), each of which defines STRIPES_ARCH_NS
 // and adds the rung's -march flags. The kernel templates therefore compile
 // once per rung, in that rung's namespace, at that rung's ISA.
 //
@@ -20,10 +20,10 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
 
-#define EINSUMS_PACKED_GEMM_KERNEL_NS EINSUMS_SIMD_ARCH_NS
+#define EINSUMS_PACKED_GEMM_KERNEL_NS STRIPES_ARCH_NS
 #include <Einsums/PackedGemm/MicroKernelBody.hpp>
-#include <Einsums/SIMD/Shuffle.hpp>
 
+#include <Stripes/Shuffle.hpp>
 #include <array>
 #include <complex>
 #include <cstddef>
@@ -41,7 +41,7 @@
 #endif
 
 EINSUMS_NAMESPACE_BEGIN(packed_gemm)
-namespace EINSUMS_SIMD_ARCH_NS {
+namespace STRIPES_ARCH_NS {
 
 #if defined(EINSUMS_PACKED_GEMM_HAVE_SME_KERNEL)
 
@@ -339,15 +339,15 @@ MicroKernelShape micro_kernel_block_1m() {
 /// written as R * lanes contiguous elements by one interleaved store. The K tail is a scalar copy.
 template <typename T, int R>
 void pack_rows_interleaved(T *panel, T const *const *rows, int64_t kc) {
-    constexpr int64_t L = simd::native_lanes<T>;
+    constexpr int64_t L = stripes::native_lanes<T>;
     int64_t           k = 0;
     for (; k + L <= kc; k += L) {
-        simd::Vec<T> tile[R];
+        stripes::Vec<T> tile[R];
         EINSUMS_PACK_UNROLL
         for (int i = 0; i < R; ++i) {
-            tile[i] = simd::loadu(rows[i] + k);
+            tile[i] = stripes::loadu(rows[i] + k);
         }
-        simd::storeu_interleaved<R>(panel + k * R, tile);
+        stripes::storeu_interleaved<R>(panel + k * R, tile);
     }
     for (; k < kc; ++k) {
         for (int i = 0; i < R; ++i) {
@@ -363,7 +363,7 @@ constexpr auto interleaved_packers(std::integer_sequence<int, Rm1...>) {
 
 template <typename T>
 void pack_transpose_rows(T *panel, T const *const *rows, int64_t nrows, int64_t kc, int64_t ld) {
-    constexpr int64_t L = simd::native_lanes<T>;
+    constexpr int64_t L = stripes::native_lanes<T>;
     if constexpr (L > 1) {
         if (nrows > 0 && nrows < L && ld == nrows) {
             static constexpr auto packers = interleaved_packers<T>(std::make_integer_sequence<int, static_cast<int>(L) - 1>{});
@@ -378,15 +378,15 @@ void pack_transpose_rows(T *panel, T const *const *rows, int64_t nrows, int64_t 
             T              *col = panel + r;
             int64_t         k   = 0;
             for (; k + L <= kc; k += L) {
-                simd::Vec<T> tile[L];
+                stripes::Vec<T> tile[L];
                 EINSUMS_PACK_UNROLL
                 for (int64_t i = 0; i < L; ++i) {
-                    tile[i] = simd::loadu(src[i] + k);
+                    tile[i] = stripes::loadu(src[i] + k);
                 }
-                simd::transpose_inplace(tile);
+                stripes::transpose_inplace(tile);
                 EINSUMS_PACK_UNROLL
                 for (int64_t i = 0; i < L; ++i) {
-                    simd::storeu(col + (k + i) * ld, tile[i]);
+                    stripes::storeu(col + (k + i) * ld, tile[i]);
                 }
             }
             for (; k < kc; ++k) {
@@ -428,5 +428,5 @@ template MicroKernelShape micro_kernel_block_1m<double>();
 template MicroKernelShape micro_kernel_block_1m<std::complex<float>>();
 template MicroKernelShape micro_kernel_block_1m<std::complex<double>>();
 
-} // namespace EINSUMS_SIMD_ARCH_NS
+} // namespace STRIPES_ARCH_NS
 EINSUMS_NAMESPACE_END(packed_gemm)

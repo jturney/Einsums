@@ -10,8 +10,8 @@ HPTT
 ====
 
 High-Performance Tensor Transpose library, originally by Paul Springer.
-Forked and refactored to use the Einsums SIMD module instead of raw compiler
-intrinsics.
+Forked and refactored to use Stripes, Einsums' SIMD library, instead of raw
+compiler intrinsics.
 
 See the `original Github repo <https://github.com/springer13/hptt>`_ for the
 upstream project. See ``THIRD-PARTY-LICENSES.txt`` for licensing information.
@@ -58,11 +58,11 @@ SIMD Refactoring
 ================
 
 The HPTT micro-kernels were refactored from raw SSE/AVX/AVX-512/NEON intrinsics
-to use the ``einsums::simd`` module. This provides three benefits:
+to use Stripes (``stripes::``), Einsums' SIMD library. This provides three benefits:
 
 - Portability: the same code runs on x86_64, from SSE2 through AVX-512, and on
   ARM NEON.
-- Maintainability: roughly 30 lines of ``einsums::simd`` calls replace about
+- Maintainability: roughly 30 lines of ``stripes::`` calls replace about
   510 lines of raw intrinsics per type.
 - Performance: a 10 to 15 percent improvement on Apple Silicon, and a
   substantial improvement for complex datatypes.

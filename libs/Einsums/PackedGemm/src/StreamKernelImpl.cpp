@@ -4,8 +4,8 @@
 //----------------------------------------------------------------------------------------------
 
 // Per-rung stream-kernel translation unit. NOT compiled directly: the thin
-// wrappers einsums_add_simd_dispatch_sources() generates (one per
-// instruction-set rung) each define EINSUMS_SIMD_ARCH_NS and add that rung's
+// wrappers stripes_add_dispatch_sources() generates (one per
+// instruction-set rung) each define STRIPES_ARCH_NS and add that rung's
 // -march flags, then include this file. The kernel template therefore
 // compiles once per rung, in that rung's namespace, at that rung's ISA - so
 // its Vec ops resolve to the rung's vector width. StreamKernelDispatch.cpp
@@ -18,14 +18,14 @@
 // TU in src (not installed, not fed to the pybind codegen). The quoted
 // include resolves relative to this file even though the SIMD-dispatch wrapper
 // pulls this TU in by absolute path.
-#define EINSUMS_STREAM_KERNEL_NS EINSUMS_SIMD_ARCH_NS
+#define EINSUMS_STREAM_KERNEL_NS STRIPES_ARCH_NS
 #include <complex>
 #include <cstdint>
 
 #include "StreamKernelBody.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(packed_gemm)
-namespace EINSUMS_SIMD_ARCH_NS {
+namespace STRIPES_ARCH_NS {
 
 template void stream_inner<float>(float *, float const *, float const *, float, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
                                   int64_t);
@@ -47,5 +47,5 @@ template void stream_tile<std::complex<double>>(std::complex<double> *, std::com
                                                 std::complex<double>, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
                                                 int64_t, int64_t, int64_t, int64_t);
 
-} // namespace EINSUMS_SIMD_ARCH_NS
+} // namespace STRIPES_ARCH_NS
 EINSUMS_NAMESPACE_END(packed_gemm)

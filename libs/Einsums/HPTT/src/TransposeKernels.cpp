@@ -40,16 +40,16 @@
 #include <Einsums/HPTT/Macros.hpp>
 #include <Einsums/HPTT/Plan.hpp>
 #include <Einsums/HPTT/Utils.hpp>
-#include <Einsums/SIMD/ComplexVec.hpp>
-#include <Einsums/SIMD/Convert.hpp>
-#include <Einsums/SIMD/Gather.hpp>
-#include <Einsums/SIMD/Operations.hpp>
-#include <Einsums/SIMD/Partial.hpp>
-#include <Einsums/SIMD/Platform.hpp>
-#include <Einsums/SIMD/Prefetch.hpp>
-#include <Einsums/SIMD/Shuffle.hpp>
-#include <Einsums/SIMD/Vec.hpp>
 
+#include <Stripes/ComplexVec.hpp>
+#include <Stripes/Convert.hpp>
+#include <Stripes/Gather.hpp>
+#include <Stripes/Operations.hpp>
+#include <Stripes/Partial.hpp>
+#include <Stripes/Platform.hpp>
+#include <Stripes/Prefetch.hpp>
+#include <Stripes/Shuffle.hpp>
+#include <Stripes/Vec.hpp>
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -64,20 +64,20 @@
 
 #include "TransposeKernels.hpp"
 
-// The rung this copy of the file is compiled for, as an einsums::simd::InstructionSet value.
-// The dispatch wrappers define EINSUMS_SIMD_DISPATCH_RUNG to the same ordinals.
-#if defined(EINSUMS_SIMD_DISPATCH_RUNG)
-#    define EINSUMS_HPTT_PLAN_RUNG EINSUMS_SIMD_DISPATCH_RUNG
+// The rung this copy of the file is compiled for, as an stripes::InstructionSet value.
+// The dispatch wrappers define STRIPES_DISPATCH_RUNG to the same ordinals.
+#if defined(STRIPES_DISPATCH_RUNG)
+#    define EINSUMS_HPTT_PLAN_RUNG STRIPES_DISPATCH_RUNG
 #else
 #    define EINSUMS_HPTT_PLAN_RUNG 0
 #endif
 
-#if !defined(EINSUMS_SIMD_ARCH_NS)
-#    define EINSUMS_SIMD_ARCH_NS arch_native
+#if !defined(STRIPES_ARCH_NS)
+#    define STRIPES_ARCH_NS arch_native
 #endif
 
 EINSUMS_NAMESPACE_BEGIN(hptt)
-namespace EINSUMS_SIMD_ARCH_NS {
+namespace STRIPES_ARCH_NS {
 
 // std::abs has no overload for __fp16 / __bf16, so promote those to float
 // before calling. Real and complex types pass straight through.
@@ -85,12 +85,12 @@ namespace detail_hptt {
 template <typename T>
 EINSUMS_FORCEINLINE auto abs_promoted(T x) {
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-    if constexpr (std::is_same_v<T, einsums::simd::half_t>) {
+    if constexpr (std::is_same_v<T, stripes::half_t>) {
         return std::abs(static_cast<float>(x));
     } else
 #endif
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-        if constexpr (std::is_same_v<T, einsums::simd::bfloat16_t>) {
+        if constexpr (std::is_same_v<T, stripes::bfloat16_t>) {
         return std::abs(static_cast<float>(x));
     } else
 #endif
@@ -107,7 +107,7 @@ template <typename floatType, bool betaIsZero, bool conjA>
 struct MicroKernel {
     static void execute(floatType const *A, size_t const lda, size_t const innerStrideA, floatType *B, size_t const ldb,
                         size_t const innerStrideB, floatType const alpha, floatType const beta) {
-        constexpr size_t n = einsums::simd::native_lanes<floatType>;
+        constexpr size_t n = stripes::native_lanes<floatType>;
 
         if constexpr (betaIsZero) {
             for (size_t j = 0; j < n; ++j) {
@@ -150,7 +150,7 @@ namespace detail_hptt {
 template <typename T, bool betaIsZero>
 static EINSUMS_FORCEINLINE void micro_kernel_simd(T const *A, size_t lda, size_t innerStrideA, T *B, size_t ldb, size_t innerStrideB,
                                                   T alpha, T beta) {
-    using namespace einsums::simd;
+    using namespace stripes;
     constexpr int N = Vec<T>::lanes;
 
     auto va = broadcast(alpha);
@@ -199,7 +199,7 @@ static EINSUMS_FORCEINLINE void micro_kernel_simd(T const *A, size_t lda, size_t
 
 // ---------------------------------------------------------------------------
 // SIMD-accelerated micro_kernel for float and double (non-complex).
-// Uses einsums::simd for portable SIMD across x86 (SSE2/AVX/AVX2/AVX-512)
+// Uses stripes for portable SIMD across x86 (SSE2/AVX/AVX2/AVX-512)
 // and ARM NEON (including Apple Silicon).
 // ---------------------------------------------------------------------------
 template <bool betaIsZero, bool conjA>
@@ -225,8 +225,8 @@ struct MicroKernel<double, betaIsZero, conjA> {
 // ---------------------------------------------------------------------------
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
 template <bool betaIsZero, bool conjA>
-struct MicroKernel<einsums::simd::half_t, betaIsZero, conjA> {
-    using half_t = einsums::simd::half_t;
+struct MicroKernel<stripes::half_t, betaIsZero, conjA> {
+    using half_t = stripes::half_t;
     static void execute(half_t const *A, size_t const lda, size_t const innerStrideA, half_t *B, size_t const ldb,
                         size_t const innerStrideB, half_t const alpha, half_t const beta) {
         detail_hptt::micro_kernel_simd<half_t, betaIsZero>(A, lda, innerStrideA, B, ldb, innerStrideB, alpha, beta);
@@ -239,17 +239,17 @@ struct MicroKernel<einsums::simd::half_t, betaIsZero, conjA> {
 // multiply that returns BF16; its arithmetic lands in FP32. So we load BF16
 // vectors, transpose them in registers, then for each output row widen BF16 to
 // FP32 (two halves), do alpha·A (+ beta·B) in FP32, and round back to BF16.
-// Everything is the SIMD module's portable spelling; it needs a Vec<bf16>
+// Everything is Stripes' portable spelling; it needs a Vec<bf16>
 // transpose, which only the NEON backend has, so AVX-512 BF16 keeps the scalar
 // kernel below.
 // ---------------------------------------------------------------------------
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC)
 template <bool betaIsZero, bool conjA>
-struct MicroKernel<einsums::simd::bfloat16_t, betaIsZero, conjA> {
-    using bf16_t = einsums::simd::bfloat16_t;
+struct MicroKernel<stripes::bfloat16_t, betaIsZero, conjA> {
+    using bf16_t = stripes::bfloat16_t;
     static void execute(bf16_t const *A, size_t const lda, size_t const innerStrideA, bf16_t *B, size_t const ldb,
                         size_t const innerStrideB, bf16_t const alpha, bf16_t const beta) {
-        using namespace einsums::simd;
+        using namespace stripes;
         constexpr int N = Vec<bf16_t>::lanes;
 
         Vec<bf16_t> rows[N]; // NOLINT
@@ -294,11 +294,11 @@ struct MicroKernel<einsums::simd::bfloat16_t, betaIsZero, conjA> {
 // SIMD work would use _mm512_cvtne2ps_pbh / _mm512_cvtpbh_ps but the
 // hardware isn't available in this dev env to validate.
 template <bool betaIsZero, bool conjA>
-struct MicroKernel<einsums::simd::bfloat16_t, betaIsZero, conjA> {
-    using bf16_t = einsums::simd::bfloat16_t;
+struct MicroKernel<stripes::bfloat16_t, betaIsZero, conjA> {
+    using bf16_t = stripes::bfloat16_t;
     static void execute(bf16_t const *A, size_t const lda, size_t const innerStrideA, bf16_t *B, size_t const ldb,
                         size_t const innerStrideB, bf16_t const alpha, bf16_t const beta) {
-        constexpr size_t n     = einsums::simd::native_lanes<bf16_t>;
+        constexpr size_t n     = stripes::native_lanes<bf16_t>;
         float const      a_f32 = static_cast<float>(alpha);
         float const      b_f32 = betaIsZero ? 0.0f : static_cast<float>(beta);
 
@@ -324,7 +324,7 @@ template <bool betaIsZero, bool conjA>
 struct MicroKernel<std::complex<float>, betaIsZero, conjA> {
     static void execute(std::complex<float> const *A, size_t const lda, size_t const innerStrideA, std::complex<float> *B, size_t const ldb,
                         size_t const innerStrideB, std::complex<float> const alpha, std::complex<float> const beta) {
-        using namespace einsums::simd;
+        using namespace stripes;
         constexpr int N = CVec<float>::complex_lanes;
 
         auto va = complex_broadcast(alpha);
@@ -365,7 +365,7 @@ template <bool betaIsZero, bool conjA>
 struct MicroKernel<std::complex<double>, betaIsZero, conjA> {
     static void execute(std::complex<double> const *A, size_t const lda, size_t const innerStrideA, std::complex<double> *B,
                         size_t const ldb, size_t const innerStrideB, std::complex<double> const alpha, std::complex<double> const beta) {
-        using namespace einsums::simd;
+        using namespace stripes;
         constexpr int N = CVec<double>::complex_lanes;
 
         auto va = complex_broadcast(alpha);
@@ -398,11 +398,11 @@ struct MicroKernel<std::complex<double>, betaIsZero, conjA> {
 };
 
 // ---------------------------------------------------------------------------
-// streamingStore and prefetch: now use einsums::simd
+// streamingStore and prefetch: now use stripes
 // ---------------------------------------------------------------------------
 template <typename floatType>
 static void streamingStore(floatType *out, floatType const *in) {
-    using namespace einsums::simd;
+    using namespace stripes;
     if constexpr (std::is_floating_point_v<floatType>) {
         // Real f32/f64: native non-temporal store on x86, STNP on aarch64.
         stream_store(out, loadu(in));
@@ -415,11 +415,11 @@ static void streamingStore(floatType *out, floatType const *in) {
     }
 }
 
-template <typename floatType, einsums::simd::PrefetchHint Hint = einsums::simd::PrefetchHint::T2>
+template <typename floatType, stripes::PrefetchHint Hint = stripes::PrefetchHint::T2>
 static EINSUMS_FORCEINLINE void prefetch_block(floatType const *A, size_t const lda) {
-    constexpr int n = einsums::simd::native_bits / 8 / sizeof(floatType);
+    constexpr int n = stripes::native_bits / 8 / sizeof(floatType);
     for (int i = 0; i < n; ++i)
-        einsums::simd::prefetch<Hint>(A + i * lda);
+        stripes::prefetch<Hint>(A + i * lda);
 }
 template <bool betaIsZero, typename floatType, bool conjA>
 static EINSUMS_FORCEINLINE void macro_kernel_scalar(floatType const *A, size_t const lda, int blockingA, size_t innerStrideA, floatType *B,
@@ -456,7 +456,7 @@ template <int blockingA, int blockingB, bool betaIsZero, typename floatType, boo
 static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const *Anext, size_t const lda, size_t innerStrideA,
                                              floatType *B, floatType const *Bnext, size_t const ldb, size_t innerStrideB,
                                              floatType const alpha, floatType const beta) {
-    constexpr int blocking_micro_ = einsums::simd::native_bits / 8 / sizeof(floatType);
+    constexpr int blocking_micro_ = stripes::native_bits / 8 / sizeof(floatType);
     constexpr int blocking_       = blocking_micro_ * 4;
 
     // A non-temporal store needs its destination aligned to the rung's vector width: 64 B for
@@ -469,7 +469,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
     // direct_prod, undefined behaviour reported against the same Einsum7 line, and it is what
     // failed: Einsum7 streams no tile at all under the 16 B gate, and LargeTranspose, which
     // streams 545 tiles only that gate allows, matches its reference on aarch64.
-    constexpr size_t stream_align       = einsums::simd::native_bits / 8;
+    constexpr size_t stream_align       = stripes::native_bits / 8;
     bool const       useStreamingStores = useStreamingStores_ && betaIsZero && (blockingB * sizeof(floatType)) % stream_align == 0 &&
                                           ((uint64_t)B) % stream_align == 0 && (ldb * sizeof(floatType)) % stream_align == 0;
 
@@ -483,7 +483,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
 
     if constexpr (blockingA == blocking_ && blockingB == blocking_) {
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 0), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 0), ldb_tmp);
         if (innerStrideA == 1)
             prefetch_block<floatType>(Anext + (0 * lda + 0), lda);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 0)), lda, innerStrideA,
@@ -494,7 +494,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
                                                            Btmp + (0 * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB,
                                                            alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 2 * blocking_micro_), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 2 * blocking_micro_), ldb_tmp);
         if (innerStrideA == 1)
             prefetch_block<floatType>(Anext + (2 * blocking_micro_ * lda + 0), lda);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (2 * blocking_micro_ * lda + (innerStrideA * 0)), lda, innerStrideA,
@@ -506,7 +506,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
                                                            Btmp + (0 * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp,
                                                            innerStrideB, alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 0), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 0), ldb_tmp);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
                                                            Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 0)), ldb_tmp, innerStrideB,
                                                            alpha, beta);
@@ -514,8 +514,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
             A + (blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
             Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 2 * blocking_micro_),
-                                                                            ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 2 * blocking_micro_), ldb_tmp);
         MicroKernel<floatType, betaIsZero, conjA>::execute(
             A + (2 * blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
             Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 2 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
@@ -523,7 +522,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
             A + (3 * blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
             Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (2 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (2 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
         if (innerStrideA == 1)
             prefetch_block<floatType>(Anext + (0 * lda + 2 * blocking_micro_), lda);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 2 * blocking_micro_)), lda, innerStrideA,
@@ -535,8 +534,8 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
             A + (blocking_micro_ * lda + (innerStrideA * 2 * blocking_micro_)), lda, innerStrideA,
             Btmp + (2 * blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (2 * blocking_micro_ * ldb_tmp + 2 * blocking_micro_),
-                                                                            ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (2 * blocking_micro_ * ldb_tmp + 2 * blocking_micro_),
+                                                                      ldb_tmp);
         if (innerStrideA == 1)
             prefetch_block<floatType>(Anext + (2 * blocking_micro_ * lda + 2 * blocking_micro_), lda);
         MicroKernel<floatType, betaIsZero, conjA>::execute(
@@ -548,7 +547,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
             A + (3 * blocking_micro_ * lda + (innerStrideA * 2 * blocking_micro_)), lda, innerStrideA,
             Btmp + (2 * blocking_micro_ * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (3 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (3 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 3 * blocking_micro_)), lda, innerStrideA,
                                                            Btmp + (3 * blocking_micro_ * ldb_tmp + (innerStrideB * 0)), ldb_tmp,
                                                            innerStrideB, alpha, beta);
@@ -556,8 +555,8 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
             A + (blocking_micro_ * lda + (innerStrideA * 3 * blocking_micro_)), lda, innerStrideA,
             Btmp + (3 * blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (3 * blocking_micro_ * ldb_tmp + 2 * blocking_micro_),
-                                                                            ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (3 * blocking_micro_ * ldb_tmp + 2 * blocking_micro_),
+                                                                      ldb_tmp);
         MicroKernel<floatType, betaIsZero, conjA>::execute(
             A + (2 * blocking_micro_ * lda + (innerStrideA * 3 * blocking_micro_)), lda, innerStrideA,
             Btmp + (3 * blocking_micro_ * ldb_tmp + (innerStrideB * 2 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
@@ -566,7 +565,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
             Btmp + (3 * blocking_micro_ * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
     } else if constexpr (blockingA == 2 * blocking_micro_ && blockingB == blocking_) {
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 0), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 0), ldb_tmp);
         if (innerStrideA == 1)
             prefetch_block<floatType>(Anext + (0 * lda + 0), lda);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 0)), lda, innerStrideA,
@@ -577,7 +576,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
                                                            Btmp + (0 * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB,
                                                            alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 2 * blocking_micro_), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 2 * blocking_micro_), ldb_tmp);
         if (innerStrideA == 1)
             prefetch_block<floatType>(Anext + (2 * blocking_micro_ * lda + 0), lda);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (2 * blocking_micro_ * lda + (innerStrideA * 0)), lda, innerStrideA,
@@ -589,7 +588,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
                                                            Btmp + (0 * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp,
                                                            innerStrideB, alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 0), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 0), ldb_tmp);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
                                                            Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 0)), ldb_tmp, innerStrideB,
                                                            alpha, beta);
@@ -597,8 +596,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
             A + (blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
             Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 2 * blocking_micro_),
-                                                                            ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 2 * blocking_micro_), ldb_tmp);
         MicroKernel<floatType, betaIsZero, conjA>::execute(
             A + (2 * blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
             Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 2 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
@@ -607,7 +605,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
             Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
     } else if constexpr (blockingA == blocking_ && blockingB == 2 * blocking_micro_) {
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 0), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 0), ldb_tmp);
         if (innerStrideA == 1)
             prefetch_block<floatType>(Anext + (0 * lda + 0), lda);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 0)), lda, innerStrideA,
@@ -618,7 +616,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
                                                            Btmp + (0 * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB,
                                                            alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 0), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 0), ldb_tmp);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
                                                            Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 0)), ldb_tmp, innerStrideB,
                                                            alpha, beta);
@@ -626,7 +624,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
             A + (blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
             Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (2 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (2 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
         if (innerStrideA == 1)
             prefetch_block<floatType>(Anext + (0 * lda + 2 * blocking_micro_), lda);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 2 * blocking_micro_)), lda, innerStrideA,
@@ -638,7 +636,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
             A + (blocking_micro_ * lda + (innerStrideA * 2 * blocking_micro_)), lda, innerStrideA,
             Btmp + (2 * blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
         if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (3 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
+            prefetch_block<floatType, stripes::PrefetchHint::WriteT2>(Bnext + (3 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
         MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 3 * blocking_micro_)), lda, innerStrideA,
                                                            Btmp + (3 * blocking_micro_ * ldb_tmp + 0), ldb_tmp, innerStrideB, alpha, beta);
         MicroKernel<floatType, betaIsZero, conjA>::execute(
@@ -794,7 +792,7 @@ void transpose_int(floatType const *A, floatType const *Anext, size_t innerStrid
     size_t const    ldb       = plan->ldb;
     int32_t const   offDiffAB = plan->offDiffAB;
 
-    constexpr int blocking_micro_ = einsums::simd::native_bits / 8 / sizeof(floatType);
+    constexpr int blocking_micro_ = stripes::native_bits / 8 / sizeof(floatType);
     constexpr int blocking_       = blocking_micro_ * 4;
 
     if (plan->next->next != nullptr) {
@@ -896,13 +894,13 @@ void transpose_int(floatType const *A, floatType const *Anext, size_t innerStrid
 template <typename floatType>
 inline constexpr bool streams_run_v = std::is_same_v<floatType, float> || std::is_same_v<floatType, double>;
 
-/// B[0 .. n) = alpha * A[0 .. n), streamed past the cache (einsums::simd::stream_store_span): a
+/// B[0 .. n) = alpha * A[0 .. n), streamed past the cache (stripes::stream_store_span): a
 /// contiguous run of the paths that keep the fastest index, which a loop alone never streamed (the
 /// `vector nontemporal` pragma they relied on is Intel's, and GCC and Clang ignore it). Conjugation is
 /// the identity on the real types this takes. The caller fences once after its last run.
 template <typename floatType>
 static EINSUMS_FORCEINLINE void stream_scaled_run(floatType *B, floatType const *A, size_t n, floatType const alpha) {
-    using namespace einsums::simd;
+    using namespace stripes;
     constexpr size_t     L  = Vec<floatType>::lanes;
     Vec<floatType> const va = broadcast(alpha);
     stream_store_span(B, n, [A, va](size_t i, size_t count) { return mul(va, count == L ? loadu(A + i) : loadu_partial(A + i, count)); });
@@ -976,11 +974,11 @@ static void axpy_1D(floatType const *A, floatType *B, size_t const myStart, size
                         size_t const len = myEnd - myStart;
                         size_t const b = myStart + len * t / nt, e = myStart + len * (t + 1) / nt;
                         stream_scaled_run(B + b, A + b + offDiffAB_, e - b, alpha);
-                        einsums::simd::stream_fence();
+                        stripes::stream_fence();
                     }
                 } else {
                     stream_scaled_run(B + myStart, A + myStart + offDiffAB_, myEnd - myStart, alpha);
-                    einsums::simd::stream_fence();
+                    stripes::stream_fence();
                 }
                 return;
             }
@@ -1021,13 +1019,13 @@ static void axpy_2D(floatType const *A, size_t const (&lda)[2], floatType *B, si
                         for (size_t j = myStart; j < myEnd; j++) {
                             column(j);
                         }
-                        einsums::simd::stream_fence();
+                        stripes::stream_fence();
                     }
                 } else {
                     for (size_t j = myStart; j < myEnd; j++) {
                         column(j);
                     }
-                    einsums::simd::stream_fence();
+                    stripes::stream_fence();
                 }
                 return;
             }
@@ -1045,7 +1043,7 @@ static void axpy_2D(floatType const *A, size_t const (&lda)[2], floatType *B, si
 
 /// Macro-kernel tile edge, in elements: four vectors. The planner steps its loops by this.
 template <typename floatType>
-inline constexpr int blocking_v = einsums::simd::native_bits / 8 / sizeof(floatType) * 4;
+inline constexpr int blocking_v = stripes::native_bits / 8 / sizeof(floatType) * 4;
 
 /// The local index of OpenMP thread @p myThreadId in the plan's thread list, or -1 if it takes no part.
 template <typename floatType>
@@ -1159,7 +1157,7 @@ static void execute_expert(KernelArgs<floatType> const &a) noexcept {
             // old contents of a line this thread already wrote. Drain them once per task, on
             // the thread that issued them.
             if constexpr (useStreamingStores && betaIsZero)
-                einsums::simd::stream_fence();
+                stripes::stream_fence();
         } else {
             auto rootNode = plan->get_root_node(taskId);
             if (a.conjA)
@@ -1168,7 +1166,7 @@ static void execute_expert(KernelArgs<floatType> const &a) noexcept {
                 transpose_int_constStride1<betaIsZero, floatType, useStreamingStores, false>(_A, _B, _alpha, _beta, rootNode);
             // Its runs stream as the tiled path's tiles do, so the same drain once per task.
             if constexpr (useStreamingStores && betaIsZero)
-                einsums::simd::stream_fence();
+                stripes::stream_fence();
         })
 }
 
@@ -1245,7 +1243,7 @@ static void execute_estimate(KernelArgs<floatType> const &a) noexcept {
 
 template <typename floatType>
 TransposeKernels<floatType> const &transpose_kernels() noexcept {
-    static constexpr TransposeKernels<floatType> table{.vector_bits      = einsums::simd::native_bits,
+    static constexpr TransposeKernels<floatType> table{.vector_bits      = stripes::native_bits,
                                                        .rung             = EINSUMS_HPTT_PLAN_RUNG,
                                                        .blocking         = blocking_v<floatType>,
                                                        .execute          = &execute<floatType>,
@@ -1259,12 +1257,12 @@ template TransposeKernels<FloatComplex> const  &transpose_kernels<FloatComplex>(
 template TransposeKernels<DoubleComplex> const &transpose_kernels<DoubleComplex>() noexcept;
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-template TransposeKernels<einsums::simd::half_t> const &transpose_kernels<einsums::simd::half_t>() noexcept;
+template TransposeKernels<stripes::half_t> const &transpose_kernels<stripes::half_t>() noexcept;
 #endif
 
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-template TransposeKernels<einsums::simd::bfloat16_t> const &transpose_kernels<einsums::simd::bfloat16_t>() noexcept;
+template TransposeKernels<stripes::bfloat16_t> const &transpose_kernels<stripes::bfloat16_t>() noexcept;
 #endif
 
-} // namespace EINSUMS_SIMD_ARCH_NS
+} // namespace STRIPES_ARCH_NS
 EINSUMS_NAMESPACE_END(hptt)

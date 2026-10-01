@@ -676,8 +676,9 @@
 "einsums:simd:arch":
   added: "2.0.0"
   body: |
-    Cap the SIMD rung that runtime-dispatched kernels run at. Empty, the default, uses the highest
-    rung the CPU and operating system support. Accepted rungs are ``baseline``, ``v2``, ``v3``,
+    Cap the SIMD rung that runtime-dispatched kernels run at. Empty, the default, leaves the choice
+    to Stripes, the SIMD library: its ``STRIPES_ARCH`` environment variable if set, and otherwise
+    the highest rung the CPU and operating system support. Accepted rungs are ``baseline``, ``v2``, ``v3``,
     ``v4`` and ``sme``, and the aliases ``sse2``, ``sse4.2``, ``avx2``, ``avx512`` and ``sme2``.
 
     This can only lower the rung. A rung the machine cannot run is replaced, with a warning, by the

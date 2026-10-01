@@ -18,10 +18,10 @@
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/PackedGemm/Stream.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/SIMD/Prefetch.hpp>
 
 #include <fmt/format.h>
 
+#include <Stripes/Prefetch.hpp>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -510,17 +510,17 @@ inline constexpr bool streams_c_v = std::is_same_v<T, float> || std::is_same_v<T
 /// Streaming stores go through the write-combining buffers, and a line assembled there whole is
 /// written with no read, so the run must be contiguous and reasonably long.
 ///
-/// Any alignment and length stream (einsums::simd::stream_store_span): the misaligned head and the
+/// Any alignment and length stream (stripes::stream_store_span): the misaligned head and the
 /// partial tail are ordinary stores, and only the lines they touch keep the fetch.
 ///
-/// @warning Streaming stores are weakly ordered. The caller must @ref einsums::simd::stream_fence()
+/// @warning Streaming stores are weakly ordered. The caller must @ref stripes::stream_fence()
 /// before anything reads @p dst.
 template <typename T>
 void stream_copy(T *dst, T const *src, int64_t n) {
     // Only float and double have a vector register here; the call sites test @ref streams_c_v, but
     // the template is instantiated for every type.
     if constexpr (streams_c_v<T>) {
-        using namespace einsums::simd;
+        using namespace stripes;
         constexpr std::size_t L = static_cast<std::size_t>(Vec<T>::lanes);
         stream_store_span(dst, static_cast<std::size_t>(n),
                           [src](std::size_t i, std::size_t count) { return count == L ? loadu(src + i) : loadu_partial(src + i, count); });
@@ -2524,7 +2524,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         // stores drain first.
                         if (team->size > 1) {
                             if (streamed_c) {
-                                einsums::simd::stream_fence();
+                                stripes::stream_fence();
                             }
                             LabeledSectionInternal("team: wait for the panel to be consumed");
                             team->state->barrier.wait();
@@ -2541,7 +2541,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     // of C is read: once per N block, the rarest point still inside the loop that
                     // wrote them.
                     if (streamed_c) {
-                        einsums::simd::stream_fence();
+                        stripes::stream_fence();
                     }
 
                     shrink_tls(tls_Ap);

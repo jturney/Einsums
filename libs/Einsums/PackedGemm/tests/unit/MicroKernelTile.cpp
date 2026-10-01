@@ -15,8 +15,8 @@
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
-#include <Einsums/SIMD/RuntimeFeatures.hpp>
 
+#include <Stripes/RuntimeFeatures.hpp>
 #include <cstdint>
 #include <limits>
 #include <random>
@@ -114,8 +114,8 @@ TEMPLATE_TEST_CASE("MicroKernel - row-major and strided C", "[PackedGemm][MicroK
 TEMPLATE_TEST_CASE("MicroKernel - tile and blocking follow the selected rung", "[PackedGemm][MicroKernel]", float, double) {
     using T           = TestType;
     auto const  shape = micro_kernel_shape<T>();
-    auto const  rung  = simd::selected_arch();
-    int const   lanes = simd::vector_bits(rung) / (8 * static_cast<int>(sizeof(T)));
+    auto const  rung  = stripes::selected_arch();
+    int const   lanes = stripes::vector_bits(rung) / (8 * static_cast<int>(sizeof(T)));
     auto const &hw    = hardware::cpu_info();
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -123,7 +123,7 @@ TEMPLATE_TEST_CASE("MicroKernel - tile and blocking follow the selected rung", "
     REQUIRE(shape.nr == 6);
     REQUIRE_FALSE(shape.block_gemm); // real types run the rung's own tile on x86
 #endif
-    REQUIRE(hw.simd_width_f64 == simd::vector_bits(rung) / 64);
+    REQUIRE(hw.simd_width_f64 == stripes::vector_bits(rung) / 64);
 
     // Blocking from that tile: one packed A column (MR * KC) within L1, the A
     // panel (MC * KC) within half the L2, the B panel (KC * NC) within half the

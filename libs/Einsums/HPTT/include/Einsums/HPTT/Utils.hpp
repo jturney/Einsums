@@ -72,7 +72,7 @@ double conj(double x) {
 /// Marked maybe-unused because the primary is static: a translation unit that
 /// transposes no half-precision tensor gets its own unreferenced copy.
 template <>
-[[maybe_unused]] einsums::simd::half_t conj(einsums::simd::half_t x) {
+[[maybe_unused]] stripes::half_t conj(stripes::half_t x) {
     return x;
 }
 #endif
@@ -80,7 +80,7 @@ template <>
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
 /// @copydoc conj<floatType>(floatType)
 template <>
-einsums::simd::bfloat16_t conj(einsums::simd::bfloat16_t x) {
+stripes::bfloat16_t conj(stripes::bfloat16_t x) {
     return x;
 }
 #endif
@@ -118,7 +118,7 @@ constexpr inline double get_zero_threshold<FloatComplex>() {
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
 /// @copydoc getZeroThreshold<floatType>()
 template <>
-constexpr inline double get_zero_threshold<einsums::simd::half_t>() {
+constexpr inline double get_zero_threshold<stripes::half_t>() {
     // FP16 has ~3 decimal digits; 1e-3 captures "effectively zero".
     return 1e-3;
 }
@@ -127,7 +127,7 @@ constexpr inline double get_zero_threshold<einsums::simd::half_t>() {
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
 /// @copydoc getZeroThreshold<floatType>()
 template <>
-constexpr inline double get_zero_threshold<einsums::simd::bfloat16_t>() {
+constexpr inline double get_zero_threshold<stripes::bfloat16_t>() {
     // BF16 has ~2 decimal digits; loose threshold matches the format's resolution.
     return 1e-2;
 }

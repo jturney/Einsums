@@ -28,9 +28,9 @@
 #pragma once
 
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/SIMD/Platform.hpp>
-#include <Einsums/SIMD/Vec.hpp>
 
+#include <Stripes/Platform.hpp>
+#include <Stripes/Vec.hpp>
 #include <complex>
 
 EINSUMS_NAMESPACE_BEGIN(hptt)

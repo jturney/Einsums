@@ -16,7 +16,7 @@
 // which hides the unit-stride/broadcast structure from the compiler's
 // autovectorizer (it emits scalar gather/scatter over the runtime strides).
 // This kernel branches on the triple at runtime and hands each vectorizable
-// case to the SIMD module's Vec ops:
+// case to Stripes' Vec ops:
 //
 //     (1,1,0)  scaled AXPY      C[i] += (alpha*W) * S[i]     (GEMV-shaped terms: Fock J/K)
 //     (1,1,1)  Hadamard FMA     C[i] += alpha * S[i] * W[i]
@@ -27,7 +27,7 @@
 // exotic element type - falls back to the general scalar strided loop.
 //
 // The kernel body (StreamKernelBody.hpp) is compiled once per instruction-set
-// rung by einsums_add_simd_dispatch_sources() (see src/StreamKernelImpl.cpp),
+// rung by stripes_add_dispatch_sources() (see src/StreamKernelImpl.cpp),
 // and the rung is resolved at runtime in src/StreamKernelDispatch.cpp,
 // mirroring the micro-kernel and HPTT transpose dispatch. Unlike the
 // micro-kernel this kernel requests NO `sme` rung: the operation is a
@@ -53,7 +53,7 @@ template <typename T>
 using StreamTileFn = void (*)(T *cb, T const *sp, T const *w, T alpha, int64_t m, int64_t n, int64_t co, int64_t si, int64_t wo, int64_t ds,
                               int64_t dc, int64_t dw, int64_t ds2, int64_t dc2, int64_t dw2);
 
-/// Resolve the best inner-loop kernel for @p T at einsums::simd::selected_arch().
+/// Resolve the best inner-loop kernel for @p T at stripes::selected_arch().
 /// Cached on first call; safe to invoke on the hot path but callers should
 /// still hoist it out of inner loops.
 template <typename T>

@@ -30,16 +30,16 @@ set(PackedGemmSources
 # compiled once per SIMD-dispatch rung (each copy in its own namespace) rather
 # than as a regular module source. MicroKernelDispatch.cpp bridges the copies
 # when blis_contraction resolves its tile kernel. See
-# Einsums/SIMD/RuntimeFeatures.hpp and Einsums_AddSIMDDispatch.cmake.
+# Stripes/RuntimeFeatures.hpp and StripesDispatch.cmake (Einsums_SetupStripes).
 include(Einsums_AddSIMDDispatch)
-einsums_add_simd_dispatch_sources(
+stripes_add_dispatch_sources(
   PackedGemmMicroKernelRungs IMPL src/MicroKernelImpl.cpp RUNGS baseline v2 v3 v4 sme
 )
 
 # StreamKernelImpl.cpp is the inner loop of stream_contract, dispatched the same
 # way. No `sme` rung is requested: the kernel is a bandwidth-bound streaming FMA
 # that gains nothing from the matrix unit.
-einsums_add_simd_dispatch_sources(
+stripes_add_dispatch_sources(
   PackedGemmStreamKernelRungs IMPL src/StreamKernelImpl.cpp RUNGS baseline v2 v3 v4
 )
 

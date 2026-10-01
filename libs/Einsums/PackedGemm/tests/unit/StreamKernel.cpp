@@ -6,7 +6,7 @@
 // The stream-fusion inner kernel against a scalar loop, for every stride
 // triple it vectorizes and for lengths on both sides of every vector-block
 // boundary. The kernel is compiled once per SIMD rung and chosen at run time,
-// so the per-rung registrations (EINSUMS_SIMD_ARCH) are what cover the wide
+// so the per-rung registrations (STRIPES_ARCH) are what cover the wide
 // paths; each rung's vector length and its four-accumulator dot unroll put
 // the boundaries in different places, which is why the lengths run past 4
 // vectors of the widest rung.

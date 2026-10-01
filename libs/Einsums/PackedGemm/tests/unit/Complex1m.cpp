@@ -19,13 +19,13 @@
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/PackedGemm/Options.hpp>
 #include <Einsums/PackedGemm/PackedGemm.hpp>
-#include <Einsums/SIMD/RuntimeFeatures.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorAlgebra/Detail/PackedGemmIndices.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <Stripes/RuntimeFeatures.hpp>
 #include <cmath>
 #include <complex>
 #include <string>
@@ -55,9 +55,9 @@ class Complex1mFlag {
 /// Whether the rung this process selected has a 1m route to opt into.
 bool rung_has_1m() {
 #if defined(__x86_64__) || defined(_M_X64)
-    return einsums::simd::selected_arch() >= einsums::simd::InstructionSet::V2;
+    return stripes::selected_arch() >= stripes::InstructionSet::V2;
 #else
-    return einsums::simd::selected_arch() == einsums::simd::InstructionSet::Sme;
+    return stripes::selected_arch() == stripes::InstructionSet::Sme;
 #endif
 }
 
@@ -65,13 +65,13 @@ bool rung_has_1m() {
 template <typename T>
 std::string expected_engine(bool flag) {
     if constexpr (IsComplexV<T>) {
-        if (einsums::simd::selected_arch() == einsums::simd::InstructionSet::Sme || (flag && rung_has_1m())) {
+        if (stripes::selected_arch() == stripes::InstructionSet::Sme || (flag && rung_has_1m())) {
             return "1m";
         }
         return packed_gemm::micro_kernel_shape<T>().use_3m ? "3m" : "block_gemm";
     } else {
         // A rung without a vector tile kernel for T runs real types through block_gemm too: the
-        // aarch64 NEON rung does, which a forced EINSUMS_SIMD_ARCH=baseline selects on an SME machine.
+        // aarch64 NEON rung does, which a forced STRIPES_ARCH=baseline selects on an SME machine.
         return packed_gemm::micro_kernel_shape<T>().block_gemm ? "block_gemm" : "tile";
     }
 }

@@ -14,8 +14,8 @@
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/PackedGemm/Options.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
-#include <Einsums/SIMD/RuntimeFeatures.hpp>
 
+#include <Stripes/RuntimeFeatures.hpp>
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
@@ -159,9 +159,9 @@ CpuConfig const &cpu_config() {
         // compiled for (which is what VL used to be taken from).
         EINSUMS_LOG_INFO("cpu_config: rung={}, VL={} doubles (compiled width {}), MR={}, NR={}, L1={}K, L2={}K, L3={}K shared by {} cores, "
                          "omp_region={:.2f}us, min_parallel_flops={}",
-                         einsums::simd::to_string(einsums::simd::selected_arch()), c.VL,
-                         einsums::hardware::cpu_info().compiled_simd_width_f64, c.MR, c.NR, c.l1_cache_size / 1024, c.l2_cache_size / 1024,
-                         c.l3_cache_size / 1024, c.cores_per_l3, c.omp_region_cost_ns / 1000.0, c.min_parallel_flops);
+                         stripes::to_string(stripes::selected_arch()), c.VL, einsums::hardware::cpu_info().compiled_simd_width_f64, c.MR,
+                         c.NR, c.l1_cache_size / 1024, c.l2_cache_size / 1024, c.l3_cache_size / 1024, c.cores_per_l3,
+                         c.omp_region_cost_ns / 1000.0, c.min_parallel_flops);
         return c;
     }();
     return cfg;

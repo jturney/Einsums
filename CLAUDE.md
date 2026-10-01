@@ -145,10 +145,12 @@ if (config::get(option::ProfileReport)) { ... }
 
 ### SIMD Runtime Dispatch
 
-The SIMD module (`libs/Einsums/SIMD/`) provides compile-time intrinsics wrappers plus a runtime feature ladder (`RuntimeFeatures.hpp`): psABI rungs Baseline/V2/V3/V4, `cpu_features()` (CPUID + XCR0 OS-state gated), `selected_arch()`, and the `EINSUMS_SIMD_ARCH` env override (lower-only, clamps).
-Kernel TUs compile once per rung via `einsums_add_simd_dispatch_sources()` (see `cmake/Einsums_AddSIMDDispatch.cmake`); HPTT is the reference consumer, dispatching at plan creation.
-`EINSUMS_WITH_SIMD_DISPATCH=OFF`, non-x86 targets, or the `EINSUMS_SIMD_NATIVE_ARCH`/`EINSUMS_SIMD_TARGET_CPU` pins collapse to a single native TU.
-`einsums_add_simd_rung_tests()` re-registers a test per rung; unsupported rungs report ctest "Skipped" via the `simd_rung_guard` launcher.
+SIMD code is Stripes (https://github.com/Einsums/Stripes, namespace `stripes::`, headers `<Stripes/...>`), fetched at a pinned commit by `cmake/Einsums_SetupStripes.cmake` (or found installed); change it there, then bump `GIT_TAG`. To work on both at once, configure with `-DFETCHCONTENT_SOURCE_DIR_STRIPES=<Stripes checkout>`.
+Stripes provides `Vec<T>` and the runtime feature ladder (`<Stripes/RuntimeFeatures.hpp>`): rungs Baseline/V2/V3/V4 and aarch64 Sme, `cpu_features()`, `selected_arch()`, and its `STRIPES_ARCH` env override (lower-only, clamps).
+`libs/Einsums/SIMD/` is only Einsums' glue: the `--einsums:simd:arch` option (env `EINSUMS_SIMD_ARCH`), which the runtime forwards to `stripes::set_arch_override()` at start-up along with a log handler.
+Kernel TUs compile once per rung via `stripes_add_dispatch_sources()` (HPTT, PackedGemm); dispatch through `stripes::select<Fn>(STRIPES_LADDER(fn))` so the sme slot carries its requirements.
+`EINSUMS_WITH_SIMD_DISPATCH=OFF` or the `EINSUMS_SIMD_NATIVE_ARCH`/`EINSUMS_SIMD_TARGET_CPU` pins collapse to a single native TU.
+`einsums_add_simd_rung_tests()` (`cmake/Einsums_AddSIMDDispatch.cmake`) re-registers a test per rung as `<test>.simd.<rung>`; unsupported rungs report ctest "Skipped" via Stripes' rung guard.
 MSVC ABI note: classes with out-of-line members need `EINSUMS_EXPORT` on the explicit instantiation DEFINITIONS, not just on the class template or extern declarations.
 
 ### Test System

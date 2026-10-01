@@ -5,7 +5,7 @@
 
 // Transposes that keep the fastest index stream B when beta is zero: the one-dimensional and
 // two-dimensional axpy paths and the constant-stride-1 path each write contiguous runs through
-// einsums::simd::stream_store_span, whose misaligned head, streamed middle and partial tail are
+// stripes::stream_store_span, whose misaligned head, streamed middle and partial tail are
 // three separate code paths. These cases reach each transpose path directly, at every start
 // offset within a vector and at lengths that leave every tail, and check that every element of
 // B's buffer outside the transposed region keeps its sentinel.

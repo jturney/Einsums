@@ -19,6 +19,7 @@
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/Options.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
+#include <Einsums/SIMD/Options.hpp>
 #include <Einsums/Version.hpp>
 
 #include <H5Epublic.h>
@@ -110,6 +111,10 @@ int run(std::function<int()> const &f, std::vector<std::string> const &argv, Ini
 
     // Before this line logging does not work.
     init_logging(config);
+
+    // Stripes chooses the SIMD dispatch rung on the first dispatch; give it --einsums:simd:arch and
+    // the logger first.
+    apply_SIMD_options();
 
     // Report build settings.
     EINSUMS_LOG_INFO("Starting Einsums: {}", build_string());

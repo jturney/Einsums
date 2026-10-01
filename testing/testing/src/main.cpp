@@ -90,7 +90,7 @@ int einsums_main(int /*argc*/, char *const *const argv) {
     einsums::finalize();
 
     // Catch2 answers 4 when every test case it ran skipped, which ctest would count as a failure.
-    // Hand back 77 instead, the skip code every Catch2 test registration and simd_rung_guard share,
+    // Hand back 77 instead, the skip code every Catch2 test registration and stripes_rung_guard share,
     // so a binary with nothing to check on this machine reports "Skipped".
     constexpr int catch_all_skipped = 4;
     constexpr int ctest_skipped     = 77;

@@ -33,12 +33,12 @@ set(HPTTSources
 # Transpose.cpp is the arch-generic kernel implementation: it is compiled
 # once per SIMD-dispatch rung (each copy in its own namespace) rather than
 # as a regular module source. TransposeFactory.cpp bridges the copies at
-# plan creation. See Einsums/SIMD/RuntimeFeatures.hpp and
+# plan creation. See Stripes/RuntimeFeatures.hpp and
 # Einsums_AddSIMDDispatch.cmake.
 include(Einsums_AddSIMDDispatch)
 # Only the kernels are compiled per rung; the planner (Transpose.cpp) is compiled
 # once. See src/TransposeKernels.hpp for why nothing else may go in that file.
-einsums_add_simd_dispatch_sources(HPTTTransposeRungs IMPL src/TransposeKernels.cpp)
+stripes_add_dispatch_sources(HPTTTransposeRungs IMPL src/TransposeKernels.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(

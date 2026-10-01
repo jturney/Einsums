@@ -166,11 +166,11 @@ extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<FloatComplex>;
 extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<DoubleComplex>;
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<einsums::simd::half_t>;
+extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<stripes::half_t>;
 #endif
 
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<einsums::simd::bfloat16_t>;
+extern template class EINSUMS_EXTERN_TEMPLATE_EXPORT Transpose<stripes::bfloat16_t>;
 #endif
 
 EINSUMS_NAMESPACE_END(hptt)

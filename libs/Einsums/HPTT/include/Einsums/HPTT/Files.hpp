@@ -132,7 +132,7 @@ inline constexpr char plan_file_format = 1;
 struct PlanTarget {
     uint16_t vector_bits;  ///< Register width, in bits, of the rung that wrote the plan.
     uint8_t  element_size; ///< sizeof the element type the plan was built for.
-    uint8_t  rung;         ///< einsums::simd::InstructionSet of the writing rung.
+    uint8_t  rung;         ///< stripes::InstructionSet of the writing rung.
     uint32_t pad;
 };
 

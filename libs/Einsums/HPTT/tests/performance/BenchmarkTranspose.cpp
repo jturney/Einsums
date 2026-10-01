@@ -21,8 +21,8 @@
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/Performance.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/SIMD/Vec.hpp>
 
+#include <Stripes/Vec.hpp>
 #include <cstddef>
 #include <vector>
 
@@ -82,13 +82,13 @@ EINSUMS_TEST_CASE("Transpose 2D float", "[performance][hptt][transpose]") {
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
 EINSUMS_TEST_CASE("Transpose 2D fp16", "[performance][hptt][transpose][half]") {
     for (int const N : {256, 512, 1024, 2048})
-        bench_transpose_2d<einsums::simd::half_t>("transpose-2d-fp16", N);
+        bench_transpose_2d<stripes::half_t>("transpose-2d-fp16", N);
 }
 #endif
 
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
 EINSUMS_TEST_CASE("Transpose 2D bf16", "[performance][hptt][transpose][bfloat]") {
     for (int const N : {256, 512, 1024, 2048})
-        bench_transpose_2d<einsums::simd::bfloat16_t>("transpose-2d-bf16", N);
+        bench_transpose_2d<stripes::bfloat16_t>("transpose-2d-bf16", N);
 }
 #endif

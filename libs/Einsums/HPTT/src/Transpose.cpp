@@ -58,7 +58,8 @@
 #include <Einsums/HPTT/Plan.hpp>
 #include <Einsums/HPTT/Utils.hpp>
 #include <Einsums/Logging.hpp>
-#include <Einsums/SIMD/RuntimeFeatures.hpp>
+
+#include <Stripes/RuntimeFeatures.hpp>
 
 #include "TransposeImpl.hpp"
 #include "TransposeKernels.hpp"
@@ -1421,8 +1422,8 @@ TransposeImpl<FloatType>::TransposeImpl(TransposeKernels<FloatType> const &kerne
                 std::runtime_error,
                 "HPTT plan file was written by the {} rung for {}-bit vectors and {}-byte elements, but this process reads it with the {} "
                 "rung, {}-bit vectors and {}-byte elements. Its loop increments are wrong here; recreate the plan.",
-                einsums::simd::to_string(static_cast<einsums::simd::InstructionSet>(target.rung)), target.vector_bits,
-                static_cast<int>(target.element_size), einsums::simd::to_string(static_cast<einsums::simd::InstructionSet>(mine.rung)),
+                stripes::to_string(static_cast<stripes::InstructionSet>(target.rung)), target.vector_bits,
+                static_cast<int>(target.element_size), stripes::to_string(static_cast<stripes::InstructionSet>(mine.rung)),
                 mine.vector_bits, static_cast<int>(mine.element_size));
         }
     }
@@ -1546,12 +1547,12 @@ template class TransposeImpl<FloatComplex>;
 template class TransposeImpl<DoubleComplex>;
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-template class TransposeImpl<einsums::simd::half_t>;
+template class TransposeImpl<stripes::half_t>;
 
 #endif
 
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-template class TransposeImpl<einsums::simd::bfloat16_t>;
+template class TransposeImpl<stripes::bfloat16_t>;
 
 #endif
 

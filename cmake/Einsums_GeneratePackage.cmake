@@ -60,6 +60,7 @@ install(
 # Install dir - SPDLOG_INSTALL lands the vendored spdlog under the Einsums root,
 # which EinsumsConfig locates relative to itself so the tree stays relocatable.
 set(EINSUMS_BUILD_TREE_SPDLOG_DIR "")
+set(EINSUMS_BUILD_TREE_STRIPES_DIR "")
 configure_file(
   cmake/templates/EinsumsConfig.cmake.in
   "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/EinsumsConfig.cmake" ESCAPE_QUOTES @ONLY
@@ -70,6 +71,13 @@ configure_file(
 # ships - which is how an out-of-tree stage module ends up compiling against a
 # different spdlog than the one already inside the libEinsums it links.
 set(EINSUMS_BUILD_TREE_SPDLOG_DIR "${spdlog_BINARY_DIR}")
+# Stripes likewise: a fetched one's config is in its binary directory, an installed one's where
+# find_package found it.
+if(stripes_BINARY_DIR)
+  set(EINSUMS_BUILD_TREE_STRIPES_DIR "${stripes_BINARY_DIR}")
+else()
+  set(EINSUMS_BUILD_TREE_STRIPES_DIR "${Stripes_DIR}")
+endif()
 configure_file(
   cmake/templates/EinsumsConfig.cmake.in
   "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/${EINSUMS_PACKAGE_NAME}/EinsumsConfig.cmake" ESCAPE_QUOTES
