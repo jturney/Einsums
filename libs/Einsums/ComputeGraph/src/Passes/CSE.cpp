@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
@@ -258,15 +259,13 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
     // scale), the redirected readers would observe the mutated value instead
     // of the common subexpression. So every output buffer involved in a merge
     // must have exactly one writer, the producing node itself.
-    std::unordered_map<void const *, int> writer_count;
-    for (auto const &nd : nodes) {
-        if (is_lifecycle(nd.kind))
-            continue;
-        for (auto out : nd.outputs) {
-            if (auto const *p = ptr_of(out))
-                writer_count[p]++;
-        }
-    }
+    // Counted by EscapeAnalysis, alias-resolved and without lifecycle nodes, like every other
+    // pass's writer count. Taken once, before any merge: the outputs it is asked about belong to
+    // nodes the loop below has not rewritten yet when it asks.
+    EscapeAnalysis const writers = EscapeAnalysis::over(graph);
+    // A tensor with no storage pointer (a deferred shell) is never single-writer here: nothing
+    // about its buffer can be proved, and redirecting readers onto it is declined.
+    auto const single_written = [&](TensorId out) { return ptr_of(out) != nullptr && writers.writer_count(out) == 1; };
 
     // Buffers reached from inside a control-flow node's sub-graphs (Guard D).
     //
@@ -485,16 +484,14 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
             // that gets mutated again would hand them the wrong value.
             bool single_writer = true;
             for (auto out : nodes[i].outputs) {
-                auto const *p = ptr_of(out);
-                if (p == nullptr || writer_count[p] != 1) {
+                if (!single_written(out)) {
                     single_writer = false;
                     break;
                 }
             }
             if (single_writer) {
                 for (auto out : nodes[j].outputs) {
-                    auto const *p = ptr_of(out);
-                    if (p == nullptr || writer_count[p] != 1) {
+                    if (!single_written(out)) {
                         single_writer = false;
                         break;
                     }

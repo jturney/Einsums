@@ -303,8 +303,9 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 bool const  internal    = std::ranges::find(region.internal, target) != region.internal.end();
                 bool const  overwritten = is_zero(statement.target_prefactor);
                 std::size_t writers     = 0;
+                // By buffer: a write through a view of the target is a second writer under another id.
                 for (auto const &other_statement : expr.statements) {
-                    if (other_statement.target == target && other_statement.value != invalid_term) {
+                    if (graph.buffer_of(other_statement.target) == graph.buffer_of(target) && other_statement.value != invalid_term) {
                         ++writers;
                     }
                 }
@@ -428,7 +429,7 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
                                      is_zero(statement.target_prefactor) && statement.operators.empty();
             std::size_t writers    = 0;
             for (auto const &other_statement : expr.statements) {
-                if (other_statement.target == statement.target && other_statement.value != invalid_term) {
+                if (graph.buffer_of(other_statement.target) == graph.buffer_of(statement.target) && other_statement.value != invalid_term) {
                     ++writers;
                 }
             }

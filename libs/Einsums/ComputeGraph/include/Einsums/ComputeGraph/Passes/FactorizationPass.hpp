@@ -113,8 +113,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return ``"FactorizationPass"``.
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string name() const override { return "FactorizationPass"; }
     /// @copydoc RegionRewrite::understood_features
-    /// The region default less views, redirected slots and mixed precision: its flattening checks interference by id, and a carried
-    /// elementwise node is rebuilt in the destination's type.
+    /// The region default less views, redirected slots and mixed precision: a carried elementwise node is rebuilt in the
+    /// destination's type, and the rewrite's handling of a view has no test.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
         return default_region_features.without(NodeFeature::Views | NodeFeature::WritesView | NodeFeature::RedirectedSlot |
                                                NodeFeature::MixedPrecision);

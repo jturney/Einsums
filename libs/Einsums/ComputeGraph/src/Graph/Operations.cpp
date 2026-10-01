@@ -18,6 +18,7 @@
 
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Detail/MixedPrecision.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
@@ -74,6 +75,12 @@ void Graph::update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorSca
         if (desc->params) {
             desc->params->c_pf  = c_pf;
             desc->params->ab_pf = ab_pf;
+        }
+        // A C prefactor moving to or from zero changes whether the node reads C.
+        auto const before = node.inputs;
+        sync_destination_input(node);
+        if (node.inputs != before) {
+            note_node_edit();
         }
         // Prefactors appear in the cached profiler annotations.
         _profile_strings_valid = false;
@@ -294,9 +301,6 @@ Node Graph::make_permute_node(TensorId a_id, TensorId c_id, ParsedPermuteSpec co
     if (label.empty()) {
         label = fmt::format("permute({} <- {})", fmt::join(spec.c_indices, ","), fmt::join(spec.a_indices, ","));
     }
-    // One input even when beta is nonzero. See the note on the declaration: this
-    // matches what capturing a cg::permute produces, and four passes plus
-    // build_executor gate on a permute having exactly one input.
     return make_node(OpKind::Permute, dtype, OpData{std::move(desc)}, {a_id}, {c_id}, std::move(label));
 }
 
@@ -313,6 +317,7 @@ Node Graph::make_node(OpKind kind, packed_gemm::ScalarType dtype, OpData descrip
     node.outputs = std::move(outputs);
     node.op_data = std::move(descriptor);
     node.execute = build_executor(kind, dtype, tensor(node.outputs.front()).rank, node.op_data, *this, node.inputs, node.outputs);
+    sync_destination_input(node);
     return node;
 }
 

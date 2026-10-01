@@ -1880,11 +1880,36 @@ def _partial_reduction_program() -> Program:
     )
 
 
+def _accumulation_after_tiled_writer_program() -> Program:
+    """An accumulation into a result whose overwrite the tiling moves into its loop.
+
+    ``r0`` is overwritten by the chain and then accumulated into by a contraction the loop does
+    not take. Once an accumulating einsum listed its destination as an input, the pass manager's
+    program-order check saw that read, and it counted only a node's own outputs as writes, so the
+    overwrite inside the loop body looked removed and a correct tiling was refused.
+    """
+    return Program(
+        pool={"p0": (2, 6, 2), "p1": (2, 6, 2), "p2": (6, 2, 6), "p3": (6, 2, 6), "p4": (6, 3, 8), "p5": (6, 3, 8)},
+        inter={"t0_0": (2, 6), "t1_0": (6, 2, 3, 8)},
+        outs={"r0": (2, 3, 8)},
+        stmts=(
+            ("t0_0", ("a", "d"), "p0", ("a", "b", "c"), "p2", ("b", "c", "d"), 0.0, 1.0),
+            ("r0", ("a", "e", "f"), "t0_0", ("a", "d"), "p4", ("d", "e", "f"), 0.0, 1.0),
+            ("t1_0", ("b", "c", "e", "f"), "p2", ("b", "c", "d"), "p4", ("d", "e", "f"), 0.0, 1.0),
+            ("r0", ("a", "e", "f"), "p0", ("a", "b", "c"), "t1_0", ("b", "c", "e", "f"), 1.0, 1.0),
+        ),
+        terms=(("p0", "p2", "p4"), ("p0", "p2", "p4")),
+        disjoint=None,
+        loop=(2, 3, 1),
+    )
+
+
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
 @given(drawn=_tiling_programs())
 @settings(max_examples=sanitizer_examples(50), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
 @example(drawn=(_partial_reduction_program(), 2))
+@example(drawn=(_accumulation_after_tiled_writer_program(), 16))
 def test_the_tiled_schedule_keeps_the_answer(drawn, dtype):
     prog, divisor = drawn
     try:

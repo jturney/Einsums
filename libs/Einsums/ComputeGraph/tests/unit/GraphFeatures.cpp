@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -344,6 +345,121 @@ TEST_CASE("Graph - verify names broken extents, in-place nodes and redirect writ
 // on the view relation alone, which misses it: a node still naming the merged-away id looked like
 // it read a tensor nothing writes. The scheduler then put it in the same level as the writer it
 // depends on, and a threading executor ran the two concurrently.
+namespace {
+
+/// A pass that turns every overwriting einsum into an accumulating one by writing its live C
+/// prefactor, the way a scale-folding pass rewrites a prefactor, and leaves the input lists alone.
+class AccumulatingPass : public cg::OptimizerPass {
+  public:
+    [[nodiscard]] std::string name() const override { return "AccumulatingPass"; }
+    bool                      run(cg::Graph &graph) override {
+        bool changed = false;
+        for (auto &node : graph.nodes()) {
+            if (auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr && desc->params != nullptr) {
+                desc->params->c_pf = cg::PrefactorScalar{1.0};
+                changed            = true;
+            }
+        }
+        return changed;
+    }
+};
+
+std::vector<TensorId> inputs_of(cg::Graph const &graph, cg::OpKind kind) {
+    auto const it = std::ranges::find_if(graph.nodes(), [&](cg::Node const &node) { return node.kind == kind; });
+    REQUIRE(it != graph.nodes().end());
+    return it->inputs;
+}
+
+} // namespace
+
+// Defends: the destination rule of DestinationRead.hpp. A node reads its destination when its
+// destination prefactor is nonzero, and the schedulers and liveness passes see that read only
+// through the input list, so the list names the destination last exactly when the node reads it.
+// Captured einsums and permutes used to list only their operands whatever the prefactor, while
+// make_einsum_node listed C, and a pass that rewrote a prefactor in place left the list describing
+// the old one.
+TEST_CASE("Graph - a node lists its destination as an input exactly when it reads it", "[ComputeGraph][Verify][DestinationRead]") {
+    auto A = create_random_tensor<double>("A", 3, 4);
+    auto B = create_random_tensor<double>("B", 4, 3);
+    auto C = create_random_tensor<double>("C", 3, 3);
+
+    SECTION("capture lists C for an accumulating einsum and not for an overwriting one") {
+        for (double const c_pf : {0.0, 1.0}) {
+            INFO("c_pf " << c_pf);
+            cg::Graph graph("einsum");
+            {
+                cg::CaptureGuard const guard(graph);
+                cg::einsum("ik;kj->ij", c_pf, &C, 1.0, A, B);
+            }
+            auto const inputs = inputs_of(graph, cg::OpKind::Einsum);
+            CHECK(inputs.size() == (c_pf == 0.0 ? 2U : 3U));
+            CHECK(graph.verify().empty());
+        }
+    }
+
+    SECTION("capture lists the destination of an accumulating permute") {
+        auto P = create_random_tensor<double>("P", 3, 3);
+        for (double const beta : {0.0, 1.0}) {
+            INFO("beta " << beta);
+            cg::Graph graph("permute");
+            {
+                cg::CaptureGuard const guard(graph);
+                cg::permute("j,i <- i,j", beta, &P, 1.0, C);
+            }
+            CHECK(inputs_of(graph, cg::OpKind::Permute).size() == (beta == 0.0 ? 1U : 2U));
+            CHECK(graph.verify().empty());
+        }
+    }
+
+    SECTION("update_prefactors adds and drops C") {
+        cg::Graph graph("update");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", &C, A, B);
+        }
+        auto const id = graph.nodes().front().id;
+        CHECK(inputs_of(graph, cg::OpKind::Einsum).size() == 2);
+        graph.update_prefactors(id, cg::PrefactorScalar{1.0}, cg::PrefactorScalar{1.0});
+        CHECK(inputs_of(graph, cg::OpKind::Einsum).size() == 3);
+        graph.update_prefactors(id, cg::PrefactorScalar{0.0}, cg::PrefactorScalar{1.0});
+        CHECK(inputs_of(graph, cg::OpKind::Einsum).size() == 2);
+        CHECK(graph.verify().empty());
+    }
+
+    SECTION("the pass manager follows a pass that rewrites a prefactor in place") {
+        auto want = C;
+        reference_einsum("ij <- ik ; kj", 1.0, &want, 1.0, A, B);
+
+        cg::Graph graph("rewritten");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", &C, A, B);
+        }
+        VerifyPasses const verifying;
+        REQUIRE(graph.apply<AccumulatingPass>().first);
+        CHECK(inputs_of(graph, cg::OpKind::Einsum).size() == 3);
+
+        graph.execute();
+        for (size_t i = 0; i < 3; i++) {
+            for (size_t j = 0; j < 3; j++) {
+                CHECK(std::abs(C(i, j) - want(i, j)) < 1e-12 * (1.0 + std::abs(want(i, j))));
+            }
+        }
+    }
+
+    SECTION("verify names a node that breaks the rule") {
+        cg::Graph graph("broken");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", 1.0, &C, 1.0, A, B);
+        }
+        graph.nodes().front().inputs.pop_back();
+        auto const problems = graph.verify();
+        REQUIRE(problems.size() == 1);
+        CHECK_THAT(problems.front(), Catch::Matchers::ContainsSubstring("reads its destination but lists 2 input(s)"));
+    }
+}
+
 TEST_CASE("Graph - buffer_of follows views and redirects, and the buffer analyses key on it", "[ComputeGraph][BufferIdentity]") {
     auto A  = create_random_tensor<double>("A", 3, 3);
     auto B  = create_random_tensor<double>("B", 3, 3);

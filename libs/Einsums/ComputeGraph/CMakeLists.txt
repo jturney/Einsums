@@ -53,6 +53,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Operations.hpp
     Einsums/ComputeGraph/Optimizer.hpp
     Einsums/ComputeGraph/UsageAnalysis.hpp
+    Einsums/ComputeGraph/DestinationRead.hpp
     Einsums/ComputeGraph/EscapeAnalysis.hpp
     Einsums/ComputeGraph/NodeFeatures.hpp
     Einsums/ComputeGraph/TensorExpr.hpp
@@ -158,6 +159,7 @@ set(ComputeGraphSources
     SymbolicExtents.cpp
     GroupedBatchedGemm.cpp
     UsageAnalysis.cpp
+    DestinationRead.cpp
     EscapeAnalysis.cpp
     NodeFeatures.cpp
     TensorExpr.cpp

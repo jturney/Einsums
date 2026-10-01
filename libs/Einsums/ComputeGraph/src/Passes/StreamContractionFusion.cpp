@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
@@ -174,7 +175,7 @@ bool StreamContractionFusion::run(Graph &graph) {
 
     for (size_t ni = 0; ni < nodes.size(); ni++) {
         auto const &node = nodes[ni];
-        if (node.kind != OpKind::Einsum || node.inputs.size() != 2 || node.outputs.size() != 1) {
+        if (node.kind != OpKind::Einsum || operand_inputs(node).size() != 2 || node.outputs.size() != 1) {
             continue;
         }
         if (!understands(graph, node)) {
@@ -415,29 +416,11 @@ bool StreamContractionFusion::run(Graph &graph) {
             continue;
         }
 
-        bool interference = false;
-        for (size_t n = lo + 1; n < hi && !interference; n++) {
-            if (is_member[n]) {
-                continue;
-            }
-            for (auto const &out : nodes[n].outputs) {
-                TensorId const r = root_of(out);
-                if (r == s_root || out_roots.contains(r) || w_roots.contains(r)) {
-                    interference = true;
-                    break;
-                }
-            }
-            if (interference) {
-                break;
-            }
-            for (auto const &in : nodes[n].inputs) {
-                if (out_roots.contains(root_of(in))) {
-                    interference = true;
-                    break;
-                }
-            }
-        }
-        if (interference) {
+        // The group writes its outputs and reads the stream and its weights. Control flow was
+        // refused above with its own reason, so span_interferes need not check it again.
+        std::unordered_set<TensorId> group_reads = w_roots;
+        group_reads.insert(s_root);
+        if (span_interferes(graph, lo, hi, is_member, out_roots, group_reads, /*reject_control_flow=*/false)) {
             note_skip("an intervening node touches an operand or output",
                       fmt::format("stream over '{}': a node between the members shares a buffer with one of them",
                                   handle_of(s_id) != nullptr ? handle_of(s_id)->name : "?"));

@@ -113,6 +113,12 @@
  * einsum into it nor accept one at bind. An absent key reads as a bare element,
  * which is what every earlier reader built.
  *
+ * Since 1.10.0 a node's inputs follow the destination rule of DestinationRead.hpp: its
+ * operands, then its destination exactly when a nonzero destination prefactor makes it read
+ * it. Earlier files listed the destination by the habit of the call that captured the node,
+ * so a reader rebuilds their input lists from the prefactors, and a 1.10.0 file whose lists
+ * break the rule is refused.
+ *
  * @par The hash domain
  * @ref Graph::content_hash digests the canonical bytes of that object with
  * ``provenance`` REMOVED and nothing else changed. Provenance is therefore
@@ -246,7 +252,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.9.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.10.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

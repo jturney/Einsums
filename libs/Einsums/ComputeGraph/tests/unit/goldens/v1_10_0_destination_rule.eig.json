@@ -1,0 +1,161 @@
+{
+  "einsums_graph_ir": "1.10.0",
+  "provenance": {"library_version":"2.0.0","config_fingerprint":"0xa2b35bda3e940d68","structural_passes":[]},
+  "name": "destination_rule",
+  "manifest": [
+    {
+      "id": 0,
+      "name": "A",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,4],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 1,
+      "name": "B",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [4,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 2,
+      "name": "C",
+      "direction": "inout",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 3,
+      "name": "D",
+      "direction": "inout",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 4,
+      "name": "P",
+      "direction": "inout",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 5,
+      "name": "Y",
+      "direction": "output",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    }
+  ],
+  "spaces": {"names":[],"symbol_ties":[]},
+  "approximations": [],
+  "params": [],
+  "gate_flags": [],
+  "tensors": [],
+  "slot_redirects": [],
+  "nodes": [
+    {
+      "id": 0,
+      "kind": "Einsum",
+      "label": "einsum: C[i,j] = A[i,k] * B[k,j]",
+      "inputs": [0,1],
+      "outputs": [3],
+      "dtype": "float64",
+      "rank": 2,
+      "descriptor": {
+        "c_indices": ["i","j"],
+        "a_indices": ["i","k"],
+        "b_indices": ["k","j"],
+        "link_indices": ["k"],
+        "target_indices": ["i","j"],
+        "all_indices": ["i","j","k"],
+        "scalar_output": false,
+        "conj_a": false,
+        "conj_b": false,
+        "c_prefactor": {"dtype":"float64","re":0.0},
+        "ab_prefactor": {"dtype":"float64","re":1.0},
+        "letter_spaces": [],
+        "gemm_hint": {"m":3,"n":3,"k":4,"trans_a":"N","trans_b":"N","a":{"id":0,"leading_dim":3},"b":{"id":1,"leading_dim":4},"c":{"id":3,"leading_dim":3}}
+      }
+    },
+    {
+      "id": 1,
+      "kind": "Einsum",
+      "label": "einsum: C[i,j] = A[i,k] * B[k,j]",
+      "inputs": [0,1,2],
+      "outputs": [2],
+      "dtype": "float64",
+      "rank": 2,
+      "descriptor": {
+        "c_indices": ["i","j"],
+        "a_indices": ["i","k"],
+        "b_indices": ["k","j"],
+        "link_indices": ["k"],
+        "target_indices": ["i","j"],
+        "all_indices": ["i","j","k"],
+        "scalar_output": false,
+        "conj_a": false,
+        "conj_b": false,
+        "c_prefactor": {"dtype":"float64","re":0.5},
+        "ab_prefactor": {"dtype":"float64","re":1.0},
+        "letter_spaces": [],
+        "gemm_hint": {"m":3,"n":3,"k":4,"trans_a":"N","trans_b":"N","a":{"id":0,"leading_dim":3},"b":{"id":1,"leading_dim":4},"c":{"id":2,"leading_dim":3}}
+      }
+    },
+    {
+      "id": 2,
+      "kind": "Permute",
+      "label": "permute: C[i,j] = A[j,i]",
+      "inputs": [3,4],
+      "outputs": [4],
+      "dtype": "float64",
+      "rank": 2,
+      "descriptor": {"alpha":{"dtype":"float64","re":2.0},"beta":{"dtype":"float64","re":0.25},"c_indices":["i","j"],"a_indices":["j","i"]}
+    },
+    {
+      "id": 3,
+      "kind": "Axpby",
+      "label": "axpby(alpha=1.5, beta=0)",
+      "inputs": [4],
+      "outputs": [5],
+      "dtype": "float64",
+      "rank": 2,
+      "descriptor": {"alpha":{"dtype":"float64","re":1.5},"beta":{"dtype":"float64","re":0.0}}
+    }
+  ]
+}

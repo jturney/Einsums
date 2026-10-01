@@ -76,11 +76,9 @@ bool rebuildable(Graph &graph, Node const &nd) {
                nd.outputs.size() == 1 && operands_resolve();
     }
     case OpKind::Permute: {
-        // Exactly one input and one output: a SymmetrizedAccumulation-rewritten
-        // permute accumulates into a second input and its descriptor no longer
-        // matches its baked executor, so it must not be rebuilt from it.
+        // The source, then the destination when the permute accumulates into it.
         auto const *d = nd.op_data.get_if<PermuteDescriptor>();
-        return d != nullptr && nd.inputs.size() == 1 && nd.outputs.size() == 1 && operands_resolve();
+        return d != nullptr && (nd.inputs.size() == 1 || nd.inputs.size() == 2) && nd.outputs.size() == 1 && operands_resolve();
     }
     case OpKind::Axpby: {
         // The live params are what the captured executor reads; a descriptor
@@ -117,7 +115,7 @@ void rebuild_node(Graph &graph, Node &nd, TensorId old_id, TensorId new_id) {
     // params included, so the node keeps it and only the operand ids change. The executor comes
     // from build_executor, as for a captured node. (A hand-built permute executor used to drop the
     // permutation operators and read the snapshot scalars.) Only the ids change in the operand
-    // lists, so an accumulating axpby keeps listing Y as an input.
+    // lists, so an accumulating axpby or permute keeps listing its destination as an input.
     for (auto &tid : nd.inputs) {
         tid = sub(tid);
     }

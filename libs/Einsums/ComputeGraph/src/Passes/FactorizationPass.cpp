@@ -612,7 +612,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                         continue;
                     }
                     for (auto const &piece : outer_pieces) {
-                        interference = interference || expr.statements[between].target == piece.tensor;
+                        interference = interference || graph.buffer_of(expr.statements[between].target) == graph.buffer_of(piece.tensor);
                     }
                 }
                 if (interference) {

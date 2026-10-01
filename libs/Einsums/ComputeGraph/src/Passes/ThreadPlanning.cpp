@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
+#include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Moldability.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -246,7 +247,7 @@ GemmShape gemm_shape_of(Graph const &graph, Node const &node) {
             return {.m = static_cast<std::size_t>(hint.m), .n = static_cast<std::size_t>(hint.n), .k = static_cast<std::size_t>(hint.k)};
         }
     }
-    if (node.inputs.size() != 2 || node.outputs.size() != 1) {
+    if (operand_inputs(node).size() != 2 || node.outputs.size() != 1) {
         return {};
     }
     double const a = static_cast<double>(elems_of(graph, node.inputs[0]));

@@ -626,12 +626,14 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             bool interference = false;
             for (std::size_t between = numerator_position + 1; between < position; ++between) {
                 ExprStatement const &other = expr.statements[between];
+                // By buffer: a write through a view of an operand is the same hazard under another id.
+                auto const written = graph.buffer_of(other.target);
                 for (TermId const operand : formation.operands) {
-                    if (other.target == expr.at(operand).tensor) {
+                    if (written == graph.buffer_of(expr.at(operand).tensor)) {
                         interference = true;
                     }
                 }
-                if (other.target == denominator_id || other.target == apply.target) {
+                if (written == graph.buffer_of(denominator_id) || written == graph.buffer_of(apply.target)) {
                     interference = true;
                 }
             }

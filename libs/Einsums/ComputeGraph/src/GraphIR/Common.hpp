@@ -176,6 +176,10 @@ using GateFlagTable = std::unordered_map<std::string, std::shared_ptr<std::vecto
 
 struct IrDocument {
     std::string version;
+    /// Written before 1.10.0, when a node listed its destination among its inputs by its
+    /// capture site's habit rather than by whether it reads it. Such a file's input lists are
+    /// rebuilt from its prefactors; a newer file's are taken as written and verified.
+    bool        predates_destination_rule{false};
     std::string name;
     /// The provenance block's pass list. CARRIED, never acted on: a load does not re-run one
     /// of these, and does not refuse a graph because of what is in the list. It is put back on
