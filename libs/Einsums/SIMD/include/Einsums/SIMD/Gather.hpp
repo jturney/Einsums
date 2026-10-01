@@ -15,6 +15,7 @@
 #include <limits>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
+EINSUMS_SIMD_ISA_NAMESPACE_BEGIN()
 
 // ===========================================================================
 // Gather: load Vec<T>::lanes elements from base[0], base[stride], base[2*stride], ...
@@ -472,4 +473,5 @@ EINSUMS_FORCEINLINE void scatter_fixed(T *base, Vec<T> v) {
     }
 }
 
+EINSUMS_SIMD_ISA_NAMESPACE_END()
 EINSUMS_NAMESPACE_END(simd)

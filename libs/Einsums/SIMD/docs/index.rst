@@ -457,6 +457,23 @@ cannot change while the program runs. The ``RuntimeDispatch`` example is a
 complete, buildable version of this, and HPTT and PackedGemm are the library's
 own consumers.
 
+Each copy of the implementation is a different program under the same source,
+so nothing it defines may share a name with another copy: the linker keeps one
+definition per name and hands it to every caller. Your own code is kept apart
+by ``EINSUMS_SIMD_ARCH_NS``. The SIMD headers keep theirs apart themselves:
+they declare everything inside an inline namespace named for the features the
+translation unit was compiled with, such as
+``einsums::simd::isa_avx_avx2_fma_sse3_ssse3_sse41_sse42``. It is transparent,
+so ``einsums::simd::Vec<float>`` names it, but ``Vec<float>`` at v3 and at v4
+are different types to the linker, and a helper that does not inline is a
+different function in each copy. ``EINSUMS_SIMD_ISA_NS`` expands to the name.
+
+Neither namespace covers templates from other libraries. A ``std::vector``
+member or an fmt formatter instantiated in the implementation file is emitted
+by every copy under one name, compiled at that copy's flags, and the program
+calls whichever copy the linker kept. Keep such code in an arch-neutral file
+and pass the kernel plain pointers and sizes.
+
 The whole mechanism sits behind ``EINSUMS_WITH_SIMD_DISPATCH`` (default ON).
 When it is OFF, or when a compile-time pin is in effect (below), the helper
 emits a single ``native`` rung compiled at the ambient flags. On aarch64 the

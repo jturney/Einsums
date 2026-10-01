@@ -62,7 +62,12 @@
 #:
 #:    The implementation file is compiled once per surviving rung, so keep
 #:    everything arch-independent out of it; heavy shared code belongs in a
-#:    regular TU.
+#:    regular TU. Every copy must define its own names: the implementation's
+#:    in ``EINSUMS_SIMD_ARCH_NS``, the SIMD headers' in the instruction-set
+#:    namespace they open themselves (``EINSUMS_SIMD_ISA_NS``). A template
+#:    from another library instantiated here (a ``std::vector`` member, an fmt
+#:    formatter) is emitted by every copy under one name, and the linker keeps
+#:    one of them for all callers.
 include(CheckCXXCompilerFlag)
 
 #:

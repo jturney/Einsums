@@ -15,6 +15,7 @@
 #include <cstring>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
+EINSUMS_SIMD_ISA_NAMESPACE_BEGIN()
 
 // ===========================================================================
 // Partial load / store: the first n lanes of a Vec, for the tail of a loop
@@ -165,4 +166,5 @@ EINSUMS_FORCEINLINE void storeu_partial(double *p, Vec<double> v, std::size_t n)
 }
 #endif
 
+EINSUMS_SIMD_ISA_NAMESPACE_END()
 EINSUMS_NAMESPACE_END(simd)

@@ -68,3 +68,26 @@ target_compile_definitions(
   RuntimeFeatures_test PRIVATE EINSUMS_SIMD_SME_RUNG_ENABLES_SVE=$<BOOL:${_sme_sve}>
                                EINSUMS_SIMD_SME_RUNG_ENABLES_SVE2=$<BOOL:${_sme_sve2}>
 )
+
+# IsaNamespace_test links a baseline translation unit with one compiled at the v3
+# rung's flags, to check that the SIMD headers' instruction-set namespace keeps
+# their entities apart. Only x86 has a rung whose lane count differs from the
+# baseline's.
+if(EINSUMS_WITH_SIMD_DISPATCH
+   AND NOT EINSUMS_SIMD_NATIVE_ARCH
+   AND "${EINSUMS_SIMD_TARGET_CPU}" STREQUAL ""
+   AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64"
+)
+  einsums_simd_rung_flags(v3 _isa_wide_flags _isa_wide_ordinal _isa_wide_ok "IsaNamespace_test")
+  if(_isa_wide_ok)
+    einsums_add_executable(
+      IsaNamespace_test INTERNAL_FLAGS
+      SOURCES IsaNamespace.cpp IsaNamespaceWide.cpp
+      NOINSTALL
+    )
+    set_source_files_properties(IsaNamespaceWide.cpp PROPERTIES COMPILE_OPTIONS "${_isa_wide_flags}")
+    # The wide unit cannot share the baseline precompiled header.
+    set_target_properties(IsaNamespace_test PROPERTIES DISABLE_PRECOMPILE_HEADERS ON)
+    einsums_add_unit_test("Modules.SIMD" IsaNamespace)
+  endif()
+endif()

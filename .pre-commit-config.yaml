@@ -55,6 +55,17 @@ repos:
         pass_filenames: false
         always_run: true
 
+      # The SIMD headers declare everything in an inline namespace named for the
+      # features they were compiled with, so translation units built for different
+      # rungs cannot share a definition. A feature a header tests but the name does
+      # not encode reopens that for the feature, silently.
+      - id: einsums-simd-isa-tag
+        name: Ensure the SIMD instruction-set namespace names every tested feature
+        entry: devtools/check_simd_isa_tag.py
+        language: python
+        pass_filenames: false
+        always_run: true
+
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v22.1.8
     hooks:

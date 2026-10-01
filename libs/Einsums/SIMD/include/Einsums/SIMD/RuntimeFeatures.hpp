@@ -291,7 +291,7 @@ EINSUMS_EXPORT InstructionSet resolve_arch(CpuFeatures const &features, std::opt
  */
 EINSUMS_EXPORT InstructionSet selected_arch();
 
-namespace detail {
+namespace dispatch_detail {
 /// Position of @p set in the argument list select() takes.
 constexpr int ladder_slot(InstructionSet set) noexcept {
     switch (set) {
@@ -308,7 +308,7 @@ constexpr int ladder_slot(InstructionSet set) noexcept {
     }
     return 0;
 }
-} // namespace detail
+} // namespace dispatch_detail
 
 /**
  * @brief select() against an explicit feature set and starting rung.
@@ -341,7 +341,7 @@ F select_for(CpuFeatures const &features, InstructionSet start, F baseline, F v2
         if (!reached) {
             continue;
         }
-        F const entry = slots[detail::ladder_slot(rung)];
+        F const entry = slots[dispatch_detail::ladder_slot(rung)];
         if (entry != nullptr && supports(features, rung)) {
             return entry;
         }

@@ -18,6 +18,7 @@
 #include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
+EINSUMS_SIMD_ISA_NAMESPACE_BEGIN()
 
 // ===========================================================================
 // Prefetch hints
@@ -245,4 +246,5 @@ EINSUMS_FORCEINLINE void stream_store_span(T *dst, std::size_t n, Produce &&prod
     }
 }
 
+EINSUMS_SIMD_ISA_NAMESPACE_END()
 EINSUMS_NAMESPACE_END(simd)

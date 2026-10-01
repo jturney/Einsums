@@ -15,6 +15,7 @@
 #include <cstddef>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
+EINSUMS_SIMD_ISA_NAMESPACE_BEGIN()
 
 // ===========================================================================
 // CVec<T>: interleaved complex SIMD vector.
@@ -464,4 +465,5 @@ EINSUMS_FORCEINLINE CVec<T> operator*(CVec<T> a, CVec<T> b) {
 }
 #endif
 
+EINSUMS_SIMD_ISA_NAMESPACE_END()
 EINSUMS_NAMESPACE_END(simd)

@@ -18,6 +18,7 @@
 #include <utility>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
+EINSUMS_SIMD_ISA_NAMESPACE_BEGIN()
 
 // ===========================================================================
 // In-register transpose: transpose_inplace(Vec<T> *rows)
@@ -417,4 +418,5 @@ EINSUMS_FORCEINLINE void storeu_interleaved(T *dst, Vec<T> const *rows) {
     }
 }
 
+EINSUMS_SIMD_ISA_NAMESPACE_END()
 EINSUMS_NAMESPACE_END(simd)

@@ -24,6 +24,7 @@
 #endif
 
 EINSUMS_NAMESPACE_BEGIN(simd)
+EINSUMS_SIMD_ISA_NAMESPACE_BEGIN()
 
 // ---------------------------------------------------------------------------
 // Half-precision type aliases.
@@ -484,4 +485,5 @@ struct Vec {
 template <typename T>
 inline constexpr int lanes = Vec<T>::lanes;
 
+EINSUMS_SIMD_ISA_NAMESPACE_END()
 EINSUMS_NAMESPACE_END(simd)

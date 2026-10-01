@@ -16,6 +16,7 @@
 #include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
+EINSUMS_SIMD_ISA_NAMESPACE_BEGIN()
 
 // ===========================================================================
 // Lane-wise conversion between element types of the same width, so the lane
@@ -461,4 +462,5 @@ EINSUMS_FORCEINLINE Vec<bfloat16_t> convert<bfloat16_t, float>(Vec<float> low, V
 #    endif
 #endif
 
+EINSUMS_SIMD_ISA_NAMESPACE_END()
 EINSUMS_NAMESPACE_END(simd)

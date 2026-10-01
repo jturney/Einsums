@@ -12,6 +12,7 @@
 #include <cstdint>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
+EINSUMS_SIMD_ISA_NAMESPACE_BEGIN()
 
 // ===========================================================================
 // Horizontal reductions: the sum, minimum or maximum of a Vec's lanes.
@@ -219,4 +220,5 @@ EINSUMS_SIMD_SCALAR_REDUCE(int32_t)
 #    undef EINSUMS_SIMD_SCALAR_REDUCE
 #endif
 
+EINSUMS_SIMD_ISA_NAMESPACE_END()
 EINSUMS_NAMESPACE_END(simd)

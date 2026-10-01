@@ -16,6 +16,7 @@
 #include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
+EINSUMS_SIMD_ISA_NAMESPACE_BEGIN()
 
 // ===========================================================================
 // Broadcast: scalar → Vec<T>
@@ -3565,4 +3566,5 @@ EINSUMS_FORCEINLINE void storea(bfloat16_t *p, Vec<bfloat16_t> v) {
 }
 #endif // __ARM_FEATURE_BF16_VECTOR_ARITHMETIC || __AVX512BF16__
 
+EINSUMS_SIMD_ISA_NAMESPACE_END()
 EINSUMS_NAMESPACE_END(simd)
