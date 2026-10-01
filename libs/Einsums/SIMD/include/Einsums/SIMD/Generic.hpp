@@ -10,6 +10,7 @@
 #include <Einsums/SIMD/Convert.hpp>
 #include <Einsums/SIMD/Gather.hpp>
 #include <Einsums/SIMD/Operations.hpp>
+#include <Einsums/SIMD/Partial.hpp>
 #include <Einsums/SIMD/Platform.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
@@ -37,8 +38,10 @@
 // The scalar overloads match one lane of the vector operation bit for bit, so
 // a scalar run on the CPU is an exact reference for the vector run: min is
 // a < b ? a : b (not std::fmin), the fused forms round once exactly where the
-// vector forms do (where the build has FMA), and a compare returns bool, which
-// select, any, all and the bitwise mask combinations accept.
+// vector forms do (where the build has FMA), and a compare returns bool where
+// the vector one returns a Mask<T>. Everything that takes a Mask<T> takes the
+// bool too: select, any, all, none, count, the bitwise mask combinations, and
+// the masked loadu, storeu and lookup. Write !m, not ~m, in generic code.
 //
 // Call them qualified, einsums::simd::fmadd(...): argument-dependent lookup
 // finds the vector forms but nothing for double. Each scalar overload is a
@@ -137,6 +140,27 @@ EINSUMS_FORCEINLINE Vec<T> lookup(T const *base, Vec<gather_index_t<T>> idx) {
 template <std::floating_point T, std::integral I>
 EINSUMS_FORCEINLINE T lookup(T const *base, I idx) {
     return base[idx];
+}
+/// lookup in the lanes m sets, zero elsewhere; an inactive lane's index is never dereferenced.
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> lookup(T const *base, Vec<gather_index_t<T>> idx, Mask<T> m) {
+    return gather(base, idx, m);
+}
+template <std::floating_point T, std::integral I>
+EINSUMS_FORCEINLINE T lookup(T const *base, I idx, bool m) {
+    return m ? base[idx] : T(0);
+}
+
+/// The scalar forms of the masked load and store: *p where m is true, and zero or nothing otherwise.
+template <detail::arithmetic T>
+EINSUMS_FORCEINLINE T loadu(T const *p, bool m) {
+    return m ? *p : T(0);
+}
+template <detail::arithmetic T>
+EINSUMS_FORCEINLINE void storeu(T *p, T v, bool m) {
+    if (m) {
+        *p = v;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +297,14 @@ EINSUMS_FORCEINLINE bool any(B mask) {
 template <std::same_as<bool> B>
 EINSUMS_FORCEINLINE bool all(B mask) {
     return mask;
+}
+template <std::same_as<bool> B>
+EINSUMS_FORCEINLINE bool none(B mask) {
+    return !mask;
+}
+template <std::same_as<bool> B>
+EINSUMS_FORCEINLINE int count(B mask) {
+    return mask ? 1 : 0;
 }
 template <std::same_as<bool> B>
 EINSUMS_FORCEINLINE bool bitwise_and(B a, B b) {

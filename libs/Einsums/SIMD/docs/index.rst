@@ -87,24 +87,38 @@ SSE2 baseline has no rounding instruction and emulates one with an add and a
 subtract of 2^23 or 2^52, which is wrong under ``-ffast-math`` or any other
 reassociating mode.
 
-A comparison returns a mask of the same type: each lane all-ones where it
-holds and zero where it does not. The comparisons follow IEEE 754, so every
-one involving a NaN is false except ``cmp_ne``.
+A comparison returns a ``Mask<T>``, one flag per lane, held as the hardware
+holds it: a k-register on AVX-512, a vector of all-ones or zero lanes on AVX,
+SSE and NEON. The comparisons follow IEEE 754, so every one involving a NaN is
+false except ``cmp_ne``.
 
 .. code-block:: cpp
 
-    Vec<float> const too_big = cmp_gt(v, limit);         // lanes where v > limit
-    Vec<float> const clamped = select(too_big, limit, v); // limit there, v elsewhere
-    if (any(cmp_ne(v, v))) {                              // is any lane a NaN?
+    Mask<float> const too_big = cmp_gt(v, limit);         // lanes where v > limit
+    Vec<float> const  clamped = select(too_big, limit, v); // limit there, v elsewhere
+    if (any(cmp_ne(v, v))) {                               // is any lane a NaN?
         ...
     }
 
 ``select(mask, a, b)`` takes ``a`` where the mask is set, for ``float``,
-``double`` and the 32- and 64-bit integers. Masks combine with
-``bitwise_and``, ``bitwise_or``, ``bitwise_xor`` and ``bitwise_andnot``
-(``a & ~b``), and ``any(mask)`` and ``all(mask)`` reduce one to a ``bool``.
-Only comparison results are valid masks: the backends read different bits of
-a lane, so only all-ones and zero mean the same thing everywhere.
+``double`` and the 32- and 64-bit integers. Masks combine with ``&``, ``|``,
+``^`` and ``!`` (or ``bitwise_and``, ``bitwise_or``, ``bitwise_xor`` and
+``bitwise_andnot``), and ``any``, ``all``, ``none`` and ``count`` reduce one to
+a ``bool`` or a lane count. Write ``!m``, not ``~m``: generic kernels also run
+with a ``bool`` mask, and ``~true`` is ``-2``, which is still true.
+
+``first_n<T>(n)`` sets the first ``n`` lanes, a loop tail's mask, and
+``mask_all<T>()`` and ``mask_none<T>()`` set every lane or none.
+``to_bits(m)`` and ``mask_from_bits<T>(bits)`` convert to and from an integer
+whose bit ``i`` is lane ``i``, and ``mask_cast<U>(m)`` reuses a mask for an
+element type of the same width, so a ``float`` comparison can steer an
+``int32_t`` index vector. Code that used a mask as bits, as the vector of
+all-ones or zero lanes masks used to be, gets that vector from ``to_vec(m)``;
+the numeric form, one or zero, is ``select(m, broadcast(T(1)), broadcast(T(0)))``.
+
+A masked operation is ``select`` over the unmasked one:
+``select(m, fmadd(a, b, c), c)`` is a masked FMA, and AVX-512 compiles it to
+the masked instruction.
 
 The 32- and 64-bit integers have the same six comparisons, ordered by their
 own signedness, so ``cmp_lt`` on ``Vec<uint32_t>`` treats ``0xFFFFFFFF`` as
@@ -137,15 +151,22 @@ at the end of an allocation is safe:
         storeu_partial(y + i, fmadd(a, loadu_partial(x + i, n - i), loadu_partial(y + i, n - i)), n - i);
     }
 
-A partial access is a single masked instruction only on AVX-512, and on AVX
-for ``float`` and ``double``; everywhere else it goes through a stack buffer,
-which a tail of two or three elements does not repay. ``native_partial<T>`` is
-``true`` exactly where the masked instruction exists, so a kernel compiled per
-rung can keep a scalar tail on the others:
+The masked forms behind them are public too: ``loadu(p, m)`` reads the lanes
+``m`` sets and gives zero in the rest, ``storeu(p, v, m)`` writes only the lanes
+``m`` sets, and ``gather(base, idx, m)`` reads ``base[idx[i]]`` only where set.
+None of them touches an inactive lane's memory, so an out-of-range index in an
+inactive lane is safe. ``loadu_partial(p, n)`` is ``loadu(p, first_n<T>(n))``.
+
+A masked access is a single instruction on AVX-512, and on AVX and AVX2 for
+``float``, ``double`` and the 32- and 64-bit integers. SSE and NEON have no
+masked load, so there it goes through a stack buffer, which a tail of two or
+three elements does not repay. ``native_masked_memory<T>`` (also spelled
+``native_partial<T>``) is ``true`` exactly where the masked instruction
+exists, so a kernel compiled per rung can keep a scalar tail on the others:
 
 .. code-block:: cpp
 
-    if constexpr (native_partial<T>) {
+    if constexpr (native_masked_memory<T>) {
         // one masked vector step, as above
     } else {
         for (; i < n; ++i) { /* scalar tail */ }
@@ -221,8 +242,9 @@ reference.
 
 The header adds scalar overloads of the operations above (the fused forms,
 ``div``, ``sqrt``, ``min``, ``max``, ``abs``, ``neg``, the rounding functions,
-the comparisons, ``select``, ``any``, ``all``, the mask combinations and
-``convert``), and the generic operations a scalar has no other spelling for:
+the comparisons, which return ``bool`` where the vector ones return a
+``Mask<T>``, ``select``, ``any``, ``all``, ``none``, ``count``, the mask
+combinations, the masked ``loadu`` and ``storeu``, and ``convert``), and the generic operations a scalar has no other spelling for:
 ``scalar_t<V>``, ``lanes_v<V>`` and ``is_vec_v<V>``; ``splat<V>(x)``;
 ``load<V>(p)`` and ``store(p, v)``; and ``lookup(base, idx)``, an index
 gather that reads ``base[idx]`` for a scalar index. ``lookup`` exists because

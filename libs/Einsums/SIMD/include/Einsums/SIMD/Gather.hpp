@@ -317,6 +317,61 @@ EINSUMS_FORCEINLINE Vec<double> gather(double const *base, Vec<int64_t> idx) {
 #endif
 
 // ===========================================================================
+// Masked index gather: gather(base, idx, m) reads base[idx[i]] in each lane m
+// sets and gives zero elsewhere. An inactive lane's index is never
+// dereferenced, so it may be out of range. AVX2 and AVX-512 use their masked
+// gathers; everything else reads the active lanes one by one.
+// ===========================================================================
+
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> gather(T const *base, Vec<gather_index_t<T>> idx, Mask<T> m);
+
+namespace detail {
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> gather_index_masked_scalar(T const *base, Vec<gather_index_t<T>> idx, Mask<T> m) {
+    alignas(native_alignment) gather_index_t<T> at[Vec<T>::lanes];
+    alignas(native_alignment) T                 buf[Vec<T>::lanes] = {};
+    storea(at, idx);
+    uint64_t const set_lanes = to_bits(m);
+    for (int i = 0; i < Vec<T>::lanes; ++i) {
+        if ((set_lanes >> i) & 1u) {
+            buf[i] = base[at[i]];
+        }
+    }
+    return loada(buf);
+}
+} // namespace detail
+
+#if defined(__AVX512F__) && defined(__AVX512VL__)
+template <>
+EINSUMS_FORCEINLINE Vec<float> gather(float const *base, Vec<int32_t> idx, Mask<float> m) {
+    return _mm512_mask_i32gather_ps(_mm512_setzero_ps(), m.reg, idx.reg, base, sizeof(float));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> gather(double const *base, Vec<int64_t> idx, Mask<double> m) {
+    return _mm512_mask_i64gather_pd(_mm512_setzero_pd(), m.reg, idx.reg, base, sizeof(double));
+}
+#elif defined(__AVX2__)
+template <>
+EINSUMS_FORCEINLINE Vec<float> gather(float const *base, Vec<int32_t> idx, Mask<float> m) {
+    return _mm256_mask_i32gather_ps(_mm256_setzero_ps(), base, idx.reg, m.reg, sizeof(float));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> gather(double const *base, Vec<int64_t> idx, Mask<double> m) {
+    return _mm256_mask_i64gather_pd(_mm256_setzero_pd(), base, idx.reg, m.reg, sizeof(double));
+}
+#else
+template <>
+EINSUMS_FORCEINLINE Vec<float> gather(float const *base, Vec<int32_t> idx, Mask<float> m) {
+    return detail::gather_index_masked_scalar(base, idx, m);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> gather(double const *base, Vec<int64_t> idx, Mask<double> m) {
+    return detail::gather_index_masked_scalar(base, idx, m);
+}
+#endif
+
+// ===========================================================================
 // Scatter: store Vec<T>::lanes elements to base[0], base[stride], ...
 // ===========================================================================
 

@@ -7,10 +7,10 @@
 /// @brief Branch-free conditionals: comparisons make masks, select applies them.
 ///
 /// A SIMD loop cannot branch per lane, so a conditional becomes a mask. cmp_lt and its siblings
-/// return a Vec whose lanes are all-ones where the comparison holds and zero where it does not;
-/// select(mask, a, b) then takes a in the set lanes and b in the rest. Masks combine with
-/// bitwise_and/or/xor/andnot, and any(mask) or all(mask) turn one into a single bool, which is how
-/// a loop can skip work, or stop, when no lane needs it.
+/// return a Mask<float>, one flag per lane, set where the comparison holds; select(mask, a, b) then
+/// takes a in the set lanes and b in the rest. Masks combine with &, |, ^ and !, any(mask) or
+/// all(mask) turn one into a single bool, which is how a loop can skip work, or stop, when no lane
+/// needs it, and count(mask) says how many lanes are set.
 ///
 /// Here: replace every NaN with zero, clamp to [lo, hi], and count how many values were changed.
 /// A NaN is the one value not equal to itself, so cmp_ne(v, v) finds them.
@@ -20,7 +20,6 @@
 #include <Einsums/SIMD/Partial.hpp>
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -42,10 +41,10 @@ std::size_t sanitize(std::size_t n, float *x, float lo, float hi) {
         std::size_t const width = std::min(L, n - i);
         Vec<float> const  v     = loadu_partial(x + i, width);
 
-        Vec<float> const is_nan    = cmp_ne(v, v);
-        Vec<float> const too_low   = cmp_lt(v, vlo);
-        Vec<float> const too_high  = cmp_gt(v, vhi);
-        Vec<float> const needs_fix = bitwise_or(is_nan, bitwise_or(too_low, too_high));
+        Mask<float> const is_nan    = cmp_ne(v, v);
+        Mask<float> const too_low   = cmp_lt(v, vlo);
+        Mask<float> const too_high  = cmp_gt(v, vhi);
+        Mask<float> const needs_fix = is_nan | too_low | too_high;
         if (!any(needs_fix)) {
             continue; // the common case: nothing in this Vec to change, so skip the store
         }
@@ -55,13 +54,8 @@ std::size_t sanitize(std::size_t n, float *x, float lo, float hi) {
         Vec<float> const clamped = min(max(v, vlo), vhi);
         storeu_partial(x + i, select(is_nan, zero, clamped), width);
 
-        // Count the set mask lanes that are real elements, not the zeroed padding of a partial load.
-        // A set lane is all-ones, which as a float is a NaN, so read its bits rather than its value.
-        float mask_lanes[L];
-        storeu(mask_lanes, needs_fix);
-        for (std::size_t lane = 0; lane < width; ++lane) {
-            changed += std::bit_cast<std::uint32_t>(mask_lanes[lane]) != 0;
-        }
+        // Count the set lanes that are real elements, not the zeroed padding of a partial load.
+        changed += static_cast<std::size_t>(count(needs_fix & first_n<float>(width)));
     }
     return changed;
 }

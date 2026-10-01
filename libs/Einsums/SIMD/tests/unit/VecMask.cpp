@@ -3,8 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Floating-point comparisons, select, mask logic and any/all, against scalar references. A mask
-// lane must be exactly all-ones or zero, so masks are compared bit for bit.
+// Mask<T>: the comparisons, select, the mask logic and operators, any/all/none/count, first_n, the
+// bit conversions and mask_cast, against scalar references. to_vec must give exactly all-ones or
+// zero per lane, so masks are compared bit for bit.
 
 #include <Einsums/SIMD/Operations.hpp>
 
@@ -52,16 +53,20 @@ void for_each_pairing(F f) {
     }
 }
 
-/// Checks that @p mask holds exactly ref(a[i], b[i]) in every lane.
+/// Checks that @p mask holds exactly ref(a[i], b[i]) in every lane, both as bits (to_vec gives
+/// all-ones or zero per lane) and as the integer to_bits gives.
 template <typename T, typename Ref>
-void check_mask(Vec<T> mask, T const *a, T const *b, Ref ref) {
+void check_mask(Mask<T> mask, T const *a, T const *b, Ref ref) {
     constexpr int L = Vec<T>::lanes;
     T             out[L];
-    storeu(out, mask);
+    storeu(out, to_vec(mask));
+    uint64_t const bits = to_bits(mask);
     for (int i = 0; i < L; ++i) {
         INFO("lane " << i << ": a = " << a[i] << ", b = " << b[i]);
         CHECK(std::bit_cast<bits_t<T>>(out[i]) == std::bit_cast<bits_t<T>>(mask_lane<T>(ref(a[i], b[i]))));
+        CHECK(((bits >> i) & 1u) == (ref(a[i], b[i]) ? 1u : 0u));
     }
+    CHECK((bits >> L) == 0u);
 }
 
 } // namespace
@@ -86,6 +91,15 @@ TEMPLATE_TEST_CASE("mask logic combines comparison results", "[simd][mask]", flo
         check_mask(bitwise_or(lt, gt), a, b, [](TestType x, TestType y) { return x < y || x > y; });
         check_mask(bitwise_xor(lt, le), a, b, [](TestType x, TestType y) { return (x < y) != (x <= y); });
         check_mask(bitwise_andnot(le, lt), a, b, [](TestType x, TestType y) { return x <= y && !(x < y); });
+        check_mask(lt & le, a, b, [](TestType x, TestType y) { return x < y && x <= y; });
+        check_mask(lt | gt, a, b, [](TestType x, TestType y) { return x < y || x > y; });
+        check_mask(lt ^ le, a, b, [](TestType x, TestType y) { return (x < y) != (x <= y); });
+        check_mask(!lt, a, b, [](TestType x, TestType y) { return !(x < y); });
+        auto compound = lt;
+        compound |= gt;
+        compound &= le;
+        compound ^= lt;
+        check_mask(compound, a, b, [](TestType x, TestType y) { return (((x < y) || (x > y)) && (x <= y)) != (x < y); });
     });
 }
 
@@ -146,4 +160,58 @@ TEMPLATE_TEST_CASE("select, andnot, any and all on integer masks", "[simd][mask]
     CHECK(all(eq) == (L == 1 && a[0] == b[0]));
     CHECK(all(cmp_eq(loadu(a), loadu(a))));
     CHECK_FALSE(any(cmp_eq(loadu(a), broadcast(TestType(200)))));
+}
+
+TEMPLATE_TEST_CASE("first_n sets the first n lanes, and the bit conversions round-trip", "[simd][mask]", float, double, int32_t, uint32_t,
+                   int64_t, uint64_t) {
+    using T         = TestType;
+    constexpr int L = Vec<T>::lanes;
+    for (std::size_t n = 0; n <= static_cast<std::size_t>(L) + 2; ++n) {
+        Mask<T> const     m    = first_n<T>(n);
+        std::size_t const set  = n < static_cast<std::size_t>(L) ? n : static_cast<std::size_t>(L);
+        uint64_t const    want = (uint64_t{1} << set) - 1u;
+        INFO("n = " << n);
+        CHECK(to_bits(m) == want);
+        CHECK(count(m) == static_cast<int>(set));
+        CHECK(any(m) == (set > 0));
+        CHECK(none(m) == (set == 0));
+        CHECK(all(m) == (set == static_cast<std::size_t>(L)));
+        CHECK(to_bits(!m) == ((uint64_t{1} << L) - 1u - want));
+    }
+    CHECK(to_bits(mask_all<T>()) == (uint64_t{1} << L) - 1u);
+    CHECK(to_bits(mask_none<T>()) == 0u);
+    for (uint64_t bits = 0; bits < (uint64_t{1} << L) && bits < 4096; bits = bits * 3 + 1) {
+        CHECK(to_bits(mask_from_bits<T>(bits)) == bits);
+        CHECK(count(mask_from_bits<T>(bits)) == std::popcount(bits));
+    }
+    // Bits past the lane count are ignored.
+    CHECK(to_bits(mask_from_bits<T>(~uint64_t{0})) == (uint64_t{1} << L) - 1u);
+}
+
+TEST_CASE("mask_cast keeps the lanes between element types of one width", "[simd][mask]") {
+    for (std::size_t n = 0; n <= static_cast<std::size_t>(Vec<float>::lanes); ++n) {
+        CHECK(to_bits(mask_cast<int32_t>(first_n<float>(n))) == to_bits(first_n<float>(n)));
+        CHECK(to_bits(mask_cast<float>(first_n<uint32_t>(n))) == to_bits(first_n<uint32_t>(n)));
+    }
+    for (std::size_t n = 0; n <= static_cast<std::size_t>(Vec<double>::lanes); ++n) {
+        CHECK(to_bits(mask_cast<int64_t>(first_n<double>(n))) == to_bits(first_n<double>(n)));
+        CHECK(to_bits(mask_cast<double>(first_n<uint64_t>(n))) == to_bits(first_n<uint64_t>(n)));
+    }
+}
+
+TEMPLATE_TEST_CASE("a masked fmadd is select over fmadd", "[simd][mask]", float, double) {
+    // Active lanes take fmadd's result exactly, inactive lanes keep c.
+    using T = TestType;
+    for_each_pairing<T>([](T const *a, T const *b) {
+        constexpr int L  = Vec<T>::lanes;
+        Vec<T> const  va = loadu(a), vb = loadu(b);
+        T             out[L], fused[L];
+        storeu(out, select(cmp_lt(va, vb), fmadd(va, vb, vb), vb));
+        storeu(fused, fmadd(va, vb, vb));
+        for (int i = 0; i < L; ++i) {
+            T const want = a[i] < b[i] ? fused[i] : b[i];
+            INFO("lane " << i << ": a = " << a[i] << ", b = " << b[i]);
+            CHECK(std::bit_cast<bits_t<T>>(out[i]) == std::bit_cast<bits_t<T>>(want));
+        }
+    });
 }

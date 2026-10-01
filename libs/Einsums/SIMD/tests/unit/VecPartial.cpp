@@ -7,6 +7,7 @@
 // on the heap, so an access past them is an out-of-bounds read or write that the sanitizer legs
 // report, rather than a quiet read of whatever sits next in a larger buffer.
 
+#include <Einsums/SIMD/Gather.hpp>
 #include <Einsums/SIMD/Operations.hpp>
 #include <Einsums/SIMD/Partial.hpp>
 
@@ -14,9 +15,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 #include <catch2/catch_all.hpp>
+
+#if defined(__linux__)
+#    include <sys/mman.h>
+#    include <unistd.h>
+#endif
 
 using namespace einsums::simd;
 
@@ -69,19 +76,93 @@ TEMPLATE_TEST_CASE("partial load and store stay inside an exact-size allocation"
     }
 }
 
-TEST_CASE("native_partial is true exactly where partial access is a masked instruction", "[simd][partial]") {
-#if defined(__AVX512F__) && defined(__AVX512VL__)
-    STATIC_CHECK(native_partial<float>);
-    STATIC_CHECK(native_partial<double>);
-    STATIC_CHECK(native_partial<int32_t>);
-    STATIC_CHECK(native_partial<int64_t>);
-#elif defined(__AVX__)
-    STATIC_CHECK(native_partial<float>);
-    STATIC_CHECK(native_partial<double>);
-    STATIC_CHECK_FALSE(native_partial<int32_t>);
+TEST_CASE("native_masked_memory is true exactly where a masked load or store is one instruction", "[simd][partial]") {
+#if (defined(__AVX512F__) && defined(__AVX512VL__)) || defined(__AVX__)
+    // AVX-512 masks every type; AVX2 has VPMASKMOV for the integers, and AVX without it moves them
+    // through VMASKMOV's float form.
+    STATIC_CHECK(native_masked_memory<float>);
+    STATIC_CHECK(native_masked_memory<double>);
+    STATIC_CHECK(native_masked_memory<int32_t>);
+    STATIC_CHECK(native_masked_memory<int64_t>);
 #else
-    STATIC_CHECK_FALSE(native_partial<float>);
-    STATIC_CHECK_FALSE(native_partial<double>);
-    STATIC_CHECK_FALSE(native_partial<int32_t>);
+    STATIC_CHECK_FALSE(native_masked_memory<float>);
+    STATIC_CHECK_FALSE(native_masked_memory<double>);
+    STATIC_CHECK_FALSE(native_masked_memory<int32_t>);
 #endif
+    // native_partial is the earlier name.
+    STATIC_CHECK(native_partial<float> == native_masked_memory<float>);
+    STATIC_CHECK(native_partial<int64_t> == native_masked_memory<int64_t>);
 }
+
+#if defined(__linux__)
+namespace {
+
+/// Two pages, the second inaccessible: an element run ending at the end of the first page faults if
+/// anything reads or writes past it.
+struct GuardPage {
+    std::size_t page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+    void       *base = mmap(nullptr, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    GuardPage() {
+        REQUIRE(base != MAP_FAILED);
+        REQUIRE(mprotect(static_cast<char *>(base) + page, page, PROT_NONE) == 0);
+    }
+    ~GuardPage() { munmap(base, 2 * page); }
+    /// The first of the last @p n elements before the guard.
+    template <typename T>
+    T *last(std::size_t n) const {
+        return reinterpret_cast<T *>(static_cast<char *>(base) + page) - n;
+    }
+};
+
+} // namespace
+
+TEMPLATE_TEST_CASE("masked load, store and gather never touch an inactive lane's memory", "[simd][partial][mask]", float, double, int32_t,
+                   uint32_t, int64_t, uint64_t) {
+    // The active lanes sit against an inaccessible page, so a read or write of any inactive lane past
+    // them faults; inactive lanes' gather indices point into it.
+    using T           = TestType;
+    constexpr int   L = Vec<T>::lanes;
+    GuardPage const guard;
+    for (std::size_t n = 0; n <= static_cast<std::size_t>(L); ++n) {
+        INFO("n = " << n);
+        T *const p = guard.last<T>(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            p[i] = static_cast<T>(i + 1);
+        }
+        Mask<T> const m = first_n<T>(n);
+
+        T out[L];
+        storeu(out, loadu(p, m));
+        for (int i = 0; i < L; ++i) {
+            CHECK(out[i] == (static_cast<std::size_t>(i) < n ? static_cast<T>(i + 1) : T(0)));
+        }
+
+        storeu(p, broadcast(T(9)), m);
+        for (std::size_t i = 0; i < n; ++i) {
+            CHECK(p[i] == T(9));
+        }
+
+        storeu(out, loadu_partial(p, n));
+        storeu_partial(p, loadu(out), n);
+        for (std::size_t i = 0; i < n; ++i) {
+            CHECK(p[i] == T(9));
+        }
+
+        if constexpr (std::is_floating_point_v<T>) {
+            // Active lanes read p[n - 1 - i]; inactive lanes' indices are far past the guard.
+            using I = gather_index_t<T>;
+            I at[L];
+            for (int i = 0; i < L; ++i) {
+                at[i] = static_cast<std::size_t>(i) < n ? static_cast<I>(n - 1 - static_cast<std::size_t>(i)) : I{1} << 20;
+            }
+            for (std::size_t i = 0; i < n; ++i) {
+                p[i] = static_cast<T>(10 + i);
+            }
+            storeu(out, gather(p, loadu(at), m));
+            for (int i = 0; i < L; ++i) {
+                CHECK(out[i] == (static_cast<std::size_t>(i) < n ? static_cast<T>(10 + n - 1 - static_cast<std::size_t>(i)) : T(0)));
+            }
+        }
+    }
+}
+#endif

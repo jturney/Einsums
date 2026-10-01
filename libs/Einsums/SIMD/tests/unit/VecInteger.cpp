@@ -219,7 +219,7 @@ TEMPLATE_TEST_CASE("cmp_eq returns all-1s mask in matching lanes", "[simd][integ
     auto                  vb    = loadu<TestType>(b.data());
     auto                  vmask = cmp_eq(va, vb);
     std::vector<TestType> mask(N);
-    storeu(mask.data(), vmask);
+    storeu(mask.data(), to_vec(vmask));
     using U = std::make_unsigned_t<TestType>;
     for (int i = 0; i < N; ++i) {
         if (i % 2 == 0)
@@ -278,7 +278,7 @@ TEMPLATE_TEST_CASE("cmp_ne, cmp_lt, cmp_le, cmp_gt and cmp_ge order integers by 
                     a[i] = s[(oa + static_cast<size_t>(i)) % s.size()];
                     b[i] = s[(ob + 3 * static_cast<size_t>(i)) % s.size()];
                 }
-                storeu(out, op(loadu(a), loadu(b)));
+                storeu(out, to_vec(op(loadu(a), loadu(b))));
                 for (int i = 0; i < L; ++i) {
                     INFO(name << " lane " << i << ": a = " << a[i] << ", b = " << b[i]);
                     CHECK(static_cast<U>(out[i]) == (ref(a[i], b[i]) ? ~U(0) : U(0)));

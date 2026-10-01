@@ -11,9 +11,9 @@
 ///   - A hash of every element (xorshift: x ^= x << 13; x ^= x >> 17; x ^= x << 5), which is
 ///     nothing but shift_left, shift_right and bitwise_xor, lanes at a time. The shift count is
 ///     a template argument, because every ISA encodes it in the instruction.
-///   - Counting the elements equal to a key. cmp_eq gives -1 (all ones) in matching lanes and 0
-///     elsewhere, so subtracting the mask from a counter adds one per match without a branch, and
-///     reduce_add totals the counters at the end.
+///   - Counting the elements equal to a key. cmp_eq gives a Mask, and to_vec turns it into -1 (all
+///     ones) in matching lanes and 0 elsewhere, so subtracting it from a counter adds one per match
+///     without a branch, and reduce_add totals the counters at the end.
 ///
 /// AVX without AVX2 has no 256-bit integer instructions: on such a build these operations are
 /// missing and the program fails to link, rather than silently running something else.
@@ -52,7 +52,7 @@ std::int32_t count_equal(std::size_t n, std::int32_t const *v, std::int32_t key)
     Vec<std::int32_t>       count = broadcast(std::int32_t{0});
     std::size_t             i     = 0;
     for (; i + L <= n; i += L) {
-        count = sub(count, cmp_eq(loadu(v + i), vkey)); // a match is -1, so this adds one
+        count = sub(count, to_vec(cmp_eq(loadu(v + i), vkey))); // a match is -1, so this adds one
     }
     std::int32_t total = reduce_add(count);
     for (; i < n; ++i) {

@@ -125,6 +125,8 @@ TEMPLATE_TEST_CASE("compares, masks and select match the scalar instantiation", 
     check_matches_scalar<T>([](auto x, auto y) { return simd::select(simd::cmp_le(x, y), x, y + 1); }, "cmp_le");
     check_matches_scalar<T>([](auto x, auto y) { return simd::select(simd::cmp_gt(x, y), x, y + 1); }, "cmp_gt");
     check_matches_scalar<T>([](auto x, auto y) { return simd::select(simd::cmp_ge(x, y), x, y + 1); }, "cmp_ge");
+    check_matches_scalar<T>([](auto x, auto y) { return simd::select(!simd::cmp_lt(x, y), x, y + 1); }, "!m");
+    check_matches_scalar<T>([](auto x, auto y) { return simd::select(!(simd::cmp_lt(x, y) | simd::cmp_ne(x, x)), y, x); }, "!(m | n)");
     check_matches_scalar<T>(
         [](auto x, auto y) {
             auto const lt = simd::cmp_lt(x, y), pos = simd::cmp_gt(x, simd::splat<decltype(x)>(T(0)));
@@ -287,4 +289,42 @@ TEST_CASE("the generic layer's overloads resolve as designed", "[simd][generic]"
     static Fn const fn = simd::select<Fn>(+[] { return 7; }, nullptr, nullptr, nullptr, nullptr);
     CHECK(fn() == 7);
     CHECK(simd::select(true, 1.0, 2.0) == 1.0);
+}
+
+TEMPLATE_TEST_CASE("masked loadu, storeu and lookup match the scalar instantiation", "[simd][generic][mask]", float, double) {
+    // The vector run masks its lanes with a Mask<T>; the scalar run on lane i uses the bool for that lane.
+    using T          = TestType;
+    using I          = simd::gather_index_t<T>;
+    constexpr int  L = simd::Vec<T>::lanes;
+    std::vector<T> table(64);
+    for (size_t k = 0; k < table.size(); ++k)
+        table[k] = T(0.25) * static_cast<T>(k) - T(3);
+    auto const s = inputs<T>();
+    for (size_t o = 0; o < s.size(); ++o) {
+        T x[L], y[L];
+        I at[L];
+        for (int i = 0; i < L; ++i) {
+            x[i]  = s[(o + static_cast<size_t>(i)) % s.size()];
+            y[i]  = s[(o + 3 * static_cast<size_t>(i) + 1) % s.size()];
+            at[i] = static_cast<I>((o * 7 + static_cast<size_t>(i) * 13) % table.size());
+        }
+        auto const vm = simd::cmp_lt(simd::loadu(x), simd::loadu(y));
+        T          loaded[L], looked[L], stored[L];
+        simd::store(loaded, simd::loadu(table.data(), vm));
+        simd::store(looked, simd::lookup(table.data(), simd::loadu(at), vm));
+        for (int i = 0; i < L; ++i)
+            stored[i] = T(-1);
+        simd::storeu(stored, simd::loadu(x), vm);
+        for (int i = 0; i < L; ++i) {
+            bool const m = simd::cmp_lt(x[i], y[i]);
+            INFO("lane " << i << ": x = " << x[i] << ", y = " << y[i]);
+            CHECK(same(loaded[i], simd::loadu(table.data() + i, m)));
+            CHECK(same(looked[i], simd::lookup(table.data(), at[i], m)));
+            T scalar_stored = T(-1);
+            simd::storeu(&scalar_stored, x[i], m);
+            CHECK(same(stored[i], scalar_stored));
+            CHECK(simd::count(m) == (m ? 1 : 0));
+            CHECK(simd::none(m) == !m);
+        }
+    }
 }
