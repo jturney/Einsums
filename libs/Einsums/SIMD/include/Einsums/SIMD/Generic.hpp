@@ -15,6 +15,7 @@
 #include <Einsums/SIMD/Vec.hpp>
 #include <Einsums/SIMD/Wide.hpp>
 
+#include <bit>
 #include <cmath>
 #include <concepts>
 #include <cstddef>
@@ -468,6 +469,27 @@ EINSUMS_FORCEINLINE bool bitwise_xor(B a, B b) {
 template <std::same_as<bool> B>
 EINSUMS_FORCEINLINE bool bitwise_andnot(B a, B b) {
     return a && !b;
+}
+
+// ---------------------------------------------------------------------------
+// Scalar bits: bitcast between same-width types, and the logical shifts by an
+// immediate count, as the vector forms.
+// ---------------------------------------------------------------------------
+
+template <detail::arithmetic To, detail::arithmetic From>
+    requires(sizeof(To) == sizeof(From))
+EINSUMS_FORCEINLINE To bitcast(From x) {
+    return std::bit_cast<To>(x);
+}
+template <int S, std::integral T>
+    requires(!std::same_as<T, bool>)
+EINSUMS_FORCEINLINE T shift_left(T v) {
+    return static_cast<T>(static_cast<std::make_unsigned_t<T>>(v) << S);
+}
+template <int S, std::integral T>
+    requires(!std::same_as<T, bool>)
+EINSUMS_FORCEINLINE T shift_right(T v) {
+    return static_cast<T>(static_cast<std::make_unsigned_t<T>>(v) >> S);
 }
 
 // ---------------------------------------------------------------------------

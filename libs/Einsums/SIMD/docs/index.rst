@@ -272,6 +272,28 @@ does not. In the scalar instantiation ``float * 2.0`` would compute in
 ``S(2.0)``. The scalar fallback build, where ``Vec<T>`` is a single ``T``
 that converts implicitly, cannot enforce this.
 
+Exponential
+===========
+
+``Math.hpp`` provides ``exp`` for ``float`` and ``double``, on ``Vec<T>``,
+wide ``Vec<T, N>`` and plain ``T``, written once over the generic operations so
+every instantiation gives the same bits. It reduces the argument by multiples
+of ``ln 2``, evaluates the Taylor series of the remainder, and scales by a
+power of two built from exponent bits, in two halves so that a subnormal
+result rounds once. Against a correctly rounded ``exp`` its worst error over
+the whole range, subnormal results included, is 0.9 ulp with FMA and 1.03 ulp
+without, and it returns exactly 1 at zero, ``inf`` and 0 past the range, and
+NaN for NaN. It needs the integer shifts, which AVX without AVX2 lacks.
+
+.. code-block:: cpp
+
+    #include <Einsums/SIMD/Math.hpp>
+
+    Vec<double> const e = simd::exp(-t);   // e^-T for the Boys downward recursion
+
+Under ``using namespace einsums::simd``, an unqualified ``exp(2.0)`` still
+calls the C library; call ``simd::exp`` for the vector algorithm on scalars.
+
 Mixed Precision at Equal Width
 ==============================
 

@@ -9,6 +9,7 @@
 // vector one, over NaN, signed zeros, infinities and the values that separate the rounding modes.
 
 #include <Einsums/SIMD/Generic.hpp>
+#include <Einsums/SIMD/Math.hpp>
 #include <Einsums/SIMD/RungLadder.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
@@ -127,6 +128,8 @@ TEMPLATE_TEST_CASE("math, fused forms and rounding match the scalar instantiatio
     check_matches_scalar<V>([](auto x, auto) { return simd::trunc(x); }, "trunc");
     check_matches_scalar<V>([](auto x, auto) { return simd::round(x); }, "round");
     check_matches_scalar<V>([](auto x, auto) { return simd::round_even(x); }, "round_even");
+    check_matches_scalar<V>([](auto x, auto) { return simd::exp(x); }, "exp");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::exp(simd::fnmadd(x, y, x)); }, "exp of an expression");
 }
 
 TEMPLATE_TEST_CASE("compares, masks and select match the scalar instantiation", "[simd][generic]", EINSUMS_GENERIC_VALUE_TYPES) {
@@ -296,6 +299,7 @@ TEST_CASE("the generic layer's overloads resolve as designed", "[simd][generic]"
         CHECK(sqrt(2.0) == std::sqrt(2.0));
         CHECK(round(2.5) == 3.0);
         CHECK(abs(-3) == 3);
+        CHECK(exp(1.0) == std::exp(1.0));
     }
 
     // The runtime ladder's select still resolves beside the scalar select.

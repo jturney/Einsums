@@ -55,6 +55,12 @@ struct Kernels {
     void (*interp_f64_wide_i32)(Table<double> const &t, double const *x, double *out, std::size_t n);
     /// The scalar instantiation of the same kernel body, compiled at the rung's flags.
     void (*interp_f64_scalar)(Table<double> const &t, double const *x, double *out, std::size_t n);
+
+    // exp, which the Boys function's downward recursion needs once per argument.
+    void (*exp_f32)(float const *x, float *out, std::size_t n);
+    void (*exp_f64)(double const *x, double *out, std::size_t n);
+    void (*exp_f64_wide)(double const *x, double *out, std::size_t n);
+    void (*exp_f64_scalar)(double const *x, double *out, std::size_t n);
 };
 
 #define EINSUMS_SIMD_BENCH_DECLARE_RUNG(ns)                                                                                                \

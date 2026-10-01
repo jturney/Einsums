@@ -389,6 +389,38 @@ EINSUMS_SIMD_WIDE_REDUCE(reduce_max, max)
 #undef EINSUMS_SIMD_WIDE_REDUCE
 
 // ---------------------------------------------------------------------------
+// Bits: bitcast between same-width element types, and the immediate shifts.
+// ---------------------------------------------------------------------------
+
+template <typename To, typename From, int N>
+    requires(detail::wide_lanes<From, N> && sizeof(To) == sizeof(From))
+EINSUMS_FORCEINLINE Vec<To, N> bitcast(Vec<From, N> v) {
+    Vec<To, N> r;
+    for (int k = 0; k < Vec<From, N>::parts; ++k) {
+        r.part[k] = bitcast<To>(v.part[k]);
+    }
+    return r;
+}
+template <int S, typename T, int N>
+    requires detail::wide_lanes<T, N>
+EINSUMS_FORCEINLINE Vec<T, N> shift_left(Vec<T, N> v) {
+    Vec<T, N> r;
+    for (int k = 0; k < Vec<T, N>::parts; ++k) {
+        r.part[k] = shift_left<S>(v.part[k]);
+    }
+    return r;
+}
+template <int S, typename T, int N>
+    requires detail::wide_lanes<T, N>
+EINSUMS_FORCEINLINE Vec<T, N> shift_right(Vec<T, N> v) {
+    Vec<T, N> r;
+    for (int k = 0; k < Vec<T, N>::parts; ++k) {
+        r.part[k] = shift_right<S>(v.part[k]);
+    }
+    return r;
+}
+
+// ---------------------------------------------------------------------------
 // Moving between element types with the same lane count.
 // ---------------------------------------------------------------------------
 

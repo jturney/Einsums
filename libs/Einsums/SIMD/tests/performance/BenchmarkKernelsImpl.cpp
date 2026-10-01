@@ -6,6 +6,7 @@
 // The benchmark kernels, compiled once per SIMD dispatch rung; see BenchmarkKernels.hpp.
 
 #include <Einsums/SIMD/Generic.hpp>
+#include <Einsums/SIMD/Math.hpp>
 #include <Einsums/SIMD/Platform.hpp>
 
 #include <cstddef>
@@ -60,6 +61,14 @@ void interp_kernel(Table<simd::scalar_t<V>> const &t, simd::scalar_t<V> const *x
     }
 }
 
+template <typename V>
+void exp_kernel(simd::scalar_t<V> const *x, simd::scalar_t<V> *out, std::size_t n) {
+    constexpr int L = simd::lanes_v<V>;
+    for (std::size_t i = 0; i < n; i += L) {
+        simd::store(out + i, simd::exp(simd::load<V>(x + i)));
+    }
+}
+
 constexpr int LF = simd::lanes<float>;
 
 } // namespace
@@ -79,6 +88,10 @@ Kernels const &kernels() noexcept {
         .interp_f64_wide     = &interp_kernel<simd::Vec<double, LF>, int64_t>,
         .interp_f64_wide_i32 = &interp_kernel<simd::Vec<double, LF>, int32_t>,
         .interp_f64_scalar   = &interp_kernel<double, int64_t>,
+        .exp_f32             = &exp_kernel<simd::Vec<float>>,
+        .exp_f64             = &exp_kernel<simd::Vec<double>>,
+        .exp_f64_wide        = &exp_kernel<simd::Vec<double, LF>>,
+        .exp_f64_scalar      = &exp_kernel<double>,
     };
     return table;
 }

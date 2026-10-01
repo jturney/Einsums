@@ -10,6 +10,7 @@
 //   interpolation   a six-term Taylor series about the grid point below x, the shape of the Boys
 //                   function inside its table: FP32, FP64, FP64 at FP32's lane count with a 64-bit
 //                   and with a shared 32-bit index, and the scalar instantiation of the same body
+//   exp             e^-T over the range the Boys recursion takes, in the same tiers
 //
 // Each label names the rung, so one run compares rungs, and the interpolation labels compare the
 // precision tiers: the FP64-at-FP32-width variants against plain FP64 show what the second register
@@ -150,6 +151,22 @@ EINSUMS_TEST_CASE("SIMD gather, conversion and interpolation on every supported 
             bench("interpolation f64 at f32 width, i32 index", r.set,
                   [&] { r.kernels->interp_f64_wide_i32(td.view, xd.data(), od.data(), n); });
             bench("interpolation f64 scalar body", r.set, [&] { r.kernels->interp_f64_scalar(td.view, xd.data(), od.data(), n); });
+        }
+    }
+
+    {
+        std::uniform_real_distribution<double> arg(-50.0, 0.0); // e^-T, as the Boys recursion takes it
+        std::vector<float>                     xf(n), of(n);
+        std::vector<double>                    xd(n), od(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            xd[i] = arg(rng);
+            xf[i] = static_cast<float>(xd[i]);
+        }
+        for (simd_bench::Rung const &r : simd_bench::runnable_rungs()) {
+            bench("exp f32", r.set, [&] { r.kernels->exp_f32(xf.data(), of.data(), n); });
+            bench("exp f64", r.set, [&] { r.kernels->exp_f64(xd.data(), od.data(), n); });
+            bench("exp f64 at f32 width", r.set, [&] { r.kernels->exp_f64_wide(xd.data(), od.data(), n); });
+            bench("exp f64 scalar body", r.set, [&] { r.kernels->exp_f64_scalar(xd.data(), od.data(), n); });
         }
     }
 }
