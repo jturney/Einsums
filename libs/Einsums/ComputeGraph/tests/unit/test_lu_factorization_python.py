@@ -123,11 +123,11 @@ def test_getrs_leaves_the_factorization_alone():
     assert np.array_equal(np.asarray(Ta), factored)
 
 
-def test_the_factorization_orders_the_solve():
+def test_the_factorization_orders_the_solve(dtype):
     """Ordering rides on the tensor, because the pivots are not a slot."""
     n = 4
-    A = _well_conditioned(n, "float64", 51)
-    B = np.asarray(np.random.default_rng(52).random((n, 2)))
+    A = _well_conditioned(n, dtype, 51)
+    B = np.asarray(np.random.default_rng(52).random((n, 2))).astype(dtype)
 
     Ta, Tb = _tensor("A", A), _tensor("B", B)
     pivots = la.LuPivots()
@@ -138,14 +138,14 @@ def test_the_factorization_orders_the_solve():
         la.getrs(Ta, pivots, Tb)
 
     g.execute()
-    assert_close(np.asarray(Tb), np.linalg.solve(A, B), rtol=1e-12, atol=1e-12)
+    assert_close(np.asarray(Tb), np.linalg.solve(A, B))
 
 
-def test_the_pivots_outlive_the_handle():
+def test_the_pivots_outlive_the_handle(dtype):
     """Both executors hold the buffer, not the Python object that named it."""
     n = 4
-    A = _well_conditioned(n, "float64", 61)
-    B = np.asarray(np.random.default_rng(62).random((n, 2)))
+    A = _well_conditioned(n, dtype, 61)
+    B = np.asarray(np.random.default_rng(62).random((n, 2))).astype(dtype)
 
     Ta, Tb = _tensor("A", A), _tensor("B", B)
 
@@ -157,13 +157,13 @@ def test_the_pivots_outlive_the_handle():
     del pivots
 
     g.execute()
-    assert_close(np.asarray(Tb), np.linalg.solve(A, B), rtol=1e-12, atol=1e-12)
+    assert_close(np.asarray(Tb), np.linalg.solve(A, B))
 
 
-def test_replaying_a_captured_lu_reproduces_the_solve():
+def test_replaying_a_captured_lu_reproduces_the_solve(dtype):
     n = 4
-    A = _well_conditioned(n, "float64", 71)
-    B = np.asarray(np.random.default_rng(72).random((n, 2)))
+    A = _well_conditioned(n, dtype, 71)
+    B = np.asarray(np.random.default_rng(72).random((n, 2))).astype(dtype)
     want = np.linalg.solve(A, B)
 
     Ta, Tb = _tensor("A", A), _tensor("B", B)
@@ -178,13 +178,13 @@ def test_replaying_a_captured_lu_reproduces_the_solve():
         np.asarray(Ta)[...] = A
         np.asarray(Tb)[...] = B
         g.execute()
-        assert_close(np.asarray(Tb), want, rtol=1e-12, atol=1e-12)
+        assert_close(np.asarray(Tb), want)
 
 
-def test_getrs_solves_a_rank_one_right_hand_side():
+def test_getrs_solves_a_rank_one_right_hand_side(dtype):
     n = 5
-    A = _well_conditioned(n, "float64", 81)
-    b = np.asarray(np.random.default_rng(82).random(n))
+    A = _well_conditioned(n, dtype, 81)
+    b = np.asarray(np.random.default_rng(82).random(n)).astype(dtype)
 
     Ta, Tb = _tensor("A", A), _tensor("b", b)
     pivots = la.LuPivots()
@@ -195,7 +195,7 @@ def test_getrs_solves_a_rank_one_right_hand_side():
         la.getrs(Ta, pivots, Tb)
     g.execute()
 
-    assert_close(np.asarray(Tb), np.linalg.solve(A, b), rtol=1e-12, atol=1e-12)
+    assert_close(np.asarray(Tb), np.linalg.solve(A, b))
 
 
 def test_zero_extent_lu_is_a_quick_return():

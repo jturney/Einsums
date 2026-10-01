@@ -28,6 +28,12 @@ import numpy as np
 import pytest
 
 import einsums
+from einsums.testing import assert_close
+
+
+def _pf(dtype, re, im):
+    """A prefactor for ``dtype``: complex(re, im) for a complex dtype, re otherwise."""
+    return complex(re, im) if np.dtype(dtype).kind == "c" else re
 import einsums.graph as cg
 
 
@@ -36,10 +42,10 @@ import einsums.graph as cg
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_gemm_OOO_baseline():
-    A = einsums.create_random_tensor("A", [4, 5])
-    B = einsums.create_random_tensor("B", [5, 3])
-    C = einsums.create_zero_tensor("C", [4, 3])
+def test_gemm_OOO_baseline(dtype):
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
+    B = einsums.create_random_tensor("B", [5, 3], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [4, 3], dtype=dtype)
 
     g = cg.Graph("g-OOO")
     with cg.capture(g):
@@ -47,7 +53,7 @@ def test_gemm_OOO_baseline():
     g.execute()
 
     expected = np.asarray(A) @ np.asarray(B)
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -55,10 +61,10 @@ def test_gemm_OOO_baseline():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_gemm_OOV_C_is_view_into_parent():
-    A = einsums.create_random_tensor("A", [4, 5])
-    B = einsums.create_random_tensor("B", [5, 3])
-    big_C = einsums.create_zero_tensor("big_C", [6, 6])
+def test_gemm_OOV_C_is_view_into_parent(dtype):
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
+    B = einsums.create_random_tensor("B", [5, 3], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [6, 6], dtype=dtype)
 
     g = cg.Graph("g-OOV")
     with cg.capture(g):
@@ -66,9 +72,9 @@ def test_gemm_OOV_C_is_view_into_parent():
         einsums.linalg.gemm(1.0, A, B, 0.0, Cv)
     g.execute()
 
-    expected = np.zeros((6, 6))
+    expected = np.zeros((6, 6), dtype=dtype)
     expected[1:5, 2:5] = np.asarray(A) @ np.asarray(B)
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -76,10 +82,10 @@ def test_gemm_OOV_C_is_view_into_parent():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_gemm_OVO_B_is_view():
-    A = einsums.create_random_tensor("A", [4, 5])
-    big_B = einsums.create_random_tensor("big_B", [5, 6])  # B = big_B[:, :3]
-    C = einsums.create_zero_tensor("C", [4, 3])
+def test_gemm_OVO_B_is_view(dtype):
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [5, 6], dtype=dtype)  # B = big_B[:, :3]
+    C = einsums.create_zero_tensor("C", [4, 3], dtype=dtype)
 
     g = cg.Graph("g-OVO")
     with cg.capture(g):
@@ -88,7 +94,7 @@ def test_gemm_OVO_B_is_view():
     g.execute()
 
     expected = np.asarray(A) @ np.asarray(big_B)[:, :3]
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -96,10 +102,10 @@ def test_gemm_OVO_B_is_view():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_gemm_OVV_only_A_is_owning():
-    A = einsums.create_random_tensor("A", [4, 5])
-    big_B = einsums.create_random_tensor("big_B", [5, 6])
-    big_C = einsums.create_zero_tensor("big_C", [6, 6])
+def test_gemm_OVV_only_A_is_owning(dtype):
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [5, 6], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [6, 6], dtype=dtype)
 
     g = cg.Graph("g-OVV")
     with cg.capture(g):
@@ -108,9 +114,9 @@ def test_gemm_OVV_only_A_is_owning():
         einsums.linalg.gemm(1.0, A, Bv, 0.0, Cv)
     g.execute()
 
-    expected = np.zeros((6, 6))
+    expected = np.zeros((6, 6), dtype=dtype)
     expected[0:4, 3:6] = np.asarray(A) @ np.asarray(big_B)[:, :3]
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -118,10 +124,10 @@ def test_gemm_OVV_only_A_is_owning():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_gemm_VOO_A_is_view():
-    big_A = einsums.create_random_tensor("big_A", [6, 5])  # A = big_A[1:5, :]
-    B = einsums.create_random_tensor("B", [5, 3])
-    C = einsums.create_zero_tensor("C", [4, 3])
+def test_gemm_VOO_A_is_view(dtype):
+    big_A = einsums.create_random_tensor("big_A", [6, 5], dtype=dtype)  # A = big_A[1:5, :]
+    B = einsums.create_random_tensor("B", [5, 3], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [4, 3], dtype=dtype)
 
     g = cg.Graph("g-VOO")
     with cg.capture(g):
@@ -130,7 +136,7 @@ def test_gemm_VOO_A_is_view():
     g.execute()
 
     expected = np.asarray(big_A)[1:5, :] @ np.asarray(B)
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -138,10 +144,10 @@ def test_gemm_VOO_A_is_view():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_gemm_VOV_A_and_C_are_views():
-    big_A = einsums.create_random_tensor("big_A", [6, 5])
-    B = einsums.create_random_tensor("B", [5, 3])
-    big_C = einsums.create_zero_tensor("big_C", [5, 5])
+def test_gemm_VOV_A_and_C_are_views(dtype):
+    big_A = einsums.create_random_tensor("big_A", [6, 5], dtype=dtype)
+    B = einsums.create_random_tensor("B", [5, 3], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [5, 5], dtype=dtype)
 
     g = cg.Graph("g-VOV")
     with cg.capture(g):
@@ -150,9 +156,9 @@ def test_gemm_VOV_A_and_C_are_views():
         einsums.linalg.gemm(1.0, Av, B, 0.0, Cv)
     g.execute()
 
-    expected = np.zeros((5, 5))
+    expected = np.zeros((5, 5), dtype=dtype)
     expected[1:5, 1:4] = np.asarray(big_A)[1:5, :] @ np.asarray(B)
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -160,10 +166,10 @@ def test_gemm_VOV_A_and_C_are_views():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_gemm_VVO_A_and_B_are_views():
-    big_A = einsums.create_random_tensor("big_A", [6, 5])
-    big_B = einsums.create_random_tensor("big_B", [5, 6])
-    C = einsums.create_zero_tensor("C", [4, 3])
+def test_gemm_VVO_A_and_B_are_views(dtype):
+    big_A = einsums.create_random_tensor("big_A", [6, 5], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [5, 6], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [4, 3], dtype=dtype)
 
     g = cg.Graph("g-VVO")
     with cg.capture(g):
@@ -173,7 +179,7 @@ def test_gemm_VVO_A_and_B_are_views():
     g.execute()
 
     expected = np.asarray(big_A)[1:5, :] @ np.asarray(big_B)[:, 2:5]
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -181,10 +187,10 @@ def test_gemm_VVO_A_and_B_are_views():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_gemm_VVV_all_three_views_with_trans_a():
-    big_A = einsums.create_random_tensor("big_A", [5, 6])  # A_view = big_A[:, :3] (5x3)
-    big_B = einsums.create_random_tensor("big_B", [5, 6])  # B_view = big_B[:, :3] (5x3)
-    big_C = einsums.create_zero_tensor("big_C", [5, 5])  # C_view = big_C[:3, :3] (3x3)
+def test_gemm_VVV_all_three_views_with_trans_a(dtype):
+    big_A = einsums.create_random_tensor("big_A", [5, 6], dtype=dtype)  # A_view = big_A[:, :3] (5x3)
+    big_B = einsums.create_random_tensor("big_B", [5, 6], dtype=dtype)  # B_view = big_B[:, :3] (5x3)
+    big_C = einsums.create_zero_tensor("big_C", [5, 5], dtype=dtype)  # C_view = big_C[:3, :3] (3x3)
 
     g = cg.Graph("g-VVV-T")
     with cg.capture(g):
@@ -195,9 +201,9 @@ def test_gemm_VVV_all_three_views_with_trans_a():
         einsums.linalg.gemm(1.0, Av, Bv, 0.0, Cv, trans_a=True)
     g.execute()
 
-    expected = np.zeros((5, 5))
+    expected = np.zeros((5, 5), dtype=dtype)
     expected[:3, :3] = np.asarray(big_A)[:, :3].T @ np.asarray(big_B)[:, :3]
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -205,21 +211,22 @@ def test_gemm_VVV_all_three_views_with_trans_a():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_gemm_density_pattern_VVO_with_trans_b():
+def test_gemm_density_pattern_VVO_with_trans_b(dtype):
     """SCF density build via views: D = 2 * C_occ @ C_occ^T, C_occ a view of C."""
+    pf_2_0 = _pf(dtype, 2.0, 0.75)
     nbf, nocc = 5, 3
-    C = einsums.create_random_tensor("C", [nbf, nbf])
-    D = einsums.create_zero_tensor("D", [nbf, nbf])
+    C = einsums.create_random_tensor("C", [nbf, nbf], dtype=dtype)
+    D = einsums.create_zero_tensor("D", [nbf, nbf], dtype=dtype)
 
     g = cg.Graph("density-views-direct")
     with cg.capture(g):
         C_occ = cg.view(C, [(-1, -1), (0, nocc)])
-        einsums.linalg.gemm(2.0, C_occ, C_occ, 0.0, D, trans_b=True)
+        einsums.linalg.gemm(pf_2_0, C_occ, C_occ, 0.0, D, trans_b=True)
     g.execute()
 
     C_np = np.asarray(C)
-    expected = 2.0 * C_np[:, :nocc] @ C_np[:, :nocc].T
-    np.testing.assert_allclose(np.asarray(D), expected, rtol=1e-5)
+    expected = pf_2_0 * C_np[:, :nocc] @ C_np[:, :nocc].T
+    assert_close(np.asarray(D), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -227,10 +234,10 @@ def test_gemm_density_pattern_VVO_with_trans_b():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_gemm_OVV_with_trans_a_and_trans_b():
-    A = einsums.create_random_tensor("A", [5, 4])  # A^T is 4x5
-    big_B = einsums.create_random_tensor("big_B", [3, 6])  # B = big_B[:, :5]; B^T is 5x3
-    big_C = einsums.create_zero_tensor("big_C", [6, 6])
+def test_gemm_OVV_with_trans_a_and_trans_b(dtype):
+    A = einsums.create_random_tensor("A", [5, 4], dtype=dtype)  # A^T is 4x5
+    big_B = einsums.create_random_tensor("big_B", [3, 6], dtype=dtype)  # B = big_B[:, :5]; B^T is 5x3
+    big_C = einsums.create_zero_tensor("big_C", [6, 6], dtype=dtype)
 
     g = cg.Graph("g-OVV-TT")
     with cg.capture(g):
@@ -239,6 +246,6 @@ def test_gemm_OVV_with_trans_a_and_trans_b():
         einsums.linalg.gemm(1.0, A, Bv, 0.0, Cv, trans_a=True, trans_b=True)
     g.execute()
 
-    expected = np.zeros((6, 6))
+    expected = np.zeros((6, 6), dtype=dtype)
     expected[0:4, 0:3] = np.asarray(A).T @ np.asarray(big_B)[:, :5].T
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)

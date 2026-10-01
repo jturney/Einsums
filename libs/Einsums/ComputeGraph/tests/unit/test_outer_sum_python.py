@@ -22,7 +22,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import ALL_DTYPES, REAL_DTYPES
+from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -44,15 +44,15 @@ def test_outer_sum_rank2_eager(dtype):
     np.testing.assert_allclose(np.asarray(r), expected, rtol=1e-5)
 
 
-def test_outer_sum_empty_coefficients_defaults_to_plus_one():
-    a = einsums.create_random_tensor("a", [3])
-    b = einsums.create_random_tensor("b", [4])
-    r = einsums.create_zero_tensor("r", [3, 4])
+def test_outer_sum_empty_coefficients_defaults_to_plus_one(dtype):
+    a = einsums.create_random_tensor("a", [3], dtype=dtype)
+    b = einsums.create_random_tensor("b", [4], dtype=dtype)
+    r = einsums.create_zero_tensor("r", [3, 4], dtype=dtype)
 
     einsums.linalg.outer_sum(r, [a, b], [])
 
     expected = np.asarray(a)[:, None] + np.asarray(b)[None, :]
-    np.testing.assert_allclose(np.asarray(r), expected, rtol=1e-5)
+    assert_close(np.asarray(r), expected)
 
 
 @pytest.mark.parametrize("dtype", REAL_DTYPES)
@@ -120,16 +120,16 @@ def test_outer_sum_mp2_denominator_in_capture(dtype):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_outer_sum_and_element_transform_for_mp2():
+def test_outer_sum_and_element_transform_for_mp2(dtype):
     """Δ then 1/Δ, the full MP2-weight pattern, graph-only."""
     nocc, nvirt = 3, 4
-    eps_o = einsums.create_random_tensor("eps_o", [nocc])
-    eps_v = einsums.create_random_tensor("eps_v", [nvirt])
+    eps_o = einsums.create_random_tensor("eps_o", [nocc], dtype=dtype)
+    eps_v = einsums.create_random_tensor("eps_v", [nvirt], dtype=dtype)
     # Force eigenvalues to be ordered so virtual > occupied and Δ < 0.
     np.asarray(eps_o)[:] = -np.abs(np.asarray(eps_o)) - 0.1
     np.asarray(eps_v)[:] = +np.abs(np.asarray(eps_v)) + 0.1
 
-    inv_delta = einsums.create_zero_tensor("inv_delta", [nocc, nocc, nvirt, nvirt])
+    inv_delta = einsums.create_zero_tensor("inv_delta", [nocc, nocc, nvirt, nvirt], dtype=dtype)
 
     g = cg.Graph("mp2-weight")
     with cg.capture(g):
@@ -141,7 +141,7 @@ def test_outer_sum_and_element_transform_for_mp2():
     ev = np.asarray(eps_v)
     expected_delta = eo[:, None, None, None] + eo[None, :, None, None] - ev[None, None, :, None] - ev[None, None, None, :]
     expected = 1.0 / expected_delta
-    np.testing.assert_allclose(np.asarray(inv_delta), expected, rtol=1e-5)
+    assert_close(np.asarray(inv_delta), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -194,24 +194,24 @@ def test_outer_sum_no_vectors_raises():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_outer_sum_OO_baseline():
+def test_outer_sum_OO_baseline(dtype):
     """Cell OO, owning result, owning vectors. (Already covered by earlier tests
     but listed here so the matrix is complete in one place.)"""
-    a = einsums.create_random_tensor("a", [3])
-    b = einsums.create_random_tensor("b", [4])
-    r = einsums.create_zero_tensor("r", [3, 4])
+    a = einsums.create_random_tensor("a", [3], dtype=dtype)
+    b = einsums.create_random_tensor("b", [4], dtype=dtype)
+    r = einsums.create_zero_tensor("r", [3, 4], dtype=dtype)
 
     einsums.linalg.outer_sum(r, [a, b], [+1.0, +1.0])
 
     expected = np.asarray(a)[:, None] + np.asarray(b)[None, :]
-    np.testing.assert_allclose(np.asarray(r), expected, rtol=1e-5)
+    assert_close(np.asarray(r), expected)
 
 
-def test_outer_sum_OV_all_vectors_are_views():
+def test_outer_sum_OV_all_vectors_are_views(dtype):
     """Cell OV, owning result, all vectors are views into larger tensors."""
-    big_a = einsums.create_random_tensor("big_a", [10])
-    big_b = einsums.create_random_tensor("big_b", [10])
-    r = einsums.create_zero_tensor("r", [3, 4])
+    big_a = einsums.create_random_tensor("big_a", [10], dtype=dtype)
+    big_b = einsums.create_random_tensor("big_b", [10], dtype=dtype)
+    r = einsums.create_zero_tensor("r", [3, 4], dtype=dtype)
 
     g = cg.Graph("os-OV")
     with cg.capture(g):
@@ -221,14 +221,14 @@ def test_outer_sum_OV_all_vectors_are_views():
     g.execute()
 
     expected = np.asarray(big_a)[2:5, None] + np.asarray(big_b)[None, 1:5]
-    np.testing.assert_allclose(np.asarray(r), expected, rtol=1e-5)
+    assert_close(np.asarray(r), expected)
 
 
-def test_outer_sum_VO_result_is_view_owning_vectors():
+def test_outer_sum_VO_result_is_view_owning_vectors(dtype):
     """Cell VO, view result (slab in a bigger tensor), owning vectors."""
-    a = einsums.create_random_tensor("a", [3])
-    b = einsums.create_random_tensor("b", [4])
-    big_r = einsums.create_zero_tensor("big_r", [6, 8])
+    a = einsums.create_random_tensor("a", [3], dtype=dtype)
+    b = einsums.create_random_tensor("b", [4], dtype=dtype)
+    big_r = einsums.create_zero_tensor("big_r", [6, 8], dtype=dtype)
 
     g = cg.Graph("os-VO")
     with cg.capture(g):
@@ -236,20 +236,20 @@ def test_outer_sum_VO_result_is_view_owning_vectors():
         einsums.linalg.outer_sum(rv, [a, b], [+1.0, +1.0])
     g.execute()
 
-    expected = np.zeros((6, 8))
+    expected = np.zeros((6, 8), dtype=dtype)
     expected[1:4, 2:6] = np.asarray(a)[:, None] + np.asarray(b)[None, :]
-    np.testing.assert_allclose(np.asarray(big_r), expected, rtol=1e-5)
+    assert_close(np.asarray(big_r), expected)
 
 
-def test_outer_sum_VV_all_views():
+def test_outer_sum_VV_all_views(dtype):
     """Cell VV, view result, all-view vectors. The MP2 denominator pattern when
     eigenvalues live in larger arrays (e.g. full eps split into occ/virt views)."""
-    big_eps = einsums.create_random_tensor("big_eps", [10])
+    big_eps = einsums.create_random_tensor("big_eps", [10], dtype=dtype)
     # Make first 4 elements "occupied" (negative) and rest "virtual" (positive),
     # then split via views.
     np.asarray(big_eps)[:4] = -np.abs(np.asarray(big_eps)[:4]) - 0.5
     np.asarray(big_eps)[4:] = +np.abs(np.asarray(big_eps)[4:]) + 0.5
-    big_delta = einsums.create_zero_tensor("big_delta", [6, 6, 8, 8])
+    big_delta = einsums.create_zero_tensor("big_delta", [6, 6, 8, 8], dtype=dtype)
 
     nocc, nvirt = 3, 4
     g = cg.Graph("os-VV-mp2")
@@ -263,21 +263,21 @@ def test_outer_sum_VV_all_views():
     eo = np.asarray(big_eps)[:nocc]
     ev = np.asarray(big_eps)[4:4 + nvirt]
     expected_block = eo[:, None, None, None] + eo[None, :, None, None] - ev[None, None, :, None] - ev[None, None, None, :]
-    expected = np.zeros((6, 6, 8, 8))
+    expected = np.zeros((6, 6, 8, 8), dtype=dtype)
     expected[:nocc, :nocc, :nvirt, :nvirt] = expected_block
-    np.testing.assert_allclose(np.asarray(big_delta), expected, rtol=1e-5)
+    assert_close(np.asarray(big_delta), expected)
 
 
-def test_outer_sum_VV_then_element_transform_full_mp2_weight():
+def test_outer_sum_VV_then_element_transform_full_mp2_weight(dtype):
     """End-to-end: extract eps_occ and eps_virt as views from a single eps array,
     build the MP2 1/Δ tensor via outer_sum + element_transform, all captured."""
     nbf = 8
     nocc = 3
     nvirt = nbf - nocc
-    eps = einsums.create_random_tensor("eps", [nbf])
+    eps = einsums.create_random_tensor("eps", [nbf], dtype=dtype)
     np.asarray(eps)[:nocc] = -np.abs(np.asarray(eps)[:nocc]) - 0.5
     np.asarray(eps)[nocc:] = +np.abs(np.asarray(eps)[nocc:]) + 0.5
-    inv_delta = einsums.create_zero_tensor("inv_delta", [nocc, nocc, nvirt, nvirt])
+    inv_delta = einsums.create_zero_tensor("inv_delta", [nocc, nocc, nvirt, nvirt], dtype=dtype)
 
     g = cg.Graph("mp2-weight-views")
     with cg.capture(g):
@@ -291,22 +291,22 @@ def test_outer_sum_VV_then_element_transform_full_mp2_weight():
     ev = np.asarray(eps)[nocc:]
     expected_delta = eo[:, None, None, None] + eo[None, :, None, None] - ev[None, None, :, None] - ev[None, None, None, :]
     expected = 1.0 / expected_delta
-    np.testing.assert_allclose(np.asarray(inv_delta), expected, rtol=1e-5)
+    assert_close(np.asarray(inv_delta), expected)
 
 
 @pytest.mark.parametrize("capture", [False, True])
-def test_outer_sum_reads_strided_vectors_through_their_stride(capture):
+def test_outer_sum_reads_strided_vectors_through_their_stride(capture, dtype):
     """A row of a column-major matrix is a vector whose elements are a matrix height apart.
 
     The kernel read every vector as contiguous, so a row view summed the wrong elements.
     """
-    M = einsums.create_zero_tensor("M", [4, 3])
+    M = einsums.create_zero_tensor("M", [4, 3], dtype=dtype)
     m = np.arange(12.0).reshape(4, 3)
     np.asarray(M)[...] = m
-    W = einsums.create_zero_tensor("W", [2, 2])
+    W = einsums.create_zero_tensor("W", [2, 2], dtype=dtype)
     w = np.array([[10.0, 20.0], [30.0, 40.0]])
     np.asarray(W)[...] = w
-    R = einsums.create_zero_tensor("R", [3, 2])
+    R = einsums.create_zero_tensor("R", [3, 2], dtype=dtype)
 
     rows = [M[1, :], W[0, :]]
     if capture:
@@ -317,4 +317,4 @@ def test_outer_sum_reads_strided_vectors_through_their_stride(capture):
     else:
         einsums.linalg.outer_sum(R, rows, [1.0, 2.0])
 
-    np.testing.assert_allclose(np.asarray(R), m[1, :][:, None] + 2.0 * w[0, :][None, :], rtol=0, atol=1e-14)
+    assert_close(np.asarray(R), m[1, :][:, None] + 2.0 * w[0, :][None, :])

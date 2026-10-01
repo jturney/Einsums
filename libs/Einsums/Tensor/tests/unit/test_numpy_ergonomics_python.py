@@ -27,7 +27,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close
+from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close, tolerance_for
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -111,9 +111,9 @@ def test_transpose_axpy_in_capture(dtype):
     assert_close(np.asarray(K), 2.0 * m - m.T)
 
 
-def test_permute_view_general_axes_in_capture():
+def test_permute_view_general_axes_in_capture(dtype):
     """cg.permute_view handles an arbitrary rank-3 axis permutation."""
-    R = einsums.create_random_tensor("R", [2, 3, 4], dtype="float64")
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype=dtype)
     r = np.asarray(R).copy()
     g = cg.Graph("perm")
     with cg.capture(g):
@@ -204,9 +204,11 @@ def test_max_complex_raises():
         Z.max()
 
 
-def test_reductions_in_capture():
+# .max() and .min() have no meaning for complex values, so this runs over the real dtypes.
+@pytest.mark.parametrize("dtype", REAL_DTYPES)
+def test_reductions_in_capture(dtype):
     """sum/mean/max record into graph [1] tensors; read after execute."""
-    B = einsums.create_random_tensor("B", [4, 5], dtype="float64")
+    B = einsums.create_random_tensor("B", [4, 5], dtype=dtype)
     b = np.asarray(B).copy()
     g = cg.Graph("red")
     with cg.capture(g):
@@ -219,9 +221,9 @@ def test_reductions_in_capture():
     assert_close(np.asarray(mx)[0], b.max())
 
 
-def test_reduction_feeds_downstream_op_in_capture():
+def test_reduction_feeds_downstream_op_in_capture(dtype):
     """The [1] sum result is a real tensor slot, so downstream ops compose."""
-    C = einsums.create_random_tensor("C", [3, 3], dtype="float64")
+    C = einsums.create_random_tensor("C", [3, 3], dtype=dtype)
     c = np.asarray(C).copy()
     g = cg.Graph("red2")
     with cg.capture(g):
@@ -231,10 +233,10 @@ def test_reduction_feeds_downstream_op_in_capture():
     assert_close(np.asarray(tot)[0], c.sum() + 100.0)
 
 
-def test_transpose_swapaxes_copy_in_capture():
+def test_transpose_swapaxes_copy_in_capture(dtype):
     """transpose/swapaxes route through cg.permute_view under capture; copy records."""
-    R = einsums.create_random_tensor("R", [2, 3, 4], dtype="float64")
-    B = einsums.create_random_tensor("B", [3, 3], dtype="float64")
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [3, 3], dtype=dtype)
     r, b = np.asarray(R).copy(), np.asarray(B).copy()
     g = cg.Graph("views")
     with cg.capture(g):
@@ -328,9 +330,9 @@ def test_matmul_matrix_vector(dtype):
     assert_close(np.asarray(v @ A), np.asarray(v) @ np.asarray(A))
 
 
-def test_matmul_matvec_in_capture():
-    A = einsums.create_random_tensor("A", [3, 4], dtype="float64")
-    x = einsums.create_random_tensor("x", [4], dtype="float64")
+def test_matmul_matvec_in_capture(dtype):
+    A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
+    x = einsums.create_random_tensor("x", [4], dtype=dtype)
     a, xv = np.asarray(A).copy(), np.asarray(x).copy()
     g = cg.Graph("gv")
     with cg.capture(g):
@@ -382,8 +384,8 @@ def test_setitem_scalar_fill_block():
     assert np.all(np.asarray(A)[2:, :] == 0.0)  # rest untouched
 
 
-def test_setitem_numpy_rhs():
-    A = einsums.create_zero_tensor("A", [3, 4], dtype="float64")
+def test_setitem_numpy_rhs(dtype):
+    A = einsums.create_zero_tensor("A", [3, 4], dtype=dtype)
     A[2, :] = np.arange(4.0)
     assert_close(np.asarray(A)[2], np.arange(4.0))
 
@@ -394,12 +396,12 @@ def test_setitem_shape_mismatch_raises():
         A[0] = einsums.zeros((3,), dtype="float64")  # wrong length
 
 
-def test_setitem_block_in_capture():
+def test_setitem_block_in_capture(dtype):
     """Slice-key block assignment records into a graph (sub-view dims resolve
     at execute, so the assignment is correct even though the captured view's
     dims are a placeholder at capture time)."""
-    C = einsums.create_zero_tensor("C", [3, 4], dtype="float64")
-    src = einsums.create_random_tensor("src", [2, 4], dtype="float64")
+    C = einsums.create_zero_tensor("C", [3, 4], dtype=dtype)
+    src = einsums.create_random_tensor("src", [2, 4], dtype=dtype)
     sv = np.asarray(src).copy()
     g = cg.Graph("si")
     with cg.capture(g):
@@ -408,11 +410,11 @@ def test_setitem_block_in_capture():
     assert_close(np.asarray(C)[0:2, :], sv)
 
 
-def test_setitem_int_key_in_capture():
+def test_setitem_int_key_in_capture(dtype):
     """Int-key assignment in capture works now that __getitem__ rank-reduces
     via the Drop axis."""
-    C = einsums.create_zero_tensor("C", [3, 4], dtype="float64")
-    row = einsums.create_random_tensor("row", [4], dtype="float64")
+    C = einsums.create_zero_tensor("C", [3, 4], dtype=dtype)
+    row = einsums.create_random_tensor("row", [4], dtype=dtype)
     rv = np.asarray(row).copy()
     g = cg.Graph("si-int")
     with cg.capture(g):
@@ -426,9 +428,9 @@ def test_setitem_int_key_in_capture():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_rank_reducing_read_in_capture():
+def test_rank_reducing_read_in_capture(dtype):
     """A[i] / A[:,j,:] / A[i,j] inside cg.capture rank-reduce (Drop)."""
-    R = einsums.create_random_tensor("R", [2, 3, 4], dtype="float64")
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype=dtype)
     r = np.asarray(R).copy()
     g = cg.Graph("drop")
     with cg.capture(g):
@@ -443,8 +445,8 @@ def test_rank_reducing_read_in_capture():
     assert_close(np.asarray(s), 2.0 * r[1])
 
 
-def test_negative_int_index_in_capture():
-    R = einsums.create_random_tensor("R", [2, 3, 4], dtype="float64")
+def test_negative_int_index_in_capture(dtype):
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype=dtype)
     r = np.asarray(R).copy()
     g = cg.Graph("drop-neg")
     with cg.capture(g):
@@ -453,10 +455,10 @@ def test_negative_int_index_in_capture():
     assert_close(np.asarray(d), r[-1])
 
 
-def test_matmul_on_dropped_view_in_capture():
+def test_matmul_on_dropped_view_in_capture(dtype):
     """A dropped (rank-reduced) view feeds gemv inside capture."""
-    R = einsums.create_random_tensor("R", [2, 3, 4], dtype="float64")
-    v = einsums.create_random_tensor("v", [4], dtype="float64")
+    R = einsums.create_random_tensor("R", [2, 3, 4], dtype=dtype)
+    v = einsums.create_random_tensor("v", [4], dtype=dtype)
     r, vv = np.asarray(R).copy(), np.asarray(v).copy()
     g = cg.Graph("drop-matvec")
     with cg.capture(g):
@@ -465,7 +467,7 @@ def test_matmul_on_dropped_view_in_capture():
     assert_close(np.asarray(y), r[0] @ vv)
 
 
-def test_dropped_view_matvec_repeated():
+def test_dropped_view_matvec_repeated(dtype):
     """Deterministic guard for the noncontiguous-gemv OpenMP data race.
 
     ``R[0]`` of a column-major (2,3,4) tensor is a (3,4) view with strides
@@ -478,15 +480,16 @@ def test_dropped_view_matvec_repeated():
     (1 - 0.9**200 ≈ certain). Each iteration uses fresh tensors so a lost
     update shows up as a wrong element vs numpy."""
     for trial in range(200):
-        R = einsums.create_random_tensor(f"R{trial}", [2, 3, 4], dtype="float64")
-        v = einsums.create_random_tensor(f"v{trial}", [4], dtype="float64")
+        R = einsums.create_random_tensor(f"R{trial}", [2, 3, 4], dtype=dtype)
+        v = einsums.create_random_tensor(f"v{trial}", [4], dtype=dtype)
         r, vv = np.asarray(R).copy(), np.asarray(v).copy()
         g = cg.Graph(f"drop-matvec-{trial}")
         with cg.capture(g):
             y = R[0] @ v
         g.execute()
         got, exp = np.asarray(y), r[0] @ vv
-        assert np.allclose(got, exp, rtol=1e-12, atol=1e-12), (
+        rtol, atol = tolerance_for(dtype)
+        assert np.allclose(got, exp, rtol=rtol, atol=atol), (
             f"trial {trial}: {got} != {exp} (diff {got - exp})"
         )
 
@@ -533,7 +536,7 @@ def test_scalar_mul_and_div(dtype):
     assert_close(np.asarray(A / 4.0), a / 4.0)   # __truediv__
 
 
-def test_complex_scalar_mul():
+def test_complex_scalar_mul(dtype):
     A = einsums.create_random_tensor("A", [2, 3], dtype="complex128")
     assert_close(np.asarray((2 + 1j) * A), (2 + 1j) * np.asarray(A))
 
@@ -580,7 +583,7 @@ def test_scalar_add_sub(dtype):
     assert_close(np.asarray(A), a)                # operands untouched
 
 
-def test_complex_scalar_add():
+def test_complex_scalar_add(dtype):
     A = einsums.create_random_tensor("A", [2, 3], dtype="complex128")
     a = np.asarray(A).copy()
     assert_close(np.asarray(A + (1 + 2j)), a + (1 + 2j))
@@ -606,9 +609,9 @@ def test_shift_op_direct(dtype):
     assert_close(np.asarray(A), a + 4.0)
 
 
-def test_scalar_add_captured_into_graph():
+def test_scalar_add_captured_into_graph(dtype):
     """Scalar add (binary) and in-place shift both record into a graph."""
-    A = einsums.create_random_tensor("A", [3, 3], dtype="float64")
+    A = einsums.create_random_tensor("A", [3, 3], dtype=dtype)
     a = np.asarray(A).copy()
     g = cg.Graph("shift")
     with cg.capture(g):
@@ -764,14 +767,14 @@ def test_constructor_result_has_ergonomics():
     assert z.T.shape == (3, 2)
 
 
-def test_constructor_inside_capture_is_graph_owned():
+def test_constructor_inside_capture_is_graph_owned(dtype):
     """A constructor used inside cg.capture yields a graph-owned tensor that
     survives a chained, reassigning workflow through execute()."""
-    A = einsums.create_random_tensor("A", [2, 2], dtype="float64")
+    A = einsums.create_random_tensor("A", [2, 2], dtype=dtype)
     a = np.asarray(A).copy()
     g = cg.Graph("ctor")
     with cg.capture(g):
-        acc = einsums.zeros((2, 2))
+        acc = einsums.zeros((2, 2), dtype=dtype)
         acc = acc + A
         acc = acc + A
     g.execute()
@@ -851,11 +854,11 @@ def test_generated_stubs_parse():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_capture_range_slice_matmul_shape():
+def test_capture_range_slice_matmul_shape(dtype):
     """matmul whose operand is a captured range slice sizes its output from
     the real sliced extent, not the full parent."""
-    A = einsums.create_random_tensor("A", [5, 4], dtype="float64")
-    B = einsums.create_random_tensor("B", [4, 2], dtype="float64")
+    A = einsums.create_random_tensor("A", [5, 4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 2], dtype=dtype)
     a, b = np.asarray(A).copy(), np.asarray(B).copy()
     g = cg.Graph("rs-mm")
     with cg.capture(g):
@@ -865,10 +868,10 @@ def test_capture_range_slice_matmul_shape():
     assert_close(np.asarray(C), a[1:3, :] @ b)
 
 
-def test_capture_range_slice_mean():
+def test_capture_range_slice_mean(dtype):
     """mean of a captured range slice divides by the sliced count, not the
     full-parent count."""
-    A = einsums.create_random_tensor("A", [5, 4], dtype="float64")
+    A = einsums.create_random_tensor("A", [5, 4], dtype=dtype)
     a = np.asarray(A).copy()
     g = cg.Graph("rs-mean")
     with cg.capture(g):
@@ -877,10 +880,10 @@ def test_capture_range_slice_mean():
     assert_close(np.asarray(m)[0], a[1:3, :].mean())
 
 
-def test_capture_chained_slice():
+def test_capture_chained_slice(dtype):
     """A slice of a slice resolves the inner view as its parent (not the
     original tensor)."""
-    v = einsums.create_random_tensor("v", [6], dtype="float64")
+    v = einsums.create_random_tensor("v", [6], dtype=dtype)
     vv = np.asarray(v).copy()
     g = cg.Graph("chain-slice")
     with cg.capture(g):

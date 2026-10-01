@@ -87,35 +87,35 @@ def test_complex_prefactors(dtype):
     assert_close(C, expected)
 
 
-def test_multi_char_indices_2d():
+def test_multi_char_indices_2d(dtype):
     # Multi-char tokens are comma-separated (single-char would otherwise
     # ambiguously parse "mu" as two indices m and u).
-    A = einsums.create_random_tensor("A", [4, 5])
-    C = einsums.create_zero_tensor("C", [5, 4])
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [5, 4], dtype=dtype)
 
     einsums.permute("nu,mu <- mu,nu", C, A)
 
-    np.testing.assert_allclose(np.asarray(C), np.asarray(A).T)
+    assert_close(np.asarray(C), np.asarray(A).T)
 
 
-def test_multi_char_indices_rank3():
-    A = einsums.create_random_tensor("A", [2, 3, 4])
-    C = einsums.create_zero_tensor("C", [4, 3, 2])
+def test_multi_char_indices_rank3(dtype):
+    A = einsums.create_random_tensor("A", [2, 3, 4], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [4, 3, 2], dtype=dtype)
 
     einsums.permute("sigma,nu,mu <- mu,nu,sigma", C, A)
 
     expected = np.transpose(np.asarray(A), (2, 1, 0))
-    np.testing.assert_allclose(np.asarray(C), expected)
+    assert_close(np.asarray(C), expected)
 
 
-def test_mixed_index_lengths():
+def test_mixed_index_lengths(dtype):
     # Single-char and multi-char tokens in the same spec.
-    A = einsums.create_random_tensor("A", [3, 5])
-    C = einsums.create_zero_tensor("C", [5, 3])
+    A = einsums.create_random_tensor("A", [3, 5], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [5, 3], dtype=dtype)
 
     einsums.permute("alpha,i <- i,alpha", C, A)
 
-    np.testing.assert_allclose(np.asarray(C), np.asarray(A).T)
+    assert_close(np.asarray(C), np.asarray(A).T)
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)

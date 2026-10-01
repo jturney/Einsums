@@ -25,6 +25,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
+
 from einsums.testing import ALL_DTYPES
 
 
@@ -96,20 +97,20 @@ def test_grouped_dot_captured_is_bitwise_the_loop(dtype):
                                       err_msg=f"entry {i}")
 
 
-def test_grouped_dot_takes_views():
+def test_grouped_dot_takes_views(dtype):
     # The DLPNO shape: the operands are slices of a padded store while the
     # destinations are scalars of their own.
-    store = einsums.create_random_tensor("store", [8, 8], dtype="float64")
+    store = einsums.create_random_tensor("store", [8, 8], dtype=dtype)
     A = [store[0:3, 0:4], store[2:5, 1:5]]
     B = [store[4:7, 2:6], store[1:4, 3:7]]
 
     ref = []
     for a, b in zip(A, B):
-        r = einsums.create_zero_tensor("r", [1], dtype="float64")
+        r = einsums.create_zero_tensor("r", [1], dtype=dtype)
         einsums.linalg.dot(r, a, b)
         ref.append(np.asarray(r).copy())
 
-    got = [einsums.create_zero_tensor(f"g{i}", [1], dtype="float64")
+    got = [einsums.create_zero_tensor(f"g{i}", [1], dtype=dtype)
            for i in range(2)]
     einsums.linalg.grouped_dot(got, A, B)
     for i, (g, r) in enumerate(zip(got, ref)):
@@ -180,20 +181,20 @@ def test_grouped_axpby_eager_is_bitwise_the_loop(dtype):
                                       err_msg=f"entry {i}")
 
 
-def test_grouped_axpby_chain_into_one_destination_keeps_term_order():
+def test_grouped_axpby_chain_into_one_destination_keeps_term_order(dtype):
     # The idiom the operation exists for: several scalars accumulated into one
     # element of a shared matrix, whose sum has to arrive in emission order.
     n = 6
-    S = [einsums.create_random_tensor(f"s{i}", [1, 1], dtype="float64")
+    S = [einsums.create_random_tensor(f"s{i}", [1, 1], dtype=dtype)
          for i in range(n)]
     alphas = [1.0 + 0.25 * i for i in range(n)]
     betas = [1.0] * n
 
-    looped = einsums.create_zero_tensor("looped", [1, 1], dtype="float64")
+    looped = einsums.create_zero_tensor("looped", [1, 1], dtype=dtype)
     for a, s in zip(alphas, S):
         einsums.linalg.axpby(a, s, 1.0, looped)
 
-    grouped = einsums.create_zero_tensor("grouped", [1, 1], dtype="float64")
+    grouped = einsums.create_zero_tensor("grouped", [1, 1], dtype=dtype)
     g = cg.Graph("chain")
     with cg.capture(g):
         einsums.linalg.grouped_axpby(alphas, S, betas, [grouped] * n)
@@ -237,20 +238,22 @@ def test_grouped_axpby_rejects_malformed_runs():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_grouped_pair_keeps_the_edge_between_reduction_and_accumulate():
+def test_grouped_pair_keeps_the_edge_between_reduction_and_accumulate(dtype):
+    # grouped_axpby takes real alphas and betas for every element type, so the
+    # prefactors stay real; the reduced values are complex for a complex dtype.
     # One node reduces a family into scalars, the next accumulates them into a
     # shared element. Two levels, and the interleaved loop's answer.
     n = 5
-    A = [einsums.create_random_tensor(f"a{i}", [4, 4], dtype="float64")
+    A = [einsums.create_random_tensor(f"a{i}", [4, 4], dtype=dtype)
          for i in range(n)]
-    B = [einsums.create_random_tensor(f"b{i}", [4, 4], dtype="float64")
+    B = [einsums.create_random_tensor(f"b{i}", [4, 4], dtype=dtype)
          for i in range(n)]
-    S = [einsums.create_zero_tensor(f"s{i}", [1, 1], dtype="float64")
+    S = [einsums.create_zero_tensor(f"s{i}", [1, 1], dtype=dtype)
          for i in range(n)]
-    dest = einsums.create_zero_tensor("dest", [1, 1], dtype="float64")
+    dest = einsums.create_zero_tensor("dest", [1, 1], dtype=dtype)
 
-    looped = einsums.create_zero_tensor("looped", [1, 1], dtype="float64")
-    scratch = einsums.create_zero_tensor("scratch", [1, 1], dtype="float64")
+    looped = einsums.create_zero_tensor("looped", [1, 1], dtype=dtype)
+    scratch = einsums.create_zero_tensor("scratch", [1, 1], dtype=dtype)
     for a, b in zip(A, B):
         einsums.linalg.dot(scratch, a, b)
         einsums.linalg.axpby(-2.0, scratch, 1.0, looped)

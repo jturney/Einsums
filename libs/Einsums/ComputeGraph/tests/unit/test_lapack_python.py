@@ -23,7 +23,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import ALL_DTYPES, REAL_DTYPES
+from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close
 
 
 @pytest.fixture(autouse=True)
@@ -123,7 +123,7 @@ def test_syev_in_graph_capture(dtype):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_syev_eig_eager_returns_tuple():
+def test_syev_eig_eager_returns_tuple(dtype):
     A = _build_symmetric(3)
     A_orig = np.asarray(A).copy()
     result = einsums.linalg.syev_eig(A, compute_eigenvectors=True)
@@ -132,7 +132,7 @@ def test_syev_eig_eager_returns_tuple():
     assert len(result) == 2
     _, w = result
     expected_w = np.linalg.eigvalsh(A_orig)
-    np.testing.assert_allclose(np.sort(np.asarray(w)), np.sort(expected_w), rtol=1e-10)
+    assert_close(np.sort(np.asarray(w)), np.sort(expected_w))
 
 
 def test_syev_eig_throws_during_capture():
@@ -274,7 +274,7 @@ def test_invert_in_graph_capture(dtype):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_det_eager_matches_numpy():
+def test_det_eager_matches_numpy(dtype):
     # Compare absolute values: einsums.linalg.det has a sign bug for random
     # matrices that require an odd-parity permutation in the LU
     # decomposition's pivot pattern. The bug surfaced on the Linux MKL CI
@@ -282,12 +282,9 @@ def test_det_eager_matches_numpy():
     # docs/known-bugs/det-sign.md (bug-pending) for the investigation
     # plan. Once the sign computation in LinearAlgebra.hpp::det is fixed,
     # drop the np.abs and the test will catch any regression.
-    A = einsums.create_random_tensor("A", [4, 4])
-    np.testing.assert_allclose(
-        np.abs(einsums.linalg.det(A)),
-        np.abs(np.linalg.det(np.asarray(A))),
-        rtol=1e-8,
-    )
+    A = einsums.create_random_tensor("A", [4, 4], dtype=dtype)
+    assert_close(np.abs(einsums.linalg.det(A)),
+        np.abs(np.linalg.det(np.asarray(A))))
 
 
 def test_det_throws_during_capture():
@@ -303,8 +300,8 @@ def test_det_throws_during_capture():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_svd_eager_singular_values_match_numpy():
-    A = einsums.create_random_tensor("A", [4, 3])
+def test_svd_eager_singular_values_match_numpy(dtype):
+    A = einsums.create_random_tensor("A", [4, 3], dtype=dtype)
     A_np = np.asarray(A).copy()
     result = einsums.linalg.svd(A)
     # svd returns (U, S, Vt).
@@ -312,7 +309,7 @@ def test_svd_eager_singular_values_match_numpy():
     assert len(result) == 3
     _, S, _ = result
     expected_s = np.linalg.svd(A_np, compute_uv=False)
-    np.testing.assert_allclose(np.sort(np.asarray(S))[::-1], expected_s, rtol=1e-4)
+    assert_close(np.sort(np.asarray(S))[::-1], expected_s)
 
 
 def test_svd_throws_during_capture():
@@ -328,13 +325,13 @@ def test_svd_throws_during_capture():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_qr_eager_q_r_reconstructs_input():
+def test_qr_eager_q_r_reconstructs_input(dtype):
     n, m = 4, 3
-    A = einsums.create_random_tensor("A", [n, m])
+    A = einsums.create_random_tensor("A", [n, m], dtype=dtype)
     A_np = np.asarray(A).copy()
     Q, R = einsums.linalg.qr(A)
     reconstructed = np.asarray(Q) @ np.asarray(R)
-    np.testing.assert_allclose(reconstructed, A_np, rtol=1e-5)
+    assert_close(reconstructed, A_np)
 
 
 def test_qr_throws_during_capture():

@@ -23,43 +23,50 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import ALL_DTYPES
 
 
-def test_direct_product_OOO_baseline():
-    A = einsums.create_random_tensor("A", [4, 5])
-    B = einsums.create_random_tensor("B", [4, 5])
-    C = einsums.create_zero_tensor("C", [4, 5])
+def _pf(dtype, re, im):
+    """A prefactor for ``dtype``: complex(re, im) for a complex dtype, re otherwise."""
+    return complex(re, im) if np.dtype(dtype).kind == "c" else re
+from einsums.testing import ALL_DTYPES, assert_close
+
+
+def test_direct_product_OOO_baseline(dtype):
+    pf_1_5 = _pf(dtype, 1.5, 0.75)
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 5], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [4, 5], dtype=dtype)
 
     g = cg.Graph("dp-OOO")
     with cg.capture(g):
-        einsums.linalg.direct_product(1.5, A, B, 0.0, C)
+        einsums.linalg.direct_product(pf_1_5, A, B, 0.0, C)
     g.execute()
 
-    expected = 1.5 * np.asarray(A) * np.asarray(B)
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    expected = pf_1_5 * np.asarray(A) * np.asarray(B)
+    assert_close(np.asarray(C), expected)
 
 
-def test_direct_product_OOV_C_is_view():
-    A = einsums.create_random_tensor("A", [3, 4])
-    B = einsums.create_random_tensor("B", [3, 4])
-    big_C = einsums.create_zero_tensor("big_C", [6, 8])
+def test_direct_product_OOV_C_is_view(dtype):
+    pf_2_0 = _pf(dtype, 2.0, 0.75)
+    A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [3, 4], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [6, 8], dtype=dtype)
 
     g = cg.Graph("dp-OOV")
     with cg.capture(g):
         Cv = cg.view(big_C, [(1, 4), (2, 6)])
-        einsums.linalg.direct_product(2.0, A, B, 0.0, Cv)
+        einsums.linalg.direct_product(pf_2_0, A, B, 0.0, Cv)
     g.execute()
 
-    expected = np.zeros((6, 8))
-    expected[1:4, 2:6] = 2.0 * np.asarray(A) * np.asarray(B)
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    expected = np.zeros((6, 8), dtype=dtype)
+    expected[1:4, 2:6] = pf_2_0 * np.asarray(A) * np.asarray(B)
+    assert_close(np.asarray(big_C), expected)
 
 
-def test_direct_product_OVO_B_is_view():
-    A = einsums.create_random_tensor("A", [3, 4])
-    big_B = einsums.create_random_tensor("big_B", [6, 8])
-    C = einsums.create_zero_tensor("C", [3, 4])
+def test_direct_product_OVO_B_is_view(dtype):
+    A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [6, 8], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [3, 4], dtype=dtype)
 
     g = cg.Graph("dp-OVO")
     with cg.capture(g):
@@ -68,13 +75,13 @@ def test_direct_product_OVO_B_is_view():
     g.execute()
 
     expected = np.asarray(A) * np.asarray(big_B)[:3, :4]
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
-def test_direct_product_OVV_B_and_C_are_views():
-    A = einsums.create_random_tensor("A", [3, 4])
-    big_B = einsums.create_random_tensor("big_B", [6, 8])
-    big_C = einsums.create_zero_tensor("big_C", [6, 8])
+def test_direct_product_OVV_B_and_C_are_views(dtype):
+    A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [6, 8], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [6, 8], dtype=dtype)
 
     g = cg.Graph("dp-OVV")
     with cg.capture(g):
@@ -83,15 +90,15 @@ def test_direct_product_OVV_B_and_C_are_views():
         einsums.linalg.direct_product(1.0, A, Bv, 0.0, Cv)
     g.execute()
 
-    expected = np.zeros((6, 8))
+    expected = np.zeros((6, 8), dtype=dtype)
     expected[2:5, 3:7] = np.asarray(A) * np.asarray(big_B)[:3, :4]
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)
 
 
-def test_direct_product_VOO_A_is_view():
-    big_A = einsums.create_random_tensor("big_A", [6, 8])
-    B = einsums.create_random_tensor("B", [3, 4])
-    C = einsums.create_zero_tensor("C", [3, 4])
+def test_direct_product_VOO_A_is_view(dtype):
+    big_A = einsums.create_random_tensor("big_A", [6, 8], dtype=dtype)
+    B = einsums.create_random_tensor("B", [3, 4], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [3, 4], dtype=dtype)
 
     g = cg.Graph("dp-VOO")
     with cg.capture(g):
@@ -100,13 +107,13 @@ def test_direct_product_VOO_A_is_view():
     g.execute()
 
     expected = np.asarray(big_A)[1:4, 2:6] * np.asarray(B)
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
-def test_direct_product_VOV_A_and_C_are_views():
-    big_A = einsums.create_random_tensor("big_A", [6, 8])
-    B = einsums.create_random_tensor("B", [3, 4])
-    big_C = einsums.create_zero_tensor("big_C", [6, 8])
+def test_direct_product_VOV_A_and_C_are_views(dtype):
+    big_A = einsums.create_random_tensor("big_A", [6, 8], dtype=dtype)
+    B = einsums.create_random_tensor("B", [3, 4], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [6, 8], dtype=dtype)
 
     g = cg.Graph("dp-VOV")
     with cg.capture(g):
@@ -115,15 +122,15 @@ def test_direct_product_VOV_A_and_C_are_views():
         einsums.linalg.direct_product(1.0, Av, B, 0.0, Cv)
     g.execute()
 
-    expected = np.zeros((6, 8))
+    expected = np.zeros((6, 8), dtype=dtype)
     expected[2:5, 3:7] = np.asarray(big_A)[1:4, 2:6] * np.asarray(B)
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)
 
 
-def test_direct_product_VVO_A_and_B_are_views():
-    big_A = einsums.create_random_tensor("big_A", [6, 8])
-    big_B = einsums.create_random_tensor("big_B", [6, 8])
-    C = einsums.create_zero_tensor("C", [3, 4])
+def test_direct_product_VVO_A_and_B_are_views(dtype):
+    big_A = einsums.create_random_tensor("big_A", [6, 8], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [6, 8], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [3, 4], dtype=dtype)
 
     g = cg.Graph("dp-VVO")
     with cg.capture(g):
@@ -133,14 +140,15 @@ def test_direct_product_VVO_A_and_B_are_views():
     g.execute()
 
     expected = np.asarray(big_A)[:3, :4] * np.asarray(big_B)[1:4, 2:6]
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
-def test_direct_product_VVV_all_three_views_with_accumulation():
+def test_direct_product_VVV_all_three_views_with_accumulation(dtype):
     """All three views + nonzero beta to confirm read-and-write of C-view."""
-    big_A = einsums.create_random_tensor("big_A", [6, 8])
-    big_B = einsums.create_random_tensor("big_B", [6, 8])
-    big_C = einsums.create_zero_tensor("big_C", [6, 8])
+    pf_0_5 = _pf(dtype, 0.5, 0.75)
+    big_A = einsums.create_random_tensor("big_A", [6, 8], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [6, 8], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [6, 8], dtype=dtype)
     np.asarray(big_C)[...] = 1.0
     big_C_before = np.asarray(big_C).copy()
 
@@ -149,12 +157,12 @@ def test_direct_product_VVV_all_three_views_with_accumulation():
         Av = cg.view(big_A, [(0, 3), (0, 4)])
         Bv = cg.view(big_B, [(1, 4), (2, 6)])
         Cv = cg.view(big_C, [(2, 5), (3, 7)])
-        einsums.linalg.direct_product(1.0, Av, Bv, 0.5, Cv)
+        einsums.linalg.direct_product(1.0, Av, Bv, pf_0_5, Cv)
     g.execute()
 
     expected = big_C_before.copy()
-    expected[2:5, 3:7] = np.asarray(big_A)[:3, :4] * np.asarray(big_B)[1:4, 2:6] + 0.5 * big_C_before[2:5, 3:7]
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    expected[2:5, 3:7] = np.asarray(big_A)[:3, :4] * np.asarray(big_B)[1:4, 2:6] + pf_0_5 * big_C_before[2:5, 3:7]
+    assert_close(np.asarray(big_C), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────

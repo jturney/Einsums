@@ -18,6 +18,11 @@ import pytest
 
 import einsums
 import einsums.graph as cg
+
+
+def _pf(dtype, re, im):
+    """A prefactor for ``dtype``: complex(re, im) for a complex dtype, re otherwise."""
+    return complex(re, im) if np.dtype(dtype).kind == "c" else re
 from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close
 
 
@@ -50,7 +55,7 @@ def test_axpy_in_graph_capture(dtype):
     assert_close(Y, expected)
 
 
-def test_axpy_complex_alpha_on_complex_tensor():
+def test_axpy_complex_alpha_on_complex_tensor(dtype):
     X = einsums.create_random_tensor("X", [4], dtype="complex128")
     Y = einsums.create_random_tensor("Y", [4], dtype="complex128")
     alpha = 1.0 + 2.0j
@@ -137,14 +142,15 @@ def test_gemv_in_graph_capture(dtype):
     assert_close(y, expected)
 
 
-def test_gemv_accumulating_beta():
+def test_gemv_accumulating_beta(dtype):
     """beta != 0 means y is accumulated into rather than overwritten."""
-    A = einsums.create_random_tensor("A", [3, 3])
-    x = einsums.create_random_tensor("x", [3])
-    y = einsums.create_random_tensor("y", [3])
+    pf_0_5 = _pf(dtype, 0.5, 0.75)
+    A = einsums.create_random_tensor("A", [3, 3], dtype=dtype)
+    x = einsums.create_random_tensor("x", [3], dtype=dtype)
+    y = einsums.create_random_tensor("y", [3], dtype=dtype)
     y_before = np.asarray(y).copy()
-    expected = np.asarray(A) @ np.asarray(x) + 0.5 * y_before
-    einsums.linalg.gemv(1.0, A, x, 0.5, y)
+    expected = np.asarray(A) @ np.asarray(x) + pf_0_5 * y_before
+    einsums.linalg.gemv(1.0, A, x, pf_0_5, y)
     assert_close(y, expected)
 
 
@@ -179,11 +185,11 @@ def test_ger_in_graph_capture(dtype):
     assert_close(A, expected)
 
 
-def test_ger_accumulates_into_a():
+def test_ger_accumulates_into_a(dtype):
     """ger does ``A += alpha * X * Y^T``, initial A is preserved."""
-    X = einsums.create_random_tensor("X", [3])
-    Y = einsums.create_random_tensor("Y", [3])
-    A = einsums.create_random_tensor("A", [3, 3])
+    X = einsums.create_random_tensor("X", [3], dtype=dtype)
+    Y = einsums.create_random_tensor("Y", [3], dtype=dtype)
+    A = einsums.create_random_tensor("A", [3, 3], dtype=dtype)
     A_before = np.asarray(A).copy()
     expected = A_before + np.outer(np.asarray(X), np.asarray(Y))
     einsums.linalg.ger(1.0, X, Y, A)

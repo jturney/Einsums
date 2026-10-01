@@ -20,7 +20,12 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import ALL_DTYPES
+
+
+def _pf(dtype, re, im):
+    """A prefactor for ``dtype``: complex(re, im) for a complex dtype, re otherwise."""
+    return complex(re, im) if np.dtype(dtype).kind == "c" else re
+from einsums.testing import ALL_DTYPES, assert_close
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -28,56 +33,60 @@ from einsums.testing import ALL_DTYPES
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_axpy_OO_baseline():
-    X = einsums.create_random_tensor("X", [4, 5])
-    Y = einsums.create_random_tensor("Y", [4, 5])
+def test_axpy_OO_baseline(dtype):
+    pf_2_0 = _pf(dtype, 2.0, 0.75)
+    X = einsums.create_random_tensor("X", [4, 5], dtype=dtype)
+    Y = einsums.create_random_tensor("Y", [4, 5], dtype=dtype)
     Y_before = np.asarray(Y).copy()
 
     g = cg.Graph("axpy-OO")
     with cg.capture(g):
-        einsums.linalg.axpy(2.0, X, Y)
+        einsums.linalg.axpy(pf_2_0, X, Y)
     g.execute()
 
-    expected = Y_before + 2.0 * np.asarray(X)
-    np.testing.assert_allclose(np.asarray(Y), expected, rtol=1e-5)
+    expected = Y_before + pf_2_0 * np.asarray(X)
+    assert_close(np.asarray(Y), expected)
 
 
-def test_axpy_OV_Y_is_view():
-    X = einsums.create_random_tensor("X", [3, 4])
-    big_Y = einsums.create_zero_tensor("big_Y", [6, 8])
+def test_axpy_OV_Y_is_view(dtype):
+    pf_0_5 = _pf(dtype, 0.5, 0.75)
+    X = einsums.create_random_tensor("X", [3, 4], dtype=dtype)
+    big_Y = einsums.create_zero_tensor("big_Y", [6, 8], dtype=dtype)
     np.asarray(big_Y)[...] = 1.0
     big_Y_before = np.asarray(big_Y).copy()
 
     g = cg.Graph("axpy-OV")
     with cg.capture(g):
         Yv = cg.view(big_Y, [(1, 4), (2, 6)])  # 3x4 slab
-        einsums.linalg.axpy(0.5, X, Yv)
+        einsums.linalg.axpy(pf_0_5, X, Yv)
     g.execute()
 
     expected = big_Y_before.copy()
-    expected[1:4, 2:6] += 0.5 * np.asarray(X)
-    np.testing.assert_allclose(np.asarray(big_Y), expected, rtol=1e-5)
+    expected[1:4, 2:6] += pf_0_5 * np.asarray(X)
+    assert_close(np.asarray(big_Y), expected)
 
 
-def test_axpy_VO_X_is_view():
-    big_X = einsums.create_random_tensor("big_X", [6, 8])
-    Y = einsums.create_zero_tensor("Y", [3, 4])
+def test_axpy_VO_X_is_view(dtype):
+    pf_1_5 = _pf(dtype, 1.5, 0.75)
+    big_X = einsums.create_random_tensor("big_X", [6, 8], dtype=dtype)
+    Y = einsums.create_zero_tensor("Y", [3, 4], dtype=dtype)
     np.asarray(Y)[...] = 5.0
     Y_before = np.asarray(Y).copy()
 
     g = cg.Graph("axpy-VO")
     with cg.capture(g):
         Xv = cg.view(big_X, [(1, 4), (2, 6)])
-        einsums.linalg.axpy(1.5, Xv, Y)
+        einsums.linalg.axpy(pf_1_5, Xv, Y)
     g.execute()
 
-    expected = Y_before + 1.5 * np.asarray(big_X)[1:4, 2:6]
-    np.testing.assert_allclose(np.asarray(Y), expected, rtol=1e-5)
+    expected = Y_before + pf_1_5 * np.asarray(big_X)[1:4, 2:6]
+    assert_close(np.asarray(Y), expected)
 
 
-def test_axpy_VV_both_views():
-    big_X = einsums.create_random_tensor("big_X", [6, 8])
-    big_Y = einsums.create_zero_tensor("big_Y", [6, 8])
+def test_axpy_VV_both_views(dtype):
+    pf_m1_0 = _pf(dtype, -1.0, 0.75)
+    big_X = einsums.create_random_tensor("big_X", [6, 8], dtype=dtype)
+    big_Y = einsums.create_zero_tensor("big_Y", [6, 8], dtype=dtype)
     np.asarray(big_Y)[...] = 2.0
     big_Y_before = np.asarray(big_Y).copy()
 
@@ -85,12 +94,12 @@ def test_axpy_VV_both_views():
     with cg.capture(g):
         Xv = cg.view(big_X, [(0, 3), (0, 4)])
         Yv = cg.view(big_Y, [(2, 5), (3, 7)])
-        einsums.linalg.axpy(-1.0, Xv, Yv)
+        einsums.linalg.axpy(pf_m1_0, Xv, Yv)
     g.execute()
 
     expected = big_Y_before.copy()
-    expected[2:5, 3:7] -= np.asarray(big_X)[:3, :4]
-    np.testing.assert_allclose(np.asarray(big_Y), expected, rtol=1e-5)
+    expected[2:5, 3:7] += pf_m1_0 * np.asarray(big_X)[:3, :4]
+    assert_close(np.asarray(big_Y), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -98,56 +107,62 @@ def test_axpy_VV_both_views():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_axpby_OO_baseline():
-    X = einsums.create_random_tensor("X", [4, 5])
-    Y = einsums.create_random_tensor("Y", [4, 5])
+def test_axpby_OO_baseline(dtype):
+    pf_2_0 = _pf(dtype, 2.0, 0.75)
+    pf_3_0 = _pf(dtype, 3.0, 0.75)
+    X = einsums.create_random_tensor("X", [4, 5], dtype=dtype)
+    Y = einsums.create_random_tensor("Y", [4, 5], dtype=dtype)
     Y_before = np.asarray(Y).copy()
 
     g = cg.Graph("axpby-OO")
     with cg.capture(g):
-        einsums.linalg.axpby(2.0, X, 3.0, Y)
+        einsums.linalg.axpby(pf_2_0, X, pf_3_0, Y)
     g.execute()
 
-    expected = 2.0 * np.asarray(X) + 3.0 * Y_before
-    np.testing.assert_allclose(np.asarray(Y), expected, rtol=1e-5)
+    expected = pf_2_0 * np.asarray(X) + pf_3_0 * Y_before
+    assert_close(np.asarray(Y), expected)
 
 
-def test_axpby_OV_Y_is_view():
-    X = einsums.create_random_tensor("X", [3, 4])
-    big_Y = einsums.create_zero_tensor("big_Y", [6, 8])
+def test_axpby_OV_Y_is_view(dtype):
+    pf_0_25 = _pf(dtype, 0.25, 0.75)
+    X = einsums.create_random_tensor("X", [3, 4], dtype=dtype)
+    big_Y = einsums.create_zero_tensor("big_Y", [6, 8], dtype=dtype)
     np.asarray(big_Y)[...] = 4.0
     big_Y_before = np.asarray(big_Y).copy()
 
     g = cg.Graph("axpby-OV")
     with cg.capture(g):
         Yv = cg.view(big_Y, [(1, 4), (2, 6)])
-        einsums.linalg.axpby(1.0, X, 0.25, Yv)
+        einsums.linalg.axpby(1.0, X, pf_0_25, Yv)
     g.execute()
 
     expected = big_Y_before.copy()
-    expected[1:4, 2:6] = np.asarray(X) + 0.25 * big_Y_before[1:4, 2:6]
-    np.testing.assert_allclose(np.asarray(big_Y), expected, rtol=1e-5)
+    expected[1:4, 2:6] = np.asarray(X) + pf_0_25 * big_Y_before[1:4, 2:6]
+    assert_close(np.asarray(big_Y), expected)
 
 
-def test_axpby_VO_X_is_view():
-    big_X = einsums.create_random_tensor("big_X", [6, 8])
-    Y = einsums.create_zero_tensor("Y", [3, 4])
+def test_axpby_VO_X_is_view(dtype):
+    pf_m0_5 = _pf(dtype, -0.5, 0.75)
+    pf_2_0 = _pf(dtype, 2.0, 0.75)
+    big_X = einsums.create_random_tensor("big_X", [6, 8], dtype=dtype)
+    Y = einsums.create_zero_tensor("Y", [3, 4], dtype=dtype)
     np.asarray(Y)[...] = 1.5
     Y_before = np.asarray(Y).copy()
 
     g = cg.Graph("axpby-VO")
     with cg.capture(g):
         Xv = cg.view(big_X, [(1, 4), (2, 6)])
-        einsums.linalg.axpby(-0.5, Xv, 2.0, Y)
+        einsums.linalg.axpby(pf_m0_5, Xv, pf_2_0, Y)
     g.execute()
 
-    expected = -0.5 * np.asarray(big_X)[1:4, 2:6] + 2.0 * Y_before
-    np.testing.assert_allclose(np.asarray(Y), expected, rtol=1e-5)
+    expected = pf_m0_5 * np.asarray(big_X)[1:4, 2:6] + pf_2_0 * Y_before
+    assert_close(np.asarray(Y), expected)
 
 
-def test_axpby_VV_both_views():
-    big_X = einsums.create_random_tensor("big_X", [6, 8])
-    big_Y = einsums.create_zero_tensor("big_Y", [6, 8])
+def test_axpby_VV_both_views(dtype):
+    pf_0_5 = _pf(dtype, 0.5, 0.75)
+    big_X = einsums.create_random_tensor("big_X", [6, 8], dtype=dtype)
+    big_Y = einsums.create_zero_tensor("big_Y", [6, 8], dtype=dtype)
     np.asarray(big_Y)[...] = 7.0
     big_Y_before = np.asarray(big_Y).copy()
 
@@ -155,12 +170,12 @@ def test_axpby_VV_both_views():
     with cg.capture(g):
         Xv = cg.view(big_X, [(0, 3), (0, 4)])
         Yv = cg.view(big_Y, [(2, 5), (3, 7)])
-        einsums.linalg.axpby(0.5, Xv, 0.5, Yv)
+        einsums.linalg.axpby(pf_0_5, Xv, pf_0_5, Yv)
     g.execute()
 
     expected = big_Y_before.copy()
-    expected[2:5, 3:7] = 0.5 * np.asarray(big_X)[:3, :4] + 0.5 * big_Y_before[2:5, 3:7]
-    np.testing.assert_allclose(np.asarray(big_Y), expected, rtol=1e-5)
+    expected[2:5, 3:7] = pf_0_5 * np.asarray(big_X)[:3, :4] + pf_0_5 * big_Y_before[2:5, 3:7]
+    assert_close(np.asarray(big_Y), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -26,6 +26,12 @@ import numpy as np
 import pytest
 
 import einsums
+from einsums.testing import assert_close
+
+
+def _pf(dtype, re, im):
+    """A prefactor for ``dtype``: complex(re, im) for a complex dtype, re otherwise."""
+    return complex(re, im) if np.dtype(dtype).kind == "c" else re
 import einsums.graph as cg
 
 
@@ -53,26 +59,27 @@ def test_eager_element_access_returns_scalar():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_captured_slice_alias_round_trip_via_scale():
-    big = einsums.create_zero_tensor("big", [4, 6])
+def test_captured_slice_alias_round_trip_via_scale(dtype):
+    pf_2_0 = _pf(dtype, 2.0, 0.75)
+    big = einsums.create_zero_tensor("big", [4, 6], dtype=dtype)
     np.asarray(big)[...] = 1.0
 
     g = cg.Graph("auto-slice-scale")
     with cg.capture(g):
         sub = big[:, :3]  # auto cg.view
-        einsums.linalg.scale(2.0, sub)
+        einsums.linalg.scale(pf_2_0, sub)
     g.execute()
 
-    expected = np.ones((4, 6))
-    expected[:, :3] = 2.0
-    np.testing.assert_allclose(np.asarray(big), expected, rtol=1e-5)
+    expected = np.ones((4, 6), dtype=dtype)
+    expected[:, :3] = pf_2_0
+    assert_close(np.asarray(big), expected)
 
 
-def test_captured_slice_in_gemm_inputs():
+def test_captured_slice_in_gemm_inputs(dtype):
     """Both A and B sliced from larger parents; C is owning."""
-    A = einsums.create_random_tensor("A", [5, 5])
-    B = einsums.create_random_tensor("B", [5, 5])
-    C = einsums.create_zero_tensor("C", [3, 4])
+    A = einsums.create_random_tensor("A", [5, 5], dtype=dtype)
+    B = einsums.create_random_tensor("B", [5, 5], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [3, 4], dtype=dtype)
 
     g = cg.Graph("auto-slice-gemm")
     with cg.capture(g):
@@ -80,29 +87,29 @@ def test_captured_slice_in_gemm_inputs():
     g.execute()
 
     expected = np.asarray(A)[:3, :] @ np.asarray(B)[:, :4]
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
-def test_captured_slice_in_gemm_output():
+def test_captured_slice_in_gemm_output(dtype):
     """C is sliced from a larger parent, gemm writes through the view."""
-    A = einsums.create_random_tensor("A", [3, 4])
-    B = einsums.create_random_tensor("B", [4, 3])
-    big_C = einsums.create_zero_tensor("big_C", [5, 5])
+    A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 3], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [5, 5], dtype=dtype)
 
     g = cg.Graph("auto-slice-output")
     with cg.capture(g):
         einsums.linalg.gemm(1.0, A, B, 0.0, big_C[:3, :3])
     g.execute()
 
-    expected = np.zeros((5, 5))
+    expected = np.zeros((5, 5), dtype=dtype)
     expected[:3, :3] = np.asarray(A) @ np.asarray(B)
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)
 
 
-def test_captured_full_axis_via_colon():
+def test_captured_full_axis_via_colon(dtype):
     """``t[:, :3]``, the first axis is a bare colon (slice(None))."""
-    big = einsums.create_random_tensor("big", [4, 6])
-    out = einsums.create_zero_tensor("out", [4, 3])
+    big = einsums.create_random_tensor("big", [4, 6], dtype=dtype)
+    out = einsums.create_zero_tensor("out", [4, 3], dtype=dtype)
 
     g = cg.Graph("auto-full")
     with cg.capture(g):
@@ -110,30 +117,31 @@ def test_captured_full_axis_via_colon():
     g.execute()
 
     expected = np.asarray(big)[:, :3]
-    np.testing.assert_allclose(np.asarray(out), expected, rtol=1e-5)
+    assert_close(np.asarray(out), expected)
 
 
-def test_captured_ellipsis_expands_to_full_axes():
+def test_captured_ellipsis_expands_to_full_axes(dtype):
     """``t[..., :3]`` on a rank-3 tensor expands to ``t[:, :, :3]``."""
-    big = einsums.create_random_tensor("big", [2, 3, 6])
-    out = einsums.create_zero_tensor("out", [2, 3, 4])
+    pf_2_0 = _pf(dtype, 2.0, 0.75)
+    big = einsums.create_random_tensor("big", [2, 3, 6], dtype=dtype)
+    out = einsums.create_zero_tensor("out", [2, 3, 4], dtype=dtype)
     np.asarray(out)[...] = 1.0
 
     g = cg.Graph("auto-ellipsis")
     with cg.capture(g):
-        einsums.linalg.axpy(2.0, big[..., :4], out)
+        einsums.linalg.axpy(pf_2_0, big[..., :4], out)
     g.execute()
 
-    expected = np.ones((2, 3, 4)) + 2.0 * np.asarray(big)[..., :4]
-    np.testing.assert_allclose(np.asarray(out), expected, rtol=1e-5)
+    expected = np.ones((2, 3, 4), dtype=dtype) + pf_2_0 * np.asarray(big)[..., :4]
+    assert_close(np.asarray(out), expected)
 
 
-def test_captured_mp2_iajb_via_slicing():
+def test_captured_mp2_iajb_via_slicing(dtype):
     """MP2 (ia|jb) block extraction with auto cg.view from slicing."""
     nocc, nvirt = 3, 4
     nbf = nocc + nvirt
-    eri_mo = einsums.create_random_tensor("eri_mo", [nbf, nbf, nbf, nbf])
-    e = einsums.create_zero_tensor("e", [])  # rank-0 scalar
+    eri_mo = einsums.create_random_tensor("eri_mo", [nbf, nbf, nbf, nbf], dtype=dtype)
+    e = einsums.create_zero_tensor("e", [], dtype=dtype)  # rank-0 scalar
 
     g = cg.Graph("mp2-auto-slice")
     with cg.capture(g):
@@ -142,8 +150,8 @@ def test_captured_mp2_iajb_via_slicing():
     g.execute()
 
     sliced = np.asarray(eri_mo)[:nocc, nocc:, :nocc, nocc:]
-    expected = float(np.sum(sliced * sliced))
-    np.testing.assert_allclose(float(np.asarray(e)), expected, rtol=1e-5)
+    expected = np.asarray(np.sum(sliced * sliced)).item()
+    assert_close(np.asarray(e).item(), expected, dtype=dtype)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -151,19 +159,19 @@ def test_captured_mp2_iajb_via_slicing():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_captured_slice_of_view_aliases_parent_chain():
+def test_captured_slice_of_view_aliases_parent_chain(dtype):
     """Slicing a view (``(A.T)[1:]``) must route through cg.view too, so the
     sub-view aliases the parent chain. Regression: the slice used to take a
     raw eager path with ``aliases == 0``, so a reduction over it had no
     dependency on an in-place ``Scale`` of the owning tensor and the
     optimizer's Reorder pass floated the read ahead of the write, reading
     unscaled data."""
-    A = einsums.create_random_tensor("A", [2, 3])
+    A = einsums.create_random_tensor("A", [2, 3], dtype=dtype)
     ref = np.asarray(A).copy()
     factor = -1.84
 
     g = cg.Graph("slice-of-view")
-    out = einsums.create_zero_tensor("out", [2, 2])
+    out = einsums.create_zero_tensor("out", [2, 2], dtype=dtype)
     with cg.capture(g):
         einsums.linalg.scale(factor, A)   # in-place scale of the owner
         sub = A.T[1:]                      # (A.T)[1:], a view of a view
@@ -173,14 +181,14 @@ def test_captured_slice_of_view_aliases_parent_chain():
     g.execute()
 
     expected = (ref * factor).T[1:]
-    np.testing.assert_allclose(np.asarray(out), expected, rtol=1e-5)
+    assert_close(np.asarray(out), expected)
 
 
-def test_captured_slice_of_view_is_graph_registered():
+def test_captured_slice_of_view_is_graph_registered(dtype):
     """The view-of-a-view is a graph-registered RuntimeTensorView, not the
     raw eager kind, i.e. the capture-aware __getitem__ fires on view
     classes, mirroring how it already fires on owning tensors."""
-    A = einsums.create_random_tensor("A", [4, 6])
+    A = einsums.create_random_tensor("A", [4, 6], dtype=dtype)
     g = cg.Graph("slice-of-view-reg")
     with cg.capture(g):
         sub = A.T[1:]          # rank-2 view-of-view
@@ -188,17 +196,17 @@ def test_captured_slice_of_view_is_graph_registered():
         assert sub.dim(0) == 5   # (6 - 1) after dropping row 0 of the transpose
         assert sub.dim(1) == 4
     g.execute()
-    np.testing.assert_allclose(np.asarray(sub), np.asarray(A).T[1:], rtol=1e-5)
+    assert_close(np.asarray(sub), np.asarray(A).T[1:])
 
 
-def test_captured_assign_into_slice_of_view_writes_parent():
+def test_captured_assign_into_slice_of_view_writes_parent(dtype):
     """Write-side twin: ``(A.T)[1:] = X`` inside capture must route the target
     through cg.view too (the capture-aware __setitem__ is installed on the
     view classes), so the write lands in A's storage and any later read of an
     aliasing slice is correctly ordered after it. Without it the slice-assign
     target is a raw eager view with aliases == 0."""
-    A = einsums.create_zero_tensor("A", [2, 3])
-    rhs = einsums.create_random_tensor("rhs", [2, 2])
+    A = einsums.create_zero_tensor("A", [2, 3], dtype=dtype)
+    rhs = einsums.create_random_tensor("rhs", [2, 2], dtype=dtype)
 
     g = cg.Graph("assign-into-slice-of-view")
     with cg.capture(g):
@@ -206,18 +214,18 @@ def test_captured_assign_into_slice_of_view_writes_parent():
     g.execute()
 
     # A.T has shape (3,2); [1:] is rows 1..2 of A.T == columns 1..2 of A.
-    expected = np.zeros((2, 3))
+    expected = np.zeros((2, 3), dtype=dtype)
     expected.T[1:] = np.asarray(rhs)
-    np.testing.assert_allclose(np.asarray(A), expected, rtol=1e-5)
+    assert_close(np.asarray(A), expected)
 
 
-def test_captured_assign_then_read_slice_of_view_ordering():
+def test_captured_assign_then_read_slice_of_view_ordering(dtype):
     """A write through a view-of-a-view followed by a read of an aliasing
     slice must stay ordered under the full optimizer pipeline (the dependency
     is only visible if the slice-assign target aliases the parent chain)."""
-    A = einsums.create_zero_tensor("A", [2, 3])
-    rhs = einsums.create_random_tensor("rhs", [2, 2])
-    out = einsums.create_zero_tensor("out", [2, 2])
+    A = einsums.create_zero_tensor("A", [2, 3], dtype=dtype)
+    rhs = einsums.create_random_tensor("rhs", [2, 2], dtype=dtype)
+    out = einsums.create_zero_tensor("out", [2, 2], dtype=dtype)
 
     g = cg.Graph("assign-read-slice-of-view")
     with cg.capture(g):
@@ -227,7 +235,7 @@ def test_captured_assign_then_read_slice_of_view_ordering():
     g.apply(cg.default_pass_manager())
     g.execute()
 
-    np.testing.assert_allclose(np.asarray(out), np.asarray(rhs), rtol=1e-5)
+    assert_close(np.asarray(out), np.asarray(rhs))
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -235,16 +243,16 @@ def test_captured_assign_then_read_slice_of_view_ordering():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_captured_int_index_rank_reduces():
+def test_captured_int_index_rank_reduces(dtype):
     """Integer indices inside capture now rank-reduce via cg.view_indexed
     (the Drop axis), matching eager numpy semantics."""
-    big = einsums.create_random_tensor("big", [4, 6])
+    big = einsums.create_random_tensor("big", [4, 6], dtype=dtype)
     ref = np.asarray(big).copy()
     g = cg.Graph("int-index")
     with cg.capture(g):
         sub = big[0, :3]  # drop axis 0, range axis 1 -> (3,)
     g.execute()
-    np.testing.assert_allclose(np.asarray(sub), ref[0, :3], rtol=1e-5)
+    assert_close(np.asarray(sub), ref[0, :3])
 
 
 def test_captured_strided_slice_raises():
@@ -255,15 +263,15 @@ def test_captured_strided_slice_raises():
             _ = big[::2, :3]
 
 
-def test_captured_short_key_pads_trailing_axes():
+def test_captured_short_key_pads_trailing_axes(dtype):
     """A key shorter than the rank gets implicit trailing ':' (numpy)."""
-    big = einsums.create_random_tensor("big", [4, 6])
+    big = einsums.create_random_tensor("big", [4, 6], dtype=dtype)
     ref = np.asarray(big).copy()
     g = cg.Graph("short-key")
     with cg.capture(g):
         sub = big[:3]  # == big[:3, :] -> (3, 6)
     g.execute()
-    np.testing.assert_allclose(np.asarray(sub), ref[:3], rtol=1e-5)
+    assert_close(np.asarray(sub), ref[:3])
 
 
 def test_captured_too_many_indices_raises():
@@ -294,12 +302,12 @@ def test_captured_double_ellipsis_raises():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_eager_element_access_after_capture():
+def test_eager_element_access_after_capture(dtype):
     """Confirm that after a capture ends, element access on the result
     (now eager) works as before."""
-    A = einsums.create_random_tensor("A", [4])
-    B = einsums.create_random_tensor("B", [4])
-    e = einsums.create_zero_tensor("e", [1])
+    A = einsums.create_random_tensor("A", [4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4], dtype=dtype)
+    e = einsums.create_zero_tensor("e", [1], dtype=dtype)
 
     g = cg.Graph("scalar-result")
     with cg.capture(g):
@@ -308,5 +316,5 @@ def test_eager_element_access_after_capture():
 
     # Outside capture again, element read works.
     val = e[0]
-    expected = float(np.dot(np.asarray(A), np.asarray(B)))
-    np.testing.assert_allclose(val, expected, rtol=1e-5)
+    expected = np.asarray(np.dot(np.asarray(A), np.asarray(B))).item()
+    assert_close(val, expected)

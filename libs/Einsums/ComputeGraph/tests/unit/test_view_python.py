@@ -27,7 +27,20 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import ALL_DTYPES
+
+
+def _pf(dtype, re, im):
+    """A prefactor for ``dtype``: complex(re, im) for a complex dtype, re otherwise."""
+    return complex(re, im) if np.dtype(dtype).kind == "c" else re
+
+
+def _normal(rng, shape, dtype):
+    """Standard-normal data in ``dtype``, with an imaginary part for a complex dtype."""
+    x = rng.standard_normal(shape)
+    if np.dtype(dtype).kind == "c":
+        x = x + 1j * rng.standard_normal(shape)
+    return x.astype(dtype)
+from einsums.testing import ALL_DTYPES, assert_close
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -94,10 +107,11 @@ def test_scale_through_view_modifies_parent(dtype):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_axpy_through_two_views_on_disjoint_columns():
+def test_axpy_through_two_views_on_disjoint_columns(dtype):
     """X view = C[:, 0:3], Y view = D[:, 0:3]; Y += 1.5 * X writes only into D's first 3 cols."""
-    C = einsums.create_random_tensor("C", [4, 6])
-    D = einsums.create_zero_tensor("D", [4, 6])
+    pf_1_5 = _pf(dtype, 1.5, 0.75)
+    C = einsums.create_random_tensor("C", [4, 6], dtype=dtype)
+    D = einsums.create_zero_tensor("D", [4, 6], dtype=dtype)
     np.asarray(D)[...] = 10.0
 
     C_np_before = np.asarray(C).copy()
@@ -106,12 +120,12 @@ def test_axpy_through_two_views_on_disjoint_columns():
     with cg.capture(g):
         Cv = cg.view(C, [(-1, -1), (0, 3)])
         Dv = cg.view(D, [(-1, -1), (0, 3)])
-        einsums.linalg.axpy(1.5, Cv, Dv)
+        einsums.linalg.axpy(pf_1_5, Cv, Dv)
     g.execute()
 
-    expected = np.full((4, 6), 10.0)
-    expected[:, :3] = 10.0 + 1.5 * C_np_before[:, :3]
-    np.testing.assert_allclose(np.asarray(D), expected, rtol=1e-5)
+    expected = np.full((4, 6), 10.0, dtype=dtype)
+    expected[:, :3] = 10.0 + pf_1_5 * C_np_before[:, :3]
+    assert_close(np.asarray(D), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -119,11 +133,11 @@ def test_axpy_through_two_views_on_disjoint_columns():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_block_copy_view_dst_owning_src_writes_into_subregion():
+def test_block_copy_view_dst_owning_src_writes_into_subregion(dtype):
     """Write a small owning tensor into a view slab of a larger one."""
-    big = einsums.create_zero_tensor("big", [5, 6])
+    big = einsums.create_zero_tensor("big", [5, 6], dtype=dtype)
     np.asarray(big)[...] = 9.0
-    small = einsums.create_random_tensor("small", [3, 2])
+    small = einsums.create_random_tensor("small", [3, 2], dtype=dtype)
 
     g = cg.Graph("write-slab")
     with cg.capture(g):
@@ -132,15 +146,15 @@ def test_block_copy_view_dst_owning_src_writes_into_subregion():
         einsums.linalg.block_copy(slab, small, [0, 0], [0, 0], [3, 2])
     g.execute()
 
-    expected = np.full((5, 6), 9.0)
+    expected = np.full((5, 6), 9.0, dtype=dtype)
     expected[1:4, 2:4] = np.asarray(small)
     np.testing.assert_array_equal(np.asarray(big), expected)
 
 
-def test_block_copy_owning_dst_view_src_extracts_slab():
+def test_block_copy_owning_dst_view_src_extracts_slab(dtype):
     """Extract a slab through a view directly (zero-copy alternative to writing offsets)."""
-    src = einsums.create_random_tensor("src", [6, 6])
-    dst = einsums.create_zero_tensor("dst", [3, 3])
+    src = einsums.create_random_tensor("src", [6, 6], dtype=dtype)
+    dst = einsums.create_zero_tensor("dst", [3, 3], dtype=dtype)
 
     g = cg.Graph("extract-via-view")
     with cg.capture(g):
@@ -156,8 +170,8 @@ def test_block_copy_owning_dst_view_src_extracts_slab():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_element_transform_through_view_only_touches_subregion():
-    C = einsums.create_zero_tensor("C", [4, 6])
+def test_element_transform_through_view_only_touches_subregion(dtype):
+    C = einsums.create_zero_tensor("C", [4, 6], dtype=dtype)
     np.asarray(C)[...] = 2.0
 
     g = cg.Graph("vet")
@@ -166,9 +180,9 @@ def test_element_transform_through_view_only_touches_subregion():
         einsums.linalg.element_transform(sub, lambda x: 1.0 / x)
     g.execute()
 
-    expected = np.full((4, 6), 2.0)
+    expected = np.full((4, 6), 2.0, dtype=dtype)
     expected[:, :3] = 0.5
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -197,23 +211,24 @@ def test_view_records_view_node_with_aliasing():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_scf_density_via_view_and_block_copy_then_gemm():
+def test_scf_density_via_view_and_block_copy_then_gemm(dtype):
+    pf_2_0 = _pf(dtype, 2.0, 0.75)
     nbf, nocc = 5, 3
-    C = einsums.create_random_tensor("C", [nbf, nbf])
-    C_occ = einsums.create_zero_tensor("C_occ", [nbf, nocc])
-    D = einsums.create_zero_tensor("D", [nbf, nbf])
+    C = einsums.create_random_tensor("C", [nbf, nbf], dtype=dtype)
+    C_occ = einsums.create_zero_tensor("C_occ", [nbf, nocc], dtype=dtype)
+    D = einsums.create_zero_tensor("D", [nbf, nbf], dtype=dtype)
 
     g = cg.Graph("density-via-view")
     with cg.capture(g):
         slab = cg.view(C, [(-1, -1), (0, nocc)])
         # block_copy from the view to an owning tensor, then gemm on the owning copy.
         einsums.linalg.block_copy(C_occ, slab, [0, 0], [0, 0], [nbf, nocc])
-        einsums.linalg.gemm(2.0, C_occ, C_occ, 0.0, D, trans_b=True)
+        einsums.linalg.gemm(pf_2_0, C_occ, C_occ, 0.0, D, trans_b=True)
     g.execute()
 
     C_np = np.asarray(C)
-    expected = 2.0 * C_np[:, :nocc] @ C_np[:, :nocc].T
-    np.testing.assert_allclose(np.asarray(D), expected, rtol=1e-5)
+    expected = pf_2_0 * C_np[:, :nocc] @ C_np[:, :nocc].T
+    assert_close(np.asarray(D), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -246,13 +261,13 @@ def test_view_of_deferred_tensor_has_real_dims_at_capture():
         assert [drop.dim(k) for k in range(2)] == [3, 4]
 
 
-def test_einsum_through_view_of_deferred_tensor_matches_numpy():
+def test_einsum_through_view_of_deferred_tensor_matches_numpy(dtype):
     o, v, naux = 2, 3, 4
     rng = np.random.default_rng(0)
-    B_np = rng.standard_normal((naux, v, v))
-    T_np = rng.standard_normal((o, o, v, v))
-    B = einsums.asarray(np.ascontiguousarray(B_np), name="B")
-    Tsrc = einsums.asarray(np.ascontiguousarray(T_np), name="Tsrc")
+    B_np = _normal(rng, (naux, v, v), dtype)
+    T_np = _normal(rng, (o, o, v, v), dtype)
+    B = einsums.asarray(np.ascontiguousarray(B_np), name="B", dtype=dtype)
+    Tsrc = einsums.asarray(np.ascontiguousarray(T_np), name="Tsrc", dtype=dtype)
 
     # r2[i,j,a,b] = sum_ef T[i,j,e,f] * sum_Q B[Q,a,e] B[Q,b,f], pair-driven:
     # both the sliced operand and the accumulated output are deferred.
@@ -260,9 +275,9 @@ def test_einsum_through_view_of_deferred_tensor_matches_numpy():
     expected = np.einsum("ijef,abef->ijab", T_np, g4)
 
     g = cg.Graph("pair-driven-deferred")
-    T = g.declare_zero_tensor("T", [o, o, v, v], dtype="float64", intermediate=True)
-    r2 = g.declare_zero_tensor("r2", [o, o, v, v], dtype="float64", intermediate=True)
-    H = g.declare_zero_tensor("H", [naux, v, v], dtype="float64", intermediate=True)
+    T = g.declare_zero_tensor("T", [o, o, v, v], dtype=dtype, intermediate=True)
+    r2 = g.declare_zero_tensor("r2", [o, o, v, v], dtype=dtype, intermediate=True)
+    H = g.declare_zero_tensor("H", [naux, v, v], dtype=dtype, intermediate=True)
     FULL = (0, 0, 0)
     with cg.capture(g):
         einsums.linalg.axpby(1.0, Tsrc, 0.0, T)
@@ -275,4 +290,4 @@ def test_einsum_through_view_of_deferred_tensor_matches_numpy():
 
     g.apply(cg.default_pass_manager())
     g.execute()
-    np.testing.assert_allclose(np.asarray(r2), expected, rtol=1e-10, atol=1e-12)
+    assert_close(np.asarray(r2), expected)

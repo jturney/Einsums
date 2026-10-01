@@ -21,7 +21,12 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import ALL_DTYPES, REAL_DTYPES
+
+
+def _pf(dtype, re, im):
+    """A prefactor for ``dtype``: complex(re, im) for a complex dtype, re otherwise."""
+    return complex(re, im) if np.dtype(dtype).kind == "c" else re
+from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -53,10 +58,10 @@ def test_block_copy_extract_with_src_offset(dtype):
     np.testing.assert_array_equal(np.asarray(C_virt), np.asarray(C)[:, nocc:])
 
 
-def test_block_copy_with_dst_offset_writes_into_subregion():
+def test_block_copy_with_dst_offset_writes_into_subregion(dtype):
     """Write src into a sub-region of a larger dst."""
-    big = einsums.create_zero_tensor("big", [5, 5])
-    small = einsums.create_random_tensor("small", [2, 3])
+    big = einsums.create_zero_tensor("big", [5, 5], dtype=dtype)
+    small = einsums.create_random_tensor("small", [2, 3], dtype=dtype)
 
     einsums.linalg.block_copy(big, small, [1, 1], [0, 0], [2, 3])
 
@@ -103,9 +108,9 @@ def test_block_copy_captured_matches_eager(dtype):
     np.testing.assert_array_equal(np.asarray(capt_occ), np.asarray(eager_occ))
 
 
-def test_block_copy_captured_deferred_until_execute():
-    C = einsums.create_random_tensor("C", [4, 4])
-    C_occ = einsums.create_zero_tensor("C_occ", [4, 2])
+def test_block_copy_captured_deferred_until_execute(dtype):
+    C = einsums.create_random_tensor("C", [4, 4], dtype=dtype)
+    C_occ = einsums.create_zero_tensor("C_occ", [4, 2], dtype=dtype)
 
     g = cg.Graph("deferred")
     with cg.capture(g):
@@ -177,19 +182,20 @@ def test_block_copy_extent_overflow_dst_raises():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_scf_density_build_via_block_copy_and_gemm():
+def test_scf_density_build_via_block_copy_and_gemm(dtype):
     """D = 2 * C_occ @ C_occ^T, where C_occ is extracted via block_copy."""
+    pf_2_0 = _pf(dtype, 2.0, 0.75)
     nbf, nocc = 5, 3
-    C = einsums.create_random_tensor("C", [nbf, nbf])
-    C_occ = einsums.create_zero_tensor("C_occ", [nbf, nocc])
-    D = einsums.create_zero_tensor("D", [nbf, nbf])
+    C = einsums.create_random_tensor("C", [nbf, nbf], dtype=dtype)
+    C_occ = einsums.create_zero_tensor("C_occ", [nbf, nocc], dtype=dtype)
+    D = einsums.create_zero_tensor("D", [nbf, nbf], dtype=dtype)
 
     g = cg.Graph("density")
     with cg.capture(g):
         einsums.linalg.block_copy(C_occ, C, [0, 0], [0, 0], [nbf, nocc])
-        einsums.linalg.gemm(2.0, C_occ, C_occ, 0.0, D, trans_b=True)
+        einsums.linalg.gemm(pf_2_0, C_occ, C_occ, 0.0, D, trans_b=True)
     g.execute()
 
     C_np = np.asarray(C)
-    expected = 2.0 * C_np[:, :nocc] @ C_np[:, :nocc].T
-    np.testing.assert_allclose(np.asarray(D), expected, rtol=1e-5)
+    expected = pf_2_0 * C_np[:, :nocc] @ C_np[:, :nocc].T
+    assert_close(np.asarray(D), expected)

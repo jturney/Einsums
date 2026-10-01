@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 
 import einsums
+from einsums.testing import assert_close
 import einsums.graph as cg
 
 
@@ -35,10 +36,10 @@ import einsums.graph as cg
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_einsum_OOO_baseline_matmul():
-    A = einsums.create_random_tensor("A", [4, 5])
-    B = einsums.create_random_tensor("B", [5, 3])
-    C = einsums.create_zero_tensor("C", [4, 3])
+def test_einsum_OOO_baseline_matmul(dtype):
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
+    B = einsums.create_random_tensor("B", [5, 3], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [4, 3], dtype=dtype)
 
     g = cg.Graph("es-OOO")
     with cg.capture(g):
@@ -46,13 +47,13 @@ def test_einsum_OOO_baseline_matmul():
     g.execute()
 
     expected = np.asarray(A) @ np.asarray(B)
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
-def test_einsum_OOV_B_is_view():
-    A = einsums.create_random_tensor("A", [4, 5])
-    big_B = einsums.create_random_tensor("big_B", [5, 8])
-    C = einsums.create_zero_tensor("C", [4, 3])
+def test_einsum_OOV_B_is_view(dtype):
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [5, 8], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [4, 3], dtype=dtype)
 
     g = cg.Graph("es-OOV")
     with cg.capture(g):
@@ -61,13 +62,13 @@ def test_einsum_OOV_B_is_view():
     g.execute()
 
     expected = np.asarray(A) @ np.asarray(big_B)[:, :3]
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
-def test_einsum_OVO_A_is_view():
-    big_A = einsums.create_random_tensor("big_A", [6, 5])
-    B = einsums.create_random_tensor("B", [5, 3])
-    C = einsums.create_zero_tensor("C", [4, 3])
+def test_einsum_OVO_A_is_view(dtype):
+    big_A = einsums.create_random_tensor("big_A", [6, 5], dtype=dtype)
+    B = einsums.create_random_tensor("B", [5, 3], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [4, 3], dtype=dtype)
 
     g = cg.Graph("es-OVO")
     with cg.capture(g):
@@ -76,13 +77,13 @@ def test_einsum_OVO_A_is_view():
     g.execute()
 
     expected = np.asarray(big_A)[1:5, :] @ np.asarray(B)
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
-def test_einsum_OVV_A_and_B_are_views():
-    big_A = einsums.create_random_tensor("big_A", [6, 5])
-    big_B = einsums.create_random_tensor("big_B", [5, 8])
-    C = einsums.create_zero_tensor("C", [4, 3])
+def test_einsum_OVV_A_and_B_are_views(dtype):
+    big_A = einsums.create_random_tensor("big_A", [6, 5], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [5, 8], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [4, 3], dtype=dtype)
 
     g = cg.Graph("es-OVV")
     with cg.capture(g):
@@ -92,13 +93,13 @@ def test_einsum_OVV_A_and_B_are_views():
     g.execute()
 
     expected = np.asarray(big_A)[1:5, :] @ np.asarray(big_B)[:, :3]
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
-def test_einsum_VOO_C_is_view():
-    A = einsums.create_random_tensor("A", [4, 5])
-    B = einsums.create_random_tensor("B", [5, 3])
-    big_C = einsums.create_zero_tensor("big_C", [6, 6])
+def test_einsum_VOO_C_is_view(dtype):
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
+    B = einsums.create_random_tensor("B", [5, 3], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [6, 6], dtype=dtype)
 
     g = cg.Graph("es-VOO")
     with cg.capture(g):
@@ -106,15 +107,15 @@ def test_einsum_VOO_C_is_view():
         einsums.einsum("ij <- ik ; kj", Cv, A, B)
     g.execute()
 
-    expected = np.zeros((6, 6))
+    expected = np.zeros((6, 6), dtype=dtype)
     expected[1:5, 2:5] = np.asarray(A) @ np.asarray(B)
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)
 
 
-def test_einsum_VOV_C_and_B_are_views():
-    A = einsums.create_random_tensor("A", [4, 5])
-    big_B = einsums.create_random_tensor("big_B", [5, 8])
-    big_C = einsums.create_zero_tensor("big_C", [6, 6])
+def test_einsum_VOV_C_and_B_are_views(dtype):
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [5, 8], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [6, 6], dtype=dtype)
 
     g = cg.Graph("es-VOV")
     with cg.capture(g):
@@ -123,15 +124,15 @@ def test_einsum_VOV_C_and_B_are_views():
         einsums.einsum("ij <- ik ; kj", Cv, A, Bv)
     g.execute()
 
-    expected = np.zeros((6, 6))
+    expected = np.zeros((6, 6), dtype=dtype)
     expected[1:5, 2:5] = np.asarray(A) @ np.asarray(big_B)[:, :3]
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)
 
 
-def test_einsum_VVO_C_and_A_are_views():
-    big_A = einsums.create_random_tensor("big_A", [6, 5])
-    B = einsums.create_random_tensor("B", [5, 3])
-    big_C = einsums.create_zero_tensor("big_C", [6, 6])
+def test_einsum_VVO_C_and_A_are_views(dtype):
+    big_A = einsums.create_random_tensor("big_A", [6, 5], dtype=dtype)
+    B = einsums.create_random_tensor("B", [5, 3], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [6, 6], dtype=dtype)
 
     g = cg.Graph("es-VVO")
     with cg.capture(g):
@@ -140,15 +141,15 @@ def test_einsum_VVO_C_and_A_are_views():
         einsums.einsum("ij <- ik ; kj", Cv, Av, B)
     g.execute()
 
-    expected = np.zeros((6, 6))
+    expected = np.zeros((6, 6), dtype=dtype)
     expected[1:5, 2:5] = np.asarray(big_A)[1:5, :] @ np.asarray(B)
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)
 
 
-def test_einsum_VVV_all_three_views():
-    big_A = einsums.create_random_tensor("big_A", [6, 5])
-    big_B = einsums.create_random_tensor("big_B", [5, 8])
-    big_C = einsums.create_zero_tensor("big_C", [6, 6])
+def test_einsum_VVV_all_three_views(dtype):
+    big_A = einsums.create_random_tensor("big_A", [6, 5], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [5, 8], dtype=dtype)
+    big_C = einsums.create_zero_tensor("big_C", [6, 6], dtype=dtype)
 
     g = cg.Graph("es-VVV")
     with cg.capture(g):
@@ -158,9 +159,9 @@ def test_einsum_VVV_all_three_views():
         einsums.einsum("ij <- ik ; kj", Cv, Av, Bv)
     g.execute()
 
-    expected = np.zeros((6, 6))
+    expected = np.zeros((6, 6), dtype=dtype)
     expected[1:5, 2:5] = np.asarray(big_A)[1:5, :] @ np.asarray(big_B)[:, :3]
-    np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+    assert_close(np.asarray(big_C), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -168,11 +169,11 @@ def test_einsum_VVV_all_three_views():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_einsum_view_batched_matmul():
+def test_einsum_view_batched_matmul(dtype):
     """bij <- bik ; bkj with a view of a larger batched tensor."""
-    big_A = einsums.create_random_tensor("big_A", [4, 3, 5])  # batch dim 4
-    big_B = einsums.create_random_tensor("big_B", [4, 5, 6])
-    C = einsums.create_zero_tensor("C", [3, 3, 4])  # 3 batches in result
+    big_A = einsums.create_random_tensor("big_A", [4, 3, 5], dtype=dtype)  # batch dim 4
+    big_B = einsums.create_random_tensor("big_B", [4, 5, 6], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [3, 3, 4], dtype=dtype)  # 3 batches in result
 
     g = cg.Graph("es-batched-view")
     with cg.capture(g):
@@ -182,14 +183,14 @@ def test_einsum_view_batched_matmul():
     g.execute()
 
     expected = np.einsum("bik,bkj->bij", np.asarray(big_A)[:3, :, :], np.asarray(big_B)[:3, :, :4])
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
-def test_einsum_view_outer_product():
+def test_einsum_view_outer_product(dtype):
     """ij <- i ; j with rank-1 views."""
-    big_a = einsums.create_random_tensor("big_a", [10])
-    big_b = einsums.create_random_tensor("big_b", [10])
-    C = einsums.create_zero_tensor("C", [3, 4])
+    big_a = einsums.create_random_tensor("big_a", [10], dtype=dtype)
+    big_b = einsums.create_random_tensor("big_b", [10], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [3, 4], dtype=dtype)
 
     g = cg.Graph("es-outer-view")
     with cg.capture(g):
@@ -199,14 +200,14 @@ def test_einsum_view_outer_product():
     g.execute()
 
     expected = np.outer(np.asarray(big_a)[2:5], np.asarray(big_b)[1:5])
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5)
+    assert_close(np.asarray(C), expected)
 
 
-def test_einsum_view_full_reduction_scalar():
+def test_einsum_view_full_reduction_scalar(dtype):
     """ <- ij ; ij with views, writing to a rank-0 scalar slot."""
-    big_A = einsums.create_random_tensor("big_A", [5, 5])
-    big_B = einsums.create_random_tensor("big_B", [5, 5])
-    e = einsums.create_zero_tensor("e", [])  # rank-0 scalar
+    big_A = einsums.create_random_tensor("big_A", [5, 5], dtype=dtype)
+    big_B = einsums.create_random_tensor("big_B", [5, 5], dtype=dtype)
+    e = einsums.create_zero_tensor("e", [], dtype=dtype)  # rank-0 scalar
 
     g = cg.Graph("es-scalar-view")
     with cg.capture(g):
@@ -216,7 +217,7 @@ def test_einsum_view_full_reduction_scalar():
     g.execute()
 
     expected = np.sum(np.asarray(big_A)[:3, :4] * np.asarray(big_B)[:3, :4])
-    np.testing.assert_allclose(np.asarray(e), expected, rtol=1e-5)
+    assert_close(np.asarray(e), expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -224,13 +225,13 @@ def test_einsum_view_full_reduction_scalar():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_einsum_mp2_iajb_block_via_view():
+def test_einsum_mp2_iajb_block_via_view(dtype):
     """Build the (ia|jb) block from eri_mo via a view, then contract with itself."""
     nocc, nvirt = 3, 4
     nbf = nocc + nvirt
-    eri_mo = einsums.create_random_tensor("eri_mo", [nbf, nbf, nbf, nbf])
+    eri_mo = einsums.create_random_tensor("eri_mo", [nbf, nbf, nbf, nbf], dtype=dtype)
     # MP2 energy contribution: sum_{ijab} (ia|jb)^2 , toy contraction with itself
-    e = einsums.create_zero_tensor("e", [])
+    e = einsums.create_zero_tensor("e", [], dtype=dtype)
 
     g = cg.Graph("mp2-iajb-view")
     with cg.capture(g):
@@ -239,11 +240,11 @@ def test_einsum_mp2_iajb_block_via_view():
     g.execute()
 
     sliced = np.asarray(eri_mo)[:nocc, nocc:, :nocc, nocc:]
-    expected = float(np.sum(sliced * sliced))
-    np.testing.assert_allclose(float(np.asarray(e)), expected, rtol=1e-5)
+    expected = np.asarray(np.sum(sliced * sliced)).item()
+    assert_close(np.asarray(e).item(), expected, dtype=dtype)
 
 
-def test_a_view_of_graph_scratch_is_taken_inside_the_capture():
+def test_a_view_of_graph_scratch_is_taken_inside_the_capture(dtype):
     """A slice of deferred graph scratch taken BEFORE the capture is refused.
 
     Defect: the view copied the scratch's missing data pointer, Materialization
@@ -252,17 +253,17 @@ def test_a_view_of_graph_scratch_is_taken_inside_the_capture():
     the live storage and computes the product.
     """
     n = 4
-    A = einsums.create_random_tensor("A", [n, n], dtype="float64")
-    C = einsums.create_zero_tensor("C", [n, n], dtype="float64")
+    A = einsums.create_random_tensor("A", [n, n], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [n, n], dtype=dtype)
     a = np.asarray(A)
 
     early = cg.Graph("early_view")
-    X = early.scratch("X", [n, n], "float64")
+    X = early.scratch("X", [n, n], dtype)
     with pytest.raises(Exception, match="no storage yet"):
         X[:, :]
 
     g = cg.Graph("captured_view")
-    X = g.scratch("X", [n, n], "float64")
+    X = g.scratch("X", [n, n], dtype)
     with cg.capture(g):
         einsums.einsum("ij <- ik ; kj", X, A, A)
         einsums.einsum("ij <- ik ; kj", C, X[:, :], A)
@@ -270,4 +271,4 @@ def test_a_view_of_graph_scratch_is_taken_inside_the_capture():
     pm.add(cg.Materialization())
     g.apply(pm)
     g.execute()
-    np.testing.assert_allclose(np.asarray(C), a @ a @ a, rtol=1e-12)
+    assert_close(np.asarray(C), a @ a @ a)

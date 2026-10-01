@@ -25,7 +25,13 @@ import pytest
 
 import einsums
 import einsums.graph as cg
+
+
+def _pf(dtype, re, im):
+    """A prefactor for ``dtype``: complex(re, im) for a complex dtype, re otherwise."""
+    return complex(re, im) if np.dtype(dtype).kind == "c" else re
 from einsums.testing import ALL_DTYPES, REAL_DTYPES, COMPLEX_DTYPES, assert_close
+
 
 
 # Map each input dtype to the dtype of a Frobenius-norm scalar result.
@@ -100,11 +106,11 @@ def test_dot_writer_zero_size_result_raises():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_dot_both_inputs_are_views():
+def test_dot_both_inputs_are_views(dtype):
     """dot(e, view(A), view(B)): graph aliases both inputs to their parents."""
-    A = einsums.create_random_tensor("A", [5, 6])
-    B = einsums.create_random_tensor("B", [5, 6])
-    e = einsums.create_zero_tensor("e", [1])
+    A = einsums.create_random_tensor("A", [5, 6], dtype=dtype)
+    B = einsums.create_random_tensor("B", [5, 6], dtype=dtype)
+    e = einsums.create_zero_tensor("e", [1], dtype=dtype)
 
     g = cg.Graph("dot-vv")
     with cg.capture(g):
@@ -114,14 +120,14 @@ def test_dot_both_inputs_are_views():
     g.execute()
 
     expected = np.sum(np.asarray(A)[:, :3] * np.asarray(B)[:, :3])
-    np.testing.assert_allclose(np.asarray(e)[0], expected, rtol=1e-5)
+    assert_close(np.asarray(e)[0], expected)
 
 
-def test_dot_view_input_owning_input_mixed():
+def test_dot_view_input_owning_input_mixed(dtype):
     """dot(e, view(C), D): mixed view/owning input pair."""
-    C = einsums.create_random_tensor("C", [4, 6])
-    D = einsums.create_random_tensor("D", [4, 3])  # already same shape as C[:, :3]
-    e = einsums.create_zero_tensor("e", [1])
+    C = einsums.create_random_tensor("C", [4, 6], dtype=dtype)
+    D = einsums.create_random_tensor("D", [4, 3], dtype=dtype)  # already same shape as C[:, :3]
+    e = einsums.create_zero_tensor("e", [1], dtype=dtype)
 
     g = cg.Graph("dot-vo")
     with cg.capture(g):
@@ -130,15 +136,15 @@ def test_dot_view_input_owning_input_mixed():
     g.execute()
 
     expected = np.sum(np.asarray(C)[:, :3] * np.asarray(D))
-    np.testing.assert_allclose(np.asarray(e)[0], expected, rtol=1e-5)
+    assert_close(np.asarray(e)[0], expected)
 
 
-def test_dot_result_is_view():
+def test_dot_result_is_view(dtype):
     """dot(view_into_scalar_holder, A, B): even the result tensor can be a view."""
     # Holder has two slots; we write into slot 1 via a view.
-    holder = einsums.create_zero_tensor("holder", [2])
-    A = einsums.create_random_tensor("A", [4])
-    B = einsums.create_random_tensor("B", [4])
+    holder = einsums.create_zero_tensor("holder", [2], dtype=dtype)
+    A = einsums.create_random_tensor("A", [4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4], dtype=dtype)
 
     g = cg.Graph("dot-rv")
     with cg.capture(g):
@@ -148,15 +154,15 @@ def test_dot_result_is_view():
 
     expected = np.dot(np.asarray(A), np.asarray(B))
     holder_np = np.asarray(holder)
-    np.testing.assert_allclose(holder_np[1], expected, rtol=1e-5)
+    assert_close(holder_np[1], expected)
     assert holder_np[0] == 0.0  # other slot untouched
 
 
-def test_dot_all_three_are_views():
+def test_dot_all_three_are_views(dtype):
     """The full 8th-cell case: result, A, and B all views into larger parents."""
-    A_big = einsums.create_random_tensor("A_big", [3, 5])
-    B_big = einsums.create_random_tensor("B_big", [3, 5])
-    holder = einsums.create_zero_tensor("holder", [4])
+    A_big = einsums.create_random_tensor("A_big", [3, 5], dtype=dtype)
+    B_big = einsums.create_random_tensor("B_big", [3, 5], dtype=dtype)
+    holder = einsums.create_zero_tensor("holder", [4], dtype=dtype)
 
     g = cg.Graph("dot-vvv")
     with cg.capture(g):
@@ -167,14 +173,14 @@ def test_dot_all_three_are_views():
     g.execute()
 
     expected = np.sum(np.asarray(A_big)[:, :3] * np.asarray(B_big)[:, :3])
-    np.testing.assert_allclose(np.asarray(holder)[2], expected, rtol=1e-5)
+    assert_close(np.asarray(holder)[2], expected)
 
 
-def test_dot_owning_result_owning_A_view_B():
+def test_dot_owning_result_owning_A_view_B(dtype):
     """Cell RRV: owning result, owning A, view B."""
-    A = einsums.create_random_tensor("A", [4, 3])
-    B = einsums.create_random_tensor("B", [4, 6])
-    e = einsums.create_zero_tensor("e", [1])
+    A = einsums.create_random_tensor("A", [4, 3], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 6], dtype=dtype)
+    e = einsums.create_zero_tensor("e", [1], dtype=dtype)
 
     g = cg.Graph("dot-rrv")
     with cg.capture(g):
@@ -183,14 +189,14 @@ def test_dot_owning_result_owning_A_view_B():
     g.execute()
 
     expected = np.sum(np.asarray(A) * np.asarray(B)[:, :3])
-    np.testing.assert_allclose(np.asarray(e)[0], expected, rtol=1e-5)
+    assert_close(np.asarray(e)[0], expected)
 
 
-def test_dot_view_result_owning_A_view_B():
+def test_dot_view_result_owning_A_view_B(dtype):
     """Cell VRV: view result, owning A, view B."""
-    holder = einsums.create_zero_tensor("holder", [4])
-    A = einsums.create_random_tensor("A", [4, 3])
-    B = einsums.create_random_tensor("B", [4, 6])
+    holder = einsums.create_zero_tensor("holder", [4], dtype=dtype)
+    A = einsums.create_random_tensor("A", [4, 3], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 6], dtype=dtype)
 
     g = cg.Graph("dot-vrv")
     with cg.capture(g):
@@ -200,14 +206,14 @@ def test_dot_view_result_owning_A_view_B():
     g.execute()
 
     expected = np.sum(np.asarray(A) * np.asarray(B)[:, :3])
-    np.testing.assert_allclose(np.asarray(holder)[3], expected, rtol=1e-5)
+    assert_close(np.asarray(holder)[3], expected)
 
 
-def test_dot_view_result_view_A_owning_B():
+def test_dot_view_result_view_A_owning_B(dtype):
     """Cell VVR: view result, view A, owning B."""
-    holder = einsums.create_zero_tensor("holder", [4])
-    A = einsums.create_random_tensor("A", [4, 6])
-    B = einsums.create_random_tensor("B", [4, 3])
+    holder = einsums.create_zero_tensor("holder", [4], dtype=dtype)
+    A = einsums.create_random_tensor("A", [4, 6], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 3], dtype=dtype)
 
     g = cg.Graph("dot-vvr")
     with cg.capture(g):
@@ -217,7 +223,7 @@ def test_dot_view_result_view_A_owning_B():
     g.execute()
 
     expected = np.sum(np.asarray(A)[:, :3] * np.asarray(B))
-    np.testing.assert_allclose(np.asarray(holder)[0], expected, rtol=1e-5)
+    assert_close(np.asarray(holder)[0], expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -272,10 +278,10 @@ def test_norm_writer_complex_returns_real_dtype(dtype):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_norm_owning_result_view_A():
+def test_norm_owning_result_view_A(dtype):
     """Cell RV: owning result, view A."""
-    A = einsums.create_random_tensor("A", [4, 6])
-    r = einsums.create_zero_tensor("r", [1])
+    A = einsums.create_random_tensor("A", [4, 6], dtype=dtype)
+    r = einsums.create_zero_tensor("r", [1], dtype=_NORM_RESULT_DTYPE[dtype])
 
     g = cg.Graph("norm-rv")
     with cg.capture(g):
@@ -284,13 +290,13 @@ def test_norm_owning_result_view_A():
     g.execute()
 
     expected = np.linalg.norm(np.asarray(A)[:, :3], ord="fro")
-    np.testing.assert_allclose(np.asarray(r)[0], expected, rtol=1e-5)
+    assert_close(np.asarray(r)[0], expected)
 
 
-def test_norm_view_result_owning_A():
+def test_norm_view_result_owning_A(dtype):
     """Cell VR: view result, owning A."""
-    holder = einsums.create_zero_tensor("holder", [3])
-    A = einsums.create_random_tensor("A", [4, 5])
+    holder = einsums.create_zero_tensor("holder", [3], dtype=_NORM_RESULT_DTYPE[dtype])
+    A = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
 
     g = cg.Graph("norm-vr")
     with cg.capture(g):
@@ -299,13 +305,13 @@ def test_norm_view_result_owning_A():
     g.execute()
 
     expected = np.linalg.norm(np.asarray(A), ord="fro")
-    np.testing.assert_allclose(np.asarray(holder)[1], expected, rtol=1e-5)
+    assert_close(np.asarray(holder)[1], expected)
 
 
-def test_norm_view_result_view_A():
+def test_norm_view_result_view_A(dtype):
     """Cell VV: view result, view A."""
-    holder = einsums.create_zero_tensor("holder", [3])
-    A = einsums.create_random_tensor("A", [4, 6])
+    holder = einsums.create_zero_tensor("holder", [3], dtype=_NORM_RESULT_DTYPE[dtype])
+    A = einsums.create_random_tensor("A", [4, 6], dtype=dtype)
 
     g = cg.Graph("norm-vv")
     with cg.capture(g):
@@ -315,7 +321,7 @@ def test_norm_view_result_view_A():
     g.execute()
 
     expected = np.linalg.norm(np.asarray(A)[:, :3], ord="fro")
-    np.testing.assert_allclose(np.asarray(holder)[2], expected, rtol=1e-5)
+    assert_close(np.asarray(holder)[2], expected)
 
 
 @pytest.mark.parametrize("dtype", COMPLEX_DTYPES)
@@ -390,10 +396,10 @@ def test_trace_writer_rank3_raises():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_trace_owning_result_view_A():
+def test_trace_owning_result_view_A(dtype):
     """Cell RV: owning result, view of a square sub-block."""
-    big = einsums.create_random_tensor("big", [6, 6])
-    r = einsums.create_zero_tensor("r", [1])
+    big = einsums.create_random_tensor("big", [6, 6], dtype=dtype)
+    r = einsums.create_zero_tensor("r", [1], dtype=dtype)
 
     g = cg.Graph("trace-rv")
     with cg.capture(g):
@@ -402,13 +408,13 @@ def test_trace_owning_result_view_A():
     g.execute()
 
     expected = np.trace(np.asarray(big)[1:4, 1:4])
-    np.testing.assert_allclose(np.asarray(r)[0], expected, rtol=1e-5)
+    assert_close(np.asarray(r)[0], expected)
 
 
-def test_trace_view_result_owning_A():
+def test_trace_view_result_owning_A(dtype):
     """Cell VR: view result, owning A."""
-    holder = einsums.create_zero_tensor("holder", [3])
-    A = einsums.create_random_tensor("A", [4, 4])
+    holder = einsums.create_zero_tensor("holder", [3], dtype=dtype)
+    A = einsums.create_random_tensor("A", [4, 4], dtype=dtype)
 
     g = cg.Graph("trace-vr")
     with cg.capture(g):
@@ -417,13 +423,13 @@ def test_trace_view_result_owning_A():
     g.execute()
 
     expected = np.trace(np.asarray(A))
-    np.testing.assert_allclose(np.asarray(holder)[1], expected, rtol=1e-5)
+    assert_close(np.asarray(holder)[1], expected)
 
 
-def test_trace_view_result_view_A():
+def test_trace_view_result_view_A(dtype):
     """Cell VV: view result + view of a square sub-block."""
-    big = einsums.create_random_tensor("big", [6, 6])
-    holder = einsums.create_zero_tensor("holder", [3])
+    big = einsums.create_random_tensor("big", [6, 6], dtype=dtype)
+    holder = einsums.create_zero_tensor("holder", [3], dtype=dtype)
 
     g = cg.Graph("trace-vv")
     with cg.capture(g):
@@ -433,7 +439,7 @@ def test_trace_view_result_view_A():
     g.execute()
 
     expected = np.trace(np.asarray(big)[2:5, 2:5])
-    np.testing.assert_allclose(np.asarray(holder)[2], expected, rtol=1e-5)
+    assert_close(np.asarray(holder)[2], expected)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -441,21 +447,22 @@ def test_trace_view_result_view_A():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_scf_energy_pattern_captured():
+def test_scf_energy_pattern_captured(dtype):
+    pf_0_5 = _pf(dtype, 0.5, 0.75)
     n = 5
-    D = einsums.create_random_tensor("D", [n, n])
-    H = einsums.create_random_tensor("H", [n, n])
-    F = einsums.create_random_tensor("F", [n, n])
-    sum_HF = einsums.create_zero_tensor("HF", [n, n])
-    e = einsums.create_zero_tensor("e", [1])
+    D = einsums.create_random_tensor("D", [n, n], dtype=dtype)
+    H = einsums.create_random_tensor("H", [n, n], dtype=dtype)
+    F = einsums.create_random_tensor("F", [n, n], dtype=dtype)
+    sum_HF = einsums.create_zero_tensor("HF", [n, n], dtype=dtype)
+    e = einsums.create_zero_tensor("e", [1], dtype=dtype)
 
     g = cg.Graph("scf-energy")
     with cg.capture(g):
         einsums.linalg.axpby(1.0, H, 0.0, sum_HF)  # sum_HF = H
         einsums.linalg.axpy(1.0, F, sum_HF)         # sum_HF += F
         einsums.linalg.dot(e, D, sum_HF)            # e = D · (H + F)
-        einsums.linalg.scale(0.5, e)                # e = 0.5 * (D · (H + F))
+        einsums.linalg.scale(pf_0_5, e)                # e = pf_0_5 * (D · (H + F))
     g.execute()
 
-    expected = 0.5 * np.sum(np.asarray(D) * (np.asarray(H) + np.asarray(F)))
-    np.testing.assert_allclose(np.asarray(e)[0], expected, rtol=1e-5)
+    expected = pf_0_5 * np.sum(np.asarray(D) * (np.asarray(H) + np.asarray(F)))
+    assert_close(np.asarray(e)[0], expected)

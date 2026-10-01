@@ -58,11 +58,11 @@ def test_gather_empty_selection_is_not_a_wildcard():
     assert np.asarray(out).shape == (0, 6)
 
 
-def test_gather_captures_and_rereads_source_on_replay():
-    A = einsums.create_zero_tensor("A", [6, 6], dtype="float64")
+def test_gather_captures_and_rereads_source_on_replay(dtype):
+    A = einsums.create_zero_tensor("A", [6, 6], dtype=dtype)
     np.asarray(A)[...] = np.arange(36).reshape(6, 6)
     dom = [4, 1, 0]
-    out = einsums.create_zero_tensor("out", [len(dom), len(dom)], dtype="float64")
+    out = einsums.create_zero_tensor("out", [len(dom), len(dom)], dtype=dtype)
 
     g = cg.Graph("gather")
     with cg.capture(g):
@@ -115,14 +115,14 @@ def test_scatter_leaves_the_rest_untouched():
     assert got[1, 1] == 7.0 and got[2, 0] == 7.0
 
 
-def test_scatter_round_trips_with_gather():
-    A = einsums.create_zero_tensor("A", [6, 6], dtype="float64")
+def test_scatter_round_trips_with_gather(dtype):
+    A = einsums.create_zero_tensor("A", [6, 6], dtype=dtype)
     np.asarray(A)[...] = np.arange(36).reshape(6, 6)
     dom = [4, 1, 0]
 
-    block = einsums.create_zero_tensor("block", [len(dom), len(dom)], dtype="float64")
+    block = einsums.create_zero_tensor("block", [len(dom), len(dom)], dtype=dtype)
     la.gather(block, A, [dom, dom])
-    back = einsums.create_zero_tensor("back", [6, 6], dtype="float64")
+    back = einsums.create_zero_tensor("back", [6, 6], dtype=dtype)
     la.scatter(back, block, [dom, dom])
 
     assert_close(np.asarray(back)[np.ix_(dom, dom)], np.asarray(A)[np.ix_(dom, dom)])
@@ -161,14 +161,14 @@ def test_gather_axes_permutes_on_the_way_out(dtype):
     assert_close(np.asarray(dst), want)
 
 
-def test_gather_axes_default_is_the_identity():
+def test_gather_axes_default_is_the_identity(dtype):
     rng = np.random.default_rng(12)
-    src = _filled("src", (4, 3, 7), "float64", rng)
+    src = _filled("src", (4, 3, 7), dtype, rng)
     perm = [5, 0, 3, 6, 1, 4, 2]
     idx = [list(range(4)), list(range(3)), perm]
 
-    a = einsums.create_zero_tensor("a", [4, 3, 7], dtype="float64")
-    b = einsums.create_zero_tensor("b", [4, 3, 7], dtype="float64")
+    a = einsums.create_zero_tensor("a", [4, 3, 7], dtype=dtype)
+    b = einsums.create_zero_tensor("b", [4, 3, 7], dtype=dtype)
     la.gather(a, src, idx)
     la.gather(b, src, idx, [0, 1, 2])
 
@@ -176,12 +176,12 @@ def test_gather_axes_default_is_the_identity():
     assert_close(np.asarray(b), np.asarray(a))
 
 
-def test_gather_axes_composes_with_selection():
+def test_gather_axes_composes_with_selection(dtype):
     """Selecting a subset and reordering axes at once."""
     rng = np.random.default_rng(13)
-    src = _filled("src", (4, 3, 7), "float64", rng)
+    src = _filled("src", (4, 3, 7), dtype, rng)
 
-    dst = einsums.create_zero_tensor("dst", [4, 2, 2], dtype="float64")
+    dst = einsums.create_zero_tensor("dst", [4, 2, 2], dtype=dtype)
     la.gather(dst, src, [list(range(4)), [0, 2], [1, 5]], [0, 2, 1])
 
     want = np.asarray(src)[:, [0, 2], :][:, :, [1, 5]].transpose(0, 2, 1)
@@ -205,11 +205,11 @@ def test_gather_axes_checks_the_permuted_extent():
         la.gather(unpermuted, src, [list(range(4)), list(range(3)), list(range(7))], [0, 2, 1])
 
 
-def test_gather_axes_captures():
+def test_gather_axes_captures(dtype):
     """The permutation survives capture and replay, like any other gather."""
     rng = np.random.default_rng(14)
-    src = _filled("src", (4, 3, 7), "float64", rng)
-    dst = einsums.create_zero_tensor("dst", [4, 7, 3], dtype="float64")
+    src = _filled("src", (4, 3, 7), dtype, rng)
+    dst = einsums.create_zero_tensor("dst", [4, 7, 3], dtype=dtype)
     perm = [5, 0, 3, 6, 1, 4, 2]
 
     g = cg.Graph("permuting gather")

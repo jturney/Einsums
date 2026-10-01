@@ -19,8 +19,17 @@ import pytest
 
 import einsums
 import einsums.graph as cg
+
 from einsums import linalg as la
 from einsums.testing import ALL_DTYPES, assert_close
+
+
+def _normal(rng, shape, dtype):
+    """Standard-normal data in ``dtype``, with an imaginary part for a complex dtype."""
+    x = rng.standard_normal(shape)
+    if np.dtype(dtype).kind == "c":
+        x = x + 1j * rng.standard_normal(shape)
+    return x.astype(dtype)
 
 DTYPE_TO_TRT = {
     np.float32: einsums.TiledRuntimeTensorF,
@@ -159,15 +168,15 @@ def test_tiled_permute_accumulates_with_prefactors(dtype):
     assert_close(_gather(C, 9, 5), 0.5 * cref + 2.0 * aref.T)
 
 
-def test_tiled_permute_sparsity_rules():
+def test_tiled_permute_sparsity_rules(dtype):
     # An absent A tile is a rigorous zero: its target C tile keeps beta*C, and
     # a stored C tile the permutation never reaches is still scaled by beta.
-    A = einsums.TiledRuntimeTensorD("A", [[2, 3], [4, 5]])
+    A = DTYPE_TO_TRT[np.dtype(dtype).type]("A", [[2, 3], [4, 5]])
     A.add_tile([0, 0])
     A.materialize()
     np.asarray(A.tile_view([0, 0]))[...] = 3.0
 
-    C = einsums.TiledRuntimeTensorD("C", [[4, 5], [2, 3]])
+    C = DTYPE_TO_TRT[np.dtype(dtype).type]("C", [[4, 5], [2, 3]])
     C.add_tile([1, 1])  # never a permutation target of A's stored tiles
     C.materialize()
     np.asarray(C.tile_view([1, 1]))[...] = 8.0
@@ -175,20 +184,20 @@ def test_tiled_permute_sparsity_rules():
     einsums.permute("j,i <- i,j", C, A, c_pf=0.5, a_pf=1.0)
 
     assert C.has_tile([0, 0])  # created by A[0,0]'s contribution
-    np.testing.assert_allclose(np.asarray(C.tile_view([0, 0])), 3.0)
-    np.testing.assert_allclose(np.asarray(C.tile_view([1, 1])), 4.0)  # 0.5 * 8
+    assert_close(np.asarray(C.tile_view([0, 0])), 3.0)
+    assert_close(np.asarray(C.tile_view([1, 1])), 4.0)  # 0.5 * 8
     assert not C.has_tile([0, 1]) and not C.has_tile([1, 0])  # zeros stay absent
 
 
-def test_tiled_permute_rank4_symmetrizer():
+def test_tiled_permute_rank4_symmetrizer(dtype):
     # The CC symmetrizer shape: C[j,i,b,a] = A[i,j,a,b] on a rank-4 grid.
     rng = np.random.default_rng(3)
     aref = rng.standard_normal((4, 4, 5, 5))
     grid = [[2, 2], [2, 2], [2, 3], [2, 3]]
-    A = _make_nd("float64", "A", grid, ref=aref)
-    C = einsums.TiledRuntimeTensorD("C", [[2, 2], [2, 2], [2, 3], [2, 3]])
+    A = _make_nd(dtype, "A", grid, ref=aref)
+    C = DTYPE_TO_TRT[np.dtype(dtype).type]("C", [[2, 2], [2, 2], [2, 3], [2, 3]])
     einsums.permute("j,i,b,a <- i,j,a,b", C, A)
-    assert_close(_gather_nd(C, (4, 4, 5, 5), "float64"), aref.transpose(1, 0, 3, 2))
+    assert_close(_gather_nd(C, (4, 4, 5, 5), dtype), aref.transpose(1, 0, 3, 2))
 
 
 def test_tiled_permute_grid_mismatch_throws():
@@ -203,16 +212,16 @@ def _node_labels(g):
     return [n.get("label", "") for n in json.loads(g.to_json()).get("nodes", [])]
 
 
-def test_tiled_permute_expands_in_pipeline():
+def test_tiled_permute_expands_in_pipeline(dtype):
     """TiledExpansion lowers a captured tiled permute into per-tile dense
     Permute nodes (one per stored A tile, targets bijectively permuted), with
     the leftover-scale rule for stored C tiles the permutation never reaches.
     Before the TiledPermuteDescriptor existed the node was opaque and its
     cannot-expand contagion stranded every tensor it touched."""
-    aref = (1.0 + np.arange(45)).reshape(5, 9).astype("float64")
-    cref = (2.0 - np.arange(45)).reshape(9, 5).astype("float64")
-    A = _make("float64", "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])
-    C = _make("float64", "C", [[4, 5], [2, 3]], fill=lambda r, c: cref[r, c])
+    aref = (1.0 + np.arange(45)).reshape(5, 9).astype(dtype)
+    cref = (2.0 - np.arange(45)).reshape(9, 5).astype(dtype)
+    A = _make(dtype, "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])
+    C = _make(dtype, "C", [[4, 5], [2, 3]], fill=lambda r, c: cref[r, c])
 
     g = cg.Graph("tiled_permute_expand")
     with cg.capture(g):
@@ -229,16 +238,16 @@ def test_tiled_permute_expands_in_pipeline():
     assert_close(_gather(C, 9, 5), 0.5 * (0.5 * cref + 2.0 * aref.T) + 2.0 * aref.T)
 
 
-def test_tiled_permute_expansion_no_longer_strands_einsums():
+def test_tiled_permute_expansion_no_longer_strands_einsums(dtype):
     """The motivating fix: a permute sharing tensors with tiled einsums used to
     poison the whole body out of expansion. Now both expand together and the
     result is exact."""
     rng = np.random.default_rng(31)
     aref = rng.standard_normal((6, 6))
     grid = [[3, 3], [3, 3]]
-    A = _make_nd("float64", "A", grid, ref=aref)
-    T = einsums.TiledRuntimeTensorD("T", grid)
-    C = einsums.TiledRuntimeTensorD("C", grid)
+    A = _make_nd(dtype, "A", grid, ref=aref)
+    T = DTYPE_TO_TRT[np.dtype(dtype).type]("T", grid)
+    C = DTYPE_TO_TRT[np.dtype(dtype).type]("C", grid)
 
     g = cg.Graph("permute_plus_einsum")
     with cg.capture(g):
@@ -251,18 +260,18 @@ def test_tiled_permute_expansion_no_longer_strands_einsums():
     assert not any(l.startswith("tiled einsum") or l.startswith("tiled permute") for l in labels), labels
 
     g.execute()
-    assert_close(_gather_nd(T, (6, 6), "float64"), (aref @ aref).T @ aref)
+    assert_close(_gather_nd(T, (6, 6), dtype), (aref @ aref).T @ aref)
 
 
-def test_tiled_permute_expansion_sparsity():
+def test_tiled_permute_expansion_sparsity(dtype):
     """Expanded form must keep the runtime's sparsity semantics: absent A
     tiles contribute nothing (their targets keep beta*C), untargeted stored C
     tiles are scaled by beta, and zeros stay absent."""
-    A = einsums.TiledRuntimeTensorD("A", [[2, 3], [4, 5]])
+    A = DTYPE_TO_TRT[np.dtype(dtype).type]("A", [[2, 3], [4, 5]])
     A.add_tile([0, 0])
     A.materialize()
     np.asarray(A.tile_view([0, 0]))[...] = 3.0
-    C = einsums.TiledRuntimeTensorD("C", [[4, 5], [2, 3]])
+    C = DTYPE_TO_TRT[np.dtype(dtype).type]("C", [[4, 5], [2, 3]])
     C.add_tile([1, 1])
     C.materialize()
     np.asarray(C.tile_view([1, 1]))[...] = 8.0
@@ -273,22 +282,22 @@ def test_tiled_permute_expansion_sparsity():
     g.apply(cg.default_pass_manager())
     g.execute()
 
-    np.testing.assert_allclose(np.asarray(C.tile_view([0, 0])), 3.0)
-    np.testing.assert_allclose(np.asarray(C.tile_view([1, 1])), 4.0)  # 0.5 * 8
+    assert_close(np.asarray(C.tile_view([0, 0])), 3.0)
+    assert_close(np.asarray(C.tile_view([1, 1])), 4.0)  # 0.5 * 8
     assert not C.has_tile([0, 1]) and not C.has_tile([1, 0])
 
 
-def test_tile_view_per_block_contractions():
+def test_tile_view_per_block_contractions(dtype):
     """The tiled ladder idiom: capture dense contractions per tile block via
     cg.tile_view, writing disjoint tiles of one tiled output. Sequential and
     Dataflow executors must agree exactly (the tile-coordinate boxes prove the
     per-tile writes disjoint, so the Dataflow replay may run them wide)."""
     rng = np.random.default_rng(21)
-    aref = rng.standard_normal((6, 4))
+    aref = _normal(rng, (6, 4), dtype)
     grid_a = [[3, 3], [4]]
-    A = _make_nd("float64", "A", grid_a, ref=aref)
-    B = einsums.asarray(np.ascontiguousarray(rng.standard_normal((4, 4))), name="B")
-    C = einsums.TiledRuntimeTensorD("C", grid_a)
+    A = _make_nd(dtype, "A", grid_a, ref=aref)
+    B = einsums.asarray(np.ascontiguousarray(_normal(rng, (4, 4), dtype)), name="B", dtype=dtype)
+    C = DTYPE_TO_TRT[np.dtype(dtype).type]("C", grid_a)
 
     g = cg.Graph("tile_view_ladder")
     with cg.capture(g):
@@ -299,24 +308,24 @@ def test_tile_view_per_block_contractions():
 
     g.execute()
     ref = aref @ np.asarray(B)
-    assert_close(_gather_nd(C, (6, 4), "float64"), ref)
+    assert_close(_gather_nd(C, (6, 4), dtype), ref)
 
     g.set_executor(cg.DataflowExecutor())
     g.execute()
-    assert_close(_gather_nd(C, (6, 4), "float64"), ref)
+    assert_close(_gather_nd(C, (6, 4), dtype), ref)
 
 
-def test_tile_view_of_deferred_scratch_parent():
+def test_tile_view_of_deferred_scratch_parent(dtype):
     """tile_view over a graph-owned DEFERRED tiled scratch: the tile's storage
     does not exist at capture (dims come from the grid through the deferred
     sentinel), and each replay re-resolves the tile from the live parent."""
     rng = np.random.default_rng(22)
-    aref = rng.standard_normal((3, 3))
-    A = einsums.asarray(np.ascontiguousarray(aref), name="A")
-    out = einsums.zeros((3, 3), dtype="float64")
+    aref = _normal(rng, (3, 3), dtype)
+    A = einsums.asarray(np.ascontiguousarray(aref), name="A", dtype=dtype)
+    out = einsums.zeros((3, 3), dtype=dtype)
 
     g = cg.Graph("tile_view_scratch")
-    scr = g.declare_zero_tiled_tensor("scr", [[3], [3]], dtype="float64", intermediate=True)
+    scr = g.declare_zero_tiled_tensor("scr", [[3], [3]], dtype=dtype, intermediate=True)
     body = g.add_loop("it", 2, lambda i: True)
     with cg.capture(body):
         s = cg.tile_view(scr, [0, 0])
@@ -342,7 +351,7 @@ def test_tile_view_validation():
             cg.tile_view(A, [5, 0])  # off the grid
 
 
-def test_graph_owned_tiled_scratch_in_loop_body():
+def test_graph_owned_tiled_scratch_in_loop_body(dtype):
     """The CCSD loop idiom on tiled operands: scratch declared DEFERRED on the
     graph (no populated tiles until ops create them), overwritten with c_pf=0
     and consumed every replay. Materialization hoists the lifecycle pair to
@@ -352,12 +361,12 @@ def test_graph_owned_tiled_scratch_in_loop_body():
     aref = rng.standard_normal((6, 6))
     bref = rng.standard_normal((6, 6))
     grid = [[3, 3], [3, 3]]
-    A = _make_nd("float64", "A", grid, ref=aref)
-    B = _make_nd("float64", "B", grid, ref=bref)
-    acc = _make_nd("float64", "acc", grid, ref=np.zeros((6, 6)))
+    A = _make_nd(dtype, "A", grid, ref=aref)
+    B = _make_nd(dtype, "B", grid, ref=bref)
+    acc = _make_nd(dtype, "acc", grid, ref=np.zeros((6, 6), dtype=dtype))
 
     g = cg.Graph("tiled_scratch")
-    tmp = g.declare_zero_tiled_tensor("tmp", grid, dtype="float64", intermediate=True)
+    tmp = g.declare_zero_tiled_tensor("tmp", grid, dtype=dtype, intermediate=True)
     body = g.add_loop("it", 3, lambda i: True)
     with cg.capture(body):
         einsums.einsum("ij <- ik ; kj", tmp, A, B, c_pf=0.0, ab_pf=1.0)  # overwrite scratch
@@ -365,16 +374,16 @@ def test_graph_owned_tiled_scratch_in_loop_body():
 
     g.apply(cg.default_pass_manager())
     g.execute()
-    assert_close(_gather_nd(acc, (6, 6), "float64"), 3.0 * (aref @ bref))
+    assert_close(_gather_nd(acc, (6, 6), dtype), 3.0 * (aref @ bref))
 
     g.execute()  # replay: hoisted Materialize/Initialize rerun after any Free
-    assert_close(_gather_nd(acc, (6, 6), "float64"), 6.0 * (aref @ bref))
+    assert_close(_gather_nd(acc, (6, 6), dtype), 6.0 * (aref @ bref))
 
 
-def test_tiled_permute_captured():
-    aref = (1.0 + np.arange(45)).reshape(5, 9).astype("float64")
-    A = _make("float64", "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])
-    C = DTYPE_TO_TRT[np.float64]("C", [[4, 5], [2, 3]])
+def test_tiled_permute_captured(dtype):
+    aref = (1.0 + np.arange(45)).reshape(5, 9).astype(dtype)
+    A = _make(dtype, "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])
+    C = DTYPE_TO_TRT[np.dtype(dtype).type]("C", [[4, 5], [2, 3]])
 
     g = cg.Graph("tiled_permute")
     with cg.capture(g):
@@ -596,14 +605,14 @@ def test_tiled_heev_block_diagonal(dtype):
 # ordinary dense RuntimeTensors, so the passes above act on them legitimately.
 # The three guards still matter -- they are what keeps a WHOLE tiled operand out
 # of those passes, including on every path expansion declines.
-def test_tiled_operands_are_lowered_by_the_default_pipeline():
+def test_tiled_operands_are_lowered_by_the_default_pipeline(dtype):
     import json
 
-    aref = (1.0 + np.arange(45, dtype=np.float64)).reshape(5, 9)
-    bref = (2.0 - np.arange(63, dtype=np.float64)).reshape(9, 7)
-    A = _make(np.float64, "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])
-    B = _make(np.float64, "B", [[4, 5], [3, 4]], fill=lambda r, c: bref[r, c])
-    C = _make(np.float64, "C", [[2, 3], [3, 4]])
+    aref = (1.0 + np.arange(45, dtype=dtype)).reshape(5, 9)
+    bref = (2.0 - np.arange(63, dtype=dtype)).reshape(9, 7)
+    A = _make(dtype, "A", [[2, 3], [4, 5]], fill=lambda r, c: aref[r, c])
+    B = _make(dtype, "B", [[4, 5], [3, 4]], fill=lambda r, c: bref[r, c])
+    C = _make(dtype, "C", [[2, 3], [3, 4]])
 
     import einsums.graph as cg
 
@@ -645,7 +654,7 @@ def test_tiled_operands_are_lowered_by_the_default_pipeline():
     assert_close(_gather(C, 5, 7), aref @ bref)
 
 
-def test_tiled_operands_are_never_gpu_placed():
+def test_tiled_operands_are_never_gpu_placed(dtype):
     """A tiled tensor must never be handed to GPUPlacement.
 
     It has no single contiguous buffer -- data_ptr is null, storage is one dense
@@ -698,7 +707,7 @@ def test_tiled_operands_are_never_gpu_placed():
 # sequence eagerly, replay by replay.
 
 
-def test_scratch_zeroing_scale_expands_and_replays():
+def test_scratch_zeroing_scale_expands_and_replays(dtype):
     """The CCSD loop idiom: scale(0) on graph-owned DEFERRED scratch, then an
     ACCUMULATING einsum into it. Positionally the scale sees zero tiles, took
     the silent no-op path, stayed opaque, and its contagion stranded the whole
@@ -710,12 +719,12 @@ def test_scratch_zeroing_scale_expands_and_replays():
     aref = rng.standard_normal((6, 6))
     bref = rng.standard_normal((6, 6))
     grid = [[3, 3], [3, 3]]
-    A = _make("float64", "A", grid, fill=lambda r, c: aref[r, c])
-    B = _make("float64", "B", grid, fill=lambda r, c: bref[r, c])
-    acc = _make("float64", "acc", grid, fill=lambda r, c: 0.0)
+    A = _make(dtype, "A", grid, fill=lambda r, c: aref[r, c])
+    B = _make(dtype, "B", grid, fill=lambda r, c: bref[r, c])
+    acc = _make(dtype, "acc", grid, fill=lambda r, c: 0.0)
 
     g = cg.Graph("scratch_zeroing")
-    tmp = g.declare_zero_tiled_tensor("tmp", grid, dtype="float64", intermediate=True)
+    tmp = g.declare_zero_tiled_tensor("tmp", grid, dtype=dtype, intermediate=True)
     body = g.add_loop("it", 2, lambda i: True)
     with cg.capture(body):
         einsums.linalg.scale(0.0, tmp)                                   # zero the scratch
@@ -732,7 +741,7 @@ def test_scratch_zeroing_scale_expands_and_replays():
     assert_close(_gather(acc, 6, 6), 4.0 * (aref @ bref))
 
 
-def test_accumulating_einsum_first_write_carries_c_pf_on_replay():
+def test_accumulating_einsum_first_write_carries_c_pf_on_replay(dtype):
     """einsum with c_pf=0.5 into an initially-EMPTY tiled output. The
     positional model called the first write an overwrite (the tile 'did not
     exist yet'), which is right once: on replay 2+ the tile holds the previous
@@ -742,10 +751,10 @@ def test_accumulating_einsum_first_write_carries_c_pf_on_replay():
     aref = rng.standard_normal((6, 6))
     bref = rng.standard_normal((6, 6))
     grid = [[3, 3], [3, 3]]
-    A = _make("float64", "A", grid, fill=lambda r, c: aref[r, c])
-    B = _make("float64", "B", grid, fill=lambda r, c: bref[r, c])
-    Cg = DTYPE_TO_TRT[np.float64]("Cg", grid)  # empty: tiles created by the op
-    Ce = DTYPE_TO_TRT[np.float64]("Ce", grid)
+    A = _make(dtype, "A", grid, fill=lambda r, c: aref[r, c])
+    B = _make(dtype, "B", grid, fill=lambda r, c: bref[r, c])
+    Cg = DTYPE_TO_TRT[np.dtype(dtype).type]("Cg", grid)  # empty: tiles created by the op
+    Ce = DTYPE_TO_TRT[np.dtype(dtype).type]("Ce", grid)
 
     g = cg.Graph("accumulating_einsum")
     with cg.capture(g):
@@ -758,7 +767,7 @@ def test_accumulating_einsum_first_write_carries_c_pf_on_replay():
         assert_close(_gather(Cg, 6, 6), _gather(Ce, 6, 6))
 
 
-def test_leftover_scales_cover_tiles_created_later_in_the_graph():
+def test_leftover_scales_cover_tiles_created_later_in_the_graph(dtype):
     """A permute's beta must also hit output tiles a LATER node creates: they
     exist (with data) at the permute from the second execution on. The
     positional pre-node set missed them. Sequence: permute writes C(0,0) with
@@ -768,7 +777,7 @@ def test_leftover_scales_cover_tiles_created_later_in_the_graph():
     grid = [[2, 2], [2, 2]]
 
     def sparse(name, coords, ref):
-        t = DTYPE_TO_TRT[np.float64](name, grid)
+        t = DTYPE_TO_TRT[np.dtype(dtype).type](name, grid)
         for co in coords:
             t.add_tile(list(co))
         t.materialize()
@@ -786,7 +795,7 @@ def test_leftover_scales_cover_tiles_created_later_in_the_graph():
         "A": sparse(f"A{tag}", [(0, 0)], aref),        # permute source: only (0,0)
         "D": sparse(f"D{tag}", [(1, 0)], dref),        # einsum operands hit only C(1,1)
         "E": sparse(f"E{tag}", [(0, 1)], eref),
-        "C": DTYPE_TO_TRT[np.float64](f"C{tag}", grid),
+        "C": DTYPE_TO_TRT[np.dtype(dtype).type](f"C{tag}", grid),
     }
     tg, te = mk("g"), mk("e")
 
@@ -803,7 +812,7 @@ def test_leftover_scales_cover_tiles_created_later_in_the_graph():
         assert_close(_gather(tg["C"], 4, 4), _gather(te["C"], 4, 4))
 
 
-def test_many_tile_permute_densifies():
+def test_many_tile_permute_densifies(dtype):
     """A permute over many small tiles must take the densified lowering
     (gather + one dense permute + scatter), not one node per tile: per-tile
     permutes on tiny blocks are pure dispatch overhead (the toy CCSD's blocked
@@ -817,7 +826,7 @@ def test_many_tile_permute_densifies():
     grid = [[2] * 8, [2] * 8]  # 64 tiles of 2x2: firmly in densify territory
 
     def sparse(name, coords, ref):
-        t = DTYPE_TO_TRT[np.float64](name, grid)
+        t = DTYPE_TO_TRT[np.dtype(dtype).type](name, grid)
         for co in coords:
             t.add_tile(list(co))
         t.materialize()

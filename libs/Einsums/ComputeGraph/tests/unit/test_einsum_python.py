@@ -66,25 +66,25 @@ def test_invalid_spec_raises():
         einsums.einsum("ik,kj->ij", C, A, B)  # numpy-style ',' instead of ';'
 
 
-def test_multi_char_indices_matmul():
+def test_multi_char_indices_matmul(dtype):
     # Multi-char tokens (e.g. "mu", "nu", "rho") are comma-separated.
-    A = einsums.create_random_tensor("A", [3, 4])
-    B = einsums.create_random_tensor("B", [4, 5])
-    C = einsums.create_zero_tensor("C", [3, 5])
+    A = einsums.create_random_tensor("A", [3, 4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 5], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [3, 5], dtype=dtype)
 
     einsums.einsum("mu,nu <- mu,rho ; rho,nu", C, A, B)
 
     expected = np.einsum("ik,kj->ij", np.asarray(A), np.asarray(B))
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5, atol=1e-6)
+    assert_close(np.asarray(C), expected)
 
 
-def test_multi_char_indices_batched():
+def test_multi_char_indices_batched(dtype):
     # Mix multi-char and single-char tokens in a batched contraction.
-    A = einsums.create_random_tensor("A", [2, 3, 4])
-    B = einsums.create_random_tensor("B", [2, 4, 5])
-    C = einsums.create_zero_tensor("C", [2, 3, 5])
+    A = einsums.create_random_tensor("A", [2, 3, 4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [2, 4, 5], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [2, 3, 5], dtype=dtype)
 
     einsums.einsum("batch,i,j <- batch,i,k ; batch,k,j", C, A, B)
 
     expected = np.einsum("bik,bkj->bij", np.asarray(A), np.asarray(B))
-    np.testing.assert_allclose(np.asarray(C), expected, rtol=1e-5, atol=1e-6)
+    assert_close(np.asarray(C), expected)
