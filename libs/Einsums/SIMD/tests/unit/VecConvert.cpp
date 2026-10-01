@@ -3,7 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// int32 <-> float conversion: rounding to nearest one way, truncation toward zero the other.
+// Conversions between element types: int32 and float, int64 and double, float and double, int32 and
+// double, the 16-bit floats, and bitcast. Integer to float rounds to nearest, float to integer
+// truncates toward zero, and widening is exact.
 
 #include <Einsums/SIMD/Convert.hpp>
 #include <Einsums/SIMD/Operations.hpp>
@@ -140,5 +142,214 @@ TEST_CASE("half_t widens exactly and narrows to nearest even", "[simd][convert][
 TEST_CASE("bfloat16_t widens exactly and narrows to nearest even", "[simd][convert][bf16]") {
     check_widen_every_pattern<bfloat16_t>();
     check_narrow<bfloat16_t>(narrowing_inputs());
+}
+#endif
+
+// ─── bitcast ──────────────────────────────────────────────────────────────
+
+TEST_CASE("bitcast reinterprets the bits of each lane", "[simd][convert][bitcast]") {
+    constexpr int F = Vec<float>::lanes;
+    constexpr int D = Vec<double>::lanes;
+    float         f[F];
+    double        d[D];
+    for (int i = 0; i < F; ++i) {
+        f[i] = (i % 2 ? -1.0f : 1.0f) * (static_cast<float>(i) + 0.25f);
+    }
+    for (int i = 0; i < D; ++i) {
+        d[i] = (i % 2 ? -1.0 : 1.0) * (static_cast<double>(i) + 0.125);
+    }
+    int32_t  fi[F];
+    uint32_t fu[F];
+    int64_t  di[D];
+    uint64_t du[D];
+    storeu(fi, bitcast<int32_t>(loadu(f)));
+    storeu(fu, bitcast<uint32_t>(loadu(f)));
+    storeu(di, bitcast<int64_t>(loadu(d)));
+    storeu(du, bitcast<uint64_t>(loadu(d)));
+    for (int i = 0; i < F; ++i) {
+        CHECK(fi[i] == std::bit_cast<int32_t>(f[i]));
+        CHECK(fu[i] == std::bit_cast<uint32_t>(f[i]));
+    }
+    for (int i = 0; i < D; ++i) {
+        CHECK(di[i] == std::bit_cast<int64_t>(d[i]));
+        CHECK(du[i] == std::bit_cast<uint64_t>(d[i]));
+    }
+    // And back, through both signednesses.
+    float  f2[F];
+    double d2[D];
+    storeu(f2, bitcast<float>(bitcast<uint32_t>(bitcast<int32_t>(loadu(f)))));
+    storeu(d2, bitcast<double>(bitcast<uint64_t>(bitcast<int64_t>(loadu(d)))));
+    for (int i = 0; i < F; ++i) {
+        CHECK(std::bit_cast<uint32_t>(f2[i]) == std::bit_cast<uint32_t>(f[i]));
+    }
+    for (int i = 0; i < D; ++i) {
+        CHECK(std::bit_cast<uint64_t>(d2[i]) == std::bit_cast<uint64_t>(d[i]));
+    }
+}
+
+// ─── double and int64 ─────────────────────────────────────────────────────
+
+namespace {
+
+/// Every value lands in every lane, next to every other, so a batch can mix lanes that take the
+/// x86 fast path (below 2^51) with lanes that force the lane-by-lane one.
+template <typename From, typename To, typename Ref>
+void check_same_lane_conversion(std::vector<From> const &values, Ref ref) {
+    constexpr int L = Vec<From>::lanes;
+    for (size_t o = 0; o < values.size(); ++o) {
+        for (size_t step : {size_t{1}, size_t{3}}) {
+            From in[L];
+            To   out[L];
+            for (int i = 0; i < L; ++i) {
+                in[i] = values[(o + step * static_cast<size_t>(i)) % values.size()];
+            }
+            storeu(out, convert<To>(loadu(in)));
+            for (int i = 0; i < L; ++i) {
+                INFO("lane " << i << ": " << in[i]);
+                ref(in[i], out[i]);
+            }
+        }
+    }
+}
+
+} // namespace
+
+TEST_CASE("convert<int64_t> of double truncates toward zero", "[simd][convert]") {
+    constexpr double    two51 = 2251799813685248.0, two63 = 9223372036854775808.0;
+    std::vector<double> in{0.0,
+                           -0.0,
+                           0.75,
+                           -0.75,
+                           1.5,
+                           -2.5,
+                           123456789.875,
+                           -987654321.25,
+                           two51,
+                           -two51,
+                           two51 - 0.5,
+                           -two51 + 0.5,
+                           two51 + 1,
+                           4503599627370497.0,
+                           1e18,
+                           -1e18,
+                           -two63,
+                           std::nextafter(two63, 0.0),
+                           -std::nextafter(two63, 0.0)};
+    check_same_lane_conversion<double, int64_t>(in, [](double x, int64_t got) { CHECK(got == static_cast<int64_t>(x)); });
+
+    // Out of range or NaN: x86 gives INT64_MIN and NEON saturates; either is allowed.
+    std::vector<double> bad{two63, -two63 * 2, 1e300, -std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN(),
+                            0.5};
+    check_same_lane_conversion<double, int64_t>(bad, [](double x, int64_t got) {
+        if (x == 0.5) {
+            CHECK(got == 0);
+        } else {
+            CHECK((got == std::numeric_limits<int64_t>::min() || got == std::numeric_limits<int64_t>::max() || got == 0));
+        }
+    });
+}
+
+TEST_CASE("convert<double> of int64 rounds to nearest, ties to even", "[simd][convert]") {
+    constexpr int64_t    two51 = int64_t{1} << 51, two53 = int64_t{1} << 53;
+    std::vector<int64_t> in{0,
+                            1,
+                            -1,
+                            42,
+                            -123456789,
+                            two51 - 1,
+                            -(two51 - 1),
+                            two51,
+                            -two51,
+                            two53,
+                            two53 + 1,
+                            two53 + 3,
+                            -(two53 + 1),
+                            -(two53 + 3),
+                            std::numeric_limits<int64_t>::max(),
+                            std::numeric_limits<int64_t>::min()};
+    check_same_lane_conversion<int64_t, double>(in, [](int64_t x, double got) { CHECK(got == static_cast<double>(x)); });
+}
+
+// ─── float and double, double and int32 ───────────────────────────────────
+
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2) || defined(__aarch64__) || defined(_M_ARM64)
+TEST_CASE("float widens to double exactly and narrows to nearest even", "[simd][convert]") {
+    constexpr int F = Vec<float>::lanes;
+    constexpr int D = Vec<double>::lanes;
+    static_assert(F == 2 * D);
+    float in[F];
+    for (int i = 0; i < F; ++i) {
+        in[i] = (i % 2 ? -1.0f : 1.0f) * std::ldexp(1.0f + static_cast<float>(i) / 16.0f, 3 * i - 20);
+    }
+    in[1] = std::numeric_limits<float>::denorm_min();
+    in[2] = std::numeric_limits<float>::infinity();
+    double low[D], high[D];
+    storeu(low, convert_low<double>(loadu(in)));
+    storeu(high, convert_high<double>(loadu(in)));
+    for (int i = 0; i < F; ++i) {
+        CHECK((i < D ? low[i] : high[i - D]) == static_cast<double>(in[i]));
+    }
+
+    // Narrowing: a tie between two floats goes to the even one, a value past FLT_MAX overflows to
+    // infinity, one below the smallest subnormal rounds to a signed zero, and NaN stays NaN.
+    std::vector<double> wide{
+        1.0 + 0x1p-24, 1.0 + 3 * 0x1p-24, -(1.0 + 0x1p-24), 3.5e38, -3.5e38, 1e-50, -1e-50, std::numeric_limits<double>::quiet_NaN(), 0.1,
+        -0.0,          1.0 / 3.0,         16777217.0};
+    for (size_t o = 0; o < wide.size(); ++o) {
+        double lo[D], hi[D];
+        for (int i = 0; i < D; ++i) {
+            lo[i] = wide[(o + static_cast<size_t>(i)) % wide.size()];
+            hi[i] = wide[(o + static_cast<size_t>(D + i)) % wide.size()];
+        }
+        float out[F];
+        storeu(out, convert<float>(loadu(lo), loadu(hi)));
+        for (int i = 0; i < F; ++i) {
+            double const x = i < D ? lo[i] : hi[i - D];
+            INFO("input " << x);
+            if (std::isnan(x)) {
+                CHECK(std::isnan(out[i]));
+            } else {
+                CHECK(std::bit_cast<uint32_t>(out[i]) == std::bit_cast<uint32_t>(static_cast<float>(x)));
+            }
+        }
+    }
+}
+
+TEST_CASE("int32 widens to double exactly and double truncates into int32", "[simd][convert]") {
+    constexpr int I = Vec<int32_t>::lanes;
+    constexpr int D = Vec<double>::lanes;
+    static_assert(I == 2 * D);
+    int32_t in[I];
+    for (int i = 0; i < I; ++i) {
+        in[i] = (i % 2 ? -1 : 1) * (i * 134217727 + 7);
+    }
+    in[0]     = std::numeric_limits<int32_t>::min();
+    in[I - 1] = std::numeric_limits<int32_t>::max();
+    double low[D], high[D];
+    storeu(low, convert_low<double>(loadu(in)));
+    storeu(high, convert_high<double>(loadu(in)));
+    for (int i = 0; i < I; ++i) {
+        CHECK((i < D ? low[i] : high[i - D]) == static_cast<double>(in[i]));
+    }
+
+    double lo[D], hi[D];
+    for (int i = 0; i < D; ++i) {
+        lo[i] = (i % 2 ? -1.0 : 1.0) * (static_cast<double>(i) * 1000.5 + 0.75);
+        hi[i] = (i % 2 ? 1.0 : -1.0) * (2147483647.75 - static_cast<double>(i));
+    }
+    int32_t out[I];
+    storeu(out, convert<int32_t>(loadu(lo), loadu(hi)));
+    for (int i = 0; i < I; ++i) {
+        double const x = i < D ? lo[i] : hi[i - D];
+        INFO("input " << x);
+        CHECK(out[i] == static_cast<int32_t>(x));
+    }
+}
+#else
+TEST_CASE("the scalar build converts float, double and int32 lane for lane", "[simd][convert]") {
+    CHECK(convert<double>(broadcast(1.5f))[0] == 1.5);
+    CHECK(convert<float>(broadcast(1.0 + 0x1p-24))[0] == 1.0f);
+    CHECK(convert<double>(broadcast(int32_t{-7}))[0] == -7.0);
+    CHECK(convert<int32_t>(broadcast(-7.75))[0] == -7);
 }
 #endif

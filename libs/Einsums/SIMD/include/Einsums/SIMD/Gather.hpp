@@ -11,6 +11,8 @@
 #include <Einsums/SIMD/Vec.hpp>
 
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
 
@@ -42,6 +44,14 @@ EINSUMS_FORCEINLINE void scatter_scalar(T *base, std::ptrdiff_t stride, Vec<T> v
         base[i * stride] = buf[i];
 }
 
+/// Whether every offset 0, stride, ..., (lanes - 1) * stride of a Vec<T> fits the int32 lanes of a
+/// 32-bit-index gather or scatter. A larger stride would wrap, so it takes the scalar loop instead.
+template <typename T>
+EINSUMS_FORCEINLINE bool offsets_fit_int32(std::ptrdiff_t stride) {
+    constexpr std::ptrdiff_t limit = std::numeric_limits<int32_t>::max() / (Vec<T>::lanes - 1);
+    return stride <= limit && stride >= -limit;
+}
+
 } // namespace detail
 
 // ===========================================================================
@@ -60,8 +70,10 @@ template <>
 EINSUMS_FORCEINLINE Vec<float> gather(float const *base, std::ptrdiff_t stride) {
     if (stride == 1)
         return loadu(base);
-    __m512i idx = _mm512_set_epi32(15 * stride, 14 * stride, 13 * stride, 12 * stride, 11 * stride, 10 * stride, 9 * stride, 8 * stride,
-                                   7 * stride, 6 * stride, 5 * stride, 4 * stride, 3 * stride, 2 * stride, stride, 0);
+    if (!detail::offsets_fit_int32<float>(stride))
+        return detail::gather_scalar(base, stride);
+    __m512i idx = _mm512_mullo_epi32(_mm512_set1_epi32(static_cast<int32_t>(stride)),
+                                     _mm512_set_epi32(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0));
     return _mm512_i32gather_ps(idx, base, sizeof(float));
 }
 
@@ -100,7 +112,9 @@ template <>
 EINSUMS_FORCEINLINE Vec<float> gather(float const *base, std::ptrdiff_t stride) {
     if (stride == 1)
         return loadu(base);
-    __m256i idx = _mm256_set_epi32(7 * stride, 6 * stride, 5 * stride, 4 * stride, 3 * stride, 2 * stride, stride, 0);
+    if (!detail::offsets_fit_int32<float>(stride))
+        return detail::gather_scalar(base, stride);
+    __m256i idx = _mm256_mullo_epi32(_mm256_set1_epi32(static_cast<int32_t>(stride)), _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0));
     return _mm256_i32gather_ps(base, idx, sizeof(float));
 }
 
@@ -233,6 +247,75 @@ EINSUMS_FORCEINLINE Vec<double> gather(double const *base, std::ptrdiff_t stride
 #endif
 
 // ===========================================================================
+// Index gather: gather(base, idx) loads base[idx[0]], base[idx[1]], ... with
+// one index per lane, counted in elements. The index vector has the element's
+// width so the lane counts match: Vec<int32_t> for float, Vec<int64_t> for
+// double. Every index must address a valid element; there is no masking.
+//
+// AVX2 and AVX-512 use their hardware gathers. Everything else, including
+// NEON, which has no gather, reads lane by lane.
+// ===========================================================================
+
+// Empty for other types, so gather(base, stride) on them never trips over this overload.
+template <typename T>
+struct gather_index {};
+template <>
+struct gather_index<float> {
+    using type = int32_t;
+};
+template <>
+struct gather_index<double> {
+    using type = int64_t;
+};
+/// The index element type gather(base, idx) takes for a T table.
+template <typename T>
+using gather_index_t = typename gather_index<T>::type;
+
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> gather(T const *base, Vec<gather_index_t<T>> idx);
+
+namespace detail {
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> gather_index_scalar(T const *base, Vec<gather_index_t<T>> idx) {
+    alignas(native_alignment) gather_index_t<T> at[Vec<T>::lanes];
+    alignas(native_alignment) T                 buf[Vec<T>::lanes];
+    storea(at, idx);
+    for (int i = 0; i < Vec<T>::lanes; ++i)
+        buf[i] = base[at[i]];
+    return loada(buf);
+}
+} // namespace detail
+
+#if defined(__AVX512F__) && defined(__AVX512VL__)
+template <>
+EINSUMS_FORCEINLINE Vec<float> gather(float const *base, Vec<int32_t> idx) {
+    return _mm512_i32gather_ps(idx.reg, base, sizeof(float));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> gather(double const *base, Vec<int64_t> idx) {
+    return _mm512_i64gather_pd(idx.reg, base, sizeof(double));
+}
+#elif defined(__AVX2__)
+template <>
+EINSUMS_FORCEINLINE Vec<float> gather(float const *base, Vec<int32_t> idx) {
+    return _mm256_i32gather_ps(base, idx.reg, sizeof(float));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> gather(double const *base, Vec<int64_t> idx) {
+    return _mm256_i64gather_pd(base, idx.reg, sizeof(double));
+}
+#else
+template <>
+EINSUMS_FORCEINLINE Vec<float> gather(float const *base, Vec<int32_t> idx) {
+    return detail::gather_index_scalar(base, idx);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> gather(double const *base, Vec<int64_t> idx) {
+    return detail::gather_index_scalar(base, idx);
+}
+#endif
+
+// ===========================================================================
 // Scatter: store Vec<T>::lanes elements to base[0], base[stride], ...
 // ===========================================================================
 
@@ -250,8 +333,12 @@ EINSUMS_FORCEINLINE void scatter(float *base, std::ptrdiff_t stride, Vec<float> 
         storeu(base, v);
         return;
     }
-    __m512i idx = _mm512_set_epi32(15 * stride, 14 * stride, 13 * stride, 12 * stride, 11 * stride, 10 * stride, 9 * stride, 8 * stride,
-                                   7 * stride, 6 * stride, 5 * stride, 4 * stride, 3 * stride, 2 * stride, stride, 0);
+    if (!detail::offsets_fit_int32<float>(stride)) {
+        detail::scatter_scalar(base, stride, v);
+        return;
+    }
+    __m512i idx = _mm512_mullo_epi32(_mm512_set1_epi32(static_cast<int32_t>(stride)),
+                                     _mm512_set_epi32(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0));
     _mm512_i32scatter_ps(base, idx, v.reg, sizeof(float));
 }
 

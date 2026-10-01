@@ -13,6 +13,9 @@
 #include <Einsums/SIMD/Vec.hpp>
 
 #include <cstdint>
+#include <limits>
+#include <type_traits>
+#include <vector>
 
 #include <catch2/catch_all.hpp>
 
@@ -223,5 +226,92 @@ TEMPLATE_TEST_CASE("cmp_eq returns all-1s mask in matching lanes", "[simd][integ
             CHECK(static_cast<U>(mask[i]) == ~U(0));
         else
             CHECK(static_cast<U>(mask[i]) == U(0));
+    }
+}
+
+// ─── Ordering compares and variable shifts ────────────────────────────────
+
+namespace {
+
+/// Values that order differently as signed and unsigned, and 64-bit pairs that differ only in their
+/// low half or only in their high half, which is where a compare built from 32-bit halves goes wrong.
+template <typename T>
+std::vector<T> ordering_values() {
+    using U = std::make_unsigned_t<T>;
+    std::vector<T> v{T(0),
+                     T(1),
+                     static_cast<T>(-1),
+                     T(2),
+                     static_cast<T>(-2),
+                     std::numeric_limits<T>::min(),
+                     std::numeric_limits<T>::max(),
+                     static_cast<T>(std::numeric_limits<T>::min() + 1),
+                     static_cast<T>(std::numeric_limits<T>::max() - 1),
+                     static_cast<T>(U(1) << (4 * sizeof(T) - 1)),
+                     static_cast<T>(U(1) << (4 * sizeof(T)))};
+    if constexpr (sizeof(T) == 8) {
+        v.push_back(static_cast<T>(0x0000000100000000ULL));
+        v.push_back(static_cast<T>(0x00000000FFFFFFFFULL));
+        v.push_back(static_cast<T>(0x0000000180000000ULL));
+        v.push_back(static_cast<T>(0x000000017FFFFFFFULL));
+        v.push_back(static_cast<T>(0xFFFFFFFF00000000ULL));
+        v.push_back(static_cast<T>(0xFFFFFFFE80000000ULL));
+        v.push_back(static_cast<T>(0x8000000080000000ULL));
+        v.push_back(static_cast<T>(0x7FFFFFFF80000000ULL));
+    }
+    return v;
+}
+
+} // namespace
+
+TEMPLATE_TEST_CASE("cmp_ne, cmp_lt, cmp_le, cmp_gt and cmp_ge order integers by their own signedness", "[simd][integer]", int32_t, uint32_t,
+                   int64_t, uint64_t) {
+    using T             = TestType;
+    using U             = std::make_unsigned_t<T>;
+    constexpr int L     = Vec<T>::lanes;
+    auto const    s     = ordering_values<T>();
+    auto          check = [&](auto op, auto ref, char const *name) {
+        for (size_t oa = 0; oa < s.size(); ++oa) {
+            for (size_t ob = 0; ob < s.size(); ++ob) {
+                T a[L], b[L], out[L];
+                for (int i = 0; i < L; ++i) {
+                    a[i] = s[(oa + static_cast<size_t>(i)) % s.size()];
+                    b[i] = s[(ob + 3 * static_cast<size_t>(i)) % s.size()];
+                }
+                storeu(out, op(loadu(a), loadu(b)));
+                for (int i = 0; i < L; ++i) {
+                    INFO(name << " lane " << i << ": a = " << a[i] << ", b = " << b[i]);
+                    CHECK(static_cast<U>(out[i]) == (ref(a[i], b[i]) ? ~U(0) : U(0)));
+                }
+            }
+        }
+    };
+    check([](auto a, auto b) { return cmp_ne(a, b); }, [](T a, T b) { return a != b; }, "cmp_ne");
+    check([](auto a, auto b) { return cmp_lt(a, b); }, [](T a, T b) { return a < b; }, "cmp_lt");
+    check([](auto a, auto b) { return cmp_le(a, b); }, [](T a, T b) { return a <= b; }, "cmp_le");
+    check([](auto a, auto b) { return cmp_gt(a, b); }, [](T a, T b) { return a > b; }, "cmp_gt");
+    check([](auto a, auto b) { return cmp_ge(a, b); }, [](T a, T b) { return a >= b; }, "cmp_ge");
+}
+
+TEMPLATE_TEST_CASE("shift_left and shift_right by a count per lane are logical", "[simd][integer]", int32_t, uint32_t, int64_t, uint64_t) {
+    using T            = TestType;
+    using U            = std::make_unsigned_t<T>;
+    constexpr int L    = Vec<T>::lanes;
+    constexpr int bits = 8 * sizeof(T);
+    // Every count from 0 to bits - 1 reaches every lane, against a value with its top bit set so a
+    // sign-extending right shift would show.
+    for (int first = 0; first < bits; ++first) {
+        T values[L], counts[L], left[L], right[L];
+        for (int i = 0; i < L; ++i) {
+            values[i] = static_cast<T>((~U(0) - static_cast<U>(0x0123456789ABCDEFULL * static_cast<U>(i + 1))) | (U(1) << (bits - 1)));
+            counts[i] = static_cast<T>((first + 7 * i) % bits);
+        }
+        storeu(left, shift_left(loadu(values), loadu(counts)));
+        storeu(right, shift_right(loadu(values), loadu(counts)));
+        for (int i = 0; i < L; ++i) {
+            INFO("lane " << i << ": count " << counts[i]);
+            CHECK(static_cast<U>(left[i]) == static_cast<U>(static_cast<U>(values[i]) << counts[i]));
+            CHECK(static_cast<U>(right[i]) == static_cast<U>(static_cast<U>(values[i]) >> counts[i]));
+        }
     }
 }

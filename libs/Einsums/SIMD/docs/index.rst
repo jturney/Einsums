@@ -73,6 +73,20 @@ and the operators ``/`` and unary ``-``. ``min(a, b)`` is exactly
 ``a < b ? a : b``, so a NaN on either side, or two zeros of either sign, give
 ``b`` on every backend. ``abs`` and ``neg`` change only the sign bit.
 
+``fmsub(a, b, c)``, ``fnmadd(a, b, c)`` and ``fnmsub(a, b, c)`` are
+``a*b - c``, ``-(a*b) + c`` and ``-(a*b) - c``, with the x86 names. Like
+``fmadd`` they round once on aarch64 and wherever ``has_fma`` is true, and
+multiply and add separately elsewhere, so a kernel that depends on the single
+rounding can check ``has_fma`` at compile time.
+
+``floor``, ``ceil``, ``trunc`` and ``round`` match their ``std::`` namesakes
+lane for lane, signed zeros included; ``round`` takes ties away from zero, as
+``std::round`` does, and ``round_even`` takes them to the even neighbour. The
+result is still floating point; ``convert`` turns it into an integer. The
+SSE2 baseline has no rounding instruction and emulates one with an add and a
+subtract of 2^23 or 2^52, which is wrong under ``-ffast-math`` or any other
+reassociating mode.
+
 A comparison returns a mask of the same type: each lane all-ones where it
 holds and zero where it does not. The comparisons follow IEEE 754, so every
 one involving a NaN is false except ``cmp_ne``.
@@ -91,6 +105,13 @@ one involving a NaN is false except ``cmp_ne``.
 (``a & ~b``), and ``any(mask)`` and ``all(mask)`` reduce one to a ``bool``.
 Only comparison results are valid masks: the backends read different bits of
 a lane, so only all-ones and zero mean the same thing everywhere.
+
+The 32- and 64-bit integers have the same six comparisons, ordered by their
+own signedness, so ``cmp_lt`` on ``Vec<uint32_t>`` treats ``0xFFFFFFFF`` as
+the largest value. Besides the immediate shifts ``shift_left<N>(v)`` and
+``shift_right<N>(v)``, ``shift_left(v, count)`` and ``shift_right(v, count)``
+shift each lane by the matching lane of ``count``, which must be below the
+element's width in bits. Every right shift is logical.
 
 Reductions, Partial Loads and Conversions
 =========================================
@@ -148,6 +169,32 @@ twice ``Vec<float>``'s lanes, so it widens to two float vectors:
 Widening is exact; narrowing rounds to nearest, ties to even, as a C++
 conversion does. NEON uses its conversion instructions and every other build
 converts lane by lane through memory.
+
+``float`` and ``double``, and ``int32_t`` and ``double``, convert in the same
+shape, because ``Vec<double>`` has half the lanes of the 32-bit vectors:
+
+.. code-block:: cpp
+
+    Vec<double> lo = convert_low<double>(vf);     // lanes 0 .. L/2 - 1 of a Vec<float>
+    Vec<double> hi = convert_high<double>(vf);    // lanes L/2 .. L - 1
+    Vec<float>  f  = convert<float>(lo, hi);      // rounded to nearest even
+    Vec<int32_t> i = convert<int32_t>(lo, hi);    // truncated toward zero
+
+These use conversion instructions on every ISA. The scalar fallback has one
+lane of each type, so it converts one ``Vec`` to another instead, as in
+``convert<double>(vf)``.
+
+``int64_t`` and ``double`` have the same lane count and convert like
+``int32_t`` and ``float``: ``convert<int64_t>(vd)`` truncates toward zero and
+``convert<double>(vl)`` rounds to nearest. AVX-512DQ and NEON have
+instructions for both. Other x86 builds have none, so they take a short
+exact sequence when every lane is below 2^51 in magnitude, which covers any
+table index, and convert lane by lane otherwise.
+
+``bitcast<To>(v)`` reads the same bits as another element type of the same
+width, ``Vec<float>`` as ``Vec<int32_t>`` or ``Vec<double>`` as
+``Vec<uint64_t>`` and back. It compiles to nothing, and with the integer
+operations it reaches the exponent and mantissa bits of a float.
 
 Examples
 ========
@@ -223,6 +270,21 @@ Strided memory access, with hardware gathers where the ISA has them:
 
     // Write the lanes back to the same strided locations
     scatter(data, 3, strided);
+
+A gather can also take one index per lane, in elements. The index vector has
+the element's width, so the lane counts match: ``Vec<int32_t>`` for
+``float`` and ``Vec<int64_t>`` for ``double``, named by
+``gather_index_t<T>``. With ``floor`` and ``convert`` it looks up a
+tabulated function at the grid point below each lane's argument:
+
+.. code-block:: cpp
+
+    // table[k] holds f(k * dx)
+    Vec<int64_t> k = convert<int64_t>(floor(x * broadcast(1.0 / dx)));
+    Vec<double>  f = gather(table, k);
+
+AVX2 and AVX-512 use their gather instructions; every other build, NEON
+included, reads lane by lane. Every index must address a valid element.
 
 Complex Numbers
 ===============

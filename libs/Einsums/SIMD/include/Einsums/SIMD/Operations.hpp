@@ -12,6 +12,8 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
 
@@ -753,6 +755,104 @@ EINSUMS_FORCEINLINE Vec<float> neg(Vec<float> a) {
 template <>
 EINSUMS_FORCEINLINE Vec<double> neg(Vec<double> a) {
     return {-a.reg};
+}
+#endif
+
+// ===========================================================================
+// The other fused forms, with the x86 names and meanings:
+//
+//   fmsub(a, b, c)  =  a * b - c
+//   fnmadd(a, b, c) = -(a * b) + c
+//   fnmsub(a, b, c) = -(a * b) - c
+//
+// Each rounds once where fmadd does, and where fmadd falls back to a separate
+// multiply and add (has_fma is false on x86), these do too. NEON has only
+// c + a*b and c - a*b, so a negated c supplies the other two; negation is
+// exact, so the result is still the single rounding x86 gives, signed zeros
+// included.
+// ===========================================================================
+
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> fmsub(Vec<T> a, Vec<T> b, Vec<T> c);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> fnmadd(Vec<T> a, Vec<T> b, Vec<T> c);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> fnmsub(Vec<T> a, Vec<T> b, Vec<T> c);
+
+#if defined(EINSUMS_SIMD_HAVE_FMA)
+#    define EINSUMS_SIMD_FMA_FORMS(T, FMSUB, FNMADD, FNMSUB)                                                                               \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> fmsub(Vec<T> a, Vec<T> b, Vec<T> c) {                                                                   \
+            return FMSUB(a.reg, b.reg, c.reg);                                                                                             \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> fnmadd(Vec<T> a, Vec<T> b, Vec<T> c) {                                                                  \
+            return FNMADD(a.reg, b.reg, c.reg);                                                                                            \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> fnmsub(Vec<T> a, Vec<T> b, Vec<T> c) {                                                                  \
+            return FNMSUB(a.reg, b.reg, c.reg);                                                                                            \
+        }
+#    if defined(__AVX512F__) && defined(__AVX512VL__)
+EINSUMS_SIMD_FMA_FORMS(float, _mm512_fmsub_ps, _mm512_fnmadd_ps, _mm512_fnmsub_ps)
+EINSUMS_SIMD_FMA_FORMS(double, _mm512_fmsub_pd, _mm512_fnmadd_pd, _mm512_fnmsub_pd)
+#    elif defined(__AVX__)
+EINSUMS_SIMD_FMA_FORMS(float, _mm256_fmsub_ps, _mm256_fnmadd_ps, _mm256_fnmsub_ps)
+EINSUMS_SIMD_FMA_FORMS(double, _mm256_fmsub_pd, _mm256_fnmadd_pd, _mm256_fnmsub_pd)
+#    else
+EINSUMS_SIMD_FMA_FORMS(float, _mm_fmsub_ps, _mm_fnmadd_ps, _mm_fnmsub_ps)
+EINSUMS_SIMD_FMA_FORMS(double, _mm_fmsub_pd, _mm_fnmadd_pd, _mm_fnmsub_pd)
+#    endif
+#    undef EINSUMS_SIMD_FMA_FORMS
+#elif defined(__aarch64__) || defined(_M_ARM64)
+template <>
+EINSUMS_FORCEINLINE Vec<float> fmsub(Vec<float> a, Vec<float> b, Vec<float> c) {
+    return vfmaq_f32(vnegq_f32(c.reg), a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> fmsub(Vec<double> a, Vec<double> b, Vec<double> c) {
+    return vfmaq_f64(vnegq_f64(c.reg), a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> fnmadd(Vec<float> a, Vec<float> b, Vec<float> c) {
+    return vfmsq_f32(c.reg, a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> fnmadd(Vec<double> a, Vec<double> b, Vec<double> c) {
+    return vfmsq_f64(c.reg, a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> fnmsub(Vec<float> a, Vec<float> b, Vec<float> c) {
+    return vfmsq_f32(vnegq_f32(c.reg), a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> fnmsub(Vec<double> a, Vec<double> b, Vec<double> c) {
+    return vfmsq_f64(vnegq_f64(c.reg), a.reg, b.reg);
+}
+#else
+template <>
+EINSUMS_FORCEINLINE Vec<float> fmsub(Vec<float> a, Vec<float> b, Vec<float> c) {
+    return sub(mul(a, b), c);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> fmsub(Vec<double> a, Vec<double> b, Vec<double> c) {
+    return sub(mul(a, b), c);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> fnmadd(Vec<float> a, Vec<float> b, Vec<float> c) {
+    return sub(c, mul(a, b));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> fnmadd(Vec<double> a, Vec<double> b, Vec<double> c) {
+    return sub(c, mul(a, b));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> fnmsub(Vec<float> a, Vec<float> b, Vec<float> c) {
+    return sub(neg(mul(a, b)), c);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> fnmsub(Vec<double> a, Vec<double> b, Vec<double> c) {
+    return sub(neg(mul(a, b)), c);
 }
 #endif
 
@@ -1629,8 +1729,8 @@ EINSUMS_SIMD_INT_BITWISE(uint64_t)
 // Logical shifts: shift_left<N>(v) and shift_right<N>(v).
 //
 // The shift count is a non-type template parameter so the intrinsics
-// generated are immediate-form (best codegen). Variable-count shifts are a
-// separate API not added yet.
+// generated are immediate-form (best codegen). The variable-count forms,
+// one count per lane, follow this section.
 //
 // `shift_right` is *logical* (zero-fill on the high bit). Arithmetic shift
 // (sign-extending) is a separate operation we'll add when there's a use.
@@ -1817,6 +1917,164 @@ template <int N>
 EINSUMS_FORCEINLINE Vec<uint64_t> shift_right(Vec<uint64_t> v) {
     return {static_cast<uint64_t>(v.reg >> N)};
 }
+#endif
+
+// ===========================================================================
+// Variable logical shifts: shift_left(v, count) and shift_right(v, count)
+// shift each lane of v by the matching lane of count, on the 32- and 64-bit
+// integers. shift_right is logical, as the immediate form is.
+//
+// Each count must be in [0, bits of the element); outside that the lane is
+// unspecified, because x86 gives zero and NEON reads the count's low byte as a
+// signed amount.
+//
+// AVX2 and AVX-512 shift per lane natively, and NEON shifts by a signed
+// per-lane amount, negated for a right shift. SSE has only a shift of every
+// lane by one amount: 64-bit lanes take two such shifts and keep a lane of
+// each, and 32-bit lanes go through memory.
+// ===========================================================================
+
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> shift_left(Vec<T> v, Vec<T> count);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> shift_right(Vec<T> v, Vec<T> count);
+
+#if defined(__AVX512F__) && defined(__AVX512VL__)
+#    define EINSUMS_SIMD_X86_VAR_SHIFTS(T, SLLV, SRLV)                                                                                     \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> shift_left(Vec<T> v, Vec<T> count) {                                                                    \
+            return SLLV(v.reg, count.reg);                                                                                                 \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> shift_right(Vec<T> v, Vec<T> count) {                                                                   \
+            return SRLV(v.reg, count.reg);                                                                                                 \
+        }
+EINSUMS_SIMD_X86_VAR_SHIFTS(int32_t, _mm512_sllv_epi32, _mm512_srlv_epi32)
+EINSUMS_SIMD_X86_VAR_SHIFTS(uint32_t, _mm512_sllv_epi32, _mm512_srlv_epi32)
+EINSUMS_SIMD_X86_VAR_SHIFTS(int64_t, _mm512_sllv_epi64, _mm512_srlv_epi64)
+EINSUMS_SIMD_X86_VAR_SHIFTS(uint64_t, _mm512_sllv_epi64, _mm512_srlv_epi64)
+#    undef EINSUMS_SIMD_X86_VAR_SHIFTS
+#elif defined(__AVX2__)
+#    define EINSUMS_SIMD_X86_VAR_SHIFTS(T, SLLV, SRLV)                                                                                     \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> shift_left(Vec<T> v, Vec<T> count) {                                                                    \
+            return SLLV(v.reg, count.reg);                                                                                                 \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> shift_right(Vec<T> v, Vec<T> count) {                                                                   \
+            return SRLV(v.reg, count.reg);                                                                                                 \
+        }
+EINSUMS_SIMD_X86_VAR_SHIFTS(int32_t, _mm256_sllv_epi32, _mm256_srlv_epi32)
+EINSUMS_SIMD_X86_VAR_SHIFTS(uint32_t, _mm256_sllv_epi32, _mm256_srlv_epi32)
+EINSUMS_SIMD_X86_VAR_SHIFTS(int64_t, _mm256_sllv_epi64, _mm256_srlv_epi64)
+EINSUMS_SIMD_X86_VAR_SHIFTS(uint64_t, _mm256_sllv_epi64, _mm256_srlv_epi64)
+#    undef EINSUMS_SIMD_X86_VAR_SHIFTS
+#elif defined(__AVX__)
+// No 256-bit integer instructions; see the comment above.
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+namespace detail {
+template <typename T, typename Shift>
+EINSUMS_FORCEINLINE Vec<T> shift_lanes(Vec<T> v, Vec<T> count, Shift shift) {
+    using U = std::make_unsigned_t<T>;
+    alignas(native_alignment) T values[Vec<T>::lanes];
+    alignas(native_alignment) T counts[Vec<T>::lanes];
+    storea(values, v);
+    storea(counts, count);
+    for (int i = 0; i < Vec<T>::lanes; ++i) {
+        // A C++ shift by the width or more is undefined; give the zero PSLLD would.
+        auto const n = static_cast<unsigned>(counts[i]);
+        values[i]    = n < 8 * sizeof(T) ? static_cast<T>(shift(static_cast<U>(values[i]), n)) : T{0};
+    }
+    return loada(values);
+}
+
+/// PSLLQ and PSRLQ shift both lanes by the low 64 bits of their count, so shift twice and take lane
+/// 0 of the first and lane 1 of the second.
+template <typename Shift>
+EINSUMS_FORCEINLINE __m128i shift_two_lanes(__m128i v, __m128i count, Shift shift) {
+    __m128i const low  = shift(v, count);
+    __m128i const high = shift(v, _mm_unpackhi_epi64(count, count));
+    return _mm_castpd_si128(_mm_move_sd(_mm_castsi128_pd(high), _mm_castsi128_pd(low)));
+}
+} // namespace detail
+
+#    define EINSUMS_SIMD_SSE_VAR_SHIFTS_32(T)                                                                                              \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> shift_left(Vec<T> v, Vec<T> count) {                                                                    \
+            return detail::shift_lanes(v, count, [](auto x, unsigned n) { return x << n; });                                               \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> shift_right(Vec<T> v, Vec<T> count) {                                                                   \
+            return detail::shift_lanes(v, count, [](auto x, unsigned n) { return x >> n; });                                               \
+        }
+#    define EINSUMS_SIMD_SSE_VAR_SHIFTS_64(T)                                                                                              \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> shift_left(Vec<T> v, Vec<T> count) {                                                                    \
+            return detail::shift_two_lanes(v.reg, count.reg, [](__m128i x, __m128i n) { return _mm_sll_epi64(x, n); });                    \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> shift_right(Vec<T> v, Vec<T> count) {                                                                   \
+            return detail::shift_two_lanes(v.reg, count.reg, [](__m128i x, __m128i n) { return _mm_srl_epi64(x, n); });                    \
+        }
+EINSUMS_SIMD_SSE_VAR_SHIFTS_32(int32_t)
+EINSUMS_SIMD_SSE_VAR_SHIFTS_32(uint32_t)
+EINSUMS_SIMD_SSE_VAR_SHIFTS_64(int64_t)
+EINSUMS_SIMD_SSE_VAR_SHIFTS_64(uint64_t)
+#    undef EINSUMS_SIMD_SSE_VAR_SHIFTS_32
+#    undef EINSUMS_SIMD_SSE_VAR_SHIFTS_64
+#elif defined(__aarch64__) || defined(_M_ARM64)
+// VSHL shifts left by a signed per-lane amount and right by a negative one. Its amount is always a
+// signed vector, so the unsigned counts are reinterpreted, and the logical right shift of a signed
+// lane goes through the unsigned type.
+template <>
+EINSUMS_FORCEINLINE Vec<int32_t> shift_left(Vec<int32_t> v, Vec<int32_t> count) {
+    return vshlq_s32(v.reg, count.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<uint32_t> shift_left(Vec<uint32_t> v, Vec<uint32_t> count) {
+    return vshlq_u32(v.reg, vreinterpretq_s32_u32(count.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<int64_t> shift_left(Vec<int64_t> v, Vec<int64_t> count) {
+    return vshlq_s64(v.reg, count.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<uint64_t> shift_left(Vec<uint64_t> v, Vec<uint64_t> count) {
+    return vshlq_u64(v.reg, vreinterpretq_s64_u64(count.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<int32_t> shift_right(Vec<int32_t> v, Vec<int32_t> count) {
+    return vreinterpretq_s32_u32(vshlq_u32(vreinterpretq_u32_s32(v.reg), vnegq_s32(count.reg)));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<uint32_t> shift_right(Vec<uint32_t> v, Vec<uint32_t> count) {
+    return vshlq_u32(v.reg, vnegq_s32(vreinterpretq_s32_u32(count.reg)));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<int64_t> shift_right(Vec<int64_t> v, Vec<int64_t> count) {
+    return vreinterpretq_s64_u64(vshlq_u64(vreinterpretq_u64_s64(v.reg), vnegq_s64(count.reg)));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<uint64_t> shift_right(Vec<uint64_t> v, Vec<uint64_t> count) {
+    return vshlq_u64(v.reg, vnegq_s64(vreinterpretq_s64_u64(count.reg)));
+}
+#else
+#    define EINSUMS_SIMD_SCALAR_VAR_SHIFTS(T)                                                                                              \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> shift_left(Vec<T> v, Vec<T> count) {                                                                    \
+            auto const n = static_cast<std::make_unsigned_t<T>>(count.reg);                                                                \
+            return {n < 8 * sizeof(T) ? static_cast<T>(static_cast<std::make_unsigned_t<T>>(v.reg) << n) : T{0}};                          \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> shift_right(Vec<T> v, Vec<T> count) {                                                                   \
+            auto const n = static_cast<std::make_unsigned_t<T>>(count.reg);                                                                \
+            return {n < 8 * sizeof(T) ? static_cast<T>(static_cast<std::make_unsigned_t<T>>(v.reg) >> n) : T{0}};                          \
+        }
+EINSUMS_SIMD_SCALAR_VAR_SHIFTS(int32_t)
+EINSUMS_SIMD_SCALAR_VAR_SHIFTS(uint32_t)
+EINSUMS_SIMD_SCALAR_VAR_SHIFTS(int64_t)
+EINSUMS_SIMD_SCALAR_VAR_SHIFTS(uint64_t)
+#    undef EINSUMS_SIMD_SCALAR_VAR_SHIFTS
 #endif
 
 // ===========================================================================
@@ -2582,6 +2840,392 @@ EINSUMS_SIMD_SCALAR_INT_MASKS(int64_t)
 EINSUMS_SIMD_SCALAR_INT_MASKS(uint64_t)
 #    undef EINSUMS_SIMD_SCALAR_INT_MASKS
 #endif
+
+// ===========================================================================
+// Integer ordering comparisons: cmp_ne, cmp_lt, cmp_le, cmp_gt, cmp_ge on the
+// 32- and 64-bit integers, signed and unsigned, returning the same all-ones
+// or zero lane mask as cmp_eq.
+//
+// AVX-512 and NEON compare natively in either signedness. AVX2 and SSE only
+// have a signed greater-than, so lt swaps the operands, le and ge invert, and
+// the unsigned forms flip each operand's top bit first, which maps unsigned
+// order onto signed order. SSE2 without SSE4.2 has no 64-bit greater-than at
+// all and builds it from the 32-bit halves. AVX without AVX2 leaves these
+// undefined, as it does every integer operation.
+// ===========================================================================
+
+#if defined(__AVX512F__) && defined(__AVX512VL__)
+#    define EINSUMS_SIMD_AVX512_INT_CMPS(T, CMP, SET)                                                                                      \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_ne(Vec<T> a, Vec<T> b) {                                                                            \
+            return SET(CMP(a.reg, b.reg, _MM_CMPINT_NE), -1);                                                                              \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_lt(Vec<T> a, Vec<T> b) {                                                                            \
+            return SET(CMP(a.reg, b.reg, _MM_CMPINT_LT), -1);                                                                              \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_le(Vec<T> a, Vec<T> b) {                                                                            \
+            return SET(CMP(a.reg, b.reg, _MM_CMPINT_LE), -1);                                                                              \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_gt(Vec<T> a, Vec<T> b) {                                                                            \
+            return SET(CMP(a.reg, b.reg, _MM_CMPINT_NLE), -1);                                                                             \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_ge(Vec<T> a, Vec<T> b) {                                                                            \
+            return SET(CMP(a.reg, b.reg, _MM_CMPINT_NLT), -1);                                                                             \
+        }
+EINSUMS_SIMD_AVX512_INT_CMPS(int32_t, _mm512_cmp_epi32_mask, _mm512_maskz_set1_epi32)
+EINSUMS_SIMD_AVX512_INT_CMPS(uint32_t, _mm512_cmp_epu32_mask, _mm512_maskz_set1_epi32)
+EINSUMS_SIMD_AVX512_INT_CMPS(int64_t, _mm512_cmp_epi64_mask, _mm512_maskz_set1_epi64)
+EINSUMS_SIMD_AVX512_INT_CMPS(uint64_t, _mm512_cmp_epu64_mask, _mm512_maskz_set1_epi64)
+#    undef EINSUMS_SIMD_AVX512_INT_CMPS
+#elif defined(__AVX__) && !defined(__AVX2__)
+// No 256-bit integer instructions; see the comment above.
+#elif defined(__AVX2__) || defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+namespace detail {
+#    if defined(__AVX2__)
+EINSUMS_FORCEINLINE __m256i signed_gt32(__m256i a, __m256i b) {
+    return _mm256_cmpgt_epi32(a, b);
+}
+EINSUMS_FORCEINLINE __m256i signed_gt64(__m256i a, __m256i b) {
+    return _mm256_cmpgt_epi64(a, b);
+}
+#    else
+EINSUMS_FORCEINLINE __m128i signed_gt32(__m128i a, __m128i b) {
+    return _mm_cmpgt_epi32(a, b);
+}
+#        if defined(__SSE4_2__)
+EINSUMS_FORCEINLINE __m128i signed_gt64(__m128i a, __m128i b) {
+    return _mm_cmpgt_epi64(a, b);
+}
+#        else
+// A 64-bit lane is greater when its signed high half is, or when the high halves are equal and its
+// low half is greater as an unsigned number. The answer lands in the high half and is copied down.
+EINSUMS_FORCEINLINE __m128i signed_gt64(__m128i a, __m128i b) {
+    __m128i const bias   = _mm_set1_epi32(std::numeric_limits<int32_t>::min());
+    __m128i const hi_gt  = _mm_cmpgt_epi32(a, b);
+    __m128i const hi_eq  = _mm_cmpeq_epi32(a, b);
+    __m128i const lo_gt  = _mm_cmpgt_epi32(_mm_xor_si128(a, bias), _mm_xor_si128(b, bias));
+    __m128i const lo_up  = _mm_shuffle_epi32(lo_gt, _MM_SHUFFLE(2, 2, 0, 0));
+    __m128i const result = _mm_or_si128(hi_gt, _mm_and_si128(hi_eq, lo_up));
+    return _mm_shuffle_epi32(result, _MM_SHUFFLE(3, 3, 1, 1));
+}
+#        endif
+#    endif
+
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> ordered_gt(Vec<T> a, Vec<T> b) {
+    if constexpr (std::is_unsigned_v<T>) {
+        Vec<T> const top = broadcast(static_cast<T>(T{1} << (8 * sizeof(T) - 1)));
+        a                = bitwise_xor(a, top);
+        b                = bitwise_xor(b, top);
+    }
+    if constexpr (sizeof(T) == 4) {
+        return signed_gt32(a.reg, b.reg);
+    } else {
+        return signed_gt64(a.reg, b.reg);
+    }
+}
+
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> lane_not(Vec<T> m) {
+    return bitwise_xor(m, broadcast(static_cast<T>(~T{0})));
+}
+} // namespace detail
+
+#    define EINSUMS_SIMD_X86_INT_CMPS(T)                                                                                                   \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_ne(Vec<T> a, Vec<T> b) {                                                                            \
+            return detail::lane_not(cmp_eq(a, b));                                                                                         \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_lt(Vec<T> a, Vec<T> b) {                                                                            \
+            return detail::ordered_gt(b, a);                                                                                               \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_le(Vec<T> a, Vec<T> b) {                                                                            \
+            return detail::lane_not(detail::ordered_gt(a, b));                                                                             \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_gt(Vec<T> a, Vec<T> b) {                                                                            \
+            return detail::ordered_gt(a, b);                                                                                               \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_ge(Vec<T> a, Vec<T> b) {                                                                            \
+            return detail::lane_not(detail::ordered_gt(b, a));                                                                             \
+        }
+EINSUMS_SIMD_X86_INT_CMPS(int32_t)
+EINSUMS_SIMD_X86_INT_CMPS(uint32_t)
+EINSUMS_SIMD_X86_INT_CMPS(int64_t)
+EINSUMS_SIMD_X86_INT_CMPS(uint64_t)
+#    undef EINSUMS_SIMD_X86_INT_CMPS
+#elif defined(__aarch64__) || defined(_M_ARM64)
+namespace detail {
+EINSUMS_FORCEINLINE uint32x4_t lane_not(uint32x4_t m) {
+    return vmvnq_u32(m);
+}
+EINSUMS_FORCEINLINE uint64x2_t lane_not(uint64x2_t m) {
+    return vreinterpretq_u64_u32(vmvnq_u32(vreinterpretq_u32_u64(m)));
+}
+} // namespace detail
+
+// The compares return an unsigned lane mask; TO_T reinterprets it as the element type.
+#    define EINSUMS_SIMD_NEON_INT_CMPS(T, sfx, TO_T)                                                                                       \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_ne(Vec<T> a, Vec<T> b) {                                                                            \
+            return TO_T(detail::lane_not(vceqq_##sfx(a.reg, b.reg)));                                                                      \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_lt(Vec<T> a, Vec<T> b) {                                                                            \
+            return TO_T(vcltq_##sfx(a.reg, b.reg));                                                                                        \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_le(Vec<T> a, Vec<T> b) {                                                                            \
+            return TO_T(vcleq_##sfx(a.reg, b.reg));                                                                                        \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_gt(Vec<T> a, Vec<T> b) {                                                                            \
+            return TO_T(vcgtq_##sfx(a.reg, b.reg));                                                                                        \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_ge(Vec<T> a, Vec<T> b) {                                                                            \
+            return TO_T(vcgeq_##sfx(a.reg, b.reg));                                                                                        \
+        }
+#    define EINSUMS_SIMD_NEON_SAME(x) (x)
+EINSUMS_SIMD_NEON_INT_CMPS(int32_t, s32, vreinterpretq_s32_u32)
+EINSUMS_SIMD_NEON_INT_CMPS(uint32_t, u32, EINSUMS_SIMD_NEON_SAME)
+EINSUMS_SIMD_NEON_INT_CMPS(int64_t, s64, vreinterpretq_s64_u64)
+EINSUMS_SIMD_NEON_INT_CMPS(uint64_t, u64, EINSUMS_SIMD_NEON_SAME)
+#    undef EINSUMS_SIMD_NEON_SAME
+#    undef EINSUMS_SIMD_NEON_INT_CMPS
+#else
+#    define EINSUMS_SIMD_SCALAR_INT_CMPS(T)                                                                                                \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_ne(Vec<T> a, Vec<T> b) {                                                                            \
+            return {static_cast<T>(a.reg != b.reg ? ~T{0} : T{0})};                                                                        \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_lt(Vec<T> a, Vec<T> b) {                                                                            \
+            return {static_cast<T>(a.reg < b.reg ? ~T{0} : T{0})};                                                                         \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_le(Vec<T> a, Vec<T> b) {                                                                            \
+            return {static_cast<T>(a.reg <= b.reg ? ~T{0} : T{0})};                                                                        \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_gt(Vec<T> a, Vec<T> b) {                                                                            \
+            return {static_cast<T>(a.reg > b.reg ? ~T{0} : T{0})};                                                                         \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_ge(Vec<T> a, Vec<T> b) {                                                                            \
+            return {static_cast<T>(a.reg >= b.reg ? ~T{0} : T{0})};                                                                        \
+        }
+EINSUMS_SIMD_SCALAR_INT_CMPS(int32_t)
+EINSUMS_SIMD_SCALAR_INT_CMPS(uint32_t)
+EINSUMS_SIMD_SCALAR_INT_CMPS(int64_t)
+EINSUMS_SIMD_SCALAR_INT_CMPS(uint64_t)
+#    undef EINSUMS_SIMD_SCALAR_INT_CMPS
+#endif
+
+// ===========================================================================
+// Rounding to an integral value, float and double:
+//
+//   floor(x)       toward -infinity           std::floor
+//   ceil(x)        toward +infinity           std::ceil
+//   trunc(x)       toward zero                std::trunc
+//   round(x)       nearest, ties away from 0  std::round
+//   round_even(x)  nearest, ties to even      std::nearbyint in the default mode
+//
+// The result stays floating point; convert() turns it into an integer. Each
+// matches its std:: function lane for lane, signed zeros included (floor of
+// -0.0 is -0.0, ceil of -0.5 is -0.0), and NaN and infinities pass through.
+// round_even ignores the dynamic rounding mode, as the instructions below do.
+//
+// AVX-512, AVX and SSE4.1 round with one instruction in any mode but away from
+// zero, which is built from trunc. NEON has an instruction for all five. SSE2
+// has none: adding and subtracting 2^23 (float) or 2^52 (double) rounds a
+// smaller magnitude to an integer, ties to even, because the sum has no
+// fraction bits left, and floor, ceil and trunc correct that by one where it
+// went the wrong way. Larger magnitudes are integers already and are returned
+// unchanged. That emulation relies on the add and subtract not being folded
+// together, so it is wrong under -ffast-math, -fassociative-math or icx's
+// default -fp-model=fast.
+// ===========================================================================
+
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> floor(Vec<T> x);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> ceil(Vec<T> x);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> trunc(Vec<T> x);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> round(Vec<T> x);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> round_even(Vec<T> x);
+
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+namespace detail {
+/// round(x) from trunc(x): step one further from zero where the dropped fraction is at least a half.
+/// x - trunc(x) is exact, so the comparison sees the true fraction.
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> round_half_away(Vec<T> x) {
+    Vec<T> const t       = trunc(x);
+    Vec<T> const away    = bitwise_or(broadcast(T{1}), bitwise_and(x, broadcast(T{-0.0})));
+    Vec<T> const dropped = abs(sub(x, t));
+    Vec<T> const stepped = add(t, away);
+    return select(cmp_ge(dropped, broadcast(T{0.5})), stepped, t);
+}
+} // namespace detail
+#endif
+
+#define EINSUMS_SIMD_X86_ROUNDING(T, ROUND)                                                                                                \
+    template <>                                                                                                                            \
+    EINSUMS_FORCEINLINE Vec<T> floor(Vec<T> x) {                                                                                           \
+        return ROUND(x.reg, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);                                                                    \
+    }                                                                                                                                      \
+    template <>                                                                                                                            \
+    EINSUMS_FORCEINLINE Vec<T> ceil(Vec<T> x) {                                                                                            \
+        return ROUND(x.reg, _MM_FROUND_TO_POS_INF | _MM_FROUND_NO_EXC);                                                                    \
+    }                                                                                                                                      \
+    template <>                                                                                                                            \
+    EINSUMS_FORCEINLINE Vec<T> trunc(Vec<T> x) {                                                                                           \
+        return ROUND(x.reg, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);                                                                       \
+    }                                                                                                                                      \
+    template <>                                                                                                                            \
+    EINSUMS_FORCEINLINE Vec<T> round_even(Vec<T> x) {                                                                                      \
+        return ROUND(x.reg, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);                                                                \
+    }                                                                                                                                      \
+    template <>                                                                                                                            \
+    EINSUMS_FORCEINLINE Vec<T> round(Vec<T> x) {                                                                                           \
+        return detail::round_half_away(x);                                                                                                 \
+    }
+
+#if defined(__AVX512F__) && defined(__AVX512VL__)
+// VRNDSCALE with a scale of zero is a plain round in the given mode.
+EINSUMS_SIMD_X86_ROUNDING(float, _mm512_roundscale_ps)
+EINSUMS_SIMD_X86_ROUNDING(double, _mm512_roundscale_pd)
+#elif defined(__AVX__)
+EINSUMS_SIMD_X86_ROUNDING(float, _mm256_round_ps)
+EINSUMS_SIMD_X86_ROUNDING(double, _mm256_round_pd)
+#elif defined(__SSE4_1__)
+EINSUMS_SIMD_X86_ROUNDING(float, _mm_round_ps)
+EINSUMS_SIMD_X86_ROUNDING(double, _mm_round_pd)
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+namespace detail {
+template <typename T>
+inline constexpr T no_fraction_bits = sizeof(T) == 4 ? T{8388608.0} : T{4503599627370496.0}; // 2^23, 2^52
+
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> sse2_round_even(Vec<T> x) {
+    Vec<T> const big     = broadcast(no_fraction_bits<T>);
+    Vec<T> const ax      = abs(x);
+    Vec<T> const rounded = sub(add(ax, big), big);
+    Vec<T> const signed_ = bitwise_or(rounded, bitwise_and(x, broadcast(T{-0.0})));
+    return select(cmp_lt(ax, big), signed_, x);
+}
+
+/// floor(x): round to nearest, then step down where that went up. OR-ing in x's sign gives -0.0 for
+/// floor(-0.0); every other negative x already floors to a negative value.
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> sse2_floor(Vec<T> x) {
+    Vec<T> const r = sse2_round_even(x);
+    return sub(r, bitwise_and(cmp_gt(r, x), broadcast(T{1})));
+}
+
+/// ceil(x): round to nearest, then step up where that went down. A negative x above -1 steps up to
+/// +0.0, so x's sign is OR-ed back in to make it -0.0.
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> sse2_ceil(Vec<T> x) {
+    Vec<T> const r  = sse2_round_even(x);
+    Vec<T> const up = add(r, bitwise_and(cmp_lt(r, x), broadcast(T{1})));
+    return bitwise_or(up, bitwise_and(x, broadcast(T{-0.0})));
+}
+
+/// trunc(x) = floor(|x|) with x's sign.
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> sse2_trunc(Vec<T> x) {
+    return bitwise_or(sse2_floor(abs(x)), bitwise_and(x, broadcast(T{-0.0})));
+}
+} // namespace detail
+
+#    define EINSUMS_SIMD_SSE2_ROUNDING(T)                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> floor(Vec<T> x) {                                                                                       \
+            return detail::sse2_floor(x);                                                                                                  \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> ceil(Vec<T> x) {                                                                                        \
+            return detail::sse2_ceil(x);                                                                                                   \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> trunc(Vec<T> x) {                                                                                       \
+            return detail::sse2_trunc(x);                                                                                                  \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> round_even(Vec<T> x) {                                                                                  \
+            return detail::sse2_round_even(x);                                                                                             \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> round(Vec<T> x) {                                                                                       \
+            return detail::round_half_away(x);                                                                                             \
+        }
+EINSUMS_SIMD_SSE2_ROUNDING(float)
+EINSUMS_SIMD_SSE2_ROUNDING(double)
+#    undef EINSUMS_SIMD_SSE2_ROUNDING
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#    define EINSUMS_SIMD_NEON_ROUNDING(T, sfx)                                                                                             \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> floor(Vec<T> x) {                                                                                       \
+            return vrndmq_##sfx(x.reg);                                                                                                    \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> ceil(Vec<T> x) {                                                                                        \
+            return vrndpq_##sfx(x.reg);                                                                                                    \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> trunc(Vec<T> x) {                                                                                       \
+            return vrndq_##sfx(x.reg);                                                                                                     \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> round(Vec<T> x) {                                                                                       \
+            return vrndaq_##sfx(x.reg);                                                                                                    \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> round_even(Vec<T> x) {                                                                                  \
+            return vrndnq_##sfx(x.reg);                                                                                                    \
+        }
+EINSUMS_SIMD_NEON_ROUNDING(float, f32)
+EINSUMS_SIMD_NEON_ROUNDING(double, f64)
+#    undef EINSUMS_SIMD_NEON_ROUNDING
+#else
+#    define EINSUMS_SIMD_SCALAR_ROUNDING(T)                                                                                                \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> floor(Vec<T> x) {                                                                                       \
+            return {std::floor(x.reg)};                                                                                                    \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> ceil(Vec<T> x) {                                                                                        \
+            return {std::ceil(x.reg)};                                                                                                     \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> trunc(Vec<T> x) {                                                                                       \
+            return {std::trunc(x.reg)};                                                                                                    \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> round(Vec<T> x) {                                                                                       \
+            return {std::round(x.reg)};                                                                                                    \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> round_even(Vec<T> x) {                                                                                  \
+            return {std::nearbyint(x.reg)};                                                                                                \
+        }
+EINSUMS_SIMD_SCALAR_ROUNDING(float)
+EINSUMS_SIMD_SCALAR_ROUNDING(double)
+#    undef EINSUMS_SIMD_SCALAR_ROUNDING
+#endif
+#undef EINSUMS_SIMD_X86_ROUNDING
 
 // ===========================================================================
 // 8-bit integer load / store / broadcast.
