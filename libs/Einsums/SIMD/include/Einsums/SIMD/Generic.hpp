@@ -13,6 +13,7 @@
 #include <Einsums/SIMD/Partial.hpp>
 #include <Einsums/SIMD/Platform.hpp>
 #include <Einsums/SIMD/Vec.hpp>
+#include <Einsums/SIMD/Wide.hpp>
 
 #include <cmath>
 #include <concepts>
@@ -30,13 +31,16 @@
 // the scalar half of the operations in Operations.hpp, and the few generic
 // operations that have no vector spelling to reuse:
 //
-//   scalar_t<V>, lanes_v<V>, is_vec_v<V>   element type, lane count, and whether V is a Vec
+//   scalar_t<V>, lanes_v<V>, is_vec_v<V>   element type, lane count, and whether V is a Vec<T, N>
 //   splat<V>(x)                           broadcast(x), or x
 //   load<V>(p), store(p, v)               loadu and storeu, or *p
 //   lookup(base, idx)                     gather(base, idx) with a lane per index, or base[idx]
 //
 // The scalar overloads match one lane of the vector operation bit for bit, so
-// a scalar run on the CPU is an exact reference for the vector run: min is
+// a scalar run on the CPU is an exact reference for the vector run, as long as
+// the compiler does not contract a kernel's own separate multiply and add into
+// an FMA: GCC does by default (-ffp-contract=fast), independently in each
+// instantiation, so build the comparison with -ffp-contract=off. In particular: min is
 // a < b ? a : b (not std::fmin), the fused forms round once exactly where the
 // vector forms do (where the build has FMA), and a compare returns bool where
 // the vector one returns a Mask<T>. Everything that takes a Mask<T> takes the
@@ -62,21 +66,21 @@ EINSUMS_SIMD_ISA_NAMESPACE_BEGIN()
 namespace detail {
 template <typename V>
 struct is_vec : std::false_type {};
-template <typename T>
-struct is_vec<Vec<T>> : std::true_type {};
+template <typename T, int N>
+struct is_vec<Vec<T, N>> : std::true_type {};
 
 template <typename V>
 struct lanes_of : std::integral_constant<int, 1> {};
-template <typename T>
-struct lanes_of<Vec<T>> : std::integral_constant<int, Vec<T>::lanes> {};
+template <typename T, int N>
+struct lanes_of<Vec<T, N>> : std::integral_constant<int, N> {};
 
 template <typename V>
 struct value_of {
     using type = V;
 };
-template <typename T>
-struct value_of<Vec<T>> {
-    using type = typename Vec<T>::value_type;
+template <typename T, int N>
+struct value_of<Vec<T, N>> {
+    using type = T;
 };
 
 /// An element type a scalar overload takes: a floating-point type or an integer, but not bool.
@@ -103,26 +107,37 @@ inline constexpr int lanes_v = detail::lanes_of<V>::value;
 /// A V holding x in every lane.
 template <typename V>
 EINSUMS_FORCEINLINE V splat(scalar_t<V> x) {
-    if constexpr (is_vec_v<V>) {
+    if constexpr (!is_vec_v<V>) {
+        return x;
+    } else if constexpr (V::native) {
         return broadcast(x);
     } else {
-        return x;
+        V r;
+        r.part.fill(broadcast(x));
+        return r;
     }
 }
 
 /// lanes_v<V> consecutive elements from p, which need no alignment.
 template <typename V>
 EINSUMS_FORCEINLINE V load(scalar_t<V> const *p) {
-    if constexpr (is_vec_v<V>) {
+    if constexpr (!is_vec_v<V>) {
+        return *p;
+    } else if constexpr (V::native) {
         return loadu(p);
     } else {
-        return *p;
+        constexpr int L = V::part_type::lanes;
+        V             r;
+        for (int k = 0; k < V::parts; ++k) {
+            r.part[k] = loadu(p + k * L);
+        }
+        return r;
     }
 }
 
 /// Write v's lanes to consecutive elements from p, which needs no alignment.
-template <typename T>
-EINSUMS_FORCEINLINE void store(T *p, Vec<T> v) {
+template <typename T, int N>
+EINSUMS_FORCEINLINE void store(T *p, Vec<T, N> v) {
     storeu(p, v);
 }
 template <detail::arithmetic T>
@@ -149,6 +164,120 @@ EINSUMS_FORCEINLINE Vec<T> lookup(T const *base, Vec<gather_index_t<T>> idx, Mas
 template <std::floating_point T, std::integral I>
 EINSUMS_FORCEINLINE T lookup(T const *base, I idx, bool m) {
     return m ? base[idx] : T(0);
+}
+
+// ---------------------------------------------------------------------------
+// lookup on wide vectors, with an index of either width and the same lane count.
+//
+// A Vec<int32_t, N> index lets the two tiers of a mixed-precision kernel share
+// one index vector: the FP32 tier computes convert<int32_t>(floor(x)) and the
+// FP64 tier, Vec<double, N>, gathers its doubles with the same register. AVX2
+// and AVX-512 gather doubles at 32-bit indices directly, half an index register
+// per double register; every other build reads lane by lane, as every gather
+// there does.
+// ---------------------------------------------------------------------------
+
+namespace detail {
+template <typename I>
+concept lookup_index = std::same_as<I, int32_t> || std::same_as<I, int64_t>;
+
+/// Whether lookup(base, Vec<I, N>) is the native index gather of gather_index_t<T>, which the plain
+/// overloads above already are.
+template <typename T, typename I, int N>
+inline constexpr bool native_lookup = N == VecTraits<T>::lanes && std::same_as<I, gather_index_t<T>>;
+
+#if (defined(__AVX512F__) && defined(__AVX512VL__)) || defined(__AVX2__)
+#    define EINSUMS_SIMD_HAVE_GATHER_PD_I32 1
+/// The doubles at half @p h of a 32-bit index register: one double register's worth of lanes.
+EINSUMS_FORCEINLINE Vec<double> gather_pd_i32(double const *base, Vec<int32_t> idx, int h) {
+#    if defined(__AVX512F__) && defined(__AVX512VL__)
+    __m256i const half = h == 0 ? _mm512_castsi512_si256(idx.reg) : _mm512_extracti64x4_epi64(idx.reg, 1);
+    return _mm512_i32gather_pd(half, base, sizeof(double));
+#    else
+    __m128i const half = h == 0 ? _mm256_castsi256_si128(idx.reg) : _mm256_extracti128_si256(idx.reg, 1);
+    return _mm256_i32gather_pd(base, half, sizeof(double));
+#    endif
+}
+EINSUMS_FORCEINLINE Vec<double> gather_pd_i32(double const *base, Vec<int32_t> idx, int h, Mask<double> m) {
+#    if defined(__AVX512F__) && defined(__AVX512VL__)
+    __m256i const half = h == 0 ? _mm512_castsi512_si256(idx.reg) : _mm512_extracti64x4_epi64(idx.reg, 1);
+    return _mm512_mask_i32gather_pd(_mm512_setzero_pd(), m.reg, half, base, sizeof(double));
+#    else
+    __m128i const half = h == 0 ? _mm256_castsi256_si128(idx.reg) : _mm256_extracti128_si256(idx.reg, 1);
+    return _mm256_mask_i32gather_pd(_mm256_setzero_pd(), base, half, m.reg, sizeof(double));
+#    endif
+}
+#endif
+
+/// The fallback: every lane's index read through memory, and only the lanes @p bits sets loaded.
+template <typename T, typename I, int N>
+EINSUMS_FORCEINLINE Vec<T, N> lookup_lanes(T const *base, Vec<I, N> idx, uint64_t bits) {
+    alignas(native_alignment) I at[N];
+    alignas(native_alignment) T out[N] = {};
+    store(at, idx);
+    for (int i = 0; i < N; ++i) {
+        if ((bits >> i) & 1u) {
+            out[i] = base[at[i]];
+        }
+    }
+    return load<Vec<T, N>>(out);
+}
+} // namespace detail
+
+template <std::floating_point T, detail::lookup_index I, int N>
+    requires(!detail::native_lookup<T, I, N>)
+EINSUMS_FORCEINLINE Vec<T, N> lookup(T const *base, Vec<I, N> idx) {
+    constexpr int LT = VecTraits<T>::lanes;
+    constexpr int LI = VecTraits<I>::lanes;
+    if constexpr (LT == LI && std::same_as<I, gather_index_t<T>>) {
+        Vec<T, N> r;
+        for (int k = 0; k < N / LT; ++k) {
+            detail::set_part(r, k, gather(base, detail::part_of(idx, k)));
+        }
+        return r;
+    }
+#if defined(EINSUMS_SIMD_HAVE_GATHER_PD_I32)
+    else if constexpr (std::same_as<T, double> && std::same_as<I, int32_t> && LI == 2 * LT) {
+        Vec<T, N> r;
+        for (int k = 0; k < N / LI; ++k) {
+            Vec<int32_t> const p = detail::part_of(idx, k);
+            detail::set_part(r, 2 * k, detail::gather_pd_i32(base, p, 0));
+            detail::set_part(r, 2 * k + 1, detail::gather_pd_i32(base, p, 1));
+        }
+        return r;
+    }
+#endif
+    else {
+        return detail::lookup_lanes(base, idx, N == 64 ? ~uint64_t{0} : (uint64_t{1} << N) - 1u);
+    }
+}
+
+template <std::floating_point T, detail::lookup_index I, int N>
+    requires(!detail::native_lookup<T, I, N>)
+EINSUMS_FORCEINLINE Vec<T, N> lookup(T const *base, Vec<I, N> idx, Mask<T, N> m) {
+    constexpr int LT = VecTraits<T>::lanes;
+    constexpr int LI = VecTraits<I>::lanes;
+    if constexpr (LT == LI && std::same_as<I, gather_index_t<T>>) {
+        Vec<T, N> r;
+        for (int k = 0; k < N / LT; ++k) {
+            detail::set_part(r, k, gather(base, detail::part_of(idx, k), detail::part_of(m, k)));
+        }
+        return r;
+    }
+#if defined(EINSUMS_SIMD_HAVE_GATHER_PD_I32)
+    else if constexpr (std::same_as<T, double> && std::same_as<I, int32_t> && LI == 2 * LT) {
+        Vec<T, N> r;
+        for (int k = 0; k < N / LI; ++k) {
+            Vec<int32_t> const p = detail::part_of(idx, k);
+            detail::set_part(r, 2 * k, detail::gather_pd_i32(base, p, 0, detail::part_of(m, 2 * k)));
+            detail::set_part(r, 2 * k + 1, detail::gather_pd_i32(base, p, 1, detail::part_of(m, 2 * k + 1)));
+        }
+        return r;
+    }
+#endif
+    else {
+        return detail::lookup_lanes(base, idx, to_bits(m));
+    }
 }
 
 /// The scalar forms of the masked load and store: *p where m is true, and zero or nothing otherwise.

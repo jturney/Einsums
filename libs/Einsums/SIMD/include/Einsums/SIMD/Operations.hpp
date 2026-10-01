@@ -9,6 +9,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
+#include <array>
 #include <bit>
 #include <cmath>
 #include <concepts>
@@ -2176,21 +2177,50 @@ using mask_reg_t = bool;
 #endif
 } // namespace detail
 
-/// One flag per lane of a Vec<T>.
-template <typename T>
-struct Mask {
-    static_assert(detail::has_mask<T>, "Mask exists for float, double and the 32- and 64-bit integers");
+template <typename T, int N = VecTraits<T>::lanes>
+    requires(N > 0 && N % VecTraits<T>::lanes == 0)
+struct Mask;
 
-    using reg_type   = detail::mask_reg_t<T>;
-    using value_type = T;
+namespace detail {
+template <typename T, int N, bool Native = (N == VecTraits<T>::lanes)>
+struct mask_storage;
 
-    static constexpr int lanes = Vec<T>::lanes;
+/// One register, or bool.
+template <typename T, int N>
+struct mask_storage<T, N, true> {
+    static_assert(has_mask<T>, "Mask exists for float, double and the 32- and 64-bit integers");
+
+    using reg_type = mask_reg_t<T>;
 
     reg_type reg;
 
-    Mask() = default;
+    mask_storage() = default;
 
-    EINSUMS_FORCEINLINE explicit Mask(reg_type r) : reg(r) {}
+    EINSUMS_FORCEINLINE explicit mask_storage(reg_type r) : reg(r) {}
+};
+
+/// K native masks, in the lane order of Vec<T, N>.
+template <typename T, int N>
+struct mask_storage<T, N, false> {
+    using part_type = Mask<T>;
+
+    static constexpr int parts = N / VecTraits<T>::lanes;
+
+    std::array<Mask<T>, parts> part;
+};
+} // namespace detail
+
+/// One flag per lane of a Vec<T, N>.
+template <typename T, int N>
+    requires(N > 0 && N % VecTraits<T>::lanes == 0)
+struct Mask : detail::mask_storage<T, N> {
+    using detail::mask_storage<T, N>::mask_storage;
+    using value_type = T;
+
+    static constexpr int  lanes  = N;
+    static constexpr bool native = N == VecTraits<T>::lanes; ///< Whether this is one register.
+
+    Mask() = default;
 };
 
 template <typename T>
@@ -2359,31 +2389,41 @@ alignas(64) inline constexpr int32_t first_n_words[32] = {-1, -1, -1, -1, -1, -1
 // ---------------------------------------------------------------------------
 
 /// Lanes 0 .. n-1 set: the mask of a loop tail of n elements. n of the lane count or more sets every lane.
-template <typename T>
-EINSUMS_FORCEINLINE Mask<T> first_n(std::size_t n) {
-    constexpr int     L = Vec<T>::lanes;
-    std::size_t const k = n < static_cast<std::size_t>(L) ? n : static_cast<std::size_t>(L);
+template <typename T, int N = VecTraits<T>::lanes>
+EINSUMS_FORCEINLINE Mask<T, N> first_n(std::size_t n) {
+    constexpr int L = VecTraits<T>::lanes;
+    if constexpr (N != L) {
+        // Part k holds lanes k L .. k L + L - 1.
+        Mask<T, N> m;
+        for (int k = 0; k < N / L; ++k) {
+            std::size_t const before = static_cast<std::size_t>(k) * static_cast<std::size_t>(L);
+            m.part[k]                = first_n<T>(n > before ? n - before : 0);
+        }
+        return m;
+    } else {
+        std::size_t const k = n < static_cast<std::size_t>(L) ? n : static_cast<std::size_t>(L);
 #if defined(EINSUMS_SIMD_MASK_IS_K)
-    using K = typename Mask<T>::reg_type;
-    return Mask<T>(k == static_cast<std::size_t>(L) ? static_cast<K>((1u << L) - 1u) : static_cast<K>((1u << k) - 1u));
+        using K = typename Mask<T>::reg_type;
+        return Mask<T>(k == static_cast<std::size_t>(L) ? static_cast<K>((1u << L) - 1u) : static_cast<K>((1u << k) - 1u));
 #elif defined(EINSUMS_SIMD_MASK_IS_VECTOR)
-    using R                  = typename Mask<T>::reg_type;
-    constexpr std::size_t wl = sizeof(T) / sizeof(int32_t); // words per lane
-    R                     r;
-    std::memcpy(&r, detail::first_n_words + 16 - k * wl, sizeof(R));
-    return Mask<T>(r);
+        using R                  = typename Mask<T>::reg_type;
+        constexpr std::size_t wl = sizeof(T) / sizeof(int32_t); // words per lane
+        R                     r;
+        std::memcpy(&r, detail::first_n_words + 16 - k * wl, sizeof(R));
+        return Mask<T>(r);
 #else
-    return Mask<T>(k > 0);
+        return Mask<T>(k > 0);
 #endif
+    }
 }
 
-template <typename T>
-EINSUMS_FORCEINLINE Mask<T> mask_all() {
-    return first_n<T>(static_cast<std::size_t>(Vec<T>::lanes));
+template <typename T, int N = VecTraits<T>::lanes>
+EINSUMS_FORCEINLINE Mask<T, N> mask_all() {
+    return first_n<T, N>(static_cast<std::size_t>(N));
 }
-template <typename T>
-EINSUMS_FORCEINLINE Mask<T> mask_none() {
-    return first_n<T>(0);
+template <typename T, int N = VecTraits<T>::lanes>
+EINSUMS_FORCEINLINE Mask<T, N> mask_none() {
+    return first_n<T, N>(0);
 }
 
 /// The lanes of m as an integer, lane i in bit i.
@@ -2417,24 +2457,33 @@ EINSUMS_FORCEINLINE uint64_t to_bits(Mask<T> m) {
 }
 
 /// The mask whose lane i is bit i of @p bits; bits past the lane count are ignored.
-template <typename T>
-EINSUMS_FORCEINLINE Mask<T> mask_from_bits(uint64_t bits) {
-    [[maybe_unused]] constexpr int L = Vec<T>::lanes;
+template <typename T, int N = VecTraits<T>::lanes>
+    requires(N <= 64)
+EINSUMS_FORCEINLINE Mask<T, N> mask_from_bits(uint64_t bits) {
+    [[maybe_unused]] constexpr int L = VecTraits<T>::lanes;
+    if constexpr (N != L) {
+        Mask<T, N> m;
+        for (int k = 0; k < N / L; ++k) {
+            m.part[k] = mask_from_bits<T>(bits >> (k * L));
+        }
+        return m;
+    } else {
 #if defined(EINSUMS_SIMD_MASK_IS_K)
-    using K = typename Mask<T>::reg_type;
-    return Mask<T>(static_cast<K>(bits & ((1u << L) - 1u)));
+        using K = typename Mask<T>::reg_type;
+        return Mask<T>(static_cast<K>(bits & ((1u << L) - 1u)));
 #elif defined(EINSUMS_SIMD_MASK_IS_VECTOR)
-    using W = std::conditional_t<sizeof(T) == 4, int32_t, int64_t>;
-    W lanes_bits[L];
-    for (int i = 0; i < L; ++i) {
-        lanes_bits[i] = ((bits >> i) & 1u) ? W{-1} : W{0};
-    }
-    typename Mask<T>::reg_type r;
-    std::memcpy(&r, lanes_bits, sizeof(r));
-    return Mask<T>(r);
+        using W = std::conditional_t<sizeof(T) == 4, int32_t, int64_t>;
+        W lanes_bits[L];
+        for (int i = 0; i < L; ++i) {
+            lanes_bits[i] = ((bits >> i) & 1u) ? W{-1} : W{0};
+        }
+        typename Mask<T>::reg_type r;
+        std::memcpy(&r, lanes_bits, sizeof(r));
+        return Mask<T>(r);
 #else
-    return Mask<T>((bits & 1u) != 0);
+        return Mask<T>((bits & 1u) != 0);
 #endif
+    }
 }
 
 /// The same lanes as a mask for U, an element type of T's width (float and int32_t, double and int64_t).

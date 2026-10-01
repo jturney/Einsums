@@ -46,10 +46,12 @@ std::vector<T> inputs() {
             T(123456.5)};
 }
 
-/// Run op on Vec<T> lanes drawn from the inputs, and on each lane's inputs as T, and compare.
-template <typename T, typename Op>
+/// Run op on a V whose lanes are drawn from the inputs, and on each lane's inputs as its scalar type,
+/// and compare.
+template <typename V, typename Op>
 void check_matches_scalar(Op op, char const *name) {
-    constexpr int L = simd::Vec<T>::lanes;
+    using T         = simd::scalar_t<V>;
+    constexpr int L = simd::lanes_v<V>;
     auto const    s = inputs<T>();
     for (size_t oa = 0; oa < s.size(); ++oa) {
         for (size_t ob = 0; ob < s.size(); ob += 2) {
@@ -58,7 +60,7 @@ void check_matches_scalar(Op op, char const *name) {
                 a[i] = s[(oa + static_cast<size_t>(i)) % s.size()];
                 b[i] = s[(ob + 3 * static_cast<size_t>(i)) % s.size()];
             }
-            auto const vector_result = op(simd::loadu(a), simd::loadu(b));
+            auto const vector_result = op(simd::load<V>(a), simd::load<V>(b));
             using R                  = simd::scalar_t<std::remove_cvref_t<decltype(vector_result)>>;
             R out[L];
             simd::store(out, vector_result);
@@ -73,18 +75,27 @@ void check_matches_scalar(Op op, char const *name) {
 
 } // namespace
 
-TEMPLATE_TEST_CASE("arithmetic, mixed operators and compound assignment match the scalar instantiation", "[simd][generic]", float, double) {
-    using T = TestType;
-    check_matches_scalar<T>([](auto x, auto y) { return x + y; }, "+");
-    check_matches_scalar<T>([](auto x, auto y) { return x - y; }, "-");
-    check_matches_scalar<T>([](auto x, auto y) { return x * y; }, "*");
-    check_matches_scalar<T>([](auto x, auto y) { return x / y; }, "/");
-    check_matches_scalar<T>([](auto x, auto y) { return -x + y; }, "unary -");
-    check_matches_scalar<T>([](auto x, auto) { return x * 2; }, "v * 2");
-    check_matches_scalar<T>([](auto x, auto) { return 3 - x; }, "3 - v");
-    check_matches_scalar<T>([](auto x, auto) { return x / T(0.25); }, "v / T");
-    check_matches_scalar<T>([](auto x, auto) { return T(0.5) + x; }, "T + v");
-    check_matches_scalar<T>(
+// Each case runs for the native vectors, for an FP64 vector at FP32's width (the mixed-precision tier),
+// and for a float vector four registers wide, so the wide forms are exercised for more than two parts.
+// (Catch's type lists split on commas, so the wide types are named first.)
+using DoubleAtFloatWidth = simd::Vec<double, simd::lanes<float>>;
+using FloatFourWide      = simd::Vec<float, 4 * simd::lanes<float>>;
+#define EINSUMS_GENERIC_VALUE_TYPES simd::Vec<float>, simd::Vec<double>, DoubleAtFloatWidth, FloatFourWide
+
+TEMPLATE_TEST_CASE("arithmetic, mixed operators and compound assignment match the scalar instantiation", "[simd][generic]",
+                   EINSUMS_GENERIC_VALUE_TYPES) {
+    using V = TestType;
+    using T = simd::scalar_t<V>;
+    check_matches_scalar<V>([](auto x, auto y) { return x + y; }, "+");
+    check_matches_scalar<V>([](auto x, auto y) { return x - y; }, "-");
+    check_matches_scalar<V>([](auto x, auto y) { return x * y; }, "*");
+    check_matches_scalar<V>([](auto x, auto y) { return x / y; }, "/");
+    check_matches_scalar<V>([](auto x, auto y) { return -x + y; }, "unary -");
+    check_matches_scalar<V>([](auto x, auto) { return x * 2; }, "v * 2");
+    check_matches_scalar<V>([](auto x, auto) { return 3 - x; }, "3 - v");
+    check_matches_scalar<V>([](auto x, auto) { return x / T(0.25); }, "v / T");
+    check_matches_scalar<V>([](auto x, auto) { return T(0.5) + x; }, "T + v");
+    check_matches_scalar<V>(
         [](auto x, auto y) {
             auto t = x;
             t += y;
@@ -98,36 +109,38 @@ TEMPLATE_TEST_CASE("arithmetic, mixed operators and compound assignment match th
         "compound");
 }
 
-TEMPLATE_TEST_CASE("math, fused forms and rounding match the scalar instantiation", "[simd][generic]", float, double) {
-    using T = TestType;
-    check_matches_scalar<T>([](auto x, auto y) { return simd::fmadd(x, y, x); }, "fmadd");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::fmsub(x, y, y); }, "fmsub");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::fnmadd(x, y, x); }, "fnmadd");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::fnmsub(y, x, y); }, "fnmsub");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::div(x, y); }, "div");
-    check_matches_scalar<T>([](auto x, auto) { return simd::sqrt(x); }, "sqrt");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::min(x, y); }, "min");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::max(x, y); }, "max");
-    check_matches_scalar<T>([](auto x, auto) { return simd::abs(x); }, "abs");
-    check_matches_scalar<T>([](auto x, auto) { return simd::neg(x); }, "neg");
-    check_matches_scalar<T>([](auto x, auto) { return simd::floor(x); }, "floor");
-    check_matches_scalar<T>([](auto x, auto) { return simd::ceil(x); }, "ceil");
-    check_matches_scalar<T>([](auto x, auto) { return simd::trunc(x); }, "trunc");
-    check_matches_scalar<T>([](auto x, auto) { return simd::round(x); }, "round");
-    check_matches_scalar<T>([](auto x, auto) { return simd::round_even(x); }, "round_even");
+TEMPLATE_TEST_CASE("math, fused forms and rounding match the scalar instantiation", "[simd][generic]", EINSUMS_GENERIC_VALUE_TYPES) {
+    using V = TestType;
+    using T = simd::scalar_t<V>;
+    check_matches_scalar<V>([](auto x, auto y) { return simd::fmadd(x, y, x); }, "fmadd");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::fmsub(x, y, y); }, "fmsub");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::fnmadd(x, y, x); }, "fnmadd");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::fnmsub(y, x, y); }, "fnmsub");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::div(x, y); }, "div");
+    check_matches_scalar<V>([](auto x, auto) { return simd::sqrt(x); }, "sqrt");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::min(x, y); }, "min");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::max(x, y); }, "max");
+    check_matches_scalar<V>([](auto x, auto) { return simd::abs(x); }, "abs");
+    check_matches_scalar<V>([](auto x, auto) { return simd::neg(x); }, "neg");
+    check_matches_scalar<V>([](auto x, auto) { return simd::floor(x); }, "floor");
+    check_matches_scalar<V>([](auto x, auto) { return simd::ceil(x); }, "ceil");
+    check_matches_scalar<V>([](auto x, auto) { return simd::trunc(x); }, "trunc");
+    check_matches_scalar<V>([](auto x, auto) { return simd::round(x); }, "round");
+    check_matches_scalar<V>([](auto x, auto) { return simd::round_even(x); }, "round_even");
 }
 
-TEMPLATE_TEST_CASE("compares, masks and select match the scalar instantiation", "[simd][generic]", float, double) {
-    using T = TestType;
-    check_matches_scalar<T>([](auto x, auto y) { return simd::select(simd::cmp_eq(x, y), x, y + 1); }, "cmp_eq");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::select(simd::cmp_ne(x, y), x, y + 1); }, "cmp_ne");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::select(simd::cmp_lt(x, y), x, y + 1); }, "cmp_lt");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::select(simd::cmp_le(x, y), x, y + 1); }, "cmp_le");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::select(simd::cmp_gt(x, y), x, y + 1); }, "cmp_gt");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::select(simd::cmp_ge(x, y), x, y + 1); }, "cmp_ge");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::select(!simd::cmp_lt(x, y), x, y + 1); }, "!m");
-    check_matches_scalar<T>([](auto x, auto y) { return simd::select(!(simd::cmp_lt(x, y) | simd::cmp_ne(x, x)), y, x); }, "!(m | n)");
-    check_matches_scalar<T>(
+TEMPLATE_TEST_CASE("compares, masks and select match the scalar instantiation", "[simd][generic]", EINSUMS_GENERIC_VALUE_TYPES) {
+    using V = TestType;
+    using T = simd::scalar_t<V>;
+    check_matches_scalar<V>([](auto x, auto y) { return simd::select(simd::cmp_eq(x, y), x, y + 1); }, "cmp_eq");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::select(simd::cmp_ne(x, y), x, y + 1); }, "cmp_ne");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::select(simd::cmp_lt(x, y), x, y + 1); }, "cmp_lt");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::select(simd::cmp_le(x, y), x, y + 1); }, "cmp_le");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::select(simd::cmp_gt(x, y), x, y + 1); }, "cmp_gt");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::select(simd::cmp_ge(x, y), x, y + 1); }, "cmp_ge");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::select(!simd::cmp_lt(x, y), x, y + 1); }, "!m");
+    check_matches_scalar<V>([](auto x, auto y) { return simd::select(!(simd::cmp_lt(x, y) | simd::cmp_ne(x, x)), y, x); }, "!(m | n)");
+    check_matches_scalar<V>(
         [](auto x, auto y) {
             auto const lt = simd::cmp_lt(x, y), pos = simd::cmp_gt(x, simd::splat<decltype(x)>(T(0)));
             auto       r = simd::select(simd::bitwise_and(lt, pos), x, y);
@@ -138,7 +151,7 @@ TEMPLATE_TEST_CASE("compares, masks and select match the scalar instantiation", 
         "mask combinations");
 
     // any and all fold the lanes, so the vector answer is the fold of the scalar ones.
-    constexpr int L = simd::Vec<T>::lanes;
+    constexpr int L = simd::lanes_v<V>;
     auto const    s = inputs<T>();
     for (size_t o = 0; o < s.size(); ++o) {
         T a[L], b[L];
@@ -151,8 +164,8 @@ TEMPLATE_TEST_CASE("compares, masks and select match the scalar instantiation", 
             any_lane   = any_lane || simd::any(simd::cmp_lt(a[i], b[i]));
             every_lane = every_lane && simd::all(simd::cmp_lt(a[i], b[i]));
         }
-        CHECK(simd::any(simd::cmp_lt(simd::loadu(a), simd::loadu(b))) == any_lane);
-        CHECK(simd::all(simd::cmp_lt(simd::loadu(a), simd::loadu(b))) == every_lane);
+        CHECK(simd::any(simd::cmp_lt(simd::load<V>(a), simd::load<V>(b))) == any_lane);
+        CHECK(simd::all(simd::cmp_lt(simd::load<V>(a), simd::load<V>(b))) == every_lane);
     }
 }
 
@@ -219,10 +232,11 @@ V interpolate(V x, simd::scalar_t<V> const *const (&taylor)[4], simd::scalar_t<V
 
 } // namespace
 
-TEMPLATE_TEST_CASE("a table interpolation written once gives the same lanes as its scalar instantiation", "[simd][generic]", float,
-                   double) {
-    using T           = TestType;
-    constexpr int  L  = simd::Vec<T>::lanes;
+TEMPLATE_TEST_CASE("a table interpolation written once gives the same lanes as its scalar instantiation", "[simd][generic]",
+                   EINSUMS_GENERIC_VALUE_TYPES) {
+    using V           = TestType;
+    using T           = simd::scalar_t<V>;
+    constexpr int  L  = simd::lanes_v<V>;
     T const        dx = T(0.125), inv_dx = T(8);
     std::vector<T> c0(400), c1(400), c2(400), c3(400);
     for (size_t k = 0; k < 400; ++k) {
@@ -240,7 +254,7 @@ TEMPLATE_TEST_CASE("a table interpolation written once gives the same lanes as i
             x[i] = T(0.013) * static_cast<T>((start * 97 + i * 31) % 3700); // below 48.1, inside the 400-point table
         }
         T out[L];
-        simd::store(out, interpolate(simd::load<simd::Vec<T>>(x), taylor, inv_dx, dx));
+        simd::store(out, interpolate(simd::load<V>(x), taylor, inv_dx, dx));
         for (int i = 0; i < L; ++i) {
             T const want = interpolate(x[i], taylor, inv_dx, dx);
             INFO("x = " << x[i]);
@@ -291,11 +305,12 @@ TEST_CASE("the generic layer's overloads resolve as designed", "[simd][generic]"
     CHECK(simd::select(true, 1.0, 2.0) == 1.0);
 }
 
-TEMPLATE_TEST_CASE("masked loadu, storeu and lookup match the scalar instantiation", "[simd][generic][mask]", float, double) {
-    // The vector run masks its lanes with a Mask<T>; the scalar run on lane i uses the bool for that lane.
-    using T          = TestType;
+TEMPLATE_TEST_CASE("masked loadu, storeu and lookup match the scalar instantiation", "[simd][generic][mask]", EINSUMS_GENERIC_VALUE_TYPES) {
+    // The vector run masks its lanes with a Mask<T, N>; the scalar run on lane i uses the bool for that lane.
+    using V          = TestType;
+    using T          = simd::scalar_t<V>;
     using I          = simd::gather_index_t<T>;
-    constexpr int  L = simd::Vec<T>::lanes;
+    constexpr int  L = simd::lanes_v<V>;
     std::vector<T> table(64);
     for (size_t k = 0; k < table.size(); ++k)
         table[k] = T(0.25) * static_cast<T>(k) - T(3);
@@ -308,13 +323,13 @@ TEMPLATE_TEST_CASE("masked loadu, storeu and lookup match the scalar instantiati
             y[i]  = s[(o + 3 * static_cast<size_t>(i) + 1) % s.size()];
             at[i] = static_cast<I>((o * 7 + static_cast<size_t>(i) * 13) % table.size());
         }
-        auto const vm = simd::cmp_lt(simd::loadu(x), simd::loadu(y));
+        auto const vm = simd::cmp_lt(simd::load<V>(x), simd::load<V>(y));
         T          loaded[L], looked[L], stored[L];
         simd::store(loaded, simd::loadu(table.data(), vm));
-        simd::store(looked, simd::lookup(table.data(), simd::loadu(at), vm));
+        simd::store(looked, simd::lookup(table.data(), simd::load<simd::Vec<I, L>>(at), vm));
         for (int i = 0; i < L; ++i)
             stored[i] = T(-1);
-        simd::storeu(stored, simd::loadu(x), vm);
+        simd::storeu(stored, simd::load<V>(x), vm);
         for (int i = 0; i < L; ++i) {
             bool const m = simd::cmp_lt(x[i], y[i]);
             INFO("lane " << i << ": x = " << x[i] << ", y = " << y[i]);

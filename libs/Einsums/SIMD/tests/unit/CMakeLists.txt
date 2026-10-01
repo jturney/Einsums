@@ -18,6 +18,7 @@ set(SIMDTests
     GatherScatter
     ComplexVec
     GenericKernel
+    VecWide
     RuntimeFeatures
 )
 
@@ -41,6 +42,7 @@ set(SIMDWidthDependentTests
     GatherScatter
     ComplexVec
     GenericKernel
+    VecWide
 )
 
 include(Einsums_AddSIMDDispatch)
@@ -92,4 +94,18 @@ if(EINSUMS_WITH_SIMD_DISPATCH
     set_target_properties(IsaNamespace_test PROPERTIES DISABLE_PRECOMPILE_HEADERS ON)
     einsums_add_unit_test("Modules.SIMD" IsaNamespace)
   endif()
+endif()
+
+# GenericKernel compares the vector and scalar instantiations of one kernel bit for bit. GCC contracts a
+# separate multiply and add into an FMA by default (-ffp-contract=fast), even in ISO mode and in
+# intrinsic code, and decides per instantiation, so with it on the comparison would test the
+# compiler's contraction choices rather than the library's operations.
+if(NOT MSVC)
+  foreach(_target GenericKernel_test GenericKernel_simd_v2_test GenericKernel_simd_v3_test GenericKernel_simd_v4_test
+                  GenericKernel_simd_sme_test
+  )
+    if(TARGET ${_target})
+      target_compile_options(${_target} PRIVATE -ffp-contract=off)
+    endif()
+  endforeach()
 endif()

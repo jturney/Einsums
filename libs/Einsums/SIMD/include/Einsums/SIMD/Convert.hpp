@@ -29,7 +29,10 @@ EINSUMS_SIMD_ISA_NAMESPACE_BEGIN()
 // performing the cast, which C++ leaves undefined.
 // ===========================================================================
 
+/// The same lanes as another element type of the same native lane count. Wide.hpp adds the form for
+/// any two element types with the same lane count N, such as Vec<float> and Vec<double, lanes<float>>.
 template <typename To, typename From>
+    requires(VecTraits<To>::lanes == VecTraits<From>::lanes)
 EINSUMS_FORCEINLINE Vec<To> convert(Vec<From> v);
 template <typename To, typename From>
 EINSUMS_FORCEINLINE Vec<To> convert_low(Vec<From> v);

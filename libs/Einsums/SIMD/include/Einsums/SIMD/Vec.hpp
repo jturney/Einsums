@@ -9,6 +9,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/Platform.hpp>
 
+#include <array>
 #include <cstring>
 #include <type_traits>
 
@@ -444,45 +445,90 @@ struct VecTraits<uint8_t> {
 #endif
 
 // ---------------------------------------------------------------------------
-// Vec<T>: thin wrapper over a platform SIMD register.
+// Vec<T, N>: N lanes of T.
 //
-// Design:
-//   - Aggregate type, no virtual dispatch
-//   - Implicitly converts to/from raw register for interop
-//   - operator[] for debug/testing only (not performance-critical)
+// N defaults to the native lane count, VecTraits<T>::lanes, and then Vec<T> is
+// a thin wrapper over one platform register: no virtual dispatch, implicit
+// conversion to and from the raw register for interop, and operator[] for
+// debugging. Every operation in these headers is written for that native
+// Vec<T>.
+//
+// A larger N, a whole multiple K of the native count, holds K native vectors,
+// part[0] .. part[K-1], in lane order: lane i is lane i % L of part[i / L], and
+// in memory the parts follow one another. Wide.hpp applies each operation to
+// the parts. The use is mixed precision at equal width: Vec<double,
+// lanes<float>> holds as many doubles as a Vec<float> holds floats.
+//
+// A partial specialization may not name VecTraits<T>::lanes as an argument, so
+// the two layouts are chosen by a bool in the storage base class.
 // ---------------------------------------------------------------------------
 
+/// The native lane count of T: what Vec<T> holds in one register.
 template <typename T>
-struct Vec {
+inline constexpr int native_lanes_v = VecTraits<T>::lanes;
+
+template <typename T, int N = VecTraits<T>::lanes>
+    requires(N > 0 && N % VecTraits<T>::lanes == 0)
+struct Vec;
+
+namespace detail {
+template <typename T, int N, bool Native = (N == VecTraits<T>::lanes)>
+struct vec_storage;
+
+/// One register.
+template <typename T, int N>
+struct vec_storage<T, N, true> {
     // VecTraits<T> is only specialized for the types we support on the
     // active ISA tier. Instantiating Vec<T> for an unsupported type
     // (e.g. int8_t, char, std::complex) gives an "incomplete type"
-    // error pointing here, the cleanest signal short of a `requires`
-    // clause that doesn't tie us to a specific compile-time concept.
-    using traits     = VecTraits<T>;
-    using reg_type   = typename traits::reg_type;
-    using value_type = T; ///< The element type, as einsums::simd::scalar_t<Vec<T>> reads it.
-
-    static constexpr int lanes = traits::lanes;
-    static constexpr int bits  = traits::bits;
+    // error pointing here.
+    using traits   = VecTraits<T>;
+    using reg_type = typename traits::reg_type;
 
     reg_type reg;
 
-    Vec() = default;
+    vec_storage() = default;
 
-    EINSUMS_FORCEINLINE Vec(reg_type r) : reg(r) {}
+    EINSUMS_FORCEINLINE vec_storage(reg_type r) : reg(r) {}
 
     EINSUMS_FORCEINLINE operator reg_type() const { return reg; }
 
     /// Element access for debugging only. Stores to a temporary buffer, then indexes it.
     EINSUMS_FORCEINLINE T operator[](int i) const {
-        alignas(native_alignment) T buf[lanes];
+        alignas(native_alignment) T buf[N];
         std::memcpy(buf, &reg, sizeof(reg));
         return buf[i];
     }
 };
 
-/// Convenience alias for the number of lanes in a Vec<T>.
+/// K native vectors.
+template <typename T, int N>
+struct vec_storage<T, N, false> {
+    using part_type = Vec<T>;
+
+    static constexpr int parts = N / VecTraits<T>::lanes;
+
+    std::array<Vec<T>, parts> part;
+
+    /// Element access for debugging only.
+    EINSUMS_FORCEINLINE T operator[](int i) const { return part[i / VecTraits<T>::lanes][i % VecTraits<T>::lanes]; }
+};
+} // namespace detail
+
+template <typename T, int N>
+    requires(N > 0 && N % VecTraits<T>::lanes == 0)
+struct Vec : detail::vec_storage<T, N> {
+    using detail::vec_storage<T, N>::vec_storage;
+    using value_type = T; ///< The element type, as einsums::simd::scalar_t<Vec<T, N>> reads it.
+
+    static constexpr int  lanes  = N;
+    static constexpr int  bits   = N * static_cast<int>(sizeof(T)) * 8;
+    static constexpr bool native = N == VecTraits<T>::lanes; ///< Whether this is one register.
+
+    Vec() = default;
+};
+
+/// Convenience alias for the number of lanes in a native Vec<T>.
 template <typename T>
 inline constexpr int lanes = Vec<T>::lanes;
 

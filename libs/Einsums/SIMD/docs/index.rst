@@ -252,7 +252,11 @@ gather that reads ``base[idx]`` for a scalar index. ``lookup`` exists because
 accept a scalar index.
 
 Each scalar overload matches one lane of the vector operation bit for bit, so
-the scalar instantiation is an exact reference for the vector one: ``min`` is
+the scalar instantiation is an exact reference for the vector one, provided the
+compiler does not fuse a kernel's own separate multiply and add into an FMA.
+GCC does so by default (``-ffp-contract=fast``), even in intrinsic code and
+differently in each instantiation, so compile a bit-for-bit comparison with
+``-ffp-contract=off``. In particular, ``min`` is
 ``a < b ? a : b``, the fused forms round once exactly where the vector forms
 do, and a comparison returns ``bool``. Call them qualified, as
 ``simd::fmadd``: argument-dependent lookup finds nothing for ``double``. They
@@ -267,6 +271,43 @@ does not. In the scalar instantiation ``float * 2.0`` would compute in
 ``double``, so the two instantiations would round differently; write
 ``S(2.0)``. The scalar fallback build, where ``Vec<T>`` is a single ``T``
 that converts implicitly, cannot enforce this.
+
+Mixed Precision at Equal Width
+==============================
+
+``Vec<T, N>`` holds ``N`` lanes of ``T``. ``N`` defaults to the native lane
+count, so ``Vec<float>`` is one register as always; a larger ``N``, a whole
+multiple of the native count, is that many registers in lane order. The use
+is a kernel run in two precisions over the same batch: the FP32 tier is
+``Vec<float>`` and the FP64 tier ``Vec<double, lanes<float>>``, with as many
+doubles as the float vector has floats. ``Mask<T, N>`` is laid out the same
+way.
+
+.. code-block:: cpp
+
+    #include <Einsums/SIMD/Generic.hpp>
+
+    using F = simd::Vec<float>;                       // FP32 tier
+    using D = simd::Vec<double, simd::lanes<float>>;  // FP64 tier, same lanes
+
+    F const x   = simd::load<F>(xs);
+    auto const idx = simd::convert<int32_t>(simd::floor(x * inv_dx)); // computed once
+    D const f   = simd::lookup(table64, idx);         // the FP64 tier reuses it
+    D const xd  = simd::convert<double>(x);           // lane i stays lane i
+    auto const m = simd::mask_cast<double>(simd::cmp_lt(x, limit));
+
+Every operation of the sections above, and every operation generic kernels
+use, takes ``Vec<T, N>`` and ``Mask<T, N>``: it is the native operation on
+each register, so the results are bit for bit the native ones side by side.
+``convert`` moves the same lanes between any two element types with the same
+lane count, widening or narrowing ``float`` and ``double`` and converting
+between ``double`` and the 32- and 64-bit integers, and ``mask_cast`` does the
+same for masks. ``lookup`` on a wide double vector takes an index vector of
+either integer width, so the two tiers can share the index the FP32 tier
+computes; AVX2 and AVX-512 gather doubles at 32-bit indices directly.
+``first_n<T, N>(n)`` and ``mask_from_bits<T, N>`` build wide masks. A wide
+vector of doubles at FP32's width uses twice the registers, so a long fused
+chain of them may spill where the same chain in ``Vec<double>`` did not.
 
 Examples
 ========
