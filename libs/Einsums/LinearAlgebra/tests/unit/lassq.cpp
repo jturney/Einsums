@@ -93,3 +93,20 @@ TEMPLATE_TEST_CASE("Tiled Tensors", "[linear-algebra]", float, double, std::comp
 
     REQUIRE_THAT(scale * scale * sumsq, Catch::Matchers::WithinAbs(result, 0.00001));
 }
+
+// A type the vendor has no lassq for takes a hand-written branch, which summed into a local and
+// never wrote it back: sumsq came out unchanged, so the sum of squares was zero.
+TEST_CASE("sum_square over a type without a vendor lassq", "[linear-algebra]") {
+    Tensor<int, 1> A("A", 4);
+    for (int i = 0; i < 4; i++) {
+        A(i) = i + 1; // 1 + 4 + 9 + 16 = 30
+    }
+
+    int scale = 1, sumsq = 0;
+    linear_algebra::sum_square(A, &scale, &sumsq);
+    REQUIRE(scale * scale * sumsq == 30);
+
+    // Accumulating onto a prior total, as lassq does.
+    linear_algebra::sum_square(A, &scale, &sumsq);
+    REQUIRE(scale * scale * sumsq == 60);
+}

@@ -5,27 +5,42 @@
 
 #pragma once
 #include <Einsums/BLAS.hpp>
+#include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
+#include <complex>
+
 EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {
+
+/// lassq for a type the vendor has no lassq for: add sum |x_i|^2 to scale^2 * sumsq. The result is
+/// left as scale = 1 and sumsq = the total, since such a type need not have a square root that
+/// round-trips. Each call adds to what it was given, so a strided walk can call it once per run.
+template <typename T>
+void impl_sum_square_unblased(size_t n, T const *x, size_t inc, RemoveComplexT<T> *scale, RemoveComplexT<T> *sumsq) {
+    using Real = RemoveComplexT<T>;
+    Real added{};
+    EINSUMS_OMP_PRAGMA(parallel for reduction(+: added))
+    for (size_t i = 0; i < n; i++) {
+        if constexpr (IsComplexV<T>) {
+            added += std::norm(x[i * inc]);
+        } else {
+            added += x[i * inc] * x[i * inc];
+        }
+    }
+    *sumsq = *scale * *scale * *sumsq + added;
+    *scale = Real{1};
+}
 
 template <typename T>
 void impl_sum_square_contiguous(einsums::detail::TensorImpl<T> const &a, RemoveComplexT<T> *scale, RemoveComplexT<T> *sumsq) {
     if constexpr (blas::IsBlasableV<T>) {
         blas::lassq(a.size(), a.data(), a.get_incx(), scale, sumsq);
     } else {
-        T const     *a_data = a.data();
-        size_t const size = a.size(), incx = a.get_incx();
-        T            sumsq_local = T{0.0};
-
-        EINSUMS_OMP_PRAGMA(parallel for reduction(+: sumsq_local))
-        for (size_t i = 0; i < size; i++) {
-            sumsq_local += a_data[i * incx] * a_data[i * incx];
-        }
+        impl_sum_square_unblased(a.size(), a.data(), a.get_incx(), scale, sumsq);
     }
 }
 
@@ -37,14 +52,7 @@ void impl_sum_square_noncontiguous_vectorable(int depth, int hard_rank, size_t e
         if constexpr (blas::IsBlasableV<T>) {
             blas::lassq(easy_size, in, inc_in, scale, sumsq);
         } else {
-            T sumsq_local = T{0.0};
-            *scale        = T{1.0};
-            EINSUMS_OMP_PRAGMA(parallel for reduction(+: sumsq_local))
-            for (size_t i = 0; i < easy_size; i++) {
-                sumsq_local += in[i * inc_in] * in[i * inc_in];
-            }
-
-            *sumsq = sumsq_local;
+            impl_sum_square_unblased(easy_size, in, inc_in, scale, sumsq);
         }
     } else {
         for (int i = 0; i < dims[depth]; i++) {
