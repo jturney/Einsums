@@ -175,7 +175,7 @@ bool StreamContractionFusion::run(Graph &graph) {
 
     for (size_t ni = 0; ni < nodes.size(); ni++) {
         auto const &node = nodes[ni];
-        if (node.kind != OpKind::Einsum || node.inputs.size() != 2 || node.outputs.size() != 1) {
+        if (node.kind != OpKind::Einsum || operand_inputs(node).size() != 2 || node.outputs.size() != 1) {
             continue;
         }
         if (!understands(graph, node)) {

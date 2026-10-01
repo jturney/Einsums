@@ -451,6 +451,10 @@ Graph build_graph(IrDocument const &document, SpaceRegistry &registry) {
     }
     graph.link_alias_storage();
 
+    if (document.predates_destination_rule) {
+        (void)graph.sync_destination_inputs();
+    }
+
     // The invariants every pass keeps, asked of the file too. A reader checks each field
     // against its own schema; this is what checks the fields against EACH OTHER, which is how a
     // consistent-looking file described a program no capture could write: an intermediate

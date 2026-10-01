@@ -406,6 +406,16 @@ def _extents_agree(letters_by_operand):
     return seen
 
 
+def _nonzero(prefactor):
+    """A written prefactor, ``{"dtype": ..., "re": ..., "im": ...}``, that is not zero."""
+    return prefactor.get("re", 0) != 0 or prefactor.get("im", 0) != 0
+
+
+def _lists_destination(ins, outs, operands, reads):
+    """The destination rule: the operands, then the destination exactly when the node reads it."""
+    return len(ins) == operands + reads and (not reads or ins[-1] == outs[0])
+
+
 def _node_consistent(node, frame, parent):
     kind = node.get("kind")
     ins, outs = node.get("inputs", []), node.get("outputs", [])
@@ -417,7 +427,7 @@ def _node_consistent(node, frame, parent):
         return tuple(frame[i]["dims"])
 
     if kind == "Einsum":
-        if len(ins) not in (2, 3) or len(outs) != 1 or (len(ins) == 3 and ins[2] != outs[0]):
+        if len(outs) != 1 or not _lists_destination(ins, outs, 2, _nonzero(desc["c_prefactor"])):
             return False
         extents = _extents_agree([(desc["a_indices"], dims(ins[0])), (desc["b_indices"], dims(ins[1])),
                                   (desc["c_indices"], dims(outs[0]))])
@@ -432,12 +442,13 @@ def _node_consistent(node, frame, parent):
         # strict by _classify and never reach this model.
         return True
     if kind == "Permute":
-        return (len(ins) == 1 and len(outs) == 1
+        return (len(outs) == 1 and _lists_destination(ins, outs, 1, _nonzero(desc["beta"]))
                 and _extents_agree([(desc["a_indices"], dims(ins[0])), (desc["c_indices"], dims(outs[0]))]) is not None)
     if kind in ("Scale", "ElementTransform"):
         return len(ins) == 1 and ins == outs
     if kind == "Axpby":
-        return len(ins) == 2 and outs == [ins[1]] and dims(ins[0]) == dims(ins[1])
+        return (len(outs) == 1 and _lists_destination(ins, outs, 1, "beta" not in desc or _nonzero(desc["beta"]))
+                and dims(ins[0]) == dims(outs[0]))
     if kind == "Dot":
         return len(ins) == 2 and len(outs) == 1 and dims(ins[0]) == dims(ins[1]) and frame[outs[0]]["rank"] == 0
     if kind == "WriteParam":

@@ -153,8 +153,8 @@ void record_einsum(CaptureContext &ctx, ParsedEinsumSpec const &parsed, Prefacto
                              fmt::join(parsed.b_indices, ","));
 
     // The operand lists in the order the builder reads them: A, B from the inputs and C from the
-    // outputs. Capture records the two inputs only; the RMW repeat of an accumulating destination is
-    // Graph::make_einsum_node's convention, and the builder ignores that trailing position either way.
+    // outputs. Graph::add_node appends C to the inputs when the einsum accumulates into it (the
+    // destination rule of DestinationRead.hpp), and the builder ignores that trailing position.
     std::vector<TensorId> const node_inputs{a.id, b.id};
     std::vector<TensorId> const node_outputs{c.id};
 

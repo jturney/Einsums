@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -60,6 +61,9 @@ void CaptureContext::record(OpKind kind, std::string label, std::vector<TensorId
     node.inputs  = std::move(inputs);
     node.outputs = std::move(outputs);
     node.op_data = std::move(op_data);
+    // A capture site lists the operands it reads; whether the destination is read too is the
+    // prefactor's to say.
+    sync_destination_input(node);
 
     _graph->add_node(std::move(node));
 }

@@ -177,7 +177,8 @@ RuleResult propagate_permute(Graph &graph, Node const &node, EscapeAnalysis cons
     if (node.kind != OpKind::Permute && node.kind != OpKind::Transpose) {
         return {};
     }
-    if (node.inputs.size() != 1 || node.outputs.size() != 1) {
+    // The source, then the destination when the permute accumulates into it.
+    if (node.inputs.empty() || node.inputs.size() > 2 || node.outputs.size() != 1) {
         return {};
     }
 

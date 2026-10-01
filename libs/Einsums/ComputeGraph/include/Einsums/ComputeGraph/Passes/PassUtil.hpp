@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
@@ -201,57 +202,24 @@ inline void hash_range(std::size_t &h, Range const &range) {
     if (auto const *b = nd.op_data.get_if<BatchedGemmDescriptor>()) {
         return b->beta == std::complex<double>{0.0, 0.0};
     }
+    if (auto const *e = nd.op_data.get_if<ElementwiseBinaryDescriptor>()) {
+        return is_zero(live_beta(*e));
+    }
+    if (auto const *t = nd.op_data.get_if<TiledElementwiseDescriptor>()) {
+        // A tiled scale works in place and a tiled axpy adds into Y; only the quotient can overwrite.
+        return t->op == TiledElementwiseOp::Divide && t->params != nullptr && is_zero(t->params->beta);
+    }
+    if (auto const *g = nd.op_data.get_if<GemmDescriptor>()) {
+        return is_zero(g->beta);
+    }
+    if (auto const *p = nd.op_data.get_if<TiledPermuteDescriptor>()) {
+        return is_zero(p->beta);
+    }
     return false;
 }
 
-/**
- * @brief True when @p nd reads its destination (accumulates into it).
- *
- * The always-accumulating kinds (Scale/ElementTransform), an Axpby with a
- * non-zero beta, or a
- * prefactor-bearing op with a non-zero destination prefactor. Used by
- * LoopInvariantHoisting to refuse to hoist a self-modifying update out of a loop.
- *
- * @note This is NOT the negation of pure_overwrite: an op with no prefactor
- *       descriptor (e.g. Gemm, Dot) returns false from both.
- */
-[[nodiscard]] inline bool reads_destination(Node const &nd) {
-    switch (nd.kind) {
-    case OpKind::Scale:
-    case OpKind::ElementTransform:
-        return true;
-    default:
-        break;
-    }
-    // Axpby reads its destination only when beta != 0. It used to be lumped in
-    // with the always-accumulating ops above, which predates AxpbyDescriptor
-    // carrying beta and made a pure-overwrite `Y = alpha*X` look self-modifying.
-    // LoopInvariantHoisting then refused to hoist it, even though the identical
-    // pure-overwrite Permute (checked precisely below) hoists fine -- so an
-    // invariant `L = alpha*g` rebuilt every iteration stayed in the loop.
-    // A pass-built Axpby with no descriptor stays conservative (true).
-    if (nd.kind == OpKind::Axpby) {
-        auto const *beta = axpby_beta(nd);
-        return beta == nullptr || !is_zero(*beta);
-    }
-    // The LIVE prefactor; see the note in pure_overwrite above.
-    if (auto const *e = nd.op_data.get_if<EinsumDescriptor>()) {
-        return !is_zero(live_c_prefactor(*e));
-    }
-    // Tiled einsum: same rule as the dense one, read through the shared params.
-    // A descriptor with no params is unknowable, so assume it accumulates; that
-    // only costs a missed hoist, where the other answer loses the accumulation.
-    if (auto const *t = nd.op_data.get_if<TiledEinsumDescriptor>()) {
-        return t->params == nullptr || !is_zero(t->params->c_pf);
-    }
-    if (auto const *p = nd.op_data.get_if<PermuteDescriptor>()) {
-        return p->params != nullptr ? !is_zero(p->params->beta) : p->beta != 0.0;
-    }
-    if (auto const *b = nd.op_data.get_if<BatchedGemmDescriptor>()) {
-        return b->beta != std::complex<double>{0.0, 0.0};
-    }
-    return false;
-}
+/// @brief True when @p node reads its destination; see compute_graph::reads_destination.
+using ::einsums::compute_graph::reads_destination;
 
 /**
  * @brief Interference gate shared by the passes that collapse a run of nodes

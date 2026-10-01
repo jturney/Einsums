@@ -52,7 +52,7 @@ std::optional<OperatorProducer> read_producer(Node const &node) {
 
     if (node.kind == OpKind::Permute) {
         auto const *desc = node.op_data.get_if<PermuteDescriptor>();
-        if (desc == nullptr || desc->operators.empty() || node.inputs.size() != 1) {
+        if (desc == nullptr || desc->operators.empty() || operand_inputs(node).size() != 1) {
             return std::nullopt;
         }
         // The fold replaces the permuted tensor by its source and multiplies by the term count

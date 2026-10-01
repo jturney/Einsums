@@ -121,7 +121,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // idiom the first contraction is often an overwrite seed (c_pf=0) and the
         // rest accumulate (c_pf=1). Phase 2 requires every *non-first* member to
         // accumulate, so a stray overwrite in the tail correctly rejects the group.
-        if (node.inputs.size() != 2 || node.outputs.size() != 1) {
+        if (operand_inputs(node).size() != 2 || node.outputs.size() != 1) {
             continue;
         }
         // Prefactors stay type-erased; the fold kernel converts with as<T>()

@@ -229,7 +229,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         }
         if (is_zero(live_c_prefactor(*desc)))
             continue;
-        if (node.inputs.size() != 2 || node.outputs.size() != 1)
+        if (operand_inputs(node).size() != 2 || node.outputs.size() != 1)
             continue;
 
         TensorId const out_id = node.outputs[0];

@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -109,7 +110,7 @@ bool propagate_linear_combination(Graph &graph, Node const &node, EscapeAnalysis
 bool propagate_self_contraction(Graph &graph, Node const &node, EscapeAnalysis const &guard) {
     if (node.kind != OpKind::Einsum)
         return false;
-    if (node.inputs.size() != 2 || node.outputs.size() != 1)
+    if (operand_inputs(node).size() != 2 || node.outputs.size() != 1)
         return false;
     if (node.inputs[0] != node.inputs[1])
         return false;

@@ -1004,6 +1004,7 @@ IrDocument read_document(Value const &root, Problems &problems, SpaceRegistry co
                                    out.version, graph_ir_schema_version));
         return out;
     }
+    out.predates_destination_rule = compare_semver(out.version, "1.10.0").value_or(0) < 0;
 
     // Provenance is DATA. Every field is consumed so the strict audit passes,
     // and not one of them is acted on.

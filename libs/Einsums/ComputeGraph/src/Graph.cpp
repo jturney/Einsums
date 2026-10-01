@@ -27,6 +27,7 @@
 
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
@@ -132,6 +133,25 @@ NodeId Graph::add_node(Node node) {
     note_node_edit();
     _structure_version++;
     return id;
+}
+
+bool Graph::sync_destination_inputs() {
+    // Each graph syncs its own nodes; for_each_descendant already reaches every depth.
+    auto const sync_own = [](Graph &graph) {
+        bool changed = false;
+        for (auto &node : graph._nodes) {
+            auto const before = node.inputs;
+            sync_destination_input(node);
+            changed = changed || node.inputs != before;
+        }
+        if (changed) {
+            graph.note_node_edit();
+        }
+        return changed;
+    };
+    bool changed = sync_own(*this);
+    for_each_descendant(std::function<void(Graph &)>{[&](Graph &sub) { changed = sync_own(sub) || changed; }});
+    return changed;
 }
 
 void Graph::note_node_edit() noexcept {

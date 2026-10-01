@@ -730,6 +730,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * Assigns a unique NodeId and appends the node. Marks the graph as unsorted.
      * Typically called internally by CaptureContext::record(), not by users directly.
+     * The node is taken as it is: its inputs must already follow the destination rule of
+     * DestinationRead.hpp, which CaptureContext::record and make_node apply and verify() checks.
      *
      * @param[in] node The node to add (moved into the graph).
      * @return The assigned NodeId.
@@ -1885,8 +1887,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     [[nodiscard]] std::string const                 &stage_type() const { return _stage_type; }
     [[nodiscard]] std::vector<Node> const           &nodes() const { return _nodes; } ///< Read-only access to nodes.
     [[nodiscard]] std::vector<Node>                 &nodes() { return _nodes; }       ///< Mutable access (for optimization passes).
-    APIARY_EXPOSE [[nodiscard]] size_t               num_nodes() const { return _nodes.size(); }     ///< Number of operation nodes.
-    APIARY_EXPOSE [[nodiscard]] size_t               num_tensors() const { return _tensors.size(); } ///< Number of registered tensors.
+
+    /**
+     * @brief Make every node's input list follow the destination rule (see DestinationRead.hpp),
+     *        in this graph and every descendant.
+     *
+     * The PassManager calls it after each pass, because a pass may rewrite a node's destination
+     * prefactor in place and leave the input list describing the old one.
+     *
+     * @return True when any node's inputs changed.
+     */
+    bool                               sync_destination_inputs();
+    APIARY_EXPOSE [[nodiscard]] size_t num_nodes() const { return _nodes.size(); }     ///< Number of operation nodes.
+    APIARY_EXPOSE [[nodiscard]] size_t num_tensors() const { return _tensors.size(); } ///< Number of registered tensors.
 
     /**
      * @brief Drop nodes flagged for removal, preserving the survivors' order.
@@ -3587,15 +3600,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] label Node label; a default is generated from the spec when empty.
      * @return A node with a reserved id and its inputs/outputs set.
      *
-     * @note The destination is NOT listed among the inputs when @p beta is
-     *       nonzero, which differs from @ref make_einsum_node's RMW convention
-     *       and deliberately MATCHES what capturing a ``cg::permute`` produces.
-     *       Four passes (SymmetryPropagation, SpacePropagation,
-     *       ScratchPrivatization, LayoutAssignment) and @ref build_executor all
-     *       gate a permute on having exactly one input before reading
-     *       ``inputs[0]``, so a node spelled the other way is silently declined
-     *       by every one of them. Ordering is safe regardless, because the node
-     *       writes its destination and the hazard edges key on that.
+     * @note The inputs follow the destination rule of DestinationRead.hpp: the
+     *       source, then the destination exactly when @p beta is nonzero.
      * @versionadded{2.0.0}
      */
     Node make_permute_node(TensorId a_id, TensorId c_id, ParsedPermuteSpec const &spec, PrefactorScalar alpha, PrefactorScalar beta,
@@ -3615,7 +3621,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] inputs     Operand ids read, in the order @ref build_executor expects for @p kind.
      * @param[in] outputs    Operand ids written; must not be empty.
      * @param[in] label      Node label.
-     * @return A node with a reserved id, its operands, descriptor and executor set.
+     * @return A node with a reserved id, its operands, descriptor and executor set. Its inputs
+     *         follow the destination rule of DestinationRead.hpp, so a node that reads its
+     *         destination lists it last whether or not @p inputs did.
      * @versionadded{2.0.0}
      */
     Node make_node(OpKind kind, packed_gemm::ScalarType dtype, OpData descriptor, std::vector<TensorId> inputs,

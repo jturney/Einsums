@@ -10,6 +10,7 @@
 /// up later, far from the pass, as a lookup that found the wrong node or a contraction that read
 /// the wrong axes. Keeping them in one walk is what lets the test suite run it after every pass.
 
+#include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -164,6 +165,12 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
                     note(node, fmt::format("adds x of shape [{}] into y of shape [{}]", fmt::join(*x, ","), fmt::join(*y, ",")));
                 }
             }
+        }
+
+        // The destination rule (DestinationRead.hpp): operands first, then the destination once,
+        // exactly when the node reads it.
+        if (auto const violation = destination_rule_violation(graph, node)) {
+            note(node, *violation);
         }
 
         for_each_child_graph(

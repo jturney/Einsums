@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
@@ -987,7 +988,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
             if (tdesc == nullptr || !tdesc->indices || !tdesc->params) {
                 continue;
             }
-            if (src.inputs.size() != 2 || src.outputs.size() != 1) {
+            if (operand_inputs(src).size() != 2 || src.outputs.size() != 1) {
                 continue;
             }
             TensorId const a_id = src.inputs[0];
