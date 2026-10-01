@@ -11,6 +11,9 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
+
+#include <limits>
 
 #include <Einsums/Testing.hpp>
 
@@ -64,30 +67,40 @@ TEST_CASE("InplaceOptimization - finds candidates", "[ComputeGraph][Passes]") {
     CHECK(pass.num_merged() == 0);
 }
 
-TEST_CASE("InplaceOptimization - merges direct_product output into dying input", "[ComputeGraph][Passes][Inplace]") {
+// Every dtype: after the merge the complex elementwise product runs in place, the aliasing a
+// complex kernel can get wrong by writing the real part before reading it back for the imaginary.
+TEMPLATE_LIST_TEST_CASE("InplaceOptimization - merges direct_product output into dying input", "[ComputeGraph][Passes][Inplace]",
+                        testing::AllScalarTypes) {
+    using T          = TestType;
+    double const tol = 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
     // X = A·B (intermediate), Y = alpha*(X ⊙ B) with beta=0 (intermediate,
     // pure overwrite, elementwise), out = Y·A (user-visible). X dies at the
     // direct_product, whose output is element-aligned with it, so Y reuses
     // X's storage and Y's own allocation disappears.
-    auto A   = create_random_tensor<double>("A", 6, 6);
-    auto B   = create_random_tensor<double>("B", 6, 6);
-    auto out = create_zero_tensor<double>("out", 6, 6);
+    auto A   = create_random_tensor<T>("A", 6, 6);
+    auto B   = create_random_tensor<T>("B", 6, 6);
+    auto out = create_zero_tensor<T>("out", 6, 6);
 
-    // Reference, computed eagerly.
-    auto X_ref = create_zero_tensor<double>("Xref", 6, 6);
+    // Reference, by loops and reference_einsum, sharing no code with the engine.
+    auto X_ref = create_zero_tensor<T>("Xref", 6, 6);
     reference_einsum("ij <- ik ; kj", &X_ref, A, B);
-    auto Y_ref = create_zero_tensor<double>("Yref", 6, 6);
-    linear_algebra::direct_product(2.0, X_ref, B, 0.0, &Y_ref);
-    auto out_ref = create_zero_tensor<double>("OUTref", 6, 6);
+    auto    Y_ref = create_zero_tensor<T>("Yref", 6, 6);
+    T const alpha = testing::prefactor<T>(2.0, 0.5);
+    for (size_t ii = 0; ii < 6; ii++) {
+        for (size_t jj = 0; jj < 6; jj++) {
+            Y_ref(ii, jj) = alpha * X_ref(ii, jj) * B(ii, jj);
+        }
+    }
+    auto out_ref = create_zero_tensor<T>("OUTref", 6, 6);
     reference_einsum("ij <- ik ; kj", &out_ref, Y_ref, A);
 
     cg::Graph graph("inplace_merge");
-    auto     &X = graph.create_zero_tensor<double, 2>("X", 6, 6);
-    auto     &Y = graph.create_zero_tensor<double, 2>("Y", 6, 6);
+    auto     &X = graph.create_zero_tensor<T, 2>("X", 6, 6);
+    auto     &Y = graph.create_zero_tensor<T, 2>("Y", 6, 6);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &X, A, B);
-        cg::direct_product(2.0, X, B, 0.0, &Y);
+        cg::direct_product(alpha, X, B, T{0}, &Y);
         cg::einsum("ik;kj->ij", &out, Y, A);
     }
 
@@ -111,20 +124,12 @@ TEST_CASE("InplaceOptimization - merges direct_product output into dying input",
     CHECK(allocs_after == 1); // Y's alloc removed
 
     graph.execute();
-    for (size_t ii = 0; ii < 6; ii++) {
-        for (size_t jj = 0; jj < 6; jj++) {
-            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(out, out_ref, {.rtol = tol, .atol = tol});
 
     // Replays keep working through the merged storage.
     out.zero();
     graph.execute();
-    for (size_t ii = 0; ii < 6; ii++) {
-        for (size_t jj = 0; jj < 6; jj++) {
-            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
-        }
-    }
+    einsums::testing::require_tensors_close(out, out_ref, {.rtol = tol, .atol = tol});
 }
 
 TEST_CASE("InplaceOptimization - a permute is never merged onto its dying input", "[ComputeGraph][Passes][Inplace]") {

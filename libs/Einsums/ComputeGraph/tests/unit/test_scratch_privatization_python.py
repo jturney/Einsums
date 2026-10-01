@@ -19,10 +19,15 @@ import pytest
 import einsums
 import einsums.graph as cg
 from einsums import linalg as la
+from einsums.testing import assert_close
 
 
-def _randn(rng, *shape):
-    return np.ascontiguousarray(rng.standard_normal(shape))
+def _randn(rng, dtype, *shape):
+    """Standard normal data in ``dtype``, with an imaginary part for a complex dtype."""
+    data = rng.standard_normal(shape)
+    if np.dtype(dtype).kind == "c":
+        data = data + 1j * rng.standard_normal(shape)
+    return np.ascontiguousarray(data.astype(dtype))
 
 
 @pytest.fixture
@@ -30,12 +35,12 @@ def rng():
     return np.random.default_rng(1234)
 
 
-def test_set_executor_on_loop_body(rng):
+def test_set_executor_on_loop_body(rng, dtype):
     """A body-installed executor replays the loop correctly; None resets."""
-    A = einsums.asarray(_randn(rng, 20, 20), name="A")
-    C1 = einsums.create_zero_tensor("C1", [20, 20], dtype="float64")
-    C2 = einsums.create_zero_tensor("C2", [20, 20], dtype="float64")
-    acc = einsums.create_zero_tensor("acc", [20, 20], dtype="float64")
+    A = einsums.asarray(_randn(rng, dtype, 20, 20), name="A")
+    C1 = einsums.create_zero_tensor("C1", [20, 20], dtype=dtype)
+    C2 = einsums.create_zero_tensor("C2", [20, 20], dtype=dtype)
+    acc = einsums.create_zero_tensor("acc", [20, 20], dtype=dtype)
 
     g = cg.Graph("exec")
     body = g.add_loop("it", 3, lambda i: True)
@@ -49,20 +54,20 @@ def test_set_executor_on_loop_body(rng):
     g.execute()
     An = np.asarray(A)
     ref = 3 * (An @ An + An.T @ An)
-    np.testing.assert_allclose(np.asarray(acc), ref, atol=1e-12)
+    assert_close(np.asarray(acc), ref)
 
     body.set_executor(None)
     g.execute()
-    np.testing.assert_allclose(np.asarray(acc), 2 * ref, atol=1e-12)
+    assert_close(np.asarray(acc), 2 * ref)
 
 
-def test_privatization_splits_generations(rng):
+def test_privatization_splits_generations(rng, dtype):
     """Three write->read episodes of one scratch split onto clones, exactly."""
-    ops = [einsums.asarray(_randn(rng, 24, 24), name=f"A{k}") for k in range(3)]
-    acc = einsums.create_zero_tensor("acc", [24, 24], dtype="float64")
+    ops = [einsums.asarray(_randn(rng, dtype, 24, 24), name=f"A{k}") for k in range(3)]
+    acc = einsums.create_zero_tensor("acc", [24, 24], dtype=dtype)
 
     g = cg.Graph("gen")
-    tmp = g.declare_zero_tensor("tmp", [24, 24], dtype="float64", intermediate=True)
+    tmp = g.declare_zero_tensor("tmp", [24, 24], dtype=dtype, intermediate=True)
     with cg.capture(g):
         for A in ops:
             einsums.einsum("ij <- ik ; kj", tmp, A, A, c_pf=0.0, ab_pf=1.0)
@@ -81,12 +86,12 @@ def test_privatization_splits_generations(rng):
     g.apply(cg.default_pass_manager())  # materialize the clones
     g.execute()
     ref = sum(np.asarray(A) @ np.asarray(A) for A in ops)
-    np.testing.assert_allclose(np.asarray(acc), ref, atol=1e-12)
+    assert_close(np.asarray(acc), ref)
 
 
 def test_privatization_requires_executor_by_default(rng):
     """Without an installed executor the default-gated pass leaves graphs alone."""
-    A = einsums.asarray(_randn(rng, 16, 16), name="A")
+    A = einsums.asarray(_randn(rng, "float64", 16, 16), name="A")
     acc = einsums.create_zero_tensor("acc", [16, 16], dtype="float64")
 
     g = cg.Graph("gated")
@@ -109,7 +114,7 @@ def test_privatization_requires_executor_by_default(rng):
 
 def test_privatization_skips_loop_carried_scratch(rng):
     """A tensor read before its first overwrite carries state; it must not split."""
-    A = einsums.asarray(_randn(rng, 12, 12), name="A")
+    A = einsums.asarray(_randn(rng, "float64", 12, 12), name="A")
     acc = einsums.create_zero_tensor("acc", [12, 12], dtype="float64")
 
     g = cg.Graph("carried")
@@ -129,18 +134,18 @@ def test_privatization_skips_loop_carried_scratch(rng):
     assert sp.num_tensors_privatized == 0
 
 
-def test_privatized_ccsd_style_loop_matches_numpy(rng):
+def test_privatized_ccsd_style_loop_matches_numpy(rng, dtype):
     """The motivating shape: a loop body reusing tmp/tmpP through einsum,
     permute, and axpby, replayed on the Dataflow executor after the default
     pipeline (privatization included) rewrote it."""
     n = 14
-    A1 = einsums.asarray(_randn(rng, n, n), name="A1")
-    A2 = einsums.asarray(_randn(rng, n, n), name="A2")
-    r2 = einsums.create_zero_tensor("r2", [n, n], dtype="float64")
+    A1 = einsums.asarray(_randn(rng, dtype, n, n), name="A1")
+    A2 = einsums.asarray(_randn(rng, dtype, n, n), name="A2")
+    r2 = einsums.create_zero_tensor("r2", [n, n], dtype=dtype)
 
     g = cg.Graph("ccsdish")
-    tmp = g.declare_zero_tensor("tmp", [n, n], dtype="float64", intermediate=True)
-    tmpP = g.declare_zero_tensor("tmpP", [n, n], dtype="float64", intermediate=True)
+    tmp = g.declare_zero_tensor("tmp", [n, n], dtype=dtype, intermediate=True)
+    tmpP = g.declare_zero_tensor("tmpP", [n, n], dtype=dtype, intermediate=True)
     body = g.add_loop("it", 3, lambda i: True)
     with cg.capture(body):
         for A in (A1, A2):
@@ -157,16 +162,16 @@ def test_privatized_ccsd_style_loop_matches_numpy(rng):
         return m + m.T
 
     ref = 3 * (sym(np.asarray(A1) @ np.asarray(A1)) + sym(np.asarray(A2) @ np.asarray(A2)))
-    np.testing.assert_allclose(np.asarray(r2), ref, atol=1e-12)
+    assert_close(np.asarray(r2), ref)
 
 
-def test_disjoint_view_writes_parallel_and_exact(rng):
+def test_disjoint_view_writes_parallel_and_exact(rng, dtype):
     """Writes through disjoint constant-index views of one tensor must not
     serialize (the ladder idiom) and must land exactly where they belong,
     under both the sequential and the Dataflow executor."""
     n, m = 4, 21
-    src = einsums.asarray(_randn(rng, n, m, m), name="src")
-    out = einsums.create_zero_tensor("out", [n, m, m], dtype="float64")
+    src = einsums.asarray(_randn(rng, dtype, n, m, m), name="src")
+    out = einsums.create_zero_tensor("out", [n, m, m], dtype=dtype)
     _FULL = (0, 0, 0)
 
     g = cg.Graph("slices")
@@ -180,14 +185,14 @@ def test_disjoint_view_writes_parallel_and_exact(rng):
     ref = np.stack([src_np[k] @ src_np[k] for k in range(n)])
 
     g.execute()
-    np.testing.assert_allclose(np.asarray(out), ref, atol=1e-12)
+    assert_close(np.asarray(out), ref)
 
     g.set_executor(cg.DataflowExecutor())
     g.execute()
-    np.testing.assert_allclose(np.asarray(out), 2 * ref, atol=1e-12)
+    assert_close(np.asarray(out), 2 * ref)
 
 
-def test_privatization_splits_generations_axpy_spelling(rng):
+def test_privatization_splits_generations_axpy_spelling(rng, dtype):
     """The axpy spelling of the reader privatizes exactly like axpby.
 
     `acc += tmp` is an axpy in every other library, and until axpy started
@@ -195,11 +200,11 @@ def test_privatization_splits_generations_axpy_spelling(rng):
     so the generations of a scratch consumed this way never split, and the
     false WAR chain kept serializing work a parallel executor could overlap.
     """
-    ops = [einsums.asarray(_randn(rng, 24, 24), name=f"B{k}") for k in range(3)]
-    acc = einsums.create_zero_tensor("acc_axpy", [24, 24], dtype="float64")
+    ops = [einsums.asarray(_randn(rng, dtype, 24, 24), name=f"B{k}") for k in range(3)]
+    acc = einsums.create_zero_tensor("acc_axpy", [24, 24], dtype=dtype)
 
     g = cg.Graph("gen_axpy")
-    tmp = g.declare_zero_tensor("tmp", [24, 24], dtype="float64", intermediate=True)
+    tmp = g.declare_zero_tensor("tmp", [24, 24], dtype=dtype, intermediate=True)
     with cg.capture(g):
         for A in ops:
             einsums.einsum("ij <- ik ; kj", tmp, A, A, c_pf=0.0, ab_pf=1.0)
@@ -216,4 +221,4 @@ def test_privatization_splits_generations_axpy_spelling(rng):
     g.apply(cg.default_pass_manager())
     g.execute()
     ref = sum(np.asarray(A) @ np.asarray(A) for A in ops)
-    np.testing.assert_allclose(np.asarray(acc), ref, atol=1e-12)
+    assert_close(np.asarray(acc), ref)
