@@ -8,6 +8,8 @@
 #include <Einsums/SIMD/Generic.hpp>
 #include <Einsums/SIMD/Math.hpp>
 #include <Einsums/SIMD/Platform.hpp>
+#include <Einsums/SIMD/Reduce.hpp>
+#include <Einsums/SIMD/Shuffle.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -116,6 +118,89 @@ void rsqrt_f64_estimate(double const *x, double *out, std::size_t n) {
     map_kernel<simd::Vec<double>>(x, out, n, [](auto v) { return rsqrt_estimate(v); });
 }
 
+void segsum_scalar(double const *v, int32_t const *offset, int groups, double *out) {
+    for (int g = 0; g < groups; ++g) {
+        double sum = 0;
+        for (int32_t i = offset[g]; i < offset[g + 1]; ++i) {
+            sum += v[i];
+        }
+        out[g] = sum;
+    }
+}
+
+/// Group g's elements summed vertically into one vector: full loads, then a masked tail.
+simd::Vec<double> group_vector(double const *v, int32_t begin, int32_t end) {
+    constexpr int     L   = simd::lanes<double>;
+    simd::Vec<double> acc = simd::broadcast(0.0);
+    int32_t           i   = begin;
+    for (; i + L <= end; i += L) {
+        acc = acc + simd::loadu(v + i);
+    }
+    if (i < end) {
+        acc = acc + simd::loadu_partial(v + i, static_cast<std::size_t>(end - i));
+    }
+    return acc;
+}
+
+void segsum_horizontal(double const *v, int32_t const *offset, int groups, double *out) {
+    for (int g = 0; g < groups; ++g) {
+        out[g] = simd::reduce_add(group_vector(v, offset[g], offset[g + 1]));
+    }
+}
+
+void segsum_transpose(double const *v, int32_t const *offset, int groups, double *out) {
+    constexpr int L = simd::lanes<double>;
+    int           g = 0;
+    for (; g + L <= groups; g += L) {
+        simd::Vec<double> tile[L];
+        for (int k = 0; k < L; ++k) {
+            tile[k] = group_vector(v, offset[g + k], offset[g + k + 1]);
+        }
+        // Row k of the transposed tile holds lane k of every group's vector; their sum is the
+        // vector of the L groups' totals.
+        simd::transpose_inplace(tile);
+        simd::Vec<double> sums = tile[0];
+        for (int k = 1; k < L; ++k) {
+            sums = sums + tile[k];
+        }
+        simd::storeu(out + g, sums);
+    }
+    for (; g < groups; ++g) {
+        out[g] = simd::reduce_add(group_vector(v, offset[g], offset[g + 1]));
+    }
+}
+
+void segsum_scalar_tail(double const *v, int32_t const *offset, int groups, double *out) {
+    constexpr int L = simd::lanes<double>;
+    for (int g = 0; g < groups; ++g) {
+        int32_t const end = offset[g + 1];
+        int32_t       i   = offset[g];
+        double        sum = 0;
+        if (i + L <= end) {
+            simd::Vec<double> acc = simd::loadu(v + i);
+            for (i += L; i + L <= end; i += L) {
+                acc = acc + simd::loadu(v + i);
+            }
+            sum = simd::reduce_add(acc);
+        }
+        for (; i < end; ++i) {
+            sum += v[i];
+        }
+        out[g] = sum;
+    }
+}
+
+void segsum_interleaved(double const *v, int32_t const *rows, int batches, double *out) {
+    constexpr int L = simd::lanes<double>;
+    for (int b = 0; b < batches; ++b) {
+        simd::Vec<double> acc = simd::broadcast(0.0);
+        for (int32_t r = 0; r < rows[b]; ++r, v += L) {
+            acc = acc + simd::loadu(v);
+        }
+        simd::storeu(out + static_cast<std::ptrdiff_t>(b) * L, acc);
+    }
+}
+
 constexpr int LF = simd::lanes<float>;
 
 } // namespace
@@ -144,6 +229,11 @@ Kernels const &kernels() noexcept {
         .erfc_f32            = &erfc_f32,
         .rsqrt_f64           = &rsqrt_f64,
         .rsqrt_f64_estimate  = &rsqrt_f64_estimate,
+        .segsum_scalar       = &segsum_scalar,
+        .segsum_horizontal   = &segsum_horizontal,
+        .segsum_transpose    = &segsum_transpose,
+        .segsum_scalar_tail  = &segsum_scalar_tail,
+        .segsum_interleaved  = &segsum_interleaved,
     };
     return table;
 }

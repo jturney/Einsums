@@ -71,6 +71,22 @@ struct Kernels {
     // the hardware estimate refined by two Newton steps, whose bits differ between CPU vendors.
     void (*rsqrt_f64)(double const *x, double *out, std::size_t n);
     void (*rsqrt_f64_estimate)(double const *x, double *out, std::size_t n);
+
+    // Segmented reduction: out[g] = sum of v[offset[g] .. offset[g + 1]), the primitive-to-contracted
+    // sum of integral kernels. Groups are contiguous, of any size, and straddle vector boundaries.
+    /// A sequential sum per group.
+    void (*segsum_scalar)(double const *v, int32_t const *offset, int groups, double *out);
+    /// Per group: vertical adds over its vectors, a masked tail, one horizontal reduction.
+    void (*segsum_horizontal)(double const *v, int32_t const *offset, int groups, double *out);
+    /// Each group reduced to one vector as above, a register's worth of those transposed, and the
+    /// rows added: one transpose instead of a horizontal reduction per group.
+    void (*segsum_transpose)(double const *v, int32_t const *offset, int groups, double *out);
+    /// As horizontal, but the tail summed in scalar instead of by a masked load.
+    void (*segsum_scalar_tail)(double const *v, int32_t const *offset, int groups, double *out);
+    /// No segmented reduction at all: the producer writes a register's worth of groups lane-
+    /// interleaved, row i holding element i of each, zero past a group's end. Batch b has rows[b]
+    /// rows; out receives one vector of sums per batch.
+    void (*segsum_interleaved)(double const *v, int32_t const *rows, int batches, double *out);
 };
 
 #define EINSUMS_SIMD_BENCH_DECLARE_RUNG(ns)                                                                                                \

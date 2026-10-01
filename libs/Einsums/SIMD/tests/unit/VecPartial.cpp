@@ -12,6 +12,7 @@
 #include <Einsums/SIMD/Partial.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -162,6 +163,29 @@ TEMPLATE_TEST_CASE("masked load, store and gather never touch an inactive lane's
             for (int i = 0; i < L; ++i) {
                 CHECK(out[i] == (static_cast<std::size_t>(i) < n ? static_cast<T>(10 + n - 1 - static_cast<std::size_t>(i)) : T(0)));
             }
+        }
+    }
+}
+
+TEMPLATE_TEST_CASE("a masked load reads every lane pattern exactly", "[simd][partial][mask]", float, double, int32_t, uint32_t, int64_t,
+                   uint64_t) {
+    // Arbitrary patterns, not only the prefixes a partial load asks for: SSE assembles each pattern
+    // its own way. The highest active lane sits against the guard, so a read past it faults, and the
+    // inactive lanes below it hold a sentinel that must not reach the result.
+    using T           = TestType;
+    constexpr int   L = Vec<T>::lanes;
+    GuardPage const guard;
+    for (uint64_t bits = 1; bits < (uint64_t{1} << L) && bits < 4096; ++bits) {
+        INFO("bits = " << bits);
+        int const top = std::bit_width(bits);
+        T *const  p   = guard.last<T>(static_cast<std::size_t>(top));
+        for (int i = 0; i < top; ++i) {
+            p[i] = ((bits >> i) & 1u) ? static_cast<T>(i + 1) : T(77);
+        }
+        T out[L];
+        storeu(out, loadu(p, mask_from_bits<T>(bits)));
+        for (int i = 0; i < L; ++i) {
+            CHECK(out[i] == (((bits >> i) & 1u) ? static_cast<T>(i + 1) : T(0)));
         }
     }
 }

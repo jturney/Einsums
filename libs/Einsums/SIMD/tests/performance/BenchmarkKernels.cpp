@@ -23,11 +23,15 @@
 #include <Einsums/SIMD/RungLadder.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <numeric>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -186,6 +190,111 @@ EINSUMS_TEST_CASE("SIMD gather, conversion and interpolation on every supported 
             bench("erfc f32", r.set, [&] { r.kernels->erfc_f32(xf.data(), of.data(), n); });
             bench("rsqrt f64", r.set, [&] { r.kernels->rsqrt_f64(pd.data(), od.data(), n); });
             bench("rsqrt f64, hardware estimate + Newton", r.set, [&] { r.kernels->rsqrt_f64_estimate(pd.data(), od.data(), n); });
+        }
+    }
+
+    // Segmented reduction over group-size distributions an integral code meets: fixed small sizes,
+    // contraction degrees (K^4 primitive quartets per contracted quartet for K = 2, 3), and screened
+    // groups of random size. Each strategy is checked against the scalar sum once; the padding line
+    // reports what padding every group to a whole number of vectors would cost the integral kernel
+    // in wasted lanes, for every vector width this machine has.
+    {
+        struct Distribution {
+            std::string name;
+            int         lo, hi; // group sizes uniform in [lo, hi]
+        };
+        std::vector<Distribution> const distributions = {{"size 1", 1, 1},
+                                                         {"size 3", 3, 3},
+                                                         {"size 4", 4, 4},
+                                                         {"size 7", 7, 7},
+                                                         {"size 16 (K = 2)", 16, 16},
+                                                         {"size 81 (K = 3)", 81, 81},
+                                                         {"sizes 1-8", 1, 8},
+                                                         {"sizes 1-16", 1, 16},
+                                                         {"sizes 1-100", 1, 100}};
+        for (Distribution const &d : distributions) {
+            std::uniform_int_distribution<int> size(d.lo, d.hi);
+            std::vector<int32_t>               offset{0};
+            while (offset.back() < static_cast<int32_t>(n)) {
+                offset.push_back(offset.back() + size(rng));
+            }
+            offset.back()                                 = static_cast<int32_t>(n); // the last group ends at n
+            int const                              groups = static_cast<int>(offset.size()) - 1;
+            std::uniform_real_distribution<double> value(-1.0, 1.0);
+            std::vector<double>                    v(n);
+            for (double &x : v) {
+                x = value(rng);
+            }
+            std::vector<double> reference(static_cast<std::size_t>(groups)), out(static_cast<std::size_t>(groups));
+
+            for (int width : {2, 4, 8}) {
+                std::size_t padded = 0;
+                for (int g = 0; g < groups; ++g) {
+                    padded += static_cast<std::size_t>((offset[g + 1] - offset[g] + width - 1) / width * width);
+                }
+                std::printf("[segmented %s] padding to %d lanes: %.1f%% of kernel lanes wasted\n", d.name.c_str(), width,
+                            100.0 * static_cast<double>(padded - n) / static_cast<double>(padded));
+            }
+
+            for (simd_bench::Rung const &r : simd_bench::runnable_rungs()) {
+                r.kernels->segsum_scalar(v.data(), offset.data(), groups, reference.data());
+                for (auto const &[label, fn] : {std::pair{std::string("horizontal"), r.kernels->segsum_horizontal},
+                                                std::pair{std::string("transpose"), r.kernels->segsum_transpose}}) {
+                    fn(v.data(), offset.data(), groups, out.data());
+                    for (int g = 0; g < groups; ++g) {
+                        REQUIRE(std::fabs(out[g] - reference[g]) <= 1e-12 * (1.0 + std::fabs(reference[g])));
+                    }
+                }
+                bench("segmented sum " + d.name + ": scalar", r.set,
+                      [&] { r.kernels->segsum_scalar(v.data(), offset.data(), groups, out.data()); });
+                bench("segmented sum " + d.name + ": horizontal", r.set,
+                      [&] { r.kernels->segsum_horizontal(v.data(), offset.data(), groups, out.data()); });
+                bench("segmented sum " + d.name + ": transpose", r.set,
+                      [&] { r.kernels->segsum_transpose(v.data(), offset.data(), groups, out.data()); });
+                bench("segmented sum " + d.name + ": scalar tail", r.set,
+                      [&] { r.kernels->segsum_scalar_tail(v.data(), offset.data(), groups, out.data()); });
+
+                // The interleaved layout, with groups in arrival order and with groups sorted by
+                // size first (a producer batching by contraction degree); the zero rows past a
+                // group's end are lanes the integral kernel computed for nothing.
+                int const L = r.kernels->vector_bits / 64;
+                for (bool sorted : {false, true}) {
+                    std::vector<int> order(static_cast<std::size_t>(groups));
+                    std::iota(order.begin(), order.end(), 0);
+                    if (sorted) {
+                        std::stable_sort(order.begin(), order.end(),
+                                         [&](int a, int b) { return offset[a + 1] - offset[a] < offset[b + 1] - offset[b]; });
+                    }
+                    int const            batches = (groups + L - 1) / L;
+                    std::vector<int32_t> rows(static_cast<std::size_t>(batches));
+                    std::vector<double>  tiles;
+                    for (int b = 0; b < batches; ++b) {
+                        for (int k = 0; k < L && b * L + k < groups; ++k) {
+                            int const g = order[static_cast<std::size_t>(b * L + k)];
+                            rows[b]     = std::max(rows[b], offset[g + 1] - offset[g]);
+                        }
+                        std::size_t const base = tiles.size();
+                        tiles.resize(base + static_cast<std::size_t>(rows[b]) * L, 0.0);
+                        for (int k = 0; k < L && b * L + k < groups; ++k) {
+                            int const g = order[static_cast<std::size_t>(b * L + k)];
+                            for (int32_t i = offset[g]; i < offset[g + 1]; ++i) {
+                                tiles[base + static_cast<std::size_t>(i - offset[g]) * L + k] = v[i];
+                            }
+                        }
+                    }
+                    std::vector<double> sums(static_cast<std::size_t>(batches) * L);
+                    r.kernels->segsum_interleaved(tiles.data(), rows.data(), batches, sums.data());
+                    for (int j = 0; j < groups; ++j) {
+                        double const want = reference[order[j]];
+                        REQUIRE(std::fabs(sums[j] - want) <= 1e-12 * (1.0 + std::fabs(want)));
+                    }
+                    std::string const which = sorted ? "interleaved, sorted" : "interleaved";
+                    std::printf("[segmented %s] %s at %d lanes: %.1f%% of kernel lanes wasted\n", d.name.c_str(), which.c_str(), L,
+                                100.0 * static_cast<double>(tiles.size() - n) / static_cast<double>(tiles.size()));
+                    bench("segmented sum " + d.name + ": " + which, r.set,
+                          [&] { r.kernels->segsum_interleaved(tiles.data(), rows.data(), batches, sums.data()); });
+                }
+            }
         }
     }
 }

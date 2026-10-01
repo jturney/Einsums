@@ -159,8 +159,10 @@ inactive lane is safe. ``loadu_partial(p, n)`` is ``loadu(p, first_n<T>(n))``.
 
 A masked access is a single instruction on AVX-512, and on AVX and AVX2 for
 ``float``, ``double`` and the 32- and 64-bit integers. SSE and NEON have no
-masked load, so there it goes through a stack buffer, which a tail of two or
-three elements does not repay. ``native_masked_memory<T>`` (also spelled
+masked load, so there the active lanes are loaded one at a time and assembled
+in a register, and a masked store goes through a stack buffer; either costs a
+few branches that a tail of two or three elements may not repay.
+``native_masked_memory<T>`` (also spelled
 ``native_partial<T>``) is ``true`` exactly where the masked instruction
 exists, so a kernel compiled per rung can keep a scalar tail on the others:
 
@@ -171,6 +173,35 @@ exists, so a kernel compiled per rung can keep a scalar tail on the others:
     } else {
         for (; i < n; ++i) { /* scalar tail */ }
     }
+
+Summing groups of varying size
+------------------------------
+
+A kernel that produces many short groups to be summed, such as the primitive
+integrals of each contracted one, is fastest when each lane computes one
+group and walks its elements in step with the other lanes. The sum is then the
+kernel's own vector accumulator, and no reduction across lanes is needed:
+
+.. code-block:: cpp
+
+    // Lane k sums group g + k. sizes holds each lane's group size, rows the largest,
+    // and term(r) is the kernel's value for element r of every lane's group.
+    Vec<double> acc = broadcast(0.0);
+    for (int r = 0; r < rows; ++r) {
+        Mask<double> live = cmp_lt(broadcast(double(r)), sizes);
+        acc = acc + select(live, term(r), broadcast(0.0));
+    }
+    storeu(out + g, acc);
+
+Batching groups of similar size is what makes this pay: a batch costs as many
+steps as its largest group, so unsorted groups of 1 to 16 elements leave a
+third of a 4-lane kernel's lanes idle, and sorted ones under 1 percent. The
+alternative, one element per lane with groups stored one after another, then
+summed group by group, has to pad each group to whole vectors (a quarter to
+nearly half the lanes idle for groups of 1 to 8 elements) or pay a masked tail
+and a horizontal reduction per group, which loses to a plain scalar loop below
+about 16 elements. ``tests/performance/BenchmarkKernels.cpp`` measures both
+layouts.
 
 ``Convert.hpp`` converts between ``int32_t`` and ``float``, which have the
 same lane count: ``convert<float>(vi)`` rounds to nearest and
