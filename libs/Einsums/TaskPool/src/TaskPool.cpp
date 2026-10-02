@@ -73,11 +73,10 @@ TaskPool::TaskPool() {
     // Note: shutdown function is registered lazily in enqueue() when workers
     // are actually started, to ensure workers exist when shutdown() is called.
 
-    // Register profiler server handler for metrics
+    // The viewer's TaskPool panel asks for these. Registered whether or not a server runs yet.
 #if defined(EINSUMS_HAVE_PROFILER)
-    auto *srv = profile::Profiler::instance().server();
-    if (srv) {
-        srv->register_handler("get_taskpool_metrics", [this](std::string const &) {
+    {
+        profile::Profiler::instance().register_handler("get_taskpool_metrics", [this](std::string const &) {
             auto        m    = snapshot_metrics();
             std::string json = "{\"total_submitted\":" + std::to_string(m.total_submitted);
             json += ",\"total_completed\":" + std::to_string(m.total_completed);
@@ -104,6 +103,10 @@ TaskPool::TaskPool() {
 }
 
 TaskPool::~TaskPool() {
+#if defined(EINSUMS_HAVE_PROFILER)
+    // The handler captures this pool, and the profiler, constructed first, outlives it.
+    profile::Profiler::instance().unregister_handler("get_taskpool_metrics");
+#endif
     shutdown();
 }
 

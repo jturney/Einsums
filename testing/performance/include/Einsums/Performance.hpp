@@ -10,6 +10,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #include <chrono>
 #include <cmath>
@@ -221,30 +222,23 @@ inline void publish_benchmark_result(char const *label, char const *metric, int 
                 if (!first)
                     annotations_json += ",";
                 first = false;
-                annotations_json += "\"" + key + "\":\"" + val + "\"";
+                annotations_json += "\"" + json_escape(key) + "\":\"" + json_escape(val) + "\"";
             }
         }
         annotations_json += "}";
 
-        profile::BenchmarkResultEntry entry;
         // Include N in the label so each size is a distinct benchmark in the DB
-        if (N > 0) {
-            char lbl_buf[512];
-            std::snprintf(lbl_buf, sizeof(lbl_buf), "%s N=%d", label, N);
-            entry.label = lbl_buf;
-        } else {
-            entry.label = label;
-        }
-        entry.metric           = metric;
-        entry.value_us         = stats.avg;
-        entry.min_us           = stats.min;
-        entry.max_us           = stats.max;
-        entry.stddev_us        = stats.stddev;
-        entry.warmup_us        = stats.warmup;
-        entry.reps             = stats.reps;
-        entry.annotations_json = std::move(annotations_json);
+        std::string const full_label = N > 0 ? fmt::format("{} N={}", label, N) : std::string(label);
 
-        srv->benchmark_queue().push(std::move(entry));
+        std::string json = R"({"label":")" + json_escape(full_label) + R"(","metric":")" + json_escape(metric) + "\"";
+        json += ",\"value_us\":" + std::to_string(stats.avg);
+        json += ",\"min_us\":" + std::to_string(stats.min);
+        json += ",\"max_us\":" + std::to_string(stats.max);
+        json += ",\"stddev_us\":" + std::to_string(stats.stddev);
+        json += ",\"warmup_us\":" + std::to_string(stats.warmup);
+        json += ",\"reps\":" + std::to_string(stats.reps);
+        json += ",\"annotations\":" + annotations_json + "}";
+        prof.publish("benchmark_result", json);
     }
 #endif
 }

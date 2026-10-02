@@ -57,44 +57,6 @@ class LogMessageQueue {
     std::deque<LogEntry> _queue;
 };
 
-// ─── Benchmark result queue ──────────────────────────────────────────────────
-
-/// A benchmark result entry sent via the profiler server as type="benchmark_result".
-struct BenchmarkResultEntry {
-    std::string label;    ///< e.g., "gemm N=256"
-    std::string metric;   ///< e.g., "t_einsum", "t_generic"
-    double      value_us; ///< Primary timing (average)
-    double      min_us;
-    double      max_us;
-    double      stddev_us;
-    double      warmup_us;
-    int         reps;
-    std::string annotations_json; ///< Pre-serialized JSON object of annotations
-};
-
-class BenchmarkResultQueue {
-  public:
-    static constexpr size_t kMaxPending = 10000;
-
-    void push(BenchmarkResultEntry entry) {
-        std::lock_guard<std::mutex> lock(_mutex);
-        if (_queue.size() >= kMaxPending)
-            _queue.pop_front();
-        _queue.push_back(std::move(entry));
-    }
-
-    std::vector<BenchmarkResultEntry> drain() {
-        std::lock_guard<std::mutex>       lock(_mutex);
-        std::vector<BenchmarkResultEntry> result(std::make_move_iterator(_queue.begin()), std::make_move_iterator(_queue.end()));
-        _queue.clear();
-        return result;
-    }
-
-  private:
-    std::mutex                       _mutex;
-    std::deque<BenchmarkResultEntry> _queue;
-};
-
 /// spdlog sink that forwards log messages to a LogMessageQueue.
 /// IMPORTANT: This sink must never call EINSUMS_LOG_* to avoid recursion.
 class ProfilerSink : public spdlog::sinks::base_sink<std::mutex> {

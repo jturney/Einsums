@@ -13,6 +13,7 @@
 #include <Einsums/Profile/CounterBackend.hpp>
 #include <Einsums/Profile/Event.hpp>
 #include <Einsums/Profile/Options.hpp>
+#include <Einsums/Profile/RequestHandlers.hpp>
 #include <Einsums/Profile/RingBuffer.hpp>
 #include <Einsums/Profile/Server.hpp>
 #include <Einsums/Profile/StringTable.hpp>
@@ -143,8 +144,33 @@ struct EINSUMS_EXPORT Profiler {
     // Access consumer (for annotations, shared lock on tree, etc.)
     auto consumer() -> Consumer * { return _consumer.get(); }
 
-    // Access server (for registering request handlers from other modules).
-    auto server() -> Server * { return _server.get(); }
+    /// The live-viewing server, or null until @ref start_server runs. Safe from any thread.
+    auto server() -> Server * { return _server_ptr.load(std::memory_order_acquire); }
+
+    /// Start the live-viewing server on @p port unless one already runs. Safe at any time and from
+    /// any thread: zones recorded before it starts are in the first snapshot it sends.
+    void start_server(uint16_t port);
+
+    /// Register @p handler for viewer requests named @p method. Works before any server exists: the
+    /// profiler keeps the table, and a server started later answers from it.
+    void register_handler(std::string method, RequestHandlers::Handler handler) { _handlers.add(std::move(method), std::move(handler)); }
+
+    /// Remove the handler for @p method, waiting for any call of it in progress. An owner whose
+    /// handler captures it calls this from its destructor.
+    void unregister_handler(std::string const &method) { _handlers.remove(method); }
+
+    /// Embed @p section's JSON under @p key in every session file.
+    void register_session_section(std::string key, RequestHandlers::SessionSection section) {
+        _handlers.add_session_section(std::move(key), std::move(section));
+    }
+
+    /// Send @p json_object (a JSON object) to every connected viewer as a message of type @p type.
+    /// Dropped when no server runs: nothing would ever read it.
+    void publish(std::string_view type, std::string_view json_object) {
+        if (auto *srv = server()) {
+            srv->publish(type, json_object);
+        }
+    }
 
     // Get the profiler's thread ID for the calling thread (platform-specific, matches Consumer keys).
     static auto current_thread_id() -> uint32_t { return thread_key(); }
@@ -169,10 +195,8 @@ struct EINSUMS_EXPORT Profiler {
             _enabled.store(!profile_recording_disabled(), std::memory_order_relaxed);
         } catch (...) { // NOLINT
         }
-        // The callback dereferences _server on every consumer tick, so it goes inside the guard.
         if (profile_server_enabled()) {
-            _server = std::make_unique<Server>(*_consumer, _strings, "127.0.0.1", port);
-            _consumer->set_tick_callback([this] { _server->tick(); });
+            start_server(port);
         }
         // No signal handlers here: Runtime owns those, and einsums::finalize() shuts the profiler down.
     }
@@ -264,7 +288,15 @@ struct EINSUMS_EXPORT Profiler {
 
     StringTable               _strings;
     std::unique_ptr<Consumer> _consumer;
-    std::unique_ptr<Server>   _server;
+
+    /// What libraries registered for the server and session files. Declared before the server,
+    /// which reads it, so it is destroyed after it.
+    RequestHandlers _handlers;
+
+    /// Owned by @ref _server; @ref _server_ptr publishes it to other threads once it exists.
+    std::mutex              _server_mutex;
+    std::unique_ptr<Server> _server;
+    std::atomic<Server *>   _server_ptr{nullptr};
 
     /// Recording switch: on by default, off with --einsums:profile:disable.
     std::atomic<bool> _enabled{true};
@@ -870,7 +902,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 //
 // With EINSUMS_WITH_PROFILER=OFF the instrumentation API remains as empty inlines, so call sites
 // need no guards. The machinery (rings, consumer, server) has no stand-in: code that uses
-// Profiler::server, a Consumer or a BenchmarkResultEntry stays behind EINSUMS_HAVE_PROFILER.
+// Profiler::server, register_handler, publish or a Consumer stays behind EINSUMS_HAVE_PROFILER.
 
 /// Stand-in for the recording profiler: its instrumentation and lifecycle entry points only.
 struct Profiler {

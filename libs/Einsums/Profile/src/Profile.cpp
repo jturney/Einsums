@@ -114,6 +114,17 @@ auto Profiler::thread_channel() -> ThreadChannel & {
     return *channel;
 }
 
+void Profiler::start_server(uint16_t port) {
+    std::scoped_lock const lock(_server_mutex);
+    if (_server) {
+        return;
+    }
+    _server = std::make_unique<Server>(*_consumer, _strings, _handlers, "127.0.0.1", port);
+    _server_ptr.store(_server.get(), std::memory_order_release);
+    // The consumer ticks the server from its own thread from now on.
+    _consumer->set_tick_callback([srv = _server.get()] { srv->tick(); });
+}
+
 auto Profiler::register_thread() -> ThreadChannel & {
     auto       channel = std::make_shared<ThreadChannel>();
     auto const tid     = thread_key();

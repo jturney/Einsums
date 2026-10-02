@@ -172,8 +172,8 @@ auto compute_inclusive_ms(AggNode const &n) -> double { // NOLINT
 
 } // namespace
 
-Server::Server(Consumer &consumer, StringTable &strings, std::string const &bind_addr, uint16_t port)
-    : _consumer(consumer), _strings(strings) {
+Server::Server(Consumer &consumer, StringTable &strings, RequestHandlers const &handlers, std::string const &bind_addr, uint16_t port)
+    : _consumer(consumer), _strings(strings), _handlers(handlers) {
 #    ifndef _WIN32
     _listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (_listen_fd < 0) {
@@ -621,22 +621,13 @@ void Server::send_updates() {
         msg += R"(,"message":")" + escape_json_str(entry.message) + "\"}\n";
     }
 
-    // Append benchmark result events
-    auto bench_results = _benchmark_queue.drain();
-    for (auto const &entry : bench_results) {
-        msg += R"({"type":"benchmark_result")";
-        msg += R"(,"label":")" + escape_json_str(entry.label) + "\"";
-        msg += R"(,"metric":")" + escape_json_str(entry.metric) + "\"";
-        msg += ",\"value_us\":" + std::to_string(entry.value_us);
-        msg += ",\"min_us\":" + std::to_string(entry.min_us);
-        msg += ",\"max_us\":" + std::to_string(entry.max_us);
-        msg += ",\"stddev_us\":" + std::to_string(entry.stddev_us);
-        msg += ",\"warmup_us\":" + std::to_string(entry.warmup_us);
-        msg += ",\"reps\":" + std::to_string(entry.reps);
-        if (!entry.annotations_json.empty()) {
-            msg += ",\"annotations\":" + entry.annotations_json;
+    // Append published messages
+    {
+        std::scoped_lock const lock(_published_mutex);
+        for (auto const &line : _published) {
+            msg += line;
         }
-        msg += "}\n";
+        _published.clear();
     }
 
     // Send to all clients, remove disconnected ones
@@ -656,8 +647,24 @@ void Server::send_updates() {
     _has_client.store(!_client_fds.empty(), std::memory_order_relaxed);
 }
 
-void Server::register_handler(std::string const &method, RequestHandler handler) {
-    _request_handlers[method] = std::move(handler);
+void Server::publish(std::string_view type, std::string_view json_object) {
+    // Splice the type in as the object's first member: {"type":"<type>", <the object's members>}.
+    auto const       open    = json_object.find('{');
+    std::string_view members = open == std::string_view::npos ? std::string_view{"}"} : json_object.substr(open + 1);
+    auto const       first   = members.find_first_not_of(" \t\r\n");
+
+    std::string line = R"({"type":")" + escape_json_str(std::string(type)) + "\"";
+    if (first != std::string_view::npos && members[first] != '}') {
+        line += ',';
+    }
+    line.append(members);
+    line += '\n';
+
+    std::scoped_lock const lock(_published_mutex);
+    if (_published.size() >= kMaxPublished) {
+        _published.pop_front();
+    }
+    _published.push_back(std::move(line));
 }
 
 void Server::recv_requests() {
@@ -788,11 +795,9 @@ void Server::process_request(int fd, std::string const &line) {
     }
 
     // Dispatch to handler
-    auto        it = _request_handlers.find(method);
     std::string response;
-    if (it != _request_handlers.end()) {
-        std::string const data = it->second(params);
-        response               = R"({"type":"response","id":")" + escape_json_str(req_id) + R"(","data":)" + data + "}\n";
+    if (auto const data = _handlers.call(method, params)) {
+        response = R"({"type":"response","id":")" + escape_json_str(req_id) + R"(","data":)" + *data + "}\n";
     } else {
         response = R"({"type":"response","id":")" + escape_json_str(req_id) + "\",\"data\":{\"error\":\"unknown method\"}}\n";
     }
@@ -914,18 +919,9 @@ void Server::export_session(std::string const &path, std::string const &label,
         json += ",\n  \"" + escape_json_str(key) + "\": " + value;
     }
 
-    // Include compute graph data if the handler is registered.
-    {
-        auto it = _request_handlers.find("get_compute_graphs");
-        if (it != _request_handlers.end()) {
-            std::string const graphs_json = it->second("");
-            auto              arr_start   = graphs_json.find('[');
-            auto              arr_end     = graphs_json.rfind(']');
-            if (arr_start != std::string::npos && arr_end != std::string::npos && arr_end > arr_start) {
-                json += ",\n  \"compute_graphs\": ";
-                json += graphs_json.substr(arr_start, arr_end - arr_start + 1);
-            }
-        }
+    // Include what libraries registered for session files.
+    for (auto const &[key, value] : _handlers.session_sections()) {
+        json += ",\n  \"" + escape_json_str(key) + "\": " + value;
     }
 
     json += "\n}\n";

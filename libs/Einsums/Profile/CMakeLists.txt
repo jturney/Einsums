@@ -13,6 +13,7 @@ set(ProfileHeaders
     Einsums/Profile/Consumer.hpp
     Einsums/Profile/CounterBackend.hpp
     Einsums/Profile/Server.hpp
+    Einsums/Profile/RequestHandlers.hpp
     Einsums/Profile/LogSink.hpp
     Einsums/Profile/Options.hpp
     Einsums/Profile/TickClock.hpp

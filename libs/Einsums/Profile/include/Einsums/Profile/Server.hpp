@@ -13,12 +13,15 @@
 
 #    include <Einsums/Profile/Consumer.hpp>
 #    include <Einsums/Profile/LogSink.hpp>
+#    include <Einsums/Profile/RequestHandlers.hpp>
 #    include <Einsums/Profile/StringTable.hpp>
 
 #    include <atomic>
 #    include <cstdint>
-#    include <functional>
+#    include <deque>
+#    include <mutex>
 #    include <string>
+#    include <string_view>
 #    include <unordered_map>
 #    include <vector>
 
@@ -33,7 +36,10 @@ EINSUMS_NAMESPACE_BEGIN(profile)
 /// On macOS, advertises via Bonjour/mDNS as "_einsums-profile._tcp".
 class EINSUMS_EXPORT Server {
   public:
-    Server(Consumer &consumer, StringTable &strings, std::string const &bind_addr = "127.0.0.1", uint16_t port = 19216);
+    /// @param handlers The request handlers and session sections libraries registered; read, never
+    ///        owned, and may outlive or predate the server.
+    Server(Consumer &consumer, StringTable &strings, RequestHandlers const &handlers, std::string const &bind_addr = "127.0.0.1",
+           uint16_t port = 19216);
     ~Server();
 
     Server(Server const &)            = delete;
@@ -44,13 +50,6 @@ class EINSUMS_EXPORT Server {
 
     /// Shut down the server, close all connections.
     void shutdown();
-
-    /// Request handler: method name → handler function.
-    /// Handler receives (params_json) and returns data_json string.
-    using RequestHandler = std::function<std::string(std::string const &)>;
-
-    /// Register a request handler for a given method name.
-    void register_handler(std::string const &method, RequestHandler handler);
 
     /// Whether the server is active.
     [[nodiscard]] auto is_running() const -> bool { return _listen_fd >= 0; }
@@ -65,8 +64,13 @@ class EINSUMS_EXPORT Server {
     /// Access the output message queue (for forwarding println output).
     LogMessageQueue &output_queue() { return _output_queue; }
 
-    /// Access the benchmark result queue (for forwarding benchmark_result events).
-    BenchmarkResultQueue &benchmark_queue() { return _benchmark_queue; }
+    /// Queue a message for every connected viewer: @p json_object (a JSON object, braces included)
+    /// with a ``"type"`` member of @p type added. Thread-safe. The oldest messages are dropped
+    /// past @ref kMaxPublished.
+    void publish(std::string_view type, std::string_view json_object);
+
+    /// Messages @ref publish holds for viewers before dropping the oldest.
+    static constexpr size_t kMaxPublished = 10000;
 
     /// Flush, then export the session to a JSON file the viewer loads with ``--load``.
     /// @param path Output file path.
@@ -108,12 +112,14 @@ class EINSUMS_EXPORT Server {
     /// Per-client receive buffer for incoming requests.
     std::unordered_map<int, std::string> _recv_buffers;
 
-    /// Registered request handlers.
-    std::unordered_map<std::string, RequestHandler> _request_handlers;
+    RequestHandlers const &_handlers;
 
-    LogMessageQueue      _log_queue;
-    LogMessageQueue      _output_queue;
-    BenchmarkResultQueue _benchmark_queue;
+    LogMessageQueue _log_queue;
+    LogMessageQueue _output_queue;
+
+    /// Lines @ref publish queued, each a complete JSON Lines record.
+    std::mutex              _published_mutex;
+    std::deque<std::string> _published;
 
 #    ifdef __APPLE__
     DNSServiceRef _mdns_ref = nullptr;
