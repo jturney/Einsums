@@ -61,17 +61,20 @@ def test_completion_covers_forwarded_commands():
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-def test_bash_completion_completes(tmp_path):
-    script = tmp_path / "einsums.bash"
-    script.write_text(bash(command_tree()))
+def test_bash_completion_completes():
+    script = bash(command_tree())
 
+    # The script goes to bash on stdin, as bytes: a Windows temp path pasted into the command
+    # loses its backslashes to bash's quoting, and a text-mode write turns every LF into CRLF,
+    # which bash reads as part of each command.
     def complete(*words):
         line = " ".join(["einsums", *words])
         probe = (
-            f"source {script}; COMP_WORDS=({line}); COMP_CWORD={len(words)}; "
-            '_einsums_complete; printf "%s\\n" "${COMPREPLY[@]}"'
+            f"{script}\nCOMP_WORDS=({line}); COMP_CWORD={len(words)}; "
+            '_einsums_complete; printf "%s\\n" "${COMPREPLY[@]}"\n'
         )
-        return subprocess.run(["bash", "-c", probe], capture_output=True, text=True, check=True).stdout.split()
+        result = subprocess.run(["bash", "-s"], input=probe.encode(), capture_output=True, check=True)
+        return result.stdout.decode().split()
 
     assert "bench" in complete("b") and "profiler" in complete("p")
     assert complete("bench", "tr") == ["trend"]
