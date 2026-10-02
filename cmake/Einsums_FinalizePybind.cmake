@@ -229,16 +229,36 @@ function(einsums_finalize_pybind)
     # The `einsums` command beside the executables, so `einsums bench ...` works with
     # build/bin on PATH. The package has no install step that could generate an entry
     # point, so the build writes the launcher. It locates the package relative to itself.
-    file(RELATIVE_PATH EINSUMS_LAUNCHER_PKG_REL "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}" "${CMAKE_BINARY_DIR}/lib")
-    configure_file(
-      "${CMAKE_SOURCE_DIR}/libs/Einsums/Python/tools/einsums.in" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/einsums" @ONLY
-      FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
-    )
-    if(WIN32)
-      # cmd.exe cannot run a shebang script; this hands it to the same interpreter.
-      file(TO_NATIVE_PATH "${Python_EXECUTABLE}" _einsums_python_native)
-      file(WRITE "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/einsums.cmd" "@\"${_einsums_python_native}\" \"%~dp0einsums\" %*\r\n")
+    # Under MSVC, Einsums_SetOutputPaths sets only the per-config output directories
+    # (build/<Config>/bin) and leaves the plain one empty, so each config gets its own copy.
+    if(MSVC)
+        set(_launcher_configs ${CMAKE_CONFIGURATION_TYPES})
+        if(NOT _launcher_configs)
+            set(_launcher_configs "${CMAKE_BUILD_TYPE}")
+        endif()
+        set(_launcher_dirs)
+        foreach(_cfg IN LISTS _launcher_configs)
+            string(TOUPPER "${_cfg}" _cfg_upper)
+            list(APPEND _launcher_dirs "${CMAKE_RUNTIME_OUTPUT_DIRECTORY_${_cfg_upper}}")
+        endforeach()
+    else()
+        set(_launcher_dirs "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
     endif()
+    if(WIN32)
+        # cmd.exe cannot run a shebang script; this hands it to the same interpreter.
+        file(TO_NATIVE_PATH "${Python_EXECUTABLE}" _einsums_python_native)
+        set(_einsums_cmd "@\"${_einsums_python_native}\" \"%~dp0einsums\" %*\r\n")
+    endif()
+    foreach(_launcher_dir IN LISTS _launcher_dirs)
+        file(RELATIVE_PATH EINSUMS_LAUNCHER_PKG_REL "${_launcher_dir}" "${CMAKE_BINARY_DIR}/lib")
+        configure_file(
+          "${CMAKE_SOURCE_DIR}/libs/Einsums/Python/tools/einsums.in" "${_launcher_dir}/einsums" @ONLY
+          FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+        )
+        if(WIN32)
+            file(WRITE "${_launcher_dir}/einsums.cmd" "${_einsums_cmd}")
+        endif()
+    endforeach()
     file(GLOB _py_helpers     CONFIGURE_DEPENDS "${_pkg_src}/*.py")
     file(GLOB _py_helper_pkgs CONFIGURE_DEPENDS "${_pkg_src}/*/*.py")
 
@@ -451,7 +471,8 @@ function(einsums_finalize_pybind)
     )
     install(PROGRAMS "${CMAKE_BINARY_DIR}/install-launcher/einsums" DESTINATION "${CMAKE_INSTALL_BINDIR}")
     if(WIN32)
-        install(PROGRAMS "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/einsums.cmd" DESTINATION "${CMAKE_INSTALL_BINDIR}")
+        file(WRITE "${CMAKE_BINARY_DIR}/install-launcher/einsums.cmd" "${_einsums_cmd}")
+        install(PROGRAMS "${CMAKE_BINARY_DIR}/install-launcher/einsums.cmd" DESTINATION "${CMAKE_INSTALL_BINDIR}")
     endif()
 
     list(LENGTH _modules _count)
