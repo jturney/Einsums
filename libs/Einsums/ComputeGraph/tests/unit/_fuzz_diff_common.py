@@ -66,6 +66,7 @@ Data-dependent branching is covered by the dedicated SCF/MP2 tests.
 
 from __future__ import annotations
 
+import collections
 import json
 import os
 import tempfile
@@ -111,6 +112,31 @@ _DTYPE_CAP = {"float32": 1e3, "complex64": 1e3, "float64": 1e8, "complex128": 1e
 # Defaults used by the non-dtype-parametrized modes (which run in float64).
 RTOL = 1e-5
 ATOL = 1e-5
+
+# The tolerances above scale with the result, but when an operator's terms
+# cancel (X - X^T of a symmetric X) the engine keeps about an ulp of the terms,
+# which the oracle, summing them first, does not. So the oracle records each
+# program's largest operator term, and comparisons floor atol at
+# _TERM_ULPS * eps * that term. Keyed by id(prog); the table keeps a reference
+# so the id stays unique.
+_TERM_ULPS = 8
+_TERM_SCALE = collections.OrderedDict()
+_TERM_SCALE_KEEP = 64
+
+
+def _note_term(prog_key, magnitude):
+    entry = _TERM_SCALE.get(prog_key)
+    if entry is not None and magnitude > entry[1]:
+        _TERM_SCALE[prog_key] = (entry[0], magnitude)
+
+
+def _term_atol(prog, dtype, atol):
+    """@p atol raised to the floor the program's largest operator term sets."""
+    entry = _TERM_SCALE.get(id(prog))
+    if entry is None or entry[0] is not prog:
+        return atol
+    eps = np.finfo(np.dtype(dtype) if dtype is not None else np.float64).eps
+    return max(atol, _TERM_ULPS * eps * entry[1])
 
 MAT_SHAPES = [(r, c) for r in DIMS for c in DIMS for _ in range(COPIES)]
 VEC_LENS = [d for d in DIMS for _ in range(COPIES)]
@@ -949,6 +975,17 @@ def _ref_write(ref, m, t, value, cast):
 
 
 def interp_np(stmts, m, v, t, dt=None):
+    """Interpret @p stmts over the numpy pools, recording its operator terms (see _TERM_SCALE)."""
+    key = id(stmts)
+    if key not in _TERM_SCALE or _TERM_SCALE[key][0] is not stmts:
+        _TERM_SCALE[key] = (stmts, 0.0)
+        while len(_TERM_SCALE) > _TERM_SCALE_KEEP:
+            _TERM_SCALE.popitem(last=False)
+    _TERM_SCALE.move_to_end(key)
+    _interp_np_stmts(stmts, m, v, t, dt, key)
+
+
+def _interp_np_stmts(stmts, m, v, t, dt, key):
     # When dt is given the oracle is kept in that precision: a Python-float
     # scalar times a float32 array would otherwise promote to float64, making
     # the oracle more accurate than the float32 graph and creating spurious
@@ -1040,13 +1077,18 @@ def interp_np(stmts, m, v, t, dt=None):
             opB = np.conj(opB) if cb else opB
             c_idx = list(spec.split("<-")[0].strip())
             product = patterns[spec][0] if spec in patterns else _MATMUL_SPELLINGS[spec]
-            base = apply_operator(op, c_idx, product(opA, opB))
+            terms = product(opA, opB)
+            if op is not None and terms.size:
+                _note_term(key, abs(ab) * float(np.max(np.abs(terms))))
+            base = apply_operator(op, c_idx, terms)
             _ref_write(Cref, m, t, ab * base + cpf * _ref_read(Cref, m, t), cast)
         elif k == "aperm":
             _, kind, op, a, src, cpf, C = s
             pool = m if kind == "m" else t
             letters = _APERM_LETTERS[kind]
             a = _dtype_scalar(a, np.asarray(pool[C]).dtype)
+            if op is not None and pool[src].size:
+                _note_term(key, abs(a) * float(np.max(np.abs(pool[src]))))
             pool[C] = cast(a * apply_operator(op, letters, pool[src]) + cpf * pool[C])
         elif k in ("dot", "dotc"):
             _, kind, out, A, B = s
@@ -1061,10 +1103,10 @@ def interp_np(stmts, m, v, t, dt=None):
         elif k == "loop":
             _, n, body = s
             for _ in range(n):
-                interp_np(body, m, v, t, dt)
+                _interp_np_stmts(body, m, v, t, dt, key)
         elif k == "cond":
             _, flag, then, els = s
-            interp_np(then if flag else els, m, v, t, dt)
+            _interp_np_stmts(then if flag else els, m, v, t, dt, key)
         else:  # pragma: no cover
             raise AssertionError(f"unknown opcode {k!r}")
 
@@ -1278,6 +1320,7 @@ def check_program(prog, m_arrays, v_arrays, t_arrays, label, dtype="float64"):
         interp_np(prog, om, ov, ot, dt)
     if not _usable(om, ov, ot, cap=cap):
         pytest.skip("oracle overflowed — numerically degenerate program")
+    atol = _term_atol(prog, dtype, atol)
 
     rm, rv, rt = _run_program(prog, m_arrays, v_arrays, t_arrays, f"{label}_raw", optimize=False)
     pm, pv, pt = _run_program(prog, m_arrays, v_arrays, t_arrays, f"{label}_opt", optimize=True)
@@ -1526,6 +1569,7 @@ def _build_with_scratch(prog, m_arrays, v_arrays, t_arrays, name):
 
 def _assert_pools_typed(got, oracle, prog, stage, dtype, extra=""):
     rtol, atol = _DTYPE_TOL[dtype]
+    atol = _term_atol(prog, dtype, atol)
     for kind, gs, os_ in zip("mvt", got, oracle):
         for idx in range(len(os_)):
             if not np.allclose(gs[idx], os_[idx], rtol=rtol, atol=atol):
@@ -1836,6 +1880,7 @@ def _build(prog, m, v, t, name):
 
 def _assert_pools(got, oracle, prog, label, extra="", dtype=None):
     rtol, atol = _DTYPE_TOL[dtype] if dtype is not None else (RTOL, ATOL)
+    atol = _term_atol(prog, dtype, atol)
     for kind, gs, os in zip("mvt", got, oracle):
         for idx in range(len(os)):
             if not np.allclose(gs[idx], os[idx], rtol=rtol, atol=atol):
@@ -3139,6 +3184,7 @@ __all__ = [
     'COPIES',
     '_DTYPE_TOL',
     '_DTYPE_CAP',
+    '_term_atol',
     'RTOL',
     'ATOL',
     'MAT_SHAPES',

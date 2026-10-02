@@ -176,3 +176,25 @@ def test_permute_fusion_redirect_clobbers_the_source_through_an_earlier_writer(l
             ("perm", 1.0, 0.0, A, _EAGER44),
             ("xeinsum", "ij <- ik ; kj", None, 1.0, ("m", _EAGER44), ("m", B), 0.0, ("m", C), False, False)]
     check_program_opt_level(prog, *_seed_arrays(np.random.default_rng(2)), "pf_redirect", level)
+
+
+@pytest.mark.parametrize("level", LEVELS)
+def test_cancelling_operator_terms_set_the_tolerance(level):
+    """R += P(ij) (S S^T) over a large symmetric S, whose terms cancel exactly.
+
+    numpy forms the antisymmetrized product first and gets zero; the engine
+    accumulates each term into R in turn and keeps about one ulp of S S^T, which
+    at 1e12 is far outside a tolerance scaled to R. The comparison has to scale
+    with the terms (seed 990 of the rich corpus hit this), and only so far that
+    an O(1) error still fails.
+    """
+    R, S = MAT_BY_SHAPE[(3, 3)][0], MAT_BY_SHAPE[(3, 3)][1]
+    m, v, t = _seed_arrays(np.random.default_rng(3))
+    big = 1e6 * m[S]
+    m[S] = big + big.T
+    op = ([["i"], ["j"]], 0, ["i", "j"])
+    prog = [("xeinsum", "ij <- ik ; jk", op, 0.9909, ("m", S), ("m", S), 1.0, ("m", R), False, False)]
+    check_program_opt_level(prog, m, v, t, "cancel", level)
+
+    floor = _term_atol(prog, "float64", _DTYPE_TOL["float64"][1])
+    assert _DTYPE_TOL["float64"][1] < floor < 0.1
