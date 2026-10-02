@@ -142,9 +142,7 @@ struct ZipIter final {
     /**
      * @brief Check whether any of the iterators are equal.
      *
-     * This uses an or mask to make sure that we don't go past any of the ends of any of the
-     * iterators. If we used an and mask and we compared with the iterator containing the ends
-     * of the containers, then comparison will fail if any iterator is not finished.
+     * Any one equal is enough, so iteration stops at the shortest container.
      *
      * @versionadded{1.1.0}
      */
@@ -155,9 +153,7 @@ struct ZipIter final {
     /**
      * @brief Check whether all of the iterators are not equal.
      *
-     * This uses an and mask to make sure that we don't go past any of the ends of any of the
-     * iterators. If we used an or mask and we compared with the iterator containing the ends
-     * of the containers, then comparison will fail if any iterator is not finished.
+     * The negation of operator==, so iteration stops at the shortest container.
      *
      * @versionadded{1.1.0}
      */

@@ -33,10 +33,7 @@ constexpr void for_sequence(std::integer_sequence<T, S...>, F f) {
 /**
  * @brief Provides compile-time for loop semantics.
  *
- * Loops from 0 to n-1. This function expands as if it were a loop, but it does its
- * evaluation at compile time if possible. The functor is called with a
- * @c std::integral_constant on each iteration, whose value type is the same as the
- * type of @c n . Here is an example of how one might use this.
+ * Calls @p f with a @c std::integral_constant for each of 0 to n-1, unrolled at compile time:
  *
  * @code
  * auto index_lists = std::make_tuple(Indices{index::i, index::j, index::k}, Indices{index::i, index::k, index::j});
@@ -47,9 +44,7 @@ constexpr void for_sequence(std::integer_sequence<T, S...>, F f) {
  *     std::get<(size_t) n>(index_lists), A, Indices{index::i, index::j, index::k}, B); });
  * @endcode
  *
- * This code will go through and compute the einsum with several different layouts of
- * indices. Note that we need to cast the argument to the lambda to @c size_t so that
- * it can be consumed by @c std::get .
+ * The argument is cast to @c size_t for @c std::get.
  *
  * @tparam n the number of iterations to perform
  * @tparam F the functor type to call
