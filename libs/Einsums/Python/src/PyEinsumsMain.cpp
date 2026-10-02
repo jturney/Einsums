@@ -240,6 +240,7 @@ PYBIND11_MODULE(_core, m) {
                 d["key"]              = opt.key;
                 d["attribute"]        = rc_attribute_name(opt.name);
                 d["negated_name"]     = opt.negated_name;
+                d["env"]              = opt.env_name;
                 d["help"]             = opt.help;
                 d["category"]         = opt.category;
                 d["value_name"]       = opt.value_name;

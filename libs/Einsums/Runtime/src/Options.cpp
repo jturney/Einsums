@@ -10,6 +10,11 @@
 EINSUMS_NAMESPACE_BEGIN()
 
 int register_Einsums_Runtime_options() {
+    // The environment prefix is a fact about the library, not about one start-up, so it is
+    // set where the options register: the registry can then name each option's variable
+    // (EINSUMS_LOG_LEVEL) before initialize(), for `einsums options` and the Python layer.
+    // RuntimeConfiguration::parse_command_line sets the same value again.
+    cl::Registry::instance().set_env_prefix("EINSUMS");
     cl::register_option(option::InstallSignalHandlers);
     cl::register_option(option::AttachDebugger);
     cl::register_option(option::DiagnosticsOnTerminate);

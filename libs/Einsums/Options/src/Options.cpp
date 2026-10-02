@@ -490,6 +490,7 @@ std::vector<RegisteredOption> registered_options() {
         RegisteredOption ro;
         ro.name             = entry.primary->long_name;
         ro.key              = entry.key;
+        ro.env_name         = entry.primary->effective_env_name();
         ro.help             = entry.primary->help;
         ro.category         = entry.primary->category != nullptr ? entry.primary->category->name : std::string{};
         ro.kind             = entry.kind;

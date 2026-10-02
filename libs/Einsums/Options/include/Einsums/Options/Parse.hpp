@@ -50,6 +50,9 @@ struct RegisteredOption {
     std::string key;
     /// The `--no-` spelling, for a flag; empty for a value option.
     std::string negated_name;
+    /// The environment variable the runtime reads for it (derived from @ref name unless the
+    /// descriptor names its own); empty for an option that opts out of the environment.
+    std::string env_name;
     /// The `--help` description and heading.
     std::string help;
     std::string category;
