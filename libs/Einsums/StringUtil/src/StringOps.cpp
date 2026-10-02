@@ -16,8 +16,7 @@ std::string difference(std::string const &st1, std::string const &st2) {
     for (char i : st2) {
         size_t index = out.find(i);
         if (index < out.size()) {
-            // One character. erase(index) alone removes everything from index to the end, which
-            // emptied the result on the first match and made any two index strings look alike.
+            // One character: erase(index) alone would erase to the end.
             out.erase(index, 1);
         }
     }
