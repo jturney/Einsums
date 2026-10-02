@@ -127,12 +127,19 @@ inline void progress_init(int total) {
 /// and a progress bar to stderr.
 ///
 /// Output format:
-///   [label N=size] Time: avg us  min: ...  max: ...  stddev: ...  cv: ...%  warmup: ... us (Nx)
-inline void report(char const *label, int N, TimingStats const &s) {
+///   [label N=size] Time: avg us  min: ...  max: ...  stddev: ...  cv: ...%  warmup: ... us (Nx)  metric: name
+///
+/// The metric is printed when given, so a build without the profiler server, where
+/// `einsums bench` falls back to reading this line, still records which timing it was.
+inline void report(char const *label, int N, TimingStats const &s, char const *metric = nullptr) {
     double cv      = (s.avg > 0) ? (s.stddev / s.avg * 100.0) : 0.0;
     double w_ratio = (s.avg > 0) ? (s.warmup / s.avg) : 0.0;
-    std::printf("[%s N=%d] Time: %.2f us  min: %.2f  max: %.2f  stddev: %.2f  cv: %.1f%%  warmup: %.2f us (%.1fx)\n", label, N, s.avg,
-                s.min, s.max, s.stddev, cv, s.warmup, w_ratio);
+    std::printf("[%s N=%d] Time: %.2f us  min: %.2f  max: %.2f  stddev: %.2f  cv: %.1f%%  warmup: %.2f us (%.1fx)", label, N, s.avg, s.min,
+                s.max, s.stddev, cv, s.warmup, w_ratio);
+    if (metric != nullptr) {
+        std::printf("  metric: %s", metric);
+    }
+    std::printf("\n");
     std::fflush(stdout);
 
     int total = bench_total();
@@ -190,8 +197,8 @@ void fill_spd(einsums::Tensor<T, 2> &A) {
 /// @param N      Problem size (for the human-readable report line)
 /// @param stats  Timing statistics from time_us()
 inline void publish_benchmark_result(char const *label, char const *metric, int N, TimingStats const &stats) {
-    // 1. Print human-readable output to stdout (backward compatibility)
-    report(label, N, stats);
+    // 1. Print human-readable output to stdout, the fallback when no server is listening
+    report(label, N, stats, metric);
 
     // 2. Send structured result to profiler server
 #if defined(EINSUMS_HAVE_PROFILER)

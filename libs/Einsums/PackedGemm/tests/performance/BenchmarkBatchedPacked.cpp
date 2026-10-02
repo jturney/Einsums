@@ -24,6 +24,8 @@
 
 #include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
+#include <Einsums/Performance.hpp>
+#include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #ifdef _OPENMP
@@ -34,6 +36,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -84,9 +87,18 @@ double best_of(int trials, size_t reps, F &&fn) {
     return best;
 }
 
+/// A best-of timing (seconds) into the benchmark database, in microseconds. The best of
+/// several trials is the figure this file reports, so it stands as the mean, minimum and maximum.
+void publish_best(char const *label, char const *metric, int n, double seconds, int reps) {
+    double const                   us = seconds * 1e6;
+    performance::TimingStats const stats{us, us, us, 0.0, 0.0, reps};
+    performance::publish_benchmark_result(label, metric, n, stats);
+}
+
 } // namespace
 
 TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_gemm][batched]") {
+    LabeledSection0(); // the zone the GFLOP/s annotations below attach to
     // The particle-particle ladder, per tile: C[i,j,a,b] += A[i,j,e,f] B[e,f,a,b]
     // with an occupied block of 2 and a virtual block of 4 -- the shape tiled
     // expansion emits for a symmetry-blocked CCSD.
@@ -266,6 +278,15 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
                            t * 1e6 / static_cast<double>(NT), t_per_call / t);
     };
 
+    // One label per tile shape (the env overrides change it); N is the tiles per group and
+    // every metric is the time for the whole group.
+    std::string const label = fmt::format("batched-packed ccsd-ladder ob={} vb={}", ob, vb);
+    for (auto const &[metric, t] : {std::pair{"t_per_call", t_per_call}, std::pair{"t_topology", t_topology},
+                                    std::pair{"t_prepared", t_prepared}, std::pair{"t_batched", t_batched}}) {
+        ProfileAnnotate("gflops", flops / t / 1e9);
+        publish_best(label.c_str(), metric, static_cast<int>(NT), t, 20);
+    }
+
     WARN(fmt::format("{} tiles per group, occ block {}, vir block {}{}{}{}{}"
                      "\n\n  prepared-vs-topology cache (A0 -> A)     : {:5.2f}x on the plan-preparation step"
                      "\n  A captures {:4.1f}% of the gap B closes; B's remaining edge over A is {:4.1f}x",
@@ -313,6 +334,7 @@ TEST_CASE("OpenMP region cost vs small-contraction work", "[performance][packed_
             }
         });
         out += fmt::format("  empty parallel region, {} threads : {:8.3f} us\n", nt, t * 1e6);
+        publish_best("omp-region empty", "t_region", nt, t, 20000);
     }
 
     // Same, but the team sleeps in between (a serial gap), which is what an
@@ -336,6 +358,7 @@ TEST_CASE("OpenMP region cost vs small-contraction work", "[performance][packed_
         });
         out +=
             fmt::format("  region after a serial gap, {} threads : {:8.3f} us  (gap alone {:8.3f} us)\n", nt, (t - gap) * 1e6, gap * 1e6);
+        publish_best("omp-region after-serial-gap", "t_region", nt, t - gap, 2000);
     }
     // Break-even: a region only pays for itself once the work it distributes takes
     // longer than entering it. At ~20 GFLOP/s achievable on one core, a 20 us

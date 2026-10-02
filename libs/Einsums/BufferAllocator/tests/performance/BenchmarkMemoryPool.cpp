@@ -25,6 +25,7 @@
 // hand back memory whose first write faults.
 
 #include <Einsums/BufferAllocator/MemoryPool.hpp>
+#include <Einsums/Performance.hpp>
 
 #if defined(EINSUMS_WINDOWS)
 #    include <malloc.h>
@@ -34,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -109,12 +111,27 @@ Timing fill(size_t count, size_t bytes, std::function<void *(size_t)> const &all
     return t;
 }
 
-void report(char const *label, size_t count, size_t bytes, Timing const &t) {
+/// Into the benchmark database as the cost per block of each phase, under
+/// `memory-fill <allocator> x<count>[ touched] N=<MiB per block>`. A single fill has no spread,
+/// so min and max are the mean; `reps` records how many blocks it averaged over.
+void publish_phase(std::string const &name, char const *metric, size_t count, size_t bytes, double ms) {
+    double const                   us = ms * 1000.0 / static_cast<double>(count);
+    performance::TimingStats const stats{us, us, us, 0.0, 0.0, static_cast<int>(count)};
+    performance::publish_benchmark_result(name.c_str(), metric, static_cast<int>(bytes / kMiB), stats);
+}
+
+void report(char const *label, size_t count, size_t bytes, bool touched, Timing const &t) {
     double const per_alloc_us = t.alloc_ms * 1000.0 / static_cast<double>(count);
     std::printf("  %-24s alloc %8.2f ms (%7.2f us/block)  touch %8.2f ms  free %8.2f ms\n", label, t.alloc_ms, per_alloc_us, t.touch_ms,
                 t.free_ms);
     std::fflush(stdout);
-    (void)bytes;
+
+    std::string const name = std::string{"memory-fill "} + label + " x" + std::to_string(count) + (touched ? " touched" : "");
+    publish_phase(name, "t_alloc", count, bytes, t.alloc_ms);
+    if (touched) {
+        publish_phase(name, "t_touch", count, bytes, t.touch_ms);
+    }
+    publish_phase(name, "t_free", count, bytes, t.free_ms);
 }
 
 // The platform's own aligned allocator, which is what einsums called before
@@ -144,9 +161,9 @@ void run_regime(size_t count, size_t bytes, bool do_touch) {
     std::printf("\n%zu blocks x %zu MiB (%zu MiB live)%s\n", count, bytes / kMiB, count * bytes / kMiB,
                 do_touch ? ", with first touch" : "");
 
-    report(kSystemLabel, count, bytes, fill(count, bytes, system_alloc, system_free, do_touch));
+    report(kSystemLabel, count, bytes, do_touch, fill(count, bytes, system_alloc, system_free, do_touch));
 
-    report("mimalloc (default heap)", count, bytes,
+    report("mimalloc (default heap)", count, bytes, do_touch,
            fill(count, bytes, [](size_t n) { return memory::aligned_alloc(n); }, [](void *p) { memory::aligned_free(p); }, do_touch));
 
     {
@@ -156,10 +173,10 @@ void run_regime(size_t count, size_t bytes, bool do_touch) {
         auto       carve   = [&pool](size_t n) { return pool.allocate(n); };
         auto       release = [&pool](void *p) { pool.deallocate(p); };
 
-        report("pool (cold arena)", count, bytes, fill(count, bytes, carve, release, do_touch));
+        report("pool (cold arena)", count, bytes, do_touch, fill(count, bytes, carve, release, do_touch));
         // Second pass over the same arena: the pages are committed and warm,
         // which is the state every chunk after the first sees.
-        report("pool (warm arena)", count, bytes, fill(count, bytes, carve, release, do_touch));
+        report("pool (warm arena)", count, bytes, do_touch, fill(count, bytes, carve, release, do_touch));
         if (pool.arenas() != 1) {
             std::printf("  NOTE: pool grew to %zu arenas\n", pool.arenas());
         }

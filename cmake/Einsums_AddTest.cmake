@@ -410,24 +410,38 @@ endfunction(einsums_add_python_unit_test)
 #:    Define a performance test under ``Tests.Performance.<subcategory>`` and wire its pseudo‑target.
 #:
 #:    Forwards to ``einsums_add_test_and_deps_test`` with ``RUN_SERIAL`` and
-#:    ``PERFORMANCE_TESTING`` enabled, then sets label ``PERFORMANCE_ONLY``.
+#:    ``PERFORMANCE_TESTING`` enabled, then sets the labels ``PERFORMANCE_ONLY`` and
+#:    ``SUITE_<SUITE>``.
+#:
+#:    ``SUITE`` is required: ``contraction`` for contractions and the operations they are
+#:    built from (BLAS, LAPACK, permutes, dispatch), ``infrastructure`` for everything around
+#:    them (allocators, the profiler, task pools, executors, graph overhead). ``einsums bench
+#:    run --suite`` selects by it, and runs the contraction suite by default.
 #:
 #:    **Signature**
-#:    ``einsums_add_performance_test(<subcategory> <name> [ARGS ...])``
+#:    ``einsums_add_performance_test(<subcategory> <name> SUITE <contraction|infrastructure> [ARGS ...])``
 #:
 #:    **Example**
 #:    .. code-block:: cmake
 #:
-#:       einsums_add_performance_test(Benchmarks gemm_perf EXECUTABLE gemm_bench TIMEOUT 600)
+#:       einsums_add_performance_test(Benchmarks gemm_perf SUITE contraction EXECUTABLE gemm_bench TIMEOUT 600)
 function(einsums_add_performance_test subcategory name)
+  cmake_parse_arguments(_perf "" "SUITE" "" ${ARGN})
+  if(NOT _perf_SUITE MATCHES "^(contraction|infrastructure)$")
+    message(FATAL_ERROR "einsums_add_performance_test(${name}): SUITE must be contraction or infrastructure, "
+                        "got '${_perf_SUITE}'")
+  endif()
+  string(TOUPPER "${_perf_SUITE}" _perf_suite_label)
+
   einsums_add_test_and_deps_test(
-    "Performance" "${subcategory}" ${name} ${ARGN} RUN_SERIAL PERFORMANCE_TESTING
+    "Performance" "${subcategory}" ${name} ${_perf_UNPARSED_ARGUMENTS} RUN_SERIAL PERFORMANCE_TESTING
   )
   einsums_set_test_properties("Tests.Performance.${subcategory}.${name}" "PERFORMANCE_ONLY")
+  set_property(TEST "Tests.Performance.${subcategory}.${name}" APPEND PROPERTY LABELS "SUITE_${_perf_suite_label}")
 
   # Performance tests are built with "all" but excluded from default ctest.
   # Run via:  ctest --test-dir build -L PERFORMANCE_ONLY
-  #       or: python -m devtools.benchmarks run --build-dir build
+  #       or: build/bin/einsums bench run
   set_tests_properties(
     "Tests.Performance.${subcategory}.${name}" PROPERTIES DISABLED TRUE
   )

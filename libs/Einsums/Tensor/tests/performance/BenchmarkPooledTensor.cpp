@@ -17,11 +17,13 @@
 // Same regime as the allocator benchmark: monotonic fill, every tensor held
 // live, multi-megabyte shapes.
 
+#include <Einsums/Performance.hpp>
 #include <Einsums/Tensor/PooledTensor.hpp>
 
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -36,9 +38,16 @@ double elapsed_ms(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 }
 
-void report(char const *label, size_t count, double ms) {
-    std::printf("  %-28s %8.2f ms (%7.2f us/tensor)\n", label, ms, ms * 1000.0 / static_cast<double>(count));
+/// One timed pass of `count` constructions of `mib`-MiB tensors, into the benchmark database as
+/// the cost per tensor (`tensor-construct <case> x<count> N=<mib>`). A single pass has no spread,
+/// so min and max are the mean; `reps` records how many tensors it averaged over.
+void report(char const *label, size_t count, size_t mib, double ms) {
+    double const us_per_tensor = ms * 1000.0 / static_cast<double>(count);
+    std::printf("  %-28s %8.2f ms (%7.2f us/tensor)\n", label, ms, us_per_tensor);
     std::fflush(stdout);
+    performance::TimingStats const stats{us_per_tensor, us_per_tensor, us_per_tensor, 0.0, 0.0, static_cast<int>(count)};
+    std::string const              name = std::string{"tensor-construct "} + label + " x" + std::to_string(count);
+    performance::publish_benchmark_result(name.c_str(), "t_construct", static_cast<int>(mib), stats);
 }
 
 void run_regime(size_t count, size_t mib) {
@@ -57,7 +66,7 @@ void run_regime(size_t count, size_t mib) {
         for (size_t i = 0; i < count; i++) {
             held.push_back(std::make_unique<RuntimeTensor<double>>("owned", dims));
         }
-        report("RuntimeTensor (owned)", count, elapsed_ms(start));
+        report("RuntimeTensor (owned)", count, mib, elapsed_ms(start));
     }
 
     {
@@ -78,7 +87,7 @@ void run_regime(size_t count, size_t mib) {
         for (size_t i = 0; i < count; i++) {
             held.push_back(carve(false));
         }
-        report("pooled empty (cold arena)", count, elapsed_ms(start));
+        report("pooled empty (cold arena)", count, mib, elapsed_ms(start));
         held.clear();
 
         held.reserve(count);
@@ -86,7 +95,7 @@ void run_regime(size_t count, size_t mib) {
         for (size_t i = 0; i < count; i++) {
             held.push_back(carve(false));
         }
-        report("pooled empty (warm arena)", count, elapsed_ms(start));
+        report("pooled empty (warm arena)", count, mib, elapsed_ms(start));
         held.clear();
 
         held.reserve(count);
@@ -94,7 +103,7 @@ void run_regime(size_t count, size_t mib) {
         for (size_t i = 0; i < count; i++) {
             held.push_back(carve(true));
         }
-        report("pooled zeros (warm arena)", count, elapsed_ms(start));
+        report("pooled zeros (warm arena)", count, mib, elapsed_ms(start));
 
         if (pool.arenas() != 1) {
             std::printf("  NOTE: pool grew to %zu arenas\n", pool.arenas());

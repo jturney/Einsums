@@ -9,5 +9,5 @@ foreach(test ${BufferAllocatorPerfTests})
   get_filename_component(TestName ${test} NAME_WE)
 
   einsums_add_executable(${TestName}_test INTERNAL_FLAGS SOURCES ${test} NOINSTALL)
-  einsums_add_performance_test("Modules.Einsums.BufferAllocator" ${TestName})
+  einsums_add_performance_test("Modules.Einsums.BufferAllocator" ${TestName} SUITE infrastructure)
 endforeach()

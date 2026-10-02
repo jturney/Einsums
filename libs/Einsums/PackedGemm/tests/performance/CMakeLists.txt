@@ -21,6 +21,6 @@ foreach(test ${PackedGemmPerfTests})
   )
 
   einsums_add_performance_test(
-    "Modules.PackedGemm" ${TestName}
+    "Modules.PackedGemm" ${TestName} SUITE contraction
   )
 endforeach()

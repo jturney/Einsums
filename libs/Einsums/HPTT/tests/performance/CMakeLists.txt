@@ -12,5 +12,5 @@ foreach(test ${HPTTPerfTests})
   get_filename_component(TestName ${test} NAME_WE)
 
   einsums_add_executable(${TestName}_test INTERNAL_FLAGS SOURCES ${test} NOINSTALL)
-  einsums_add_performance_test("Modules.HPTT" ${TestName})
+  einsums_add_performance_test("Modules.HPTT" ${TestName} SUITE contraction)
 endforeach()

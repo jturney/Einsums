@@ -15,6 +15,6 @@ foreach(test ${TaskPoolPerfTests})
   )
 
   einsums_add_performance_test(
-    "Modules.Einsums.TaskPool" ${TestName}
+    "Modules.Einsums.TaskPool" ${TestName} SUITE infrastructure
   )
 endforeach()

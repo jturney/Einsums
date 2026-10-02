@@ -18,5 +18,5 @@ foreach(test ${ProfilePerfTests})
     NOINSTALL
   )
 
-  einsums_add_performance_test("Modules.Profile" ${TestName})
+  einsums_add_performance_test("Modules.Profile" ${TestName} SUITE infrastructure)
 endforeach()

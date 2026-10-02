@@ -9,5 +9,5 @@ foreach(test ${TensorAlgebraPerfTests})
   get_filename_component(TestName ${test} NAME_WE)
 
   einsums_add_executable(${TestName}_test INTERNAL_FLAGS SOURCES ${test} NOINSTALL)
-  einsums_add_performance_test("Modules.TensorAlgebra" ${TestName})
+  einsums_add_performance_test("Modules.TensorAlgebra" ${TestName} SUITE contraction)
 endforeach()

@@ -23,6 +23,7 @@
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 
 #include <omp.h>
+#include <string_view>
 
 #include <Einsums/Testing.hpp>
 
@@ -95,5 +96,11 @@ EINSUMS_TEST_CASE("Bench GenericSmall: batched contraction", "[TensorAlgebra][be
         size_t const flops = 2 * elems * static_cast<size_t>(n);
         fmt::println("[GenericSmall] {:>10d} {:>12} {:>12d} {:>12.3f} {:>14.2f}", elems, route_name(route), flops, t.avg,
                      t.avg * 1000.0 / static_cast<double>(elems));
+
+        // Into the benchmark database too, with the route alongside: a row whose route
+        // changes is a different measurement, not a regression of the same one.
+        ProfileAnnotate("route", std::string_view{route_name(route)});
+        ProfileAnnotate("threads", static_cast<int64_t>(omp_get_max_threads()));
+        publish_benchmark_result("generic-small batched", "t_einsum", n, t);
     }
 }
