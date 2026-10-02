@@ -27,9 +27,7 @@
 #    include <Einsums/BLASVendor/Vendor.hpp>
 #endif
 
-// The strided-batched CPU fallback needs BLASVendor unconditionally
-// (the CUDA/HIP branches use cuBLAS/hipBLAS directly, but we still
-// ship the non-GPU fallback body so mock builds compile cleanly).
+// The CPU fallback for strided batches needs BLASVendor.
 #if !defined(EINSUMS_HAVE_CUDA) && !defined(EINSUMS_HAVE_HIP) && !defined(EINSUMS_HAVE_MPS)
 // Already covered by the mock include above.
 #elif defined(EINSUMS_HAVE_MPS)
@@ -145,27 +143,10 @@ void zgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, std::compl
 // ===========================================================================
 // Strided-batched GEMM.
 //
-// On CUDA/HIP: one `{cublas,hipblas}?gemmStridedBatched` call handles
-// the entire batch; the GPU runtime pipelines matrix launches and
-// avoids per-call pointer-array construction.
+// One `?gemmStridedBatched` call on CUDA/HIP; elsewhere the CPU `?gemm_batch` on computed pointers.
 //
-// On CPU / mock / MPS: fall back to the pointer-array CPU
-// `blas::vendor::?gemm_batch` by computing pointer arrays from the
-// base + stride info. Result is identical; performance matches the
-// non-batched path because there's no GPU to exploit.
-//
-// TODO: Apple MPS has native batched matmul via
-// `MPSMatrixMultiplication` (`batchStart` / `batchSize`) and
-// `MPSNDArrayMatrixMultiplication` (macOS 13+). Replacing the MPS
-// fall-through with a real MPS batched dispatch would give Apple
-// Silicon users GPU-accelerated batching without them having to
-// rebuild against CUDA/HIP. Blockers: MPS expects row-major storage
-// so the col-major-batch-last layout needs a thin wrapper, and MPS
-// doubles generally round-trip to CPU anyway, so float32 is the
-// first target.
-//
-// Pattern shared across all dtypes, kept inline rather than factored
-// into a helper because each type has its own cuBLAS entry point.
+// TODO: MPS has native batched matmul (MPSMatrixMultiplication batchStart/batchSize); it needs a
+// row-major wrapper, and float32 first, since MPS doubles go to the CPU anyway.
 // ===========================================================================
 
 namespace {
@@ -347,20 +328,8 @@ EINSUMS_EXPORT void gemv<double>(char trans, int64_t m, int64_t n, double alpha,
 // ===========================================================================
 // BLAS Level 1: element-wise operations on device memory.
 //
-// These used to call ::einsums::blas::vendor::* unconditionally, on every
-// backend. That was wrong in the two ways that matter:
-//
-//   * On CUDA/HIP the pointers are device pointers (the ComputeGraph executor
-//     swaps a tensor's data pointer to its device shadow before dispatch), so a
-//     host BLAS call on them is a segfault, not a slow path. The old comment
-//     here claimed the data was "accessible on all backends, with unified
-//     memory on MPS and shadow memory on CUDA/HIP/mock" - shadow memory on
-//     CUDA is cudaMalloc'd device memory and is not host-accessible.
-//   * The CUDA/HIP branches of this file do not even include BLASVendor, so
-//     the code could not compile once EINSUMS_HAVE_CUDA was defined.
-//
-// On MPS and mock the host fallback is correct: MPS is unified memory and the
-// mock "device" is plain malloc.
+// On CUDA/HIP these are device pointers, so host BLAS would segfault. The host fallback is right
+// only on MPS (unified memory) and the mock (malloc).
 // ===========================================================================
 
 template <>
@@ -427,9 +396,7 @@ EINSUMS_EXPORT void axpby<double>(int64_t n, double alpha, double const *x, int6
     axpy<double>(n, alpha, x, incx, y, incy);
 }
 
-// dot and nrm2 return a scalar to the host. cuBLAS/hipBLAS default to
-// CUBLAS_POINTER_MODE_HOST, under which these calls write through a host
-// pointer and synchronize before returning, so no explicit sync is needed.
+// In the default host pointer mode, dot and nrm2 synchronize before returning.
 template <>
 EINSUMS_EXPORT float dot<float>(int64_t n, float const *x, int64_t incx, float const *y, int64_t incy) {
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;

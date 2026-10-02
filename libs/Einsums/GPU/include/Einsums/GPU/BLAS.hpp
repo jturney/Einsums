@@ -41,15 +41,8 @@ EINSUMS_EXPORT void gemm(char transa, char transb, int64_t m, int64_t n, int64_t
                          int64_t ldb, T beta, T *c, int64_t ldc);
 
 // ===========================================================================
-// Strided-batched GEMM: N independent 2D GEMMs with matrices stored
-// contiguously in memory with a uniform stride between them. Maps to
-// cublasDgemmStridedBatched / hipblasDgemmStridedBatched on discrete
-// GPUs; on CPU/mock builds, falls through to a loop over the CPU
-// gemm_batch wrapper with pointers computed from base + i*stride.
-//
-// Compared to the pointer-array form (not yet wrapped here), strided
-// batching avoids per-call pointer-array construction and allows the
-// GPU runtime to schedule the whole batch as one work unit.
+// Strided-batched GEMM: N GEMMs at a uniform stride. cuBLAS/hipBLAS strided-batched on GPUs; the
+// CPU gemm_batch with computed pointers elsewhere.
 // ===========================================================================
 
 EINSUMS_EXPORT void sgemm_strided_batched(char transa, char transb, int64_t m, int64_t n, int64_t k, float alpha, float const *a,

@@ -21,9 +21,7 @@ EINSUMS_NAMESPACE_BEGIN(gpu::solver)
 
 // --- Symmetric/Hermitian eigenvalue decomposition ---
 
-/// Symmetric eigenvalue: A → eigenvectors, W → eigenvalues.
-/// jobz: 'V' = compute eigenvectors, 'N' = eigenvalues only.
-/// uplo: 'U' = upper, 'L' = lower triangle.
+/// Symmetric eigensolve: A becomes the eigenvectors (jobz 'V') and W the eigenvalues.
 template <typename T>
 EINSUMS_EXPORT int syev(char jobz, char uplo, int64_t n, T *A, int64_t lda, T *W);
 

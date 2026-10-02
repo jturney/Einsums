@@ -95,12 +95,8 @@ int read_dev_info(DeviceScratch const &info) {
     return host_info;
 }
 
-/// Copy a device pivot array (cuSOLVER uses int) into the caller's int64_t
-/// buffer.
-///
-/// Note the asymmetry in this API: the matrices are device pointers but `ipiv`
-/// is host memory - see the tests in libs/Einsums/GPU/tests/unit/Runtime.cpp,
-/// which pass a stack array. So the pivots have to come back across the bus.
+/// Copy device pivots (int) into the caller's int64_t buffer, which is host memory although the
+/// matrices are on the device.
 void pivots_to_host(DeviceScratch const &dev_ipiv, int64_t *ipiv, int64_t count) {
     if (count <= 0) {
         return;

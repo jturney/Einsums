@@ -45,17 +45,8 @@ namespace {
 
 /// Page-aligned "device" allocation for the mock-discrete backend.
 ///
-/// The point is that a host dereference must FAULT. A plain malloc'd mock
-/// pointer is host-readable, so code that wrongly treats a device pointer as a
-/// host pointer - a CPU BLAS call on a device buffer, or the ComputeGraph
-/// fallback running its CPU lambda while pointers are still swapped to shadows
-/// - silently computes the right answer under the mock and segfaults on CUDA.
-/// That asymmetry is exactly what let those bugs sit unnoticed.
-///
-/// So the region is mapped PROT_NONE and only made accessible to the explicit
-/// transfer entry points (memcpy_*_to_*, device_memset), which unprotect it for
-/// the duration of the copy. Everything else touching it takes SIGSEGV at the
-/// offending instruction, where a debugger can name the culprit.
+/// Mapped PROT_NONE so a host dereference faults, as it would on CUDA. Only the transfer entry
+/// points (memcpy_*_to_*, device_memset) unprotect it, for the duration of the copy.
 ///
 /// Layout, one mmap per allocation:
 ///   [ guard page ][ payload pages (PROT_NONE at rest) ][ guard page ]
@@ -72,9 +63,7 @@ std::size_t mock_page_size() {
     return pagesize;
 }
 
-/// Header lives in the last bytes of the leading guard page, so the payload
-/// stays page-aligned (device allocators are page-aligned in practice, and
-/// alignment assumptions in the tensor layer would otherwise trip).
+/// The header sits at the end of the leading guard page, so the payload stays page-aligned.
 MockDiscreteHeader *mock_header(void *payload) {
     auto *p = static_cast<unsigned char *>(payload);
     return reinterpret_cast<MockDiscreteHeader *>(p - sizeof(MockDiscreteHeader));
@@ -89,9 +78,7 @@ void mock_set_payload_prot(void *payload, int prot) {
     }
 }
 
-/// Live mock allocations, so MockDeviceKernelScope can unprotect all of them.
-/// A device kernel may touch any device buffer, and the mock has no way to know
-/// which, so the scope is all-or-nothing.
+/// Live mock allocations, which MockDeviceKernelScope unprotects all at once.
 std::mutex &mock_registry_mutex() {
     static std::mutex m;
     return m;
@@ -156,9 +143,7 @@ expected<void *, GpuError> device_malloc(size_t bytes) {
             return unexpected(GpuError{fmt::format("mock-discrete mmap({} bytes) failed", bytes), -1});
 
         auto *payload_ptr = static_cast<unsigned char *>(base) + pagesize;
-        // Header sits at the tail of the leading guard page, which must stay
-        // readable/writable for us; the guard property that matters is that the
-        // PAYLOAD faults, and that overruns off either end land outside it.
+        // The guard page holding the header stays writable; it is the payload that must fault.
         MockDiscreteHeader *h = reinterpret_cast<MockDiscreteHeader *>(payload_ptr - sizeof(MockDiscreteHeader));
         h->base               = base;
         h->length             = length;
@@ -267,9 +252,7 @@ void device_memset(void *ptr, int value, size_t bytes) {
 
 void device_synchronize() {
 #if defined(EINSUMS_HAVE_CUDA)
-    // Nothing was ever queued when there is no device, so there is nothing to
-    // wait for. Raising here would make a bare "flush the GPU" call fatal on a
-    // driverless machine.
+    // Without a device nothing was queued.
     if (!gpu_available()) {
         return;
     }
@@ -323,11 +306,7 @@ size_t available_device_memory() {
         return override_val;
 
 #if defined(EINSUMS_HAVE_CUDA)
-    // A query must answer, not raise. This used to gpu_catch the call, so on a
-    // machine with no usable device it threw out of a function whose whole job
-    // is to report a budget - and the optimizer passes that ask for that budget
-    // run on every graph, so a CUDA-enabled binary on a driverless node died
-    // inside an ordinary CPU workload.
+    // A query must answer, not throw: the optimizer asks on every graph.
     if (!gpu_available()) {
         return 0;
     }
@@ -359,11 +338,7 @@ void set_mock_device_memory_limit(size_t bytes) {
 }
 
 std::string device_name() {
-    // Served from the cached probe rather than re-querying. This used to return
-    // the literal "Unknown CUDA Device" when cudaGetDeviceProperties failed,
-    // which reads as a real device downstream: ComputeGraph's
-    // CostModel::has_gpu() tests !gpu.name.empty(), so a driverless machine
-    // convinced the cost model it had a GPU to place work on.
+    // From the cached probe; empty without a device, which CostModel::has_gpu() relies on.
 #if defined(EINSUMS_HAVE_MPS)
     return mps::device_name();
 #else
@@ -373,9 +348,7 @@ std::string device_name() {
 
 namespace {
 
-/// One-shot probe behind device_capabilities(). Never throws and never lets a
-/// vendor error escape: a machine with no driver must yield available == false,
-/// not an exception out of a query function.
+/// The probe behind device_capabilities(). Never throws.
 DeviceCaps detect_capabilities() {
     DeviceCaps caps;
 
@@ -462,9 +435,7 @@ bool gpu_available() {
 #if defined(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
 
 namespace {
-/// Nesting depth of device-kernel scopes on this thread. Only the outermost
-/// scope flips protection, so the templated gpu::blas wrappers forwarding to
-/// the typed ones do not re-protect out from under the inner call.
+/// Nesting depth of device-kernel scopes on this thread; only the outermost flips protection.
 thread_local int mock_kernel_depth = 0;
 
 void mock_set_all(int prot) {

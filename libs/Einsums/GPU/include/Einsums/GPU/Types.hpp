@@ -12,12 +12,7 @@
 #include <cstdint>
 #include <type_traits>
 
-// Include vendor type headers.
-//
-// cublas_v2.h / hipblas.h are needed for cublasOperation_t and hipblasOperation_t,
-// which to_vendor_op() below returns. Without them this header does not compile at
-// all under CUDA ("'cublasOperation_t' does not name a type") - it went unnoticed
-// because no build ever defined EINSUMS_HAVE_CUDA.
+// Vendor headers; cublas_v2.h and hipblas.h declare the types to_vendor_op() returns.
 #if defined(EINSUMS_HAVE_CUDA)
 #    include <cuComplex.h>
 #    include <cublas_v2.h>

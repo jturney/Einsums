@@ -18,10 +18,8 @@ EINSUMS_NAMESPACE_BEGIN(gpu::detail)
 /**
  * @brief @p value as the integer type a backend routine takes, or a DimensionError naming @p name.
  *
- * The GPU entry points take int64_t extents. The routines they forward to take narrower ones:
- * cuBLAS, cuSOLVER, hipBLAS and MPS take int, and the CPU vendor layer takes blas::int_t, which is
- * int unless the build is ILP64. A static_cast wrapped an extent past the target's range into a
- * small or negative one, and the routine then ran on it.
+ * The entry points take int64_t; the backends take int (or blas::int_t), so out-of-range extents throw
+ * rather than wrap.
  */
 template <std::integral To, std::integral From>
 To narrow_extent(From value, char const *name) {

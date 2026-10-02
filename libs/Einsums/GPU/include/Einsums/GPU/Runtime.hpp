@@ -21,11 +21,7 @@ EINSUMS_NAMESPACE_BEGIN(gpu)
 /**
  * @brief Structured error for GPU runtime operations.
  *
- * Used with expected<T, GpuError> for recoverable GPU errors
- * (allocation failure, device not found, etc.).
- *
- * BLAS/solver errors continue to throw, since they represent unrecoverable
- * hardware failures such as a dimension mismatch or a kernel launch failure.
+ * For recoverable errors (allocation, no device), via expected<T, GpuError>; BLAS and solver errors throw.
  */
 struct GpuError {
     std::string message;
@@ -61,21 +57,13 @@ EINSUMS_EXPORT void device_memset(void *ptr, int value, size_t bytes);
 /// completes. Wrap GPU calls in this when timing from Python.
 APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT void device_synchronize();
 
-/// Query available (free) device memory in bytes.
-/// CUDA/HIP: queries the actual device.
-/// Mock: returns a configurable limit (default: system RAM / 2).
+/// Free device memory in bytes; on the mock, a configurable limit (default half of RAM).
 APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT size_t available_device_memory();
 
-/// Set the mock device memory limit (only effective on mock backend).
-/// Has no effect when a real GPU is present. This is useful for tests that
-/// want to simulate an OOM under the mock.
+/// Set the mock backend's device memory limit, for tests that simulate OOM.
 APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT void set_mock_device_memory_limit(size_t bytes);
 
-/// Query the device name string.
-/// CUDA: cudaGetDeviceProperties().name
-/// HIP:  hipGetDeviceProperties().name
-/// MPS:  MTLDevice.name
-/// Mock: returns ""
+/// The device name, or "" on the mock.
 APIARY_EXPOSE APIARY_MODULE("gpu") [[nodiscard]] EINSUMS_EXPORT std::string device_name();
 
 // ===========================================================================
@@ -87,21 +75,9 @@ APIARY_EXPOSE APIARY_MODULE("gpu") [[nodiscard]] EINSUMS_EXPORT std::string devi
 /**
  * @brief Marks a region of code that is standing in for a DEVICE KERNEL.
  *
- * Under mock-discrete, device allocations sit at PROT_NONE so that host code
- * touching a device pointer faults instead of silently succeeding. But the mock
- * backend implements its "device" kernels with host CPU BLAS, and those must be
- * able to read the buffers - on a real GPU, cuBLAS reads device memory as a
- * matter of course. Without this scope the very first mock GEMM segfaults
- * inside OpenBLAS.
- *
- * So the rule the mock enforces is not "nothing may touch device memory", it is
- * "only the backend may". Entering this scope unprotects every live mock
- * allocation; leaving the outermost one re-protects them. Anything outside a
- * scope - most importantly the ComputeGraph executor running a CPU lambda while
- * tensor pointers are still swapped to shadows - still faults.
- *
- * Re-entrant: the templated gpu::blas entry points forward to the typed ones,
- * so scopes nest, and only the outermost re-protects.
+ * Under mock-discrete, device memory is PROT_NONE so host access faults, but the mock's "kernels"
+ * are host BLAS. This scope unprotects every mock allocation while one runs; anything outside it
+ * still faults. Nests; the outermost re-protects.
  */
 struct EINSUMS_EXPORT MockDeviceKernelScope {
     MockDeviceKernelScope();

@@ -29,17 +29,8 @@ EINSUMS_NAMESPACE_BEGIN(gpu)
 /**
  * @brief Report a GPU entry point that has no implementation on this backend.
  *
- * Several vendor entry points are declared and dispatched to but not yet
- * written for CUDA/HIP. They used to cast their arguments to void and return,
- * which is the worst available behavior: the caller sees a successful call and
- * an untouched output buffer, so a missing kernel is indistinguishable from a
- * correct one that happened to compute zeros. Under the mock backend the same
- * functions delegate to CPU BLAS and are numerically right, so nothing in the
- * test suite noticed.
- *
- * Throwing instead makes the gap loud at the call site. Callers that can fall
- * back (the ComputeGraph executor catches around its GPU dispatch) still do so;
- * callers that cannot get a diagnosable error instead of silent corruption.
+ * Throws, so a missing CUDA/HIP kernel is not mistaken for one that computed zeros. Callers that
+ * can fall back (the ComputeGraph executor) catch it.
  *
  * @param what Name of the entry point, e.g. "gpu::solver::syev<float>".
  * @param loc Call site named in the message. Defaults to the caller's location.
@@ -52,14 +43,8 @@ EINSUMS_NAMESPACE_BEGIN(gpu)
 }
 
 // ===========================================================================
-// Unified error checking macros for GPU runtime, BLAS, and solver calls.
-//
-// Usage:
-//   gpu_catch(cudaMalloc(&ptr, bytes));
-//   gpu_blas_catch(cublasSgemm(...));
-//   gpu_solver_catch(cusolverDnDsyev(...));
-//
-// On the mock backend, these are no-ops since there are no GPU errors.
+// Error checks for runtime, BLAS and solver calls: gpu_catch(cudaMalloc(...)),
+// gpu_blas_catch(...), gpu_solver_catch(...). No-ops on the mock backend.
 // ===========================================================================
 
 #if defined(EINSUMS_HAVE_CUDA)

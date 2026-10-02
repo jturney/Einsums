@@ -19,9 +19,7 @@ EINSUMS_NAMESPACE_BEGIN(gpu)
 // DeviceAllocator tag: used by GeneralTensor to select DeviceVector storage.
 // ===========================================================================
 
-/// Tag type indicating device memory allocation.
-/// When used as the Alloc parameter of GeneralTensor, the storage switches
-/// from std::vector<T, Alloc> to DeviceVector<T>.
+/// As GeneralTensor's Alloc parameter, switches its storage to DeviceVector<T>.
 template <typename T>
 struct DeviceAllocator {
     using value_type = T; // NOLINT(readability-identifier-naming)
@@ -38,13 +36,8 @@ template <typename Alloc>
 inline constexpr bool IsDeviceAllocatorV = IsDeviceAllocator<Alloc>::value;
 
 // ===========================================================================
-// DeviceVector<T>: minimal vector-like container backed by GPU memory.
-//
-// Supports only bulk operations: data(), size(), resize(), copy, move.
-// No element access (operator[], begin/end, at), since device memory is not
-// host-accessible. Use gpu::memcpy_device_to_host to read elements.
-//
-// On the mock backend, uses std::malloc (same address space) so tests work.
+// DeviceVector<T>: bulk-only container in GPU memory, with no element access (device memory is not
+// host-readable). std::malloc on the mock backend.
 // ===========================================================================
 
 template <typename T>
@@ -129,9 +122,7 @@ class DeviceVector {
     /// Check if empty.
     [[nodiscard]] bool empty() const noexcept { return _size == 0; }
 
-    /// Resize the vector. If size changes, old data is lost (not preserved).
-    /// This matches the behavior needed by GeneralTensor which always
-    /// reinitializes after resize.
+    /// Resize, discarding the contents (GeneralTensor reinitializes after a resize anyway).
     void resize(size_t new_size) {
         if (new_size == _size) {
             return;
