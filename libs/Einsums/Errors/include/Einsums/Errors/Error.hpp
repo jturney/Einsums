@@ -53,19 +53,10 @@ std::string make_error_message(StringLiteral<N> const type_name, std::string con
 /**
  * @struct CodedError
  *
- * This error type is used when a function can emit several different instances of the
- * same error.
- *
- * This allows the user to either catch the class the code is based on,
- * or the CodedError with the code specified. This means that the user can
- * handle all errors with a similar cause together, or gain more fine-grained control
- * if needed.
- *
- * As an example, in some specializations of the gemm call, multiple TensorCompatError s
- * can be thrown. For the TiledTensor version, for instance, a TensorCompatError can be
- * thrown if either the output tensor's grid doesn't match what the input tensors require,
- * or if the inner input tensor dimension's grid doesn't match what is required. If you
- * wanted to catch both of these at once, you can use something like the following.
+ * Distinguishes several throws of the same error type from one function: catch the base class to
+ * handle them together, or a specific CodedError to handle one. The TiledTensor gemm, for
+ * instance, throws TensorCompatError for both an incompatible output grid and an incompatible
+ * inner grid. Both at once:
  *
  * @code
  * TiledTensor<double, 2> A, B, C;
@@ -76,7 +67,7 @@ std::string make_error_message(StringLiteral<N> const type_name, std::string con
  * }
  * @endcode
  *
- * Or you can handle each individually, like here.
+ * Or each individually:
  *
  * @code
  * try {
@@ -132,15 +123,8 @@ struct EINSUMS_EXPORT DimensionError : std::invalid_argument {
 /**
  * @struct TensorCompatError
  *
- * Indicates that two or more tensors are not compatible with each other for the requested operation.
- *
- * For instance, matrix multiplication is only allowed for matrices of certain dimensions: for some
- * natural numbers n, m, and k, the only allowed contraction is of the form (n by k) times (k by m)
- * giving (n by m). If you were to pass a 3-by-2 matrix as the first matrix argument, a 1-by-4 matrix
- * as the second matrix argument, and a 3-by-5 matrix as the third matrix argument to
- * linear_algebra::gemm, this error will be thrown because the inner dimensions of the input arguments
- * don't match (2 is not 1), and the outer dimensions of the input matrices and the dimensions of the
- * output matrix don't match either (3 is 3, but 4 is not 5).
+ * Indicates that two or more tensors are not compatible with each other for the requested operation,
+ * such as a gemm whose inner dimensions differ.
  *
  * @versionadded{1.0.0}
  */
@@ -151,14 +135,8 @@ struct EINSUMS_EXPORT TensorCompatError : std::logic_error {
 /**
  * @struct NumArgumentError
  *
- * Indicates that a function that can receive a variable number of arguments did not receive the
- * right number of arguments.
- *
- * This is especially used in the RuntimeTensor subscript functions,
- * where the number of indices needed is not known at compile time, so compile-time checks can't
- * be made. This exception has two specializations, NotEnoughArgs and TooManyArgs , for not
- * enough and too many arguments. It is also thrown when a function takes an array of values that
- * are treated as individual arguments, but the array is too small or too big.
+ * Indicates that a function received the wrong number of arguments, or an array of them of the
+ * wrong size, as in RuntimeTensor subscripts. See NotEnoughArgs and TooManyArgs.
  *
  * @versionadded{1.0.0}
  */
@@ -191,9 +169,8 @@ struct EINSUMS_EXPORT TooManyArgs : NumArgumentError {
 /**
  * @struct AccessDenied
  *
- * Indicates that an operation was stopped due to access restrictions. This exception is mostly
- * thrown by the HDF5 compatibility code, where it indicates an illegal action on a file object,
- * such as writing read-only data, or accessing a file without the required permissions.
+ * Indicates that an operation was stopped due to access restrictions, mostly in the HDF5 code:
+ * writing read-only data, or accessing a file without permission.
  *
  * @versionadded{1.0.0}
  */
@@ -241,12 +218,7 @@ struct EINSUMS_EXPORT NotImplemented : std::logic_error {
 /**
  * @struct BadLogic
  *
- * Indicates that an error occurred for some unspecified reason.
- *
- * It means
- * the same as std::logic_error. However, since std::logic_error is the base class for so many
- * exceptions, this specialization is provided so that you can catch it specifically without
- * also matching every exception derived from std::logic_error.
+ * Means the same as std::logic_error, but can be caught without catching everything derived from it.
  *
  * @versionadded{1.0.0}
  */
@@ -292,9 +264,8 @@ struct EINSUMS_EXPORT EnumError : std::domain_error {
 /**
  * @struct ComplexConversionError
  *
- * Thrown when trying to convert a complex number to a real number. Instead, the input
- * data should be transformed into a real value in a way that makes sense for the operation
- * being performed. This is often either the magnitude or the real part.
+ * Thrown when converting a complex number to a real one. Take the magnitude or real part instead,
+ * as suits the operation.
  *
  * @versionadded{2.0.0}
  */
