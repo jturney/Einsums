@@ -12,11 +12,7 @@ EINSUMS_NAMESPACE_BEGIN(design_pats)
 /**
  * @class Lockable
  *
- * @brief Base class that enables mutexes on an object, making thread safety a breeze.
- *
- * Simply inherit this class and the new class will have everything it needs to satisfy
- * the Lockable requirement. You can even specify what kind of mutex to use to handle
- * the locks.
+ * @brief Base class that makes a class Lockable, with a mutex of type @p Mutex.
  *
  * @versionadded{1.0.0}
  */
@@ -31,8 +27,7 @@ class Lockable {
     Lockable() = default;
 
     /**
-     * "Copy constructor." It doesn't perform any copies and is only
-     * necessary for subclasses so that they can define copy constructors.
+     * Copies nothing; exists so subclasses can be copyable.
      *
      * @versionadded{1.0.0}
      */

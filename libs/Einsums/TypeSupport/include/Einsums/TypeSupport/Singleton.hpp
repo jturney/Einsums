@@ -10,12 +10,8 @@
 /**
  * @def EINSUMS_SINGLETON_DEF
  *
- * Turns a C++ class into a singleton. Place this at the beginning of the class. You will then need to define a private
- * constructor with no arguments to actually construct the singleton stuff. This macro is only for the definition of the
- * class and does not contain any code. Make sure to use a matching \c EINSUMS_SINGLETON_IMPL somewhere else to
- * get the code to compile.
- *
- * This will provide the <tt>Type &get_singleton()</tt> static method.
+ * Makes a class a singleton with a static <tt>Type &get_singleton()</tt>. Place at the start of
+ * the class, define a private no-argument constructor, and pair with \c EINSUMS_SINGLETON_IMPL.
  *
  * @param Type The type of singleton to construct.
  *

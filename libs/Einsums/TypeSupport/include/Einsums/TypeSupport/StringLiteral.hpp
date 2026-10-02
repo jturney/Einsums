@@ -20,8 +20,7 @@ EINSUMS_NAMESPACE_BEGIN()
 /**
  * @struct StringLiteral
  *
- * Normal strings cannot be used as template parameters, but this can.
- * This is needed for the parameters' names in the NamedTuples.
+ * A string usable as a template parameter, as NamedTuple names need.
  *
  * @tparam N The size of the string including the null terminator.
  *
