@@ -108,13 +108,8 @@ EINSUMS_NAMESPACE_END(detail)
  * \param[in] ... The optional message that is used to give further information if
  *             the assert fails. This should be convertible to a std::string
  *
- * If \p expr evaluates to false, The source location and the message are
- * printed along with the expression and additional. Afterwards the program is
- * aborted. The assertion handler can be customized by calling
- * einsums::assertion::set_assertion_handler().
- *
- * Asserts are enabled if \a EINSUMS_DEBUG is set. This is the default for
- * `CMAKE_BUILD_TYPE=Debug`
+ * On failure the assertion handler (see set_assertion_handler()) reports the location, expression
+ * and message. Enabled when \a EINSUMS_DEBUG is set, the default for `CMAKE_BUILD_TYPE=Debug`.
  *
  * @throws assertion_error If the expression is false.
  *
