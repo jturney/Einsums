@@ -9,11 +9,7 @@
  * @file EnumNames.hpp
  * @brief One table per enum, answering both directions of the name question.
  *
- * A hand-written pair of a naming ``switch`` and a parsing loop over a
- * separately written enumerator list is two tables for one fact, and the two
- * drift: an enumerator added to the switch and forgotten in the list parses as
- * nothing while it names fine, and nothing in the build says so. An
- * @ref EnumNames holds the spellings once and derives both directions from it.
+ * The spellings are held once, so naming and parsing cannot drift apart.
  */
 
 #include <Einsums/Config/Namespace.hpp>
@@ -42,8 +38,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * }}, "individual"};
  * @endcode
  *
- * The scan is linear, which is the right shape at these sizes and is also what
- * makes the whole thing usable in a constant expression.
+ * A linear scan, usable in constant expressions.
  *
  * @versionadded{2.0.0}
  */
@@ -69,9 +64,7 @@ struct EnumNames {
 
     /// @brief The enumerator spelled @p spelling, if there is one.
     /// @param[in] spelling A spelling @ref name produces.
-    /// @return The enumerator, or an empty optional. Unresolvable is an empty
-    ///         optional rather than a fallback so a loader can fail naming the
-    ///         string it could not resolve.
+    /// @return The enumerator, or an empty optional so a loader can report the string.
     [[nodiscard]] constexpr std::optional<E> from_name(std::string_view spelling) const noexcept {
         for (auto const &[key, text] : entries) {
             if (text == spelling) {

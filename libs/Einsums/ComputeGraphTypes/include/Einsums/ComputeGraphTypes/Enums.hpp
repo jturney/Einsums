@@ -334,16 +334,8 @@ inline std::string_view op_kind_name(OpKind kind) {
  * @param[in] name A spelling @ref op_kind_name produces.
  * @return The kind, or an empty optional when nothing is spelled that way.
  *
- * The reverse of @ref op_kind_name, and it exists because the saved-graph IR
- * writes op kinds BY NAME: @ref OpKind is a @c std::uint8_t
- * enum whose members are added in the middle by whoever adds an operation, so a
- * numeric value in a file would silently mean a different operation the next
- * time someone inserts a kind. An unresolvable name is an empty optional rather
- * than a fallback, so a loader can fail naming the string it could not resolve.
- *
- * Linear over the enumerators, which is what keeps the two functions from
- * drifting: there is one table (the ``switch`` in @ref op_kind_name) and this
- * asks it, rather than a second table that could disagree.
+ * Saved graphs store kinds by name, since enumerators get inserted mid-enum. Asks
+ * @ref op_kind_name's switch rather than keeping a second table.
  * @versionadded{2.0.0}
  */
 [[nodiscard]] inline std::optional<OpKind> op_kind_from_name(std::string_view name) {
@@ -438,10 +430,7 @@ inline std::string_view op_kind_name(OpKind kind) {
 }
 
 // ── OpKind classifier predicates ───────────────────────────────────────────
-// Shared vocabulary for pass pattern-matching. Kept here, next to the enum and
-// op_kind_name, so the membership of each category lives in ONE place: several
-// passes and Graph::effective_io must agree on these sets, and hand-copied
-// inline checks silently drift as new OpKinds are added.
+// One definition of each category, which several passes and Graph::effective_io must agree on.
 
 /// @brief Lifecycle/bookkeeping kinds that produce no value of their own
 ///        (Alloc, Free, Materialize, Initialize). Passes counting value-producing
@@ -453,11 +442,7 @@ inline std::string_view op_kind_name(OpKind kind) {
 
 /// @brief Control-flow kinds carrying subgraphs (Conditional, Loop, Setup).
 ///
-/// Membership is about STRUCTURE, not about how often a body runs: everything that
-/// walks, expands, or refuses a node because it owns a sub-graph has to see all three.
-/// A @ref OpKind::Setup body runs at most once per bound problem where a loop body runs
-/// many times, and that difference belongs to the executor and to whichever pass reasons
-/// about iteration counts, not to the question this predicate answers.
+/// About structure (owning a sub-graph), not how often a body runs.
 [[nodiscard]] inline bool is_control_flow(OpKind kind) {
     return kind == OpKind::Conditional || kind == OpKind::Loop || kind == OpKind::Setup;
 }

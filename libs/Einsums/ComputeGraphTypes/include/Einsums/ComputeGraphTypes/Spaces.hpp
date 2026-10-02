@@ -9,9 +9,8 @@
  * @file Spaces.hpp
  * @brief Index-space annotations and the registry that holds them.
  *
- * An index space is the *meaning* of a tensor index: occupied orbitals, virtual orbitals, an
- * auxiliary fitting basis, a grid. Slot annotations (added by a later task) carry a @ref SpaceId
- * per index, and the algebraic passes read the registry to answer the questions they need:
+ * An index space is what a tensor index means: occupied orbitals, an auxiliary basis, a grid.
+ * Annotations carry a @ref SpaceId per index, and the passes ask the registry:
  *
  * - which of two extents is the small one (scale order, so a cost polynomial can be minimized
  *   symbolically before any tensor is bound),
@@ -21,21 +20,14 @@
  *   space).
  *
  * @par What deliberately is NOT here
- * @ref IndexSpace carries semantics and nothing else. Distribution and storage preferences are
- * machine policy, they live in @ref SpacePolicy, and the registry keeps them in a separate table
- * keyed by space NAME. A graph saved to disk must never carry the policy of the machine that
- * captured it, and the only way to guarantee that is for the annotation type to have nowhere to
- * put it.
+ * Machine policy (distribution, storage) lives in @ref SpacePolicy, keyed by name, so a saved
+ * graph cannot carry the capturing machine's policy.
  *
  * @par Ids versus names
- * @ref SpaceId is an opaque registry-local handle. It is stable for the life of the registry that
- * issued it and meaningless outside that process. In-memory annotations hold ids; serialization
- * writes names and resolves them back to ids on load.
+ * @ref SpaceId is registry-local; serialization writes names.
  *
  * @par Spaces are assumed non-empty
- * Every query below reads "space" as a non-empty set of indices. That is what makes a space not
- * disjoint from itself, and what makes a space known to be disjoint from another one also known
- * not to be contained in it.
+ * So a space is not disjoint from itself, and disjoint spaces are not contained in one another.
  */
 
 #include <Einsums/Config/Namespace.hpp>
@@ -59,20 +51,13 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 /**
  * @brief How a space's extent grows with the size of the system.
  *
- * Stored as an exponent so a user-defined space is expressible without extending an enum: the
- * extent is taken to scale as @c N^exponent for system size @c N. The two cases that matter for
- * electronic structure have names, @ref constant and @ref linear, and everything else goes through
- * @ref power.
- *
- * The value is advisory. It is what lets a pass rank two candidate contraction orders whose cost
- * polynomials differ only in which symbol carries the higher power, before any tensor with real
- * extents has been bound.
+ * The extent scales as @c N^exponent for system size @c N (@ref constant, @ref linear, @ref power).
+ * Advisory: lets a pass rank contraction orders before extents are bound.
  */
 struct APIARY_EXPOSE APIARY_MODULE("graph") GrowthClass {
     /// Exponent of the system size that the extent follows. Defaults to linear growth.
     ///
-    /// Read-only from Python: a growth class reached through a registered space is a view of what
-    /// the registry holds, and a space's semantics are settled at registration.
+    /// Read-only from Python, as a space's semantics are fixed at registration.
     APIARY_EXPOSE APIARY_READONLY double exponent{1.0};
 
     /// @brief A space whose extent does not grow with the system (exponent 0).
@@ -98,14 +83,8 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") GrowthClass {
 /**
  * @brief The semantics of one index space, and nothing else.
  *
- * Value type: two of these compare equal exactly when every field matches, which is what lets
- * @ref SpaceRegistry::register_space be idempotent for a repeated identical declaration and an
- * error for a conflicting one.
- *
- * An aggregate, deliberately: every construction site in the library uses designated initializers,
- * which is what keeps a five-field declaration readable. Python has no aggregate initialization, so
- * it builds one through @ref make_index_space (spelled ``cg.index_space`` there) instead, and reads
- * the fields back.
+ * Field-wise equality makes a repeated identical registration idempotent and a conflicting one an
+ * error. An aggregate for designated initializers; Python uses @ref make_index_space.
  */
 struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
     /// Human-readable name, unique within a registry ("occ", "virt", "aux", "grid", ...).
@@ -117,11 +96,8 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
     /// Name a SYMBOLIC EXTENT over this space goes by ("no", "nv", ...). Empty when the space has
     /// none, and then an axis over it cannot be given a symbolic extent from the space alone.
     ///
-    /// Distinct from @ref scale_symbol, which names the space in a cost POLYNOMIAL ("o"), and
-    /// distinct from @ref name, which identifies the space itself. Spelling a dim symbol as the
-    /// space's name would make the ``(symbol, space)`` tie a tautology and, worse, would have a
-    /// plain symbol claim a single extent for a space that may be ragged - which is exactly what
-    /// ``"ragged:<space>"`` exists to say instead.
+    /// Distinct from @ref scale_symbol (the cost-polynomial letter) and @ref name. A ragged space
+    /// uses ``"ragged:<space>"`` instead.
     APIARY_EXPOSE APIARY_READONLY std::string dim_symbol;
 
     /// Advisory extent, used only to break ties when no tensor instance is bound. Zero means unset.
@@ -144,11 +120,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
  * @return A comma-separated list such as @c "typical extent 4050 against 0", never empty for two
  *         spaces that compare unequal.
  *
- * A conflict is a caller error, and the caller has to be able to see WHICH declaration it is
- * making twice. A derived typical extent is the case that matters: two graphs at two problem sizes
- * declaring the same truncated space produce the same name carrying two different numbers, and a
- * message that says only "different content" leaves the reader to guess which of the two callers
- * it is talking about.
+ * So the message can say which declaration is repeated, e.g. two problem sizes deriving one space.
  */
 [[nodiscard]] inline std::string describe_space_conflict(IndexSpace const &held, IndexSpace const &offered) {
     auto number = [](double value) {
@@ -190,9 +162,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
  *            default, when the space has none.
  * @return The space.
  *
- * A named constructor rather than a real one: @ref IndexSpace stays an aggregate so the library's
- * designated-initializer construction sites keep working, and this is what a caller with no
- * aggregate initialization (Python) builds one through.
+ * For callers without aggregate initialization (Python).
  */
 [[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("index_space") inline IndexSpace
 make_index_space(std::string name, std::string scale_symbol, double typical_extent = 0.0, GrowthClass growth = GrowthClass::linear(),
@@ -228,9 +198,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") SpaceId {
      * @param[in] other The id to compare against.
      * @return True when both wrap the same registry-local index.
      *
-     * The named form of @c operator==, bound as Python's @c __eq__. Comparison has to reach Python
-     * (a caller that looked a space up twice must be able to tell the two answers are the same
-     * space), and a named method is what the binding generator renders reliably.
+     * @c operator== as a named method, bound as Python's @c __eq__.
      */
     APIARY_EXPOSE APIARY_OPERATOR("__eq__") [[nodiscard]] constexpr bool equals(SpaceId other) const noexcept {
         return _value == other._value;
@@ -249,10 +217,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") SpaceId {
     /// @param[in] rhs Right operand.
     /// @return The ordering of the underlying indices, which is registration order.
     ///
-    /// A member rather than a hidden friend, which every other spaceship in the
-    /// tree already is: an id converts from nothing, so the two forms behave
-    /// identically here, and the member form is the one the documentation
-    /// extractor renders without mangling the operator's name.
+    /// A member, unlike the tree's other spaceships, because the doc extractor renders it cleanly.
     [[nodiscard]] constexpr std::strong_ordering operator<=>(SpaceId const &rhs) const noexcept = default;
 
   private:
@@ -268,9 +233,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") SpaceId {
 /**
  * @brief Answer to a relation query that may simply not be known.
  *
- * "Unknown" is a first-class answer, not a failure: the registry only ever holds what was declared
- * and what follows from it, and a pass that would rewrite a graph on the strength of a relation
- * must treat Unknown exactly as it treats No.
+ * The registry knows only what was declared and what follows; a rewriting pass treats Unknown as No.
  */
 // With the annotation macros in front, clang-format reads the enum base as a braced initializer
 // and glues the brace to it.
@@ -354,24 +317,14 @@ struct SpacePolicy {
  *   containment on either side: if @c a is inside @c b and @c b is disjoint from @c c, then @c a is
  *   disjoint from @c c, and so is everything inside @c c.
  *
- * Scale order and containment are kept independent on purpose. A subspace being smaller than its
- * parent is a plausible reading of @c a within @c b, but it is not a consequence of it, and the
- * caller who wants that ordering can declare it.
+ * Containment does not imply scale order; declare it if wanted.
  *
  * @par Consistency
- * A declaration inconsistent with what the registry already holds is rejected with
- * @c std::invalid_argument, in either declaration order. The governing invariant for the set
- * relations is that no space may be contained in two spaces declared disjoint, which rules out
- * "a inside b" together with "a disjoint from b" and also the transitive versions of it. Scale
- * order rejects cycles, including cycles closed through transitivity. Self-relations are rejected
- * as well: @c a < a is false, @c a disjoint from @c a is false for a non-empty space, and @c a
- * within @c a is trivially true and therefore never worth asserting.
+ * An inconsistent declaration throws @c std::invalid_argument, in either order: no space may lie
+ * in two disjoint spaces, scale order may not cycle, and self-relations are rejected.
  *
  * @par Thread safety
- * A single mutex guards everything. The expectation is that registration and declaration happen
- * during startup or setup, from one thread, and that queries then run from anywhere; the locking
- * exists so a late registration cannot corrupt a concurrent reader, not because this is a hot path.
- * References returned by @ref space stay valid for the life of the registry.
+ * One mutex guards everything; not a hot path. References from @ref space live as long as the registry.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE SpaceRegistry {
   public:
@@ -390,9 +343,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE SpaceRegi
      *         registered with different content. The message names every field the two
      *         declarations disagree on and both values, through @ref describe_space_conflict.
      *
-     * A conflicting redeclaration is never absorbed by overwriting what is held. Two callers that
-     * mean two different spaces need two registries, which is what @ref Graph::set_space_registry
-     * gives a graph, and two callers that mean the same space have to agree on its content.
+     * Never overwrites. Callers meaning different spaces need separate registries
+     * (@ref Graph::set_space_registry).
      */
     APIARY_EXPOSE SpaceId register_space(IndexSpace space) {
         std::scoped_lock const guard(_mutex);
@@ -450,11 +402,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE SpaceRegi
      * @param[in] id The id to resolve.
      * @return The registered space's name, or "" for an invalid or out-of-range id.
      *
-     * The tolerant sibling of @ref space, for the readers of a PARTIAL annotation. A tensor
-     * mixing axes over a space with axes nobody has named carries an invalid id in the slots
-     * nobody spoke for, which is what @ref Graph::annotate_space_axis exists to make, and every
-     * consumer that renders an annotation as names has to be able to render that hole rather
-     * than to throw on it.
+     * The tolerant sibling of @ref space, for partial annotations whose unnamed axes hold invalid ids.
      */
     [[nodiscard]] std::string name_of(SpaceId id) const {
         std::scoped_lock const guard(_mutex);

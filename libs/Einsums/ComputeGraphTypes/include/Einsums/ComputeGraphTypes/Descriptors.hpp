@@ -18,36 +18,14 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
-// NOTE: this header holds only the descriptors expressible in the
-// ComputeGraphTypes tier -- inert data over Enums.hpp / Ids.hpp and std types,
-// with concrete scalars (`double`, `std::complex<double>`).
-//
-// Descriptors that reference a type defined further up the stack live in
-// `Einsums/ComputeGraph/Node.hpp` instead, and are NOT duplicated here:
-//
-//   EinsumDescriptor      needs packed_gemm::ContractionSpec (PackedGemm)
-//   AxpbyDescriptor       needs PrefactorScalar, plus a shared_ptr<AxpbyParams>
-//                         handle into live execution state
-//   ScaleDescriptor       same: PrefactorScalar plus a live params handle
-//   PermuteDescriptor     same: a live params handle
-//   ElementwiseBinaryDescriptor  same (DirectProduct / DirectDivision)
-//   Loop/ConditionalDescriptor  hold shared_ptr<Graph> and std::function
-//   ViewDescriptor        needs ViewAxis
-//
-// So a descriptor missing from this file has probably not been written yet --
-// check Node.hpp before concluding it does not exist.
-//
-// ScaleDescriptor and PermuteDescriptor USED to live here, on concrete
-// `double` / `std::complex<double>` scalars. They moved when their executors
-// started reading their prefactors from a shared, pass-rewritable params block
-// (see ExecutorBuilder.hpp): that handle is a `shared_ptr` to a type holding
-// PrefactorScalar, which is exactly the "further up the stack" condition above.
+// Only the descriptors expressible at this tier: inert data over Enums.hpp, Ids.hpp and std types.
+// Those that need a type from further up (Einsum, Axpby, Scale, Permute, ElementwiseBinary,
+// Loop/Conditional, View) live in `Einsums/ComputeGraph/Node.hpp`.
 
 /**
  * @brief Data-type tag for BatchedGemmDescriptor.
  *
- * The descriptor is type-erased for pass introspection; the tag tells
- * the executor which `blas::gemm_batch<T>` variant to dispatch.
+ * Tells the executor which `blas::gemm_batch<T>` to call.
  */
 enum class BlasScalar : std::uint8_t {
     Float,
@@ -59,9 +37,7 @@ enum class BlasScalar : std::uint8_t {
 /**
  * @brief The @ref BlasScalar tag naming @p T.
  *
- * Every producer of a descriptor carrying a `scalar` field has to answer the
- * same question, and answering it in place invites the four branches to drift
- * apart. @p T is one of the four types `blas::gemm_batch` accepts.
+ * @p T is one of the four types `blas::gemm_batch` accepts.
  */
 template <typename T>
 constexpr BlasScalar blas_scalar_of() {
@@ -80,13 +56,9 @@ constexpr BlasScalar blas_scalar_of() {
 /**
  * @brief Metadata for BatchedGemm nodes produced by the GEMMBatching pass.
  *
- * A BatchedGemm collapses N independent Einsum nodes (each expressing
- * a rank-2 × rank-2 → rank-2 contraction with one link index and
- * matching M/N/K dimensions, alpha/beta prefactors, trans flags, and
- * data type) into a single `blas::gemm_batch` call. The @p inputs and
- * @p outputs on the parent @ref Node store the full 2N inputs (A_0,
- * B_0, A_1, B_1, …) and N outputs (C_0, …) in the original group
- * order; this descriptor carries the shared BLAS parameters.
+ * N independent matrix-matrix Einsums agreeing on shape, prefactors, trans flags and type, as one
+ * `blas::gemm_batch` call. The node holds the 2N inputs (A_0, B_0, A_1, ...) and N outputs in
+ * order; this holds the shared parameters.
  */
 struct BatchedGemmDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
@@ -108,10 +80,7 @@ struct BatchedGemmDescriptor {
 /**
  * @brief One shape class inside a @ref GroupedBatchedGemmDescriptor.
  *
- * Everything @ref BatchedGemmDescriptor holds once for a whole call is held
- * here per group, because that is exactly the difference between the two
- * nodes: a grouped call is several uniform batches issued under one OpenMP
- * region.
+ * The per-group counterpart of what @ref BatchedGemmDescriptor holds once.
  */
 struct GemmGroup {
     int                  m{0};            ///< Rows of each C in this group (and of op(A)).
@@ -133,21 +102,10 @@ struct GemmGroup {
 /**
  * @brief Metadata for GroupedBatchedGemm nodes.
  *
- * A GroupedBatchedGemm is a @ref BatchedGemmDescriptor that stopped insisting
- * every member agree on shape. It exists because entering an OpenMP region
- * costs tens of microseconds on a wide team, and a dependency level holding
- * many differently shaped batches used to pay that once per shape: measured on
- * a DLPNO-MP2 iteration, 754 batched calls whose arithmetic wanted 16 ms spent
- * 45. Collapsing them into one call made the time track the arithmetic again.
- *
- * The parent @ref Node stores the full 2N inputs (A_0, B_0, A_1, B_1, ...) and
- * the outputs in group order, so @ref GemmGroup::first indexes both.
- *
- * On observability. One node in place of many is one timing row in place of
- * many, and the per-shape rows are what made the investigations that produced
- * this node possible in the first place. So @ref labels names every group, and
- * the executor can be asked to time them individually; see
- * `einsums:graph:profile-groups`.
+ * Several differently shaped batches under one OpenMP region, which costs tens of microseconds to
+ * enter (a DLPNO-MP2 iteration spent 45 ms on 16 ms of arithmetic across 754 batches). The node
+ * holds the 2N inputs and the outputs in group order, indexed by @ref GemmGroup::first. @ref labels
+ * names the groups so `einsums:graph:profile-groups` can time each.
  */
 struct GroupedBatchedGemmDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
@@ -160,24 +118,16 @@ struct GroupedBatchedGemmDescriptor {
     /// when the capture API grouped the batch itself.
     std::vector<std::string> labels;
 
-    /// Whether each member's destination is a BLOCK of a shared base, described
-    /// by an offset the executor holds, rather than a tensor of its own.
-    ///
-    /// The two forms are indistinguishable from the node otherwise: the blocked
-    /// one declares each DISTINCT base as an output, so its output list is
-    /// neither one entry per member nor reliably shorter than one. A reader
-    /// that needs to know which member writes what has to be told, and a region
-    /// rewrite is exactly such a reader: it declines a blocked batch, because
-    /// the offsets that say where a member lands are not on the node.
+    /// Whether each member writes a block of a shared base, at an offset only the executor holds.
+    /// The outputs then list each distinct base, so readers that map members to outputs (region
+    /// rewrites) must decline a blocked batch.
     bool blocked{false};
 };
 
 /**
  * @brief Metadata for memory allocation/deallocation nodes.
  *
- * Marks the lifetime boundaries of a tensor in the graph. Used by
- * the MemoryPlanning pass to identify buffer reuse opportunities.
- * The actual allocation is managed by the graph (via ``owned_tensors_``).
+ * A tensor's lifetime boundaries, for MemoryPlanning; the graph owns the storage.
  */
 struct AllocDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
@@ -240,19 +190,9 @@ struct CommDescriptor {
 /**
  * @brief Metadata for @ref OpKind::ElementTransform nodes whose kernel is NAMED.
  *
- * A named element transform applies the kernel registered under @ref op_name to
- * every element of its destination, which the parent @ref Node lists as its one
- * output (and, since the operation is a read-modify-write, as its one input).
- *
- * The lambda-taking ``cg::element_transform`` overloads record the same kind
- * with NO descriptor, because a closure is precisely what a descriptor cannot
- * hold. Both remain fully legal; only the named form can be written to a file,
- * and ``Graph::serializability_report`` names the anonymous ones individually
- * with the fix in the message.
- *
- * A bare string, so it belongs in this tier: the registry the name resolves
- * against lives further up the stack, but resolving it is the BUILDER's job and
- * nothing about the recorded node needs to know the registry exists.
+ * Applies the kernel registered under @ref op_name to every element of the node's one output (also
+ * its one input). Lambda overloads record the kind with no descriptor, which cannot be saved;
+ * ``Graph::serializability_report`` names them.
  */
 struct ElementTransformDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
@@ -260,15 +200,8 @@ struct ElementTransformDescriptor {
     /// Name of the kernel in the process's element-op registry.
     std::string op_name;
 
-    /// The policy number a PARAMETERIZED kernel is applied with, e.g. the drop
-    /// threshold a guarded inverse square root compares against.
-    ///
-    /// Empty for an op that takes no parameter, and empty for a parameterized op
-    /// the capture site said nothing about, which then runs with the default its
-    /// registration documents. That is also how a file written before this field
-    /// existed reads, which is the whole reason the default is part of the
-    /// REGISTRATION rather than of the capture site: an absent key has to mean
-    /// something a reader can look up.
+    /// The parameter of a parameterized kernel (e.g. a drop threshold). Empty means the default its
+    /// registration documents, so files without the field still read.
     std::optional<double> param;
 };
 

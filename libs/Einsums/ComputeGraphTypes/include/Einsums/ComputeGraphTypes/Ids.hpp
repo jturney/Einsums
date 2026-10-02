@@ -22,10 +22,7 @@ using NodeId = uint64_t;
 /**
  * @brief The id a node carries until a graph issues it one.
  *
- * A pass that builds a node, or moves one in from another graph, leaves or sets this
- * value, and the graph issues a fresh id when the pass hands it back. A node never keeps
- * an id issued by a different graph: two graphs number independently, so such an id would
- * name another node here.
+ * A pass building or importing a node sets this; the graph then issues a fresh id. Ids never cross graphs.
  */
 inline constexpr NodeId unassigned_node_id = static_cast<NodeId>(-1);
 
