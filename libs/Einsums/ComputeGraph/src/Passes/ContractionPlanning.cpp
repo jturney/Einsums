@@ -289,7 +289,8 @@ bool output_is_canonical(EinsumDescriptor const &desc) {
 ///     reachable above rank 2, which the rank-2 gate already excludes),
 ///   - a member whose output is not `C[A targets..., B targets...]`, and
 ///   - the running product entering a later member as input_b: the matrix-chain
-///     DP assumes left-to-right leaf order, and GEMM does not commute.
+///     DP assumes left-to-right leaf order, and GEMM does not commute, and
+///   - the running product read transposed (links first) by a later member.
 std::optional<std::vector<bool>> chain_leaf_orientations(std::vector<ContractionInfo> const &chain, Graph const &graph) {
     auto const       &nodes = graph.nodes();
     std::vector<bool> transposed;
@@ -321,6 +322,11 @@ std::optional<std::vector<bool>> chain_leaf_orientations(std::vector<Contraction
             // analysis reasons about and the flag BLAS is handed are one value.
             transposed.push_back(!a_pl.suffix && a_pl.prefix);
         } else if (node.inputs.empty() || node.inputs[0] != chain[m - 1].output_tid) {
+            return std::nullopt;
+        } else if (!link_placement(lists.a, links).suffix) {
+            // The running product must be read (M,K), links last: the rebuild
+            // re-creates it in that form and has no transpose to apply, so a
+            // member reading it as (K,M) would get the untransposed product.
             return std::nullopt;
         }
         // The fresh leaf is always input_b; the A slot of a later member is the

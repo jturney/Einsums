@@ -190,6 +190,40 @@ TEST_CASE("ContractionPlanning - every operand orientation folds to the same val
     run_case.template operator()<true, true, true>();
 }
 
+TEST_CASE("ContractionPlanning - a running product read transposed declines the fold", "[ComputeGraph][Passes][CP]") {
+    // The leaf orientations above have transpose flags; the RUNNING PRODUCT has
+    // none, because the rebuild re-creates it in (M,K) form. A later member
+    // that reads it links first ("ki;kj->ij") wants its transpose, and folding
+    // anyway computed (L0 L1) L2 in place of (L0 L1)^T L2.
+    // Same shapes as above, so the fold would be profitable if it were legal.
+    auto L0  = create_random_tensor<double>("L0", 100, 1);
+    auto L1  = create_random_tensor<double>("L1", 1, 100);
+    auto L2  = create_random_tensor<double>("L2", 100, 2);
+    auto out = create_zero_tensor<double>("out", 100, 2);
+
+    auto mid_ref = create_zero_tensor<double>("mid_ref", 100, 100);
+    auto out_ref = create_zero_tensor<double>("out_ref", 100, 2);
+    reference_einsum("ij <- ik ; kj", 0.0, &mid_ref, 1.0, L0, L1);
+    reference_einsum("ij <- ki ; kj", 0.0, &out_ref, 1.0, mid_ref, L2);
+
+    cg::Graph graph("cp_transposed_product");
+    auto     &mid = graph.create_zero_tensor<double, 2>("mid", 100, 100);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &mid, 1.0, L0, L1);
+        cg::einsum("ki;kj->ij", 0.0, &out, 1.0, mid, L2); // the running product, transposed
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    pass.run(graph);
+    CHECK(pass.chains_restructured() == 0);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 100; ii++)
+        for (size_t jj = 0; jj < 2; jj++)
+            CHECK(out(ii, jj) == Catch::Approx(out_ref(ii, jj)).margin(1e-10));
+}
+
 TEST_CASE("ContractionPlanning - a permuted output keeps the chain analysis-only", "[ComputeGraph][Passes][CP]") {
     // The operand transpose flags cannot express a permuted RESULT: the fold
     // computes an M x N block and there is no flag that writes it as N x M. A
