@@ -626,7 +626,6 @@ einsums_check_for_omp_tools_h(DEFINITIONS EINSUMS_HAVE_OMP_TOOLS_H)
 include(Einsums_SetupCUDA)
 include(Einsums_SetupHIP)
 include(Einsums_SetupFFT)
-include(Einsums_SetupTracy)
 include(Einsums_PerformCXXFeatureTests)
 einsums_perform_cxx_feature_tests()
 

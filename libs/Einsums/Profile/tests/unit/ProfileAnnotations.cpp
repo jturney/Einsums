@@ -245,3 +245,50 @@ TEST_CASE("Annotation values and zone arguments are not evaluated while recordin
     }
     CHECK(evaluated == 0);
 }
+
+namespace {
+
+AggNode const *find_named(AggNode const &node, std::string const &name) {
+    if (node.name == name) {
+        return &node;
+    }
+    for (auto const &child : node.children) {
+        if (auto const *found = find_named(*child.second, name)) {
+            return found;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+// Memory events used to skip the recording switch that every other entry point honors, and to
+// record empty ones: resizing a new tensor reports freeing its zero-byte storage, so every tensor
+// construction logged a free of nothing.
+TEST_CASE("Memory events honor the recording switch and skip empty ones", "[profiler][memory]") {
+    Recording const   on(true);
+    std::string const name = "memory events: switch and empty";
+    {
+        ScopedZone const zone(name);
+        mem_alloc(0);
+        mem_free(0);
+        mem_alloc(64);
+        Profiler::instance().set_enabled(false);
+        mem_alloc(32);
+        mem_free(32);
+        Profiler::instance().set_enabled(true);
+    }
+    Profiler::instance().flush();
+
+    auto           lock = Profiler::instance().consumer()->lock_shared();
+    AggNode const *node = nullptr;
+    for (auto const &thread : Profiler::instance().consumer()->thread_data()) {
+        if ((node = find_named(thread.second.root, name)) != nullptr) {
+            break;
+        }
+    }
+    REQUIRE(node != nullptr);
+    CHECK(node->mem_alloc_count == 1);
+    CHECK(node->mem_alloc_bytes == 64);
+    CHECK(node->mem_free_count == 0);
+}

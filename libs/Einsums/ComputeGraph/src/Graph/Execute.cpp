@@ -162,7 +162,7 @@ void Graph::execute() {
     // profiler zone, or the tree depth grows without bound across failed runs.
     std::optional<profile::ScopedZone> exec_zone;
     if (recording) {
-        exec_zone.emplace(kGraphExecSite, _exec_zone_id, _exec_zone_name);
+        exec_zone.emplace(kGraphExecSite, _exec_zone_id);
     }
 
     // A node whose cache entry does not match falls back to its bare label
@@ -188,7 +188,7 @@ void Graph::execute() {
                 (idx < _profile_strings.size() && _profile_strings[idx].node_id == node.id) ? _profile_strings[idx] : kEmptyEntry;
 
             if (ps.zone_id != 0) {
-                node_zone.emplace(kGraphNodeSite, ps.zone_id, ps.zone);
+                node_zone.emplace(kGraphNodeSite, ps.zone_id);
             } else {
                 node_zone.emplace(node.label);
             }

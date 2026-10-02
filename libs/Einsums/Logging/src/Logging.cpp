@@ -21,33 +21,9 @@
 #include <string>
 #include <type_traits>
 
-#if defined(EINSUMS_HAVE_TRACY)
-#    include <tracy/Tracy.hpp>
-#endif
-
 EINSUMS_NAMESPACE_BEGIN(detail)
 
 EINSUMS_DETAIL_DEFINE_SPDLOG(einsums, warn)
-
-#if defined(EINSUMS_HAVE_TRACY)
-template <typename Mutex>
-class tracy_sink : public spdlog::sinks::base_sink<Mutex> {
-  protected:
-    void sink_it_(spdlog::details::log_msg const &msg) override {
-        spdlog::memory_buf_t formatted;
-        this->formatter_->format(msg, formatted);
-
-        auto str = fmt::to_string(formatted);
-        TracyMessage(str.c_str(), str.size()); // send to Tracy
-    }
-
-    void flush_() override {}
-};
-
-// Convenience alias
-using tracy_sink_mt = tracy_sink<std::mutex>;
-using tracy_sink_st = tracy_sink<spdlog::details::null_mutex>;
-#endif
 
 spdlog::level::level_enum get_spdlog_level(std::string const &env) {
     try {
@@ -70,11 +46,6 @@ std::shared_ptr<spdlog::sinks::sink> get_spdlog_sink(std::string const &env) {
     } else if (env == "cerr") {
         return std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
     }
-#if defined(EINSUMS_HAVE_TRACY)
-    else if (env == "tracy") {
-        return std::make_shared<tracy_sink_mt>();
-    }
-#endif
     return std::make_shared<spdlog::sinks::basic_file_sink_mt>(env);
 }
 

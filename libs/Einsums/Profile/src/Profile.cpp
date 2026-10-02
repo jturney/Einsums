@@ -114,13 +114,6 @@ auto Profiler::thread_channel() -> ThreadChannel & {
     return *channel;
 }
 
-#    ifdef EINSUMS_HAVE_TRACY
-auto Profiler::thread_tracy_zones() -> std::vector<std::unique_ptr<tracy::ScopedZone>> & {
-    thread_local std::vector<std::unique_ptr<tracy::ScopedZone>> v;
-    return v;
-}
-#    endif
-
 auto Profiler::register_thread() -> ThreadChannel & {
     auto       channel = std::make_shared<ThreadChannel>();
     auto const tid     = thread_key();

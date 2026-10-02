@@ -503,11 +503,9 @@ struct GraphState {
     /// per node, which is what made a profiled replay several times the cost
     /// of an unprofiled one. Ids are stable for the life of the process (the
     /// table only grows), so caching them here is safe across enable/disable.
-    /// @c zone is kept because the Tracy backend wants the characters.
     struct NodeProfileStrings {
         NodeId                                     node_id{0}; ///< owner, checked against the node at replay
-        std::string                                zone;       ///< "graph:<name>/<label>"
-        uint32_t                                   zone_id{0}; ///< interned @c zone
+        uint32_t                                   zone_id{0}; ///< interned "graph:<name>/<label>"
         std::vector<std::pair<uint32_t, uint32_t>> texts;      ///< invariant string annotations (key id, value id)
         std::vector<std::pair<uint32_t, int64_t>>  numbers;    ///< invariant integer annotations
         std::vector<std::pair<uint32_t, double>>   reals;      ///< invariant floating-point annotations
@@ -525,7 +523,6 @@ struct GraphState {
     /// never formats or interns any of it.
     std::vector<NodeProfileStrings> _profile_strings;
     bool                            _profile_strings_valid{false};
-    std::string                     _exec_zone_name;
     uint32_t                        _exec_zone_id{0};
 
     /// Threads the node widths were planned for; 0 = never recorded.
@@ -4383,7 +4380,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// @brief Append the Alloc node that marks an eagerly allocated tensor's lifetime start.
     /// @param[in] id The registered tensor.
     /// @param[in] name The tensor's name, which labels the node.
-    /// @param[in] size_bytes The allocation, reported to the profiler and read by MemoryPlanning.
+    /// @param[in] size_bytes The allocation, read by MemoryPlanning.
     ///
     /// The node executes nothing: the storage exists before the graph runs. It is a marker,
     /// and @ref free_tensor's is the matching one at the other end.

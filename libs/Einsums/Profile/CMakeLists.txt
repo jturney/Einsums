@@ -20,18 +20,12 @@ set(ProfileHeaders
 
 set(ProfileSources Profile.cpp Consumer.cpp CounterBackend.cpp Options.cpp Server.cpp)
 
-set(ProfileDeps)
-if(TARGET Tracy::TracyClient)
-  list(APPEND ProfileDeps Tracy::TracyClient)
-endif()
-
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums Profile
   PYBIND
   SOURCES ${ProfileSources}
   HEADERS ${ProfileHeaders}
-  DEPENDENCIES ${ProfileDeps}
   MODULE_DEPENDENCIES Einsums_Options Einsums_Config Einsums_Logging Einsums_Print Einsums_Preprocessor Einsums_TypeSupport
   CMAKE_SUBDIRS examples tests
 )

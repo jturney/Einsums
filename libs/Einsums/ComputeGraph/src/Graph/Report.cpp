@@ -101,8 +101,7 @@ void Graph::print_timing_report(std::ostream &os) const {
 }
 
 void Graph::rebuild_profile_strings() {
-    _exec_zone_name = fmt::format("ComputeGraph::execute({})", _name);
-    _exec_zone_id   = profile::intern_string(_exec_zone_name);
+    _exec_zone_id = profile::intern_string(fmt::format("ComputeGraph::execute({})", _name));
     _profile_strings.clear();
     _profile_strings.resize(_nodes.size());
 
@@ -110,8 +109,7 @@ void Graph::rebuild_profile_strings() {
         auto const         &node  = _nodes[idx];
         NodeProfileStrings &entry = _profile_strings[idx];
         entry.node_id             = node.id;
-        entry.zone                = fmt::format("graph:{}/{}", _name, node.label);
-        entry.zone_id             = profile::intern_string(entry.zone);
+        entry.zone_id             = profile::intern_string(fmt::format("graph:{}/{}", _name, node.label));
 
         auto text = [&entry](std::string_view key, std::string_view value) {
             entry.texts.emplace_back(profile::intern_string(key), profile::intern_string(value));

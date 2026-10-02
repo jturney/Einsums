@@ -24,9 +24,6 @@ einsums_add_config_cond_define_namespace(
 )
 
 set(LoggingDeps spdlog::spdlog)
-if (TARGET Tracy::TracyClient)
-  list(APPEND LoggingDeps Tracy::TracyClient)
-endif()
 
 include(Einsums_AddModule)
 einsums_add_module(

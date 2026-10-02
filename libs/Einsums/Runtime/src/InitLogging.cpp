@@ -74,9 +74,6 @@ void init_logging(RuntimeConfiguration & /*config*/) {
     auto &sinks = get_einsums_logger().sinks();
     sinks.clear();
     sinks.push_back(get_spdlog_sink(config::get(option::LogDestination)));
-#if defined(EINSUMS_HAVE_TRACY)
-    sinks.push_back(get_spdlog_sink("tracy"));
-#endif
 
     // Set log pattern
     auto formatter = std::make_unique<spdlog::pattern_formatter>();

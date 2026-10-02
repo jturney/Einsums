@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -80,6 +81,64 @@ TEST_CASE("free_tensor - inserts Free node", "[ComputeGraph][Memory]") {
 
     graph.execute();
 }
+
+#if defined(EINSUMS_HAVE_PROFILER)
+namespace {
+
+einsums::profile::AggNode const *find_zone(einsums::profile::AggNode const &node, std::string const &name) {
+    for (auto const &child : node.children) {
+        if (child.second->name == name) {
+            return child.second.get();
+        }
+        if (auto const *found = find_zone(*child.second, name)) {
+            return found;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+// The Alloc and Free nodes mark storage that exists before and after the graph runs, so they must
+// not report memory themselves: StorageBlock already reported the allocation when create_tensor
+// made the tensor. Both used to report at capture, which counted the tensor twice and logged a free
+// for storage the graph still owned.
+TEST_CASE("Alloc and Free nodes report no memory of their own", "[ComputeGraph][Memory][Profile]") {
+    auto      &profiler = einsums::profile::Profiler::instance();
+    bool const was      = profiler.enabled();
+    profiler.set_enabled(true);
+
+    std::string const zone_name = "MemoryNodes: alloc and free nodes";
+    {
+        einsums::profile::ScopedZone const zone(zone_name);
+        cg::Graph                          graph("memory_report_test");
+        auto                              &tmp        = graph.create_tensor<double, 2>("tmp", 4, 5);
+        auto const                        *alloc_desc = graph.nodes()[0].op_data.get_if<cg::AllocDescriptor>();
+        REQUIRE(alloc_desc != nullptr);
+        graph.free_tensor(alloc_desc->tensor_id, "tmp", tmp.size() * sizeof(double));
+    }
+    profiler.flush();
+
+    {
+        auto const                       lock = profiler.consumer()->lock_shared();
+        einsums::profile::AggNode const *node = nullptr;
+        for (auto const &thread : profiler.consumer()->thread_data()) {
+            if ((node = find_zone(thread.second.root, zone_name)) != nullptr) {
+                break;
+            }
+        }
+        REQUIRE(node != nullptr);
+        CHECK(node->mem_alloc_count == 1);
+        CHECK(node->mem_alloc_bytes == static_cast<int64_t>(4 * 5 * sizeof(double)));
+        // The one free is the graph releasing tmp when it is destroyed, still inside the zone;
+        // free_tensor only marks a lifetime end.
+        CHECK(node->mem_free_count == 1);
+        CHECK(node->mem_free_bytes == static_cast<int64_t>(4 * 5 * sizeof(double)));
+    }
+
+    profiler.set_enabled(was);
+}
+#endif
 
 TEST_CASE("alloc + use + free - full lifecycle", "[ComputeGraph][Memory]") {
     auto A = create_random_tensor<double>("A", 4, 3);

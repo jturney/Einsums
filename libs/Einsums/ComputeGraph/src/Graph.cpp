@@ -37,7 +37,6 @@
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
-#include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
 #include <fmt/format.h>
@@ -578,7 +577,6 @@ void Graph::free_tensor(TensorId id, std::string name, size_t size_bytes) {
     desc.tensor_name = std::move(name);
 
     Node node;
-    ProfileMemFree(size_bytes);
 
     node.kind    = OpKind::Free;
     node.label   = fmt::format("free({})", desc.tensor_name);
@@ -680,7 +678,6 @@ void Graph::add_alloc_node(TensorId id, std::string const &name, size_t size_byt
     desc.tensor_name = name;
 
     Node node;
-    ProfileMemAlloc(desc.size_bytes);
 
     node.kind    = OpKind::Alloc;
     node.label   = fmt::format("alloc({})", name);

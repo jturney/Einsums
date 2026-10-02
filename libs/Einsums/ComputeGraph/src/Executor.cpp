@@ -510,7 +510,7 @@ void DataflowExecutor::Scaffold::run_node(size_t i) {
     if (!failed.load(std::memory_order_acquire)) {
         std::optional<profile::ScopedZone> zone;
         if (recording) {
-            zone.emplace(dataflow_task_site(), zone_ids[i], node.label);
+            zone.emplace(dataflow_task_site(), zone_ids[i]);
         }
         try {
             node_ms[i].ms = timed_ms([this, i, &node] {
@@ -555,7 +555,7 @@ void DataflowExecutor::Scaffold::run_async_start(size_t i) {
     if (!failed.load(std::memory_order_acquire)) {
         std::optional<profile::ScopedZone> zone;
         if (recording) {
-            zone.emplace(dataflow_task_site(), zone_ids[i], node.label);
+            zone.emplace(dataflow_task_site(), zone_ids[i]);
         }
         try {
             node.async_start();
@@ -578,7 +578,7 @@ void DataflowExecutor::Scaffold::run_async_finish(size_t i) {
     if (!failed.load(std::memory_order_acquire)) {
         std::optional<profile::ScopedZone> zone;
         if (recording) {
-            zone.emplace(dataflow_task_site(), zone_ids[i], node.label);
+            zone.emplace(dataflow_task_site(), zone_ids[i]);
         }
         try {
             node_ms[i].ms = timed_ms([&node] { node.async_finish(); });

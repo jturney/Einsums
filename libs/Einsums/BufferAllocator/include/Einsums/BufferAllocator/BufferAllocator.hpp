@@ -30,10 +30,6 @@
 #include <unordered_set>
 #include <vector>
 
-#if defined(EINSUMS_HAVE_TRACY)
-#    include <tracy/Tracy.hpp>
-#endif
-
 EINSUMS_NAMESPACE_BEGIN()
 
 namespace detail {
@@ -200,10 +196,6 @@ struct BufferAllocator {
                 n * type_size);
         }
 
-#if defined(EINSUMS_HAVE_TRACY)
-        TracyAlloc(out, n * type_size);
-#endif
-
         return out;
     }
 
@@ -268,9 +260,6 @@ struct BufferAllocator {
         release(n);
 
         if (p != nullptr) {
-#if defined(EINSUMS_HAVE_TRACY)
-            TracyFree(p);
-#endif
             detail::deallocate(p);
         }
     }

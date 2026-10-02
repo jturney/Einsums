@@ -36,10 +36,6 @@
 #include <unordered_map>
 #include <vector>
 
-#ifdef EINSUMS_HAVE_TRACY
-#    include <tracy/Tracy.hpp>
-#endif
-
 #if defined _WIN32
 #    ifndef WIN32_LEAN_AND_MEAN
 #        define WIN32_LEAN_AND_MEAN
@@ -90,24 +86,14 @@ struct EINSUMS_EXPORT Profiler {
         if (!enabled()) {
             return;
         }
-        push_interned(_strings.intern(name), _strings.intern(file), _strings.intern(func), line, name, file, func);
+        push_interned(_strings.intern(name), _strings.intern(file), _strings.intern(func), line);
     }
 
-    /// Start a zone from already-interned ids (see @ref ZoneSite). The string views are read only by
-    /// the Tracy backend.
-    void push_interned(uint32_t name_id, uint32_t file_id, uint32_t func_id, int line, std::string_view name = {},
-                       std::string_view file = {}, std::string_view func = {}) {
+    /// Start a zone from already-interned ids (see @ref ZoneSite).
+    void push_interned(uint32_t name_id, uint32_t file_id, uint32_t func_id, int line) {
         if (!enabled()) {
             return;
         }
-#    ifdef EINSUMS_HAVE_TRACY
-        auto z = std::make_unique<tracy::ScopedZone>(line, file.data(), file.size(), func.data(), func.size(), name.data(), name.size(), 1);
-        thread_tracy_zones().push_back(std::move(z));
-#    else
-        (void)name;
-        (void)file;
-        (void)func;
-#    endif
         write_push(thread_channel(), name_id, file_id, func_id, line);
     }
 
@@ -116,10 +102,6 @@ struct EINSUMS_EXPORT Profiler {
         if (!enabled()) {
             return;
         }
-#    ifdef EINSUMS_HAVE_TRACY
-        if (!thread_tracy_zones().empty())
-            thread_tracy_zones().pop_back();
-#    endif
         write_pop(thread_channel());
     }
 
@@ -247,11 +229,6 @@ struct EINSUMS_EXPORT Profiler {
     /// gets its own copy of an inline function's thread_local, which would split a thread's zones
     /// between the library and, say, the Python bindings.
     static auto thread_channel() -> ThreadChannel &;
-
-#    ifdef EINSUMS_HAVE_TRACY
-    /// The calling thread's open Tracy zones. Out of line for the same reason as @ref thread_channel.
-    static auto thread_tracy_zones() -> std::vector<std::unique_ptr<tracy::ScopedZone>> &;
-#    endif
 
     // Platform-specific thread ID
     static auto thread_key() -> uint32_t {
@@ -383,24 +360,19 @@ struct EINSUMS_EXPORT Profiler {
  * @ref LabeledSection makes one a function-local static, so these strings are interned once per
  * site rather than on every entry, under the string table's lock. With a literal name, entering a
  * zone takes no lock at all.
- *
- * The views are for the Tracy backend and point at literals that outlive the site.
  */
 struct ZoneSite {
-    ZoneSite(std::string_view name_, char const *file_, int line_, char const *func_) : name{name_}, file{file_}, func{func_}, line{line_} {
+    ZoneSite(std::string_view name, char const *file, int line_, char const *func) : line{line_} {
         auto &st = Profiler::instance().string_table();
         name_id  = st.intern(name);
         file_id  = st.intern(file);
         func_id  = st.intern(func);
     }
 
-    std::string_view name;
-    std::string_view file;
-    std::string_view func;
-    int              line{0};
-    uint32_t         name_id{0};
-    uint32_t         file_id{0};
-    uint32_t         func_id{0};
+    int      line{0};
+    uint32_t name_id{0};
+    uint32_t file_id{0};
+    uint32_t func_id{0};
 };
 
 namespace site_cache {
@@ -560,9 +532,7 @@ struct AnnotateSite {
 
 struct ScopedZone {
     /// Enter a zone with a fixed name. Takes no lock: the site holds every id.
-    explicit ScopedZone(ZoneSite const &site) {
-        Profiler::instance().push_interned(site.name_id, site.file_id, site.func_id, site.line, site.name, site.file, site.func);
-    }
+    explicit ScopedZone(ZoneSite const &site) { Profiler::instance().push_interned(site.name_id, site.file_id, site.func_id, site.line); }
 
     /// Enter a zone whose name is built per call; only the name is interned. It arrives as a callable
     /// so nothing is built when recording is off.
@@ -573,8 +543,7 @@ struct ScopedZone {
         if (!prof.enabled()) {
             return;
         }
-        std::string const name = make_name();
-        prof.push_interned(prof.string_table().intern(name), site.file_id, site.func_id, site.line, name, site.file, site.func);
+        prof.push_interned(prof.string_table().intern(make_name()), site.file_id, site.func_id, site.line);
     }
 
     /**
@@ -594,19 +563,14 @@ struct ScopedZone {
         }
         std::forward<ApplyArgs>(apply_args)([&](auto &&...args) {
             uint32_t const id = site_cache::zone_name_id(format_name, std::forward<decltype(args)>(args)...);
-#    ifdef EINSUMS_HAVE_TRACY
-            std::string const name = prof.string_table().get(id);
-#    else
-            std::string_view const name{};
-#    endif
-            prof.push_interned(id, site.file_id, site.func_id, site.line, name, site.file, site.func);
+            prof.push_interned(id, site.file_id, site.func_id, site.line);
         });
     }
 
     /// Enter a zone with a name the caller interned (@ref intern_string), for callers with a stable
     /// set of runtime names, such as graph replay. Takes no lock.
-    ScopedZone(ZoneSite const &site, uint32_t name_id, std::string_view name = {}) {
-        Profiler::instance().push_interned(name_id, site.file_id, site.func_id, site.line, name, site.file, site.func);
+    ScopedZone(ZoneSite const &site, uint32_t name_id) {
+        Profiler::instance().push_interned(name_id, site.file_id, site.func_id, site.line);
     }
 
     explicit ScopedZone(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
@@ -760,22 +724,31 @@ inline void annotate_dims(std::string_view key, std::span<int64_t const> dims) {
     }
 }
 
-/// Record a memory allocation in the current profiling zone.
+/// Record a memory allocation in the current profiling zone. An empty one records nothing: resizing
+/// an empty tensor reports freeing its old, zero-byte storage.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_alloc(int64_t bytes) {
+    auto &prof = Profiler::instance();
+    if (bytes == 0 || !prof.enabled()) {
+        return;
+    }
     Event evt{};
     evt.type      = EventType::MemAlloc;
     evt.ticks     = TickClock::now();
     evt.mem_bytes = bytes;
-    Profiler::instance().emit_event(evt);
+    prof.emit_event(evt);
 }
 
-/// Record a memory deallocation in the current profiling zone.
+/// Record a memory deallocation in the current profiling zone. An empty one records nothing.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_free(int64_t bytes) {
+    auto &prof = Profiler::instance();
+    if (bytes == 0 || !prof.enabled()) {
+        return;
+    }
     Event evt{};
     evt.type      = EventType::MemFree;
     evt.ticks     = TickClock::now();
     evt.mem_bytes = bytes;
-    Profiler::instance().emit_event(evt);
+    prof.emit_event(evt);
 }
 
 // ---------------------- Python bindings ----------------------
@@ -910,8 +883,7 @@ struct Profiler {
     void               set_enabled(bool /*on*/) {}
 
     void push(std::string const & /*name*/, std::string const & /*file*/ = "", int /*line*/ = 0, std::string const & /*func*/ = "") {}
-    void push_interned(uint32_t /*name_id*/, uint32_t /*file_id*/, uint32_t /*func_id*/, int /*line*/, std::string_view /*name*/ = {},
-                       std::string_view /*file*/ = {}, std::string_view /*func*/ = {}) {}
+    void push_interned(uint32_t /*name_id*/, uint32_t /*file_id*/, uint32_t /*func_id*/, int /*line*/) {}
     void pop() {}
 
     void set_thread_name(std::string const & /*name*/) {}
@@ -936,7 +908,7 @@ struct ScopedZone {
         requires std::invocable<MakeName>
     ScopedZone(ZoneSite const & /*site*/, MakeName && /*make_name*/) {}
 
-    ScopedZone(ZoneSite const & /*site*/, uint32_t /*name_id*/, std::string_view /*name*/ = {}) {}
+    ScopedZone(ZoneSite const & /*site*/, uint32_t /*name_id*/) {}
 
     explicit ScopedZone(std::string const & /*name*/, std::string const & /*file*/ = "", int /*line*/ = 0,
                         std::string const & /*func*/ = "") {}
