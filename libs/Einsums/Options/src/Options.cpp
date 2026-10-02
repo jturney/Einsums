@@ -39,12 +39,14 @@ enum struct ValueKind : std::uint8_t { Bool = 1, Int = 2, Double = 4, String = 8
  * @brief One option's storage.
  *
  * All four typed slots, since a dynamic key has no declared type; @c assigned marks those written.
- * @c primary carries the value's provenance (for a flag pair, the positive half).
+ * @c primary carries the value's provenance; for a flag pair it is the positive half, and
+ * @c negation the generated ``no-`` half, which records its own when it is the spelling given.
  */
 struct OptionEntry {
     std::string key;
-    OptionKind  kind    = OptionKind::Value;
-    OptionBase *primary = nullptr;
+    OptionKind  kind     = OptionKind::Value;
+    OptionBase *primary  = nullptr;
+    OptionBase *negation = nullptr;
 
     /// The default came from a provider, not a literal.
     bool computed_default = false;
@@ -272,7 +274,8 @@ void register_option(ConfigOption<bool> &opt) {
     yes->exclusions = exclusion.get();
     no->exclusions  = exclusion.get();
 
-    entry.primary = yes.get();
+    entry.primary  = yes.get();
+    entry.negation = no.get();
 
     r.options.push_back(std::move(yes));
     r.options.push_back(std::move(no));
@@ -583,7 +586,11 @@ std::string read_string(cl::detail::OptionEntry const *entry, std::string_view n
 }
 
 bool was_specified(cl::detail::OptionEntry const *entry) noexcept {
-    return entry != nullptr && entry->primary != nullptr && entry->primary->was_specified();
+    if (entry == nullptr || entry->primary == nullptr) {
+        return false;
+    }
+    // A flag given as --no-<name> is recorded on the generated half, not the declared one.
+    return entry->primary->was_specified() || (entry->negation != nullptr && entry->negation->was_specified());
 }
 
 bool dynamic_bool(std::string const &key, bool default_value) noexcept {

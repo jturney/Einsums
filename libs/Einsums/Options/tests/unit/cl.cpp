@@ -717,6 +717,10 @@ TEST_CASE("A registered descriptor reads what the command line supplied", "[desc
         auto args = to_args({"prog", "--t21:no-guard"});
         REQUIRE(parse(args).ok);
         REQUIRE(einsums::config::get(guard) == false);
+        // The negation records its source on the generated half. try_get used to ask only the
+        // declared one, so a flag turned off this way read as never given, and anything that
+        // forwards only what was set (the profiler's settings) dropped it.
+        REQUIRE(einsums::config::try_get(guard) == std::optional<bool>{false});
     }
 
     SECTION("The positive spelling turns a default-false flag on") {
