@@ -226,11 +226,8 @@ MicroKernelShape micro_kernel_block() {
 #endif
     auto const      &cfg = cpu_config();
     MicroKernelShape shape{cfg.MR, cfg.NR};
-    // Real types take this rung's vector tile (see MicroKernelBody.hpp): two
-    // of the rung's registers along m by six columns. cfg.MR is derived from
-    // the width the library was compiled for, which on a distribution build
-    // is SSE2 whatever the machine runs, and a tile stated in that width
-    // leaves an AVX2 rung executing SSE-width code.
+    // Real types take this rung's vector tile (see MicroKernelBody.hpp), not cfg.MR, which follows
+    // the library's compile width.
     if constexpr (has_vector_kernel<T>) {
         shape.mr = vector_kernel_mr<T>;
         shape.nr = vector_kernel_nr;
@@ -245,25 +242,9 @@ MicroKernelShape micro_kernel_block() {
     // block strategy: it has no vector tile here.
     if constexpr (has_vector_kernel<T>) {
         shape.block_gemm = false;
-        // And the scatter path is worth taking even when the caller HAS a TTGT
-        // fallback. `fast_scatter` gates exactly that decision (see
-        // try_packed_gemm's "scatter_defer_to_ttgt"), and while it was false the
-        // compile-time `tensor_algebra::einsum` entry point declined every
-        // multi-M/N contraction to Sort+GEMM - so none of the packed scatter
-        // work reached an eager caller, only the string / ComputeGraph path.
-        //
-        // Measured on the shape the flag actually gates, which is one whose C
-        // index groups INTERLEAVE (C[a,b,c,d,e,f] += A[g,d,b,c] * B[e,f,g,a],
-        // the rank-6 ccsd_t pattern): Sort+GEMM 3.23 GF/s against the packed
-        // loops' 18.75, a factor of 5.8. Note that neither BenchmarkSortGemm nor
-        // BenchmarkMultiMN can show this - every case in both has C's m indices
-        // adjacent, so coalesce_plan merges them and the contraction is not a
-        // scatter at all. devtools/packedgemm-probes/scatter_probe.cpp builds
-        // one that is.
-        //
-        // Batched shapes are still declined: that term is separate, and
-        // Sort+GEMM's per-batch canonical GEMMs measured faster at every size
-        // tried.
+        // Take the scatter path even with a TTGT fallback: 18.75 GF/s against Sort+GEMM's 3.23 on the
+        // rank-6 ccsd_t pattern with interleaved C groups (devtools/packedgemm-probes/scatter_probe.cpp;
+        // the benchmarks' C groups coalesce). Batched shapes still decline.
         shape.fast_scatter = true;
     }
 #endif

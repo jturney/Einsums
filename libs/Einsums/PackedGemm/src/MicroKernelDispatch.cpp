@@ -3,18 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Arch-neutral micro-kernel dispatch: the one place the SIMD rung is chosen
-// for the packed-GEMM tile kernel. Mirrors HPTT's TransposeFactory.cpp.
-//
-// The kernel implementation (MicroKernelImpl.cpp) is compiled once per
-// instruction-set rung by stripes_add_dispatch_sources(), each copy in
-// its own namespace (packed_gemm::arch_baseline, packed_gemm::arch_v3, ...,
-// and on aarch64 arch_native plus optionally arch_sme). This TU is compiled
-// exactly once, WITHOUT arch flags: it declares each rung's entry points
-// (guarded by the STRIPES_HAS_RUNG_* definitions the CMake helper
-// emits) and picks the best built one the machine supports, starting from
-// stripes::selected_arch(), cached per element type. The kernel and its block shape resolve through
-// the same ladder so packing geometry always matches the kernel.
+// The one place the tile kernel's rung is chosen (as HPTT's TransposeFactory.cpp). Compiled once,
+// without arch flags; picks the best built rung, cached per element type. The kernel and its block
+// shape resolve together, so packing always matches the kernel.
 
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Config/Namespace.hpp>

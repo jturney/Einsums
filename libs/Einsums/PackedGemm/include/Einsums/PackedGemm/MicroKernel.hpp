@@ -7,17 +7,9 @@
 
 // This header is included from PackedGemm.hpp.
 //
-// Public entry point for the BLIS-style register-blocked micro-kernel that
-// replaces the per-tile vendor blas::gemm calls (the stand-in left behind
-// when the MLIR-JIT micro-kernel was removed). The kernel bodies live in
-// MicroKernelBody.hpp and are compiled once per SIMD-dispatch rung by
-// stripes_add_dispatch_sources() (see src/MicroKernelImpl.cpp); the
-// rung is resolved at runtime in src/MicroKernelDispatch.cpp, following the
-// same pattern HPTT uses for its transpose kernels. Without this, the MR=8
-// (AVX) and MR=16 (AVX-512) block shapes chosen by cpu_config() would be
-// compiled at the baseline ISA — an 8x6 double block needs 24 accumulator
-// registers, which baseline SSE2's 16 half-width xmm registers cannot hold
-// without spilling in the innermost FMA loop.
+// The BLIS-style register-blocked micro-kernel. Bodies in MicroKernelBody.hpp are compiled per
+// rung (src/MicroKernelImpl.cpp) and resolved at run time (src/MicroKernelDispatch.cpp), as HPTT's
+// are, so each block shape gets the registers it needs.
 
 #include <Einsums/Config.hpp>
 
@@ -44,40 +36,25 @@ struct MicroKernelShape {
     int nr;
     /// K-block hint: 0 = use the cache-derived default (compute_blocking).
     ///
-    /// The SME rung raises it: the ZA tile accumulators hold the C block for
-    /// the whole K loop, so deep K blocks mean C is read-modify-written and
-    /// the tiles extracted once instead of once per cache-sized K slice. The
-    /// M block shrinks to compensate so the packed A panel stays L2-sized.
+    /// SME raises it, as ZA holds C across the K loop; its M block shrinks to keep A in L2.
     int64_t kc = 0;
-    /// True when this rung's tile kernel makes the multi-M/N scatter path
-    /// faster than Sort+GEMM (measured 2.3x on M4 SME), so callers with a
-    /// TTGT fallback should still take the scatter path instead of
-    /// declining. Rungs whose scatter path loses to Sort+GEMM leave it
-    /// false.
+    /// The scatter path beats Sort+GEMM on this rung (2.3x on M4 SME), so callers with that fallback
+    /// still take it.
     bool fast_scatter = false;
-    /// Scatter-path engine: true = one vendor GEMM per cache block into a
-    /// contiguous temp, then scatter (best when the vendor library reaches
-    /// hardware the tile kernel cannot, e.g. Accelerate's AMX on M1-M3);
-    /// false = the rung's own MRxNR tile kernel (the SME rung's FMOPA
-    /// micro-tiles beat a vendor round-trip).
+    /// Scatter engine: a vendor GEMM per cache block, then scatter (for vendors reaching matrix
+    /// units, e.g. AMX on M1-M3), or false for the rung's own tile kernel.
     bool block_gemm = true;
     /// Complex elements via Van Zee's 1m method: A packs in the expanded 1e
     /// form ([[ar,-ai],[ai,ar]] per element), B packs re/im as adjacent K
     /// rows (1r), and the REAL tile kernel of the underlying real type
     /// computes interleaved-complex output directly.
     ///
-    /// When set, mr/nr/kc describe the REAL kernel's geometry and the working extents double
-    /// (Mh = 2M, Kh = 2K). Measured 1.74x over Sort+GEMM for complex<double>
-    /// on the M4 SME rung.
+    /// mr/nr/kc then describe the real kernel, and the extents double (Mh = 2M, Kh = 2K). 1.74x over
+    /// Sort+GEMM for complex<double> on M4 SME.
     bool use_1m = false;
     /// Complex elements via the 3m (Karatsuba) method on the BLOCK-GEMM
-    /// path: three real vendor GEMMs per block (Re*Re, Im*Im, (Re+Im)*(Re+Im))
-    /// instead of one complex GEMM - 25% fewer flops, and the real GEMMs
-    /// reach matrix hardware (Accelerate's AMX) that complex arithmetic may
-    /// not.
-    ///
-    /// Error bounds are mildly weakened versus conventional complex
-    /// multiplication (Higham's 3m analysis); enable only where measured.
+    /// path: three real GEMMs per block, 25% fewer flops and able to reach AMX. Slightly weaker error
+    /// bounds (Higham); enable only where measured.
     bool use_3m = false;
 };
 

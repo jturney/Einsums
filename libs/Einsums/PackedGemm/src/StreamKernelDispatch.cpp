@@ -3,16 +3,8 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Arch-neutral dispatch for the stream inner kernel: the one place the
-// SIMD rung is chosen. StreamKernelImpl.cpp is compiled once per rung by
-// stripes_add_dispatch_sources() (each copy in its own namespace,
-// arch_baseline/arch_v2/arch_v3/arch_v4, or arch_native on aarch64/pinned
-// builds). This TU is compiled exactly once, WITHOUT arch flags: it declares
-// each rung's entry (guarded by the STRIPES_HAS_RUNG_* definitions the
-// CMake helper emits) and picks the best built one the machine supports,
-// starting from stripes::selected_arch(), cached per element type. No `sme` rung is
-// built for this kernel - a bandwidth-bound streaming FMA gains nothing from
-// the matrix unit - so the select ladder leaves that slot at its default.
+// The one place the stream kernel's rung is chosen. Compiled once, without arch flags; picks the
+// best built rung, cached per element type. No `sme` rung.
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/StreamKernel.hpp>

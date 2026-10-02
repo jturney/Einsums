@@ -105,10 +105,7 @@ int count_cpu_list(char const *path) {
 
 /// Physical cores sharing CPU 0's L3, from sysfs; 1 where that cannot be read.
 ///
-/// option::PackedGemmCoresPerL3 overrides the detected count, as the einsums:hardware:l*-cache-size
-/// options do the cache sizes: with both, a test pins the machine model the team blocking reads and
-/// asserts the teams that model forms, on a runner whose own caches would form others (or, on
-/// macOS, where sysfs is absent, none).
+/// option::PackedGemmCoresPerL3 overrides it, so tests can pin the machine model.
 int detect_cores_per_l3() {
     if (auto const n = config::get(option::PackedGemmCoresPerL3); n > 0) {
         return static_cast<int>(n);
@@ -153,10 +150,7 @@ CpuConfig const &cpu_config() {
         // Same derivation everyone else uses, from the one detector.
         c.min_parallel_flops = einsums::hardware::omp_min_parallel_flops();
 
-        // Every constant the blocking is built from, printed rather than left to
-        // be inferred from observed block sizes: the rung the kernels dispatch to,
-        // the vector width that rung has, and the width the library itself was
-        // compiled for (which is what VL used to be taken from).
+        // Every constant the blocking is built from.
         EINSUMS_LOG_INFO("cpu_config: rung={}, VL={} doubles (compiled width {}), MR={}, NR={}, L1={}K, L2={}K, L3={}K shared by {} cores, "
                          "omp_region={:.2f}us, min_parallel_flops={}",
                          stripes::to_string(stripes::selected_arch()), c.VL, einsums::hardware::cpu_info().compiled_simd_width_f64, c.MR,

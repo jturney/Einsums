@@ -26,13 +26,8 @@
 // the interleaved CVec ops). Any other pattern - non-unit strides, or an
 // exotic element type - falls back to the general scalar strided loop.
 //
-// The kernel body (StreamKernelBody.hpp) is compiled once per instruction-set
-// rung by stripes_add_dispatch_sources() (see src/StreamKernelImpl.cpp),
-// and the rung is resolved at runtime in src/StreamKernelDispatch.cpp,
-// mirroring the micro-kernel and HPTT transpose dispatch. Unlike the
-// micro-kernel this kernel requests NO `sme` rung: the operation is a
-// bandwidth-bound streaming FMA with unit arithmetic intensity, which the
-// SME matrix unit cannot accelerate (it targets reuse-heavy outer products).
+// Compiled per rung and dispatched at run time like the micro-kernel, but with no `sme` rung: a
+// bandwidth-bound streaming FMA gains nothing from the matrix unit.
 
 #include <Einsums/Config.hpp>
 

@@ -177,13 +177,8 @@ PackingPlan compute_packing_topology(ContractionKey const &key) {
     }
 
     // --- Synthesize unit dims for empty groups ---
-    // A contraction with no M indices (all C indices from B), no N indices
-    // (all from A), or no link indices (outer product) is still a GEMM with
-    // the missing extent equal to 1. Synthesizing a unit dim (size 1,
-    // stride 0, sentinel pos) lets the block/tile scatter machinery handle
-    // GEMV- and GER-shaped contractions that would otherwise fall to the
-    // generic loops. The direct BLAS fast paths are skipped for such plans
-    // (see PackingPlan::synthetic).
+    // An empty M, N or link group is a GEMM extent of 1, so GEMV and GER shapes run through the
+    // scatter machinery (see PackingPlan::synthetic).
     if (plan.m_dims.empty()) {
         plan.m_dims.push_back({.tensor_pos = kSyntheticDimPos, .size = 1, .tensor_stride = 0});
         plan.c_m_dims.push_back({.tensor_pos = kSyntheticDimPos, .size = 1, .tensor_stride = 0});

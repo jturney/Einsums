@@ -26,15 +26,8 @@ EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
 // Thread-local buffers
 //
-// Every thread_local buffer here is reached through bind_thread_local() once, where it is
-// declared, and every loop goes through the reference it returns. These templates are
-// instantiated in libEinsums, and a shared library reaches a thread_local through a call to
-// __tls_get_addr. GCC treats that address as free to recompute, so under register pressure it
-// calls again rather than keep it: pack_A made one call per row in its strip gather, and a
-// plain local reference changes nothing, since it is the same recomputable address. Compiled
-// into an executable, as these were before cg::einsum's engine moved into the library, the
-// linker turns each access into one %fs-relative load, which is why nothing showed it until
-// then; the move cost abc-bda-dc 7% and the gather-bound intensli rows 3 to 5.
+// Reach each thread_local through bind_thread_local() once, where it is declared. In a shared
+// library GCC may recompute the address (a __tls_get_addr call) on every use; that cost up to 7%.
 //
 // Bind in the scope that declares the buffer, never above an OpenMP region: a reference taken
 // outside one is the calling thread's buffer, shared by every thread inside.
@@ -180,29 +173,18 @@ struct CpuConfig {
     int64_t l2_cache_size; ///< L2 cache size in bytes (per core)
     int64_t l3_cache_size; ///< L3 cache size in bytes (shared)
 
-    /// Cost in nanoseconds of entering and leaving an OpenMP parallel region at
-    /// the default thread count, measured once at init. Zero without OpenMP or on
-    /// a single thread.
+    /// Cost in ns of an OpenMP region at the default thread count; zero without OpenMP or threads.
     double omp_region_cost_ns;
 
     /// Work, in flops, below which parallelizing is a net loss.
     ///
-    /// A parallel region only pays for itself once the work it distributes takes
-    /// longer than entering it, and an EMPTY region costs tens of microseconds at
-    /// the default thread count while a per-tile CCSD contraction is a few hundred
-    /// KFLOP. Derived from the measured region cost times the flop rate achieved
-    /// at that size (see @ref einsums::hardware::omp_min_parallel_flops) rather
-    /// than hardcoded, because the region cost differs by an order of magnitude
-    /// across thread counts and OpenMP runtimes.
+    /// See @ref einsums::hardware::omp_min_parallel_flops.
     int64_t min_parallel_flops;
 
     /// Physical cores sharing one L3 (a Zen CCX, say), 1 where the topology cannot be read.
     ///
-    /// The packed loops' threads form teams of this size that share one packed B panel in their
-    /// common L3 (see blis_contraction). Measured on a Zen+ CCX, the tile kernel held 27.5 GF/s per
-    /// core with twelve cores busy when its B block was a third of an L3 share, against 20.7 at the
-    /// 4.2 MB block a thread packed for itself; one shared panel is what makes the block that small
-    /// without re-packing A for every narrow N block.
+    /// Team size for sharing one packed B panel per L3 (27.5 GF/s per core against 20.7 with private
+    /// panels on a Zen+ CCX).
     int cores_per_l3;
     // Last, so a binary built against the struct without it still reads every other field.
 };
@@ -239,23 +221,9 @@ EINSUMS_EXPORT BlockingParams compute_blocking(int64_t elem_size, int MR, int NR
 /// @brief Cache blocking for a kernel tile MR x NR against a KNOWN contraction
 ///        shape.
 ///
-/// The machine-only overloads size KC from L1 - one packed column of A, MR * KC
-/// - which is the right answer while C is cache-resident and much too small when
-/// it is not. The tile loops sweep C once per K block, and every micro-kernel
-/// call in such a sweep reads and writes an MR x NR piece of C whose lines are a
-/// row apart, too far for any prefetcher and, on a large C, in distinct pages.
-/// The cost therefore scales with the NUMBER of K blocks, not their size: on
-/// ccsd's rank-4 shapes (M = N = 8064, K = 7056, C = 260 MB) the L1-derived
-/// KC = 512 buys 14 sweeps and about 9.3 million such calls, and raising KC is
-/// worth 4% of the whole contraction - the difference between 96% and 101% of
-/// the vendor's own GEMM on that shape.
-///
-/// So when C spills the last-level cache, KC grows toward K. Nothing else moves:
-/// A's DRAM traffic scales with 1/NC and B's with 1/MC, and both are independent
-/// of KC, so MC and NC keep the values the machine model gave them even though
-/// the A panel then outgrows L2 - the measurement is unambiguous that the C
-/// sweeps are worth more than the panel's cache level. What pays is the packed
-/// B block, KC * NC, which is why the growth is capped.
+/// When C spills the last-level cache, each K block is a full sweep of demand misses over C, so KC
+/// grows toward K (worth 4% on ccsd's rank-4 shapes). MC and NC stay put; the packed B block
+/// (KC * NC) is what grows, hence the cap.
 ///
 /// M, N and K are the contraction's flat extents (plan.M_total and friends). A
 /// non-positive extent means there is nothing to block for and the machine-only
@@ -265,12 +233,7 @@ EINSUMS_EXPORT BlockingParams compute_blocking(int64_t elem_size, int MR, int NR
 /// @brief How far @ref compute_blocking may grow KC past its machine-derived
 ///        value when C spills the last-level cache.
 ///
-/// A memory guard, NOT a tuning knob: the measured curve is flat from roughly
-/// 4x the base KC up to KC = K (on ccsd rank-4 single, 58.5 GF/s at 4 sweeps
-/// against 59.3 at 2 and 59.2 at 1), so the exact multiple does not matter for
-/// performance. It exists so that a contraction with a pathologically large K
-/// cannot ask for an unbounded packed B block: the block grows with KC, to at
-/// most this multiple of the L3 budget NC was originally sized against.
+/// A memory guard, not a tuning knob (performance is flat from ~4x up): bounds the packed B block.
 inline constexpr int64_t BLIS_KC_SPILL_GROWTH = 8;
 
 // Convenience: default blocking for 8-byte elements (double / complex<float>).
@@ -412,26 +375,15 @@ inline void sort_k_dims_for_packing(PackingPlan &plan) {
 
 /// @brief Bytes a C run must cover before the write-back streams it.
 ///
-/// Mirrors @ref einsums::packed_gemm::kStreamRunBytes, which is the consumer of
-/// this figure; it is restated here because the A-order write-back has to be
-/// priced (in @ref coalesce_plan) before the header that defines it is reached.
+/// Restates @ref einsums::packed_gemm::kStreamRunBytes, which coalesce_plan needs earlier.
 inline constexpr int64_t kFlushRunBytes = 2 * 64;
 
 /// @brief The M group ordered for A, with C's contiguity still reachable.
 ///
-/// The flat M coordinate can be ordered for the packing operand or for C, and
-/// the loser walks the other's layout. The asymmetry the ordering cost model
-/// used to assume - that C's loser is stuck at a cache line per element - only
-/// holds while C's run has to come from the FASTEST M coordinate.
-///
-/// It does not. When the fastest coordinate is A's unit-stride index (so pack_A
-/// is a memcpy) and C's unit-stride index sits second-fastest, the block still
-/// holds whole runs of C's index; they are just strided by @ref xa inside the
-/// C block rather than contiguous in it. The write-back reads them back with a
-/// blocked transpose, which costs an L1 pass over a block that is already in
-/// L2 and leaves C's DRAM traffic sequential. It buys the pack: on
-/// abcde-efcad-bf pack_A falls from a 4.1 cycle-per-element gather to a copy,
-/// and the transpose costs about half of what that saves.
+/// When A's unit-stride index orders the flat M coordinate (pack_A is a memcpy) and C's sits
+/// second-fastest, the C block still holds whole runs of C's index at stride @ref xa, which the
+/// write-back transposes out in L1. On abcde-efcad-bf that trades a 4.1 cycle/element gather for
+/// a copy at half the saving.
 ///
 /// Interleaved A/B against the same tree without it, best of two, core 8 /
 /// node 2: abcde-efcad-bf +67% single / +36% double, abcde-efbad-cf +73/+36,
@@ -801,15 +753,8 @@ inline void precompute_offsets(int64_t start, int64_t len, std::vector<DimSpec> 
         return;
     }
 
-    // Generic odometer for 4+ dimensions.
-    //
-    // The two specializations above exist because flat_to_offset divides once
-    // per DIMENSION per element, and these tables are rebuilt for every cache
-    // block: abcde-efcad-bf has four M dims and builds a 2304-entry table 1296
-    // times per call, then does it again for C - six million divide chains on a
-    // contraction whose arithmetic floor is 83 ms. Carrying an odometer costs an
-    // add and a predictable branch instead, and it does not need a new
-    // specialization every time a rank shows up that nobody wrote one for.
+    // Generic odometer for 4+ dimensions: an add and a branch per element instead of flat_to_offset's
+    // divide per dimension, for tables rebuilt every cache block.
     constexpr size_t kMaxOdometer = 16;
     size_t const     nd           = dims.size();
     if (nd <= kMaxOdometer) {

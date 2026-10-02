@@ -685,8 +685,7 @@ bool gemm_from_strides(T *c_data, T const *a_data, T const *b_data, T alpha, T b
 /// block line is consumed whole and the staged transpose stays in L1. What reaches memory is the
 /// same sequential run of C the composed write-back sends.
 ///
-/// Out of line deliberately: inlined into @ref blis_contraction's hottest loop nest, it slowed
-/// contractions that never take this path.
+/// Out of line: inlined, it slowed contractions that never take this path.
 ///
 /// @p Cb is the mc_len x nb_cur block in column-major order, @p c_m_offsets is indexed by
 /// block-local flat M and @p c_n_offsets by N block position.
@@ -811,14 +810,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
     size_t const nb         = batch_dims.size();
 
     // ------------------------------------------------------------------------- Batch GEMM fast
-    // path: single-K, single-M, single-N with compatible strides becomes one gemm_batch() call. It
-    // is kept under a node width, unlike the single-GEMM deferrals below, because gemm_batch is
-    // einsums' own OpenMP loop over the batch and so consumes the width.
+    // path: single M, N and K become one gemm_batch(), einsums' own loop, so kept under a node width.
     // -------------------------------------------------------------------------
     //
-    // `!plan.swap_ab` is a guard, not a policy: this path reads A and B directly rather than
-    // through the role-resolved pointers below. A swap always implies a multi-dim group today, so
-    // it never fires, but it keeps a wider swap from silently breaking this path.
+    // `!plan.swap_ab` guards this path's direct reads of A and B (a swap never reaches here today).
     if (plan.batch_total > 1 && plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic && !plan.swap_ab) {
         // NOLINTNEXTLINE(readability-identifier-naming)
         using blas_int = einsums::blas::int_t;
@@ -1145,15 +1140,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 return perm.size() == ord.size();
             };
 
-            // Batched contractions (nb > 0) must not use the HPTT flatten: it describes the
-            // operand's full rank, batch dims included, while the flat buffers hold one slice and
-            // A_data/B_data already point at it, so the transpose would overflow them. The gather
-            // below honours the slice offset.
-            //
-            // A per-slice HPTT path does not pay either: the gather copies one KC tile just before
-            // the GEMM consumes it, so the copy stays in cache, where a whole-slice transpose
-            // round-trips the buffer through DRAM. The BatchedMultiK tests pin the layouts that
-            // comparison covered.
+            // No HPTT flatten for batched contractions: it would transpose the full rank into a buffer
+            // sized for one slice. The gather, which stays in cache, takes them.
             bool use_hptt = (nb == 0) && !plan.coalesced;
 
             std::vector<int>    perm_a, perm_b, ord_a, ord_b;
@@ -1180,17 +1168,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 use_hptt = describe_for_hptt(B, rank_b_rt, out_b, sizes_b, perm_b, ord_b);
             }
 
-            // How much K to hold at once.
-            //
-            // By default the flatten transposes whole operands so one GEMM spans all of K. A chunk
-            // of K is a sub-block of each operand, which HPTT can read (@ref hptt_transpose), so
-            // option::PackedGemmFlattenBudget can cap the buffers and turn the contraction into a
-            // short chain of large GEMMs. It is off by default because chunking is not free; the
-            // option's documentation says what it costs.
-            //
-            // Chunks run along the outermost plan K dim, where the flat K index varies slowest, so
-            // a chunk is a contiguous range of flat K, as both the destination layout and a
-            // zero-copy operand's offset assume.
+            // How much K to hold at once: all of it, unless option::PackedGemmFlattenBudget caps the
+            // buffers. Chunks run along the outermost K dim, so each is a contiguous range of flat K.
             int64_t const flat_budget_bytes = config::get(option::PackedGemmFlattenBudget) << 20;
             int64_t const elem_bytes        = static_cast<int64_t>(sizeof(ValueType));
             int64_t const per_k             = (a_zero_copy ? 0 : M) + (b_zero_copy ? 0 : N);
@@ -1459,9 +1438,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             int64_t const kc_base = compute_blocking(static_cast<int64_t>(sizeof(ValueType)), MR, NR).KC;
             KC_blk                = std::min(KC_blk, std::min(K, std::max(kc_team, kc_base)));
         }
-        // Bound the A panel at ~4 MiB. The bound is on the panel's size itself; gating it on a
-        // comparison of K values let 8 MiB panels through and switched off when the cache model
-        // grew.
+        // Bound the A panel at ~4 MiB.
         int64_t const mc_cap = (int64_t{4} << 20) / (KC_blk * static_cast<int64_t>(sizeof(ValueType)));
 
         // A scattered C needs a contiguous C block to accumulate into, because its elements are not
@@ -1601,11 +1578,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             }
         }
 
-        // beta == 0 says C's prior contents are irrelevant, so the first K block stores its result
-        // and later blocks accumulate onto it, as the direct-BLAS paths do through beta_k. A
-        // separate `*= 0` pass over a scattered C would touch one element per cache line, and would
-        // not honour BLAS's beta == 0 contract either: NaN * 0 is NaN, so an uninitialized C would
-        // leak through.
+        // beta == 0: the first K block stores and later ones accumulate, so C is never read (no
+        // NaN leaks from an uninitialized C) and no separate zeroing pass is needed.
         bool const overwrite_c = (beta == ValueType{0});
 
         // Whether the C block write-back may stream past the cache: C must be written and never
@@ -1645,10 +1619,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         bool const blk_runs_stream =
             plan.c_m_dims.back().tensor_stride == 1 && blk_m_fast * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes;
 
-        // The NC loop is the parallel loop, but only when there is enough work to pay for a
-        // fork/join (cpu_config().min_parallel_flops). For a small contraction the region costs
-        // orders of magnitude more than the arithmetic it distributes, so a tiled einsum of
-        // thousands of such nodes would get slower with more threads.
+        // The NC loop is parallel only above cpu_config().min_parallel_flops.
         double const work_flops    = 2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K);
         bool const   worth_threads = work_flops >= static_cast<double>(cpu_config().min_parallel_flops);
         bool const   parallel_nc   = !parallel_batch && worth_threads;
@@ -1718,10 +1689,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
         last_packed_blocking() = PackedBlocking{MC_blk, NC_blk, KC_blk};
 
-        // What the plan and the blocking came out as, on request: the strides settle which loop
-        // order won, and the blocks settle whether the write-back's runs form. Printed from out of
-        // line: this function is hot, and a formatting lambda in its body is not free even when the
-        // flag is off.
+        // Dump the plan and blocking on request, out of line to keep formatting off the hot path.
         if (config::get(option::PackedGemmDumpPlan)) {
             dump_packed_plan(plan, M, N, K, MR, NR, MC_blk, NC_blk, KC_blk, use_a_order, blk_aorder, scatter_n_inner, blk_compose,
                              blk_runs_stream);
@@ -2413,12 +2381,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                         ValueType *Ap_panel = Ap + ir * MR * kc_len;
                                         ValueType *Bp_panel = Bp + jr * NR * kc_len;
 
-                                        // Micro-kernel into contiguous Ct (col-major: rs=1, cs=MR). Always
-                                        // the whole MR x NR tile, even at an edge: Ct has room for it and
-                                        // the scatter below reads only mr_actual x nr_actual of it, so the
-                                        // lanes past the edge are computed and never read. Passing the edge
-                                        // extents instead sent every edge tile down the kernel's partial
-                                        // path, which stores through a stack tile element by element.
+                                        // The whole MR x NR tile into Ct even at an edge, avoiding the
+                                        // kernel's slow partial path; the scatter reads only the valid part.
                                         micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, MR, NR,
                                                    Ct, 1, MR);
 
@@ -2707,10 +2671,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                 ++n_count;
             // in_a && in_b → batch dim (handled by packing plan)
         }
-        // A letter in one input alone and absent from C is summed over that input. The packing plan
-        // has an axis only for target and link letters, so it would read that letter's first slice
-        // and drop the sum: the templated engine computed "jmk <- jml ; plk" from p = 0 alone.
-        // Decline, and the caller's generic algorithm sums it.
+        // A letter summed over one input alone has no axis in the plan: decline to the generic loop.
         std::unordered_set<std::string> const c_set(c_raw.begin(), c_raw.end());
         auto const                            has_lone = [&c_set](auto const &raw, std::unordered_set<std::string> const &other) {
             return std::ranges::any_of(raw, [&](std::string const &x) { return other.count(x) == 0 && c_set.count(x) == 0; });
@@ -3034,12 +2995,9 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     }
 
     // ------------------------------------------------------------------------- Pack-A / Pack-B
-    // path (BLIS-style, with optional batch dims).
-    // ------------------------------------------------------------------------- The cache stores
-    // plans already filled, k-sorted and coalesced, so a hit is only a lookup. That is sound
-    // because the key pins the strides and those steps read nothing else. The pointer outlives the
-    // shared lock deliberately: entries are never erased, and the map is node-based, so references
-    // to mapped values stay valid.
+    // path. Cached plans are fully prepared, so a hit is a lookup; entries are never erased and the
+    // map is node-based, so the pointer outlives the lock.
+    // -------------------------------------------------------------------------
     PackingPlan const *cached = PackingPlanCache::instance().lookup(key);
     PackingPlan        computed;
     if (cached == nullptr) {
