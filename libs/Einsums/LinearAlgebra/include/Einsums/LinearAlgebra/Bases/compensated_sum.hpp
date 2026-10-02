@@ -10,15 +10,8 @@
 #include <complex>
 #include <limits>
 
-// Three-tier compensated accumulator helpers used by the BLAS-bypass dot
-// and DiskAlgebra dot paths.
-//
-// Each value is funnelled into one of three running sums based on its
-// magnitude (``big_sum`` if scaled-down avoids overflow, ``small_sum`` if
-// scaled-up avoids underflow, ``medium_sum`` otherwise). ``combine_accum``
-// merges the three tiers into a single result at the end. This avoids the
-// catastrophic cancellation that a naive single-accumulator reduction
-// would hit when summing across many orders of magnitude.
+// Three-tier accumulators for the non-BLAS dot paths: each value goes to a big, small or medium
+// sum by magnitude (avoiding overflow and underflow), combined at the end by ``combine_accum``.
 
 EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {

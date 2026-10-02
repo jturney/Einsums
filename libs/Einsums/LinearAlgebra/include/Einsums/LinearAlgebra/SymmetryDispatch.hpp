@@ -10,10 +10,7 @@
 /// specialized kernels (``symm``/``hemm``) when the operand carries a
 /// matching ``SymmetryDescriptor``.
 ///
-/// These helpers inspect a tensor's declared symmetry and, if it matches a
-/// pattern BLAS has a specialized kernel for, call that kernel directly;
-/// otherwise they return ``false`` and the caller falls back to the general
-/// ``gemm`` path.
+/// A ``false`` return means no match; the caller uses ``gemm``.
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Concepts/Complex.hpp>

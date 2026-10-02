@@ -306,17 +306,8 @@ void scale_column(size_t column, typename AType::ValueType alpha, AType *A) {
 
 /// Elements a block-structured reduction will actually touch.
 ///
-/// The loop below runs over BLOCKS, so the block count is what decides whether
-/// it is worth a team - and it is not: measured with
-/// BenchmarkBlockTileReduction, a threaded block dot costs a flat ~60 us
-/// whatever the structure holds, against 0.5 us serial for two 8x8 blocks and
-/// 9.9 us for thirty-two 32x32. It only reaches break-even around half a
-/// million elements. The flat floor is the giveaway: that is fork cost, not
-/// work, and each block's own dot is a BLAS call that would rather have the
-/// threads itself.
-///
-/// So the region is gated on the total element count, the same currency
-/// @ref einsums::hardware::omp_min_parallel_elements is quoted in.
+/// The region is gated on total elements (@ref einsums::hardware::omp_min_parallel_elements), not
+/// block count: a threaded block dot cost a flat ~60 us against 0.5 us serial for two 8x8 blocks.
 template <typename AType>
 size_t block_reduction_elements(AType const &A) {
     size_t elements = 0;

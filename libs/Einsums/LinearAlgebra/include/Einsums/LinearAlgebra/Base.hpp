@@ -870,16 +870,12 @@ void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
 
 template <typename T>
 void axpby(T alpha, einsums::detail::TensorImpl<T> const &X, T beta, einsums::detail::TensorImpl<T> *Y) {
-    // If X aliases Y with the same layout, the scal-then-axpy split below would
-    // scale Y (and hence X) before axpy reads it -- corrupting the result
-    // (beta==0 zeroes X first). For that case Y = alpha*X + beta*Y = (alpha+beta)*Y.
+    // X is Y: scaling Y first would scale X too, so use Y = (alpha + beta) * Y.
     if (einsums::detail::impl_same_operand(X, *Y)) {
         einsums::detail::impl_scal(alpha + beta, *Y);
         return;
     }
-    // An X that shares storage with Y without being it (a shifted or
-    // transposed view of one parent) would be scaled by beta, or overwritten,
-    // before axpy read it. Read it through a copy.
+    // Any other overlap: read X through a copy.
     if (einsums::detail::impl_storage_overlaps(X, *Y)) {
         einsums::detail::impl_with_snapshot(X, [&](auto const &snapshot) { axpby(alpha, snapshot, beta, Y); });
         return;

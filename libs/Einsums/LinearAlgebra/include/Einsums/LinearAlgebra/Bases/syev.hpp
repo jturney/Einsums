@@ -65,9 +65,7 @@ void impl_hessenberg_reduce(einsums::detail::TensorImpl<T> *A, T *vec1, T *vec2,
         }
 
         // The first k + 1 elements of vec1 are all zero. This also means we can ignore the first k rows of A.
-        // NOTE: parallelize only the outer i loop. The accumulator is vec2[i]; with
-        // `collapse(2)` multiple threads can land on the same i (different j) and race
-        // on vec2[i]. Outer-only parallelism gives each thread a unique i.
+        // Parallel over i only: collapse(2) would race on vec2[i].
         EINSUMS_OMP_PARALLEL_FOR
         for (size_t i = 0; i < dim; i++) {
             for (size_t j = k + 1; j < dim; j++) {
@@ -95,9 +93,7 @@ void impl_hessenberg_reduce(einsums::detail::TensorImpl<T> *A, T *vec1, T *vec2,
 
         // In this case, the first k columns of A - Avv^T should be zero when vec1 is non-zero.
         // This means that the first k entries of vec2 will be zero.
-        // Loops swapped from (j outer, i inner) to (i outer, j inner) so the outer-only
-        // parallelism owns vec2[i] per thread. See the comment above the first
-        // matvec for why collapse(2) is unsafe here.
+        // i outer, so each thread owns vec2[i] (see above).
         EINSUMS_OMP_PARALLEL_FOR
         for (size_t i = k; i < dim; i++) {
             for (size_t j = k + 1; j < dim; j++) {

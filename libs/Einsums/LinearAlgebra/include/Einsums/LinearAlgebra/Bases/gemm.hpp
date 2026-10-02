@@ -35,13 +35,7 @@ void impl_gemm_noncontiguous(char transA, char transB, CType alpha, einsums::det
 
     constexpr CType zero = einsums::detail::convert<int, CType>(0);
 
-    // A parallel region costs the same whether the loop inside it has one
-    // iteration or a million - about 25 us at ten threads on the machine this
-    // was written on - so a region entered for trivial work is pure loss. The
-    // scaling loops walk m*n elements; the product loops do k times that. Both
-    // are held to the same threshold the rest of the library uses, and the
-    // collapse is over m*n, so a single output element can never be worth a
-    // team no matter how large k is.
+    // Regions are gated on the library's element threshold over m*n outputs (the collapse), whatever k is.
     size_t const outputs     = m * n;
     bool const   scale_par   = outputs >= ::einsums::hardware::omp_min_parallel_elements();
     bool const   product_par = outputs > 1 && outputs * k >= ::einsums::hardware::omp_min_parallel_elements();

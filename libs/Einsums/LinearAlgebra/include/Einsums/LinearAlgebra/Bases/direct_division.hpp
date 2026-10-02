@@ -19,12 +19,8 @@
 //
 //     c_i := beta * c_i + alpha * a_i / b_i
 //
-// Unlike direct_product there is no BLAS primitive for element-wise division,
-// so every path is a plain (OpenMP-SIMD) loop. The layout dispatch mirrors
-// direct_product exactly (contiguous / strided-vectorable / fully strided), so
-// views and mixed row/column-major operands behave identically. No divide-by-
-// zero guard: callers (CC denominators e_i+e_j-e_a-e_b, etc.) ensure b != 0;
-// matching numpy, 1/0 yields inf rather than throwing.
+// No BLAS primitive, so plain loops with direct_product's layout dispatch. No zero guard: as in
+// numpy, 1/0 is inf.
 
 EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
@@ -91,10 +87,7 @@ void impl_direct_division(CType alpha, einsums::detail::TensorImpl<AType> const 
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not combine tensors with different sizes!");
     }
 
-    // Lock-step vectorized paths require all three operands to map logical
-    // indices to memory identically; equal is_column_major() flags don't
-    // guarantee that for permuted/transposed views (see the note in impl_axpy).
-    // Compare actual strides and use the fully-general strided loop on mismatch.
+    // Lock-step paths need identical strides (see impl_axpy).
     if (A.strides() != B.strides() || A.strides() != C->strides()) {
         EINSUMS_LOG_DEBUG("Operands have different memory layouts. Using the fully-general strided fallback.");
 
@@ -135,9 +128,7 @@ void impl_direct_division(CType alpha, einsums::detail::TensorImpl<AType> const 
 
         hard_dims.resize(A.rank() - easy_rank);
 
-        // Use the layout flag (not a stride(0)<stride(-1) proxy) to pick the
-        // easy/hard split direction so it matches query_vectorable_params; the
-        // proxy ties on degenerate (size-1) extents and picks the wrong end.
+        // Split by the layout flag, as query_vectorable_params does (see impl_axpy).
         if (A.is_column_major()) {
             A_strides.resize(A.rank() - easy_rank);
             B_strides.resize(B.rank() - easy_rank);

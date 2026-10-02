@@ -30,11 +30,7 @@ void sum_square(AType const &A, T *scale, T *sumsq) {
 
 /// ``dot`` over a runtime-rank tiled tensor.
 ///
-/// The compile-time-rank overload below walks the whole grid with a
-/// ``std::array<size_t, Rank>``, which a runtime rank cannot supply. This walks
-/// the FILLED tiles instead, which is the better shape anyway: a tile absent
-/// from either operand contributes nothing, so a sparse grid costs its
-/// occupancy rather than its extent.
+/// Walks the filled tiles, so a sparse grid costs its occupancy, not its extent.
 template <typename T>
 [[nodiscard]] T dot(TiledRuntimeTensor<T> const &A, TiledRuntimeTensor<T> const &B) {
     if (A.dims() != B.dims()) {

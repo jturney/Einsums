@@ -24,11 +24,8 @@ template <typename AType, typename BType, typename CType>
 void impl_direct_product_contiguous(CType alpha, einsums::detail::TensorImpl<AType> const &a, einsums::detail::TensorImpl<BType> const &b,
                                     CType beta, einsums::detail::TensorImpl<CType> *c) {
     if constexpr (std::is_same_v<AType, BType> && std::is_same_v<AType, CType> && blas::IsBlasableV<AType>) {
-        // The scal-then-dirprod fast path scales c by beta before reading a and b.
-        // If a or b aliases c (in-place Hadamard, e.g. C = alpha*C*B), that scaling
-        // corrupts the input (beta==0 zeroes it) -> wrong result. Use it only when
-        // no input aliases the output; the scalar single-pass below reads c before
-        // overwriting and is alias-safe.
+        // The scal-then-dirprod path scales c before reading a and b, so only when neither aliases c;
+        // the scalar pass below is alias-safe.
         bool const aliased = static_cast<void const *>(a.data()) == static_cast<void const *>(c->data()) ||
                              static_cast<void const *>(b.data()) == static_cast<void const *>(c->data());
         if (!aliased) {
@@ -95,13 +92,8 @@ void impl_direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not combine tensors with different sizes!");
     }
 
-    // An input sharing storage with C is read through a copy. The vendor paths
-    // scale C by beta and then multiply into it, so such an input would be read
-    // already scaled or already written. The one shape kept in place is an input
-    // that IS C on a path whose single pass reads each element of C before
-    // writing it: the contiguous path (which drops to its scalar loop when
-    // aliased) and the fully strided loop. The strided loops over the vendor
-    // routine scale first, so they need the copy even then.
+    // An input overlapping C is read through a copy, except an input that is C on a single-pass path
+    // (the contiguous path's scalar loop and the fully strided loop).
     bool const same_layout        = A.strides() == B.strides() && A.strides() == C->strides();
     bool const all_vectorable     = A.is_totally_vectorable() && B.is_totally_vectorable() && C->is_totally_vectorable();
     bool const scales_before_read = same_layout && !all_vectorable;
@@ -120,11 +112,7 @@ void impl_direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &
         return;
     }
 
-    // Lock-step vectorized paths require all three operands to map logical
-    // indices to memory identically; equal is_column_major() flags don't
-    // guarantee that for permuted/transposed views (see the note in impl_axpy).
-    // Compare actual strides and use the fully-general strided loop on any
-    // mismatch.
+    // Lock-step paths need identical strides (see impl_axpy).
     if (A.strides() != B.strides() || A.strides() != C->strides()) {
         EINSUMS_LOG_DEBUG("Operands have different memory layouts. Using the fully-general strided fallback.");
 
@@ -165,9 +153,7 @@ void impl_direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &
 
         hard_dims.resize(A.rank() - easy_rank);
 
-        // Use the layout flag (not a stride(0)<stride(-1) proxy) to pick the
-        // easy/hard split direction so it matches query_vectorable_params; the
-        // proxy ties on degenerate (size-1) extents and picks the wrong end.
+        // Split by the layout flag, as query_vectorable_params does (see impl_axpy).
         if (A.is_column_major()) {
             A_strides.resize(A.rank() - easy_rank);
             B_strides.resize(B.rank() - easy_rank);
