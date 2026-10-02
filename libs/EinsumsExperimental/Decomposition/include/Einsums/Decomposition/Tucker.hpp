@@ -78,8 +78,6 @@ auto initialize_tucker(std::vector<TTensor, Alloc> &folds, Ranks &ranks) -> Buff
         size_t rank    = ranks[i];
         auto [U, S, _] = linear_algebra::svd_dd(folds[i]);
 
-        // println(tensor_algebra::unfold<i>(tensor));
-        // println(S);
 
         if (folds[i].dim(0) < rank) {
             // i is an std::integral_constant the "()" obtains the underlying value.

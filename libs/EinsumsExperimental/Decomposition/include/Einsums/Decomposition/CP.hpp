@@ -135,12 +135,8 @@ auto initialize_cp(std::vector<Tensor<TType, 2>, Alloc> &folds, size_t rank) -> 
             }
         }
 
-        // println("After scaling");
-        // println(U);
 
         if (folds[i].dim(0) < rank) {
-            // EINSUMS_LOG_WARN("dimension {} size {} is less than the requested decomposition rank {}", i, folds[i].dim(0), rank);
-            /// @todo Need to padd U up to rank
             Tensor<TType, 2> Unew  = create_random_tensor<TType>("Padded SVD Left Vectors", folds[i].dim(0), rank);
             Unew(All, Range{0, m}) = U(All, All);
 
@@ -151,10 +147,6 @@ auto initialize_cp(std::vector<Tensor<TType, 2>, Alloc> &folds, size_t rank) -> 
             factors.emplace_back(Tensor<TType, 2>{U(All, Range{m - rank, m})});
         }
 
-        // println("latest factor added");
-        // println(factors[factors.size() - 1]);
-        // Tensor<TType, 2> Unew = create_random_tensor("Padded SVD Left Vectors", folds[i].dim(0), rank);
-        // factors.emplace_back(Unew);
     });
 
     return factors;
@@ -201,8 +193,6 @@ auto parafac(Tensor<TType, TRank> const &tensor, size_t rank, int n_iter_max = 1
                 if (m_ind != n_ind) {
                     Tensor<TType, 2> A_tA{"V", rank, rank};
                     // A_tA = A^T[j] @ A[j]
-                    // println("iter {}, mind {}", iter, m_ind);
-                    // println(factors[m_ind]);
                     einsum(0.0, Indices{r, s}, &A_tA, 1.0, Indices{I, r}, factors[m_ind], Indices{I, s}, factors[m_ind]);
 
                     if (first) {
