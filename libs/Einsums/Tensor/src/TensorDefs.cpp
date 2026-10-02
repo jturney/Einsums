@@ -48,11 +48,7 @@ template struct GeneralRuntimeTensor<double, BufferAllocator<double>>;
 template struct GeneralRuntimeTensor<std::complex<float>, BufferAllocator<std::complex<float>>>;
 template struct GeneralRuntimeTensor<std::complex<double>, BufferAllocator<std::complex<double>>>;
 
-// NB: no explicit instantiations for gpu::DeviceAllocator; the device
-// runtime variant has host-only members gated with static_assert /
-// requires, so explicit class instantiation would force-instantiate
-// those bodies and fail. Code that uses RuntimeGPUTensor<T> picks it
-// up via implicit instantiation, mirroring GeneralTensor's pattern.
+// No explicit instantiations for gpu::DeviceAllocator, whose host-only members would then fail.
 
 template struct RuntimeTensorView<float>;
 template struct RuntimeTensorView<double>;

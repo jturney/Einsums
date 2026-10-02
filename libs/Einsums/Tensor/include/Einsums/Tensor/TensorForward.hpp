@@ -89,10 +89,7 @@ struct TiledRuntimeTensor;
 
 /// GPU-resident runtime-rank tensor using the gpu:: abstraction layer.
 ///
-/// Mirrors GPUTensor but with rank known only at runtime. It is not exposed to
-/// Python. The ComputeGraph optimization passes, such as GPUPlacement, own
-/// the host-to-device decision; users program in Python as if everything
-/// runs on a single host. On the mock backend, with no GPU, it uses std::malloc.
+/// Not exposed to Python, where GPUPlacement makes the device decision. std::malloc on the mock.
 template <typename T>
 using RuntimeGPUTensor = GeneralRuntimeTensor<T, gpu::DeviceAllocator<T>>;
 

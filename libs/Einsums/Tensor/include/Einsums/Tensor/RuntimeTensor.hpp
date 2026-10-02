@@ -71,9 +71,7 @@ Tensor &viewable(Tensor &tensor, char const *what) {
  *
  * @brief Represents a tensor whose properties can be determined at runtime but not compile time.
  *
- * This kind of tensor is unable to be used in many of the same ways as a tensor with compile-time rank. It is mostly used for communication
- * with the Python interface. To use it with rank-templated Einsums calls, convert it into a TensorView so that the rank can be coerced at
- * compile time.
+ * Mostly for the Python interface. For rank-templated calls, convert it to a TensorView.
  *
  * @tparam T The data type stored by the tensor.
  * @tparam Alloc The allocator used for the internal data.
@@ -88,11 +86,7 @@ template <typename T, typename Alloc>
 struct
     // clang-format off
 APIARY_EXPOSE
-// GeneralRuntimeTensor's allocator depends on T, so we pin each
-// (T, std::allocator<T>) tuple individually rather than using a flat
-// INSTANTIATE_TEMPLATE cross-product. BUFFER_PROTOCOL_STD lets the
-// codegen synthesize the buffer-info builder from the named pure-C++
-// accessors, so Tensor.hpp has zero pybind11 references.
+// Each (T, std::allocator<T>) is instantiated individually, as the allocator depends on T.
 APIARY_BUFFER_PROTOCOL
 APIARY_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride, element_type = T)
 APIARY_ITERATOR_STD(begin = begin, end = end)
@@ -414,11 +408,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         if constexpr (IsDeviceTensor) {
             gpu::device_memset(_storage->owned.data(), 0, _storage->owned.size() * sizeof(T));
         } else {
-            // Storage is owned, aliased (@ref alias_to), or external
-            // (@ref materialize_into, the MemoryPlanning arena). Both of the
-            // latter two leave the owned buffer empty, so zeroing it was a silent no-op on
-            // exactly the tensors the memory passes manage. Go through the
-            // impl, which always points at the live buffer.
+            // Through the impl, which points at the live buffer whether owned, aliased or external.
             if (!is_materialized()) {
                 return; // deferred: no storage yet, and _impl holds the release sentinel
             }
@@ -461,11 +451,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * Disabled for device runtime tensors, because gpu::DeviceVector has no
      * iterators and device memory is not host-accessible.
      *
-     * These iterate the LIVE storage, which is the owned buffer only when the
-     * tensor owns it: alias_to() and materialize_into() both empty that buffer, so
-     * iterating it yielded an empty range on aliased and arena-backed tensors.
-     * A deferred tensor still yields an empty range - _impl holds the release
-     * sentinel there, so its size must not be used to bound a pointer walk.
+     * They iterate the live storage (owned, aliased or external); a deferred tensor yields an empty range.
      */
     auto begin() noexcept
         requires(!IsDeviceTensor)
@@ -950,10 +936,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         return *this;
     }
 
-    // Element-wise compound-assignment operators are host-only. They go
-    // through detail::add_assign/sub_assign/etc., which iterate scalar
-    // elements. For device tensors, do GPU-side equivalents through
-    // ComputeGraph or BLAS calls.
+    // Element-wise compound assignment: host only.
     template <typename TOther>
         requires(!IsDeviceTensor)
     GeneralRuntimeTensor &operator+=(TOther const &b) {
@@ -1158,10 +1141,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
 
     [[nodiscard]] bool is_column_major() const { return _impl.is_column_major(); }
 
-    // Zero-copy transposed (reversed-axis) view. Exposed to Python as the
-    // ``.T`` property (see einsums/__init__.py); KEEP_ALIVE(0,1) ties this
-    // tensor's storage to the returned view so numpy arrays built from it
-    // stay valid.
+    // Zero-copy reversed-axis view, Python's ``.T``. KEEP_ALIVE(0,1) ties storage.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> transpose_view() {
         return RuntimeTensorView<T>(detail::viewable(*this, "transpose_view").impl().transpose_view(), _storage);
     }
@@ -1170,18 +1150,12 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         return RuntimeTensorView<T>(detail::viewable(*this, "transpose_view").impl().transpose_view(), _storage);
     }
 
-    // Zero-copy axis-permuted view (result axis i takes parent axis perm[i]).
-    // Backs the eager ``.transpose(axes)`` / ``.swapaxes`` (see einsums/__init__.py);
-    // the capture path uses cg.permute_view instead. KEEP_ALIVE(0,1) ties storage.
+    // Zero-copy view, axis i taking parent axis perm[i]; eager ``.transpose(axes)``. KEEP_ALIVE(0,1).
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
         return RuntimeTensorView<T>(detail::viewable(*this, "permute_view").impl().permute_view(perm), _storage);
     }
 
-    // Zero-copy reshaped view. The reinterpretation is free when the axes being
-    // merged already abut in memory - which is the case that matters, because
-    // the alternative is linalg::reshape copying the whole tensor. Throws rather
-    // than silently copying when the strides do not allow it, so a caller that
-    // wanted a view finds out. KEEP_ALIVE(0,1) ties storage.
+    // Zero-copy reshape; throws rather than copying when the strides do not allow it. KEEP_ALIVE(0,1).
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> reshape_view(std::vector<size_t> const &new_dims) {
         return RuntimeTensorView<T>(detail::viewable(*this, "reshape_view").impl().reshape_view(new_dims), _storage);
     }
@@ -1223,11 +1197,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
                                     _storage);
     }
 
-    // ── Symmetry metadata ──────────────────────────────────────────────
-    // Mirrors GeneralTensor's symmetry API so runtime-rank tensors (the
-    // Python-facing path) can declare the same invariants. See
-    // Tensor/SymmetryOps.hpp for symmetrize / check_symmetry (they're
-    // compile-time-rank and only apply to GeneralTensor).
+    // ── Symmetry metadata (as GeneralTensor; see Tensor/SymmetryOps.hpp) ─
 
     void set_symmetry(SymmetryDescriptor desc) {
         if (desc.empty())
@@ -1242,11 +1212,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
 
     [[nodiscard]] bool has_symmetry() const { return _symmetry && !_symmetry->empty(); }
 
-    // ── Deferred-allocation lifecycle ────────────────────────────────
-    //
-    // Mirrors GeneralTensor's API so ComputeGraph passes (Materialization,
-    // FreeInsertion) and TensorHandle::make_handle's SFINAE probes pick
-    // up the same capabilities on RuntimeTensor.
+    // ── Deferred-allocation lifecycle (as GeneralTensor, for the graph passes) ─
 
     /// Allocate backing storage (no-op if already materialized).
     /// Idempotent; safe to call repeatedly.
@@ -1259,15 +1225,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
 
     /// Materialize into caller-provided storage instead of allocating.
     ///
-    /// Mirrors GeneralTensor::materialize_into: @p ptr must hold at least
-    /// size() elements and outlive every use of this tensor; release()
-    /// detaches from it and the destructor never frees it. Used by the
-    /// MemoryPlanning arena to place graph-owned intermediates at planned
-    /// offsets in one shared block. Idempotent for the same pointer;
-    /// switching storage requires an intervening release(). Host tensors
-    /// only: the arena is host memory, so device runtime tensors do not
-    /// offer this (and make_handle's probe then leaves materialize_into_fn
-    /// unset, keeping them out of the arena).
+    /// As GeneralTensor::materialize_into: @p ptr holds size() elements and outlives the tensor, which
+    /// never frees it. For the MemoryPlanning arena. Idempotent for one pointer; host tensors only.
     void materialize_into(T *ptr)
         requires(!IsDeviceTensor)
     {
@@ -1276,11 +1235,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
 
     /// Materialize into caller-provided storage that carries its own keepalive.
     ///
-    /// Same contract as the raw overload except for lifetime: holding @p owner
-    /// is what keeps @p ptr alive, so the "must outlive every use" promise is
-    /// kept by construction rather than by the caller. A MemoryPool carve
-    /// arrives this way, and dropping the token - through release(), resize(),
-    /// or the tensor's death, on any thread - returns the bytes to the pool.
+    /// Holding @p owner keeps @p ptr alive (a MemoryPool carve); dropping it frees the carve.
     void materialize_into(T *ptr, std::shared_ptr<void const> owner)
         requires(!IsDeviceTensor)
     {
@@ -1295,20 +1250,15 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         _impl.set_data(ptr);
     }
 
-    /// True iff backing storage is available. Storage counts as available when
-    /// it is owned with a non-empty buffer, aliased to an external buffer,
-    /// materialized into external storage, or rank-0 with no data needed.
+    /// True when storage is owned, aliased or external, or none is needed (size 0).
     [[nodiscard]] bool is_materialized() const {
         return _aliased || _storage->external != nullptr || !_storage->owned.empty() || _impl.size() == 0;
     }
 
     /// Release backing storage, returning to the deferred state.
     ///
-    /// Dims and strides are preserved. data() returns a sentinel pointer until
-    /// materialize() is called again. Used by FreeInsertion to free
-    /// intermediates after their last consumer. External (materialize_into)
-    /// storage is detached, never freed. This is a no-op for aliased
-    /// tensors, which don't own their memory, so there is nothing to free.
+    /// Shape is kept; data() is a sentinel until materialize(). External storage is detached, not
+    /// freed; a no-op for aliased tensors. Used by FreeInsertion.
     void release() {
         if (_aliased || !_storage->allocated())
             return;
@@ -1318,11 +1268,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
 
     /// Re-seat this wrapper's cached data pointer on the storage block's current buffer.
     ///
-    /// The runtime-rank counterpart of @ref GeneralTensor::resync_storage, and it exists for
-    /// the same reason: a wrapper that SHARES a block (``shallow_alias()``, and the stand-in
-    /// graph capture adopts) holds its own cached address, and a relocation - release,
-    /// materialize, materialize_into, a resize - only re-seats the wrapper that made the call.
-    /// Dims and strides are untouched; a relocation moves the buffer, not the shape.
+    /// See @ref GeneralTensor::resync_storage.
     void resync_storage() noexcept {
         if (!_storage || _seen_generation == _storage->generation) {
             return;
@@ -1338,11 +1284,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     /// Re-point this tensor at an external buffer it does not own, a zero-copy
     /// alias, with the given layout.
     ///
-    /// Any previous owned storage is dropped, and
-    /// the caller guarantees @p ptr outlives this tensor. Used to wrap foreign
-    /// block memory, such as a psi4 Matrix irrep block, as a tile of a
-    /// TiledRuntimeTensor without copying. After this the tensor reports
-    /// materialized and is release-proof. This is an experimental zero-copy bridge.
+    /// Owned storage is dropped; @p ptr must outlive the tensor. Experimental, for wrapping foreign
+    /// blocks (a psi4 irrep block) as tiles without copying.
     void alias_to(T *ptr, bool row_major) {
         std::vector<size_t> d(_impl.rank());
         for (size_t i = 0; i < d.size(); ++i) {
@@ -1353,16 +1296,10 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         _aliased = true;
     }
 
-    /// Override the internal data pointer. Used by the GPU executor's
-    /// swap_data callback (TensorHandle.hpp:240) to redirect a tensor
-    /// to a device shadow allocation, then restore the original later.
-    /// Caller is responsible for the pointer's lifetime.
+    /// Override the data pointer (the GPU executor's swap to a device shadow). Caller owns the lifetime.
     void set_data(Pointer ptr) noexcept { _impl.set_data(ptr); }
 
-    /// Change dimensions of an already-materialized tensor.
-    /// No-op if dims match the current shape. Otherwise allocates a
-    /// new buffer, discarding existing data, under the same contract as
-    /// GeneralTensor's resize. The argument is any range of size_t.
+    /// Change the shape of a materialized tensor, discarding data (no-op if unchanged), as GeneralTensor.
     template <typename Dims>
         requires requires(Dims const &d) {
             d.begin();
@@ -1374,16 +1311,9 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         if (dims.size() == _impl.rank() && std::equal(_impl.dims().cbegin(), _impl.dims().cend(), dims.begin())) {
             return;
         }
-        // Build new impl to compute the required size, but don't commit yet.
-        // NB: ``stored_row_major()``, not ``is_row_major()``, because the latter
-        // collapses to true for rank-≤1 tensors regardless of how the
-        // tensor was originally constructed, so resizing a column-major
-        // ``[0]`` placeholder up to ``[3,4]`` would silently flip layout.
+        // The new impl, not committed yet. ``stored_row_major()``: ``is_row_major()`` says true below rank 2.
         detail::TensorImpl<T> new_impl(nullptr, dims, _impl.stored_row_major());
-        // Resize data first; if this throws, _impl and the block remain consistent.
-        // A resize always lands in owned storage: any arena attachment is
-        // dropped (the planned slot was sized for the old shape), and with it
-        // any keepalive, which for a pooled carve is the free.
+        // Resize data first, so a throw leaves everything consistent. Always into owned storage.
         _storage->detach_external();
         _storage->resize_owned(new_impl.size());
         // Data resize succeeded, so now commit.
@@ -1402,11 +1332,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         resize(std::vector<size_t>{static_cast<size_t>(dims)...});
     }
 
-    /// Change dimensions of a deferred (un-materialized) tensor without
-    /// allocating storage. Used by DistributionPlanning + Materialization
-    /// passes to shrink a globally-declared tensor to a local partition
-    /// before allocating. Asserts the tensor is not yet materialized,
-    /// matching GeneralTensor's contract.
+    /// Change the shape of a deferred tensor without allocating (the distribution passes' local
+    /// partition). Asserts it is not materialized.
     template <typename Dims>
         requires requires(Dims const &d) {
             d.begin();
@@ -1430,12 +1357,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     /// Lazily-created liveness token used by ComputeGraph's runtime validator;
     /// see make_handle.
     ///
-    /// The validator holds a std::weak_ptr to it so it can
-    /// detect destruction without dereferencing a possibly-freed tensor. The
-    /// old canary read freed memory, which is undefined behavior, and was
-    /// unreliable, since a reused but unchanged canary read as alive. The token
-    /// is created on first request, so tensors never captured into a graph pay
-    /// nothing.
+    /// The validator watches it through a std::weak_ptr. Created on first request.
     [[nodiscard]] std::weak_ptr<void> liveness_token() const {
         if (!_life_token) {
             _life_token = std::make_shared<char>();
@@ -1446,16 +1368,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
   protected:
     /// Refcounted backing storage, always non-null.
     ///
-    /// Holds both storage modes: ``owned`` for memory this tensor allocated and
-    /// ``external`` for memory attached through @ref materialize_into (the
-    /// MemoryPlanning arena), which are mutually exclusive. A third mode,
-    /// @ref alias_to, owns nothing at all and leaves the block empty.
-    ///
-    /// Shared rather than held by value so that a holder other than this
-    /// wrapper can keep the buffer alive: graph capture takes a reference to
-    /// it, and so does any view sliced from this tensor. Copy construction
-    /// still allocates a fresh block and deep-copies, so value semantics are
-    /// unchanged.
+    /// ``owned`` or ``external`` (@ref materialize_into) storage, or empty for @ref alias_to. Shared so
+    /// graph capture and views can keep it alive; copies still deep-copy.
     std::shared_ptr<detail::StorageBlock<T, Vector>> _storage{detail::make_storage_block<T, Vector>()};
 
     std::string _name{"(unnamed)"};
@@ -1466,9 +1380,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     /// seeded from. @see resync_storage
     size_t _seen_generation{0};
 
-    /// True when _impl points at memory this tensor does NOT own (see
-    /// @ref alias_to). Such a tensor is permanently "materialized" and
-    /// release()/materialize() leave its external buffer untouched.
+    /// _impl points at memory this tensor does not own (@ref alias_to): always materialized.
     bool _aliased{false};
 
     std::unique_ptr<SymmetryDescriptor> _symmetry{};
@@ -1503,10 +1415,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
  */
 template <typename T>
 struct APIARY_EXPOSE
-// Same Plan C protocol surface as GeneralRuntimeTensor: zero-copy numpy
-// interop via buffer protocol, Python iter, scalar subscript, and
-// slice/partial-tuple subscript. at_view returns a nested
-// RuntimeTensorView, so a view slices just like a full tensor.
+// The same Python protocols as GeneralRuntimeTensor; at_view returns a nested view.
 APIARY_BUFFER_PROTOCOL APIARY_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride, element_type = T)
 APIARY_INDEX_PROTOCOL_STD(element_type = T, rank = rank, dim = dim, at_element = at_element, set_element = set_element, at_view = at_view,
                           view_type = einsums::RuntimeTensorView<T>) APIARY_INSTANTIATE_AS("RuntimeTensorViewF", RuntimeTensorView<float>)
@@ -2162,28 +2071,19 @@ APIARY_INSTANTIATE_AS("RuntimeTensorViewZ", RuntimeTensorView<std::complex<doubl
 
     [[nodiscard]] bool is_column_major() const { return _impl.is_column_major(); }
 
-    // Zero-copy transposed (reversed-axis) view. Exposed to Python as the
-    // ``.T`` property (see einsums/__init__.py); KEEP_ALIVE(0,1) ties this
-    // tensor's storage to the returned view so numpy arrays built from it
-    // stay valid.
+    // Zero-copy reversed-axis view, Python's ``.T``. KEEP_ALIVE(0,1) ties storage.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> transpose_view() {
         return RuntimeTensorView<T>(_impl.transpose_view(), _storage_ref);
     }
 
     [[nodiscard]] RuntimeTensorView<T> const transpose_view() const { return RuntimeTensorView<T>(_impl.transpose_view(), _storage_ref); }
 
-    // Zero-copy axis-permuted view (result axis i takes parent axis perm[i]).
-    // Backs the eager ``.transpose(axes)`` / ``.swapaxes`` (see einsums/__init__.py);
-    // the capture path uses cg.permute_view instead. KEEP_ALIVE(0,1) ties storage.
+    // Zero-copy view, axis i taking parent axis perm[i]; eager ``.transpose(axes)``. KEEP_ALIVE(0,1).
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
         return RuntimeTensorView<T>(_impl.permute_view(perm), _storage_ref);
     }
 
-    // Zero-copy reshaped view. The reinterpretation is free when the axes being
-    // merged already abut in memory - which is the case that matters, because
-    // the alternative is linalg::reshape copying the whole tensor. Throws rather
-    // than silently copying when the strides do not allow it, so a caller that
-    // wanted a view finds out. KEEP_ALIVE(0,1) ties storage.
+    // Zero-copy reshape; throws rather than copying when the strides do not allow it. KEEP_ALIVE(0,1).
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> reshape_view(std::vector<size_t> const &new_dims) {
         return RuntimeTensorView<T>(_impl.reshape_view(new_dims), _storage_ref);
     }
@@ -2240,9 +2140,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorViewZ", RuntimeTensorView<std::complex<doubl
 
     /// A second view over the same region, holding the same parent storage.
     ///
-    /// Views are already non-owning, so this is a plain copy; it exists so that
-    /// graph capture can adopt a view operand through the same interface it
-    /// uses for owning tensors. See ``Graph::adopt_operand``.
+    /// A plain copy, for the interface ``Graph::adopt_operand`` uses on owning tensors.
     [[nodiscard]] RuntimeTensorView shallow_alias() const { return *this; }
 
   protected:
@@ -2255,9 +2153,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorViewZ", RuntimeTensorView<std::complex<doubl
 
     detail::TensorImpl<T> _impl{};
 
-    /// Strong reference to the storage block of the tensor this view was
-    /// sliced from, so the view keeps that buffer alive on its own. Null for
-    /// views built directly from a @c TensorImpl, which have no block to hold.
+    /// Keeps the parent's storage alive; null for views built from a bare @c TensorImpl.
     std::shared_ptr<detail::StorageBase> _storage_ref;
 
     /// @see liveness_token(). Lazily created; destroyed with the view so the

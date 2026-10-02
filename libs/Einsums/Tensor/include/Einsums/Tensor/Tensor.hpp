@@ -310,9 +310,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      */
     template <size_t OtherRank, typename... Dims>
     explicit GeneralTensor(GeneralTensor<T, OtherRank, Alloc> &&existingTensor, std::string name, Dims... dims)
-        // Reshaping adopts the source's whole storage block rather than just
-        // its buffer, so anything already holding that block -- a view, a
-        // captured graph operand -- keeps reading the same memory.
+        // Adopt the whole storage block, so its other holders keep reading the same memory.
         : _name{std::move(name)}, _storage{std::exchange(existingTensor._storage, detail::make_storage_block<T, Vector>())} {
         static_assert(Rank == sizeof...(dims), "Declared rank does not match provided dims");
 
@@ -460,9 +458,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         requires(sizeof...(Dims) == Rank)
     GeneralTensor([[maybe_unused]] DeferredAlloc tag, std::string name, Dims... dims)
         : _name{std::move(name)},
-          // Use a sentinel non-null pointer so TensorImpl stores dims/strides correctly.
-          // The pointer is never dereferenced; it just prevents TensorImpl::dim() from
-          // returning 0, which it does when _ptr == nullptr.
+          // A never-dereferenced sentinel, as TensorImpl::dim() reports 0 for a null pointer.
           _impl(reinterpret_cast<T *>(0x1), std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...}, default_row_major()) {
         static_assert(Rank == sizeof...(dims), "Declared Rank does not match provided dims");
         // Do not allocate; storage is deferred until materialize().
@@ -511,9 +507,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
             return;
         }
         assert(_storage->external == nullptr && "materialize_into(): release() before switching external storage");
-        // An owned buffer gives way to the external one (the MemoryPlanning
-        // arena attaches to eager intermediates that were allocated at
-        // create_tensor time); holding both would waste the owned copy.
+        // The external buffer replaces any owned one.
         _storage->attach_external(ptr, std::move(owner));
         _impl.set_data(ptr);
     }
@@ -796,9 +790,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         // Build new impl to compute the required size, but don't commit yet.
         detail::TensorImpl<T> new_impl(nullptr, dims, _impl.is_row_major());
 
-        // A resize always lands in owned storage: any external attachment is
-        // dropped (the attached buffer was sized for the old shape), and with
-        // it any keepalive, which for a pooled carve is the free.
+        // Always into owned storage, dropping any external attachment.
         _storage->detach_external();
         // Resize data first; if this throws, _impl and the block remain consistent.
         _storage->resize_owned(new_impl.size());
@@ -828,13 +820,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * @brief Zeroes out the tensor data.
      */
     void zero() {
-        // The owned buffer's data() is allowed to be nullptr when it is empty
-        // (e.g. zero-sized tensors used during construction or as views).
-        // memset / device_memset are declared [[gnu::nonnull(1)]] in the
-        // glibc/CUDA headers, so passing nullptr trips UBSan even though
-        // the count is also 0 (which is otherwise defined). Skip the call
-        // when there's nothing to write. Caught on the ASan/UBSan leg by
-        // Tests.Unit.Modules.LinearAlgebra.pow + .TensorUtilities.BlockViews.
+        // An empty buffer's data() may be null, which memset's nonnull declaration rejects.
         if (_storage->owned.empty()) {
             return;
         }
@@ -1030,12 +1016,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         requires requires { requires AtLeastOneOfType<AllT, MultiIndex...> || AtLeastOneOfType<Range, MultiIndex...>; }
     auto operator()(MultiIndex const &...index)
         -> TensorView<T, count_of_type<AllT, MultiIndex...>() + count_of_type<Range, MultiIndex...>()> {
-        // Construct a TensorView using the indices provided as the starting point for the view.
-        // e.g.:
-        //    Tensor T{"Big Tensor", 7, 7, 7, 7};
-        //    T(0, 0) === T(0, 0, :, :) === TensorView{T, Dims<2>{7, 7}, Offset{0, 0}, Stride{49, 1}} ??
-        // println("Here");
-
+        // A view from the given leading indices: T(0, 0) is T(0, 0, :, :).
         return TensorView<T, count_of_type<AllT, MultiIndex...>() + count_of_type<Range, MultiIndex...>()>{
             _impl.template subscript<true>(index...), data()};
     }
@@ -1053,11 +1034,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         requires requires { requires AtLeastOneOfType<AllT, MultiIndex...> || AtLeastOneOfType<Range, MultiIndex...>; }
     auto operator()(MultiIndex const &...index) const
         -> TensorView<T, count_of_type<AllT, MultiIndex...>() + count_of_type<Range, MultiIndex...>()> const {
-        // Construct a TensorView using the indices provided as the starting point for the view.
-        // e.g.:
-        //    Tensor T{"Big Tensor", 7, 7, 7, 7};
-        //    T(0, 0) === T(0, 0, :, :) === TensorView{T, Dims<2>{7, 7}, Offset{0, 0}, Stride{49, 1}} ??
-
+        // A view from the given leading indices: T(0, 0) is T(0, 0, :, :).
         return TensorView<T, count_of_type<AllT, MultiIndex...>() + count_of_type<Range, MultiIndex...>()>(
             _impl.template subscript<true>(index...));
     }
@@ -1411,14 +1388,8 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
     // ── Symmetry metadata ──────────────────────────────────────────────────
     //
-    // A tensor optionally carries a SymmetryDescriptor describing invariants
-    // the caller guarantees hold for its data (e.g. ``T(i,j) = T(j,i)``).
-    // The descriptor is metadata; storage remains dense. BLAS dispatch and
-    // ComputeGraph passes read it to pick specialized kernels
-    // (``syev`` over ``geev``, ``symm`` over ``gemm``, etc.).
-    //
-    // The descriptor is shared-owned so copies preserve the declared
-    // symmetry without copying the (small) descriptor payload.
+    // An optional SymmetryDescriptor the caller guarantees (e.g. ``T(i,j) = T(j,i)``). Storage stays
+    // dense; dispatch reads it to pick kernels (``symm`` over ``gemm``).
 
     /// Attach or replace the symmetry descriptor. Pass an empty descriptor
     /// to clear.
@@ -1467,11 +1438,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
     /// Lazily-created token whose lifetime tracks this object.
     ///
-    /// The graph's validator, see make_handle, holds a std::weak_ptr to it to detect
-    /// destruction without dereferencing a possibly-freed tensor. Reading a
-    /// destroyed object's memory, the old canary approach, is undefined
-    /// behavior and unreliable. The token is created on first request, so
-    /// tensors never captured into a graph pay nothing.
+    /// The graph's validator watches it through a std::weak_ptr. Created on first request.
     [[nodiscard]] std::weak_ptr<void> liveness_token() const {
         if (!_life_token) {
             _life_token = std::make_shared<char>();
@@ -1486,15 +1453,8 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
     /// Refcounted backing storage, always non-null.
     ///
-    /// Holds both storage modes: ``owned`` for memory this tensor allocated and
-    /// ``external`` for memory attached through materialize_into() (e.g. a
-    /// MemoryPlanning arena slice), which are mutually exclusive.
-    ///
-    /// Shared rather than held by value so that a holder other than this
-    /// wrapper can keep the buffer alive: graph capture takes a reference to
-    /// it, and so does any view sliced from this tensor. Copy construction
-    /// still allocates a fresh block and deep-copies, so value semantics are
-    /// unchanged; sharing only happens where somebody asked for it.
+    /// ``owned`` or ``external`` (materialize_into) storage. Shared so graph capture and views can
+    /// keep it alive; copies still deep-copy.
     std::shared_ptr<detail::StorageBlock<T, Vector>> _storage{detail::make_storage_block<T, Vector>()};
 
     detail::TensorImpl<T> _impl{};
@@ -1507,19 +1467,10 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     Dim<Rank>    _dim_array;
     Stride<Rank> _stride_array;
 
-    /// Optional declared symmetry, null when the tensor is treated as general.
-    /// unique_ptr keeps copies independent, avoiding accidental aliasing through
-    /// a refcount, and avoids atomic overhead. A null descriptor costs 8 bytes
-    /// per tensor. The copy constructor and copy-assignment operator on
-    /// GeneralTensor deep-clone the descriptor so the symmetry survives across
-    /// copies.
+    /// Optional declared symmetry; null for a general tensor. Copies deep-clone it.
     std::unique_ptr<SymmetryDescriptor> _symmetry{};
 
-    /// Post-materialize init policy. Set at declaration time (e.g. by
-    /// ``Workspace::declare_zero_tensor``) and consumed by ``make_handle``
-    /// so the init metadata reaches a Graph that captures this tensor
-    /// later. POD-ish so it's safe across copies / moves; see
-    /// ``Einsums/Tensor/PendingInit.hpp``.
+    /// Post-materialize init policy; see ``Einsums/Tensor/PendingInit.hpp``.
     PendingInit _pending_init{PendingInit::None};
 
     template <typename T_, size_t Rank_>
@@ -1532,9 +1483,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     /// Pending post-materialize init kind. Defaults to ``None``.
     [[nodiscard]] PendingInit pending_init() const { return _pending_init; }
 
-    /// Tag this tensor with a post-materialize init policy. Used by
-    /// declaration helpers (Workspace / Graph) so capture-time handles
-    /// created via ``make_handle`` pick up the same init behavior.
+    /// Tag this tensor with a post-materialize init policy.
     void set_pending_init(PendingInit k) { _pending_init = k; }
 };
 
@@ -1682,12 +1631,7 @@ struct GeneralTensor<T, 0, Alloc> final : tensor_base::CoreTensor,
      */
     [[nodiscard]] Stride<0> strides() const { return Stride{}; }
 
-    /// Lazily-created token whose lifetime tracks this object. The graph's
-    /// validator, see make_handle, holds a std::weak_ptr to it to detect
-    /// destruction without dereferencing a possibly-freed tensor. Reading a
-    /// destroyed object's memory, the old canary approach, is undefined
-    /// behavior and unreliable. The token is created on first request, so
-    /// tensors never captured into a graph pay nothing.
+    /// Lazily-created token whose lifetime tracks this object, watched by the graph's validator.
     [[nodiscard]] std::weak_ptr<void> liveness_token() const {
         if (!_life_token) {
             _life_token = std::make_shared<char>();
@@ -2435,10 +2379,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
 
     [[nodiscard]] bool is_column_major() const { return _impl.is_column_major(); }
 
-    // Views don't inherit symmetry yet (would need reasoning about which
-    // slice preserves the parent's invariants). Return null so the
-    // dispatch fast-path falls through to the general kernel. Future work
-    // can populate a descriptor when the view is provably symmetric.
+    // Views do not inherit symmetry, which a slice need not preserve.
     [[nodiscard]] SymmetryDescriptor const *symmetry() const noexcept { return nullptr; }
     [[nodiscard]] bool                      has_symmetry() const noexcept { return false; }
 
@@ -2474,9 +2415,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
 
     /// A second view over the same region, holding the same parent storage.
     ///
-    /// Views are already non-owning, so this is a plain copy; it exists so that
-    /// graph capture can adopt a view operand through the same interface it
-    /// uses for owning tensors. See ``Graph::adopt_operand``.
+    /// A plain copy, for the interface ``Graph::adopt_operand`` uses on owning tensors.
     [[nodiscard]] TensorView shallow_alias() const { return *this; }
 
   private:
@@ -2492,9 +2431,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
 
         _parent = other.data();
 
-        // Hold the parent's storage so this view can outlive the wrapper it was
-        // sliced from. Views built straight from a raw pointer have no block to
-        // hold and keep the older "the parent must outlive the view" contract.
+        // Hold the parent's storage, if it has a block, so the view can outlive it.
         if constexpr (requires { other.storage(); }) {
             _storage_ref = other.storage();
         }
@@ -2531,10 +2468,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
             auto offsets = arguments::get(default_offsets, args...);
             auto strides = arguments::get(default_strides, args...);
 
-            // Perform this with integer arithmetic. There is a chance that with
-            // sizes greater than 2^52 that the division becomes inaccurate with
-            // floating points. Integer divisions should never become inaccurate.
-            // In floating point, it would be ceil((size - offset) / stride)
+            // ceil((size - offset) / stride), in integers to stay exact past 2^52.
             ptrdiff_t numerator   = other.size() - offsets[0];
             size_t    denominator = strides[0];
 
@@ -2693,9 +2627,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
 
     T *_parent{nullptr};
 
-    /// Strong reference to the storage block of the tensor this view was
-    /// sliced from, so the view keeps that buffer alive on its own. Null for
-    /// views built directly from a raw pointer, which have no block to hold.
+    /// Keeps the parent's storage alive; null for views built from a raw pointer.
     std::shared_ptr<detail::StorageBase> _storage_ref;
 
     template <typename T_, size_t Rank_, typename Alloc>
@@ -2814,14 +2746,8 @@ auto create_tensor(std::string const &name, Args... args) {
  * @param args The arguments needed to construct the tensor.
  * @return A new tensor. By default, memory is not initialized to anything. It may be filled with garbage.
  */
-// The dims-are-integral constraints also disambiguate under MSVC-compat
-// compilers, where a literal `false` converts to a null `char const *` and a
-// call like create_tensor<T>(false, "a", 3, 4) would otherwise match BOTH
-// overloads (this one properly, the one above with name = (char const*)false).
-// The deduced flag type closes the mirror image of that hole: GCC and the same
-// MSVC-compat front ends treat any integer constant expression of value zero as
-// a null pointer constant, so a zero-extent call like create_tensor<T>("a", 0, 4)
-// would otherwise match here too, with row_major = "a" and name = (char const*)0.
+// Integral dims and a deduced bool flag keep a literal `false` or `0` from matching the other
+// overload as a null name (create_tensor<T>(false, "a", 3, 4), create_tensor<T>("a", 0, 4)).
 template <typename Type = double, std::same_as<bool> RowMajor = bool, typename... Args>
     requires(std::is_convertible_v<Args, std::size_t> && ...)
 auto create_tensor(RowMajor row_major, std::string const &name, Args... args) {

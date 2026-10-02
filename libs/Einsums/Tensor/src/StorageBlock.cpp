@@ -20,9 +20,7 @@
 EINSUMS_NAMESPACE_BEGIN(detail)
 
 size_t huge_page_advice_threshold() noexcept {
-    // Two whole 2 MB pages can lie inside an unaligned 4 MB buffer, and the
-    // kernel only backs whole aligned pages; below this the advice buys a VMA
-    // split and nothing else.
+    // Below 4 MB an unaligned buffer may hold no whole 2 MB page.
     return size_t{4} << 20;
 }
 

@@ -81,12 +81,8 @@ namespace detail {
 
 /// Build a pooled runtime tensor on the heap.
 ///
-/// The Python surface goes through a @c unique_ptr, not a value: these tensor
-/// types have no move constructor, so pybind11 would fall back to the
-/// deep-copying copy constructor and quietly hand Python an un-pooled tensor
-/// twice the size. A holder also pins ownership regardless of the return-value
-/// policy the binding is emitted with - a bare pointer defaults to
-/// @c automatic_reference, which would leak both the tensor and its carve.
+/// A @c unique_ptr for Python: returned by value, pybind11 would deep-copy (no move constructor) into
+/// an un-pooled tensor, and a raw pointer would leak.
 template <typename TensorT>
 std::unique_ptr<TensorT> new_pooled(MemoryPool &pool, std::string name, std::vector<size_t> const &dims, bool zero) {
     auto owned = std::make_unique<TensorT>(typename TensorT::DeferredAlloc{}, std::move(name), dims);

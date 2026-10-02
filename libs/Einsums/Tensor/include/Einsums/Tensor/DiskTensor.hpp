@@ -1134,10 +1134,7 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
             }
         }
 
-        // Performing the write here will cause a double write to occur. The destructor above will call put to save
-        // the data to disk.
-        // Sync the data to disk and into our internal tensor.
-        // h5::write<T>(_parent.disk(), other.data(), h5::count{_counts}, h5::offset{_offsets});
+        // No write here: the destructor saves to disk.
         get() = other;
 
         return *this;

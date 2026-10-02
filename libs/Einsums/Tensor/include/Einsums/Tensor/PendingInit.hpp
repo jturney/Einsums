@@ -13,16 +13,9 @@ EINSUMS_NAMESPACE_BEGIN()
 
 /// What kind of post-materialization initialization a deferred tensor wants.
 ///
-/// Set at declaration time (e.g. by ``Workspace::declare_zero_tensor``) and
-/// consumed by ``make_handle`` so the init metadata flows through capture
-/// into a ``Graph`` that the workspace doesn't directly own. The
-/// loop-aware Materialization pass then emits the corresponding
-/// Initialize node alongside Materialize.
-///
-/// Intentionally a parallel enum to ``compute_graph::InitKind`` (same
-/// values, narrower set): the Tensor module sits below ComputeGraph in
-/// the dep chain so it can't reference InitKind directly.
-/// ``make_handle`` maps one to the other.
+/// Set at declaration (e.g. ``Workspace::declare_zero_tensor``) and carried by ``make_handle`` into
+/// the graph, where Materialization emits an Initialize node. A narrower twin of
+/// ``compute_graph::InitKind``, which this module sits below.
 enum class PendingInit : std::uint8_t {
     None,
     Zero,

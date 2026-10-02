@@ -293,12 +293,7 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
         }
         tile_name += ")";
         auto [it, inserted] = _tiles.emplace(key, StoredType(typename StoredType::DeferredAlloc{}, std::move(tile_name), tile_dims));
-        // RuntimeTensor's copy ctor (used by emplace) repoints _impl at its own
-        // (empty) data buffer, dropping the deferred sentinel pointer the
-        // DeferredAlloc ctor installed. With a null pointer TensorImpl::dim()
-        // guards to 0, so the tile would report empty dims until materialized.
-        // Restore the sentinel so the deferred tile keeps its shape; dims were
-        // preserved by the copy, only the pointer needs re-establishing.
+        // Restore the deferred sentinel the copy dropped, or dim() reports 0 until materialized.
         it->second.set_data(reinterpret_cast<T *>(0x1));
     }
 
@@ -321,12 +316,7 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
 
     /// Experimental zero-copy bridge.
     ///
-    /// Add a tile at @p coord that aliases the
-    /// external buffer @p ptr instead of owning a copy. The tile takes the grid
-    /// dims for @p coord and the given layout, where row_major matches psi4's
-    /// contiguous irrep blocks. @p ptr must outlive this tensor. This lets a
-    /// psi4 Matrix/Vector be wrapped as a tiled Einsums tensor with no copy,
-    /// the precursor to making such tensors the storage backend.
+    /// Add a tile at @p coord aliasing @p ptr, which must outlive this tensor (e.g. a psi4 irrep block).
     void add_alias_tile(std::vector<int> const &coord, T *ptr, bool row_major) {
         std::vector<int> const key = normalize(coord);
         add_tile(key);                           // create a deferred tile (fixes its dims)
@@ -473,10 +463,7 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     mutable std::shared_ptr<void> _life_token;
 };
 
-// Explicit instantiations live in TensorDefs.cpp (built into libEinsums with
-// default visibility via EINSUMS_EXPORT). The pybind codegen TU is compiled
-// with hidden visibility, so it must not re-instantiate these. The extern
-// template declaration makes it link against libEinsums's copies instead.
+// Instantiated in TensorDefs.cpp; extern so the hidden-visibility bindings link libEinsums's copies.
 #if !defined(EINSUMS_WINDOWS)
 extern template struct EINSUMS_EXPORT TiledRuntimeTensor<float>;
 extern template struct EINSUMS_EXPORT TiledRuntimeTensor<double>;

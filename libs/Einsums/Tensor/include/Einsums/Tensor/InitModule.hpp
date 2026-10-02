@@ -20,10 +20,8 @@ EINSUMS_EXPORT void initialize_Einsums_Tensor();
 EINSUMS_EXPORT void finalize_Einsums_Tensor();
 // NOLINTEND
 
-/// Open an existing HDF5 file for read/write. Returns true on success; returns
-/// false (without terminating) when the file exists but is not a usable HDF5
-/// file - e.g. a stale or corrupt scratch file left by an earlier process whose
-/// PID has since been reused. Callers should recreate the file in that case.
+/// Open an existing HDF5 file for read/write. False when it is not usable (e.g. a stale scratch file
+/// from a reused PID); the caller should recreate it.
 EINSUMS_EXPORT bool open_hdf5_file(std::string const &fname);
 EINSUMS_EXPORT void create_hdf5_file(std::string const &fname);
 

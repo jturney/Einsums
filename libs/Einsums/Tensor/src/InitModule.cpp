@@ -22,10 +22,6 @@
 EINSUMS_NAMESPACE_BEGIN()
 
 int setup_Einsums_Tensor() {
-    // Auto-generated code. Do not touch if you are unsure of what you are doing.
-    // Instead, modify the other functions below.
-    // If you don't need a function, you may remove its respective line from the
-    // if statement below.
     static bool is_initialized = false;
 
     if (!is_initialized) {
@@ -252,11 +248,7 @@ bool open_hdf5_file(std::string const &fname) {
     singleton.hdf5_file = H5Fopen(fname.c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
 
     if (singleton.hdf5_file == H5I_INVALID_HID) {
-        // The file exists but is not a usable HDF5 file. This is not fatal: the
-        // scratch file is named einsums.<pid>.h5 and is not deleted by default,
-        // so a corrupt or truncated leftover from an earlier process whose PID
-        // has been reused would land here. Signal the caller to recreate it
-        // rather than terminating the whole process.
+        // Not a usable HDF5 file (e.g. a stale scratch file from a reused PID): the caller recreates it.
         EINSUMS_LOG_WARN("Existing HDF5 file '{}' could not be opened (stale or corrupt); it will be recreated.", fname);
         return false;
     }
@@ -340,9 +332,7 @@ void initialize_Einsums_Tensor() {
         std::terminate();
     }
 
-    // Open an existing file, but fall back to (re)creating it if the open fails -
-    // a stale or corrupt einsums.<pid>.h5 left by an earlier process whose PID was
-    // reused must not take the whole process down.
+    // Open, or recreate a stale or corrupt file.
     if (!std::filesystem::exists(fname) || !open_hdf5_file(fname.string())) {
         create_hdf5_file(fname.string());
     }

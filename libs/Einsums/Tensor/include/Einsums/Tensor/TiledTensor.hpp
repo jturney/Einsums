@@ -1197,11 +1197,7 @@ struct TiledTensor final : tensor_base::TiledTensor<T, Rank, einsums::Tensor<T, 
     /**
      * @brief Create a new tiled tensor with the given name and grid specification.
      *
-     * The sizes should be collections of integers. There should either be only one collection, or there should be
-     * as many collections as the rank of the tensor. If there are as many collections as the rank of the tensor,
-     * then each collection will be used to split up the respective axis as a grid. If there is only one collection, then
-     * it will be applied to all of the axes, making a square tensor whose diagonal tiles are square as well. Obviously,
-     * if the tensor is only one-dimensional, these two behaviors are the same.
+     * One collection of tile sizes per axis, or a single one applied to every axis.
      *
      * @param name The name of the tensor.
      * @param sizes The grids for the axes. There must either only be one, or the number must be the same as the rank.
@@ -1303,11 +1299,7 @@ struct TiledTensorView final : tensor_base::TiledTensor<T, Rank, einsums::Tensor
     /**
      * @brief Create an empty view with the given name and grid specification.
      *
-     * The sizes should be collections of integers. There should either be only one collection, or there should be
-     * as many collections as the rank of the tensor. If there are as many collections as the rank of the tensor,
-     * then each collection will be used to split up the respective axis as a grid. If there is only one collection, then
-     * it will be applied to all of the axes, making a square tensor whose diagonal tiles are square as well. Obviously,
-     * if the tensor is only one-dimensional, these two behaviors are the same.
+     * One collection of tile sizes per axis, or a single one applied to every axis.
      *
      * @param name The name of the tensor.
      * @param sizes The grids for the axes. There must either only be one, or the number must be the same as the rank.

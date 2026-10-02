@@ -8,17 +8,8 @@
 /// @file SymmetryOps.hpp
 /// @brief Free functions that enforce / verify a tensor's declared symmetry.
 ///
-/// ``Tensor::set_symmetry`` only attaches metadata; it does not touch the
-/// data. ``symmetrize()`` walks the data and mutates it to satisfy the
-/// descriptor in place; ``check_symmetry()`` walks the data and reports
-/// whether the descriptor holds to within a tolerance. Both are rank-N
-/// generic, composed from the descriptor's generators.
-///
-/// Each comes in two forms. The statically ranked one walks a
-/// @ref GeneralTensor with the rank in the type; the runtime-rank one walks the
-/// @ref GeneralRuntimeTensor family, which is what the Python-facing path and
-/// the ComputeGraph hold, and which could already CARRY a descriptor through
-/// @c set_symmetry with no way to enforce or verify it.
+/// ``set_symmetry`` only attaches metadata. ``symmetrize()`` enforces it in place and
+/// ``check_symmetry()`` verifies it to a tolerance, for static- and runtime-rank tensors.
 
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -194,12 +185,7 @@ template <typename T, size_t Rank, typename Alloc>
 /// A runtime-rank tensor the walks below can traverse: extents, strides and a
 /// base pointer, which is all an offset odometer needs.
 ///
-/// Stated here as a requires-expression rather than borrowed from Concepts,
-/// which has no runtime-rank concept, and deliberately narrow: it names exactly
-/// what the traversal uses and nothing else. In particular it does NOT require a
-/// declared descriptor, because @ref GeneralRuntimeTensorView has none and a view
-/// over an impl is how a ComputeGraph pass reaches a bound tensor's data. The
-/// caller-supplied-descriptor overload has to accept one.
+/// No descriptor required, as @ref GeneralRuntimeTensorView has none.
 template <typename TensorType>
 concept RuntimeRankWalkable = requires(TensorType const &t) {
     typename std::remove_cvref_t<TensorType>::ValueType;
@@ -251,28 +237,10 @@ inline std::optional<std::pair<size_t, size_t>> transposed_axes(SymmetryOp const
 
 /// Visit each unordered pair of elements that @p op relates, by OFFSET.
 ///
-/// Two running offsets stepped by an odometer, not an index vector rebuilt per
-/// element: @c off is the element's own, @c poff its partner's, and incrementing
-/// axis @c k moves them by @c stride[k] and @c stride[op.permutation[k]]
-/// respectively. The index vector survives only to decide which member of a pair
-/// to visit, and is never allocated inside the loop.
-///
-/// Measured on a rank-6 tensor of a million elements: 20.2 ns an element before,
-/// 1.47 ns after, the same cause and the same order of improvement
-/// @ref compute_graph::dispatch::generic_string_einsum records at "roughly 25 ns
-/// an element". A symmetry walk validates operands as large as the ones the
-/// arithmetic touches, so it has to cost what a pass over them costs.
-///
-/// The early stop is the larger of the two wins and was a defect rather than an
-/// optimization: the verdict used to be carried in a captured flag with nothing
-/// to end the iteration, so a generator that did NOT hold still swept the whole
-/// tensor, 2.30 ms where it is now 0.4 microseconds. Probing candidate generators
-/// against tensors that mostly do not carry them is the use, so being cheap when
-/// the answer is no is the property that matters most.
-///
-/// @p visit receives ``(off, poff, fixed)`` and returns false to STOP, which is
-/// what makes a generator that does not hold cost the distance to its first
-/// violation instead of a full sweep.
+/// Two offsets stepped by an odometer: @c off and its partner @c poff (axis @c k moves them by
+/// @c stride[k] and @c stride[op.permutation[k]]). @p visit receives ``(off, poff, fixed)`` and
+/// returns false to stop, so a generator that does not hold costs only the distance to its first
+/// violation.
 /// @return false when @p visit stopped the walk, true when it ran to completion.
 template <typename F>
 bool for_each_symmetry_pair(std::vector<size_t> const &dims, std::vector<size_t> const &strides, SymmetryOp const &op, F &&visit) {
@@ -283,46 +251,14 @@ bool for_each_symmetry_pair(std::vector<size_t> const &dims, std::vector<size_t>
         }
     }
 
-    // FAST PATH: a generator that swaps exactly two axes, which is what almost
-    // every generator is. The general walk below decides pair membership with a
-    // lexicographic compare against the inverse permutation and re-derives the
-    // partner offset, both per element. For a transposition neither is needed:
-    // membership is `a < b` over the two axes' own index values, and once those
-    // are fixed the partner sits a CONSTANT distance away, so the remaining axes
-    // are a flat sweep of two spans.
-    //
-    // Measured on rank-6 tensors shaped (o,o,o,v,v,v), nanoseconds per element:
-    //
-    //                     0.26 MB   3 MB    17 MB   64 MB
-    //     general walk      2.19    1.82     3.35    4.88
-    //     this              1.57    1.44     1.24    1.12
-    //
-    // The number to read is the TREND, not the ratio. The general walk got worse
-    // as the tensor grew, which is what a walk whose traffic exceeds its useful
-    // reads does; this one gets better, which is fixed overhead amortising over a
-    // sweep that streams. At 64 MB it is 39 ms against 9 ms, and the gap widens
-    // with size, which matters because the tensors this validates are the ones
-    // too big to fit anywhere.
+    // Fast path for a two-axis swap (most generators): membership is `a < b` and the partner is a
+    // constant distance away. 1.1 against 4.9 ns/element at 64 MB on rank 6, the gap growing with size.
     if (auto const axes = transposed_axes(op, rank); axes.has_value()) {
         auto const [p, q] = *axes;
 
-        // Sweep in MEMORY ORDER, with the partner computed rather than walked.
-        //
-        // For a transposition, an element's partner differs only in the two
-        // swapped indices, so
+        // Sweep in memory order (every axis sorted by stride), computing the partner:
         //     poff = off + (idx[q] - idx[p]) * (stride[p] - stride[q])
-        // which is one subtract, one multiply and one add, with no second
-        // odometer and no lexicographic compare. Pair membership is `idx[p] <
-        // idx[q]`, a single comparison of two counters the walk already has.
-        //
-        // The ORDER is what the earlier attempts got wrong, twice. Iterating axes
-        // as declared made the innermost loop step the widest stride. Pulling the
-        // two swapped axes out and sweeping the rest was better but still walked
-        // an 800-byte stride, so each 64-byte line yielded one useful element and
-        // the walk moved eight times the bytes it read. Sorting EVERY axis by
-        // stride makes the sweep contiguous, so the line that brought in one
-        // element brings in the next seven too, and the partner lands a short
-        // constant distance away and is almost always already resident.
+        // with membership idx[p] < idx[q].
         std::vector<size_t> order(rank);
         for (size_t i = 0; i < rank; ++i) {
             order[i] = i;
@@ -412,10 +348,8 @@ bool for_each_symmetry_pair(std::vector<size_t> const &dims, std::vector<size_t>
 
 /// Whether @p op maps every axis onto one of the same length.
 ///
-/// The statically ranked walks never ask, because their callers pass square
-/// tensors. A runtime-rank tensor reaching here can have any shape, and a
-/// permutation across axes of different extents does not merely fail to hold:
-/// it indexes out of range. Checked once per generator rather than per element.
+/// A runtime-rank tensor can have any shape, and a permutation across unequal axes would index out
+/// of range.
 inline bool symmetry_op_axes_conform(std::vector<size_t> const &dims, SymmetryOp const &op) {
     for (size_t i = 0; i < dims.size(); ++i) {
         if (dims[i] != dims[static_cast<size_t>(op.permutation[i])]) {
@@ -451,16 +385,8 @@ std::vector<size_t> symmetry_strides(TensorType const &tensor) {
 /// Verify that @p tensor satisfies @p desc to within @p tolerance (or the
 /// descriptor's own tolerance when the argument is negative).
 ///
-/// The descriptor is passed IN rather than read off the tensor, which is what
-/// lets a caller ask whether a symmetry it is considering actually holds. That
-/// is the question an optimizer asks before rewriting arithmetic on the strength
-/// of one, and it is a different question from "does this tensor's own declared
-/// symmetry hold", which the one-argument overload below asks.
-///
-/// Returns false, rather than throwing, when the descriptor cannot apply to this
-/// tensor at all: a rank past @ref kMaxSymmetryRank, which a @ref SymmetryOp
-/// cannot describe, or a generator permuting axes of unequal extent. Both mean
-/// the symmetry does not hold here, which is what the caller asked.
+/// For testing a candidate symmetry, as an optimizer does. False, not a throw, when the descriptor
+/// cannot apply (rank past @ref kMaxSymmetryRank, or unequal permuted axes).
 template <RuntimeRankWalkable TensorType>
 [[nodiscard]] bool check_symmetry(TensorType const &tensor, SymmetryDescriptor const &desc, double tolerance = -1.0) {
     using T = typename std::remove_cvref_t<TensorType>::ValueType;
@@ -483,11 +409,7 @@ template <RuntimeRankWalkable TensorType>
         }
         bool const complete = detail::for_each_symmetry_pair(dims, strides, op, [&](size_t off, size_t poff, bool fixed) {
             if (fixed) {
-                // A fixed point constrains the element against ITSELF: an
-                // antisymmetric generator forces zero, an (anti-)Hermitian one
-                // forces the value real or imaginary. A symmetric generator says
-                // nothing, which is why the statically ranked check skips these
-                // outright and this one cannot.
+                // A fixed point: antisymmetric forces zero, (anti-)Hermitian forces real (imaginary).
                 T const value = data[off];
                 if (op.sign < 0 && !op.conjugate) {
                     return static_cast<double>(std::abs(value)) <= tol;
@@ -527,10 +449,7 @@ template <RuntimeRankSymmetryTensor TensorType>
 /// elements each generator relates. The runtime-rank twin of the
 /// @ref symmetrize overload taking a compile-time-rank tensor.
 ///
-/// Throws rather than silently declining when the descriptor cannot apply: an
-/// enforcement that quietly did nothing would leave the caller believing an
-/// invariant it does not have, which is the failure this function exists to
-/// prevent.
+/// Throws when the descriptor cannot apply, rather than leaving the invariant unenforced.
 template <RuntimeRankSymmetryTensor TensorType>
 void symmetrize(TensorType &tensor) {
     using T = typename std::remove_cvref_t<TensorType>::ValueType;

@@ -44,22 +44,9 @@ struct IsStdVector<std::vector<U, A>> : std::true_type {};
 /**
  * @brief Type-erased handle to a tensor's current backing buffer.
  *
- * Anything that must keep reading a buffer across a relocation holds one of
- * these rather than a copy of the pointer. A tensor's storage moves in more
- * situations than it looks: @c materialize() allocates a deferred tensor,
- * @c materialize_into() re-seats it on an arena slice, @c release() drops it,
- * and @c resize() reallocates. A raw pointer taken before any of those is
- * silently stale afterwards, which is what made views of deferred tensors
- * dangle once a graph ran.
- *
- * @c base is the one authoritative copy of that pointer. @c generation counts
- * relocations, so an observer that cached a derived pointer can tell whether
- * it needs to recompute without comparing pointers it may no longer read.
- *
- * The destructor is deliberately non-virtual: every block is created through
- * @c std::make_shared of the concrete @ref StorageBlock, and @c shared_ptr
- * captures the concrete deleter at construction, so upcasting to
- * @c shared_ptr<StorageBase> still destroys the derived object.
+ * Hold this, not a raw pointer, to follow the buffer across materialize, materialize_into,
+ * release and resize. @c base is the current pointer; @c generation counts relocations. The
+ * destructor need not be virtual: blocks come from @c make_shared, which captures the right deleter.
  */
 struct StorageBase {
     void  *base{nullptr}; ///< Current start of the buffer, or null when unallocated.
@@ -88,10 +75,7 @@ struct StorageBlock final : StorageBase {
     Vector owned{};           ///< Self-allocated storage. Empty when external or unallocated.
     T     *external{nullptr}; ///< Caller-provided storage; never freed here.
 
-    /// Optional keepalive for @ref external. Null for a raw attach, where the
-    /// caller promises the buffer outlives the tensor; set for pooled storage,
-    /// where holding this token IS the promise, and dropping it is what returns
-    /// the carve to its pool. Never dereferenced here: the block only holds it.
+    /// Keepalive for @ref external (a pool carve, freed when dropped); null for a raw attach.
     std::shared_ptr<void const> external_owner{};
 
     StorageBlock()                                = default;
@@ -109,11 +93,7 @@ struct StorageBlock final : StorageBase {
         ++generation;
     }
 
-    /// Take the capacity @p elems needs and, while nothing has touched the new
-    /// buffer, advise it for huge pages. Host vectors only: a device vector's
-    /// memory is not the kernel's to page. When the vector already holds
-    /// elements, reserve copies them across before the advice and those pages
-    /// stay small; every tensor constructor calls this on an empty vector.
+    /// Reserve @p elems and, before first touch, advise huge pages (host vectors only).
     void reserve_owned(size_t elems) {
         if constexpr (IsStdVector<Vector>::value) {
             if (elems > owned.capacity()) {
@@ -125,9 +105,7 @@ struct StorageBlock final : StorageBase {
         }
     }
 
-    /// Grow or shrink self-allocated storage. Detaches nothing: calling this
-    /// while @ref external is set would leave two live storage modes, which the
-    /// tensor types prevent by releasing first.
+    /// Resize owned storage. Not with @ref external set; callers detach first.
     void resize_owned(size_t elems) {
         ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
         reserve_owned(elems);
@@ -207,14 +185,8 @@ struct StorageBlock final : StorageBase {
 /**
  * @brief Tag selecting a tensor constructor that SHARES the source's storage.
  *
- * The tag exists so the alias can be built in place. ``shallow_alias()``
- * returns by value, and these tensor types have no move constructor (a
- * user-declared destructor suppresses it), so handing that prvalue to
- * @c std::make_shared binds it to the *copy* constructor and silently
- * deep-copies -- the alias then shares nothing and every write through it is
- * lost. @c new T(t.shallow_alias()) avoids that only through guaranteed copy
- * elision, at the cost of a second allocation for the control block.
- * Constructing with this tag gets both: one allocation, and real sharing.
+ * For @c make_shared: these types have no move constructor, so passing ``shallow_alias()`` would
+ * deep-copy and share nothing.
  */
 struct SharedStorageTag {};
 
