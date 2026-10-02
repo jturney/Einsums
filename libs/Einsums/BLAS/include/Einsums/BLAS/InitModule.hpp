@@ -9,13 +9,6 @@
 
 #include <Einsums/Config/Namespace.hpp>
 
-/*
- * Exported definitions for initialization. If the module does not need to be initialized,
- * this header can be safely deleted. Just make sure to remove the reference in CMakeLists.txt,
- * as well as the initialization source file and the reference to Einsums_Runtime, if no other
- * symbols from this are being used.
- */
-
 EINSUMS_NAMESPACE_BEGIN()
 
 /**
