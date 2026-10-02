@@ -63,10 +63,8 @@ std::shared_ptr<hptt::Transpose<T>> build_permute_plan(T beta, std::span<int con
         return nullptr;
     }
 
-    // HPTT describes both operands in ONE layout, A's. A C laid out the other way round is the
-    // same buffer read as its transpose: its axes in reverse order, so the permutation is read
-    // from the far end. A row-major A with a C that is neither layout is described column-major,
-    // as it always was.
+    // HPTT describes both operands in A's layout. A C in the other layout is read as its transpose,
+    // axes reversed. A row-major A with a C of neither layout is described column-major.
     bool const                                    row_major = A.is_row_major() && (C->is_row_major() || C->is_column_major());
     bool const                                    flip = row_major ? !C->is_row_major() : !(A.is_column_major() && C->is_column_major());
     std::optional<einsums::detail::TensorImpl<T>> swapped;
@@ -86,12 +84,9 @@ std::shared_ptr<hptt::Transpose<T>> build_permute_plan(T beta, std::span<int con
         perms[i] = c_to_a[flip ? rank - 1 - i : i];
     }
 
-    // An extent-1 axis is never stepped along, so its stride says nothing, and a view carries
-    // whatever stride the axis had in its parent. Read off as it stands, such a stride can make a
-    // neighbour's outer size smaller than its extent, and HPTT rejects the plan. Each is replaced by
-    // a stride that agrees with its neighbours: 1 on the fastest axis; else the stride of the
-    // nearest slower axis that is stepped along, so the faster neighbour's outer size spans up to
-    // it; else, with nothing slower stepped along, the packed stride past the faster neighbour.
+    // An extent-1 axis's stride is arbitrary (a view keeps its parent's) and can make HPTT reject the
+    // plan, so it is replaced by one consistent with its neighbours: 1 on the fastest axis; else the
+    // stride of the nearest slower axis with extent > 1; else the packed stride past the faster one.
     auto const effective_strides = [&](einsums::detail::TensorImpl<T> const &t) {
         auto const          axis = [&](std::size_t p) { return static_cast<int>(row_major ? rank - 1 - p : p); };
         std::vector<size_t> s(rank, 0);

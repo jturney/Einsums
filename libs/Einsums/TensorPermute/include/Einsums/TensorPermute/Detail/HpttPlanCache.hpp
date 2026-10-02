@@ -27,34 +27,14 @@
 
 EINSUMS_NAMESPACE_BEGIN(tensor_permute::detail)
 
-// Plan cache for hptt::Transpose<T>.
-//
-// HPTT plans are expensive to build (per call: structural analysis,
-// loop ordering, parallelism strategy selection, and even in ESTIMATE
-// mode it walks the candidate list. The plan tree depends only on
-// shape, not on the runtime A/B/alpha/beta, so we hash on the
-// structural parameters and reuse the plan across calls. On hit, the
-// pointers and scalars are reset via the existing setters.
-//
-// Cache is thread_local: no locks, no contention. Each thread builds
-// its own plans on first use; for typical Einsums workloads the
-// shape catalog is small and the per-thread footprint is negligible.
+// Per-thread plan cache for hptt::Transpose<T>. Plans are expensive to build but depend only on
+// shape, so they are keyed on the structural parameters and rebound to new pointers and scalars.
 
 template <typename T>
 struct HpttPlanKey {
     int dim{0};
-    /// The team size the plan was BUILT for, which is a structural input and
-    /// not a runtime knob: Plan's constructor sets ``_numTasks`` to the product
-    /// of the per-loop thread splits and materializes one root node per task,
-    /// so the work decomposition itself is shaped by this number. Two calls on
-    /// one shape that want different counts genuinely need different plans -
-    /// reusing an 8-thread plan on one thread runs 8 chunks sequentially, and
-    /// a 1-thread plan on 8 threads leaves 7 idle. Without this field the
-    /// cache silently handed back whichever it built first, which differs on
-    /// the same thread inside and outside an OpenMP parallel region (nested
-    /// ``omp_get_max_threads()`` is not the outer one).
-    ///
-    /// PackedGemm's own plan cache has always keyed on it; this one had not.
+    /// The team size the plan was built for. It shapes the work decomposition, so plans for different
+    /// counts are different plans (and the count differs inside and outside an OpenMP region).
     int                 num_threads{1};
     bool                row_major{false};
     size_t              innerStrideA{1};
@@ -105,11 +85,8 @@ inline std::shared_ptr<hptt::Transpose<T>>
 get_or_create_hptt_plan(int const *perm, int dim, T alpha, T const *A, size_t const *sizeA, size_t const *outerSizeA, size_t const *offsetA,
                         size_t innerStrideA, T beta, T *B, size_t const *outerSizeB, size_t const *offsetB, size_t innerStrideB,
                         bool row_major, hptt::SelectionMethod method = hptt::ESTIMATE) {
-    // HPTT parallelizes internally with whatever team size it is handed, and
-    // the plan bakes that in - so a small transpose paid a thread-team fork on
-    // every execute that dwarfed the copy: 24 us against 0.6 us serial for a
-    // 64-element permute. Below the threshold ask for one thread, which makes
-    // execute() skip its parallel region outright.
+    // Small transposes run on one thread: a thread-team fork cost 24 us against 0.6 us serial for a
+    // 64-element permute.
     size_t elements = 1;
     for (int d = 0; d < dim; ++d) {
         elements *= sizeA[d];
@@ -123,9 +100,7 @@ get_or_create_hptt_plan(int const *perm, int dim, T alpha, T const *A, size_t co
 #endif
     }();
 
-    // MEASURE/PATIENT/CRAZY do their own autotuning; the caller is
-    // paying for it deliberately, so don't replace it with a cached
-    // ESTIMATE plan.
+    // The autotuning methods are not cached: the caller is paying for the search deliberately.
     if (method != hptt::ESTIMATE) {
         return hptt::create_plan(perm, dim, alpha, A, sizeA, outerSizeA, offsetA, innerStrideA, beta, B, outerSizeB, offsetB, innerStrideB,
                                  method, numThreads, nullptr, row_major);
@@ -160,14 +135,9 @@ get_or_create_hptt_plan(int const *perm, int dim, T alpha, T const *A, size_t co
     else
         key.offsetB.assign(dim, 0);
 
-    // The cache stores plan templates keyed on shape. Each caller gets a
-    // fresh ``Transpose<T>`` copy with its own ``_A``/``_B``/``_alpha``/
-    // ``_beta``/``_conjA`` slots, while the plan tree (``_masterPlan``) is the
-    // expensive thing to build and is shared via ``shared_ptr`` inside the
-    // copy. We can't return the template directly because higher-level
-    // callers (e.g. ``cached_permute`` in Dispatch.hpp) hang onto the plan
-    // across calls, and two of those callers sharing a shape would trample
-    // each other's pointer/scalar state on the shared object.
+    // Holds plan templates. Each caller gets a copy with its own pointers and scalars, sharing the
+    // expensive plan tree, since callers keep plans across calls and would otherwise overwrite each
+    // other's state.
     thread_local std::unordered_map<HpttPlanKey<T>, std::shared_ptr<hptt::Transpose<T>>, HpttPlanKeyHash<T>> cache;
 
     auto fresh_copy = [&](std::shared_ptr<hptt::Transpose<T>> const &templ) {
