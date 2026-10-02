@@ -22,30 +22,12 @@ namespace {
 /// Present a width of one to a vendor call that einsums is already
 /// threading around, and restore the caller's width after.
 ///
-/// Two regimes need it, and they are clamped through different knobs because
-/// the vendors expose different ones. Both are handled in the constructor
-/// below, in the order written there.
+/// Two cases, through different knobs: inside a moldable width scope (see
+/// @ref einsums::blas::set_moldable_width_scope), and inside an einsums parallel region with a
+/// vendor on its own runtime. Threads outside both keep wide vendor calls.
 ///
-/// The width a moldable executor grants a task is for the kernels einsums
-/// threads itself. An OpenMP-built OpenBLAS reads the same ICV but does not
-/// support concurrent callers that disagree about it (see
-/// @ref einsums::blas::set_moldable_width_scope), so a vendor call made from
-/// inside such a scope must present a width of one. Threads outside any
-/// scope - the main thread, eager callers, an OpenMPExecutor level - are
-/// untouched: a single caller with a stable ICV is the vendor's supported
-/// regime, and it is where a wide vendor GEMM is still wanted.
-///
-/// Placed on every wrapper that forwards to the vendor, because a moldable
-/// Custom node's lambda may legally call any of them - a large axpy and a
-/// syev thread inside OpenBLAS just as a gemm does. The only exemptions are
-/// the gemm_batch families: their vendor entry points are einsums' own
-/// OpenMP loops over raw serial GEMMs, so clamping at the wrapper would
-/// serialize einsums' parallelism while buying nothing - the inner calls go
-/// through the wrappers below and are clamped there, one level down, where
-/// the serialization is the point. That the moldable flag is not visible to
-/// threads of a team the KERNEL forks is harmless for the same reason: those
-/// team members are inside an active region, which the second clamp keys on
-/// directly.
+/// On every vendor wrapper, since a Custom node may call any of them, except gemm_batch: that is
+/// einsums' own loop over the wrapped GEMMs, which are clamped one level down.
 struct [[maybe_unused]] VendorWidthFence {
 #ifdef _OPENMP
     int prior{0};
@@ -56,15 +38,8 @@ struct [[maybe_unused]] VendorWidthFence {
             prior = omp_get_max_threads();
             omp_set_num_threads(1);
         }
-        // A vendor on its OWN OpenMP runtime - MKL is the one that matters -
-        // cannot see the region einsums opened, so its nested check never
-        // fires and it forks a full team from every team member of ours. That
-        // is the regime the vendor does not support: the calls disagree about
-        // the width, and the results come back both oversubscribed and
-        // NONDETERMINISTIC, which is a wrong answer and not merely a slow one.
-        // OpenBLAS needs nothing here - it reads our ICV and takes its own
-        // nested-serial path - so the clamp is asked of the vendors that
-        // expose a per-thread count instead.
+        // A vendor on its own runtime (MKL) cannot see our region and forks a full team from each of
+        // our threads: oversubscribed and nondeterministic. Clamp through its per-thread count.
         if (has_per_thread_control() && omp_in_parallel()) {
             int const vendor_width = get_num_threads_this_thread();
             if (vendor_width > 1) {
@@ -480,11 +455,8 @@ auto zlange(char norm_type, int_t m, int_t n, std::complex<double> const *A, int
 
 namespace {
 
-/// LAPACK's lassq contract, scale_out^2 * sumsq_out = scale^2 * sumsq + sum |x_i|^2, kept through
-/// nrm2 instead of the vendor's lassq. Apple Accelerate's zlassq misses that sum by about 2.5e-9
-/// relative for complex<double>, ten million times the type's epsilon, while its dznrm2 is exact,
-/// and zlange('F') inherits the error from zlassq. The two norms are combined with hypot, so the
-/// result keeps lassq's guard against overflow and underflow.
+/// LAPACK's lassq contract computed through nrm2 and hypot, since Accelerate's zlassq is off by
+/// ~2.5e-9 relative for complex<double> while its dznrm2 is exact.
 template <typename T, typename Real, typename Nrm2>
 void lassq_via_nrm2(int_t n, T const *x, int_t incx, Real *scale, Real *sumsq, Nrm2 nrm2) {
     Real const added = n > 0 ? nrm2(n, x, incx) : Real{0};

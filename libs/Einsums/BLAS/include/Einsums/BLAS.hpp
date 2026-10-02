@@ -230,11 +230,8 @@ inline void gemm_batch<std::complex<double>>(char transa, char transb, int_t m, 
  * group here. The pointer arrays hold the groups' members concatenated in group
  * order, so their length is the sum of @p group_size.
  *
- * This exists so that a set of differently shaped batches costs ONE OpenMP
- * parallel region instead of one each. At the sizes tensor code produces - a
- * few hundred GEMMs of a few dozen rows - entering a region is comparable to
- * the arithmetic, so the shape count, not the arithmetic, is what sets the
- * time.
+ * One OpenMP region for all the shapes: at a few hundred small GEMMs, entering a region costs as
+ * much as the arithmetic.
  *
  * @tparam T Element type (float, double, complex<float>, complex<double>).
  */

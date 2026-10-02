@@ -15,10 +15,7 @@
 #endif
 
 #if defined(EINSUMS_HAVE_MKL)
-// Declared rather than pulled from mkl.h so this stays independent of which
-// MKL headers the build has, and of the LP64/ILP64 spelling: both take and
-// return a plain int. BLASVendor's InitializeFinalize.cpp declares
-// mkl_set_xerbla the same way.
+// Declared, not from mkl.h, so it is independent of the MKL headers and LP64/ILP64.
 extern "C" {
 int MKL_Set_Num_Threads_Local(int nthreads);
 int MKL_Get_Max_Threads(void);
@@ -26,10 +23,7 @@ int MKL_Get_Max_Threads(void);
 #endif
 
 #if defined(EINSUMS_HAVE_OPENBLAS)
-// Declared rather than included for the same reason as MKL's: openblas's own
-// header is not on the include path of a build that resolved BLAS through a
-// vendor-neutral shim. The build proved this symbol links before defining
-// EINSUMS_HAVE_OPENBLAS.
+// Declared, as openblas's header may not be on the path; the build verified the symbol links.
 extern "C" {
 char *openblas_get_config(void);
 }
@@ -66,14 +60,8 @@ int get_num_threads_this_thread() {
 
 bool threads_with_openmp() {
 #if defined(EINSUMS_HAVE_OPENBLAS)
-    // openblas_get_config() returns a space-separated list of the flags the
-    // library was built with - "OpenBLAS 0.3.32 NO_AFFINITY USE_OPENMP VORTEX"
-    // on the conda build this is developed against. The OpenMP flag is a BARE
-    // token, not an assignment: only the numeric settings (MAX_THREADS=N) carry
-    // a value, so looking for "USE_OPENMP=1" finds nothing on a library that is
-    // in fact built with OpenMP. A pthread-built OpenBLAS carries the same
-    // symbols and the same name as the OpenMP one but keeps its own pool, so
-    // the ICV does not reach it and the answer is no.
+    // The config string lists build flags, e.g. "OpenBLAS 0.3.32 NO_AFFINITY USE_OPENMP VORTEX";
+    // USE_OPENMP is a bare token, not "USE_OPENMP=1".
     static bool const built_with_openmp = []() {
         char const *config = openblas_get_config();
         return config != nullptr && std::string_view(config).find("USE_OPENMP") != std::string_view::npos;
@@ -98,9 +86,7 @@ bool moldable_width_scope() {
 
 bool vendor_call_is_fenced() {
 #ifdef _OPENMP
-    // Mirrors VendorWidthFence in BLAS.cpp term for term. Kept here rather than
-    // shared with it because that fence is on the hot path of 48 wrappers and
-    // constructs its clamp from the same reads.
+    // Mirrors VendorWidthFence in BLAS.cpp, which inlines the same reads on its hot path.
     return moldable_width_scope_active && threads_with_openmp() && omp_get_max_threads() > 1;
 #else
     return false;
