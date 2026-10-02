@@ -22,17 +22,10 @@
 /// [TensorEntry N-1]
 /// ```
 ///
-/// Putting the entry table at the end allows appending without shifting
-/// existing data. Files written through the distributed path are standard
-/// binary, so they can be read back without MPI.
+/// The entry table is last so appending moves no data. Distributed files read back without MPI.
 ///
-/// A data region holds its tensor's elements in column-major order: the first
-/// index varies fastest, whatever layout the tensor had in memory. The slab
-/// offsets used by slice reads and writes depend on that order, and a file
-/// carries no layout flag, so a reader can only interpret the bytes one way.
-/// Reading into or writing from a row-major tensor therefore reorders the
-/// elements on the way through; a file is the same whether a column-major or
-/// a row-major process wrote it.
+/// Data is always column-major, whatever the tensor's layout in memory; there is no layout flag,
+/// and row-major tensors are reordered on the way through.
 
 #include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -235,10 +228,8 @@ namespace detail {
 
 /// Check that a stored entry can be copied to or from a destination of element type @p want.
 ///
-/// Every read and slice write calls this before it moves a byte, because the copy trusts the
-/// entry's dims and data size to describe memory of the destination's element type.
-/// There is no conversion between element types: reading float32 data into a float64 tensor
-/// throws rather than reinterpreting the bits.
+/// Called before every read and slice write moves a byte. There is no type conversion: reading
+/// float32 into float64 throws.
 ///
 /// @param path Path of the file holding the entry, for the message.
 /// @param operation Qualified name of the calling method ("TensorFile::read"), which leads the message.

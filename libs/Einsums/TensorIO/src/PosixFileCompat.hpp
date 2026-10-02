@@ -9,12 +9,8 @@
 /// @brief Positional file I/O for TensorIO: POSIX pread/pwrite on Unix,
 ///        offset-explicit ReadFile/WriteFile on Windows.
 ///
-/// The Windows implementations preserve the property TensorIO's slab reads
-/// and writes rely on: positional I/O with NO shared file-position state, so
-/// concurrent slab operations on one descriptor never race on a seek pointer.
-/// (An OVERLAPPED offset on a synchronous handle is exactly Win32's pread.)
-/// Files are always opened binary on Windows - text-mode newline translation
-/// would corrupt tensor payloads.
+/// No shared file position on either platform, so concurrent slab I/O on one descriptor cannot
+/// race (on Windows, an OVERLAPPED offset on a synchronous handle). Windows files open binary.
 
 #include <Einsums/Config.hpp>
 

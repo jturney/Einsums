@@ -69,18 +69,12 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     template <typename T, size_t Rank>
     void write_local(std::string_view name, Tensor<T, Rank> const &tensor, int rank, int num_ranks);
 
-    /// Write a slice (hyperslab) of an existing tensor entry. The entry
-    /// must already exist (e.g. from a previous full @ref write or a
-    /// pre-allocated entry). The user tensor's shape must match the
-    /// slab implied by @p ranges.
+    /// Write a hyperslab of an existing entry; @p tensor must have the slab's shape.
     /// @param ranges Per-dimension [start, end) ranges into the stored tensor.
     template <typename T, size_t Rank>
     void write_slice(std::string_view name, Tensor<T, Rank> const &tensor, std::array<std::pair<size_t, size_t>, Rank> const &ranges);
 
-    /// Reserve space for a tensor that will be filled in via @ref
-    /// write_slice. Stores the entry header (name, dtype, dims) and
-    /// allocates the data region but writes no data. Use this when you
-    /// plan to fill the tensor block-by-block from a graph or loop.
+    /// Create an entry and its data region without writing data, to fill with @ref write_slice.
     template <typename T>
     void reserve(std::string_view name, std::vector<size_t> const &dims);
 
@@ -99,11 +93,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     template <typename T, size_t Rank>
     void read_local(std::string_view name, Tensor<T, Rank> &tensor, int rank);
 
-    // ── RuntimeTensor overloads ──────────────────────────────────────────
-    //
-    // RuntimeTensor variants of read / write / read_slice / write_slice.
-    // These are what the Python bindings call into. RuntimeTensor is
-    // the runtime-rank type bound to numpy via the buffer protocol.
+    // ── RuntimeTensor overloads, which the Python bindings call ─────────
 
     /// Read a full tensor into a RuntimeTensor. Resizes the tensor.
     template <typename T, typename Alloc>
@@ -146,10 +136,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     /// Get the stored dimensions of a tensor.
     APIARY_EXPOSE [[nodiscard]] std::vector<size_t> dims(std::string_view name) const;
 
-    /// Get the stored dtype of a tensor (currently not exposed to Python:
-    /// DType enum lives in Format.hpp and isn't bound). Use ``dims`` and
-    /// ``contains`` from Python; per-dtype dispatch happens via the
-    /// ``read``/``write`` ``dtype=`` kwarg.
+    /// The stored dtype. Not bound to Python, where ``read``/``write`` take ``dtype=``.
     [[nodiscard]] DType dtype(std::string_view name) const;
 
     /// List all tensor names in the file.
@@ -222,13 +209,8 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
 
 namespace detail {
 
-/// Walk every contiguous innermost run inside a hyperslab of a
-/// column-major tensor and invoke @p visit(file_offset, dst_offset,
-/// inner_bytes) for each. Lets read_slice and write_slice share the
-/// same offset-arithmetic without code duplication.
-///
-/// `entry_dims` and `ranges` are runtime-rank (vectors). The caller is
-/// responsible for ensuring sizes agree with the actual tensor rank.
+/// Call @p visit(file_offset, dst_offset, inner_bytes) for each contiguous innermost run of a
+/// hyperslab of a column-major tensor. The caller checks that the sizes match the rank.
 template <typename T, typename Visit>
 void walk_slab(uint64_t entry_data_offset, std::vector<size_t> const &entry_dims, std::vector<std::pair<size_t, size_t>> const &ranges,
                Visit &&visit) {

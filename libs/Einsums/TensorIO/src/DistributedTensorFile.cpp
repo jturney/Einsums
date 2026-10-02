@@ -8,9 +8,7 @@
 #include <Einsums/Logging.hpp>
 #include <Einsums/TensorIO/DistributedTensorFile.hpp>
 
-// Always use POSIX I/O for file operations. MPI is only used for offset
-// coordination (Exscan, Allreduce, Gather). This avoids MPI-IO reliability
-// issues on local filesystems (especially macOS).
+// POSIX I/O for data, MPI only to coordinate offsets: MPI-IO is unreliable on local filesystems.
 #include "PosixFileCompat.hpp"
 
 #if defined(EINSUMS_HAVE_MPI)

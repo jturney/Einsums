@@ -94,12 +94,8 @@ void write_etn(std::string file_path, std::string tensor_name, TensorType const 
 /**
  * @brief A slab descriptor: per-dimension half-open ranges into a stored tensor.
  *
- * Used by @ref read_slice_etn and @ref write_slice_etn to address a
- * hyperslab of a `.etn` entry. `ranges[d]` is `{start, end}` with end
- * exclusive. The struct is captured by reference into the graph
- * executor lambda, so one graph node can drive a loop by mutating
- * `ranges` between executor invocations. This is what makes
- * read-transform-write-back patterns over batches of an ERI possible.
+ * For @ref read_slice_etn and @ref write_slice_etn; `ranges[d]` is `{start, end}`, end exclusive.
+ * Captured by reference, so mutating `ranges` between replays drives one node over many slabs.
  */
 struct APIARY_EXPOSE Slab {
     APIARY_EXPOSE Slab() = default;
@@ -109,10 +105,7 @@ struct APIARY_EXPOSE Slab {
 };
 
 namespace detail {
-/// Dispatcher: route a Slab onto the right TensorFile slice method.
-/// Static-rank `Tensor<T, N>` exposes `::Rank` as a constant, so it uses
-/// the std::array overload. Runtime-rank `GeneralRuntimeTensor<T, A>` has
-/// no such constant and goes through the std::vector overload.
+/// Route a Slab to the std::array slice overload for static rank, std::vector for runtime rank.
 template <typename TensorType>
 void file_read_slice_dispatch(TensorFile &file, std::string_view name, TensorType &t, std::vector<std::pair<size_t, size_t>> const &rng) {
     if constexpr (compute_graph::HasCompileTimeRank<TensorType>) {
@@ -146,13 +139,8 @@ void file_write_slice_dispatch(TensorFile &file, std::string_view name, TensorTy
 /**
  * @brief Read a slab of a tensor from a .etn file, graph-aware.
  *
- * During graph capture, records a DiskRead node whose executor reads
- * the slab described by @p slab into @p output. The Slab is captured
- * by reference, so a loop can drive the same graph node over different
- * slab ranges by mutating `slab.ranges` between executor invocations.
- *
- * @p output must be pre-sized to the slab shape. The bound TensorFile
- * methods will throw at execute time if dimensions disagree.
+ * During capture, records a DiskRead node (see @ref Slab). @p output must already have the slab's
+ * shape, or execution throws.
  *
  * @code
  * Slab slab{{ {0, 4}, {0, 4} }};
@@ -184,12 +172,8 @@ void read_slice_etn(std::string file_path, std::string tensor_name, Slab const &
 /**
  * @brief Write a slab of a tensor to a .etn file, graph-aware.
  *
- * During capture, records a DiskWrite node that, when executed, opens
- * the file in ReadWrite mode and patches the slab described by
- * @p slab with the contents of @p input. The target entry must
- * already exist, for example via a prior @ref write_etn or
- * @ref TensorFile::reserve. The Slab is captured by reference for
- * loop-driven write-back patterns.
+ * During capture, records a DiskWrite node that patches the slab in place (see @ref Slab). The
+ * entry must already exist, from @ref write_etn or @ref TensorFile::reserve.
  *
  * @code
  * Slab slab{{ {0, 4}, {0, 4} }};
