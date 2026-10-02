@@ -111,9 +111,7 @@ void csifft(Tensor<std::complex<float>, 1> const &a, Tensor<float, 1> *result) {
 
     DFTI_DESCRIPTOR_HANDLE handle = nullptr;
 
-    // The descriptors are odd.  You create the descriptor as if you're doing
-    // a forward transform. In this case, from float -> complex<float> and
-    // then you can call the compute backward function.
+    // The descriptor is created as for the forward transform (float -> complex<float>), then run backward.
     verify(DftiCreateDescriptor(&handle, DFTI_SINGLE, DFTI_REAL, 1, result->dim(0)));
     verify(DftiSetValue(handle, DFTI_PLACEMENT, DFTI_NOT_INPLACE));
     verify(DftiSetValue(handle, DFTI_CONJUGATE_EVEN_STORAGE, DFTI_COMPLEX_COMPLEX));
