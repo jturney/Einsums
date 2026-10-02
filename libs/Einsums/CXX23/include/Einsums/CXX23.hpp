@@ -8,9 +8,7 @@
 /// @file CXX23.hpp
 /// @brief Umbrella header for C++23 backports.
 ///
-/// Provides implementations of C++23 standard library features that are usable
-/// in C++20 codebases. When compiling with C++23 or later (and the compiler
-/// provides the feature), the standard library version is used automatically.
+/// C++23 library features for C++20; the standard versions are used when available.
 ///
 /// Available backports:
 ///   - einsums::expected<T, E>: a value-or-error type, the std::expected backport.

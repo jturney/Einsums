@@ -8,24 +8,15 @@
 /// @file Expected.hpp
 /// @brief C++23 std::expected<T, E> backport for C++20.
 ///
-/// A vocabulary type for functions that can fail: holds either a value of
-/// type T or an error of type E. Unlike exceptions, the caller has to handle
-/// the error, so nothing propagates silently. Unlike error codes, the value
-/// type is preserved.
-///
-/// When C++23 is available, define EINSUMS_USE_STD_EXPECTED to use the
-/// standard library version.
+/// Holds either a value of type T or an error of type E. With C++23, define
+/// EINSUMS_USE_STD_EXPECTED to use the standard library version.
 
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Config/Namespace.hpp>
 
-// Force the feature-test macro determination to be consistent across TUs:
-// without including <version> here, whether `__cpp_lib_expected` is defined when
-// we reach the check depends on whoever-else-included-what-first, which produces
-// different einsums::expected definitions (own class vs std::expected alias) in
-// different TUs. That ODR violation surfaces as undefined-reference link errors
-// against differently-mangled comm::broadcast<T>, allreduce_inplace<T>, etc.
+// Included so `__cpp_lib_expected` is decided the same way in every TU, whatever was included
+// first; otherwise einsums::expected differs between TUs and links fail on mangled names.
 #include <version>
 
 #if defined(__cpp_lib_expected) && __cpp_lib_expected >= 202211L
