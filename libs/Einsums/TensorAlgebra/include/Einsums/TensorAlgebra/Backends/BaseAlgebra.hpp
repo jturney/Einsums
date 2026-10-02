@@ -81,25 +81,10 @@ struct GenericLoopPlan {
 
 /// @brief Order the target loops by C's stride and merge the ones that compose.
 ///
-/// The loops used to run in the order the caller spelled C's indices, outermost
-/// first, which puts C's LAST axis - its widest stride - on the innermost loop.
-/// On a first-index-fastest layout that walks C, A and B a full row apart per
-/// step, wider than a page, so the hardware prefetcher never engages and every
-/// element is a demand miss. On a 200^3 double contraction that cost 3.2x
-/// against the same loops ordered for the layout, and 5.4x for the one
-/// permutation whose page working set also outgrew the TLB.
-///
-/// C decides the order because C is written: a scattered store pays
-/// read-for-ownership on top of the miss, which a scattered load does not.
-///
-/// Two adjacent loops merge when the outer step is exactly one full sweep of the
-/// inner one in C, A and B alike. A zero stride composes with a zero stride,
-/// which is how an index absent from an operand folds in. An elementwise
-/// contraction merges all the way down to a single flat sweep.
-///
-/// Only the TARGET loops move. The link loops keep the caller's order, so every
-/// output element accumulates its terms in the sequence it always did and the
-/// results stay bit-identical rather than merely close.
+/// Ordered by C's strides (scattered stores cost more than scattered loads), so the innermost loop
+/// is C's fastest; spelling order was up to 5.4x slower. Adjacent loops merge when the outer step is
+/// one full sweep of the inner in C, A and B alike. Only target loops move, so link-loop summation
+/// order, and the results, are unchanged.
 template <size_t N>
 GenericLoopPlan<N> plan_generic_target_loops(std::array<size_t, N> const &dims, std::array<size_t, N> const &cs,
                                              std::array<size_t, N> const &as, std::array<size_t, N> const &bs) {
@@ -148,9 +133,7 @@ GenericLoopPlan<N> plan_generic_target_loops(std::array<size_t, N> const &dims, 
 
 /// @brief Walk the planned target loops, innermost loop tight.
 ///
-/// The outer loops are flattened into one counter so the parallel region always
-/// has the full outer trip count to divide, instead of whatever the first
-/// dimension happened to be.
+/// The outer loops share one counter, so the parallel region divides the whole outer trip count.
 template <bool ConjA, bool ConjB, size_t N, typename... LinkDims, CoreBasicTensorConcept CType, typename AValue, typename BValue,
           typename T>
 void einsums_generic_target_walk(GenericLoopPlan<N> const &plan, std::tuple<LinkDims...> const &link_dims,
@@ -234,14 +217,8 @@ void einsum_generic_algorithm(std::tuple<CUniqueIndices...> const &C_unique, std
     auto const A_link_strides   = tensor_algebra::get_stride_for(A, link_position_in_A, link_unique);
     auto const B_link_strides   = tensor_algebra::get_stride_for(B, link_position_in_B, link_unique);
 
-    // The dispatcher lets C alias an operand whose index list is IDENTICAL to
-    // C's, on the grounds that each element is then read immediately before its
-    // own overwrite. True of the elementwise kernels, false here: both branches
-    // below clear or rescale C before reading anything, so an aliased operand
-    // would be read back already zeroed and the result would be silently wrong
-    // ("ij <- ij ; j" with C aliasing A produced all zeros). Snapshot any
-    // operand that overlaps C and read the copy; the precomputed strides index
-    // it identically, so the loops and their summation order are untouched.
+    // C may alias an operand with C's exact index list, but this loop clears or rescales C first, so
+    // read overlapping operands through a snapshot (same strides, same summation order).
     ADataType const       *A_data = A.data();
     BDataType const       *B_data = B.data();
     std::vector<ADataType> A_snapshot;
@@ -258,10 +235,7 @@ void einsum_generic_algorithm(std::tuple<CUniqueIndices...> const &C_unique, std
             }
             return last + 1;
         };
-        // Byte intervals, since A, B and C may have different element types.
-        // Deliberately conservative: unlike the dispatcher's guard this only
-        // decides whether to take a copy, so a false positive costs an
-        // allocation rather than a spurious throw.
+        // Conservative byte intervals: a false positive only costs a copy.
         auto const *c_lo     = reinterpret_cast<char const *>(C->data());
         auto const *c_hi     = c_lo + span_of(*C) * sizeof(CDataType);
         auto const  overlaps = [&](auto const &t, size_t elem_size) {

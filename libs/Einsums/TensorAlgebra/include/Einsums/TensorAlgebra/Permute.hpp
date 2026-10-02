@@ -127,9 +127,7 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
 
     auto target_position_in_A = detail::find_type_with_position(C_indices, A_indices);
 
-    // C has A's extents, axis for axis. The dense path's plan builder checks this itself; the
-    // generic loop below walks C's index space and reads A at the same positions, so it needs it
-    // before it starts.
+    // C must have A's extents, axis for axis, before the generic loop below walks C.
     einsums::for_sequence<ARank>([&](auto n) {
         if (C->dim((size_t)n) != A.dim(std::get<2 * (size_t)n + 1>(target_position_in_A))) {
             EINSUMS_THROW_EXCEPTION(DimensionError, "The {} dimension of the output tensor does not match the input axis it takes!",
@@ -150,12 +148,7 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
         if (C_prefactor == T{0.0}) {
             *C = T{0.0};
         }
-        // Enumerate C's index space, not A's: `index` subscripts C directly
-        // below, and A_order is derived from it. Iterating A's dims walked a
-        // differently-shaped space whenever the permutation changes the dim
-        // order - out of bounds for any non-square permutation. Masked on
-        // platforms where HPTT handles every dense case; found on Windows
-        // (no HPTT) by Nathan Gillispie in PR #235.
+        // Walk C's index space, which `index` subscripts; A_order derives from it.
         Stride<CRank> index_strides;
         size_t        elements = dims_to_strides(C->dims(), index_strides);
 

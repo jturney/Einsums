@@ -83,22 +83,6 @@ auto einsum_special_dispatch(typename CType::ValueType const C_prefactor, std::t
     }
 }
 
-// template <bool OnlyUseGenericAlgorithm, template <typename, size_t> typename AType, typename ADataType, size_t ARank,
-//           template <typename, size_t> typename BType, typename BDataType, size_t BRank, template <typename, size_t> typename CType,
-//           typename CDataType, size_t CRank, typename... CIndices, typename... AIndices, typename... BIndices>
-//     requires requires {
-//         requires RankBlockTensor<AType<ADataType, ARank>, ARank, ADataType>;
-//         requires RankBlockTensor<BType<BDataType, BRank>, BRank, BDataType>;
-//         requires RankBasicTensor<CType<CDataType, CRank>, CRank, CDataType>;
-//         requires(std::tuple_size_v<intersect_t<std::tuple<AIndices...>, std::tuple<BIndices...>>> == 0);
-//         requires CRank >= 1;
-//     }
-// auto einsum_special_dispatch(const CDataType C_prefactor, const std::tuple<CIndices...> &C_indices, CType<CDataType, CRank> *C,
-//                              const std::conditional_t<(sizeof(ADataType) > sizeof(BDataType)), ADataType, BDataType> AB_prefactor,
-//                              const std::tuple<AIndices...> &A_indices, const AType<ADataType, ARank> &A,
-//                              const std::tuple<BIndices...> &B_indices, const BType<BDataType, BRank> &B) -> void {
-//     static_assert(false, "Needs to be implemented.");
-// }
 
 template <bool OnlyUseGenericAlgorithm, bool ConjA, bool ConjB, BlockTensorConcept AType, BlockTensorConcept BType, ScalarConcept CType,
           typename... CIndices, typename... AIndices, typename... BIndices>

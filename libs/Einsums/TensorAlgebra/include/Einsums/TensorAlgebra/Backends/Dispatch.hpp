@@ -168,11 +168,8 @@ AlgorithmChoice einsum_generic_default(ValueTypeT<CType> const C_prefactor, std:
         constexpr auto C_unique = UniqueT<std::tuple<CIndices...>>();
         constexpr auto linksAB  = IntersectT<std::tuple<AIndices...>, std::tuple<BIndices...>>();
         constexpr auto links    = DifferenceT<decltype(linksAB), std::tuple<CIndices...>>();
-        // A letter in one input alone and absent from C is summed over that input too. It used to be
-        // left out of the links, so the loop never iterated it and read only its first slice:
-        // "i <- ij ; i" computed A(i, 0) * B(i). Letters in A come first, with A's extents; letters
-        // only in B follow, with B's. Extents are taken once per distinct letter, so a letter repeated
-        // within an operand (a diagonal) cannot put the extents out of step with the letters.
+        // A letter in one input only and not in C is summed too: A's such letters with A's extents,
+        // then B's with B's, once per distinct letter so a repeated letter keeps them in step.
         constexpr auto lone_A = DifferenceT<DifferenceT<std::tuple<AIndices...>, std::tuple<BIndices...>>, std::tuple<CIndices...>>();
         constexpr auto lone_B = DifferenceT<DifferenceT<std::tuple<BIndices...>, std::tuple<AIndices...>>, std::tuple<CIndices...>>();
         constexpr auto link_unique_A         = CUniqueT<decltype(std::tuple_cat(links, lone_A))>();
@@ -218,15 +215,8 @@ constexpr bool einsum_is_all_hadamard_found(std::tuple<CIndices...> const &, std
 /**
  * @brief Check whether an output index appears in neither input.
  *
- * Such an index is a broadcast: every slice along it receives the same
- * contraction result. The templated path supports that - Einsum3's
- * "3, l <- 3x4x5 * 4x3x5" pins the semantics - but ONLY the generic algorithm
- * implements it. Every BLAS fast path computes the slice its own indices
- * describe and has nowhere to put the broadcast index, so each one has to stand
- * aside. PackedGemm already refuses these itself (see compute_packing_topology).
- *
- * The string path rejects the same spec outright, which is a separate and
- * deliberate divergence; see test_einsum_rejection_python.py.
+ * A broadcast: every slice along it gets the same result. Only the generic algorithm implements it,
+ * so the fast paths stand aside. The string path rejects such specs outright, deliberately.
  */
 template <typename... CIndices, typename... AIndices, typename... BIndices>
 constexpr bool einsum_has_broadcast_target(std::tuple<CIndices...> const &, std::tuple<AIndices...> const &,
@@ -292,11 +282,8 @@ constexpr bool einsum_is_outer_product(std::tuple<CIndices...> const &, std::tup
     constexpr auto A_target_position_in_C          = detail::find_type_with_position(A_indices, C_indices);
     constexpr auto B_target_position_in_C          = detail::find_type_with_position(B_indices, C_indices);
 
-    // #257 (ported from release/v1.1.x): each operand's indices must also be
-    // CONTIGUOUS within C. Interleaved targets ('abc <- ac ; b') otherwise
-    // reach einsum_do_outer_product, whose rank-2 flattening of C scrambles
-    // the result; refusing candidacy here routes them to the generic
-    // algorithm instead. See issue #283.
+    // Each operand's indices must be contiguous within C, or flattening C to rank 2 scrambles the
+    // result ('abc <- ac ; b'); those go to the generic algorithm (#257, #283).
     constexpr auto contiguous_A_target_position_in_C = detail::contiguous_positions(A_target_position_in_C);
     constexpr auto contiguous_B_target_position_in_C = detail::contiguous_positions(B_target_position_in_C);
 
@@ -421,10 +408,7 @@ bool einsum_do_outer_product(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
             }
         }
     } catch (std::exception &e) {
-        // Catch any std::exception (not just runtime_error): a failed BLAS path
-        // can throw logic_error/domain_error (e.g. a degenerate leading-dimension
-        // rejected by the vendor), and those must still fall back to the generic
-        // algorithm rather than escape as an uncaught exception.
+        // Any std::exception falls back to the generic algorithm, logic_error included.
 #if defined(EINSUMS_SHOW_WARNING)
         EINSUMS_LOG_WARN("Optimized outer product failed. Likely from a non-contiguous "
                          "TensorView. Attempting to perform generic algorithm.");
@@ -576,11 +560,8 @@ bool einsum_do_matrix_vector(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
         }
     }
 
-    // The per-axis walk above proves A's axes tile memory; it does not prove the
-    // flattened 2-D view is a matrix BLAS will accept. A permuted view can pass
-    // it and still land a leading dimension below the leading extent - gemv then
-    // throws outright instead of computing anything. Declining here sends the
-    // contraction to the generic loop, which handles any layout.
+    // A's axes tile memory, but the flattened matrix may still have a leading dimension BLAS rejects;
+    // decline to the generic loop.
     {
         bool const   a0_fast  = sA[0] <= sA[1];
         size_t const fast     = a0_fast ? sA[0] : sA[1];
@@ -962,13 +943,7 @@ inline hptt::SelectionMethod hptt_selection_method() {
 
 /// The team size a plan built right now would be shaped for.
 ///
-/// A plan's work decomposition is built from the thread count it was created
-/// with, so a plan is only reusable by a caller that wants the same count. The
-/// plan cache @ref compile_permute builds through keys on it for that reason;
-/// the caches below hold that cache's result and so have to check it too, or a
-/// caller reuses a decomposition meant for a different team. Under the moldable
-/// scheduler one thread genuinely does run nodes of differing widths, which is
-/// what makes this reachable.
+/// Plans are shaped by their thread count, so the caches below key on it as @ref compile_permute's does.
 inline int permute_plan_team_size() {
 #ifdef _OPENMP
     return omp_in_parallel() != 0 ? 1 : omp_get_max_threads();
@@ -1039,20 +1014,14 @@ void cached_permute(std::tuple<DstIndices...> const &dst_indices, DstType *dst, 
 /**
  * @brief Performs a sort (permute) + GEMM contraction.
  *
- * When einsum_is_matrix_product fails because indices are scrambled, this
- * function automatically permutes A and B (and optionally C) so that the
- * contraction maps to a standard GEMM, then calls einsum() on the permuted
- * tensors.
+ * Permutes A, B and, if needed, C into GEMM order when the indices are scrambled.
  *
  * Canonical ordering (with optional batch dims):
  *   A_sorted: [Batch..., M dims (from CminusB, in C order), K dims (link, in A order)]
  *   B_sorted: [Batch..., N dims (from CminusA, in C order), K dims (link, same order as A_sorted)]
  *   C_sorted: [Batch..., M dims, N dims]
  *
- * When batch dims are present (indices in all three of A, B, C), we loop over
- * batch indices and call GEMM on per-batch TensorView slices.
- *
- * If C already has the canonical ordering, no C permutation is needed.
+ * Batch dims (in all three) are looped over, one GEMM per slice.
  */
 template <bool DryRun, bool ConjA, bool ConjB, TensorConcept AType, TensorConcept BType, typename CType, typename... CIndices,
           typename... AIndices, typename... BIndices>
@@ -1069,10 +1038,8 @@ bool einsum_do_sort_gemm(ValueTypeT<CType> const C_prefactor, std::tuple<CIndice
     constexpr auto B_indices = std::tuple<BIndices...>();
     constexpr auto C_indices = std::tuple<CIndices...>();
 
-    // Compute the index groups at compile time using type aliases to avoid
-    // const-qualification issues that arise from constexpr auto variables.
-    // M dims: in C but not in B. N dims: in C but not in A. K dims: in A∩B \ C.
-    // Batch dims: in all three of A, B, C.
+    // Index groups, as type aliases (constexpr auto adds const). M: C minus B. N: C minus A.
+    // K: A∩B minus C. Batch: in all three.
     using M_indices_t     = DifferenceT<std::tuple<CIndices...>, std::tuple<BIndices...>>;
     using N_indices_t     = DifferenceT<std::tuple<CIndices...>, std::tuple<AIndices...>>;
     using LinksAB_t       = IntersectT<std::tuple<AIndices...>, std::tuple<BIndices...>>;
@@ -1329,16 +1296,8 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
                          einsum_has_lone_summed(C_indices, A_indices, B_indices) || !std::is_same_v<CDataType, ADataType> ||
                          !std::is_same_v<CDataType, BDataType> ||
                          (!IsAlgebraTensorV<AType> || !IsAlgebraTensorV<BType> || (!IsAlgebraTensorV<CType> && !IsScalarV<CType>))) {
-        // Mixed datatypes and poorly behaved tensor types go directly to the generic algorithm.
-        //
-        // Broadcast outputs join them, and they are the reason this branch has
-        // teeth: "ikl <- ij ; jk" satisfied einsum_is_matrix_product, which
-        // never inspects l, so the GEMM wrote the first slice of C and left
-        // every other slice at whatever the prefactor had scaled it to - a
-        // wrong answer with no diagnostic. Only the generic algorithm carries
-        // a broadcast index, as a target loop with a zero stride into A and B.
-        // A letter summed over one input alone is the same story from the
-        // other side: no fast path looks at it, so only the generic loop sums it.
+        // Mixed types, awkward tensor types, broadcast outputs and letters summed over one input alone
+        // all go to the generic algorithm; no fast path handles the last two.
     } else if constexpr (einsum_is_dot_product(C_indices, A_indices, B_indices)) {
         if constexpr (!DryRun) {
             CDataType temp;
@@ -1353,9 +1312,7 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
                     temp = std::conj(temp);
                 }
             }
-            // A zero output prefactor assigns rather than multiplies, as on every other route: 0 * NaN
-            // is NaN, so a dot into a never-written output would keep whatever it held. A rank-0 tensor
-            // converts to a reference to its element, and a scalar output is one.
+            // A zero prefactor assigns, so NaN in an unwritten output cannot survive.
             CDataType &c = *C;
             c            = C_prefactor == CDataType{0} ? AB_prefactor * temp : C_prefactor * c + AB_prefactor * temp;
         }
@@ -1377,9 +1334,7 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
             einsum_do_outer_product<DryRun, ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B);
         retval = GER;
     } else if constexpr (einsum_is_matrix_vector<ConjA, ConjB>(C_indices, A_indices, B_indices)) {
-        // A GEMV the vendor cannot thread falls through to PackedGemm's stream route, as the string
-        // engine's does (see packed_gemm::stream_gemv_preferred). The stream does not conjugate, so a
-        // conjugated GEMV keeps the vendor's.
+        // A GEMV the vendor cannot thread goes to PackedGemm's stream route, unless conjugated.
         if (ConjA || ConjB || !packed_gemm::stream_gemv_preferred(static_cast<int64_t>(A.size()))) {
             has_performed_contraction =
                 einsum_do_matrix_vector<DryRun, ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B);
@@ -1401,14 +1356,8 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
         }
     }
 
-    // Packed GEMM: tried before Sort+GEMM. When the contraction has (or can be
-    // dim-coalesced down to) a single M dim and a single N dim, the packed
-    // backend maps it onto strided or flattened BLAS GEMM without materializing
-    // permuted copies of A, B, or C — beating TTGT (Sort+GEMM) on rank-3..6
-    // operands and avoiding its per-call temporaries entirely. allow_scatter is
-    // false: shapes that remain multi-M/N after coalescing decline instead of
-    // taking the slow scatter path, and fall through to Sort+GEMM below (as do
-    // runtime declines for unsupported C strides or repeated indices).
+    // Packed GEMM before Sort+GEMM: with one M and one N dim after coalescing it needs no permuted
+    // copies. allow_scatter is false, so other shapes fall through to Sort+GEMM.
     if (!has_performed_contraction) {
         if constexpr (!OnlyUseGenericAlgorithm && !DryRun && IsBasicTensorV<AType> && IsBasicTensorV<BType> && IsBasicTensorV<CType> &&
                       std::is_same_v<CDataType, ADataType> && std::is_same_v<CDataType, BDataType> && CRank >= 1) {
@@ -1458,26 +1407,11 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
 
     using ABDataType = std::conditional_t<(sizeof(ADataType) > sizeof(BDataType)), ADataType, BDataType>;
 
-    // Output aliasing an input is rejected unless provably elementwise-safe:
-    // when the aliased operand's index list is IDENTICAL to C's, every
-    // element is read exactly once immediately before its own overwrite and
-    // in-place updates stay supported; any other overlap silently corrupts
-    // the contraction (C is rewritten while still being read, and BLAS
-    // kernels assume no operand overlap). Mirrors string_einsum's policy
-    // (ComputeGraph/StringDispatch.hpp). Byte-based spans handle mixed
-    // element types; only dense core tensors are checked - block/tiled
-    // layouts have no single address span.
+    // C may alias an input only when their index lists are identical (each element read right before
+    // its overwrite), as in string_einsum. Dense core tensors only.
     if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && IsTensorV<CType> && CoreBasicTensorConcept<CType>) {
-        // Interval overlap alone is NOT proof of element overlap: disjoint
-        // column-major slices of one parent ("original(2, All, All)" vs
-        // "original(4, All, All)") interleave in memory, so their address
-        // intervals intersect while their element sets are disjoint - a
-        // legitimate pattern this guard must not reject. Overlap is only
-        // treated as real when it is provable: both regions are contiguous
-        // (dense blocks sharing an interval genuinely share elements) or the
-        // base pointers are identical (element (0,...,0) is shared). Strided
-        // views that interleave without either property pass unchecked -
-        // conservative in the permissive direction.
+        // Only provable overlap counts (both regions contiguous, or equal base pointers): disjoint slices
+        // of one parent interleave in memory without sharing elements.
         struct Region {
             char const *lo;
             char const *hi;
@@ -1589,11 +1523,7 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
     }
 #endif
 
-    // Zero-extent operands: nothing to contract, but the output prefactor still applies, once. An
-    // empty C is a no-op; an empty input with a non-empty C (a zero-extent link or summed letter)
-    // means C = c_pf * C, with c_pf == 0 assigning zero so stale NaNs never survive. The string
-    // engine (StringDispatch.hpp) has the same rule. Without it an empty link left C untouched,
-    // unscaled, because no algorithm below ever ran an iteration to apply the prefactor in.
+    // Zero-extent operands still apply C's prefactor once (0 assigns zero), as the string engine does.
     if constexpr (IsBasicTensorV<AType> && IsBasicTensorV<BType> && (!IsTensorV<CType> || IsBasicTensorV<CType>)) {
         // A rank-0 tensor holds one element and has no size() or zero(); it is never empty.
         auto const is_empty = []<typename TT>(TT const &t) {
@@ -1834,9 +1764,7 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
         ProfileAnnotate("A_rank", static_cast<int64_t>(ARank));
         ProfileAnnotate("B_rank", static_cast<int64_t>(BRank));
 #endif
-        // Warn once per unique contraction pattern when falling back to the
-        // generic nested-loop algorithm.  The `static bool` ensures each
-        // template instantiation (= unique index pattern) warns only once.
+        // Warn once per index pattern (template instantiation) that falls back to the generic loop.
         if (retval == detail::GENERIC) {
             thread_local static bool warned = false;
             if (!warned) {

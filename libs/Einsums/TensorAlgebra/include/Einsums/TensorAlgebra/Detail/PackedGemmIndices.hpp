@@ -8,10 +8,8 @@
 /// @file PackedGemmIndices.hpp
 /// @brief The compile-time-index entry into PackedGemm, kept with the templated engine that uses it.
 ///
-/// PackedGemm's own entry point takes a ContractionSpec, which is all ComputeGraph and the string
-/// engine need. This overload builds that spec from index-type packs for ``tensor_algebra::einsum``.
-/// It lives here rather than in PackedGemm so that the headers ComputeGraph includes carry no code
-/// that serves only the templated engine.
+/// Builds PackedGemm's ContractionSpec from index-type packs. Kept here so ComputeGraph's headers
+/// carry no templated-engine code.
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -32,12 +30,7 @@ std::vector<std::string> index_letters_from_tuple(std::tuple<Indices...> const &
 
 /// @brief Attempt to execute the einsum contraction via the packed GEMM backend.
 ///
-/// The compile-time-indices form, used by `tensor_algebra::einsum<CIndices...,
-/// AIndices..., BIndices...>`. It builds a ContractionSpec from the index packs
-/// and forwards to `packed_gemm::try_packed_gemm`, PackedGemm's own entry point.
-///
-/// Returns `true` if the contraction was handled; `false` if the backend
-/// should fall back to `einsum_generic_algorithm`.
+/// The compile-time-index form of `packed_gemm::try_packed_gemm`. False means fall back.
 template <bool ConjA, bool ConjB, einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType, typename CType,
           typename... CIndices, typename... AIndices, typename... BIndices>
     requires(einsums::BasicTensorConcept<CType> || (einsums::ScalarConcept<CType> && sizeof...(CIndices) == 0))

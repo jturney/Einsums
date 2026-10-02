@@ -43,28 +43,10 @@ AlgorithmChoice einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices.
  * @f[
  *     C_{abc\cdots} = \alpha C_{abc\cdots} + \beta A_{def\cdots} B_{ghi\cdots},
  * @f]
- * where @f$\alpha@f$ is the C prefactor and @f$\beta@f$ is the AB prefactor.
- * The indices must be known at compile time, as well as the ranks of the
- * tensors. The C tensor may also be a scalar if its index tuple is empty.
- * The tensor parameters may be any combination of smart pointers. The
- * prefactors may also be left off: if the first prefactor is left off, it
- * defaults to zero, and if the second is left off, it defaults to one. Most
- * combinations of kinds of tensors are accepted. However, for best results,
- * avoid using FunctionTensor, RuntimeTensor, or ArithmeticTensor, as these
- * can't be used with LAPACK or BLAS calls.
- *
- * This function analyzes the indices it is given to determine whether the
- * contraction can be turned into a BLAS call. As of the current version, it
- * will not perform any major transpositions to force it into a BLAS call.
- * The only transpositions it does are the ones that can be specified as
- * parameters to those BLAS calls. For instance, if it can call `gemm` for a
- * matrix multiplication, it determines whether it needs to tell `gemm` to
- * transpose the arguments or not. It will not, however, try to swap the
- * indices of a tensor around to coerce the contraction into a `gemm` call if
- * one is not seen immediately. This is up to the user to perform. We have
- * plans to make this a feature in the future, though, so feel free to write
- * your code as if it did do this transposition (we are always looking for
- * help, if you feel inclined to make this a reality).
+ * where @f$\alpha@f$ is the C prefactor and @f$\beta@f$ is the AB prefactor. Indices and ranks are
+ * compile-time; C may be a scalar (empty index tuple), tensors may be smart pointers, and the
+ * prefactors default to zero and one. From the indices it picks a BLAS call, PackedGemm, a
+ * permute-then-GEMM, or the generic loop.
  *
  * @tparam ConjA If true, use the complex conjugate of the elements of A.
  * @tparam ConjB If true, use the complex conjugate of the elements of B.
@@ -120,9 +102,7 @@ struct DerefTypeHelper<T, true> {
 template <typename T>
 using deref_type_t = typename DerefTypeHelper<T>::type;
 
-// Dereference A or B: smart-pointer → *ptr; anything else → passthrough.
-// Note: weak_ptr satisfies SmartPointer but has no operator*, so calling auto_deref
-// on one fails to compile, matching the behaviour of the old explicit overloads.
+// Dereference a smart-pointer A or B; anything else passes through. A weak_ptr does not compile.
 template <typename T>
 [[nodiscard]] decltype(auto) auto_deref(T &&t) {
     if constexpr (SmartPointer<std::remove_cvref_t<T>>)
@@ -189,10 +169,6 @@ constexpr auto get_n(std::tuple<List...> const &);
  *
  * @returns unfolded_tensor of shape ``(tensor.dim(mode), -1)``
  */
-// template <unsigned int mode, template <typename, size_t> typename CType, size_t CRank, typename T = double>
-// Tensor<T, 2> unfold(CType<T, CRank> const &source)
-// requires(std::is_same_v<Tensor<T, CRank>, CType<T, CRank>>);
-
 /** Computes the Khatri-Rao product of tensors A and B.
  *
  * Example:

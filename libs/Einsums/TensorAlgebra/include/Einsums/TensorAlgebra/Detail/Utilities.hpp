@@ -39,17 +39,8 @@ constexpr std::size_t extent_product(std::tuple<Dims...> const &dims) {
 /**
  * @brief Whether a contraction of this size is worth a parallel region.
  *
- * Forking a team costs tens of microseconds when the workers are parked, and the
- * generic walk's region is entered once per einsum call regardless of how small
- * the contraction is. Measured on an M4 Pro with ten threads, an ungated walk
- * spent 20-38 us on every shape from 4 to 2304 output elements: flat across a
- * 576x range in problem size, because the fork, not the arithmetic, was the whole
- * measurement. Threading was a 8-16x loss there and only paid from roughly 500
- * KFLOP upward.
- *
- * @c omp_min_parallel_flops is the same break-even PackedGemm gates on, derived
- * from the measured region cost, so the two backends decline a region at the same
- * size instead of disagreeing about it.
+ * Gated on @c omp_min_parallel_flops, as PackedGemm is: an ungated fork cost 20-38 us on every
+ * small shape.
  *
  * @param target_elements Number of output elements the region would divide.
  * @param link_elements   Contracted extent walked per output element.
@@ -101,10 +92,7 @@ auto order_indices(std::tuple<Args...> const &combination, std::array<size_t, Ra
 /**
  * Swap around the indices to the desired order.
  *
- * For instance, if we have a list of indices
- * <tt>{a,b,c}</tt> and we want to reverse it, we would give the order <tt>{2, 1, 0}</tt>.
- * There is no requirement that all the orders be different, so if we were to pass <tt>{1, 1, 0}</tt>
- * instead, we would get <tt>{b,b,a}</tt>.
+ * <tt>{2, 1, 0}</tt> reverses <tt>{a,b,c}</tt>; repeats are allowed (<tt>{1, 1, 0}</tt> gives <tt>{b,b,a}</tt>).
  *
  * @param combination The indices to reorder.
  * @param order The array containing the new order.
@@ -219,11 +207,6 @@ constexpr auto unique_find_type_with_position(std::tuple<Ts...> const & /*unused
  *
  * @return A tuple of ranges to be used to iterate over a tensor.
  */
-// template <TensorConcept TensorType, typename... Args>
-// auto get_dim_ranges_for(TensorType const &tensor, std::tuple<Args...> const &args) {
-//     return detail::get_dim_ranges_for(tensor, args, std::make_index_sequence<sizeof...(Args) / 2>{});
-// }
-
 /**
  * Create a tuple containing the dimensions of a tensor.
  *
@@ -234,12 +217,6 @@ template <TensorConcept TensorType, typename... Args>
 auto get_dim_for(TensorType const &tensor, std::tuple<Args...> const &args) {
     return detail::get_dim_for(tensor, args, std::make_index_sequence<sizeof...(Args) / 2>{});
 }
-
-// template <typename ScalarType>
-//     requires(!TensorConcept<ScalarType>)
-// auto get_dim_ranges_for(ScalarType const &tensor, std::tuple<> const &args) {
-//     return std::tuple{};
-// }
 
 template <typename ScalarType>
 auto get_dim_for([[maybe_unused]] ScalarType const &tensor, [[maybe_unused]] std::tuple<> const &args) {
