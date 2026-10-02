@@ -26,16 +26,7 @@ EINSUMS_NAMESPACE_BEGIN()
 namespace print {
 namespace {
 std::mutex lock;
-// Indent state is thread_local. Indent is an RAII scope object, and its
-// scope is naturally per-thread (an Indent guard on thread A should not
-// affect output from thread B). The previous shared `int` + `std::string`
-// with an `omp_get_thread_num() == 0` guard had two bugs: (1) the guard
-// returns 0 for any thread outside an OMP region, including TaskPool
-// std::thread workers, so every worker thought it was the master and
-// raced on indent_string writes; (2) the reads at print_line happened
-// outside the (existing) mutex, racing against in-flight reallocs and
-// producing a heap-use-after-free under ASan (T8 worker triggering an
-// einsum's Indent ctor while another worker was rewriting indent_string).
+// Thread-local, as an Indent guard on one thread must not affect another's output.
 thread_local int         indent_level{0};
 thread_local std::string indent_string{};
 bool                     print_master_thread_id{false};
@@ -44,9 +35,7 @@ bool                     suppress{false};
 
 OutputSinkCallback output_sink_{};
 
-/// Strip ANSI escape sequences from a string.
-/// Handles CSI sequences (ESC[...X), OSC sequences (ESC]...ST), and other
-/// two-character escape sequences (ESC + single char) used by 256-color and truecolor modes.
+/// Strip ANSI escape sequences: CSI (ESC[...X), OSC (ESC]...ST) and two-character ESC sequences.
 std::string strip_ansi(std::string const &input) {
     std::string result;
     result.reserve(input.size());
@@ -109,10 +98,7 @@ void update_indent_string() {
 }
 
 void indent() {
-    // No omp_get_thread_num() guard: indent state is thread_local, so each
-    // thread manages its own. The old guard intended "only the master thread
-    // mutates" but silently let every non-OMP thread (e.g. TaskPool workers)
-    // through as thread 0.
+    // Per-thread state, so no thread guard is needed.
     indent_level += 4;
     update_indent_string();
 }
