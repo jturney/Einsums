@@ -587,18 +587,12 @@ struct TensorImpl final {
      * @param i The axis to check.
      */
     [[nodiscard]] constexpr size_t dim(std::integral auto i) const {
-        // Rank 0 is a default-constructed, moved-from, or allocated scalar: report
-        // 0 when there is no storage (dead tensor) and 1 for an allocated scalar.
-        // Handle it before touching _dims (which is empty here).
+        // Rank 0: 0 with no storage, 1 for an allocated scalar. _dims is empty.
         if (_rank == 0) {
             return (_ptr == nullptr) ? 0 : 1;
         }
-        // A null data pointer with non-zero size is an unmaterialized (deferred)
-        // tensor. Report 0 so it reads as not-yet-allocated and the buffer
-        // protocol exposes nothing to dereference. A null pointer with size 0 is
-        // a legitimately empty tensor: its storage holds no elements, so the
-        // backing std::vector's data() is null, but its extents are real and must
-        // be reported (e.g. a (0, N) tensor is not a (0, 0) tensor).
+        // Null with a nonzero size is deferred: report 0. Null with size 0 is empty, and its extents
+        // are real ((0, N) is not (0, 0)).
         if (_ptr == nullptr && _size != 0) {
             return 0;
         }
@@ -644,8 +638,7 @@ struct TensorImpl final {
     /**
      * @brief Check whether the tensor is contiguous in memory.
      *
-     * For a tensor to be contiguous in memory, there must not be
-     * any data outside of any dimension. Views are often not contiguous, though they sometimes can be.
+     * No gaps between elements; views often have them.
      */
     [[nodiscard]] constexpr bool is_contiguous() const {
         if (_rank == 0) {
@@ -673,11 +666,8 @@ struct TensorImpl final {
             }
             return true;
         }
-        // Ignore size-1 dimensions, whose stride is irrelevant since a permuted
-        // view can leave one at a boundary with an inflated stride. The tensor is
-        // totally vectorable iff the extent>1 dimensions tile memory with a
-        // single increment and no gaps, i.e. the span (largest dim * largest
-        // stride) equals element_count * smallest_stride.
+        // Ignoring extent-1 axes (their strides are arbitrary): vectorable iff the rest tile memory
+        // with one increment, i.e. largest dim * largest stride == size * smallest stride.
         size_t min_s = 0, max_s = 0, max_dim = 0;
         bool   found = false;
         for (size_t i = 0; i < _rank; ++i) {
@@ -718,15 +708,7 @@ struct TensorImpl final {
      * @param[out] lda The leading dimension which can be passed into gemm and similar calls.
      */
     [[nodiscard]] bool is_gemmable(size_t *lda = nullptr) const {
-        // Equal strides normally mean the two axes address the same elements,
-        // which no BLAS call can express. They mean nothing of the sort when an
-        // axis has extent one: that axis is never traversed, so its stride is
-        // arbitrary and collides with the other one for a 1 x n matrix laid out
-        // perfectly well. Rejecting those sent every single-row GEMM down the
-        // generic path, where it paid two OpenMP fork/joins - about 50 us on a
-        // ten-core machine - to do work BLAS does in 0.2 us. Same reasoning as
-        // get_incx() below, which already ignores size-1 axes for the same
-        // reason.
+        // Equal strides matter only when both extents exceed one; an extent-1 axis's stride is arbitrary.
         bool const strides_collide = _strides[0] == _strides[1] && _dims[0] > 1 && _dims[1] > 1;
         if (_rank != 2 || (_strides[0] != 1 && _strides[1] != 1) || strides_collide) {
             return false;
@@ -748,18 +730,11 @@ struct TensorImpl final {
      * (axpy, dot, copy).
      */
     [[nodiscard]] constexpr size_t get_incx() const {
-        // Rank 0 used to answer 0 here, and is_totally_vectorable and query_vectorable_params
-        // called it empty, though size() is 1 and is_contiguous() true. Every kernel that trusted
-        // them skipped the element: scaling a scalar was a silent no-op, which an einsum into a
-        // scalar output through a folded diagonal ("<- ij ; llji") hit with any C prefactor but 0 or 1.
+        // A scalar is one element at increment 1.
         if (_rank == 0) {
             return 1;
         }
-        // The vectorization increment is the smallest stride among dimensions
-        // with extent > 1. A size-1 dimension is never traversed, so its stride
-        // is irrelevant and must be ignored: a permuted view can leave a size-1
-        // axis at a boundary with an inflated stride, which previously fooled the
-        // stride(0)/stride(-1) shortcut into returning the wrong increment.
+        // The smallest stride among axes of extent > 1.
         size_t inc   = 0;
         bool   found = false;
         for (size_t i = 0; i < _rank; ++i) {
@@ -844,18 +819,15 @@ struct TensorImpl final {
     /**
      * @brief Returns the raw row-major flag as stored, without the rank-1 collapse.
      *
-     * Use this when you need to *preserve* the originally-requested layout
-     * across operations like resize, where the user may grow a rank-≤1
-     * tensor into something higher-rank and expects the same layout
-     * (column-major by default in einsums) to carry over. ``is_row_major()``
-     * collapses rank-≤1 to ``true`` and would silently flip the layout.
+     * For preserving the requested layout across a resize, which ``is_row_major()`` reports as true
+     * for rank 1 and below.
      */
     constexpr bool stored_row_major() const noexcept { return _row_major; }
 
     /**
      * @brief Calculate the parameters for looping over a BLAS call.
      *
-     * A quick overview of how this might be used is something like this.
+     * For example:
      *
      * @code
      * for(size_t i = 0; i < hard_size; i++) {
@@ -863,7 +835,7 @@ struct TensorImpl final {
      * }
      * @endcode
      *
-     * For more complete examples, take a look at the implementation in @c TensorImplOperations.hpp .
+     * See @c TensorImplOperations.hpp for real uses.
      *
      * @param[out] easy_size The number of elements that can be passed into a BLAS call at any given time.
      * @param[out] hard_size The number of times the BLAS call will need to be made.
@@ -889,17 +861,8 @@ struct TensorImpl final {
             *hard_size = 1;
             *easy_rank = 0;
 
-            // Vectorization increment = smallest stride among extent>1 dims
-            // (size-1 dims have an irrelevant stride; see get_incx). The walk
-            // grows the contiguous "easy" block from the innermost end (suffix
-            // for row-major, prefix for column-major, matching impl_axpy's hard-
-            // dim extraction) by accepting each dim whose stride equals the
-            // running product of the easy extents so far. A size-1 dim folds in
-            // for free while we are still inside the easy block; once a gap is
-            // hit, the remaining dims (including any size-1 ones) are "hard".
-            // (Previously `incx` came from stride(0)/stride(-1) and the running
-            // product was a never-updated `const size = 1`, both wrong for
-            // permuted/degenerate views.)
+            // incx as in get_incx. The easy block grows from the innermost end (as impl_axpy extracts
+            // hard dims) while each stride equals the running product of easy extents; the rest are hard.
             size_t inc   = 0;
             bool   found = false;
             for (size_t i = 0; i < _rank; ++i) {
@@ -1441,21 +1404,9 @@ struct TensorImpl final {
     /**
      * @brief Strides for @p new_dims over this tensor's storage, or an empty vector.
      *
-     * The stride solver behind @ref reshape_view. Returns strides such that
-     * @p new_dims addresses exactly the elements this tensor does, in the same
-     * order, or an empty vector when no such strides exist.
-     *
-     * A reshape is a view when each new axis lands inside a run of old axes that
-     * are already contiguous with one another. Merging ``(a, b)`` into ``a*b``
-     * needs ``stride(b) == stride(a) * dim(a)``; splitting is the same condition
-     * read backwards. Anything else - merging across a gap, or reshaping a
-     * strided slice whose rows are not adjacent - has no answer, and the caller
-     * has to copy.
-     *
-     * Axes of extent one carry no data and are dropped before matching, so a
-     * length-1 axis in the middle does not break a run the way a naive stride
-     * comparison against it would. New axes of extent one get whatever stride
-     * the walk is holding; nothing addresses through them.
+     * Strides for which @p new_dims address the same elements in the same order. Possible when each
+     * new axis lies in a run of mutually contiguous old axes (merging ``(a, b)`` needs
+     * ``stride(b) == stride(a) * dim(a)``); otherwise the caller must copy. Extent-1 axes are ignored.
      */
     [[nodiscard]] ShapeVector<size_t> reshape_strides(std::vector<size_t> const &new_dims) const {
         size_t const new_size = std::accumulate(new_dims.begin(), new_dims.end(), size_t{1}, std::multiplies<>());
@@ -1475,23 +1426,8 @@ struct TensorImpl final {
             return out;
         }
 
-        // Column major walks axis 0 fastest, row major walks the last one
-        // fastest. Match in storage order so one algorithm covers both.
-        //
-        // Read that off the strides rather than off _row_major, which is not
-        // usable here: infer_row_major() calls any rank < 2 tensor row major,
-        // having no evidence either way, so the rank-1 view produced by
-        // flattening a column-major tensor claims to be row major and reshaping
-        // it back would transpose. When the strides say nothing either - fewer
-        // than two axes stepped along, or every such stride equal - column major
-        // is the fallback, being this library's construction default, which
-        // makes flatten-then-restore an identity for tensors built that way.
-        //
-        // Only axes of extent above one are compared. An extent-1 axis keeps
-        // whatever stride it had in its parent, and read as evidence it flipped
-        // the order: the column-major block (1, 2, 3) with strides (6, 1, 2) was
-        // walked row major, its axes then failed to abut, and a reshape that is
-        // free was refused.
+        // Match in storage order, read from the strides of axes with extent > 1 (not _row_major,
+        // which is meaningless below rank 2). With no evidence, column major, the construction default.
         bool   reverse = false;
         size_t prev    = _rank;
         for (size_t k = 0; k < _rank; ++k) {
@@ -1569,11 +1505,8 @@ struct TensorImpl final {
     /**
      * @brief Create a reshaped view sharing this tensor's storage.
      *
-     * Throws @ref DimensionError when the new shape does not have the same
-     * number of elements, and @ref TensorCompatError when it does but cannot
-     * be addressed over this tensor's strides - which is the case worth knowing
-     * about, because it is the difference between a free reinterpretation and a
-     * copy. See @ref reshape_strides for the rule.
+     * Throws @ref DimensionError for a different element count, @ref TensorCompatError when a copy
+     * would be needed (see @ref reshape_strides).
      */
     [[nodiscard]] TensorImpl<T> reshape_view(std::vector<size_t> const &new_dims) {
         auto strides = reshape_strides(new_dims);
@@ -1594,10 +1527,7 @@ struct TensorImpl final {
     /**
      * @brief Create an axis-permuted view: result axis i takes parent axis ``perm[i]``.
      *
-     * Like @ref transpose_view but for an arbitrary permutation of the axes
-     * (``transpose_view`` is the full-reversal special case). Does not move data;
-     * only the dims/strides are reordered. @p perm must be a permutation of
-     * ``[0, rank)``. This is unchecked here; callers validate.
+     * Moves no data. @p perm must be a permutation of ``[0, rank)``; unchecked.
      */
     [[nodiscard]] constexpr TensorImpl<T> permute_view(std::vector<size_t> const &perm) {
         ShapeVector<size_t> new_dims, new_strides;
@@ -1896,14 +1826,8 @@ struct TensorImpl final {
 
     /// Infer _row_major from existing _strides and _dims.
     ///
-    /// Only the axes stepped along, those of extent above one, carry evidence: an extent-1 axis is
-    /// never stepped along, and a view keeps whatever stride the axis had in its parent. Reading
-    /// the first and last strides regardless called the (1, 2, 3) block with strides (6, 1, 2)
-    /// row major, and permute handed HPTT a plan for the wrong layout.
-    ///
-    /// With one stepped axis the tensor is a vector in either layout, and the flag is chosen for
-    /// what BLAS will read off it as a matrix (see @ref get_lda): a unit-stride axis becomes the
-    /// minor one, any other stride the major one, whose stride is then the leading dimension.
+    /// Only axes of extent > 1 count; an extent-1 axis's stride is arbitrary. With one such axis, the
+    /// flag suits BLAS (see @ref get_lda): a unit stride is minor, any other major.
     constexpr void infer_row_major() {
         if (_rank < 2) {
             _row_major = true;

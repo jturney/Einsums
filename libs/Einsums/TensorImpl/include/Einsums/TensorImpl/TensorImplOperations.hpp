@@ -95,9 +95,7 @@ void impl_real(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
     }
 
-    // Lock-step vectorized paths require identical memory layouts; equal
-    // is_column_major() flags don't guarantee that for permuted views (see the
-    // detailed note in impl_axpy). Compare actual strides.
+    // Lock-step paths need identical strides (see impl_axpy).
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
@@ -214,9 +212,7 @@ void impl_imag(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
     }
 
-    // Lock-step vectorized paths require identical memory layouts; equal
-    // is_column_major() flags don't guarantee that for permuted views (see the
-    // detailed note in impl_axpy). Compare actual strides.
+    // Lock-step paths need identical strides (see impl_axpy).
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
@@ -323,9 +319,7 @@ void impl_abs(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
     }
 
-    // Lock-step vectorized paths require identical memory layouts; equal
-    // is_column_major() flags don't guarantee that for permuted views (see the
-    // detailed note in impl_axpy). Compare actual strides.
+    // Lock-step paths need identical strides (see impl_axpy).
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
@@ -528,10 +522,7 @@ bool impl_same_operand(TensorImpl<T> const &a, TensorImpl<U> const &b) {
 
 /// Whether the storage @p a and @p b span, from first element to one past the last, intersects.
 ///
-/// Interval intersection, deliberately conservative: callers only decide whether to read an input
-/// through a copy, so two disjoint slices that interleave in one parent pay a copy rather than a
-/// wrong answer. Strides are non-negative, so the base pointer is the lowest address. A zero-extent
-/// operand touches nothing. Compared in bytes, since the element types may differ.
+/// Conservative byte-interval intersection: interleaved disjoint slices only cost a copy.
 template <typename T, typename U>
 bool impl_storage_overlaps(TensorImpl<T> const &a, TensorImpl<U> const &b) {
     auto const bytes_of = [](auto const &t) {
@@ -552,10 +543,7 @@ bool impl_storage_overlaps(TensorImpl<T> const &a, TensorImpl<U> const &b) {
 
 /// Calls @p f with a packed copy of @p in, in @p in's own storage order.
 ///
-/// For an input whose storage overlaps the output it is read against. BLAS-1 routines forbid
-/// their operands overlapping, and every kernel here reads an input element after writing an
-/// output one, so an input sharing elements with the output would read values already written.
-/// The copy cannot overlap anything the caller holds.
+/// For an input overlapping its output, which BLAS forbids and which would read values already written.
 template <typename T, typename F>
 void impl_with_snapshot(TensorImpl<T> const &in, F &&f) {
     using V = std::remove_cv_t<T>;
@@ -577,11 +565,7 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not add two tensors with different sizes!");
     }
 
-    // An operand that IS its destination (same buffer, same layout) makes this
-    // out = (1 + alpha) * out. BLAS ?axpy forbids x and y overlapping, and a
-    // complex kernel writes Re(y) before it reads Re(x) for Im(y), so a complex
-    // alpha came back with the wrong imaginary part. Real and pure-real alpha
-    // have no cross term, which is why only complex prefactors showed it.
+    // An operand that is its destination: out = (1 + alpha) * out, since ?axpy forbids the overlap.
     if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>>) {
         if (impl_same_operand(in, out)) {
             impl_scal(T{1} + static_cast<T>(alpha), out);
@@ -589,24 +573,15 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         }
     }
 
-    // An input that shares storage with the output without being it (a
-    // shifted view of one parent, a transposed view onto its parent) is the
-    // same forbidden aliasing, and wrong for real alpha too: each output
-    // element reads a neighbour already updated. Read it through a copy.
+    // Any other overlap: read the input through a copy.
     if (impl_storage_overlaps(in, out)) {
         impl_with_snapshot(in, [&](auto const &snapshot) { impl_axpy(alpha, snapshot, out); });
         return;
     }
 
     if (in.strides() != out.strides()) {
-        // The vectorized paths below traverse `in` and `out` in lock-step by a
-        // single increment, which is only valid when the two operands map logical
-        // indices to memory identically. Equal is_column_major() flags do not
-        // guarantee that: a permuted/transposed view can share the flag yet have a
-        // different stride ordering (e.g. both internally contiguous but one
-        // stored (1,2,4) and the other (1,4,2)), so a flat axpy would pair up
-        // mismatched logical elements. Compare the actual strides and fall back to
-        // the fully-general strided loop whenever they differ.
+        // The vectorized paths walk both operands in lock-step, which needs identical strides; equal
+        // layout flags are not enough for permuted views.
         EINSUMS_LOG_DEBUG("Operands have different memory layouts. Using the fully-general strided fallback.");
 
         impl_axpy_noncontiguous(0, in.rank(), static_cast<T>(alpha), in.dims(), in.data(), in.strides(), out.data(), out.strides());
@@ -654,17 +629,8 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
             }
         }
 
-        // NOTE: the easy/hard dim split above keys off the layout flag via
-        // is_column_major() rather than `stride(0) < stride(-1)` (the same idiom,
-        // and the same fix, recurs throughout this file: impl_scal, impl_mult,
-        // impl_copy, impl_real, ...). The stride comparison was a proxy for
-        // column-major-ness, but a degenerate extent ties the two strides (a
-        // contiguous 1xN operand has equal row and column strides), so the proxy
-        // picked the wrong branch and extracted an operand's row stride where its
-        // column stride was needed. The hard loop then wrote contiguously and
-        // only the first column landed correctly. The flag is what
-        // query_vectorable_params folds against, keeping split and extraction
-        // consistent for degenerate (size-1) extents.
+        // The split keys off is_column_major(), as query_vectorable_params does, not a stride
+        // comparison, which ties on degenerate extents (here and throughout this file).
         impl_axpy_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, static_cast<T>(alpha), hard_dims, in.data(), in_strides,
                                            in_incx, out.data(), out_strides, out_incx);
     }
@@ -717,14 +683,8 @@ template <typename T, typename U>
 void impl_scal(U alpha, TensorImpl<T> &out) {
     LabeledSection0();
 
-    // Scaling by exactly zero ASSIGNS zero rather than multiplying - the same
-    // no-read convention BLAS gives gemm's beta = 0. A zero prefactor is how a
-    // caller says "discard what is here", and a multiply would let a NaN or an
-    // Inf already in the buffer survive the discard (0 * NaN is NaN) and
-    // poison the result. The case that makes this load-bearing rather than
-    // cosmetic is an UNINITIALIZED destination: einsum lowers a zero C
-    // prefactor to this scale on several of its routes, so without the
-    // special case an einsum into a never-written tensor is a latent NaN.
+    // Scaling by zero assigns zero, as gemm's beta = 0 does, so NaN in an uninitialized destination
+    // cannot survive.
     if (alpha == U{}) {
         impl_scalar_copy(alpha, out);
         return;
@@ -914,9 +874,7 @@ void impl_mult(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not multiply two tensors with different sizes!");
     }
 
-    // Lock-step vectorized paths require identical memory layouts; equal
-    // is_column_major() flags don't guarantee that for permuted views (see the
-    // detailed note in impl_axpy). Compare actual strides.
+    // Lock-step paths need identical strides (see impl_axpy).
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
@@ -1037,9 +995,7 @@ void impl_div(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not divide two tensors with different sizes!");
     }
 
-    // Lock-step vectorized paths require identical memory layouts; equal
-    // is_column_major() flags don't guarantee that for permuted views (see the
-    // detailed note in impl_axpy). Compare actual strides.
+    // Lock-step paths need identical strides (see impl_axpy).
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
@@ -1164,10 +1120,7 @@ void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
     }
 
-    // Copying an operand onto itself changes nothing. One that shares storage
-    // with the output otherwise (a shifted or transposed view of one parent)
-    // would read elements already overwritten, and ?copy forbids the overlap,
-    // so it is read through a copy of its own (see impl_axpy).
+    // A copy onto itself does nothing; any other overlap reads through a copy (see impl_axpy).
     if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>>) {
         if (impl_same_operand(in, out)) {
             return;
@@ -1178,9 +1131,7 @@ void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         return;
     }
 
-    // Lock-step vectorized paths require identical memory layouts; equal
-    // is_column_major() flags don't guarantee that for permuted views (see the
-    // detailed note in impl_axpy). Compare actual strides.
+    // Lock-step paths need identical strides (see impl_axpy).
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
