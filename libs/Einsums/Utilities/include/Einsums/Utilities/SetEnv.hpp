@@ -16,17 +16,10 @@ EINSUMS_NAMESPACE_BEGIN()
 /**
  * @brief Set (or overwrite) an environment variable, portably.
  *
- * There is no standard C++ way to SET an environment variable: std::getenv is
- * the whole standard surface, setenv/unsetenv are POSIX, and the MSVC CRT
- * spells it _putenv_s. This wraps the difference.
+ * setenv on POSIX, _putenv_s on MSVC.
  *
- * @warning The environment block is process-global mutable state with no
- *          synchronization: mutating it while another thread calls
- *          std::getenv (directly or through a library) is undefined behavior
- *          on every platform. Call during startup/configuration, before
- *          threads that might read the environment exist - the runtime's
- *          initialization path and test setup qualify; steady-state code
- *          generally should not.
+ * @warning Racing std::getenv on another thread is undefined behavior. Call during startup or
+ *          test setup, before other threads exist.
  *
  * @param[in] name The variable name.
  * @param[in] value The value to set.
@@ -36,10 +29,7 @@ EINSUMS_EXPORT void set_env_var(std::string const &name, std::string const &valu
 /**
  * @brief Remove an environment variable, portably.
  *
- * On Windows the variable is set to the empty string, which the CRT treats
- * as removal (_putenv_s semantics); std::getenv returns nullptr afterwards
- * on both platforms. The same thread-safety warning as set_env_var()
- * applies.
+ * std::getenv returns nullptr afterwards on both platforms. Same warning as set_env_var().
  *
  * @param[in] name The variable name.
  */

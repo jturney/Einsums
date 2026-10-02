@@ -24,9 +24,7 @@ namespace detail {
  *
  * @brief A uniformly random distribution on a circle with a center and radius.
  *
- * For real numbers, this will give a uniform distribution on an interval. For complex numbers,
- * the distribution will be such that the probability of a point being within a subregion
- * is proportional to the area of that subregion.
+ * Uniform on an interval for reals, uniform by area on a disc for complex numbers.
  *
  * @versionadded{1.1.0}
  */
@@ -94,9 +92,7 @@ struct CircleDistribution<std::complex<T>> {
  *
  * @brief A uniformly random distribution on the unit circle.
  *
- * For real numbers, this will give a uniform distribution on (-1, 1). The endpoints are not included.
- * For complex numbers, the distribution will be such that the probability of a point being within a subregion
- * is proportional to the area of that subregion. The region will be the unit disc without its boundary.
+ * Uniform on (-1, 1) for reals, uniform by area on the open unit disc for complex numbers.
  *
  * @versionadded{1.1.0}
  */
@@ -169,12 +165,9 @@ EINSUMS_EXPORT extern std::default_random_engine random_engine;
 /**
  * @brief Set the seed of the random number generator.
  *
- * Seeds the process-global @ref random_engine, which backs every
- * ``create_random_tensor`` / ``create_random_definite`` draw as well as the
- * randomized LAPACK-style algorithms (``truncated_svd``, ``truncated_syev``).
- * Exposed to Python so tests can make those reproducible: seeding a numpy
- * generator only pins inputs the test builds itself, not the projections
- * drawn inside the C++ algorithms.
+ * Seeds @ref random_engine, behind ``create_random_tensor``, ``create_random_definite`` and the
+ * randomized algorithms (``truncated_svd``, ``truncated_syev``). Exposed so Python tests can
+ * reproduce draws made inside C++.
  *
  * @warning The engine is process-global and unsynchronized. Seed during setup,
  *          not concurrently with threads that draw from it.
