@@ -6,11 +6,8 @@
 /// @file
 /// How every einsums namespace block is opened and closed.
 ///
-/// The library lives in `einsums::inline vN`, where N is the ABI generation.
-/// The inline namespace is transparent to name lookup, so `einsums::Tensor`
-/// still names the type and no caller spells the version - but the mangled
-/// symbol carries it, so two ABI-incompatible copies of libEinsums in one
-/// process cannot answer for each other.
+/// The library lives in `einsums::inline vN`, N the ABI generation: invisible to lookup, but in
+/// the mangled names, so incompatible copies cannot answer for each other.
 ///
 /// Write namespace blocks through these macros rather than by hand:
 ///
@@ -24,21 +21,8 @@
 ///     EINSUMS_NAMESPACE_END()
 /// @endcode
 ///
-/// The sub-namespace is an argument rather than a literal block, unlike
-/// libc++'s argument-free `_LIBCPP_BEGIN_NAMESPACE_STD`. libc++ can afford that
-/// because `std` is flat; here 303 of 415 namespace blocks are nested, so the
-/// argument-free form would turn the majority case into a four-line sandwich of
-/// macro, inner namespace, closing brace, macro. Passing the path also carries
-/// what the old `} // namespace einsums::compute_graph::passes` comments
-/// carried, so that convention retires rather than going stale.
-///
-/// The expansion is classic C++17 (`namespace einsums { inline namespace v1 {
-/// namespace path {`) rather than C++20's `namespace A::inline B::C`, keeping
-/// the least-exercised corner of the language out of the build.
-///
-/// A depth mismatch between BEGIN and END is a brace imbalance and so a hard
-/// compile error; the two cannot silently drift apart. An ARGUMENT mismatch
-/// still compiles, which is what the CI guard checks.
+/// The sub-namespace is an argument because most blocks are nested. A depth mismatch between BEGIN
+/// and END fails to compile; an argument mismatch does not, and CI checks for it.
 
 #pragma once
 
@@ -49,10 +33,7 @@
 #endif
 
 // clang-format off
-// The unbalanced braces inside __VA_OPT__ are what these macros are FOR, and
-// clang-format cannot see that: left alone it splits `__VA_OPT__(})` across
-// lines. Line-splicing makes that still compile, which is worse than if it did
-// not - the hook would rewrite it on every commit and nothing would complain.
+// clang-format would split the unbalanced braces in __VA_OPT__ across lines.
 
 /// Open `einsums::inline <abi tag>`, optionally descending into a
 /// sub-namespace path such as `compute_graph::passes`.

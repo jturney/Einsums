@@ -10,9 +10,7 @@
 
 #include <string_view>
 
-// The only translation unit that sees the git identity. Keeping the include
-// here rather than in a public header is the point of the exercise: this file
-// is the one that recompiles when HEAD moves.
+// The only TU that sees the git identity, so only it recompiles when HEAD moves.
 #include "GitInfo.hpp"
 
 EINSUMS_NAMESPACE_BEGIN()

@@ -103,17 +103,9 @@
  * @versionadded{1.1.0}
  */
 #define EINSUMS_PRAGMA(stuff) _Pragma(#stuff)
-// The `simd` in a combined construct is part of the DIRECTIVE NAME, not a
-// clause: `parallel for simd if (c)` is valid, `parallel for if (c) simd` is
-// not. So a macro that appends ` simd` to whatever it is handed only works
-// while the argument is bare directive words - which is why
-// EINSUMS_OMP_SIMD_PRAGMA is documented as taking those, and why the clause
-// form below is a separate macro that splices `simd` in at the right place.
-//
-// Getting this wrong is invisible off Intel: the ` simd` is only ever appended
-// under this #if, so gcc and clang emit a valid pragma either way, and only
-// icx sees the malformed one. Clang produces the identical diagnostic when
-// handed the bad form directly.
+// `simd` belongs to the directive name, before any clause (`parallel for simd if (c)`), so
+// EINSUMS_OMP_SIMD_PRAGMA takes bare directive words and clauses go through the CLAUSE form. Only
+// icx sees the appended ` simd`, so a mistake shows nowhere else.
 #if defined(__INTEL_LLVM_COMPILER) || defined(__INTEL_COMPILER)
 #    define EINSUMS_OMP_PRAGMA(stuff)      EINSUMS_PRAGMA(omp stuff)
 #    define EINSUMS_OMP_SIMD_PRAGMA(stuff) EINSUMS_PRAGMA(omp stuff simd)
@@ -144,24 +136,15 @@
  */
 #define EINSUMS_OMP_PARALLEL_FOR EINSUMS_OMP_PRAGMA(parallel for)
 
-// Routed through the clause-aware macro: EINSUMS_OMP_SIMD_PRAGMA appends
-// ` simd` to the END of what it is given, which puts it after the `if` clause
-// and yields a pragma icx rejects outright.
-//
-// Kept above the doc block, not between it and the #define: libclang attaches
-// only the comment immediately preceding a declaration, so an ordinary comment
-// in that gap displaces the /** */ block and the macro is extracted with no
-// documentation at all - it then never reaches the generated reference, and
-// every :c:macro: cross-reference to it fails the nitpick build.
+// Uses the clause-aware macro, since appending ` simd` after `if` is invalid. This comment stays
+// above the doc block: one between it and the #define would detach the docs.
 /**
  * @def EINSUMS_OMP_PARALLEL_FOR_SIMD_IF
  *
  * Parallelize and vectorize the following loop only when @p cond holds.
  *
- * Use this instead of @ref EINSUMS_OMP_PARALLEL_FOR_SIMD on any loop whose trip
- * count can be small, passing something like
- * ``elems >= einsums::hardware::omp_min_parallel_elements()``. An unconditional
- * region on a short loop costs far more than the loop.
+ * For loops that can be short, with a condition such as
+ * ``elems >= einsums::hardware::omp_min_parallel_elements()``.
  *
  * @versionadded{2.0.0}
  */

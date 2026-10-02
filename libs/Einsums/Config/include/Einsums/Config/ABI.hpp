@@ -6,19 +6,10 @@
 /// @file
 /// Identity of the libEinsums a piece of code is bound to.
 ///
-/// A process may legitimately contain more than one copy of libEinsums: a host
-/// application that privately links one version, and a developer's newer one
-/// alongside it. That is supported, and the rule that makes it safe is that
-/// typed Einsums objects never cross between the two; only neutral buffers do.
+/// A process may hold several copies of libEinsums, provided typed objects never cross between them.
+/// An extension module that wrongly believes it shares `einsums._core`'s copy is the danger (e.g. a
+/// capture context per copy loses nodes); this header detects it.
 ///
-/// What is NOT safe is a compiled extension module that believes it is talking
-/// to the same libEinsums as `einsums._core` when it is not. Shared-graph
-/// capture, for one, keeps its capture context in thread-local state inside the
-/// library, so two copies means two capture contexts and a graph that silently
-/// loses half its nodes. This header is how that is detected instead of
-/// debugged.
-///
-/// Three questions, three answers:
 ///
 /// - "Are we bound to the same library?" `world().identity`, plus
 ///   register_stage_module(), which answers it without trusting a pointer to
@@ -26,11 +17,7 @@
 /// - "Were we built against matching headers?" The fingerprints.
 /// - "How many copies are actually in this process?" mapped_einsums_libraries().
 ///
-/// The namespace is `sealed`, after the sealed-worlds rule above, and NOT `abi`:
-/// `<cxxabi.h>` declares `namespace abi = __cxxabiv1;` at global scope, so
-/// `einsums::abi` is ambiguous in any translation unit that says
-/// `using namespace einsums;` and reaches the C++ ABI header, which every test
-/// in this tree does.
+/// The namespace is `sealed`, not `abi`, which `<cxxabi.h>` already declares at global scope.
 
 #pragma once
 
@@ -48,10 +35,8 @@ EINSUMS_NAMESPACE_BEGIN(sealed)
 
 /// Everything one copy of libEinsums knows about itself.
 ///
-/// Compared field by field when a stage module registers, so a mismatch can say
-/// which axis diverged rather than only that something did. Extended by
-/// appending fields and bumping nothing: `struct_size` lets a reader built
-/// against older headers recognize that it is looking at a longer record.
+/// Compared field by field, so a mismatch names the field. Extend by appending; `struct_size` tells
+/// older readers the record is longer.
 struct WorldInfo {
     /// Size of this struct as the *writer* understood it.
     std::size_t struct_size;
@@ -79,27 +64,19 @@ struct WorldInfo {
     char const *compiler_id;
     int         compiler_major;
 
-    /// Filesystem path of the library this record came from, or "" when the
-    /// platform cannot answer. The single most useful field in a mismatch
-    /// report: two paths beat two hex numbers.
+    /// Path of the library this record came from, or "" when the platform cannot answer.
     char const *library_path;
 };
 
 /// The calling code's libEinsums.
 ///
-/// Deliberately out of line and never inline: an inline definition would put a
-/// copy of the static in every module that included this header, and the
-/// identity would then say "different" for two callers that share a library.
+/// Out of line, so every caller of one library sees one static.
 [[nodiscard]] EINSUMS_EXPORT WorldInfo const &world() noexcept;
 
 /// Record that a stage module bound to *this* library, and answer whether it
 /// had already.
 ///
-/// The detection trick is the side effect rather than the return: a module that
-/// resolved to a DIFFERENT copy of libEinsums writes into that copy's table, so
-/// asking this library afterwards reports nothing. That works even when the
-/// module never sets a Python attribute, and it does not depend on a pointer
-/// comparison surviving the loader.
+/// The side effect is the check: a module bound to another copy registers in that copy's table.
 EINSUMS_EXPORT bool register_stage_module(char const *name);
 
 /// Whether register_stage_module() was called on THIS library for @p name.
@@ -110,10 +87,7 @@ EINSUMS_EXPORT bool register_stage_module(char const *name);
 
 /// Paths of every libEinsums currently mapped into this process.
 ///
-/// More than one entry is the multi-world signal, and it is the first thing
-/// worth printing when a handshake fails or a process dies inside a stage
-/// module. Returns an empty vector where the platform offers no way to
-/// enumerate loaded images.
+/// More than one means several worlds. Empty where loaded images cannot be enumerated.
 [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> mapped_einsums_libraries();
 
 namespace detail {
@@ -138,21 +112,12 @@ constexpr std::uint64_t fnv1a_value(std::uint64_t v, std::uint64_t h) noexcept {
 
 /// Fold of every build setting reachable from <Einsums/Config.hpp>.
 ///
-/// Computed in the header, so a stage module computes it from the headers it
-/// was compiled against while the library carries the value it saw when IT was
-/// compiled. A difference means the two disagree about how the library was
-/// built, which is the stale-headers case and by far the likeliest way an
-/// out-of-tree build goes wrong.
-///
-/// Only what Config can see. The sizes of the types that actually cross the
-/// boundary live in layout_fingerprint(), higher up the module graph, because
-/// Config sits below every module that declares one.
+/// Computed in the header, so a stage module and the library each fold what they were compiled
+/// with; a difference means stale headers. Type layouts are in layout_fingerprint(), higher up.
 [[nodiscard]] constexpr std::uint64_t config_fingerprint() noexcept {
     std::uint64_t h = detail::fnv1a("einsums.abi.config.1");
 
-    // The ABI generation first: it is the one number that is SUPPOSED to differ
-    // when two builds are incompatible, so a mismatch here is the answer rather
-    // than a clue.
+    // The ABI generation first: a mismatch there is the answer, not a clue.
     h = detail::fnv1a_value(EINSUMS_ABI_VERSION, h);
 
     // Version. A patch bump is not an ABI break, but it is worth reporting.
@@ -163,27 +128,9 @@ constexpr std::uint64_t fnv1a_value(std::uint64_t v, std::uint64_t h) noexcept {
     h = detail::fnv1a_value(sizeof(void *), h);
     h = detail::fnv1a_value(sizeof(long), h);
 
-    // Standard-library modes that change TYPES, and only those.
-    //
-    // The bar is deliberately "does this change a layout", not "is this a debug
-    // build". Bare NDEBUG does not qualify here: it appears in exactly two
-    // public headers, neither of which guards a member, so folding it in would
-    // reject the ordinary case of a consumer that never set CMAKE_BUILD_TYPE
-    // against a RelWithDebInfo library, which is a false alarm and a common one.
-    // That was measured, not assumed: an out-of-tree consumer built against an
-    // install failed the handshake for exactly that reason.
-    //
-    // What does qualify:
-    //   _ITERATOR_DEBUG_LEVEL  MSVC, and the fatal one. It tracks /MDd against
-    //                          /MD, which are different C runtimes with
-    //                          different heaps and different container layouts,
-    //                          so mixing them corrupts rather than misbehaves.
-    //   _GLIBCXX_DEBUG         libstdc++ swaps in entirely different container
-    //                          types from namespace __debug.
-    //
-    // Checking-only knobs (_GLIBCXX_ASSERTIONS, _LIBCPP_HARDENING_MODE) are
-    // deliberately absent: they add checks without changing layouts, so
-    // including them would cost false refusals and buy nothing.
+    // Standard-library modes that change type layouts, and only those: _ITERATOR_DEBUG_LEVEL (MSVC's
+    // /MDd vs /MD runtimes) and _GLIBCXX_DEBUG. Not NDEBUG or checking-only modes, which change no
+    // layout and would refuse ordinary consumers.
 #if defined(_ITERATOR_DEBUG_LEVEL)
     h = detail::fnv1a_value(_ITERATOR_DEBUG_LEVEL, h);
 #endif
@@ -223,11 +170,7 @@ constexpr std::uint64_t fnv1a_value(std::uint64_t v, std::uint64_t h) noexcept {
 /// The layout fingerprint of the library, as opposed to of the caller's
 /// headers.
 ///
-/// Declared here and DEFINED in a translation unit high enough in the module
-/// graph to see the types it measures. Config cannot include Tensor or
-/// ComputeGraph, so the value has to arrive from above; world() calls this
-/// lazily rather than reading a global, which keeps it clear of static
-/// initialization order.
+/// Defined higher in the module graph, where the measured types are visible. Called lazily by world().
 [[nodiscard]] EINSUMS_EXPORT std::uint64_t library_layout_fingerprint() noexcept;
 
 EINSUMS_NAMESPACE_END(sealed)

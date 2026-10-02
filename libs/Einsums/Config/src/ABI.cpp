@@ -37,20 +37,13 @@ std::string_view basename_of(std::string_view path) {
     return pos == std::string_view::npos ? path : path.substr(pos + 1);
 }
 
-/// Whether @p path names a libEinsums rather than something merely linked
-/// against one. Prefix-matched so it keeps working once the library carries an
-/// ABI tag in its filename (`libEinsums-abi7.so`), and so it does NOT match the
-/// Python extension module, which is `_core`.
+/// Whether @p path names a libEinsums (prefix-matched, so ABI-tagged names count; `_core` does not).
 bool is_einsums_library(std::string_view path) {
     std::string_view const base = basename_of(path);
     return base.starts_with("libEinsums") || base.starts_with("Einsums");
 }
 
-/// The address whose identity IS the world identity.
-///
-/// A function-local static in a non-inline function: exactly one exists per
-/// loaded copy of the library, so comparing its address answers "did we resolve
-/// to the same copy?" and nothing else. Its value is never read.
+/// The world identity: one such static exists per loaded copy of the library.
 void const *identity_address() noexcept {
     static char const marker = 0;
     return &marker;
@@ -58,9 +51,7 @@ void const *identity_address() noexcept {
 
 /// Path of the library containing identity_address().
 ///
-/// Resolved from a symbol inside this library, so each caller gets the path of
-/// the copy IT bound to, which is the whole point: two callers in two worlds
-/// print two different paths.
+/// Resolved from a symbol in this library, so each caller gets the copy it bound to.
 std::string this_library_path() {
 #if defined(_WIN32)
     HMODULE module = nullptr;
@@ -107,9 +98,7 @@ int collect_elf_image(struct dl_phdr_info *info, std::size_t, void *data) {
 } // namespace
 
 WorldInfo const &world() noexcept {
-    // Function-local static rather than a namespace-scope object: the path
-    // lookup and the layout fingerprint both want to run after the library is
-    // fully loaded, not during its static initialization.
+    // Function-local, so it runs after the library is loaded, not during static initialization.
     static std::string const path = this_library_path();
     // Config sits below the Version module, so the string is assembled from
     // the macros here rather than borrowed from einsums::full_version_as_string().
