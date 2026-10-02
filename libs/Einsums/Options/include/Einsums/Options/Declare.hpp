@@ -32,12 +32,8 @@
 #include <vector>
 
 /*
- * The declaration side of the option system: the option types themselves, the
- * named-argument tags they are built from, and the registry they add
- * themselves to. Only the handful of translation units that DECLARE options
- * need this header; a translation unit that merely reads a value wants
- * Options/Get.hpp instead, which is deliberately free of fmt and of everything
- * below.
+ * The declaration side: option types, their named-argument tags, and the registry. Readers include
+ * the lighter Options/Get.hpp instead.
  */
 
 EINSUMS_NAMESPACE_BEGIN(cl)
@@ -45,13 +41,11 @@ EINSUMS_NAMESPACE_BEGIN(cl)
 // -------------------------- Value parsing --------------------------------- //
 
 /*
- * parse_value is an ADL customization point. The overloads below cover strings,
- * bools, and every integral and floating point type; a user-defined T becomes
- * usable with Opt<T>/List<T> simply by declaring
+ * parse_value is an ADL customization point: declare
  *
  *     bool parse_value(std::string_view, T &out, std::string &err);
  *
- * in T's own namespace, where argument-dependent lookup will find it.
+ * in T's namespace to use T with Opt<T>/List<T>.
  */
 
 namespace detail {
@@ -92,9 +86,7 @@ bool parse_value(std::string_view sv, T &out, std::string &err) {
 template <std::floating_point T>
 bool parse_value(std::string_view sv, T &out, std::string &err) {
 #if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
-    // from_chars is locale-independent and non-throwing. It is stricter than
-    // stod in that it rejects a leading '+' and leading whitespace, which is
-    // the behaviour we want out of a command line.
+    // from_chars: locale-independent, non-throwing, and rejects a leading '+' or whitespace.
     T          v{};
     auto const first   = sv.data();
     auto const last    = first + sv.size();
@@ -126,11 +118,7 @@ bool parse_value(std::string_view sv, T &out, std::string &err) {
 /**
  * @brief Types usable as the value type of Opt<T>, List<T>, and friends.
  *
- * Satisfied by anything for which a `parse_value(std::string_view, T&,
- * std::string&) -> bool` overload is visible, whether one of the built-in
- * overloads or one found by ADL in the user's own namespace. Constraining on
- * this turns what used to be an undefined-symbol link error into a readable
- * diagnostic at the point of declaration.
+ * Anything with a visible `parse_value` overload, built in or found by ADL.
  *
  * @versionadded{2.0.0}
  */
@@ -149,9 +137,7 @@ struct ExclusiveCategory;
 /**
  * @brief Process-wide list of every declared option.
  *
- * Options add themselves on construction and remove themselves on destruction,
- * so an option with automatic storage duration is safe to declare inside a
- * scope (a unit test, say) without leaving a dangling entry behind.
+ * Options add themselves on construction and remove themselves on destruction.
  *
  * @warning Neither the registry nor the option state it points at is
  *          synchronized. Declare options and call @ref parse from one thread.
@@ -179,15 +165,8 @@ struct EINSUMS_EXPORT Registry {
     /**
      * @brief Turn on automatic environment variable names for every option.
      *
-     * With a prefix set, an option that names no variable of its own derives
-     * one from its long name: separators become underscores, letters are
-     * upper-cased, and the prefix is prepended unless the name already carries
-     * it. So with prefix `EINSUMS`, `einsums:log:level` reads
-     * `EINSUMS_LOG_LEVEL` and a bare `buffer-size` reads
-     * `EINSUMS_BUFFER_SIZE`.
-     *
-     * An empty prefix (the default) disables derivation, leaving only options
-     * annotated with @ref Env environment-sensitive.
+     * Options without their own variable derive one (see @ref derive_env_name): with prefix
+     * `EINSUMS`, `einsums:log:level` reads `EINSUMS_LOG_LEVEL`. An empty prefix disables this.
      *
      * @param prefix The variable-name prefix, without a trailing underscore.
      */
@@ -204,12 +183,8 @@ struct EINSUMS_EXPORT Registry {
 /**
  * @brief Derive an environment variable name from a prefix and an option name.
  *
- * Separators (`:`, `-`, `.`, whitespace) become underscores, letters are
- * upper-cased, and anything else is dropped. The prefix is prepended unless
- * the normalized name already starts with it, so an option that is already
- * namespaced does not end up with the prefix twice.
- *
- * Returns an empty string when @p prefix is empty.
+ * Separators become underscores, letters are upper-cased, anything else is dropped, and the prefix
+ * is prepended unless already there. Empty when @p prefix is.
  */
 EINSUMS_EXPORT std::string derive_env_name(std::string_view prefix, std::string_view long_name);
 
@@ -218,8 +193,7 @@ EINSUMS_EXPORT std::string derive_env_name(std::string_view prefix, std::string_
 /**
  * @brief A heading that groups related options in `--help`.
  *
- * An option joins a category by naming one in its constructor; options with
- * no category print before the first heading.
+ * Options without a category print before the first heading.
  */
 struct EINSUMS_EXPORT OptionCategory {
     std::string name;
@@ -244,9 +218,7 @@ struct Location {
 /**
  * @brief A callback invoked every time an option receives a value.
  *
- * The callable may take either `(T const &)` or `(T const &, Source)`; the
- * two-argument form additionally learns whether the value arrived from the
- * default, a config file, the environment, or the command line.
+ * Takes `(T const &)`, or `(T const &, Source)` to learn where the value came from.
  */
 template <typename T>
 struct Setter {
@@ -308,8 +280,7 @@ struct EnvTag {
 /**
  * @brief Read this option from a named environment variable.
  *
- * Overrides any name the registry's prefix policy would have derived. Use it
- * for variables whose spelling predates the convention.
+ * Overrides the derived name, for variables older than the convention.
  */
 // NOLINTNEXTLINE(readability-identifier-naming)
 inline EnvTag Env(std::string n) {
@@ -327,8 +298,7 @@ inline constexpr NoEnvTag NoEnv{};
 /**
  * @brief One option's contribution to `--help`, before layout.
  *
- * Options describe themselves; @ref print_help owns column widths and wrapping,
- * so every option type lines up without repeating the formatting logic.
+ * @ref print_help owns the layout.
  */
 struct HelpEntry {
     std::string invocation;  ///< e.g. `--threads <N>`
@@ -344,14 +314,8 @@ struct HelpEntry {
 /**
  * @brief The behaviour every option shares, whatever its value type.
  *
- * Holds the names, help text, and grouping an option is declared with, plus
- * the state a parse leaves behind: how many times it appeared and which
- * @ref Source supplied the value now in effect. Derived types add the value
- * itself and say how a token becomes one.
- *
- * Construction registers the option with the process-wide @ref Registry and
- * destruction removes it again, so an option declared in a scope does not
- * outlive its entry.
+ * Names, help, grouping, and what a parse leaves (occurrences, the value's @ref Source). Derived
+ * types hold the value and parse tokens. Registers itself for its lifetime.
  */
 struct EINSUMS_EXPORT OptionBase {
     std::string        long_name;   // "--long"
@@ -394,9 +358,7 @@ struct EINSUMS_EXPORT OptionBase {
     /**
      * @brief Forget everything a previous parse recorded.
      *
-     * Options are long-lived (usually function-local statics), so a second
-     * @ref parse in the same process must not inherit the first one's
-     * occurrence counts, value source, or accumulated list items.
+     * So a second @ref parse in one process starts clean.
      */
     virtual void reset();
 
@@ -406,8 +368,7 @@ struct EINSUMS_EXPORT OptionBase {
     /**
      * @brief The environment variable this option reads, or empty for none.
      *
-     * Resolved lazily rather than at construction because the registry's
-     * prefix policy is usually installed after the options themselves.
+     * Resolved lazily, as the prefix policy is usually set after options are declared.
      */
     [[nodiscard]] virtual std::string effective_env_name() const;
 
@@ -425,10 +386,7 @@ struct EINSUMS_EXPORT OptionBase {
 /**
  * @brief A set of options of which at most one may be given.
  *
- * Membership is declared by passing the category to an option's constructor.
- * Conflicts are judged per precedence level, so two options set from the same
- * @ref Source contradict one another while one from the environment losing to
- * one from the command line does not.
+ * Two options conflict only when set from the same @ref Source; a higher source simply wins.
  */
 struct EINSUMS_EXPORT ExclusiveCategory {
     std::vector<OptionBase *> options;
@@ -450,10 +408,7 @@ struct EINSUMS_EXPORT ExclusiveCategory {
     /**
      * @brief The source at which two options in this group conflict, if any.
      *
-     * Only options resolved at the *same* precedence level conflict. Two
-     * mutually exclusive flags both named on the command line is a genuine
-     * contradiction; one set in the environment and the other on the command
-     * line is not, because the command line simply outranks the environment.
+     * Only options set at the same precedence level conflict.
      */
     [[nodiscard]] std::optional<Source> conflicting_source() const;
 };
@@ -463,14 +418,8 @@ struct EINSUMS_EXPORT ExclusiveCategory {
 /**
  * @brief A boolean option whose meaning is carried by its presence.
  *
- * `--verbose` sets the flag and `--verbose=false` clears it explicitly. An
- * ImplicitValue(false) inverts what presence means, which is how the negated
- * options in this library are spelled: passing
- * `--einsums:debug:no-attach-debugger` sets the bound `attach-debugger` to
- * false.
- *
- * A config file or environment variable has no presence to observe, so its
- * value answers that question instead - see @ref Flag::parse_token.
+ * `--verbose` sets it, `--verbose=false` clears it. ImplicitValue(false) inverts presence, which is
+ * how the generated `no-` flags work. See @ref Flag::parse_token for other sources.
  */
 struct EINSUMS_EXPORT Flag : OptionBase {
     bool                                      value = false;
@@ -482,9 +431,7 @@ struct EINSUMS_EXPORT Flag : OptionBase {
     /// The declared default, kept apart from `value` so that help text reports
     /// what the option defaults to rather than what it currently holds.
     bool default_value = false;
-    /// One more `--help` note, appended after the default and env annotations.
-    /// A generated flag pair uses it to point at its `--no-` twin, which is
-    /// hidden so the table does not list every flag twice.
+    /// An extra `--help` note; a generated pair uses it to mention its hidden `--no-` twin.
     std::string extra_annotation;
 
     template <typename... Args>
@@ -508,16 +455,9 @@ struct EINSUMS_EXPORT Flag : OptionBase {
     /**
      * @brief Apply a flag from any source.
      *
-     * On the command line a flag carries its meaning in its presence, so
-     * `--verbose` sets the flag and `--verbose=false` clears it explicitly.
-     *
-     * A config file or environment variable has no notion of presence, so its
-     * value answers that question instead: a truthy value applies the flag
-     * exactly as if it had been named on the command line, and a falsey one
-     * leaves the default in place. That distinction matters for the negated
-     * flags this library is full of - `EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1`
-     * has to mean "yes, do not attach", which is the flag's ImplicitValue of
-     * false, not the literal true it parsed.
+     * From a config file or the environment, a truthy value applies the flag as if named on the
+     * command line and a falsey one leaves the default: `EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1` means
+     * "do not attach".
      */
     bool parse_token(std::string_view, std::optional<std::string_view> val, std::string &error, Source src = Source::CommandLine) override;
 
@@ -814,12 +754,7 @@ struct List : OptionBase {
     }
 };
 
-/*
- * Opt<T> and List<T> are instantiated over a small closed set across the whole
- * tree. Declaring those instantiations extern keeps their bodies out of every
- * registration TU; the definitions live in Parse.cpp. A T outside the set
- * still works, it simply instantiates where it is used as before.
- */
+// The common instantiations live in Parse.cpp; other types instantiate where used.
 extern template struct EINSUMS_EXTERN_TEMPLATE_EXPORT Opt<std::string>;
 extern template struct EINSUMS_EXTERN_TEMPLATE_EXPORT Opt<std::int64_t>;
 extern template struct EINSUMS_EXTERN_TEMPLATE_EXPORT Opt<double>;
@@ -995,10 +930,7 @@ struct EINSUMS_EXPORT Alias : OptionBase {
     /**
      * @brief Aliases are never read from the environment.
      *
-     * An alias carries no value of its own, so a variable could only say "act
-     * as though this alias appeared", and any value at all - `=0` included -
-     * would trigger it. Set the target's variable instead, where the value
-     * means what it says.
+     * Any value, `=0` included, would trigger it; set the target's variable instead.
      */
     [[nodiscard]] std::string effective_env_name() const override;
 
@@ -1022,14 +954,8 @@ struct EINSUMS_EXPORT Alias : OptionBase {
 /**
  * @brief Give a descriptor its command-line, environment, and config presence.
  *
- * Builds the option objects the parser needs from the one declaration in the
- * descriptor: the long name and help go straight through, the config key and
- * environment variable derive from the name, and a boolean descriptor also
- * gets the `--no-` spelling of itself so a default-true flag needs no
- * hand-written negation. Registering twice is a no-op.
- *
- * Call it from the owning module's argument-registration hook; the option
- * objects it creates live until the process exits.
+ * Derives the config key and environment variable from the name; a boolean also gets its `--no-`
+ * twin. Registering twice is a no-op; the options live until exit.
  *
  * @versionadded{2.0.0}
  */
@@ -1041,10 +967,7 @@ EINSUMS_EXPORT void register_option(ConfigOption<std::string> &opt);
 /**
  * @brief Hear about every change to an option's value.
  *
- * A module that derives state from an option - the buffer allocator turning
- * "4MB" into a byte count - registers here rather than watching a map. The
- * callback runs after the store, holding no registry lock, so it is free to
- * read or write any option it likes. Register the option first.
+ * For state derived from an option. Runs after the store, with no lock held. Register the option first.
  *
  * @versionadded{2.0.0}
  */
@@ -1056,10 +979,7 @@ EINSUMS_EXPORT void on_change(ConfigOption<std::string> &opt, std::function<void
 /**
  * @brief Close the registry to new options.
  *
- * Registration belongs to the single-threaded initialization window, and this
- * is what enforces that rather than assuming it: a debug build asserts on a
- * registration that arrives afterwards. Values stay writable, because a slot
- * is atomic and a write to one was never the phasing problem.
+ * Debug builds assert on later registrations. Values stay writable.
  *
  * @versionadded{2.0.0}
  */
@@ -1072,8 +992,6 @@ EINSUMS_EXPORT void unfreeze_registry_for_tests();
 /**
  * @brief Every option's key and current value, rendered for a log or a dump.
  *
- * The replacement for walking the four config maps.
- *
  * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT std::vector<std::pair<std::string, std::string>> registered_option_values();
@@ -1081,11 +999,8 @@ EINSUMS_EXPORT std::vector<std::pair<std::string, std::string>> registered_optio
 /**
  * @brief Assert that nothing registered so far contradicts anything else.
  *
- * Two descriptors resolving to one config key, or a key that does not derive
- * from the name it was registered under, are the failures the old
- * string-keyed system swallowed silently. In a release build this does
- * nothing. Call it once, after every registration hook has run and before the
- * parse.
+ * Catches two descriptors on one key, or a key not derived from its name. Debug builds only; call
+ * once, after registration and before the parse.
  *
  * @versionadded{2.0.0}
  */
@@ -1096,8 +1011,7 @@ EINSUMS_EXPORT void verify_registered_options();
 /**
  * @brief The always-available `--help` and `--version` options.
  *
- * A singleton, because these register themselves with the process-wide
- * registry and so must outlive every call to @ref parse.
+ * A singleton, as it must outlive every @ref parse.
  */
 struct EINSUMS_EXPORT Builtins {
     OptionCategory cat{"Help"};

@@ -19,16 +19,8 @@
 #include <utility>
 
 /*
- * The reader's half of the option system, and the only part of it a module
- * that merely CONSUMES a value has to include. It declares the descriptor
- * type, the typed accessors, and the string-keyed escape hatch; it pulls in no
- * parser, no help renderer, and no fmt, because it is on its way to being
- * included by hundreds of translation units.
- *
- * A descriptor declares one option completely - name, help, category, type,
- * default - and is the single place any of those facts is spelled. The reader
- * names the descriptor rather than a string, so a typo is a compile error and
- * the type cannot be mismatched.
+ * The reader's half: descriptors, typed accessors and the dynamic escape hatch. No parser or fmt,
+ * as hundreds of TUs include it. Readers name a descriptor, so a typo fails to compile.
  */
 
 EINSUMS_NAMESPACE_BEGIN(cl)
@@ -38,9 +30,7 @@ namespace detail {
 /**
  * @brief The registry's record for one registered option.
  *
- * Opaque on purpose: a reader only ever holds a pointer to one and hands it
- * back to the accessors below. Its layout is the store's business and changes
- * when the store does.
+ * Opaque to readers.
  */
 struct OptionEntry;
 
@@ -64,10 +54,7 @@ using storage_t = typename StorageOf<T>::type;
 /**
  * @brief An option declared completely, in one place.
  *
- * Descriptors are aggregates of literal types plus one atomic back-pointer, so
- * a namespace-scope descriptor is constant-initialized: there is no static
- * initialization order to reason about, and a read that happens before the
- * option is registered simply sees @ref default_value.
+ * Constant-initialized, so a read before registration sees @ref default_value.
  *
  * @tparam T The option's value type: `bool`, `std::int64_t`, `double`, or
  *           `std::string`.
@@ -79,9 +66,7 @@ struct ConfigOption {
     using value_type   = T;
     using storage_type = detail::storage_t<T>;
 
-    /// The command-line long name, e.g. `einsums:log:level`. Every other
-    /// spelling - the config key, the environment variable, the help entry -
-    /// is derived from it.
+    /// The command-line long name, e.g. `einsums:log:level`, from which every other spelling derives.
     std::string_view name;
     /// The `--help` description.
     std::string_view help;
@@ -97,21 +82,11 @@ struct ConfigOption {
     std::optional<Range> range{};
     /// Keep the option out of `--help`.
     bool hidden = false;
-    /// A default that cannot be written down at compile time - a temp
-    /// directory, a name carrying the process id. When set it wins over
-    /// @ref default_value, which stays the fallback for a read that beats
-    /// registration.
+    /// A default known only at run time. Wins over @ref default_value, which serves reads before registration.
     value_type (*default_provider)() = nullptr;
 
-    /// The registry entry this descriptor reads, filled in by registration and
-    /// read by the accessors.
-    ///
-    /// A descriptor is an inline variable in a header, and each binary that
-    /// includes the header - a test, a tool, the Python extension - gets its
-    /// own copy, which registration never sees: it fills in the copy the owning
-    /// library registered. So the accessors treat this as a cache. When it is
-    /// null they look the entry up by key, and keep what they find, which is
-    /// why it is mutable: every copy then reads the one registered value.
+    /// A cache of the registry entry. Each binary has its own copy of the descriptor, which
+    /// registration never fills, so a null entry is looked up by key and cached here.
     mutable std::atomic<detail::OptionEntry const *> entry{nullptr};
 };
 
@@ -152,18 +127,14 @@ constexpr ConfigOption<T> config_opt_computed(std::string_view name, std::string
 /**
  * @brief The config key derived from a command-line long name.
  *
- * The rule: drop a leading `einsums:`, then turn every remaining `:` into `-`.
- * So `einsums:log:level` keys on `log-level` and `einsums:buffer-size` on
- * `buffer-size`. It is the only relationship between the two spellings, which
- * is what keeps them from drifting.
+ * Drop a leading `einsums:` and turn `:` into `-`: `einsums:log:level` keys on `log-level`.
  */
 EINSUMS_EXPORT std::string derive_key(std::string_view long_name);
 
 /**
  * @brief The `--no-` spelling generated for a flag.
  *
- * `einsums:debug:attach-debugger` pairs with `einsums:debug:no-attach-debugger`:
- * the negation goes on the last segment, where a reader looks for it.
+ * The negation goes on the last segment: `einsums:debug:no-attach-debugger`.
  */
 EINSUMS_EXPORT std::string derive_negated_name(std::string_view long_name);
 
@@ -173,10 +144,7 @@ EINSUMS_NAMESPACE_BEGIN(config)
 
 namespace detail {
 
-/*
- * The accessors are thin wrappers over these, so the store can change shape
- * without recompiling every reader.
- */
+// Out of line, so the store can change without recompiling readers.
 EINSUMS_EXPORT bool read_bool(cl::detail::OptionEntry const *entry, std::string_view name, bool default_value) noexcept;
 EINSUMS_EXPORT std::int64_t read_int(cl::detail::OptionEntry const *entry, std::string_view name, std::int64_t default_value) noexcept;
 EINSUMS_EXPORT double       read_double(cl::detail::OptionEntry const *entry, std::string_view name, double default_value) noexcept;
@@ -199,10 +167,7 @@ EINSUMS_EXPORT void set_dynamic_string(std::string const &key, std::string const
 /// of its descriptor has been registered yet.
 EINSUMS_EXPORT cl::detail::OptionEntry const *registered_entry(std::string_view name);
 
-/// The entry @p opt reads: its own cached pointer, or else the registered entry
-/// for its name, which is then cached so the lookup happens once per copy. Null
-/// before any copy is registered, and nothing is cached then, so a read that
-/// beats registration does not pin the declared default.
+/// The entry @p opt reads, looked up once per copy. Null (and not cached) before registration.
 template <typename T>
 cl::detail::OptionEntry const *entry_for(cl::ConfigOption<T> const &opt) {
     if (auto const *entry = opt.entry.load(std::memory_order_acquire); entry != nullptr) {
@@ -220,9 +185,7 @@ cl::detail::OptionEntry const *entry_for(cl::ConfigOption<T> const &opt) {
 /**
  * @brief The value in effect for an option.
  *
- * Reading an option that has not been registered yet - before
- * `einsums::initialize`, say - yields the descriptor's declared default rather
- * than a zero, so there is no second default to keep in step at the call site.
+ * Before registration, the descriptor's declared default.
  *
  * @versionadded{2.0.0}
  */
@@ -248,8 +211,7 @@ T get(cl::ConfigOption<T> const &opt) {
 /**
  * @brief The value, but only when something explicitly supplied it.
  *
- * Distinguishes "left at its default" from "set to the same value the default
- * happens to be", which the plain @ref get cannot.
+ * Distinguishes "left at the default" from "set to the default's value".
  *
  * @versionadded{2.0.0}
  */
@@ -265,9 +227,7 @@ std::optional<T> try_get(cl::ConfigOption<T> const &opt) {
 /**
  * @brief Read an option by key, for keys built at run time.
  *
- * The escape hatch for genuinely dynamic names - the per-pass flags the
- * optimizer reads, and whatever a config file carries that no descriptor
- * claims. Anything known at compile time belongs in a descriptor instead.
+ * Only for names built at run time, such as the optimizer's per-pass flags.
  *
  * @versionadded{2.0.0}
  */

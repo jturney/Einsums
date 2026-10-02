@@ -21,11 +21,7 @@
 #include <string_view>
 #include <vector>
 
-/*
- * The driver's half of the module: reading a config file, applying the
- * environment, walking argv, and rendering help. Only the runtime's
- * initialization path and the module's own tests include this.
- */
+// The driver's half: config files, the environment, argv and help. For the runtime's init path.
 
 EINSUMS_NAMESPACE_BEGIN(cl)
 
@@ -36,10 +32,7 @@ struct OptionBase;
 /**
  * @brief One registered option, flattened into data.
  *
- * What a descriptor declares, minus the C++ type: enough for a caller that
- * never names the option in source - a binding layer, a documentation
- * generator - to spell the flag, know what kind of value it takes, and report
- * what it defaults to.
+ * What a descriptor declares, minus the C++ type, for bindings and doc generators.
  *
  * @versionadded{2.0.0}
  */
@@ -68,21 +61,14 @@ struct RegisteredOption {
     double       default_double = 0.0;
     std::string  default_string;
 
-    /// True when the default came from a provider run at registration rather
-    /// than from a literal, so the value above is this process's answer and
-    /// not something a generator may print as the declared default.
+    /// The default was computed at registration, so a generator must not print it as declared.
     bool computed_default = false;
 };
 
 /**
  * @brief Every option a descriptor has registered, in registration order.
  *
- * The generated `--no-` twin of a flag is not listed: it is a spelling of the
- * option already named here, not a second option. Keys reached only through
- * the dynamic API are not listed either, since no descriptor claims them.
- *
- * This is the enumeration the Python binding layer builds its argv from, so
- * that the flag spellings live in exactly one place.
+ * Excludes `--no-` twins and dynamic-only keys. The Python layer builds its argv from this.
  *
  * @versionadded{2.0.0}
  */

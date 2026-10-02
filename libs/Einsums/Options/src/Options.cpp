@@ -24,18 +24,8 @@
 #include <vector>
 
 /*
- * Where a descriptor becomes a registered option, and where a typed read
- * becomes a value.
- *
- * The registry is the store. Every option owns one slot and every read and
- * write is an atomic operation on it: no hash, no map, no shared_ptr
- * indirection, and no lock. That is what makes the option system safe under
- * concurrent read and write at any time rather than safe only because the
- * writing happens to be confined to a single-threaded startup window.
- *
- * One mutex remains. It guards registration and the table of keys no
- * descriptor claims, and nothing ever holds it while taking another, so there
- * is no lock order to maintain and no lock-order inversion to chase.
+ * Registration and typed reads. Each option owns one slot, read and written atomically, so access
+ * is safe at any time. One mutex guards registration and the dynamic keys, never nested.
  */
 
 EINSUMS_NAMESPACE_BEGIN(cl)
@@ -48,25 +38,15 @@ enum struct ValueKind : std::uint8_t { Bool = 1, Int = 2, Double = 4, String = 8
 /**
  * @brief One option's storage.
  *
- * All four slots are present rather than one per type, because a key reached
- * through the dynamic API carries no declared type and the four parallel maps
- * this replaced let one key hold a value of each kind at once. @c assigned
- * records which slots have ever been written, so a read of a slot nobody set
- * still answers with the caller's default rather than a zero.
- *
- * @c primary is whichever generated option carries the value's provenance: for
- * a flag pair that is the positively named half, since both publish into this
- * one slot but only one of them is the option the descriptor names.
+ * All four typed slots, since a dynamic key has no declared type; @c assigned marks those written.
+ * @c primary carries the value's provenance (for a flag pair, the positive half).
  */
 struct OptionEntry {
     std::string key;
     OptionKind  kind    = OptionKind::Value;
     OptionBase *primary = nullptr;
 
-    /// True when the descriptor supplied a provider instead of a literal
-    /// default. The provider has already run by the time anyone can ask, so
-    /// this is the only record that the value is this process's answer rather
-    /// than something that could be written down.
+    /// The default came from a provider, not a literal.
     bool computed_default = false;
 
     std::atomic<std::uint8_t> assigned{0};
@@ -75,22 +55,13 @@ struct OptionEntry {
     std::atomic<std::int64_t> int_value{0};
     std::atomic<double>       double_value{0.0};
 
-    /*
-     * A string cannot live in an atomic, so the slot publishes a pointer to an
-     * immutable snapshot instead: a reader loads it and copies, and never sees
-     * a string being rewritten underneath it. Superseded snapshots are kept
-     * rather than freed, because a reader may still be copying one and there
-     * is nothing to tell us when it has finished. That costs one string per
-     * WRITE to this option, and an option is written at parse time and
-     * essentially never again.
-     */
+    // A string is published as a pointer to an immutable snapshot. Old snapshots are never freed,
+    // as a reader may still be copying one; options are rarely written.
     std::atomic<std::string const *>                string_value{nullptr};
     std::vector<std::unique_ptr<std::string const>> string_snapshots;
     std::mutex                                      snapshot_mutex;
 
-    /// Called after a store, holding no lock. Appended at registration and
-    /// never removed, so copying them out under the mutex is all a
-    /// notification needs.
+    /// Called after a store, with no lock held. Never removed.
     std::vector<std::function<void()>> observers;
     std::mutex                         observer_mutex;
 };
@@ -112,11 +83,8 @@ std::string normalize_key(std::string_view key) {
 /**
  * @brief Everything registration allocates, kept alive until the process ends.
  *
- * The parser holds raw pointers into these, so nothing here may be freed while
- * a parse could still run - which is what "until the process ends" buys.
- * Entries live in a deque because descriptors hold pointers to them, and
- * nothing may ever free or move one: config::get caches an entry's address in
- * every copy of a descriptor, in every binary, that has read it.
+ * The parser and every descriptor copy hold pointers into these, so nothing is freed or moved
+ * (hence the deque).
  */
 struct OwnedRegistrations {
     std::deque<OptionEntry>                         entries;
@@ -129,16 +97,8 @@ struct OwnedRegistrations {
 };
 
 OwnedRegistrations &owned() {
-    // The registry is reached for BEFORE `r` is constructed, and that is the
-    // only reason this shuts down cleanly. Every option, category and exclusion
-    // owned below removes itself from the registry as it dies, so the registry
-    // has to outlive them; function-local statics are destroyed in reverse
-    // order of construction, so the registry has to be CONSTRUCTED first to get
-    // that. Left to itself the first registration builds `r` and only then, one
-    // frame deeper, the registry - putting them in the wrong order, so that at
-    // exit ~OwnedRegistrations walks its owned objects into a registry whose
-    // vectors were already freed. Every einsums process ended on that
-    // use-after-free; only a sanitizer build had any way to notice.
+    // Construct the registry before `r`, so it is destroyed after: the owned options unregister
+    // themselves as they die.
     Registry::instance();
     static OwnedRegistrations r;
     return r;
@@ -276,14 +236,10 @@ void register_option(ConfigOption<bool> &opt) {
     auto &entry = detail::entry_locked(derive_key(opt.name));
     entry.kind  = OptionKind::Flag;
 
-    // The positive spelling is the one the descriptor declares and the one
-    // --help shows; the negation is generated so that a default-true option
-    // can be turned off without anyone hand-writing an inverted name.
+    // The declared spelling is the one --help shows; the negation is generated.
     auto const negated = derive_negated_name(opt.name);
 
-    // Publishing through the setter rather than a Location pointer is what
-    // lets the value live in an atomic: there is no bool to take the address
-    // of any more.
+    // Through the setter, since an atomic has no bool to point at.
     auto publish = [&entry](bool const &v, Source) { detail::store_bool(entry, v); };
 
     auto yes                   = std::make_unique<Flag>(opt.name, std::initializer_list<char>{}, opt.help, cat);
@@ -452,9 +408,7 @@ void unfreeze_registry_for_tests() {
 
 namespace {
 
-/// Fill in the type-dependent half of a RegisteredOption. The concrete option
-/// type is the only record of what the descriptor's T was, so it is recovered
-/// here rather than stored a second time on the entry.
+/// Fill in the type-dependent half of a RegisteredOption, from the concrete option type.
 void describe_value(RegisteredOption &out, OptionBase const &primary) {
     if (auto const *o = dynamic_cast<Opt<std::string> const *>(&primary); o != nullptr) {
         out.type           = OptionType::String;
@@ -538,10 +492,7 @@ void verify_registered_options() {
     auto                  &r = detail::owned();
     std::scoped_lock const lock(r.mutex);
 
-    // by_key is keyed on the normalized spelling, so two descriptors resolving
-    // to one key would have collided into a single entry and the second would
-    // have overwritten the first's primary. Checking that every entry's key
-    // still derives from its primary's name is what catches that.
+    // Two descriptors on one key would share an entry; a key not derived from its primary's name shows it.
     for (auto const &entry : r.entries) {
         if (entry.primary == nullptr) {
             continue; // an overflow key, which claims no name
@@ -571,10 +522,8 @@ namespace {
 /**
  * @brief Report a read that beat its own registration.
  *
- * Legal, and answered with the descriptor's declared default because there is
- * no other honest answer, but worth seeing while chasing an option that
- * appears not to take effect. Deliberately not routed through the logging
- * module: this module sits below it.
+ * Legal (the declared default is returned), but useful when an option seems not to take effect.
+ * Not logged through Logging, which sits above this module.
  */
 void note_unregistered([[maybe_unused]] std::string_view name) noexcept {
 #if defined(EINSUMS_DEBUG)
@@ -670,11 +619,7 @@ std::string dynamic_string(std::string const &key, std::string const &default_va
     return value != nullptr ? *value : default_value;
 }
 
-/*
- * A write goes to the slot and then, holding nothing, to whoever asked to hear
- * about it. A key no descriptor claims gets an entry of its own: that is all
- * that is left of the four string-keyed maps.
- */
+// A write stores, then notifies with no lock held. An unclaimed key gets its own entry.
 void set_dynamic_bool(std::string const &key, bool value) {
     cl::detail::store_bool(cl::detail::entry_for_write(key), value);
 }

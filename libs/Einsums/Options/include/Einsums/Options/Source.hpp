@@ -14,12 +14,7 @@
 #include <limits>
 #include <string_view>
 
-/*
- * The vocabulary every other header in this module builds on: where a value
- * came from, how an option may appear, and the numeric bounds a value must
- * satisfy. Nothing here allocates, formats, or parses, so a translation unit
- * that only reads options pays for standard library headers and nothing else.
- */
+// The shared vocabulary: value sources, occurrence rules and numeric bounds. Standard headers only.
 
 EINSUMS_NAMESPACE_BEGIN(cl)
 
@@ -33,9 +28,7 @@ inline constexpr bool always_false = false;
 /**
  * @brief Where an option's current value came from.
  *
- * The enumerators are ordered by increasing precedence: a later source is
- * allowed to overwrite an earlier one, and the parser applies them in exactly
- * this order. @ref Source::None means the option was never touched at all.
+ * In increasing precedence, the order the parser applies them. @ref Source::None means never set.
  *
  * @versionadded{2.0.0}
  */
@@ -95,14 +88,7 @@ struct Positional {};
 /**
  * @brief Inclusive bounds applied to a numeric option after parsing.
  *
- * Integral and floating point bounds are stored separately so that neither
- * kind of check has to round-trip through the other's representation: an
- * int64_t bound near the limits of its range stays exact, and a fractional
- * bound is not truncated.
- *
- * Bounds live here rather than alongside the option types because a
- * @ref ConfigOption carries them too, and the descriptor header is meant to
- * stay free of the declaration machinery.
+ * Integral and floating bounds are kept separately, so neither loses precision.
  */
 struct Range {
     long long   int_min  = (std::numeric_limits<long long>::min)();

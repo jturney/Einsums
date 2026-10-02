@@ -29,10 +29,7 @@ EINSUMS_NAMESPACE_BEGIN(cl)
 
 // -------------------------- Diagnostic text ------------------------------- //
 
-/*
- * Every error string the option types produce is built here rather than in the
- * headers, so fmt stays out of the declaration and reader headers.
- */
+// Error strings are built here, keeping fmt out of the headers.
 
 namespace detail {
 
@@ -441,9 +438,7 @@ std::string derive_env_name(std::string_view prefix, std::string_view long_name)
         return {};
     }
 
-    // Normalize the option name: separators become underscores, letters are
-    // upper-cased, and anything that cannot appear in a variable name is
-    // dropped. Runs of separators collapse so "a--b" does not become "A__B".
+    // Separators to underscores (runs collapse), letters upper-cased, anything else dropped.
     std::string normalized;
     normalized.reserve(prefix.size() + 1 + long_name.size());
     for (char const c : long_name) {
@@ -929,9 +924,7 @@ bool looks_like_option_token(std::string_view sv) {
 
 ParseResult parse_internal(std::span<std::string const> args, char const *programName, std::string_view version,
                            std::map<std::string, std::string, std::less<>> const *config, std::vector<std::string> *unknown_args) {
-    // Force the built-ins into the registry. They must be a singleton: an
-    // option registers itself on construction, so a Builtins with automatic
-    // storage duration would leave the registry pointing at a destroyed frame.
+    // Force the built-ins into the registry.
     Builtins &built = builtins();
     Registry::instance().ensure_category(&built.cat);
     Registry::instance().ensure_option(&built.help);
@@ -1119,10 +1112,7 @@ ParseResult parse_internal(std::span<std::string const> args, char const *progra
         }
     }
 
-    // Required options and per-option validation. A requirement is satisfied by
-    // any explicit source, not just the command line: naming the option in the
-    // environment or a config file is exactly as explicit, and `occurrences`
-    // counts only command-line appearances.
+    // Required options and validation. Any explicit source satisfies a requirement.
     for (auto const *o : Registry::instance().options) {
         if ((o->occurrence == Occurrence::Required || o->occurrence == Occurrence::OneOrMore) && !o->was_specified()) {
             return fail(fmt::format("missing required option '--{}'", o->long_name));
@@ -1133,9 +1123,7 @@ ParseResult parse_internal(std::span<std::string const> args, char const *progra
         }
     }
 
-    // Mutually exclusive groups. Only options resolved at the same precedence
-    // level contradict one another; the environment losing to the command line
-    // is precedence working as intended, not a conflict.
+    // Mutually exclusive groups, conflicting only at the same precedence level.
     for (auto const *exc : Registry::instance().exclusions) {
         auto const conflict = exc->conflicting_source();
         if (!conflict.has_value()) {

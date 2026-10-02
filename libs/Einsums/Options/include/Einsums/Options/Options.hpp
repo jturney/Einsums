@@ -13,11 +13,7 @@
 #include <Einsums/Options/Source.hpp>
 
 /*
- * The whole option system in one include, for callers that want all of it and
- * for source compatibility with the single header this module used to be.
- * <Einsums/CommandLine.hpp> forwards here for one release.
- *
- * Prefer the piece you actually need:
+ * The whole option system in one include. Prefer the piece you need:
  *
  *   Source.hpp   the vocabulary types; everyone gets these transitively
  *   Get.hpp      descriptors and typed reads - what a consuming module wants
