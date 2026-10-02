@@ -233,13 +233,7 @@ constexpr inline bool IsTensorViewV = requires { typename D::underlying_type; };
  */
 template <typename D>
 constexpr inline bool IsBasicTensorV =
-    // A structured (tiled) tensor is NOT a basic (single-buffer) tensor, even if
-    // it exposes data()/stride()/strides() for graph capture (TiledRuntimeTensor
-    // returns null/advisory values). Excluding it here keeps a tiled tensor from
-    // matching basic-tensor overloads that would dereference its absent whole-
-    // tensor buffer, and resolves the basic-vs-tiled overload ambiguity in
-    // linear_algebra. Plain TiledTensor never satisfied this (no flat data()),
-    // so existing types are unaffected.
+    // A tiled tensor is not basic, even if it exposes data() for graph capture.
     !std::is_base_of_v<einsums::tensor_base::TiledTensorNoExtra, std::remove_cvref_t<D>> && requires(D tensor) {
         tensor.data();
         tensor.stride(0);
@@ -382,9 +376,7 @@ constexpr inline bool IsFunctionTensorV = requires {
  *
  * @brief Checks to see if the tensor provides the subscript function.
  *
- * The subscript function should not do any bounds checking, nor should it accept negative indices as valid,
- * unless negative indices have some sort of meaning outside of index wrapping. These checks add up when iterating over
- * a tensor with millions of entries, so being able to skip them when bounds compliance is guaranteed can speed up code.
+ * subscript() does no bounds checking or negative-index wrapping, for hot loops.
  *
  * @tparam D The tensor type to check.
  *
