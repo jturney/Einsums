@@ -141,7 +141,6 @@ auto initialize_cp(std::vector<Tensor<TType, 2>, Alloc> &folds, size_t rank) -> 
             }
         }
 
-
         if (folds[i].dim(0) < rank) {
             Tensor<TType, 2> Unew  = create_random_tensor<TType>("Padded SVD Left Vectors", folds[i].dim(0), rank);
             Unew(All, Range{0, m}) = U(All, All);
@@ -152,7 +151,6 @@ auto initialize_cp(std::vector<Tensor<TType, 2>, Alloc> &folds, size_t rank) -> 
             // Need to save the factors
             factors.emplace_back(Tensor<TType, 2>{U(All, Range{m - rank, m})});
         }
-
     });
 
     return factors;

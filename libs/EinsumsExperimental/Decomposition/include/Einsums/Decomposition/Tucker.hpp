@@ -78,7 +78,6 @@ auto initialize_tucker(std::vector<TTensor, Alloc> &folds, Ranks &ranks) -> Buff
         size_t rank    = ranks[i];
         auto [U, S, _] = linear_algebra::svd_dd(folds[i]);
 
-
         if (folds[i].dim(0) < rank) {
             // i is an std::integral_constant the "()" obtains the underlying value.
             EINSUMS_LOG_WARN("dimension {} size {} is less than the requested decomposition rank {}", i(), folds[i].dim(0), rank);

@@ -12,7 +12,6 @@
 #include <chrono>
 #include <random>
 
-
 int einsums::init_Einsums_Utilities() {
     // Auto-generated code. Do not touch if you are unsure of what you are doing.
     // Instead, modify the other functions below.

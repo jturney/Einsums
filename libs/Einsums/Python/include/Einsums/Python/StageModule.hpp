@@ -64,8 +64,8 @@
         /* point: world() would report the library's own values and always agree. */                                                         \
         _einsums_info["config_fingerprint"] = ::einsums::sealed::config_fingerprint();                                                       \
         _einsums_info["layout_fingerprint"] = ::einsums::sealed::layout_fingerprint();                                                       \
-        /* For the error message only, but header-derived like the fingerprints */                                                          \
-        /* so a stale-headers refusal shows two different versions.             */                                                          \
+        /* For the error message only, but header-derived like the fingerprints */                                                           \
+        /* so a stale-headers refusal shows two different versions.             */                                                           \
         _einsums_info["version"]           = ::std::to_string(EINSUMS_VERSION_MAJOR) + "." + ::std::to_string(EINSUMS_VERSION_MINOR) + "." + \
                                              ::std::to_string(EINSUMS_VERSION_PATCH);                                                        \
         _einsums_info["compiler"]          = ::std::string(EINSUMS_DETAIL_STAGE_COMPILER);                                                   \

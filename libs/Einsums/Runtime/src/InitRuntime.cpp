@@ -134,7 +134,6 @@ int run(std::function<int()> const &f, std::vector<std::string> const &argv, Ini
         util::install_crash_handler(einsums::config::get(option::CrashDumpDir));
     }
 
-
     // Disable HDF5 diagnostic reporting
     H5Eset_auto(0, nullptr, nullptr);
 

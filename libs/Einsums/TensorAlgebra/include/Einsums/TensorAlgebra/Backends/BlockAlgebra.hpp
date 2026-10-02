@@ -83,7 +83,6 @@ auto einsum_special_dispatch(typename CType::ValueType const C_prefactor, std::t
     }
 }
 
-
 template <bool OnlyUseGenericAlgorithm, bool ConjA, bool ConjB, BlockTensorConcept AType, BlockTensorConcept BType, ScalarConcept CType,
           typename... CIndices, typename... AIndices, typename... BIndices>
 auto einsum_special_dispatch(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &C_indices, CType *C,

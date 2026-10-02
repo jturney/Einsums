@@ -112,7 +112,6 @@ template <typename StorageType1, typename StorageType2>
 void sentinel_to_indices(size_t sentinel, StorageType1 const &unique_strides, StorageType2 &out_inds) {
     size_t hold = sentinel;
 
-
     if (unique_strides[0] < unique_strides[unique_strides.size() - 1]) {
         for (ptrdiff_t i = unique_strides.size() - 1; i >= 0; i--) {
             if (unique_strides[i] != 0) {
