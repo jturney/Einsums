@@ -221,6 +221,8 @@ Server::Server(Consumer &consumer, StringTable &strings, std::string const &bind
     EINSUMS_LOG_INFO("Profile server listening on {}:{}", bind_addr, bound_port);
 
     register_mdns(bound_port);
+#    else
+    EINSUMS_LOG_WARN("Profile server: not supported on Windows; {}:{} will not be served", bind_addr, port);
 #    endif
 }
 

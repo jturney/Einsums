@@ -468,6 +468,7 @@ SERVER_SCRIPT = textwrap.dedent(
 
 
 @needs_textual
+@pytest.mark.skipif(sys.platform == "win32", reason="the profile server has no Windows socket implementation")
 def test_viewer_follows_the_real_server():
     import einsums.profile as prof
 
@@ -484,23 +485,27 @@ def test_viewer_follows_the_real_server():
         text=True,
     )  # fmt: skip
 
+    # Found by path, not position: a build with EINSUMS_WITH_PROFILER_INTERNAL records the runtime's
+    # start-up zones first, on the same thread, and roots keep their insertion order.
     async def main():
         app = ProfilerApp([("127.0.0.1", port)], mdns=False)
+
+        def paths():
+            return {r.path for r in app.active_view._rows} if app.active_view is not None else set()
+
         async with app.run_test(size=(120, 40)) as pilot:
-            await wait_for(pilot, lambda: app.active_view is not None and len(app.active_view._rows) >= 2, timeout=30)
-            names = [r.node.name for r in app.active_view._rows]
+            await wait_for(pilot, lambda: {"outer", "outer/inner"} <= paths(), timeout=30)
             session = app.active_session
             await pilot.press("q")
-        return names, session
+        return session
 
     try:
-        names, session = asyncio.run(main())
+        session = asyncio.run(main())
     finally:
         child.kill()
         _, err = child.communicate()
-    assert names[:2] == ["outer", "inner"], err
-    assert session.meta.pid == child.pid
-    outer = session.snapshot.all_roots()[0]
+    assert session.meta.pid == child.pid, err
+    outer = next(node for node in session.snapshot.all_roots() if node.name == "outer")
     assert outer.call_count > 0 and analysis.numeric_annotation(outer.annotations, "flops") == 2_000_000
 
 
