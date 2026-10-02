@@ -13,8 +13,7 @@ EINSUMS_NAMESPACE_BEGIN(task_pool)
 
 /// @brief Per-worker thread context.
 ///
-/// Passed to tasks that need to know which worker they're running on.
-/// When MPI support lands, the rank field will be populated from MPI_Comm_rank.
+/// Passed to tasks that need to know which worker they run on.
 struct WorkerContext {
     int   worker_id{-1};      ///< Index of this worker (0..N-1). -1 for the submitting thread.
     void *user_data{nullptr}; ///< Opaque user data slot for thread-local scratch buffers.

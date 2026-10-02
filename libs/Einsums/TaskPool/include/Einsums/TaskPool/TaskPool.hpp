@@ -88,15 +88,8 @@ class EINSUMS_EXPORT TaskPool {
 
     /// @brief Fire-and-forget submission: no TaskHandle, no SharedState.
     ///
-    /// For callers that track completion and failure themselves (the
-    /// counter-based DataflowExecutor), submit() wastes a SharedState
-    /// allocation per task on a handle that is immediately dropped. This
-    /// path skips the handle machinery entirely; the task still gets a
-    /// profiler zone under its name.
-    ///
-    /// The callable should not throw: with no handle to carry an exception,
-    /// anything that escapes is logged and dropped, never propagated into
-    /// the worker loop.
+    /// For callers that track completion themselves, sparing a handle allocation per task. The task
+    /// still gets a profiler zone. An escaping exception is logged and dropped.
     template <typename F>
     void submit_detached(std::string name, F &&callable) {
         enqueue([name = std::move(name), task = std::forward<F>(callable)]() mutable {
@@ -116,28 +109,14 @@ class EINSUMS_EXPORT TaskPool {
 
     /// @brief Submit a bare callable: no name, no wrapper, no handle.
     ///
-    /// The leanest submission the pool offers, for callers that already own
-    /// their naming and their error handling. @ref submit_detached wraps every
-    /// task in a closure that carries a copied name string and pushes a
-    /// profiler zone, so the wrapper AND the wrapped callable each heap-
-    /// allocate; a scheduler submitting one task per graph node per replay
-    /// pays that per node. A callable small enough for std::function's inline
-    /// buffer (a `this` pointer and an index, say) goes through here with no
-    /// allocation at all.
-    ///
-    /// The callable MUST NOT throw: there is no handle to carry an exception
-    /// and no wrapper to catch it, so anything that escapes reaches the worker
-    /// loop. Take a profiler zone inside the callable if you want one.
+    /// The leanest path: no wrapper, so a callable that fits std::function's inline buffer is not
+    /// allocated at all. It MUST NOT throw, as nothing catches it, and gets no profiler zone.
     void submit_bare(std::function<void()> task) { enqueue(std::move(task)); }
 
     /// @brief Submit several bare callables at once, same contract as
     ///        @ref submit_bare.
     ///
-    /// The external queue's mutex is taken ONCE for the whole batch and the
-    /// workers are woken once. Submitting n tasks back to back from a
-    /// non-worker thread otherwise pays a lock and a condition-variable signal
-    /// per task, which for a scheduler seeding a wide graph's roots costs more
-    /// than running them.
+    /// One lock and one wakeup for the whole batch rather than per task.
     ///
     /// @p tasks is emptied.
     void submit_bare_batch(std::vector<std::function<void()>> &tasks);
@@ -201,14 +180,7 @@ class EINSUMS_EXPORT TaskPool {
             pa.acc = init_factory();
         }
 
-        // Slot 0 belongs to the calling thread; worker `w` takes slot `w + 1`.
-        // The offset is what makes the slots disjoint: parallel_for has the
-        // caller help drain the queue, so it runs chunks alongside the workers,
-        // and mapping worker 0 onto slot 0 as well had the two of them
-        // accumulate into one unsynchronized Acc. Updates were lost whenever
-        // they interleaved, which showed up as a reduction that came out short
-        // by a random amount. There are num_workers() + 1 slots and worker ids
-        // run 0 .. num_workers() - 1, so `wid + 1` is always in range.
+        // Slot 0 is the calling thread's, which also runs chunks; worker `w` takes slot `w + 1`.
         parallel_for(std::move(name), begin, end, [&](size_t idx) {
             int const    wid  = current_worker_id();
             size_t const slot = (wid >= 0) ? static_cast<size_t>(wid) + 1 : 0;
@@ -225,9 +197,7 @@ class EINSUMS_EXPORT TaskPool {
 
     /// @brief Dataflow: submit a task that runs when all typed input handles are ready.
     ///
-    /// The callable receives the results of the input handles as arguments.
-    /// Fully asynchronous, with no blocking. The callable is submitted to the pool
-    /// when all inputs complete, via the variadic when_all continuation mechanism.
+    /// The callable takes the inputs' results and is submitted once all complete. Never blocks.
     template <typename F, typename... Ts>
     auto dataflow(std::string name, F &&callable, TaskHandle<Ts>... inputs) -> TaskHandle<std::invoke_result_t<F, Ts...>> {
         using R         = std::invoke_result_t<F, Ts...>;
@@ -313,10 +283,7 @@ class EINSUMS_EXPORT TaskPool {
 
     ~TaskPool();
 
-    /// Participate in work-stealing on the calling thread until the
-    /// predicate returns true. Used by TaskHandle::wait and by executors
-    /// with their own completion tracking (e.g. the counter-based
-    /// DataflowExecutor), so a waiting thread contributes instead of parking.
+    /// Run pool work on the calling thread until @p predicate holds, so a waiter helps rather than parks.
     void help_until(std::function<bool()> const &predicate);
 
   private:

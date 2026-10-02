@@ -96,11 +96,8 @@ struct SharedState {
         return ready;
     }
 
-    /// Register completion handlers. @p on_ok runs with the value on success;
-    /// @p on_err runs with the exception on failure. Exactly one fires. If the
-    /// state is already complete the matching handler runs immediately, but only
-    /// after the lock is released. User code never runs while holding the mutex,
-    /// because it can re-enter the pool or acquire other locks and deadlock.
+    /// Register completion handlers; exactly one of @p on_ok and @p on_err fires, immediately if
+    /// already complete. Never called with the lock held, since user code may re-enter the pool.
     void on_complete(std::function<void(T const &)> on_ok, std::function<void(std::exception_ptr)> on_err) {
         bool run_ok  = false;
         bool run_err = false;
@@ -233,11 +230,8 @@ class TaskHandle {
 
     /// @brief Register a continuation that runs when this task completes.
     ///
-    /// The continuation receives the result of this task and returns a new value.
-    /// Returns a TaskHandle for the continuation's result.
-    ///
-    /// NOTE: The continuation is submitted to the TaskPool for execution,
-    /// not run inline. This requires TaskPool to be available (implemented in TaskPool.hpp).
+    /// The continuation takes this task's result; its own result comes back as a TaskHandle. It is
+    /// submitted to the TaskPool, not run inline (defined in TaskPool.hpp).
     template <typename F>
     auto then(F &&next_fn) -> TaskHandle<std::invoke_result_t<F, T>>;
 

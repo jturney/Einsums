@@ -21,40 +21,20 @@ EINSUMS_NAMESPACE_BEGIN(task_pool)
 /**
  * @brief Process-wide admission control for the threads a task is allowed to fork.
  *
- * A moldable task declares a width - the number of threads its kernel will run
- * with - and must be admitted before it runs. The budget guarantees the widths
- * admitted at any instant sum to no more than the machine's thread count, which
- * is the only thing standing between per-task threading and unbounded
- * oversubscription.
- *
- * It is process-wide rather than per-scheduler because there is one machine.
- * One executor instance can be installed on several loop bodies, a control-flow
- * node nests one graph replay inside another, and independent replays run
- * concurrently; a budget per scheduler would hand each of them the whole
- * machine.
+ * A moldable task declares a width (its kernel's thread count) and must be admitted before it
+ * runs; admitted widths never sum past the machine's thread count. Process-wide, since nested and
+ * concurrent replays share one machine.
  *
  * @par Admission order
- * Strict priority with head-of-line blocking. Parked tasks are ordered by
- * @ref Priority, and while the highest-priority parked task does not fit,
- * nothing narrower is admitted ahead of it, so the machine drains until it
- * does. This bounds the wait of a wide task at the cost of some utilization;
- * backfilling a narrow task into the drain bubble needs honest duration
- * estimates and is deliberately not done here.
+ * Strict priority with head-of-line blocking: while the highest-priority parked task does not
+ * fit, nothing is admitted ahead of it. No backfilling, which would need duration estimates.
  *
  * @par Why it cannot deadlock
- * Every request is clamped to the total, so the head of the parked queue is
- * always admissible once the budget drains. It drains because a task that holds
- * width either computes to completion without waiting on another task, or - if
- * it waits, which is what a control-flow node does while its body replays -
- * hands its width back for the duration through @ref BlockedScope. So with no
- * new admissions the charged width strictly decreases to zero, at which point
- * the head of the queue fits by construction.
+ * Requests are clamped to the total, and a task holding width either runs to completion or lends
+ * its width back while it waits (@ref BlockedScope). So the charge drains to zero and the head fits.
  *
  * @par Threading
- * Every public member is safe to call from any thread. Continuations are
- * invoked by whichever thread released the width that admitted them, and never
- * with the budget's lock held, so a continuation may take any lock and may
- * submit work.
+ * Every member is thread-safe. Continuations run on the releasing thread, never under the lock.
  */
 class EINSUMS_EXPORT WidthBudget {
     EINSUMS_SINGLETON_DEF(WidthBudget)
@@ -62,16 +42,13 @@ class EINSUMS_EXPORT WidthBudget {
   public:
     /// @brief What a parked task does once its width is granted.
     ///
-    /// Called with the width actually granted, which is the requested width
-    /// clamped to the budget total. Called exactly once per parked request.
+    /// Called exactly once, with the granted width (the request clamped to the total).
     using Continuation = std::function<void(unsigned)>;
 
     /// @brief Admission order key.
     ///
-    /// @c rank is the task's urgency - the longest remaining path to a sink -
-    /// and larger goes first. Equal ranks break by @c tiebreak, smaller first,
-    /// so admission order is a function of the graph rather than of which
-    /// thread happened to get there.
+    /// Larger @c rank (longest remaining path to a sink) first, then smaller @c tiebreak, so the order
+    /// depends on the graph, not on thread timing.
     struct Priority {
         std::int64_t rank{0};
         std::size_t  tiebreak{0};
@@ -80,16 +57,10 @@ class EINSUMS_EXPORT WidthBudget {
     /**
      * @brief Ask for @p width units on behalf of a task.
      *
-     * @return The width charged, which the caller must later hand back through
-     *         @ref release. A return of 0 means the task was parked and
-     *         @p resume owns it from here; note that @p resume may already have
-     *         run by the time this returns, when parking it made it the head of
-     *         a queue that fits.
+     * @return The width charged, to be handed back through @ref release; 0 means the task was parked
+     *         and @p resume (which may already have run) owns it.
      *
-     * Never blocks the calling thread. A request wider than the whole budget is
-     * clamped to it rather than refused, because refusing would strand a task
-     * no one can widen the machine for; the plan gets less parallelism than it
-     * asked for, and the kernel still computes the right answer.
+     * Never blocks. A request wider than the budget is clamped, not refused.
      */
     [[nodiscard]] unsigned acquire(unsigned width, Priority priority, Continuation resume);
 
@@ -99,10 +70,8 @@ class EINSUMS_EXPORT WidthBudget {
     /**
      * @brief Adopt the machine's current thread count as the budget total.
      *
-     * Takes effect only while the budget is idle, so a total never changes
-     * under tasks that were admitted against it. Call it from the thread that
-     * starts a run, before any admission: a pool worker is pinned to one thread
-     * and would report the pin rather than the machine.
+     * Only while idle, so admitted tasks never see the total change. Call from the thread starting
+     * a run: a pool worker is pinned to one thread.
      */
     void sync_machine_width();
 
@@ -114,10 +83,7 @@ class EINSUMS_EXPORT WidthBudget {
 
     /// @brief Largest width ever charged by admission, since the last @ref reset_peak.
     ///
-    /// Counts admissions only. The unit a blocked task reclaims when its nested
-    /// run returns (@ref BlockedScope) is not an admission and is excluded, so
-    /// this is exactly the invariant the gate is responsible for: the width the
-    /// budget ever let compute at once, which must never exceed @ref total.
+    /// Admissions only (not widths reclaimed after a @ref BlockedScope), so it must never exceed @ref total.
     [[nodiscard]] unsigned peak_in_use() const;
 
     /// @brief Number of tasks parked waiting for width.
@@ -129,9 +95,7 @@ class EINSUMS_EXPORT WidthBudget {
     /**
      * @brief Marks the calling thread as running an admitted task of @p width.
      *
-     * What @ref BlockedScope reads to know how much to hand back. Constructing
-     * one with a width of 0 does nothing at all, so an unplanned task pays
-     * nothing for it.
+     * Read by @ref BlockedScope. A width of 0 does nothing.
      */
     class EINSUMS_EXPORT HoldScope {
       public:
@@ -151,15 +115,9 @@ class EINSUMS_EXPORT WidthBudget {
     /**
      * @brief Lends the calling task's width to the work it is about to wait on.
      *
-     * A control-flow node's task replays its body through a nested run and then
-     * does nothing until that run finishes. Holding its width across the wait
-     * would be both untruthful - it is not computing - and unsafe: the body's
-     * own tasks acquire from this same budget, so a body node planned at the
-     * full machine width could never be admitted while an ancestor held a unit
-     * of it, and the run would wedge.
-     *
-     * Constructed where a nested run begins. Outside an admitted task (the
-     * thread has no hold) it does nothing.
+     * Constructed where a nested run begins: the waiting task is not computing, and its body's tasks
+     * draw on the same budget, so holding the width could wedge the run. Does nothing outside an
+     * admitted task.
      */
     class EINSUMS_EXPORT BlockedScope {
       public:
@@ -194,15 +152,12 @@ class EINSUMS_EXPORT WidthBudget {
     /// Charge @p width and update the peak. Caller holds @c _mutex.
     void charge_locked(unsigned width);
 
-    /// Move every parked task that fits, in priority order, into @p ready.
-    /// Stops at the first one that does not fit - that is the head-of-line
-    /// rule. Caller holds @c _mutex.
+    /// Move parked tasks that fit, in priority order, into @p ready, stopping at the first that does
+    /// not (head-of-line). Caller holds @c _mutex.
     void drain_locked(std::vector<Pending> &ready);
 
-    /// Take back @p width without an admission check, for a task that lent its
-    /// own width out and is resuming. Cannot fail; can momentarily push the
-    /// charge past the total by the width of the resuming tasks, which is the
-    /// honest accounting for a control-flow node that is briefly running again.
+    /// Take back @p width without an admission check, for a task resuming after lending its width.
+    /// May briefly push the charge past the total.
     void recharge(unsigned width);
 
     mutable std::mutex   _mutex;

@@ -68,9 +68,7 @@ TaskPool::TaskPool() {
         _workers.push_back(std::move(worker));
     }
 
-    // Worker threads are started lazily on first enqueue() call,
-    // not here. This avoids creating threads during static initialization
-    // or program startup when no tasks may ever be submitted.
+    // Workers start lazily on the first enqueue(), not during static initialization.
 
     // Note: shutdown function is registered lazily in enqueue() when workers
     // are actually started, to ensure workers exist when shutdown() is called.
@@ -133,30 +131,16 @@ void TaskPool::worker_loop(size_t worker_id) {
     tls_worker_id = static_cast<int>(worker_id);
 
 #ifdef _OPENMP
-    // Run BLAS (and any other OpenMP code) single-threaded on worker threads.
-    // omp_set_num_threads sets the thread-scoped nthreads-var ICV, so this
-    // affects only parallel regions this worker encounters; the main thread
-    // and its OpenMP parallelism are untouched. This is both the right policy,
-    // since the pool parallelizes across nodes so nested per-node BLAS threads
-    // only oversubscribe, and a correctness fix: a libomp parallel region opened
-    // from a foreign (non-main) thread, with several workers doing so concurrently,
-    // can deadlock libomp's thread pool. For example, a control-flow node whose body
-    // runs inline on a worker and calls multithreaded BLAS would intermittently
-    // wedge at the fork/join barrier.
+    // OpenMP code (BLAS included) runs single-threaded on workers; this ICV is per-thread. The pool
+    // already parallelizes across nodes, and parallel regions opened concurrently from several
+    // non-main threads can deadlock libomp.
     omp_set_num_threads(1);
 #endif
 
-    // The ICV above only reaches a BLAS that threads through OpenMP, and then
-    // only when it shares our runtime - true of conda-forge's openblas, which
-    // is the openmp build resolving through the same libgomp shim. MKL brings
-    // its own runtime and so keeps its own thread count, which stays at the
-    // machine width unless it is told otherwise. Ask the vendor directly for
-    // the same policy; a vendor without a per-thread knob is left alone.
+    // The ICV reaches only a BLAS sharing our OpenMP runtime; MKL has its own, so ask the vendor too.
     blas::set_num_threads_this_thread(1);
 
-    // Register thread name with profiler (safe to call from any thread after
-    // Profiler singleton is initialized; the thread-local ring buffer is
-    // created lazily on first push, and set_thread_name just records the name).
+    // Name the thread in the profiler.
 #if defined(EINSUMS_HAVE_PROFILER)
     try {
         profile::Profiler::instance().set_thread_name(fmt::format("taskpool-worker-{}", worker_id));
@@ -183,12 +167,8 @@ void TaskPool::worker_loop(size_t worker_id) {
 
         // 2. Check external queue (tasks from non-worker threads).
         //
-        // Take a SHARE of what is queued, not one task: a scheduler seeding a
-        // wide graph drops n tasks in here at once, and popping them one at a
-        // time made every worker round-trip this mutex per task, so the
-        // workers spent the ramp-up contending instead of computing. One task
-        // is run directly and the rest go on our own deque, where other
-        // workers can still steal them if we fall behind.
+        // Take a share, not one task, so workers do not contend on this mutex per task: run one and
+        // put the rest on our own deque, where others can steal them.
         {
             std::scoped_lock const lock(_external_mutex);
             if (!_external_queue.empty()) {
@@ -242,11 +222,8 @@ void TaskPool::worker_loop(size_t worker_id) {
 }
 
 void TaskPool::ensure_started() {
-    // Lazy start: create worker threads on first enqueue.
-    // Also register shutdown function so workers are joined during
-    // einsums::finalize(), BEFORE the OMP parallel region's barrier.
-    // Without this, OMP waits for worker threads that called OMP-aware
-    // functions (like BLAS) and will never arrive at the barrier.
+    // Lazy start. The shutdown hook joins workers in einsums::finalize(), before OpenMP's barrier,
+    // which would otherwise wait on workers that used OpenMP.
     static std::once_flag start_flag;
     std::call_once(start_flag, [this]() {
         for (size_t i = 0; i < _workers.size(); i++) {
@@ -268,18 +245,12 @@ void TaskPool::enqueue(std::function<void()> task) {
     if (tls_worker_id >= 0 && std::cmp_less(tls_worker_id, _workers.size())) {
         _workers[static_cast<size_t>(tls_worker_id)]->deque.push(std::move(task));
     } else {
-        // External submission: push to shared MPMC queue (mutex-protected).
-        // Cannot use worker deques from external threads; they are SPMC
-        // (single-producer only from the owner thread).
+        // From outside the pool: the shared queue, as only a deque's owner may push to it.
         std::scoped_lock const lock(_external_mutex);
         _external_queue.push(std::move(task));
     }
 
-    // Wake one parked worker for the one new task. notify_all here woke
-    // every parked worker on every push - including a worker's own-deque
-    // push during dataflow execution - so an n-node graph triggered n
-    // thundering herds. A lost or insufficient wakeup self-heals: workers
-    // park with a 1ms timeout and re-scan all queues on wake.
+    // One task, one wakeup. A missed wakeup heals itself: workers park with a 1 ms timeout.
     if (_parked_count.load(std::memory_order_relaxed) > 0) {
         _notify_cv.notify_one();
     }
@@ -299,9 +270,7 @@ void TaskPool::submit_bare_batch(std::vector<std::function<void()>> &tasks) {
             deque.push(std::move(task));
         }
     } else {
-        // One lock for the whole batch. Submitting a graph's roots one at a
-        // time took this mutex and signalled the condition variable per root,
-        // and on a wide graph that cost more than the tasks themselves.
+        // One lock for the whole batch.
         std::scoped_lock const lock(_external_mutex);
         for (auto &task : tasks) {
             _external_queue.push(std::move(task));
@@ -309,9 +278,7 @@ void TaskPool::submit_bare_batch(std::vector<std::function<void()>> &tasks) {
     }
     tasks.clear();
 
-    // notify_all is right HERE (and wrong in enqueue): a batch really can feed
-    // every parked worker at once, so waking them one at a time just serializes
-    // the ramp-up.
+    // notify_all here, unlike enqueue: a batch can feed every parked worker.
     if (_parked_count.load(std::memory_order_relaxed) > 0) {
         _notify_cv.notify_all();
     }
@@ -324,18 +291,12 @@ void TaskPool::help_until(std::function<bool()> const &predicate) {
     size_t const nw = _workers.size();
 
     while (!predicate() && !_shutdown_flag.load(std::memory_order_relaxed)) {
-        // Wake a parked worker (same reasoning as enqueue: this loop runs
-        // every ~50us, so notify_all amounted to a periodic herd wakeup;
-        // the 1ms park timeout backstops any missed signal).
+        // Wake one parked worker (this loop runs every ~50 us).
         if (_parked_count.load(std::memory_order_relaxed) > 0) {
             _notify_cv.notify_one();
         }
 
-        // Drain the external queue first. This thread is usually the one that
-        // filled it - help_until()'s callers submit their roots from here, and
-        // an external submission cannot go to a worker deque - so leaving that
-        // work for a worker to notice meant the submitting thread slept
-        // through its own backlog while every worker was busy elsewhere.
+        // External queue first: this thread usually filled it.
         std::optional<std::function<void()>> external;
         {
             std::scoped_lock const lock(_external_mutex);

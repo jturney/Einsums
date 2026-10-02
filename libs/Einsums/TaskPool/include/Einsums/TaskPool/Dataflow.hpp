@@ -5,10 +5,8 @@
 
 #pragma once
 
-// Dataflow: run a task only when all its input futures are ready.
-// This header provides the dataflow() implementation that is called
-// from TaskPool. It is included after TaskPool.hpp to resolve the
-// circular dependency between TaskPool::submit and dataflow.
+// dataflow(): run a task once all its input futures are ready. Included after TaskPool.hpp,
+// which it and TaskPool::submit both depend on.
 //
 // Usage:
 //   auto result = pool.dataflow("step2",

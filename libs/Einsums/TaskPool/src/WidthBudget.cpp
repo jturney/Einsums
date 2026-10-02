@@ -21,20 +21,14 @@ EINSUMS_SINGLETON_IMPL(WidthBudget)
 
 namespace {
 
-/// The width this thread is currently admitted for, 0 when it is not running an
-/// admitted task. Lives in one translation unit so every scope object agrees on
-/// it whichever module constructs them.
+/// The width this thread is admitted for, 0 outside an admitted task. In one TU so every module agrees.
 unsigned &tls_hold() {
     static thread_local unsigned held = 0;
     return held;
 }
 
-/// The machine's thread count, asked of a thread that can answer.
-///
-/// Pool workers pin their own thread count to 1 at startup, so reading the
-/// ceiling there reports the pin rather than the machine. The pool sized itself
-/// from the machine before pinning anything, so its worker count is the same
-/// number the calling thread would have reported.
+/// The machine's thread count. A pool worker reports its pin of 1, so there the pool's worker count
+/// (sized from the machine) is used instead.
 unsigned machine_width() {
     if (TaskPool::current_worker_id() >= 0) {
         return std::max<unsigned>(1, static_cast<unsigned>(TaskPool::get_singleton().num_workers()));
@@ -91,9 +85,7 @@ unsigned WidthBudget::acquire(unsigned width, Priority priority, Continuation re
         // and the plan asking for it is a tuning artifact, not a requirement.
         unsigned const want = std::min(width, _total);
 
-        // Head-of-line: while anything is parked, a newcomer queues behind it
-        // rather than taking the room the head is waiting for, however well it
-        // would fit.
+        // Head-of-line: while anything is parked, a newcomer queues behind it.
         if (_parked.empty() && _in_use + want <= _total) {
             charge_locked(want);
             return want;
@@ -103,9 +95,7 @@ unsigned WidthBudget::acquire(unsigned width, Priority priority, Continuation re
             Pending{.rank = priority.rank, .tiebreak = priority.tiebreak, .seq = _seq++, .width = want, .resume = std::move(resume)});
         std::push_heap(_parked.begin(), _parked.end(), less_urgent);
 
-        // The newcomer may itself be the most urgent thing waiting, so the
-        // queue is drained rather than assumed blocked. It resumes through its
-        // continuation either way, which keeps one path for both cases.
+        // The newcomer may be the most urgent, so drain rather than assume it blocked.
         drain_locked(ready);
     }
 

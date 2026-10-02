@@ -21,13 +21,8 @@
 
 EINSUMS_NAMESPACE_BEGIN(task_pool)
 
-/// @brief Lock-free single-producer, multi-consumer work-stealing deque.
-///
-/// The owner thread calls push() and pop() (bottom end).
-/// Any thread can call steal() (top end).
-///
-/// Based on the Chase-Lev dynamic circular work-stealing deque.
-/// Uses a growable circular buffer with atomic indices.
+/// @brief Lock-free Chase-Lev work-stealing deque on a growable circular buffer. The owner calls
+/// push() and pop(); any thread may steal().
 template <typename T>
 class WorkStealingDeque {
   public:
