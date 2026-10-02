@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Tests for ``python -m einsums.stages extract``: the analysis, the spec, the scaffold.
+"""Tests for ``einsums stages extract``: the analysis, the spec, the scaffold.
 
 The analysis is tested against a synthetic solver written into a temp
 directory, small enough that every access kind it exercises is named in the

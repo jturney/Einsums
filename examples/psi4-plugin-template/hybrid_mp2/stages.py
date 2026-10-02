@@ -11,13 +11,13 @@ for eleven of them); each starts uncontracted (``contract=False`` reports the
 debt), gets measured under a Session, and states its contract when it is
 promoted. The promotion workflow, in order:
 
-1. ``python -m einsums.stages extract`` when the phase is a method: it reports
+1. ``einsums stages extract`` when the phase is a method: it reports
    every ``self`` field the phase touches and refuses to scaffold the split
    until a cut spec says what crosses, what stays in the plan, and what stays
    in the finish.
 2. Annotate the numerics' signature with cross-boundary types and declare the
    ``@contract`` return; the validator refuses anything that cannot cross.
-3. ``python -m einsums.stages promote hybrid_mp2/stages.py --out hybrid_mp2/cpp``
+3. ``einsums stages promote hybrid_mp2/stages.py --out hybrid_mp2/cpp``
    generates the C++ side; only the port skeleton's body is yours to fill.
 """
 

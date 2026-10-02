@@ -34,7 +34,7 @@ promoted, and ``contract=False`` reports the debt until then. Three have been:
 ``transform_pnos`` (32 narrowed to fifteen) and the coupled-cluster
 ``compute_pno_integrals`` (19 narrowed to seventeen), each split into a plan
 half that stays Python and a contracted numerics stage declared below, with C++
-backends under ``cpp/``. ``python -m einsums.stages extract`` mechanizes the
+backends under ``cpp/``. ``einsums stages extract`` mechanizes the
 analysis for the next one.
 """
 

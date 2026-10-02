@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Tests for ``python -m einsums.stages promote``: the model, the emitters, the guards.
+"""Tests for ``einsums stages promote``: the model, the emitters, the guards.
 
 The generator is tested against a stages module written into a temp directory
 rather than against a golden file. A committed golden can be regenerated into

@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Scaffolded by 'python -m einsums.stages promote' from hybrid_mp2.stages.
+// Scaffolded by 'einsums stages promote' from hybrid_mp2.stages.
 // Written once and never overwritten: this file is yours.
 
 // The port of hybrid_mp2.mp2.mp2_energy: same operations, same order, same

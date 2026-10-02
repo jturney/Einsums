@@ -17,7 +17,7 @@ import os
 
 # The driver half needs the host; the method half must not. Without psi4 the
 # package still imports - contracts, stages and numerics are host-free - which
-# is what lets `python -m einsums.stages promote` and the differential tests
+# is what lets `einsums stages promote` and the differential tests
 # under cpp/tests run in an environment with no psi4 at all.
 try:
     import psi4

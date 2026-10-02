@@ -33,7 +33,7 @@ the question that has to be answered before any C++ gets written.
 
 Once a stage has stated its contract, ``promote`` writes the C++ side of it::
 
-    python -m einsums.stages promote mymethod/stages.py --out cpp/
+    einsums stages promote mymethod/stages.py --out cpp/
 
 It generates the contract aggregates, the pybind casters and bindings, the
 build file, and a port skeleton, all from the Python signatures. What it does

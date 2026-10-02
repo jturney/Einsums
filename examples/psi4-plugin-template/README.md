@@ -82,16 +82,17 @@ Backend selection is `set hybrid_mp2 stage_backend python|cpp`, and it is explic
 The `cpp/` directory came from one command:
 
 ```bash
-python -m einsums.stages promote hybrid_mp2/stages.py --out hybrid_mp2/cpp
+einsums stages promote hybrid_mp2/stages.py --out hybrid_mp2/cpp
 ```
 
 which generated the contract header, the pybind bindings, the CMake build, the differential test, and a port skeleton whose body is the only hand-written C++ in it.
 Regenerating after a contract change is the same command; promote refuses to overwrite anything you have edited, and never rewrites the skeleton or the build file at all.
+`einsums` is the command an Einsums build writes to `build/bin`; where only the Python package is installed, `python -m einsums.stages` is the same tool.
 
 For a method that starts as a *class* rather than free functions, the field extraction comes first:
 
 ```bash
-python -m einsums.stages extract solver.py::MyMethod.build_t2
+einsums stages extract solver.py::MyMethod.build_t2
 ```
 
 reports every `self` field the method touches and scaffolds the plan / numerics / finish split once you have written a cut spec saying what crosses.

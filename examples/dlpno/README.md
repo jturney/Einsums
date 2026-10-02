@@ -152,7 +152,7 @@ Three stages exist twice: `compute_pno_overlaps`, `transform_pnos` and `compute_
 Both implement the same contracts, both are selectable at runtime, and neither Python side is retired; the C++ side is regenerated from the Python contracts by the hybrid framework's promote tool:
 
 ```bash
-python -m einsums.stages promote examples/dlpno/dlpno/stages.py \
+einsums stages promote examples/dlpno/dlpno/stages.py \
        --out examples/dlpno/cpp --license-header devtools/LicenseHeader.txt
 ```
 

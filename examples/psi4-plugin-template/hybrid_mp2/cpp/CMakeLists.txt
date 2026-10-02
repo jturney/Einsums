@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-# Scaffolded once by 'python -m einsums.stages promote'; this file is yours.
+# Scaffolded once by 'einsums stages promote'; this file is yours.
 
 # An out-of-tree stage module, built against an INSTALLED Einsums. The
 # Einsums-world binary of this plugin: it links Einsums and only Einsums,

@@ -581,7 +581,7 @@ def render_template(analysis: Analysis) -> str:
     """
     out = [
         f"# Cut spec for {analysis.cls}.{analysis.method}, written by",
-        "#     python -m einsums.stages extract",
+        "#     einsums stages extract",
         "# Fill in every disposition; extract refuses to scaffold while a TODO remains.",
         "#",
         "# Field dispositions:",
@@ -656,7 +656,7 @@ def render_scaffold(analysis: Analysis, spec: CutSpec) -> str:
         "",
         summary + ".",
         "",
-        "Written once by ``python -m einsums.stages extract``; this file is yours.",
+        "Written once by ``einsums stages extract``; this file is yours.",
         "It will not import until every TODO below is a real type, which is",
         "deliberate: the annotations are the contract, and ``@stage`` refuses a",
         "signature without them.",

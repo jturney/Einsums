@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-# Scaffolded once by 'python -m einsums.stages promote'; this file is yours.
+# Scaffolded once by 'einsums stages promote'; this file is yours.
 
 """Differential test for the ``compute_pno_integrals`` stage: python against cpp.
 

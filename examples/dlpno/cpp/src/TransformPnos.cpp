@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Scaffolded by 'python -m einsums.stages promote' from dlpno.stages.
+// Scaffolded by 'einsums stages promote' from dlpno.stages.
 // Written once and never overwritten: this file is yours.
 
 #include <Einsums/ComputeGraph.hpp>
