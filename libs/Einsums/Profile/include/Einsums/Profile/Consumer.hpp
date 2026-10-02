@@ -51,15 +51,9 @@ struct AggNode {
     uint64_t call_count = 0;
     ns       total_exclusive{0};
 
-    /// Welford's running mean and sum of squared deviations, in nanoseconds.
-    ///
-    /// Floating point, not integer, for two reasons. The sum of squares
-    /// overflows a signed 64-bit integer once a zone's spread reaches a few
-    /// seconds: a sample 108 s from the mean squares to ~5.8e21 against an
-    /// int64 ceiling of 9.2e18, which is undefined behaviour and was reported
-    /// as such by UBSan on the slow sanitizer runs where zones get that long.
-    /// And an integer mean advanced by ``delta / call_count`` truncates every
-    /// update, so it drifts low even when nothing overflows.
+    /// Welford's running mean and sum of squared deviations, in nanoseconds. Double, not integer: an
+    /// int64 sum of squares overflows once a zone's spread reaches seconds, and an integer mean
+    /// truncates every update.
     double total_exclusive_mean{0.0};
     double total_exclusive_M2{0.0};
 
@@ -94,17 +88,7 @@ struct AggNode {
     static constexpr int kHistogramBuckets = 21;
     uint64_t             histogram[kHistogramBuckets]{}; // NOLINT(modernize-avoid-c-arrays)
 
-    /// Children keyed by INTERNED name id, not by name.
-    ///
-    /// The producer already interns each zone's name once per call site and
-    /// ships a ``uint32_t`` (see ``Profiler::push_interned``, whose comment
-    /// explains that interning per entry meant hashing and ``memcmp``-ing the
-    /// same strings - including a long absolute ``__FILE__`` - under a shared
-    /// mutex millions of times). Keying this map by ``std::string`` undid that
-    /// at the consumer: every push and pop resolved the ids back to strings
-    /// through the string table's ``shared_mutex`` and then hashed the full
-    /// name at every level of the path. A 4-byte key hashes in constant time
-    /// and needs no string at all; ``name`` below still carries it for display.
+    /// Children keyed by interned name id, so aggregation never resolves or hashes a string.
     InsertionOrderedMap<uint32_t, std::unique_ptr<AggNode>> children;
 
     /// Set only on a parent's "(other)" node: the ids of the names folded into it once the parent
@@ -115,19 +99,11 @@ struct AggNode {
     AggNode() = default;
     explicit AggNode(std::string n) : name(std::move(n)) {}
 
-    /// Frees the subtree with a worklist rather than by recursion.
-    ///
-    /// The compiler-generated destructor recurses once per level through the
-    /// child ``unique_ptr`` members, so freeing the tree costs a stack frame per level
-    /// of nesting - and a profiler is exactly the thing that must not turn a
-    /// deeply nested program into a crash at exit. One did: a run that dropped
-    /// events built a chain over 100k nodes long (see @ref Event::depth) and
-    /// died of stack overflow while tearing it down, after the work it was
-    /// measuring had finished and passed.
+    /// Frees the subtree with a worklist: the implicit destructor recurses once per level, and a
+    /// deep enough tree overflows the stack at exit.
     ~AggNode() {
         std::vector<std::unique_ptr<AggNode>> pending;
-        // Moved out rather than erased: the emptied entries own nothing, so
-        // destroying the map they sit in frees no node and recurses nowhere.
+        // Moved out, not erased: the emptied map then frees nothing recursively.
         auto const detach = [&pending](AggNode &node) {
             for (auto &child : node.children) {
                 if (child.second) {
@@ -138,8 +114,7 @@ struct AggNode {
 
         detach(*this);
         while (!pending.empty()) {
-            // Detached before it goes out of scope, so the implicit destructor
-            // that runs here always finds its children already gone.
+            // Detached first, so the implicit destructor finds no children.
             std::unique_ptr<AggNode> const node = std::move(pending.back());
             pending.pop_back();
             detach(*node);
@@ -151,14 +126,8 @@ struct AggNode {
     AggNode(AggNode &&)                 = delete;
     AggNode &operator=(AggNode &&)      = delete;
 
-    /// Fold one measured exclusive duration into this node's statistics:
-    /// call count, total, running mean and variance, min/max, and the
-    /// per-call log2 histogram.
-    ///
-    /// Split out of the consumer's pop handler so the arithmetic can be
-    /// exercised directly, with durations no test would want to spend real
-    /// time producing. Exported for that reason: AggNode is otherwise a plain
-    /// aggregate whose members are all inline.
+    /// Fold one exclusive duration into this node's statistics: count, total, mean and variance,
+    /// min/max and the log2 histogram. Exported so tests can feed it durations directly.
     EINSUMS_EXPORT void record_exclusive(ns exclusive);
 };
 
@@ -181,15 +150,8 @@ struct ThreadState {
         TimePoint start;
         uint64_t  counters[kNumCounterSlots]{}; // NOLINT(modernize-avoid-c-arrays)
 
-        /// The aggregation node this frame accumulates into, resolved once when
-        /// the zone was pushed.
-        ///
-        /// Every handler used to rediscover it by walking the tree from the
-        /// root, so a zone at depth d cost d map lookups on push, d again on
-        /// pop, and d more on every annotation - all of it repeating work the
-        /// push had already done. Caching the pointer makes each O(1). It stays
-        /// valid because the node is owned by a ``unique_ptr`` in its parent's
-        /// map and nothing erases nodes; the tree only grows.
+        /// The node this frame accumulates into, resolved at push. Stays valid because nodes are
+        /// never erased.
         AggNode *node{nullptr};
     };
 
@@ -230,8 +192,7 @@ class EINSUMS_EXPORT Consumer {
     /// Stop the consumer thread and drain remaining events.
     void shutdown();
 
-    /// Force an immediate drain of all ring buffers. Blocks until complete.
-    /// Use this before reading the tree to ensure all pending events are processed.
+    /// Drain all ring buffers now, blocking until done. Call before reading the tree.
     void flush();
 
     /// Access the aggregated tree (under shared lock for concurrent readers).
@@ -243,17 +204,13 @@ class EINSUMS_EXPORT Consumer {
     /// Number of events dropped across all threads: the pushes each thread's ring refused, summed.
     auto dropped_count() const -> uint64_t;
 
-    /// Zones abandoned because the events that would have closed them were
-    /// dropped. Reported alongside @ref dropped_count so a thinned-out tree is
-    /// visibly thinned rather than quietly wrong.
+    /// Zones abandoned because their closing events were dropped.
     auto unmatched_zone_count() const -> uint64_t { return _unmatched_zones.load(std::memory_order_relaxed); }
 
     /// Notify the consumer that new events are available (called by producer after push).
     void notify() { _wake_cv.notify_one(); }
 
-    /// Set a callback to be invoked after each drain cycle (e.g., for server tick).
-    /// Guarded by _tick_mutex: the consumer thread is started in the constructor
-    /// and reads/calls _tick_callback concurrently with this setter.
+    /// Set a callback run after each drain cycle (the server's tick). Safe while the consumer runs.
     void set_tick_callback(std::function<void()> cb) {
         std::scoped_lock const lock(_tick_mutex);
         _tick_callback = std::move(cb);
@@ -279,9 +236,7 @@ class EINSUMS_EXPORT Consumer {
         if (ts.stack.empty())
             return merged;
 
-        // Root to current node, collecting annotations at each level. The
-        // frames already carry their nodes, so this needs no tree lookups and
-        // no string-table traffic at all.
+        // Root to current node; the frames carry their nodes, so no tree lookups are needed.
         for (auto const &frame : ts.stack) {
             if (frame.node == nullptr) {
                 break;
@@ -304,14 +259,7 @@ class EINSUMS_EXPORT Consumer {
     void   process_annotate(ThreadState &ts, Event const &evt);
     void   process_mem(ThreadState &ts, Event const &evt);
 
-    /// Close frames the producer is no longer inside, without recording them.
-    ///
-    /// A frame is only ever removed by its own Pop, so a Pop that the ring
-    /// buffer dropped strands its frame here for the rest of the run. The depth
-    /// each event carries says where the producer actually is, and every frame
-    /// deeper than that belongs to a zone whose Pop is never coming: dropping
-    /// them keeps this stack the shape of the code being measured instead of
-    /// growing one level per lost event.
+    /// Close, unrecorded, the frames deeper than @p depth: their Pops were dropped and will never come.
     void unwind_stale_frames(ThreadState &ts, size_t depth);
 
     StringTable &_strings;
@@ -337,15 +285,12 @@ class EINSUMS_EXPORT Consumer {
     // Zones whose Pop was among the dropped events (see unwind_stale_frames).
     std::atomic<uint64_t> _unmatched_zones{0};
 
-    // Tick callback (e.g., for server). Set on the main thread after the consumer
-    // thread is already running, so access is guarded by _tick_mutex.
+    // Tick callback (the server's), installed after the consumer thread starts.
     std::mutex            _tick_mutex;
     std::function<void()> _tick_callback;
 
-    // Timeline events for Gantt chart (circular buffer, protected by tree_mutex_)
-    /// The last kMaxTimelineEvents closed zones, a ring written at _timeline_next. A record holds the
-    /// name's id: the timeline used to be a vector of named events trimmed with erase(begin()), so
-    /// once full every closed zone copied its name and shifted a thousand events down by one.
+    /// The last kMaxTimelineEvents closed zones, for the Gantt chart: a ring written at
+    /// _timeline_next, under _tree_mutex.
     struct TimelineRecord {
         uint32_t thread_id;
         uint32_t name_id;

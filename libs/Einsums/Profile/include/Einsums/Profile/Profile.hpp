@@ -81,14 +81,11 @@ EINSUMS_NAMESPACE_BEGIN(profile)
 struct EINSUMS_EXPORT Profiler {
     static auto instance() -> Profiler &;
 
-    /// Whether zones and annotations are recorded. Checked first in every
-    /// instrumentation entry point so a disabled profiler costs one relaxed load.
+    /// Whether zones and annotations are recorded. When off, each entry point costs one relaxed load.
     [[nodiscard]] bool enabled() const { return _enabled.load(std::memory_order_relaxed); }
     void               set_enabled(bool on) { _enabled.store(on, std::memory_order_relaxed); }
 
-    // Start a timer region. Optionally provide file/line/func (if available).
-    // Interns on every call; prefer the pre-interned overload below, which is what
-    // LabeledSection uses.
+    // Start a zone, interning its strings on every call. LabeledSection uses push_interned instead.
     void push(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
         if (!enabled()) {
             return;
@@ -96,13 +93,8 @@ struct EINSUMS_EXPORT Profiler {
         push_interned(_strings.intern(name), _strings.intern(file), _strings.intern(func), line, name, file, func);
     }
 
-    /// Start a timer region from ALREADY INTERNED ids.
-    ///
-    /// A zone's name, file and function are compile-time constants at the call
-    /// site, so interning them per entry means hashing and ``memcmp``-ing the same
-    /// strings (including a long absolute ``__FILE__`` path) under a shared mutex
-    /// millions of times. @ref ZoneSite interns once per site and hands the ids
-    /// here. The trailing string views are only read by the Tracy backend.
+    /// Start a zone from already-interned ids (see @ref ZoneSite). The string views are read only by
+    /// the Tracy backend.
     void push_interned(uint32_t name_id, uint32_t file_id, uint32_t func_id, int line, std::string_view name = {},
                        std::string_view file = {}, std::string_view func = {}) {
         if (!enabled()) {
@@ -131,16 +123,16 @@ struct EINSUMS_EXPORT Profiler {
         write_pop(thread_channel());
     }
 
-    // Print default compact report (exclusive time, percent, name, file:line clickable, func)
-    // detailed -> show min/max/avg and counters
+    // Print the report: exclusive time, percent, name, file:line and function. @p detailed adds
+    // min/max/avg and counters.
     void print(bool detailed = false, std::ostream &os = std::cout);
 
-    // JSON & CSV exporters (optional)
+    // Write the aggregated profile as JSON.
     auto export_json(std::string const &path = "einsums_profile.json") -> std::optional<std::string>;
 
-    // Shutdown the consumer thread, server, and do final drain.
+    // Stop the consumer (with a final drain) and the server.
     void shutdown() {
-        // Clear print output sink before shutting down server to avoid use-after-free on the queue pointer
+        // The print sink points into the server's queue, so detach it first.
         einsums::print::clear_output_sink();
         if (_consumer)
             _consumer->shutdown();
@@ -154,12 +146,8 @@ struct EINSUMS_EXPORT Profiler {
             _consumer->flush();
     }
 
-    /// What one recorded push and one recorded pop cost, in nanoseconds.
-    ///
-    /// Measured once, on first request, by running the same code path into a scratch ring. A zone
-    /// used to time itself: two extra clock reads and four fetch_adds on counters every thread
-    /// shared, which made the overhead it reported a large part of the overhead it had, and the
-    /// shared counters grew that part with every thread added.
+    /// What one recorded push and one recorded pop cost, in nanoseconds. Measured once, on first
+    /// request, by running the real path into a scratch ring.
     auto avg_push_overhead_ns() -> double { return calibrated_overhead().push_ns; }
     auto avg_pop_overhead_ns() -> double { return calibrated_overhead().pop_ns; }
 
@@ -195,9 +183,7 @@ struct EINSUMS_EXPORT Profiler {
         uint16_t port = 19216;
         try {
             port = static_cast<uint16_t>(profile_server_port());
-            // --einsums:profile:disable. Recording every zone and annotation is not
-            // free: on small operations it dominates, so a run that does not want a
-            // profile should be able to say so and pay one relaxed load per zone.
+            // --einsums:profile:disable: recording dominates small operations, so runs can opt out.
             _enabled.store(!profile_recording_disabled(), std::memory_order_relaxed);
         } catch (...) { // NOLINT
         }
@@ -206,20 +192,11 @@ struct EINSUMS_EXPORT Profiler {
             _server = std::make_unique<Server>(*_consumer, _strings, "127.0.0.1", port);
             _consumer->set_tick_callback([this] { _server->tick(); });
         }
-        // Signal handlers are NOT installed here to avoid conflicting with
-        // the Runtime module's signal handlers (set_signal_handlers in Runtime.cpp).
-        // Profiler shutdown is handled by einsums::finalize() in Finalize.cpp,
-        // which calls prof.shutdown() + prof.print() during the shutdown phase.
+        // No signal handlers here: Runtime owns those, and einsums::finalize() shuts the profiler down.
     }
 
-    // Stop the background consumer thread before members are destroyed. The
-    // consumer's periodic tick callback calls into ``_server``; members destruct
-    // in reverse declaration order, so ``_server`` would otherwise be torn down
-    // while the thread is still ticking, and the thread would dereference a
-    // destroyed Server (an intermittent shutdown SIGSEGV). This is the fallback
-    // for interpreter/static shutdown when einsums::finalize(), which already
-    // calls shutdown(), was not invoked, such as a Python process exiting. Both
-    // calls are idempotent with finalize()'s.
+    // Fallback for exits that skip einsums::finalize(), such as Python's. The consumer must stop
+    // before members are destroyed: its tick calls into _server, which is destroyed first.
     ~Profiler() {
         if (_consumer) {
             _consumer->shutdown();
@@ -242,23 +219,19 @@ struct EINSUMS_EXPORT Profiler {
     static constexpr uint32_t kFillCheckEvery = 512;
 
     /**
-     * @brief One thread's side of the profiler: its ring buffer, nesting depth and zone counts.
+     * @brief One thread's ring buffer, nesting depth and zone counts.
      *
-     * Only the owning thread writes any of it. The counts are atomics only so another thread can
-     * read them: the owner bumps them with a relaxed load and store, never a read-modify-write, so
-     * no producer ever touches a cache line another producer writes.
+     * Only the owning thread writes it. The counts are atomic so other threads can read them, and
+     * the owner bumps them with a relaxed load and store, not a read-modify-write.
      *
-     * The ring buffer is shared with the Consumer: a producer thread (e.g. a transient TaskPool
-     * worker) can exit while the Consumer's drain thread is still popping residual events, so
-     * ownership must outlive the thread. The profiler keeps every channel for the life of the
-     * process, which is also what keeps an exited thread's zones in the counts.
+     * Channels live for the whole process, shared with the Consumer, so a thread's unread events
+     * and its counts outlive the thread.
      */
     struct ThreadChannel {
         EventRingBuffer ring;
         alignas(64) std::atomic<uint64_t> pushes{0};
         std::atomic<uint64_t> pops{0};
-        /// How many zones this thread has open, stamped into every Push and Pop (see
-        /// @ref Event::depth) so the consumer can tell a nesting level from a lost event.
+        /// Zones open on this thread, stamped into every Push and Pop (see @ref Event::depth).
         uint32_t depth{0};
         /// Whether a hardware counter backend is active, read once when the thread registers.
         bool counters{false};
@@ -270,12 +243,9 @@ struct EINSUMS_EXPORT Profiler {
 
     /// The calling thread's channel, registered on first use.
     ///
-    /// Defined out of line, in the library, so there is exactly one per thread. Every module is built
-    /// with -fvisibility-inlines-hidden, which gives each shared object its own copy of an inline
-    /// function and so of a thread_local inside it: defined here, a thread recording from the Python
-    /// bindings or a test executable as well as from the library had one channel in each, with its
-    /// own ring and its own depth, and a zone opened in one never nested under a zone opened in the
-    /// other.
+    /// Out of line so there is one per thread: under -fvisibility-inlines-hidden each shared object
+    /// gets its own copy of an inline function's thread_local, which would split a thread's zones
+    /// between the library and, say, the Python bindings.
     static auto thread_channel() -> ThreadChannel &;
 
 #    ifdef EINSUMS_HAVE_TRACY
@@ -319,9 +289,7 @@ struct EINSUMS_EXPORT Profiler {
     std::unique_ptr<Consumer> _consumer;
     std::unique_ptr<Server>   _server;
 
-    /// Recording switch. On by default so the default report keeps working;
-    /// --einsums:profile:disable turns it off, which reduces every zone and
-    /// annotation to one relaxed load.
+    /// Recording switch: on by default, off with --einsums:profile:disable.
     std::atomic<bool> _enabled{true};
 
     /// Every thread's channel, for the life of the process; see @ref ThreadChannel.
@@ -341,13 +309,10 @@ struct EINSUMS_EXPORT Profiler {
     /// Run the push and pop paths into a scratch channel and time them, once.
     auto calibrated_overhead() -> Overhead const &;
 
-    /// Record a zone's opening on @p ch. The whole hot path of a recorded zone: one raw clock read,
-    /// one event written in place into a ring only this thread writes, and the thread's own count.
-    /// When the ring is full there is no event to write, so the clock and counters are not read.
+    /// Record a zone opening on @p ch: one clock read and one event written in place. A full ring
+    /// skips the clock and counter reads.
     void write_push(ThreadChannel &ch, uint32_t name_id, uint32_t file_id, uint32_t func_id, int line) {
-        // Counted whether or not the event makes it into the buffer: this is
-        // where the thread actually is, and the consumer resynchronizes against
-        // it precisely when the events between have been dropped.
+        // Counted even when the event is dropped: the consumer resynchronizes on it.
         uint32_t const depth = ++ch.depth;
         if (Event *evt = ch.ring.try_claim()) {
             *evt = Event{.ticks   = TickClock::now(),
@@ -368,9 +333,7 @@ struct EINSUMS_EXPORT Profiler {
 
     /// Record a zone's closing on @p ch.
     void write_pop(ThreadChannel &ch) {
-        // A pop with nothing open closes nothing. It used to be sent anyway and
-        // dropped at the far end; keeping the count here means the depth a Pop
-        // carries is always the level of a zone that is really open.
+        // Nothing open: skip it, so a Pop's depth always names an open zone.
         if (ch.depth == 0) {
             return;
         }
@@ -386,12 +349,9 @@ struct EINSUMS_EXPORT Profiler {
         ch.pops.store(ch.pops.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
     }
 
-    /// Wake the consumer once when @p ch's ring passes half full. The consumer naps longer the longer
-    /// nothing arrives, so a burst that starts during a nap would otherwise fill the ring and drop
-    /// events before it looked again.
-    ///
-    /// Looks every kFillCheckEvery events, not on each: past half, every look reads the consumer's
-    /// tail, and a wake that comes a few hundred events late still comes with half a ring to spare.
+    /// Wake the consumer once when @p ch's ring passes half full, so a burst that starts during its
+    /// nap does not overflow. Checked every kFillCheckEvery events, since past half each check reads
+    /// the consumer's tail.
     void wake_consumer_if_filling(ThreadChannel &ch) {
         if (--ch.until_fill_check != 0) {
             return;
@@ -418,24 +378,13 @@ struct EINSUMS_EXPORT Profiler {
 
 // ---------------------- Scoped helper ----------------------
 /**
- * @brief The interned identity of one instrumentation site's location.
+ * @brief The interned name, file and function of one zone call site.
  *
- * ``__FILE__`` and ``__func__`` are compile-time constants where a zone is
- * written, so interning them on every entry re-hashes and re-compares the same
- * strings under a shared mutex - and ``__FILE__`` is a long absolute path.
- * @ref LabeledSection declares one of these as a function-local static, paying
- * that once per site for the life of the process.
+ * @ref LabeledSection makes one a function-local static, so these strings are interned once per
+ * site rather than on every entry, under the string table's lock. With a literal name, entering a
+ * zone takes no lock at all.
  *
- * The name is cached too, which is what makes a plain zone entry take no locks at
- * all: @ref StringTable::intern is the only mutex on this path (the event ring
- * buffer itself never blocks a producer), so interning nothing means locking
- * nothing. That holds only because @ref LabeledSection's name is a literal. A
- * name built per call keeps its own path: with format arguments the formatted
- * string is interned per entry, and a name computed at runtime uses
- * @ref LabeledSectionRuntime.
- *
- * The views are kept for the Tracy backend, which wants the characters; they
- * point at the literals the macro passes, which outlive the site.
+ * The views are for the Tracy backend and point at literals that outlive the site.
  */
 struct ZoneSite {
     ZoneSite(std::string_view name_, char const *file_, int line_, char const *func_) : name{name_}, file{file_}, func{func_}, line{line_} {
@@ -473,8 +422,7 @@ constexpr bool name_keyable() {
     if constexpr (NameKeyScalar<U> || NameKeyString<U>) {
         return true;
     } else if constexpr (is_join_view<U>::value) {
-        // A fmt::join view is read twice on a miss, once for the key and once to format, so only
-        // one over a forward range can stand in the key; a single-pass range is formatted every time.
+        // A join view is read twice on a miss (key, then format), so it must be a forward range.
         using It = decltype(std::declval<U const &>().begin);
         using E  = std::remove_cvref_t<std::iter_reference_t<It>>;
         return std::forward_iterator<It> && (NameKeyScalar<E> || NameKeyString<E>);
@@ -483,12 +431,9 @@ constexpr bool name_keyable() {
     }
 }
 
-/// Writes a cache key into a fixed buffer: scalars as their bytes, strings length-prefixed, so no
-/// two different argument lists write the same key. A key the buffer cannot hold is marked, and its
-/// zone is named the uncached way.
-///
-/// A plain buffer and memcpy, not std::string::append: three joined index lists are about twenty
-/// pieces, and appending them to a string one call at a time cost 74 ns, most of a zone's entry.
+/// Writes a cache key into a fixed buffer: scalars as bytes, strings length-prefixed, so distinct
+/// argument lists never collide. A key that does not fit is flagged and its zone named uncached.
+/// (A plain memcpy: appending the pieces to a std::string cost 74 ns per zone.)
 struct KeyWriter {
     char *pos;
     char *end;
@@ -558,15 +503,12 @@ struct NameSiteCache {
     IdCache     ids;
 };
 
-/// The interned id of the zone name @p format_name makes from @p args, cached per call site and
-/// thread. Each call site's formatting lambda is its own type, so each gets its own cache.
-///
-/// The most recent key is checked first with one comparison: a loop running the same contraction
-/// takes that path every time, and skips the hash and the map.
+/// The interned id of the zone name @p format_name builds from @p args, cached per call site (each
+/// site's lambda is its own type) and per thread. The last key is compared first, so a loop that
+/// repeats one name skips the hash.
 template <typename FormatName, typename... Args>
 uint32_t zone_name_id(FormatName const &format_name, Args &&...args) {
-    // Forwarded, because fmt refuses a view (a fmt::join) passed as an lvalue. A view read for the key
-    // is only iterators, so it can still be formatted afterwards.
+    // Forwarded because fmt rejects an lvalue join view. Building the key only copies its iterators.
     auto const intern_formatted = [&] { return Profiler::instance().string_table().intern(format_name(std::forward<Args>(args)...)); };
     if constexpr ((name_keyable<Args>() && ...)) {
         thread_local NameSiteCache cache;
@@ -598,12 +540,9 @@ uint32_t zone_name_id(FormatName const &format_name, Args &&...args) {
 /// Sentinel for an id not interned yet.
 inline constexpr uint32_t kNotInterned = std::numeric_limits<uint32_t>::max();
 
-/// One ProfileAnnotate call site: its literal key, interned on first use and then read with one
-/// relaxed load. Two threads racing to fill the slot intern the same string and store the same id.
+/// One ProfileAnnotate call site's key id, interned on first use; racing threads store the same id.
 ///
-/// Only the key is held here. A value that looks like a literal need not be one: a conditional
-/// between two literals of the same length, ``ta == 't' ? "T" : "N"``, has the same type as a
-/// single literal, and caching it here would pin the site to whichever value came first.
+/// Values are not held here: ``c ? "T" : "N"`` has a literal's type but not a fixed value.
 struct AnnotateSite {
     std::atomic<uint32_t> key_id{kNotInterned};
 
@@ -620,33 +559,13 @@ struct AnnotateSite {
 } // namespace site_cache
 
 struct ScopedZone {
-    /**
-     * @brief Enter a zone at @p site named by @p name (plus any format arguments).
-     *
-     * One constructor covers the three ways a name arrives, chosen at compile
-     * time so the common case does no work it does not need:
-     * - a literal with no arguments is interned straight from its ``string_view``,
-     *   with no ``fmt::format`` call and so no allocation;
-     * - a literal with arguments is formatted per call, as it must be;
-     * - anything else (notably ``fmt::runtime``) is formatted per call too, which
-     *   is what keeps a runtime-named zone correctly labelled.
-     */
-    /// Enter a zone whose name is fixed at the call site. Nothing is interned, so
-    /// nothing is locked: the site already holds every id, and the event ring
-    /// buffer is lock-free.
+    /// Enter a zone with a fixed name. Takes no lock: the site holds every id.
     explicit ScopedZone(ZoneSite const &site) {
         Profiler::instance().push_interned(site.name_id, site.file_id, site.func_id, site.line, site.name, site.file, site.func);
     }
 
-    /// Enter a zone whose name is built per call (format arguments, or a name
-    /// computed at runtime). Only the name is interned; the location comes from
-    /// the site.
-    ///
-    /// The name arrives as a CALLABLE so that building it is skipped entirely when
-    /// recording is off. Passing the string directly would evaluate it as an
-    /// argument, i.e. before this constructor could check: PackedGemm's zone name
-    /// formats three fmt::join views on every contraction, pure waste in a run that
-    /// is not profiling.
+    /// Enter a zone whose name is built per call; only the name is interned. It arrives as a callable
+    /// so nothing is built when recording is off.
     template <typename MakeName>
         requires std::invocable<MakeName>
     ScopedZone(ZoneSite const &site, MakeName &&make_name) {
@@ -659,14 +578,12 @@ struct ScopedZone {
     }
 
     /**
-     * @brief Enter a zone whose name is formatted from arguments, with the name cached per call site.
+     * @brief Enter a zone named by formatting arguments, cached per call site and thread.
      *
-     * @p apply_args calls what it is given with the zone's arguments, so they are evaluated only
-     * when recording is on. @p format_name formats them; it is called only when this thread has not
-     * seen these argument values at this site before, so a zone named after its operands pays for
-     * fmt::format and the string table's lock once per distinct name instead of on every entry.
-     * Numbers, strings and fmt::join views over forward ranges of either can key the cache; a zone
-     * with any other argument is formatted every time.
+     * @p apply_args supplies the arguments, so they are evaluated only when recording. @p format_name
+     * runs only for argument values this thread has not seen at this site, so formatting and the
+     * intern lock are paid once per distinct name. Numbers, strings and fmt::join views over forward
+     * ranges of them can key the cache; any other argument is formatted every time.
      */
     template <typename ApplyArgs, typename FormatName>
         requires std::is_class_v<std::remove_cvref_t<ApplyArgs>> && std::is_class_v<FormatName>
@@ -686,12 +603,8 @@ struct ScopedZone {
         });
     }
 
-    /// Enter a zone whose name the CALLER interned, at a fixed call site.
-    ///
-    /// For a caller that has its own stable set of runtime names and can cache
-    /// their ids - a graph replaying the same nodes, say - this is the plain
-    /// site path with a name the site could not know: nothing is interned, so
-    /// nothing is locked. Get the id from @ref intern_string.
+    /// Enter a zone with a name the caller interned (@ref intern_string), for callers with a stable
+    /// set of runtime names, such as graph replay. Takes no lock.
     ScopedZone(ZoneSite const &site, uint32_t name_id, std::string_view name = {}) {
         Profiler::instance().push_interned(name_id, site.file_id, site.func_id, site.line, name, site.file, site.func);
     }
@@ -702,9 +615,7 @@ struct ScopedZone {
     ~ScopedZone() { Profiler::instance().pop(); }
 };
 
-/// Intern @p s and return its id, for callers that cache annotation keys,
-/// values or zone names of their own. Ids are stable for the life of the
-/// process: the string table only ever grows.
+/// Intern @p s, for callers that cache their own ids. Ids are stable for the life of the process.
 inline uint32_t intern_string(std::string_view s) {
     return Profiler::instance().string_table().intern(s);
 }
@@ -765,12 +676,8 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate(std::string_view key
     prof.emit_event(evt);
 }
 
-/// Attach a string annotation whose key AND value were interned ahead of time.
-///
-/// The @ref annotate overloads above intern on every call, under the string
-/// table's lock. A caller whose annotations are invariant across repetitions -
-/// a graph node's shapes and index lists, say - can intern once and come
-/// through here instead, which costs the enabled() check and the event write.
+/// Attach a string annotation with a pre-interned key and value, skipping the per-call interning
+/// (and lock) of @ref annotate.
 inline void annotate_interned(uint32_t key_id, uint32_t value_id) {
     auto &prof = Profiler::instance();
     if (!prof.enabled()) {
@@ -821,12 +728,10 @@ inline void annotate_interned(uint32_t key_id, double value) {
 namespace site_cache {
 
 /**
- * @brief The body of @ref ProfileAnnotate: annotate the open zone from call site @p site.
+ * @brief The body of @ref ProfileAnnotate.
  *
- * The key is a literal, so its id is the site's, interned once. A string value is looked up in a
- * cache of this site's own on this thread, so it takes the string table's lock once per distinct
- * value. Numbers need no interning. @p get_value produces the value, and is called only when
- * recording is on.
+ * The literal key is interned once per site, string values once per distinct value through a
+ * per-site, per-thread cache. @p get_value runs only when recording.
  */
 template <std::size_t N, typename GetValue>
 void annotate_at(AnnotateSite &site, char const (&key)[N], GetValue &&get_value) {
@@ -874,15 +779,10 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_free(int64_t bytes) {
 }
 
 // ---------------------- Python bindings ----------------------
-// Thin free-function wrappers around the Profiler singleton so the
-// einsums.profile Python submodule can drive push/pop/flush/print without
-// having to bind the Profiler class itself (which holds non-copyable
-// unique_ptrs and exposes an ostream& on print()).
+// Free functions, so einsums.profile need not bind the non-copyable Profiler.
 
-/// Whether this build records anything at all. ``False`` means einsums was
-/// compiled with ``EINSUMS_WITH_PROFILER=OFF``: the whole API below is still
-/// callable and still does nothing, so instrumented code needs no branch of its
-/// own, but no report, session or counter will ever be non-empty.
+/// Whether this build records anything. ``False`` means einsums was built with
+/// ``EINSUMS_WITH_PROFILER=OFF``: the API still exists but does nothing.
 APIARY_EXPOSE APIARY_MODULE("profile") constexpr bool available() {
     return true;
 }
@@ -899,8 +799,8 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void pop() {
     Profiler::instance().pop();
 }
 
-/// Drain all per-thread ring buffers into the aggregated tree. Call before
-/// ``print_report`` / ``export_json`` to make sure recent events are visible.
+/// Drain the per-thread ring buffers into the aggregated tree, so ``print_report``
+/// and ``export_json`` see recent events.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void flush() {
     Profiler::instance().flush();
 }
@@ -908,9 +808,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void flush() {
 /// Print the compact (or detailed) report to standard output.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void print_report(bool detailed = false) {
     Profiler::instance().print(detailed);
-    // Flush std::cout so pytest's capfd (and any non-tty stdout) sees the
-    // output before the caller returns. Profiler::print otherwise leaves
-    // the data in C++ stdio's userspace buffer.
+    // Flush so pytest's capfd and non-tty stdout see the report before returning.
     std::cout.flush();
 }
 
@@ -950,31 +848,21 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
     return Profiler::instance().total_pop_count();
 }
 
-// The site is a function-local static, so name/file/func are interned once per
-// call site rather than on every entry. With no format arguments the name is the
-// literal itself and nothing is formatted; with arguments the name is built per
-// call and only it is interned. Expands to TWO declarations, so it must be used
-// at statement scope (as every call site does).
-// The site interns name, file and func once per call site (a function-local
-// static). Without format arguments, entry then interns NOTHING and so takes no
-// lock. With arguments the name must be built per call, so only it is interned.
-// The fmt::format call stays here rather than inside ScopedZone because fmt
-// validates format strings with a consteval constructor, and a format string
-// forwarded through a template parameter is no longer a constant expression.
+// Open a zone for the rest of the scope. Name, file and function are interned once per site; with
+// format arguments the name is cached per distinct value (see ScopedZone).
 //
-// @p name_format must be a compile-time literal. For a name computed at runtime
-// use @ref LabeledSectionRuntime, which cannot cache it.
+// fmt::format is called here, not in ScopedZone, because fmt checks format strings at compile time
+// and a format string forwarded through a template parameter is no longer a constant expression.
 //
-// Expands to TWO declarations, so use it at statement scope.
+// @p name_format must be a literal; use LabeledSectionRuntime otherwise. Expands to two
+// declarations, so use it at statement scope.
 #    define LabeledSection(name_format, ...)                                                                                                \
         static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};         \
         ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__( \
             , [&](auto &&_zone_f) { return _zone_f(__VA_ARGS__); },                                                                         \
             [](auto &&..._zone_a) { return fmt::format(name_format, std::forward<decltype(_zone_a)>(_zone_a)...); }))
 
-/// A zone whose name is only known at runtime. The name is interned on every
-/// entry, which is one lock; prefer @ref LabeledSection wherever the label can be
-/// a literal.
+/// A zone named at runtime. Interns, under a lock, on every entry; prefer @ref LabeledSection.
 #    define LabeledSectionRuntime(name_expr)                                                                                               \
         static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){"", __FILE__, __LINE__, __func__};                 \
         ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__),           \
@@ -992,9 +880,8 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 #        define LabeledSectionInternal0()
 #    endif
 
-/// Annotate the open zone. The key must be a plain string literal, not an expression that picks
-/// one: its id is interned once per call site and reused (see site_cache::annotate_at). The value may
-/// be anything the annotation overloads take, and is evaluated only when recording.
+/// Annotate the open zone. @p key must be a string literal, as its id is cached per site; @p value
+/// is evaluated only when recording.
 #    define ProfileAnnotate(key, value)                                                                                                    \
         [&]() {                                                                                                                            \
             static ::einsums::profile::site_cache::AnnotateSite _annotate_site;                                                            \
@@ -1008,22 +895,11 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 
 // ---------------------- Disabled-profiler shims ----------------------
 //
-// With EINSUMS_WITH_PROFILER=OFF the instrumentation API still exists and does
-// nothing, so an instrumented call site needs no preprocessor guard of its own.
-// Every entry point below is an empty inline function, which an optimizing build
-// erases along with the call.
-//
-// What does not survive is the profiler's machinery: the ring buffers, the
-// aggregating consumer and the TCP server have no stand-in, because a caller
-// that wants a Server wants to talk to something. The handful of sites that
-// reach for @ref Profiler::server, a Consumer or a BenchmarkResultEntry stay
-// guarded by EINSUMS_HAVE_PROFILER, and so does any surrounding work (reading
-// profiler-* options, opening a report file) that only exists to feed them.
+// With EINSUMS_WITH_PROFILER=OFF the instrumentation API remains as empty inlines, so call sites
+// need no guards. The machinery (rings, consumer, server) has no stand-in: code that uses
+// Profiler::server, a Consumer or a BenchmarkResultEntry stays behind EINSUMS_HAVE_PROFILER.
 
-/// Stand-in for the recording profiler. Mirrors the recording type's
-/// instrumentation and lifecycle entry points; the reporting and transport ones
-/// (``server``, ``consumer``, ``export_json``, the overhead counters) are absent
-/// on purpose.
+/// Stand-in for the recording profiler: its instrumentation and lifecycle entry points only.
 struct Profiler {
     static Profiler &instance() {
         static Profiler p;
@@ -1051,9 +927,8 @@ struct ZoneSite {
     constexpr ZoneSite(std::string_view /*name*/, char const * /*file*/, int /*line*/, char const * /*func*/) {}
 };
 
-/// Stand-in for a zone. Note that the name still has to be *built* by the caller
-/// unless it arrives through @ref LabeledSection, which drops the whole
-/// expression at preprocessing time.
+/// Stand-in for a zone. A name the caller builds is still built; @ref LabeledSection drops it at
+/// preprocessing.
 struct ScopedZone {
     explicit ScopedZone(ZoneSite const & /*site*/) {}
 
@@ -1072,10 +947,8 @@ inline uint32_t intern_string([[maybe_unused]] std::string_view s) {
     return 0;
 }
 
-// The einsums.profile Python surface stays intact so that an instrumented script
-// still runs against a build with the profiler compiled out, the same way an
-// instrumented translation unit still compiles. Parameters keep their names
-// because those names are the keyword arguments the bindings expose.
+// The Python surface stays, so instrumented scripts run on this build too. Parameters keep their
+// names: they are the bindings' keyword arguments.
 
 /// Whether this build records anything at all. Always ``False`` here.
 APIARY_EXPOSE APIARY_MODULE("profile") constexpr bool available() {

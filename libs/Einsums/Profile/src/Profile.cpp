@@ -106,8 +106,7 @@ auto Profiler::instance() -> Profiler & {
 }
 
 auto Profiler::thread_channel() -> ThreadChannel & {
-    // A plain pointer in a constant-initialized thread_local, so a zone reads it with no
-    // initialization guard; registration is the cold path.
+    // Constant-initialized, so reading it needs no initialization guard.
     static thread_local ThreadChannel *channel = nullptr;
     if (channel == nullptr) [[unlikely]] {
         channel = &instance().register_thread();
@@ -164,8 +163,8 @@ auto Profiler::total_pop_count() const -> uint64_t {
 
 auto Profiler::calibrated_overhead() -> Overhead const & {
     std::call_once(_calibration_once, [this] {
-        // The same write_push/write_pop a recorded zone runs, into a channel nobody drains and the
-        // consumer never sees. 16384 zones are 32768 events, half the ring, so none is dropped.
+        // The real write_push/write_pop into an unregistered channel. 16384 zones are 32768 events,
+        // half the ring, so none is dropped.
         constexpr int kZones  = 16384;
         auto          scratch = std::make_unique<ThreadChannel>();
         scratch->counters     = get_counter_backend().available();
@@ -231,11 +230,9 @@ TickClock::TickClock() {
     uses_tsc        = invariant_tsc();
     auto const read = [this] { return uses_tsc ? static_cast<std::uint64_t>(__rdtsc()) : fallback_now(); };
     if (uses_tsc) {
-        // The TSC's rate is not stated anywhere architectural, so measure it against steady_clock
-        // over a couple of milliseconds. Each end is a TSC read bracketed by two steady_clock reads,
-        // taken again if the bracket is wider than a microsecond: a thread descheduled between the
-        // two clocks (a CI virtual machine does this) would otherwise skew the rate by as much as
-        // it was away. The TSC read is placed at the bracket's midpoint.
+        // The TSC's rate is not architectural, so measure it against steady_clock over a couple of
+        // milliseconds. Each end is a TSC read bracketed by two steady_clock reads and placed at
+        // their midpoint, retaken if the bracket exceeds a microsecond (the thread was descheduled).
         struct Pair {
             std::chrono::steady_clock::time_point time;
             std::uint64_t                         ticks;
@@ -320,8 +317,7 @@ void Profiler::print(bool detailed, std::ostream &os) {
     fprintln(os);
     fprintln(os, fmt::emphasis::bold | fg(fmt::color::white), "Profiler overhead");
     fprintln(os, "{:-^80}", "");
-    // Per-call costs are calibrated, not accumulated per call (see avg_push_overhead_ns), so the
-    // totals are estimates: the calibrated cost times the number of calls.
+    // Estimates: the calibrated per-call cost times the number of calls.
     auto const pushes = total_push_count();
     auto const pops   = total_pop_count();
     fprintln(os, "  push():  {:.1f} ns each, calibrated  ({} calls, ~{:.3f} ms total)", avg_push_overhead_ns(), pushes,
@@ -333,9 +329,7 @@ void Profiler::print(bool detailed, std::ostream &os) {
     if (dropped > 0) {
         fprintln(os, fg(fmt::color::red), "  dropped events: {}", dropped);
     }
-    // What those drops cost the report: a zone whose Push or Pop went missing
-    // contributes no time to anything above it, so the totals below it are
-    // short by however much it was running for.
+    // A zone missing its Push or Pop contributes no time, so totals above it are short.
     if (auto const unmatched = _consumer->unmatched_zone_count(); unmatched > 0) {
         fprintln(os, fg(fmt::color::red), "  zones left unmeasured by those drops: {}", unmatched);
     }
@@ -422,16 +416,8 @@ void Profiler::write_node_json(std::ostream &ofs, AggNode const &n, int indent) 
 
 // NOLINTNEXTLINE
 void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /*thread_total_ms*/, int depth, bool detailed) {
-    // The name is misleading \u2014 this prints `n` and its descendants but does
-    // it ITERATIVELY with an explicit stack. The original recursive
-    // implementation overflowed the 8 MB Linux stack under TSan
-    // instrumentation when ~6340 fuzz-test cases produced a deeply-nested
-    // profile tree (CI run 26696948385: SIGSEGV inside fmt::format'ing a
-    // double, with 30+ identical print_node_recursive frames above it).
-    // Each frame here holds several std::string locals and TSan multiplies
-    // frame size, so deep recursion exhausts stack even at modest tree
-    // depth. Switching to an explicit work stack puts the per-node
-    // bookkeeping on the heap and keeps a constant call-stack budget.
+    // Despite the name, iterative with an explicit stack: recursion overflowed the stack under TSan
+    // on deep trees.
     auto variance = [](uint64_t cnt, double M2) -> double { return (cnt > 1) ? M2 / static_cast<double>(cnt - 1) : 0.0; };
     auto stddev   = [variance](uint64_t cnt, double M2) -> double { return sqrt(variance(cnt, M2)); };
 
@@ -525,9 +511,7 @@ void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /
             }
         }
 
-        // Push children in REVERSE order so they pop in declaration order \u2014
-        // preserves the depth-first preorder output of the original
-        // recursive implementation.
+        // Pushed in reverse so they print in order, depth-first.
         std::vector<AggNode const *> children;
         children.reserve(node->children.size());
         for (auto const &c : node->children)

@@ -12,18 +12,11 @@
 
 #include <cstdint>
 
-/*
- * The profiler's options, declared where the profiler reads them.
- *
- * The config keys derive from the option names, which is why they read
- * `profile-report` rather than the `profiler-report` the hand-written
- * registration used: the two spellings no longer exist to disagree.
- */
+// The profiler's options, declared where the profiler reads them.
 
 EINSUMS_NAMESPACE_BEGIN(option)
 
-/// Stop recording zones and annotations entirely. A large speedup for
-/// workloads made of many small operations.
+/// Stop recording zones and annotations; a large speedup for many small operations.
 inline constinit cl::ConfigOption<bool> ProfileDisable = cl::config_flag(
     "einsums:profile:disable", "Do not record profiling zones or annotations (large speedup for small operations)", "Profile", false);
 
@@ -47,8 +40,7 @@ inline constinit cl::ConfigOption<bool> ProfileDetailed =
 inline constinit cl::ConfigOption<std::string> ProfileSave = cl::config_opt<std::string>(
     "einsums:profile:save", "Save the profile session as JSON for the profile viewer", "Profile", "", "filename");
 
-/// Enable the profile server for remote viewing. The server is single-threaded and not secure, so it is only suitable for local
-/// connections.
+/// Enable the profile server for remote viewing. It is single-threaded and unauthenticated: local use only.
 inline constinit cl::ConfigOption<bool> ProfileServer =
     cl::config_flag("einsums:profile:server", "Enable the profile server for remote viewing", "Profile", false);
 
@@ -73,16 +65,9 @@ EINSUMS_NAMESPACE_BEGIN()
 
 /// @brief The three options the Profiler reads when it constructs itself.
 ///
-/// Defined in the library rather than read from the descriptors in
-/// Profile.hpp, and that is load-bearing. A ConfigOption caches the address of
-/// its registry entry inside itself, filled in when its module registers it,
-/// and a translation unit that compiles these headers gets its OWN copy of the
-/// descriptor, whose entry is never filled - so an inline read there quietly
-/// returns the default however the option was set. The Profiler is constructed
-/// from a header, so every consumer that compiles it was reading its own
-/// unregistered copies: --einsums:profile:disable did nothing for the
-/// head-to-head harness or the probes, which is exactly the work that wants the
-/// profiler off.
+/// Out of line on purpose. The Profiler is constructed from a header, and a TU outside the library
+/// gets its own copy of each descriptor, never registered, so an inline read there would always
+/// return the default.
 /// @{
 EINSUMS_EXPORT bool profile_recording_disabled();
 EINSUMS_EXPORT bool profile_server_enabled();

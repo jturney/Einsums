@@ -27,10 +27,8 @@ EINSUMS_NAMESPACE_BEGIN(profile)
 /**
  * @brief The clock profiling events are stamped with: the CPU's own counter, read raw.
  *
- * A zone is two timestamps, and ``std::chrono::steady_clock::now()`` costs about 14 ns on macOS:
- * a library call that reads the counter and converts it to nanoseconds. The producer needs only
- * the counter. So the event carries raw ticks and the consumer, off the hot path, converts them
- * to time points with @ref to_time_point.
+ * Events carry raw ticks and the consumer converts them with @ref to_time_point, keeping
+ * ``steady_clock::now()`` (about 14 ns on macOS) off the hot path.
  *
  * - arm64 (not MSVC): the generic timer's virtual count, ``cntvct_el0``, readable from user space
  *   on macOS and Linux, at the frequency ``cntfrq_el0`` reports (1 GHz on an M4, 24 MHz on M1-M3).

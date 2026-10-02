@@ -73,18 +73,16 @@ void Consumer::flush() {
 
 void Consumer::consumer_loop() {
     auto last_tick = std::chrono::steady_clock::now();
-    // How long to wait before looking again. It doubles, up to kMaxNap, each time a look finds
-    // nothing, and drops back to 1 ms when one finds events: a process that is not recording used to
-    // wake this thread a thousand times a second. A producer whose ring passes half full wakes it
-    // early, and flush() and shutdown() always do. The cap stays well under the 50 ms some callers
-    // wait for the tree to catch up without flushing.
+    // The nap doubles, up to kMaxNap, each time a look finds nothing, and resets to kMinNap when one
+    // finds events, so an idle process is not woken a thousand times a second. A ring passing half
+    // full, flush() and shutdown() wake it early. The cap stays well under the 50 ms some callers
+    // wait for the tree without flushing.
     constexpr auto kMinNap = std::chrono::milliseconds(1);
     constexpr auto kMaxNap = std::chrono::milliseconds(10);
     auto           nap     = kMinNap;
     while (_running.load(std::memory_order_relaxed)) {
         nap = drain_all() > 0 ? kMinNap : std::min(2 * nap, kMaxNap);
-        // Call tick callback every ~500ms. Snapshot it under the lock (the main
-        // thread may install it after this loop has started) and invoke outside.
+        // Tick every ~500 ms: copy the callback under its lock, call it outside.
         auto now = std::chrono::steady_clock::now();
         if ((now - last_tick) >= std::chrono::milliseconds(500)) {
             std::function<void()> tick;
@@ -97,18 +95,14 @@ void Consumer::consumer_loop() {
                 tick();
             }
         }
-        // Wait for notification from producers or timeout after 1ms.
-        // If notified (e.g., by flush() or shutdown()), wake immediately.
+        // Nap until notified (by a filling ring, flush() or shutdown()) or the nap ends.
         std::unique_lock lock(_wake_mutex);
         _wake_cv.wait_for(lock, nap);
     }
 }
 
 size_t Consumer::drain_all() {
-    // Snapshot registrations, unless every ring is empty. The consumer thread comes through here
-    // every millisecond whether anything is recording or not, and the snapshot copies a shared_ptr
-    // per thread that ever recorded and the drain takes the tree's lock exclusively: an idle
-    // process paid both a thousand times a second.
+    // Return early if every ring is empty, so an idle process skips the snapshot and the tree lock.
     std::vector<ThreadRegistration> regs;
     {
         std::scoped_lock const lock(_reg_mutex);
@@ -158,15 +152,12 @@ void Consumer::unwind_stale_frames(ThreadState &ts, size_t depth) {
         return;
     }
     _unmatched_zones.fetch_add(ts.stack.size() - depth, std::memory_order_relaxed);
-    // No time is recorded for these zones and none is charged to their parents.
-    // A duration whose end was never reported can only be invented, and a made
-    // up one would land in the same statistics as measured ones.
+    // No time is recorded for these zones or charged to their parents: it would be invented.
     ts.stack.resize(depth);
 }
 
 void Consumer::process_push(ThreadState &ts, Event const &evt) {
-    // The producer says which level this zone opens at, so anything still open
-    // below that level was left behind by a dropped Pop.
+    // Anything open at or below the level this zone opens at lost its Pop.
     if (evt.depth > 0) {
         unwind_stale_frames(ts, evt.depth - 1);
     }
@@ -181,16 +172,12 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
     for (int i = 0; i < kNumCounterSlots; ++i)
         frame.counters[i] = evt.counters[i];
 
-    // One step down from the parent, not a walk from the root. The parent's
-    // node was resolved when IT was pushed, so the path above this frame is
-    // already known and re-deriving it was pure repetition.
+    // One step down from the parent's node, resolved when the parent was pushed.
     AggNode *parent = ts.stack.empty() ? &ts.root : ts.stack.back().node;
     auto     it     = parent->children.find(evt.name_id);
     if (it == parent->children.end()) {
-        // A name built at run time, such as a graph's or a loop's, is a new node under this parent
-        // every time it changes, and a program that names each graph for its iteration grows the
-        // tree for as long as it runs. Past the cap a new name joins the parent's "(other)" node,
-        // which still times it; the names that came first keep their own.
+        // Names built at run time could grow the tree without bound. Past the cap a new name joins
+        // the parent's "(other)" node, which still times it.
         std::int64_t const cap   = config::get(option::ProfileMaxDistinctChildren);
         auto               other = parent->children.find(_other_id);
         size_t const       named = parent->children.size() - (other != parent->children.end() ? 1 : 0);
@@ -212,10 +199,7 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
         }
     }
     if (it == parent->children.end()) {
-        // The only place a name is resolved to a string, and it runs once per
-        // distinct call path rather than once per event. file/function are
-        // fixed for a given zone site, so they are recorded here too instead of
-        // being re-read from the string table on every pop.
+        // The only place ids are resolved to strings: once per distinct call path, not per event.
         auto node      = std::make_unique<AggNode>(_strings.get(evt.name_id));
         node->file     = _strings.get(evt.file_id);
         node->line     = evt.line;
@@ -233,8 +217,7 @@ void AggNode::record_exclusive(ns exclusive) {
     call_count += 1;
     total_exclusive += exclusive;
 
-    // Welford's online variance, in double. See the field declarations for why
-    // this is not integer arithmetic.
+    // Welford's online variance, in double (see the field declarations).
     double const sample = static_cast<double>(exclusive.count());
     double const delta  = sample - total_exclusive_mean;
     total_exclusive_mean += delta / static_cast<double>(call_count);
@@ -260,10 +243,8 @@ void AggNode::record_exclusive(ns exclusive) {
 }
 
 void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id) {
-    // The zone being closed is the one at the level the producer stamped, so
-    // anything open below it was left behind by a Pop that was dropped. This is
-    // the common case of the two: the pops of a burst all land after the burst
-    // has overrun the buffer.
+    // Anything open below the level being closed lost its Pop. The common case: a burst's pops
+    // land after the burst has overrun the ring.
     if (evt.depth > 0) {
         unwind_stale_frames(ts, evt.depth);
     }
@@ -278,9 +259,7 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
     ns const        duration  = std::chrono::duration_cast<ns>(end - frame.start);
     ns const        exclusive = duration - frame.child_time;
 
-    // The node this frame accumulates into was resolved at push. This used to
-    // rebuild the whole root-to-here path and hash every ancestor's full name,
-    // which is what made a pop cost O(depth) string lookups.
+    // The node was resolved at push.
     AggNode *cur = frame.node;
     if (cur == nullptr) {
         return; // push was never processed for this frame
@@ -288,9 +267,7 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
 
     cur->record_exclusive(exclusive);
 
-    // Merge hardware counter deltas, only when a counter backend is active: without one the values
-    // are all zero, and merging them cost four string allocations and a dozen string-keyed map
-    // lookups on every closed zone, and put four rows of zeros on every node of the report.
+    // Merge counter deltas only when a counter backend is active; otherwise they are all zero.
     if (!_counters_checked) {
         auto &backend    = get_counter_backend();
         _counters_active = backend.available();

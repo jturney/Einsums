@@ -52,8 +52,7 @@ struct AnnotationPayload {
  * @brief One record in a thread's ring buffer, exactly one cache line.
  *
  * Each event type uses one arm of the trailing union: Push and Pop the hardware counters, Annotate
- * the annotation, MemAlloc and MemFree the byte count. It was 96 bytes with all three side by side,
- * so every Push and Pop wrote a cache line and a half.
+ * the annotation, MemAlloc and MemFree the byte count.
  */
 struct alignas(64) Event {
     /// Raw @ref TickClock ticks; the consumer converts them with TickClock::to_time_point.
@@ -66,19 +65,11 @@ struct alignas(64) Event {
     uint32_t func_id;
     int      line;
 
-    /// For Push/Pop: how deeply the PRODUCER was nested, 1 for an outermost
-    /// zone. On a Push it is the level of the zone being opened; on a Pop, the
-    /// level of the zone being closed.
+    /// For Push/Pop: the producer's nesting level of the zone opened or closed, 1 for outermost.
     ///
-    /// The consumer cannot infer this. Events are dropped when a thread's ring
-    /// buffer fills, and a Push and its Pop are dropped independently, so a
-    /// reconstruction that trusts its own stack drifts: one lost Pop leaves a
-    /// frame open forever and nests every later zone under it, a level deeper
-    /// each time. That turned a three-level tree into a chain 100k nodes long
-    /// on a run that dropped a million events, which no report can be read
-    /// through and which overflowed the stack when the tree was freed. Stamping
-    /// the producer's own depth makes every event enough to resynchronize
-    /// against, so drops cost the zones they hit and nothing else.
+    /// The consumer cannot infer it, because a Push and its Pop are dropped independently when a
+    /// ring fills; one lost Pop would nest every later zone a level deeper. With the producer's
+    /// depth on every event, a drop costs only the zones it hit.
     uint32_t depth{0};
 
     union {

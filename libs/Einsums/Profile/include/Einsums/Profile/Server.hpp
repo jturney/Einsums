@@ -55,12 +55,8 @@ class EINSUMS_EXPORT Server {
     /// Whether the server is active.
     [[nodiscard]] auto is_running() const -> bool { return _listen_fd >= 0; }
 
-    /// Whether at least one viewer client is connected.
-    ///
-    /// Callable from ANY thread, and called from a hot one: every ComputeGraph
-    /// destruction asks, to decide whether the graph JSON is worth caching.
-    /// Answered from an atomic rather than from `_client_fds` itself, which
-    /// belongs to the server thread.
+    /// Whether a viewer is connected. Lock-free and callable from any thread; every ComputeGraph
+    /// destruction asks.
     [[nodiscard]] auto has_client() const -> bool;
 
     /// Access the log message queue (for wiring the profiler_sink).
@@ -72,9 +68,7 @@ class EINSUMS_EXPORT Server {
     /// Access the benchmark result queue (for forwarding benchmark_result events).
     BenchmarkResultQueue &benchmark_queue() { return _benchmark_queue; }
 
-    /// Export the current profiling session to a JSON file that the profile
-    /// viewer loads with ``--load``. Flushes all pending events
-    /// before exporting.
+    /// Flush, then export the session to a JSON file the viewer loads with ``--load``.
     /// @param path Output file path.
     /// @param label Session label (shown in viewer).
     /// @param extra_json Additional JSON fields to embed at the top level
@@ -100,16 +94,12 @@ class EINSUMS_EXPORT Server {
 
     int _listen_fd = -1;
 
-    /// Connected viewers. Owned by whichever thread drives tick(): the consumer
-    /// thread while the profiler runs, then the main thread during shutdown(),
-    /// which happens only after the consumer thread has been joined. Nothing
-    /// else may touch it - see _has_client for the cross-thread question.
+    /// Connected viewers. Owned by the thread driving tick(): the consumer thread, then the main
+    /// thread in shutdown() after the consumer is joined. Other threads use _has_client.
     std::vector<int> _client_fds;
 
-    /// `!_client_fds.empty()`, republished by the owning thread after every
-    /// change so has_client() can answer without a lock. A viewer connecting
-    /// or dropping is not synchronized with a caller asking, and does not need
-    /// to be: an answer one tick stale costs a cache decision, not a result.
+    /// `!_client_fds.empty()`, republished after every change. May be a tick stale, which only
+    /// affects a caching decision.
     std::atomic<bool> _has_client{false};
 
     uint64_t             _seq        = 0;

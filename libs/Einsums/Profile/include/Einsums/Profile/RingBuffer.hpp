@@ -17,13 +17,10 @@
 
 EINSUMS_NAMESPACE_BEGIN(profile)
 
-/// Single-Producer, Single-Consumer (SPSC) ring buffer.
+/// Single-producer, single-consumer ring buffer that never blocks the producer.
 ///
-/// The producer (application thread) writes events; the consumer thread reads them.
-/// Never blocks the producer; try_push() returns false if the buffer is full.
-///
-/// The indices run free and are masked only to address a slot, so all @p Capacity slots are usable
-/// and the fill level is a plain difference. A size_t does not wrap in the life of a process.
+/// The indices run free and are masked only to address a slot, so every slot is usable and the
+/// fill level is a plain difference.
 ///
 /// @tparam T The element type, which must be trivially copyable.
 /// @tparam Capacity The number of slots, which must be a power of 2.
@@ -39,13 +36,9 @@ class RingBuffer {
     RingBuffer(RingBuffer const &)            = delete;
     RingBuffer &operator=(RingBuffer const &) = delete;
 
-    /// Producer side: the next slot to write, or nullptr if the buffer is full. A null claim is
-    /// counted in @ref refused. The slot is published by @ref commit, so the producer fills it in
-    /// place instead of building the element elsewhere and copying it in.
-    ///
-    /// Reads the consumer's tail only when the producer's cached copy says the buffer is full: the
-    /// tail is the line the consumer writes as it drains, so reading it on every push missed the
-    /// cache whenever the consumer had just been through.
+    /// Producer side: the next slot to fill in place, or nullptr (counted in @ref refused) if the
+    /// buffer is full. @ref commit publishes it. Reads the consumer's tail only when the cached copy
+    /// says the buffer is full.
     auto try_claim() -> T * {
         size_t const h = _head.load(std::memory_order_relaxed);
         if (h - _cached_tail == Capacity) {
@@ -73,8 +66,8 @@ class RingBuffer {
         return true;
     }
 
-    /// Producer side: whether the buffer holds more than half its capacity. Reads the consumer's tail
-    /// only when the cached copy says so, and the cached copy only ever overstates what is held.
+    /// Producer side: whether the buffer is more than half full. Reads the consumer's tail only when
+    /// the cached copy, which can only overstate the fill, says so.
     auto past_half() -> bool {
         size_t const h = _head.load(std::memory_order_relaxed);
         if (h - _cached_tail <= Capacity / 2) {
@@ -84,15 +77,12 @@ class RingBuffer {
         return h - _cached_tail > Capacity / 2;
     }
 
-    /// Pushes refused because the buffer was full. Written only by the producer, on its own cache
-    /// line: a count every producer shared bounced between their cores on every drop, and drops come
-    /// in floods, from every thread at once, exactly when the rings are overflowing.
+    /// Pushes refused because the buffer was full. Kept on the producer's cache line: drops come
+    /// from every thread at once, and a shared count would bounce between their cores.
     auto refused() const -> uint64_t { return _refused.load(std::memory_order_relaxed); }
 
-    /// Try to pop an element. Returns false if buffer is empty.
-    ///
-    /// Reads the producer's head only when the consumer's cached copy says the buffer is empty. One
-    /// consumer at a time: callers that drain from more than one thread must serialize themselves.
+    /// Try to pop an element; false if the buffer is empty. One consumer at a time: callers draining
+    /// from several threads must serialize.
     auto try_pop(T &item) -> bool {
         size_t const t = _tail.load(std::memory_order_relaxed);
         if (t == _cached_head) {
@@ -105,13 +95,9 @@ class RingBuffer {
         return true;
     }
 
-    /// Consumer side: call @p f on every element until the buffer is empty, in place, and return how
-    /// many there were. Same one-consumer rule as @ref try_pop.
-    ///
-    /// The tail is published every @ref kReleaseEvery elements rather than after each. The producer
-    /// reads the tail whenever its ring is full or past half, which is when the consumer is busiest,
-    /// and a tail written on every pop made each of those reads a miss. Releasing in steps still
-    /// hands space back long before a 64Ki-slot ring would notice it was held.
+    /// Consumer side: call @p f on each element in place until the buffer is empty; returns the count.
+    /// Same one-consumer rule as @ref try_pop. The tail is published every @ref kReleaseEvery
+    /// elements, not after each, so a busy drain does not make every producer read of it a miss.
     template <typename F>
     auto drain(F &&f) -> size_t {
         size_t const first = _tail.load(std::memory_order_relaxed);
@@ -140,14 +126,12 @@ class RingBuffer {
     static constexpr size_t mask_         = Capacity - 1;
     static constexpr size_t kReleaseEvery = Capacity < 256 ? Capacity : 256;
 
-    // Cache-line padding to prevent false sharing between head and tail. A fixed 64, not
-    // std::hardware_destructive_interference_size: that value follows -mtune and -mcpu, and this
-    // layout is part of the ABI, reached by inline code in every TU that records a zone, so a
-    // program tuned differently from the library would disagree with it about where _tail is.
+    // A fixed 64, not std::hardware_destructive_interference_size, which follows -mtune: this layout
+    // is ABI, read by inline code in every TU that records a zone.
     static constexpr size_t cache_line = 64;
 
     // Each side's index shares a line with its cached copy of the other's, so a push touches only
-    // the producer's line and a pop only the consumer's, until a cached copy runs out.
+    // the producer's line and a pop only the consumer's.
     alignas(cache_line) std::atomic<size_t> _head{0};
     size_t                _cached_tail{0}; // the producer's view of _tail
     std::atomic<uint64_t> _refused{0};

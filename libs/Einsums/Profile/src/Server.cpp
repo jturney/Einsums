@@ -225,10 +225,7 @@ Server::Server(Consumer &consumer, StringTable &strings, std::string const &bind
 }
 
 auto Server::has_client() const -> bool {
-    // NOT `!_client_fds.empty()`: the vector belongs to the server thread, and
-    // this is called from any thread that destroys a graph. Reading it here
-    // raced a push_back that was reallocating it, which ThreadSanitizer caught
-    // on five suites at once.
+    // Not `_client_fds`: that belongs to the server thread, and this is called from any thread.
     return _has_client.load(std::memory_order_relaxed);
 }
 
@@ -237,11 +234,7 @@ Server::~Server() {
 }
 
 void Server::shutdown() {
-    // Final flush: give connected viewers a chance to fetch data.
-    // Process requests and send updates in a drain loop.
-
-    // Determine drain duration: longer if wait-for-viewer was used (viewer is important),
-    // shorter default for normal runs.
+    // Final drain loop, so connected viewers can fetch the last data. Longer if a viewer was waited for.
     int drain_iterations = 5; // default: 500ms
     try {
         if (config::get(option::ProfileWaitForViewer))
@@ -249,9 +242,8 @@ void Server::shutdown() {
     } catch (...) {                // NOLINT
     }
 
-    // A client that connected since the last tick is still in the listen backlog. Accept it
-    // now, or a short program (one that finishes between two ticks) sends it nothing: its
-    // queued benchmark results and final snapshot are dropped on close.
+    // Accept clients still in the listen backlog, or a program that ends between ticks sends
+    // them nothing.
     if (_listen_fd >= 0) {
         accept_clients();
     }
@@ -708,8 +700,8 @@ void Server::recv_requests() {
 
 void Server::process_request(int fd, std::string const &line) {
 #    ifndef _WIN32
-    // Minimal JSON parsing for request: {"type":"request","id":"...","method":"...","params":{...}}
-    // We don't have a JSON library, so do simple string extraction.
+    // Requests are {"type":"request","id":"...","method":"...","params":{...}}, parsed by string
+    // extraction (no JSON library).
 
     // Check it's a request
     if (line.find("\"type\"") == std::string::npos || line.find("\"request\"") == std::string::npos) {
@@ -947,12 +939,8 @@ void Server::export_session(std::string const &path, std::string const &label,
             existing.close();
 
             if (!content.empty()) {
-                // Find the existing sessions array. Two formats:
-                // 1. {"sessions": [...]}  is multi-session
-                // 2. {"label": ...}       is single session
-                //
-                // Strategy: find "sessions" key. If present, insert before the closing ']}'.
-                // If single session, wrap both in multi-session format.
+                // Multi-session {"sessions": [...]}: insert before the closing ']}'.
+                // Single session {"label": ...}: wrap both in the multi-session format.
                 auto sessions_pos = content.find("\"sessions\"");
                 if (sessions_pos != std::string::npos) {
                     // Multi-session: find the last ']' before the final '}'
