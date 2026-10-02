@@ -14,12 +14,13 @@ set(ProfileHeaders
     Einsums/Profile/CounterBackend.hpp
     Einsums/Profile/Server.hpp
     Einsums/Profile/RequestHandlers.hpp
+    Einsums/Profile/Settings.hpp
     Einsums/Profile/LogSink.hpp
     Einsums/Profile/Options.hpp
     Einsums/Profile/TickClock.hpp
 )
 
-set(ProfileSources Profile.cpp Consumer.cpp CounterBackend.cpp Options.cpp Server.cpp)
+set(ProfileSources Profile.cpp Consumer.cpp CounterBackend.cpp Options.cpp Server.cpp Settings.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(

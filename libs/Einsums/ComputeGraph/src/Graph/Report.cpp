@@ -516,14 +516,9 @@ bool graph_json_cache_wanted() {
     auto &prof = profile::Profiler::instance();
     if (!prof.enabled())
         return false;
-    // Read the config each time rather than latching it: a graph dies once,
-    // so this is not a hot path, and the tests flip the key at runtime.
-    bool save_configured = false;
-    try {
-        save_configured = !config::get(option::ProfileSave).empty();
-    } catch (...) { // NOLINT
-    }
-    if (save_configured)
+    // Read the settings each time rather than latching them: a graph dies
+    // once, so this is not a hot path, and the tests change the setting.
+    if (!prof.settings().save.empty())
         return true;
     auto const *srv = prof.server();
     return srv != nullptr && srv->has_client();

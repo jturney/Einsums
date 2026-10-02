@@ -11,7 +11,6 @@
 #    include <Einsums/Config.hpp>
 
 #    include <Einsums/Logging.hpp>
-#    include <Einsums/Profile/Options.hpp>
 #    include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #    ifndef _WIN32
@@ -235,14 +234,9 @@ Server::~Server() {
     shutdown();
 }
 
-void Server::shutdown() {
+void Server::shutdown(bool viewer_requested) {
     // Final drain loop, so connected viewers can fetch the last data. Longer if a viewer was waited for.
-    int drain_iterations = 5; // default: 500ms
-    try {
-        if (config::get(option::ProfileWaitForViewer))
-            drain_iterations = 30; // 3 seconds when viewer was explicitly requested
-    } catch (...) {                // NOLINT
-    }
+    int const drain_iterations = viewer_requested ? 30 : 5; // 3 s or 500 ms
 
     // Accept clients still in the listen backlog, or a program that ends between ticks sends
     // them nothing.

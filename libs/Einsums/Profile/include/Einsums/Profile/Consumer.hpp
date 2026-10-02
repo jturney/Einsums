@@ -92,7 +92,7 @@ struct AggNode {
     InsertionOrderedMap<uint32_t, std::unique_ptr<AggNode>> children;
 
     /// Set only on a parent's "(other)" node: the ids of the names folded into it once the parent
-    /// held option::ProfileMaxDistinctChildren named children. Its size is the node's "distinct"
+    /// held Settings::max_distinct_children named children. Its size is the node's "distinct"
     /// annotation.
     std::unordered_set<uint32_t> folded_names;
 
@@ -210,6 +210,10 @@ class EINSUMS_EXPORT Consumer {
     /// Notify the consumer that new events are available (called by producer after push).
     void notify() { _wake_cv.notify_one(); }
 
+    /// Distinct child names a node keeps before the rest fold into its "(other)" node; 0 for no
+    /// limit. Safe while the consumer runs.
+    void set_max_distinct_children(std::int64_t cap) { _max_distinct_children.store(cap, std::memory_order_relaxed); }
+
     /// Set a callback run after each drain cycle (the server's tick). Safe while the consumer runs.
     void set_tick_callback(std::function<void()> cb) {
         std::scoped_lock const lock(_tick_mutex);
@@ -288,6 +292,8 @@ class EINSUMS_EXPORT Consumer {
     // Tick callback (the server's), installed after the consumer thread starts.
     std::mutex            _tick_mutex;
     std::function<void()> _tick_callback;
+
+    std::atomic<std::int64_t> _max_distinct_children{256};
 
     /// The last kMaxTimelineEvents closed zones, for the Gantt chart: a ring written at
     /// _timeline_next, under _tree_mutex.

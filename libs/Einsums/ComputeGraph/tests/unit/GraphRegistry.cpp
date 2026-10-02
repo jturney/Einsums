@@ -7,6 +7,7 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Profile/Options.hpp>
+#include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -32,11 +33,27 @@ void run_and_destroy(std::string const &name) {
     graph.execute();
 }
 
-/// RAII: point --einsums:profile:save somewhere for one test, restore on exit.
+#if defined(EINSUMS_HAVE_PROFILER)
+/// RAII: point the profiler's session file somewhere for one test, restore on exit.
+struct ProfilerSaveKey {
+    explicit ProfilerSaveKey(std::string const &value) { set(value); }
+    ~ProfilerSaveKey() { set(std::string{}); }
+
+  private:
+    static void set(std::string value) {
+        profile::SettingsUpdate update;
+        update.save = std::move(value);
+        profile::Profiler::instance().override_settings(update);
+    }
+};
+#else
+/// RAII: give --einsums:profile:save a value for one test, restore on exit. With the profiler
+/// compiled out the option still exists, and nothing may cache because of it.
 struct ProfilerSaveKey {
     explicit ProfilerSaveKey(std::string const &value) { config::set(option::ProfileSave, value); }
     ~ProfilerSaveKey() { config::set(option::ProfileSave, std::string{}); }
 };
+#endif
 
 size_t count_occurrences(std::string const &haystack, std::string const &needle) {
     size_t count = 0;

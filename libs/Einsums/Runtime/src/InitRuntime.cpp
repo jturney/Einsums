@@ -104,6 +104,9 @@ int run(std::function<int()> const &f, std::vector<std::string> const &argv, Ini
     // For example, "--einsums:verbose=1" will be translated to verbose=1
     RuntimeConfiguration config(argv);
 
+    // Before logging, which streams to the profiler's server when the options start one.
+    configure_profiler_from_options();
+
     // Before this line logging does not work.
     init_logging(config);
 

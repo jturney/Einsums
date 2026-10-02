@@ -282,7 +282,8 @@ TEST_CASE("Memory events honor the recording switch and skip empty ones", "[prof
     auto           lock = Profiler::instance().consumer()->lock_shared();
     AggNode const *node = nullptr;
     for (auto const &thread : Profiler::instance().consumer()->thread_data()) {
-        if ((node = find_named(thread.second.root, name)) != nullptr) {
+        node = find_named(thread.second.root, name);
+        if (node != nullptr) {
             break;
         }
     }

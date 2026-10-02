@@ -152,7 +152,7 @@ The options that shape it:
     * - :option:`--einsums:profile:filename`
       - Where the report goes. Defaults to ``profile.txt``.
     * - :option:`--einsums:profile:append`
-      - Append rather than truncate. On by default.
+      - Append rather than replace. Off by default, so each run leaves one report.
     * - :option:`--einsums:profile:detailed`
       - Report every zone with its counters, rather than the summary.
     * - :option:`--einsums:profile:save`

@@ -9,9 +9,12 @@
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TypeSupport/JsonEscape.hpp>
 
+#include <cstdio>
+#include <fstream>
 #include <iomanip>
 #include <memory>
 #include <mutex>
+#include <thread>
 
 #if defined(__x86_64__) || defined(_M_X64)
 #    if defined(_MSC_VER) && !defined(__clang__)
@@ -112,6 +115,111 @@ auto Profiler::thread_channel() -> ThreadChannel & {
         channel = &instance().register_thread();
     }
     return *channel;
+}
+
+Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings)) {
+    Settings s;
+    {
+        std::scoped_lock const lock(_settings_mutex);
+        for (auto const &problem : _settings.apply_environment(SettingsStore::process_environment())) {
+            fmt::print(stderr, "{}\n", problem);
+        }
+        s = _settings.current();
+    }
+    apply(s);
+}
+
+void Profiler::apply(Settings const &s) {
+    _enabled.store(s.record, std::memory_order_relaxed);
+    _consumer->set_max_distinct_children(s.max_distinct_children);
+    if (s.server) {
+        start_server(static_cast<uint16_t>(s.port));
+    }
+}
+
+void Profiler::configure(SettingsUpdate const &update) {
+    Settings s;
+    {
+        std::scoped_lock const lock(_settings_mutex);
+        for (auto const &refusal : _settings.configure(update)) {
+            fmt::print(stderr, "{}\n", refusal);
+        }
+        s = _settings.current();
+    }
+    apply(s);
+}
+
+void Profiler::override_settings(SettingsUpdate const &update) {
+    Settings s;
+    {
+        std::scoped_lock const lock(_settings_mutex);
+        _settings.override_settings(update);
+        s = _settings.current();
+    }
+    apply(s);
+}
+
+auto Profiler::settings() const -> Settings {
+    std::scoped_lock const lock(_settings_mutex);
+    return _settings.current();
+}
+
+void Profiler::init(std::string client) {
+    std::scoped_lock const lock(_lifecycle_mutex);
+    _clients.push_back(std::move(client));
+}
+
+void Profiler::finalize() {
+    {
+        std::scoped_lock const lock(_lifecycle_mutex);
+        if (!_clients.empty()) {
+            _clients.pop_back();
+        }
+        if (!_clients.empty() || _finalized) {
+            return;
+        }
+        _finalized = true;
+    }
+
+    Settings const s = settings();
+    // The session file first: it is written by the server, which shutdown() stops.
+    try {
+        if (!s.save.empty()) {
+            flush();
+            if (auto *srv = server()) {
+                srv->export_session(s.save);
+            }
+        }
+    } catch (std::exception const &e) {
+        fmt::print(stderr, "waggle: could not write the session file {}: {}\n", s.save, e.what());
+    }
+
+    shutdown();
+
+    try {
+        if (s.report) {
+            std::ofstream out(s.report_file, s.report_append ? std::ios::app : std::ios::trunc);
+            print(s.report_detailed, out);
+        }
+    } catch (std::exception const &e) {
+        fmt::print(stderr, "waggle: could not write the report {}: {}\n", s.report_file, e.what());
+    }
+}
+
+void Profiler::wait_for_viewer() {
+    Settings const s   = settings();
+    auto const    *srv = server();
+    if (!s.wait_for_viewer || srv == nullptr || !srv->is_running()) {
+        return;
+    }
+    std::fprintf(stderr, "\n*** Waiting for profiler viewer to connect on port %d ***\n", static_cast<int>(s.port));
+    std::fprintf(stderr, "*** Launch the viewer and connect, then execution will begin ***\n\n");
+    // The consumer thread ticks the server, which accepts the viewer; ticking here as well would
+    // race it on the server's client list.
+    while (!srv->has_client()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    std::fprintf(stderr, "*** Viewer connected, starting execution ***\n\n");
 }
 
 void Profiler::start_server(uint16_t port) {

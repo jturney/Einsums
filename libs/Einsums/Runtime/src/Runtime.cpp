@@ -230,32 +230,16 @@ void ignore_broken_pipe() {
 
 void shutdown_profiler_and_report() noexcept {
 #if defined(EINSUMS_HAVE_PROFILER)
-    // The session export first: it needs the server, which Profiler::shutdown stops.
     try {
-        auto const save_path = config::get(option::ProfileSave);
-        if (!save_path.empty()) {
-            auto &profiler = profile::Profiler::instance();
-            profiler.flush();
-            if (auto *server = profiler.server(); server != nullptr) {
-                server->export_session(save_path);
-            } else {
-                // Refuse out loud; an error, since release builds suppress warnings.
-                EINSUMS_LOG_ERROR("--einsums:profile:save was given without --einsums:profile:server, so no session "
-                                  "file was written. The text report is unaffected.");
-            }
+        // Only the server writes session files, so name the option that starts it. An error, since
+        // release builds suppress warnings.
+        auto &profiler = profile::Profiler::instance();
+        if (!profiler.settings().save.empty() && profiler.server() == nullptr) {
+            EINSUMS_LOG_ERROR("--einsums:profile:save was given without --einsums:profile:server, so no session "
+                              "file was written. The text report is unaffected.");
         }
-    } catch (...) {
-        EINSUMS_LOG_INFO("Exception thrown while exporting the profiler session. Ignoring.");
-    }
-
-    // Drain all events, stop the consumer thread, stop the server.
-    profile::Profiler::instance().shutdown();
-
-    try {
-        if (config::get(option::ProfileReport)) {
-            std::ofstream out(config::get(option::ProfileFilename), config::get(option::ProfileAppend) ? std::ios::ate : std::ios::trunc);
-            profile::Profiler::instance().print(config::get(option::ProfileDetailed), out);
-        }
+        // Einsums' release. Whichever library releases last writes the session file and the report.
+        profiler.finalize();
     } catch (...) {
         EINSUMS_LOG_INFO("Exception thrown by the profiler during shutdown. Ignoring.");
     }
@@ -435,24 +419,7 @@ int Runtime::run(std::function<EinsumsMainFunctionType> const &func) {
     // Wait for profiler viewer to connect if requested. Compiled out with the
     // profiler: there is no Profiler type to ask, and nothing to wait for.
 #if defined(EINSUMS_HAVE_PROFILER)
-    {
-        bool const wait_viewer = config::get(option::ProfileWaitForViewer);
-        if (wait_viewer) {
-            auto *server = profile::Profiler::instance().server();
-            if (server && server->is_running()) {
-                EINSUMS_LOG_INFO("Waiting for profiler viewer to connect (--einsums:profile:wait-for-viewer)...");
-                std::fprintf(stderr, "\n*** Waiting for profiler viewer to connect on port %d ***\n",
-                             static_cast<int>(config::get(option::ProfilePort)));
-                std::fprintf(stderr, "*** Launch the viewer and connect, then execution will begin ***\n\n");
-                while (!server->has_client()) {
-                    server->tick();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                }
-                EINSUMS_LOG_INFO("Viewer connected, proceeding with execution");
-                std::fprintf(stderr, "*** Viewer connected, starting execution ***\n\n");
-            }
-        }
-    }
+    profile::Profiler::instance().wait_for_viewer();
 #endif
 
     // Once we start using a thread pool / threading manager we can

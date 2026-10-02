@@ -22,6 +22,12 @@
 
 EINSUMS_NAMESPACE_BEGIN(profile)
 
+/// Answers a viewer request: receives the request's params as a JSON object, returns JSON.
+using RequestHandler = std::function<std::string(std::string const &params)>;
+
+/// Produces one JSON value for a session file.
+using SessionSection = std::function<std::string()>;
+
 /**
  * @brief What libraries add to the profiler's server and session files: request handlers a viewer
  * calls by name, and sections a session file embeds.
@@ -35,14 +41,8 @@ EINSUMS_NAMESPACE_BEGIN(profile)
  */
 class RequestHandlers {
   public:
-    /// Answers a viewer request: receives the request's params as a JSON object, returns JSON.
-    using Handler = std::function<std::string(std::string const &params)>;
-
-    /// Produces one JSON value for a session file.
-    using SessionSection = std::function<std::string()>;
-
     /// Register @p handler for @p method, replacing any earlier one.
-    void add(std::string method, Handler handler) {
+    void add(std::string method, RequestHandler handler) {
         std::unique_lock const lock(_mutex);
         _handlers[std::move(method)] = std::move(handler);
     }
@@ -88,7 +88,7 @@ class RequestHandlers {
 
   private:
     mutable std::shared_mutex                           _mutex;
-    std::unordered_map<std::string, Handler>            _handlers;
+    std::unordered_map<std::string, RequestHandler>     _handlers;
     std::vector<std::pair<std::string, SessionSection>> _sections;
 };
 

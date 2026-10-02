@@ -36,8 +36,12 @@ EINSUMS_NAMESPACE_BEGIN(profile)
 /// On macOS, advertises via Bonjour/mDNS as "_einsums-profile._tcp".
 class EINSUMS_EXPORT Server {
   public:
-    /// @param handlers The request handlers and session sections libraries registered; read, never
-    ///        owned, and may outlive or predate the server.
+    /// @param consumer  The aggregated trees and timeline the server streams.
+    /// @param strings   The string table the trees' ids resolve through.
+    /// @param handlers  The request handlers and session sections libraries registered; read, never
+    ///                  owned, and may outlive or predate the server.
+    /// @param bind_addr The address to listen on; loopback, since the server is unauthenticated.
+    /// @param port      The port to listen on.
     Server(Consumer &consumer, StringTable &strings, RequestHandlers const &handlers, std::string const &bind_addr = "127.0.0.1",
            uint16_t port = 19216);
     ~Server();
@@ -49,7 +53,9 @@ class EINSUMS_EXPORT Server {
     void tick();
 
     /// Shut down the server, close all connections.
-    void shutdown();
+    /// @param viewer_requested Whether the program was told to wait for a viewer, which earns a
+    ///        longer final drain and a short wait for one that is late.
+    void shutdown(bool viewer_requested = false);
 
     /// Whether the server is active.
     [[nodiscard]] auto is_running() const -> bool { return _listen_fd >= 0; }

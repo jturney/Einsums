@@ -7,18 +7,32 @@
 #include <Einsums/Options/Declare.hpp>
 #include <Einsums/Profile/Options.hpp>
 
+#if defined(EINSUMS_HAVE_PROFILER)
+#    include <Einsums/Profile/Profile.hpp>
+#endif
+
 EINSUMS_NAMESPACE_BEGIN()
 
-bool profile_recording_disabled() {
-    return config::get(option::ProfileDisable);
-}
+void configure_profiler_from_options() {
+#if defined(EINSUMS_HAVE_PROFILER)
+    profile::SettingsUpdate update;
+    if (auto const disable = config::try_get(option::ProfileDisable)) {
+        update.record = !*disable;
+    }
+    update.report                = config::try_get(option::ProfileReport);
+    update.report_file           = config::try_get(option::ProfileFilename);
+    update.report_append         = config::try_get(option::ProfileAppend);
+    update.report_detailed       = config::try_get(option::ProfileDetailed);
+    update.save                  = config::try_get(option::ProfileSave);
+    update.server                = config::try_get(option::ProfileServer);
+    update.port                  = config::try_get(option::ProfilePort);
+    update.wait_for_viewer       = config::try_get(option::ProfileWaitForViewer);
+    update.max_distinct_children = config::try_get(option::ProfileMaxDistinctChildren);
 
-bool profile_server_enabled() {
-    return config::get(option::ProfileServer);
-}
-
-std::int64_t profile_server_port() {
-    return config::get(option::ProfilePort);
+    auto &profiler = profile::Profiler::instance();
+    profiler.configure(update);
+    profiler.init("einsums");
+#endif
 }
 
 int register_Einsums_Profile_options() {

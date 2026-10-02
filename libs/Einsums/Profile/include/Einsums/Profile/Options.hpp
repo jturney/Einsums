@@ -30,7 +30,7 @@ inline constinit cl::ConfigOption<std::string> ProfileFilename =
 
 /// Append to the report file rather than truncating it.
 inline constinit cl::ConfigOption<bool> ProfileAppend =
-    cl::config_flag("einsums:profile:append", "Append to the profile file instead of truncating it", "Profile", true);
+    cl::config_flag("einsums:profile:append", "Append to the profile file instead of truncating it", "Profile", false);
 
 /// Report every zone rather than the summary.
 inline constinit cl::ConfigOption<bool> ProfileDetailed =
@@ -63,16 +63,15 @@ EINSUMS_NAMESPACE_END(option)
 
 EINSUMS_NAMESPACE_BEGIN()
 
-/// @brief The three options the Profiler reads when it constructs itself.
-///
-/// Out of line on purpose. The Profiler is constructed from a header, and a TU outside the library
-/// gets its own copy of each descriptor, never registered, so an inline read there would always
-/// return the default.
-/// @{
-EINSUMS_EXPORT bool profile_recording_disabled();
-EINSUMS_EXPORT bool profile_server_enabled();
-EINSUMS_EXPORT std::int64_t profile_server_port();
-/// @}
+/**
+ * @brief Hand the profiler every profile option given on the command line or in the environment,
+ * and count Einsums as one of its users.
+ *
+ * Only options something set are passed, so Einsums' defaults never count as a choice that would
+ * keep another library's setting out. Called by einsums::initialize once the options are parsed;
+ * the matching release is the profiler's finalize at einsums::finalize.
+ */
+EINSUMS_EXPORT void configure_profiler_from_options();
 
 EINSUMS_NAMESPACE_END()
 

@@ -72,14 +72,23 @@ def _zone_names(node: dict) -> list[str]:
     return out
 
 
-def _run(tmp_path, *extra: str) -> subprocess.CompletedProcess:
+def _run(tmp_path, *extra: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [_binary(), "--einsums:debug:no-attach-debugger", *extra],
         cwd=tmp_path,
         capture_output=True,
         text=True,
         timeout=120,
+        env=None if env is None else {**os.environ, **env},
     )
+
+
+def _reports_in(path) -> int:
+    """How many text reports a report file holds: each ends with the overhead summary."""
+    return path.read_text().count("Profiler overhead")
+
+
+needs_profiler = pytest.mark.skipif(PROFILER == "0", reason="EINSUMS_WITH_PROFILER is off, so no report is written")
 
 
 @pytest.mark.skipif(
@@ -144,3 +153,35 @@ def test_session_export_without_a_server_is_reported(tmp_path):
         f"no diagnostic named {named}; the request was refused silently. "
         f"stdout/stderr was: {combined[:400]!r}"
     )
+
+
+# --einsums:profile:append was on by default and never appended: the report was opened with
+# std::ios::ate, which for an output stream truncates first. It is off by default now, and appends
+# when given.
+@needs_profiler
+def test_report_replaces_the_file_by_default(tmp_path):
+    for _ in range(2):
+        proc = _run(tmp_path)
+        assert proc.returncode == 0, proc.stderr
+    assert _reports_in(tmp_path / "profile.txt") == 1
+
+
+@needs_profiler
+def test_report_append_keeps_every_run(tmp_path):
+    for _ in range(2):
+        proc = _run(tmp_path, "--einsums:profile:append")
+        assert proc.returncode == 0, proc.stderr
+    assert _reports_in(tmp_path / "profile.txt") == 2
+
+
+@needs_profiler
+def test_waggle_environment_sits_below_einsums_options(tmp_path):
+    """WAGGLE_* variables configure the profiler, and an Einsums option given explicitly wins."""
+    proc = _run(tmp_path, env={"WAGGLE_REPORT_FILE": "from-env.txt"})
+    assert proc.returncode == 0, proc.stderr
+    assert (tmp_path / "from-env.txt").exists(), "WAGGLE_REPORT_FILE did not reach the profiler"
+
+    proc = _run(tmp_path, "--einsums:profile:filename=from-flag.txt", env={"WAGGLE_REPORT_FILE": "from-env-2.txt"})
+    assert proc.returncode == 0, proc.stderr
+    assert (tmp_path / "from-flag.txt").exists(), "the explicit option lost to the environment"
+    assert not (tmp_path / "from-env-2.txt").exists()

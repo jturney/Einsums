@@ -12,10 +12,10 @@
 #include <Einsums/Profile/Consumer.hpp>
 #include <Einsums/Profile/CounterBackend.hpp>
 #include <Einsums/Profile/Event.hpp>
-#include <Einsums/Profile/Options.hpp>
 #include <Einsums/Profile/RequestHandlers.hpp>
 #include <Einsums/Profile/RingBuffer.hpp>
 #include <Einsums/Profile/Server.hpp>
+#include <Einsums/Profile/Settings.hpp>
 #include <Einsums/Profile/StringTable.hpp>
 #include <Einsums/Profile/TickClock.hpp>
 #include <Einsums/Python/Annotations.hpp>
@@ -120,8 +120,31 @@ struct EINSUMS_EXPORT Profiler {
         if (_consumer)
             _consumer->shutdown();
         if (_server)
-            _server->shutdown();
+            _server->shutdown(settings().wait_for_viewer);
     }
+
+    /// Apply @p update. A setting another library already set to a different value keeps that
+    /// value, and the refusal is printed: libraries share this profiler, and none should have its
+    /// choice changed under it. Effects are immediate: recording switches, a server starts.
+    void configure(SettingsUpdate const &update);
+
+    /// Apply @p update whoever set those settings before. For tests and tools that must put a value
+    /// back; libraries use @ref configure.
+    void override_settings(SettingsUpdate const &update);
+
+    /// The settings in force.
+    [[nodiscard]] auto settings() const -> Settings;
+
+    /// Count a library, named @p client, as using the profiler until its matching @ref finalize.
+    void init(std::string client);
+
+    /// Release one @ref init. The last one writes the session file and the report the settings ask
+    /// for, then stops the consumer and the server; recording ends there for the whole process.
+    void finalize();
+
+    /// Hold the calling thread until a viewer connects, if the settings ask for that and a server
+    /// is listening. Returns at once otherwise.
+    void wait_for_viewer();
 
     // Flush all pending events from ring buffers into the aggregated tree.
     void flush() {
@@ -153,14 +176,14 @@ struct EINSUMS_EXPORT Profiler {
 
     /// Register @p handler for viewer requests named @p method. Works before any server exists: the
     /// profiler keeps the table, and a server started later answers from it.
-    void register_handler(std::string method, RequestHandlers::Handler handler) { _handlers.add(std::move(method), std::move(handler)); }
+    void register_handler(std::string method, RequestHandler handler) { _handlers.add(std::move(method), std::move(handler)); }
 
     /// Remove the handler for @p method, waiting for any call of it in progress. An owner whose
     /// handler captures it calls this from its destructor.
     void unregister_handler(std::string const &method) { _handlers.remove(method); }
 
     /// Embed @p section's JSON under @p key in every session file.
-    void register_session_section(std::string key, RequestHandlers::SessionSection section) {
+    void register_session_section(std::string key, SessionSection section) {
         _handlers.add_session_section(std::move(key), std::move(section));
     }
 
@@ -186,20 +209,12 @@ struct EINSUMS_EXPORT Profiler {
     }
 
   private:
-    Profiler() : _consumer(std::make_unique<Consumer>(_strings)) {
-        // Read server port from config (default 19216)
-        uint16_t port = 19216;
-        try {
-            port = static_cast<uint16_t>(profile_server_port());
-            // --einsums:profile:disable: recording dominates small operations, so runs can opt out.
-            _enabled.store(!profile_recording_disabled(), std::memory_order_relaxed);
-        } catch (...) { // NOLINT
-        }
-        if (profile_server_enabled()) {
-            start_server(port);
-        }
-        // No signal handlers here: Runtime owns those, and einsums::finalize() shuts the profiler down.
-    }
+    /// Takes the ``WAGGLE_*`` environment, below whatever libraries configure later. No signal
+    /// handlers here: the host program owns those.
+    Profiler();
+
+    /// Make the profiler match @p s: the recording switch, the consumer's child cap, the server.
+    void apply(Settings const &s);
 
     // Fallback for exits that skip einsums::finalize(), such as Python's. The consumer must stop
     // before members are destroyed: its tick calls into _server, which is destroyed first.
@@ -298,8 +313,17 @@ struct EINSUMS_EXPORT Profiler {
     std::unique_ptr<Server> _server;
     std::atomic<Server *>   _server_ptr{nullptr};
 
-    /// Recording switch: on by default, off with --einsums:profile:disable.
+    /// Recording switch, from Settings::record.
     std::atomic<bool> _enabled{true};
+
+    /// The settings and who set them; under @ref _settings_mutex.
+    mutable std::mutex _settings_mutex;
+    SettingsStore      _settings;
+
+    /// Libraries between @ref init and @ref finalize, by name; under @ref _lifecycle_mutex.
+    std::mutex               _lifecycle_mutex;
+    std::vector<std::string> _clients;
+    bool                     _finalized{false};
 
     /// Every thread's channel, for the life of the process; see @ref ThreadChannel.
     mutable std::mutex                          _channels_mutex;

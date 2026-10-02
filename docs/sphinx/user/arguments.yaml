@@ -139,9 +139,13 @@
       text: |
         This option's name has been changed to its positive spelling. It was previously documented as
         ``--einsums:profiler:no-append``, which never parsed.
+    - version: "2.0.0"
+      text: |
+        Off by default. It was documented as on by default, but every report replaced the file
+        regardless, so it now appends when given and the default keeps the behavior every run had.
   body: |
-    Append the profiling information to the profiling file rather than truncating it. On by default;
-    turn it off with ``--einsums:profile:no-append``.
+    Append the profiling information to the profiling file rather than replacing it. Off by default,
+    so each run leaves one report.
 
 "einsums:profile:detailed":
   added: "2.0.0"

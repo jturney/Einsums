@@ -123,7 +123,8 @@ TEST_CASE("Alloc and Free nodes report no memory of their own", "[ComputeGraph][
         auto const                       lock = profiler.consumer()->lock_shared();
         einsums::profile::AggNode const *node = nullptr;
         for (auto const &thread : profiler.consumer()->thread_data()) {
-            if ((node = find_zone(thread.second.root, zone_name)) != nullptr) {
+            node = find_zone(thread.second.root, zone_name);
+            if (node != nullptr) {
                 break;
             }
         }
