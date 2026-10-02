@@ -185,9 +185,7 @@ struct EINSUMS_EXPORT Profiler {
     // Emit an event to the thread-local ring buffer. Used by annotation API.
     void emit_event(Event const &evt) {
         auto &ch = thread_channel();
-        if (!ch.ring.try_push(evt)) {
-            _consumer->increment_dropped();
-        }
+        (void)ch.ring.try_push(evt); // a refused push is counted by the ring
         wake_consumer_if_filling(ch);
     }
 
@@ -240,6 +238,9 @@ struct EINSUMS_EXPORT Profiler {
 
     // ------------------ per-thread channel ------------------
 
+    /// How many events a thread records between looks at how full its ring is.
+    static constexpr uint32_t kFillCheckEvery = 512;
+
     /**
      * @brief One thread's side of the profiler: its ring buffer, nesting depth and zone counts.
      *
@@ -263,6 +264,8 @@ struct EINSUMS_EXPORT Profiler {
         bool counters{false};
         /// Whether this thread has woken the consumer since its ring last passed half full.
         bool woke_consumer{false};
+        /// Events left before @ref wake_consumer_if_filling looks at the ring again.
+        uint32_t until_fill_check{kFillCheckEvery};
     };
 
     /// The calling thread's channel, registered on first use.
@@ -339,24 +342,25 @@ struct EINSUMS_EXPORT Profiler {
     auto calibrated_overhead() -> Overhead const &;
 
     /// Record a zone's opening on @p ch. The whole hot path of a recorded zone: one raw clock read,
-    /// one event written into a ring only this thread writes, and the thread's own count.
+    /// one event written in place into a ring only this thread writes, and the thread's own count.
+    /// When the ring is full there is no event to write, so the clock and counters are not read.
     void write_push(ThreadChannel &ch, uint32_t name_id, uint32_t file_id, uint32_t func_id, int line) {
-        Event evt{};
-        evt.ticks   = TickClock::now();
-        evt.type    = EventType::Push;
-        evt.name_id = name_id;
-        evt.file_id = file_id;
-        evt.func_id = func_id;
-        evt.line    = line;
         // Counted whether or not the event makes it into the buffer: this is
         // where the thread actually is, and the consumer resynchronizes against
         // it precisely when the events between have been dropped.
-        evt.depth = ++ch.depth;
-        if (ch.counters) {
-            read_counters(evt);
-        }
-        if (!ch.ring.try_push(evt)) {
-            _consumer->increment_dropped();
+        uint32_t const depth = ++ch.depth;
+        if (Event *evt = ch.ring.try_claim()) {
+            *evt = Event{.ticks   = TickClock::now(),
+                         .type    = EventType::Push,
+                         .name_id = name_id,
+                         .file_id = file_id,
+                         .func_id = func_id,
+                         .line    = line,
+                         .depth   = depth};
+            if (ch.counters) {
+                read_counters(*evt);
+            }
+            ch.ring.commit();
         }
         wake_consumer_if_filling(ch);
         ch.pushes.store(ch.pushes.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
@@ -370,15 +374,13 @@ struct EINSUMS_EXPORT Profiler {
         if (ch.depth == 0) {
             return;
         }
-        Event evt{};
-        evt.ticks = TickClock::now();
-        evt.type  = EventType::Pop;
-        evt.depth = ch.depth--;
-        if (ch.counters) {
-            read_counters(evt);
-        }
-        if (!ch.ring.try_push(evt)) {
-            _consumer->increment_dropped();
+        uint32_t const depth = ch.depth--;
+        if (Event *evt = ch.ring.try_claim()) {
+            *evt = Event{.ticks = TickClock::now(), .type = EventType::Pop, .depth = depth};
+            if (ch.counters) {
+                read_counters(*evt);
+            }
+            ch.ring.commit();
         }
         wake_consumer_if_filling(ch);
         ch.pops.store(ch.pops.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
@@ -387,7 +389,14 @@ struct EINSUMS_EXPORT Profiler {
     /// Wake the consumer once when @p ch's ring passes half full. The consumer naps longer the longer
     /// nothing arrives, so a burst that starts during a nap would otherwise fill the ring and drop
     /// events before it looked again.
+    ///
+    /// Looks every kFillCheckEvery events, not on each: past half, every look reads the consumer's
+    /// tail, and a wake that comes a few hundred events late still comes with half a ring to spare.
     void wake_consumer_if_filling(ThreadChannel &ch) {
+        if (--ch.until_fill_check != 0) {
+            return;
+        }
+        ch.until_fill_check = kFillCheckEvery;
         if (ch.ring.past_half()) {
             if (!ch.woke_consumer) {
                 ch.woke_consumer = true;

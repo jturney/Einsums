@@ -41,6 +41,15 @@ void Consumer::register_thread(uint32_t thread_id, std::shared_ptr<EventRingBuff
     _registrations.push_back({.thread_id = thread_id, .ring_buffer = std::move(rb)});
 }
 
+auto Consumer::dropped_count() const -> uint64_t {
+    std::scoped_lock const lock(_reg_mutex);
+    uint64_t               total = 0;
+    for (auto const &reg : _registrations) {
+        total += reg.ring_buffer->refused();
+    }
+    return total;
+}
+
 void Consumer::set_thread_name(uint32_t thread_id, std::string name) {
     std::unique_lock const lock(_tree_mutex);
     _threads[thread_id].name = name;
@@ -116,11 +125,7 @@ size_t Consumer::drain_all() {
     std::unique_lock const lock(_tree_mutex);
     size_t                 drained = 0;
     for (auto &reg : regs) {
-        Event evt;
-        while (reg.ring_buffer->try_pop(evt)) {
-            process_event(reg.thread_id, evt);
-            ++drained;
-        }
+        drained += reg.ring_buffer->drain([&](Event const &evt) { process_event(reg.thread_id, evt); });
     }
     return drained;
 }

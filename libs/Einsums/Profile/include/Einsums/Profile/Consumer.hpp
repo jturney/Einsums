@@ -240,11 +240,8 @@ class EINSUMS_EXPORT Consumer {
     /// Get thread data map (caller must hold shared lock).
     auto thread_data() const -> std::unordered_map<uint32_t, ThreadState> const & { return _threads; }
 
-    /// Number of events dropped across all threads.
-    auto dropped_count() const -> uint64_t { return _dropped.load(std::memory_order_relaxed); }
-
-    /// Increment dropped counter (called by producer when ring buffer is full).
-    void increment_dropped() { _dropped.fetch_add(1, std::memory_order_relaxed); }
+    /// Number of events dropped across all threads: the pushes each thread's ring refused, summed.
+    auto dropped_count() const -> uint64_t;
 
     /// Zones abandoned because the events that would have closed them were
     /// dropped. Reported alongside @ref dropped_count so a thinned-out tree is
@@ -323,7 +320,7 @@ class EINSUMS_EXPORT Consumer {
     uint32_t _other_id;
 
     // Registered ring buffers (protected by reg_mutex_)
-    std::mutex                      _reg_mutex;
+    mutable std::mutex              _reg_mutex;
     std::vector<ThreadRegistration> _registrations;
 
     // Aggregated tree (protected by tree_mutex_)
@@ -336,9 +333,6 @@ class EINSUMS_EXPORT Consumer {
     std::thread             _thread;
     std::mutex              _wake_mutex;
     std::condition_variable _wake_cv;
-
-    // Dropped event counter
-    std::atomic<uint64_t> _dropped{0};
 
     // Zones whose Pop was among the dropped events (see unwind_stale_frames).
     std::atomic<uint64_t> _unmatched_zones{0};

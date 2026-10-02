@@ -403,3 +403,119 @@ TEST_CASE("Bench ZoneCost: the consumer", "[Profile][ZoneCost][benchmark]") {
     performance::publish_benchmark_result("zone-cost consumer, idle process CPU", "idle_cpu_us_per_s",
                                           performance::TimingStats{idle_us, idle_us, idle_us, 0.0, 0.0, 1});
 }
+
+namespace {
+
+/// Nanoseconds per push into a private ring that a second thread drains as the pushes arrive, the
+/// way the profiler's producer and consumer share one. @p work_ns of busy work per popped event
+/// stands in for the consumer's aggregation: zero keeps the ring near empty, enough of it keeps the
+/// ring full so every push takes the full-ring path.
+Result ring_with_consumer(int work_ns, std::uint64_t &dropped) {
+    constexpr int       kPushes = 1 << 22; // 64 rings' worth
+    auto                ring    = std::make_unique<prof::EventRingBuffer>();
+    std::vector<double> ns;
+    dropped = 0;
+    for (int rep = 0; rep <= 5; ++rep) {
+        std::atomic<bool> done{false};
+        std::thread       consumer([&] {
+            auto const spin = [&] {
+                auto const until = std::chrono::steady_clock::now() + std::chrono::nanoseconds(work_ns);
+                while (work_ns > 0 && std::chrono::steady_clock::now() < until) {
+                }
+            };
+            while (!done.load(std::memory_order_acquire) || !ring->empty()) {
+                ring->drain([&](prof::Event const &evt) {
+                    keep(evt.line);
+                    spin();
+                });
+            }
+        });
+        std::uint64_t     lost = 0;
+        prof::Event       evt{};
+        auto const        t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kPushes; ++i) {
+            evt.line = i;
+            if (!ring->try_push(evt)) {
+                ++lost;
+            }
+            keep(ring->past_half());
+            barrier();
+        }
+        auto const t1 = std::chrono::steady_clock::now();
+        done.store(true, std::memory_order_release);
+        consumer.join();
+        if (rep > 0) {
+            ns.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count() / kPushes);
+            dropped += lost;
+        }
+    }
+    std::ranges::sort(ns);
+    return {.min_ns = ns.front(), .median_ns = ns[ns.size() / 2]};
+}
+
+} // namespace
+
+TEST_CASE("Bench ZoneCost: a ring with its consumer running", "[Profile][ZoneCost][benchmark]") {
+    // The other cases drain between batches so they time the producer alone. Here the consumer runs
+    // at the same time, as it does in a program: the producer and consumer write the two ends of
+    // one ring, and what crosses between their cores is what this measures.
+    for (int const work : {0, 50}) {
+        std::uint64_t dropped = 0;
+        auto const    r       = ring_with_consumer(work, dropped);
+        show(fmt::format("ring push + past_half, consumer {} ns/event", work), r);
+        fmt::println("[ZoneCost]   {:.1f}% of those pushes found the ring full", 100.0 * static_cast<double>(dropped) / (5.0 * (1 << 22)));
+    }
+}
+
+TEST_CASE("Bench ZoneCost: zones while the rings overflow", "[Profile][ZoneCost][benchmark]") {
+    // Each thread opens and closes zones faster than one consumer can aggregate them, for eight
+    // rings' worth of events without a drain in between, so the rings stay full and most events are
+    // dropped. A profiler is under the most pressure to stay cheap here, and every thread is
+    // pushing at once.
+    Recording const on(true);
+    auto           &profiler = prof::Profiler::instance();
+    constexpr int   kZones   = 4 * static_cast<int>(prof::kRingBufferCapacity);
+    for (int const threads : {1, 2, 4, 8}) {
+        std::vector<double> ns;
+        std::uint64_t       dropped = 0;
+        for (int rep = 0; rep <= 5; ++rep) {
+            profiler.flush();
+            auto const               before = profiler.consumer()->dropped_count();
+            std::atomic<int>         ready{0};
+            std::atomic<bool>        go{false};
+            std::vector<double>      per_thread(threads, 0.0);
+            std::vector<std::thread> team;
+            for (int t = 0; t < threads; ++t) {
+                team.emplace_back([&, t] {
+                    {
+                        LabeledSection("bench warm");
+                    }
+                    ready.fetch_add(1);
+                    while (!go.load(std::memory_order_acquire)) {
+                    }
+                    auto const t0 = std::chrono::steady_clock::now();
+                    for (int i = 0; i < kZones; ++i) {
+                        LabeledSection("bench overflow zone");
+                        barrier();
+                    }
+                    auto const t1 = std::chrono::steady_clock::now();
+                    per_thread[t] = std::chrono::duration<double, std::nano>(t1 - t0).count() / kZones;
+                });
+            }
+            while (ready.load() < threads) {
+            }
+            go.store(true, std::memory_order_release);
+            for (auto &th : team) {
+                th.join();
+            }
+            profiler.flush();
+            if (rep > 0) {
+                ns.push_back(*std::ranges::max_element(per_thread));
+                dropped += profiler.consumer()->dropped_count() - before;
+            }
+        }
+        std::ranges::sort(ns);
+        show(fmt::format("zone, rings overflowing, {} thread(s)", threads), Result{.min_ns = ns.front(), .median_ns = ns[ns.size() / 2]});
+        fmt::println("[ZoneCost]   {:.1f}% of events dropped", 100.0 * static_cast<double>(dropped) / (5.0 * 2.0 * kZones * threads));
+    }
+}
