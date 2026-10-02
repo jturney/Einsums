@@ -19,7 +19,6 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * @brief Serialized representation of a tensor in a compute graph snapshot.
  *
  * Used for profiling, visualization, and inter-process communication.
- * Mirrors the GraphTensor struct in the imgui_viewer ProfileData.
  */
 struct GraphTensorData {
     uint64_t                 id{0};
@@ -38,7 +37,6 @@ struct GraphTensorData {
  * @brief Serialized representation of a computation node in a graph snapshot.
  *
  * Used for profiling, visualization, and inter-process communication.
- * Mirrors the GraphNode struct in the imgui_viewer ProfileData.
  */
 struct GraphNodeData {
     uint64_t              id{0};
@@ -65,8 +63,6 @@ struct GraphNodeData {
 
 /**
  * @brief Serialized representation of a data-flow edge in a graph snapshot.
- *
- * Mirrors the GraphEdge struct in the imgui_viewer ProfileData.
  */
 struct GraphEdgeData {
     uint64_t from{0};
@@ -79,8 +75,7 @@ struct GraphEdgeData {
  * @brief Complete serialized compute graph, as used for profiling and visualization.
  *
  * Captures a named graph with its stage context (pipeline, workspace, stage)
- * and all nodes, tensors, and edges. Mirrors the ComputeGraphData struct
- * in the imgui_viewer ProfileData.
+ * and all nodes, tensors, and edges.
  */
 struct ComputeGraphData {
     std::string                  name;

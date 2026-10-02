@@ -145,12 +145,12 @@ functions when the tensor is on GPU, avoiding round-trips to CPU.
 Profiler Integration
 ====================
 
-Save a profiler session to a JSON file that can be loaded in the
-EinsumsProfileViewer:
+Save a profiler session to a JSON file that ``einsums profiler`` can load
+(the export goes through the profile server, so both options are needed):
 
 .. code-block:: bash
 
-    ./my_program --einsums:profile:save=session.json
+    ./my_program --einsums:profile:server --einsums:profile:save=session.json
 
 The saved file includes profiling data (call tree, timing, annotations) and
 ComputeGraph structure (nodes, edges, GPU placement). Multiple runs append
@@ -158,7 +158,7 @@ sessions to the same file for comparison. Load in the viewer:
 
 .. code-block:: bash
 
-    ./EinsumsProfileViewer --load session.json
+    einsums profiler --load session.json
 
 Platform Detection
 ==================

@@ -72,8 +72,8 @@ class EINSUMS_EXPORT Server {
     /// Access the benchmark result queue (for forwarding benchmark_result events).
     BenchmarkResultQueue &benchmark_queue() { return _benchmark_queue; }
 
-    /// Export the current profiling session to a JSON file compatible with the
-    /// imgui profile viewer's "Load Session" feature. Flushes all pending events
+    /// Export the current profiling session to a JSON file that the profile
+    /// viewer loads with ``--load``. Flushes all pending events
     /// before exporting.
     /// @param path Output file path.
     /// @param label Session label (shown in viewer).

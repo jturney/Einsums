@@ -3,12 +3,12 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""``python -m einsums.stages`` - the promote and extract tools.
+"""``einsums stages`` (or ``python -m einsums.stages``) - the promote and extract tools.
 
 ::
 
-    python -m einsums.stages promote mymethod/stages.py --out cpp/
-    python -m einsums.stages extract mymethod/solver.py::Solver.build_t2
+    einsums stages promote mymethod/stages.py --out cpp/
+    einsums stages extract mymethod/solver.py::Solver.build_t2
 
 ``promote`` reads the Python stage signatures and contract dataclasses by
 runtime introspection - no libclang, no parsing of C++ - and writes the C++
@@ -44,7 +44,7 @@ from ._extract import (
 )
 from ._promote import PromoteError, build_model, classify_stages, load_stages_module
 
-__all__ = ["main"]
+__all__ = ["build_parser", "main"]
 
 
 def _promote_parser(sub):
@@ -246,12 +246,16 @@ def _run_promote(args) -> int:
     return 0
 
 
-def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m einsums.stages")
+def build_parser(prog: str = "python -m einsums.stages") -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog)
     sub = parser.add_subparsers(dest="command", required=True)
     _promote_parser(sub)
     _extract_parser(sub)
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv=None, prog: str = "python -m einsums.stages") -> int:
+    args = build_parser(prog).parse_args(argv)
 
     try:
         return args.run(args)

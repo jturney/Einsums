@@ -151,7 +151,7 @@
 "einsums:profile:save":
   added: "2.0.0"
   body: |
-    Save the profile session as JSON for the imgui viewer. Empty, the default, means do not save one.
+    Save the profile session as JSON, which ``einsums profiler --load`` opens. Empty, the default, means do not save one.
 
 "einsums:profile:server":
   added: "2.0.0"

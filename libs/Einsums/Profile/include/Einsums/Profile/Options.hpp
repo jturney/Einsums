@@ -43,9 +43,9 @@ inline constinit cl::ConfigOption<bool> ProfileAppend =
 inline constinit cl::ConfigOption<bool> ProfileDetailed =
     cl::config_flag("einsums:profile:detailed", "Print a detailed profile report", "Profile", false);
 
-/// Write the session as JSON for the imgui viewer. Empty means do not.
-inline constinit cl::ConfigOption<std::string> ProfileSave =
-    cl::config_opt<std::string>("einsums:profile:save", "Save the profile session as JSON for the imgui viewer", "Profile", "", "filename");
+/// Write the session as JSON for the profile viewer. Empty means do not.
+inline constinit cl::ConfigOption<std::string> ProfileSave = cl::config_opt<std::string>(
+    "einsums:profile:save", "Save the profile session as JSON for the profile viewer", "Profile", "", "filename");
 
 /// Enable the profile server for remote viewing. The server is single-threaded and not secure, so it is only suitable for local
 /// connections.

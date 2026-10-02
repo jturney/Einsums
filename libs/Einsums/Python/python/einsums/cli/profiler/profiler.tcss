@@ -1,0 +1,193 @@
+/* Copyright (c) The Einsums Developers. All rights reserved.
+   Licensed under the MIT License. See LICENSE.txt in the project root for license information. */
+
+Screen {
+    layout: vertical;
+}
+
+#sessions {
+    height: 1fr;
+    /* Panels have fixed heights; without a floor, opening several hides the tree entirely. */
+    min-height: 12;
+}
+
+/* --- optional panels: hidden until their key toggles .visible --------- */
+
+.panel {
+    display: none;
+    background: $surface;
+    border-top: solid $accent;
+    padding: 0 1;
+}
+
+.panel.visible {
+    display: block;
+}
+
+#hotspots {
+    height: auto;
+    max-height: 15;
+    border-top: none;
+    border-bottom: solid $accent;
+}
+
+#flame, #roofline {
+    height: 22;
+    padding: 0;
+}
+
+#timeline {
+    height: 18;
+    padding: 0;
+}
+
+#timeline Horizontal, #timeline PlotextPlot, #roofline PlotextPlot {
+    height: 1fr;
+}
+
+#gantt {
+    height: 22;
+}
+
+#counters {
+    height: auto;
+    max-height: 20;
+}
+
+#source {
+    height: 1fr;
+    max-height: 35;
+}
+
+#disasm {
+    height: 1fr;
+    max-height: 40;
+}
+
+#log {
+    height: 15;
+    padding: 0;
+}
+
+#log RichLog {
+    height: 1fr;
+}
+
+.panel-text {
+    height: auto;
+}
+
+/* --- always shown -------------------------------------------------------- */
+
+#detail {
+    height: 14;
+    min-height: 3;
+    background: $surface;
+    padding: 0 1;
+}
+
+ResizeHandle {
+    height: 1;
+    width: 1fr;
+    background: $surface;
+    color: $text-muted;
+    content-align: center middle;
+}
+
+ResizeHandle:hover, ResizeHandle.-dragging {
+    background: $accent;
+    color: $text;
+}
+
+#log-resize {
+    display: none;
+}
+
+#log-resize.visible {
+    display: block;
+}
+
+#filter {
+    dock: bottom;
+    display: none;
+}
+
+#filter.visible {
+    display: block;
+}
+
+#status {
+    dock: bottom;
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+}
+
+/* --- dialogs ------------------------------------------------------------- */
+
+Dialog {
+    align: center middle;
+}
+
+.dialog {
+    width: 60;
+    height: auto;
+    max-height: 90%;
+    padding: 1 2;
+    background: $surface;
+    border: thick $accent;
+}
+
+.dialog.wide {
+    width: 70;
+}
+
+.dialog.large {
+    width: 90%;
+    height: 85%;
+}
+
+.dialog Label, .dialog Input {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+.dialog SelectionList {
+    height: auto;
+    max-height: 12;
+    margin-bottom: 1;
+}
+
+.dialog DataTable, .dialog VerticalScroll {
+    height: 1fr;
+}
+
+.dialog .buttons {
+    width: 100%;
+    height: auto;
+    align: right middle;
+}
+
+.dialog Button {
+    margin-left: 1;
+}
+
+.graph-panes {
+    height: 1fr;
+}
+
+#graph-tree {
+    width: 1fr;
+    height: 1fr;
+}
+
+#graph-detail {
+    width: 1fr;
+    height: 1fr;
+    padding: 0 1;
+}
+
+#taskpool {
+    height: auto;
+    max-height: 20;
+}

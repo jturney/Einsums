@@ -201,8 +201,8 @@ As of right now, Einsums is capable of the following:
   sequences of tensor operations. They include several dozen optimization passes, parallel
   execution, control flow, and profiler integration with an interactive node viewer.
   :doc:`optimizer` documents the pipeline and how to drive it.
-* A built-in profiler that runs a real-time TCP server with an imgui-based viewer
-  showing flame graphs, timelines, hotspots, and compute graph DAG visualization.
+* A built-in profiler that streams to a real-time TCP server, with a terminal viewer
+  showing the call tree, flame graphs, thread timelines, and hotspots.
 * Limited interaction with Python.
     * A form of the ``einsum`` call works in Python. NumPy arrays cross the boundary through
       ``einsums.asarray``, which copies them into a tensor; the operations themselves take

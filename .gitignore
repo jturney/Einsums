@@ -83,7 +83,6 @@ conda.yml
 *profile.txt*
 
 # Benchmark database and reports
-devtools/benchmarks/*.db
 benchmark_report.html
 
 .wolf

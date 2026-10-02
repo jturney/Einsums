@@ -10,7 +10,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from devtools.benchmarks.parser import BenchmarkResult, BreakdownResult, CacheHitResult, compute_gflops
+from .parser import Result, compute_gflops
 
 # ---------------------------------------------------------------------------
 # Schema version and migrations
@@ -18,7 +18,7 @@ from devtools.benchmarks.parser import BenchmarkResult, BreakdownResult, CacheHi
 
 # Schema version must match the number of .sql files in the migrations/ directory.
 # Bump this when adding a new migration file.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Directory containing the shared .sql migration files (used by both Python and C++).
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -28,9 +28,7 @@ def _load_migration_sql(version: int) -> str:
     """Load the SQL content for a migration by version number.
 
     Migration files are named NNN_description.sql and live in the
-    migrations/ directory alongside this module.  Both the Python CLI
-    and the C++ ImGui viewer execute the same SQL, keeping the schema
-    in sync.
+    migrations/ directory alongside this module.
     """
     pattern = f"{version:03d}_*.sql"
     matches = sorted(_MIGRATIONS_DIR.glob(pattern))
@@ -43,10 +41,8 @@ def _load_migration_sql(version: int) -> str:
 
 # ---------------------------------------------------------------------------
 # To add a new migration in the future:
-#   1. Create devtools/benchmarks/migrations/NNN_description.sql
+#   1. Create migrations/NNN_description.sql beside this file
 #   2. Bump SCHEMA_VERSION at the top of this file
-#   3. Rebuild the ImGui viewer (so configure_file re-embeds the SQL)
-#   Both Python and C++ will pick up the new migration automatically.
 # ---------------------------------------------------------------------------
 
 
@@ -186,77 +182,49 @@ def create_run(
     return cur.lastrowid
 
 
-def store_results(
-    conn: sqlite3.Connection,
-    run_id: int,
-    test_binary: str,
-    benchmarks: list[BenchmarkResult],
-    breakdowns: list[BreakdownResult] | None = None,
-    cache_hits: list[CacheHitResult] | None = None,
-) -> None:
-    """Flatten parsed benchmark results into the results table."""
+def store_results(conn: sqlite3.Connection, run_id: int, test_binary: str, results: list[Result]) -> None:
+    """Store one test binary's results, from either collection path."""
     rows = []
-
-    for b in benchmarks:
-        label = f"{b.label} N={b.n}"
-        metrics = [
-            ("t_generic", b.t_generic, None),
-            ("t_blas_packed", b.t_blas_packed, None),
-            ("t_mlir", b.t_mlir, None),
-            ("t_einsum", b.t_einsum, b.einsum_alg or None),
-            ("t_sort_gemm", b.t_sort_gemm, None),
-        ]
-        extra = {}
-        if b.min_us is not None:
-            extra["min_us"] = b.min_us
-        if b.max_us is not None:
-            extra["max_us"] = b.max_us
-        if b.stddev_us is not None:
-            extra["stddev_us"] = b.stddev_us
-        if b.cv_pct is not None:
-            extra["cv_pct"] = b.cv_pct
-        if b.warmup_us is not None:
-            extra["warmup_us"] = b.warmup_us
-        if b.warmup_ratio is not None:
-            extra["warmup_ratio"] = round(b.warmup_ratio, 2)
-        gflops = compute_gflops(b.label, b.n, b.t_generic)
-        if gflops is not None:
-            extra["gflops"] = round(gflops, 3)
-        extra_str = json.dumps(extra) if extra else None
-
-        for metric_name, value, alg in metrics:
-            if value is not None:
-                rows.append((run_id, test_binary, label, metric_name, value, "us", alg, extra_str))
-
-    if breakdowns:
-        for bd in breakdowns:
-            label = f"Breakdown N={bd.n}"
-            for metric_name, value in [
-                ("breakdown_pack_only", bd.t_pack_only),
-                ("breakdown_kernel_only", bd.t_kernel_only),
-                ("breakdown_total", bd.t_total),
-            ]:
-                rows.append((run_id, test_binary, label, metric_name, value, "us", None,
-                             json.dumps({"mr": bd.mr, "nr": bd.nr, "tiles": bd.tiles})))
-
-    if cache_hits:
-        for ch in cache_hits:
-            label = f"Cache hit N={ch.n}"
-            for metric_name, value in [
-                ("cache_t_generic", ch.t_generic),
-                ("cache_t_mlir", ch.t_mlir),
-                ("cache_t_einsum", ch.t_einsum),
-            ]:
-                rows.append((run_id, test_binary, label, metric_name, value, "us",
-                             ch.einsum_alg if metric_name == "cache_t_einsum" else None, None))
-
+    for r in results:
+        extra: dict[str, float | int] = {
+            k: v
+            for k, v in (("min_us", r.min_us), ("max_us", r.max_us), ("stddev_us", r.stddev_us),
+                         ("warmup_us", r.warmup_us), ("reps", r.reps))
+            if v is not None
+        }  # fmt: skip
+        if r.value_us > 0 and r.stddev_us is not None:
+            extra["cv_pct"] = r.stddev_us / r.value_us * 100.0
+        if r.value_us > 0 and r.warmup_us is not None:
+            extra["warmup_ratio"] = round(r.warmup_us / r.value_us, 2)
+        gflops = r.annotations.get("gflops")
+        try:
+            extra["gflops"] = round(float(gflops), 3) if gflops else None
+        except (TypeError, ValueError):
+            pass
+        if extra.get("gflops") is None:
+            extra.pop("gflops", None)
+            if r.n is not None and (estimate := compute_gflops(r.base_label, r.n, r.value_us)) is not None:
+                extra["gflops"] = round(estimate, 3)
+        rows.append(
+            (run_id, test_binary, r.label, r.metric, r.value_us, "us", r.annotations.get("algorithm") or None,
+             json.dumps(extra) if extra else None, json.dumps(r.annotations) if r.annotations else None, r.source)
+        )  # fmt: skip
     conn.executemany(
         """INSERT INTO results
-           (run_id, test_binary, benchmark_label, metric_name, value_us, unit, algorithm, extra_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           (run_id, test_binary, benchmark_label, metric_name, value_us, unit, algorithm, extra_json, annotations, source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
+
+
+def metrics_for(conn: sqlite3.Connection, label: str) -> list[str]:
+    """The metric names ever recorded for *label*, most used first."""
+    rows = conn.execute(
+        "SELECT metric_name, COUNT(*) AS n FROM results WHERE benchmark_label = ? GROUP BY metric_name ORDER BY n DESC",
+        (label,),
+    ).fetchall()
+    return [row[0] for row in rows]
 
 
 def get_baseline_runs(

@@ -1,7 +1,10 @@
 # Copyright (c) The Einsums Developers. All rights reserved.
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
-from devtools.benchmarks.cli import main
+"""``python -m einsums``: see :mod:`einsums.cli`."""
 
-if __name__ == "__main__":
-    main()
+import sys
+
+from .cli import main
+
+sys.exit(main(prog="python -m einsums"))

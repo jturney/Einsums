@@ -217,6 +217,28 @@ function(einsums_finalize_pybind)
         get_filename_component(_name "${_f}" NAME)
         configure_file("${_f}" "${_pkg_dir}/stages/${_name}" COPYONLY)
     endforeach()
+    # The command-line tools (`einsums`, or python -m einsums), with the data files they read at run
+    # time: the profiler's stylesheet and the benchmark database migrations.
+    file(GLOB_RECURSE _cli_files CONFIGURE_DEPENDS RELATIVE "${_pkg_src}"
+        "${_pkg_src}/cli/*.py" "${_pkg_src}/cli/*.tcss" "${_pkg_src}/cli/*.sql")
+    foreach(_f IN LISTS _cli_files)
+        configure_file("${_pkg_src}/${_f}" "${_pkg_dir}/${_f}" COPYONLY)
+    endforeach()
+    configure_file("${_pkg_src}/__main__.py" "${_pkg_dir}/__main__.py" COPYONLY)
+
+    # The `einsums` command beside the executables, so `einsums bench ...` works with
+    # build/bin on PATH. The package has no install step that could generate an entry
+    # point, so the build writes the launcher. It locates the package relative to itself.
+    file(RELATIVE_PATH EINSUMS_LAUNCHER_PKG_REL "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}" "${CMAKE_BINARY_DIR}/lib")
+    configure_file(
+      "${CMAKE_SOURCE_DIR}/libs/Einsums/Python/tools/einsums.in" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/einsums" @ONLY
+      FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+    )
+    if(WIN32)
+      # cmd.exe cannot run a shebang script; this hands it to the same interpreter.
+      file(TO_NATIVE_PATH "${Python_EXECUTABLE}" _einsums_python_native)
+      file(WRITE "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/einsums.cmd" "@\"${_einsums_python_native}\" \"%~dp0einsums\" %*\r\n")
+    endif()
     file(GLOB _py_helpers     CONFIGURE_DEPENDS "${_pkg_src}/*.py")
     file(GLOB _py_helper_pkgs CONFIGURE_DEPENDS "${_pkg_src}/*/*.py")
 
@@ -391,6 +413,47 @@ function(einsums_finalize_pybind)
     # what einsums_add_executable does for ordinary in-tree targets.
     if(TARGET einsums_private_flags)
         target_link_libraries(PyEinsums PRIVATE einsums_private_flags)
+    endif()
+
+    # --- Installing the package -------------------------------------------
+    #
+    # The package goes to <prefix>/${EINSUMS_INSTALL_PYMODDIR}/einsums, copied from the
+    # build tree's package directory so the generated files (rc.py, the .pyi stubs) come
+    # with the checked-in ones. _core is installed as a target rather than copied, so it
+    # gets an install RPATH reaching libEinsums in ${CMAKE_INSTALL_LIBDIR}.
+    set(_py_install_dir "${EINSUMS_INSTALL_PYMODDIR}/einsums")
+    install(TARGETS PyEinsums LIBRARY DESTINATION "${_py_install_dir}" RUNTIME DESTINATION "${_py_install_dir}")
+    file(RELATIVE_PATH _core_to_libdir "${CMAKE_INSTALL_PREFIX}/${_py_install_dir}"
+         "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
+    if(APPLE)
+        set_property(TARGET PyEinsums APPEND PROPERTY INSTALL_RPATH "@loader_path/${_core_to_libdir}")
+    elseif(NOT WIN32)
+        set_property(TARGET PyEinsums APPEND PROPERTY INSTALL_RPATH "\$ORIGIN/${_core_to_libdir}")
+    else()
+        # No RPATH on Windows: the DLLs go beside _core.pyd, as the build tree has them.
+        install(FILES "$<TARGET_RUNTIME_DLLS:PyEinsums>" DESTINATION "${_py_install_dir}")
+    endif()
+    install(
+        DIRECTORY "${_pkg_dir}/"
+        DESTINATION "${_py_install_dir}"
+        FILES_MATCHING
+        PATTERN "*.py"
+        PATTERN "*.pyi"
+        PATTERN "py.typed"
+        PATTERN "*.tcss"
+        PATTERN "*.sql"
+        PATTERN "__pycache__" EXCLUDE
+    )
+
+    # The installed `einsums` command, whose path to the package is relative to <prefix>/bin.
+    file(RELATIVE_PATH EINSUMS_LAUNCHER_PKG_REL "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}"
+         "${CMAKE_INSTALL_PREFIX}/${EINSUMS_INSTALL_PYMODDIR}")
+    configure_file(
+      "${CMAKE_SOURCE_DIR}/libs/Einsums/Python/tools/einsums.in" "${CMAKE_BINARY_DIR}/install-launcher/einsums" @ONLY
+    )
+    install(PROGRAMS "${CMAKE_BINARY_DIR}/install-launcher/einsums" DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    if(WIN32)
+        install(PROGRAMS "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/einsums.cmd" DESTINATION "${CMAKE_INSTALL_BINDIR}")
     endif()
 
     list(LENGTH _modules _count)

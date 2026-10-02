@@ -299,7 +299,7 @@ TaskPool integrates with the Einsums profiler:
 - Each task creates a named profiler region, visible in both the tree and the flame graph.
 - Metrics are accessible through the ``"get_taskpool_metrics"`` server handler.
 
-The imgui profile viewer's Gantt panel shows task execution across workers.
+The Gantt panel of ``einsums profiler`` (key ``G``) shows task execution across workers.
 Task regions appear nested under the submitting thread's profiler tree.
 
 Accessing metrics:

@@ -9,7 +9,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from devtools.benchmarks import compare, models
+from . import compare, models
 
 
 def generate_html_report(

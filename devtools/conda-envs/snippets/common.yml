@@ -14,7 +14,7 @@ dependencies:
   - ninja
   - lcov
   - pre-commit
-  # cmake-format is invoked directly by `python -m einsums.stages promote`, not
+  # cmake-format is invoked directly by `einsums stages promote`, not
   # only by the pre-commit hook (which keeps its own copy in a cached venv the
   # PATH never sees). Without it the promote golden tests skip silently.
   - cmake-format
@@ -68,4 +68,6 @@ dependencies:
   - numpy
   - scipy
   - textual
+  - textual-plotext  # profiler timeline and roofline panels
+  - zeroconf         # profiler: find servers advertised over mDNS (macOS)
   - rich

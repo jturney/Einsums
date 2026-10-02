@@ -6,7 +6,7 @@
 /// Long-running profiler example for testing the live TUI viewer.
 ///
 /// Run this program, then in another terminal:
-///     python devtools/profiling/profile_viewer.py
+///     build/bin/einsums profiler
 ///
 /// The program runs for ~60 seconds, simulating a workload with nested
 /// profiling zones, annotations, and multiple threads.
@@ -152,7 +152,7 @@ void worker_loop(int worker_id) {
 
 int einsums_main() {
     einsums::println("Profile live demo — running for 30 seconds.");
-    einsums::println("Connect with:  python devtools/profiling/profile_viewer.py");
+    einsums::println("Connect with:  build/bin/einsums profiler");
     einsums::println("");
 
     int constexpr num_workers = 3;

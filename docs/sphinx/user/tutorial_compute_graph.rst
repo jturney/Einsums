@@ -311,9 +311,9 @@ Profiling
 =========
 
 ``execute()`` automatically integrates with the Einsums profiler. Each node
-appears as a named region with timing data. Connect the imgui profile viewer
-to see a real-time flame graph, and open View > Compute Graph to see the
-node DAG.
+appears as a named region with timing data. Run with
+``--einsums:profile:server`` and attach ``einsums profiler``
+to see a real-time call tree and flame graph.
 
 .. code-block:: cpp
 
@@ -689,19 +689,21 @@ ComputeGraph structure) to a JSON file for offline analysis:
 
 .. code-block:: bash
 
-    ./my_program --einsums:profile:save=session.json
+    ./my_program --einsums:profile:server --einsums:profile:save=session.json
 
-The file is compatible with the EinsumsProfileViewer. Multiple runs
+The export goes through the profile server, so ``--einsums:profile:save`` writes
+nothing without ``--einsums:profile:server``. ``einsums profiler --load``
+opens the file. Multiple runs
 append to the same file, creating a multi-session comparison:
 
 .. code-block:: bash
 
     # Run multiple times; sessions accumulate
-    ./program --einsums:profile:save=runs.json
-    ./program --einsums:profile:save=runs.json
+    ./program --einsums:profile:server --einsums:profile:save=runs.json
+    ./program --einsums:profile:server --einsums:profile:save=runs.json
 
     # Load all in the viewer
-    ./EinsumsProfileViewer --load runs.json
+    einsums profiler --load runs.json
 
 The saved JSON includes:
 

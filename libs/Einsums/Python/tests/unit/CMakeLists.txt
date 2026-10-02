@@ -14,6 +14,9 @@ if(EINSUMS_BUILD_PYTHON)
   einsums_add_python_unit_test("Modules.Python" ExtractPython SCRIPT test_extract_python.py)
   einsums_add_python_unit_test("Modules.Python" SealedPython SCRIPT test_sealed_python.py)
   einsums_add_python_unit_test("Modules.Python" RcOptionsPython SCRIPT test_rc_options_python.py)
+  einsums_add_python_unit_test("Modules.Python" CliProfilerPython SCRIPT test_cli_profiler_python.py)
+  einsums_add_python_unit_test("Modules.Python" CliBenchPython SCRIPT test_cli_bench_python.py)
+  einsums_add_python_unit_test("Modules.Python" CliCommandsPython SCRIPT test_cli_commands_python.py)
 
   # EINSUMS_STAGE_MODULE, exercised by a real compiled stage module rather than
   # by a hand-built stand-in. The macro's job is to publish the fingerprints

@@ -19,6 +19,7 @@ some of our more useful tools.
     Coding Style <style>
     Documenting the Code <documenting>
     Creating Module Skeletons <create_module_skeleton>
+    The einsums Command <einsums_command>
 
 .. toctree::
     :caption: Library internals

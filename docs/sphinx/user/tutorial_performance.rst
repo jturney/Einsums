@@ -278,8 +278,11 @@ A zone has to close before any zone opened after it on the same thread, and one 
 The Live Viewer
 ---------------
 
-``devtools/profiling/profile_viewer.py`` is a terminal interface that attaches to a running
-program and shows the tree as it fills. Start the program with the server enabled, then attach:
+``einsums profiler`` is a terminal interface that attaches to a running program and shows the
+tree as it fills. The build writes the ``einsums`` command to ``build/bin`` and installs it to
+``<prefix>/bin`` (see :ref:`einsums-command`). It needs Textual (in the
+``einsums-dev`` environment; ``textual-plotext`` adds the timeline and roofline plots, and
+``zeroconf`` adds discovery). Start the program with the server enabled, then attach:
 
 .. code-block:: bash
 
@@ -287,13 +290,15 @@ program and shows the tree as it fills. Start the program with the server enable
     ./my_program --einsums:profile:server
 
     # Terminal 2: attach
-    python devtools/profiling/profile_viewer.py
+    einsums profiler
 
-The viewer finds local sessions over mDNS; ``--host`` and ``--port`` reach one explicitly, and
-``--no-mdns`` turns discovery off. If a program is short enough that you would miss the start, run
-it with :option:`--einsums:profile:wait-for-viewer` and it will block until you attach.
+With no arguments the viewer connects to ``127.0.0.1:19216`` and keeps retrying, so it can be
+started first. Name other servers as ``HOST:PORT`` arguments, or with ``--host`` and ``--port``.
+Servers on macOS also advertise themselves over mDNS, which the viewer follows when ``zeroconf``
+is installed; ``--no-mdns`` turns that off. If a program is short enough that you would miss the
+start, run it with :option:`--einsums:profile:wait-for-viewer` and it will block until you attach.
 
-The keys worth knowing:
+``?`` lists every key; the ones worth knowing:
 
 .. list-table::
     :header-rows: 1
@@ -315,6 +320,15 @@ The keys worth knowing:
       - Bookmark a zone, and jump to the next bookmark.
     * - ``V``
       - Source panel for the selected zone.
+    * - ``f``
+      - Flame graph of the selected thread; click a bar to zoom in.
+    * - ``A``
+      - Disassembly of the selected zone's function, found with ``nm`` and ``objdump``.
+    * - ``K``
+      - The program's compute graphs: nodes with their measured times, and the tensors each reads
+        and writes.
+    * - ``W``
+      - TaskPool workers: tasks run and stolen per worker, polled from a live program.
     * - ``S``
       - Save the session to JSON.
 
@@ -323,9 +337,9 @@ run before and after a change:
 
 .. code-block:: bash
 
-    python devtools/profiling/profile_viewer.py --record before.jsonl
+    einsums profiler --record before.jsonl
     # ... make the change, run again ...
-    python devtools/profiling/profile_viewer.py --replay before.jsonl
+    einsums profiler --replay before.jsonl
 
 A program run with :option:`--einsums:profile:save` writes a session file directly, which
 ``--load`` opens; ``--load`` accepts several files at once for comparison.
@@ -337,6 +351,19 @@ file.
 
 The session is exported during teardown, whichever way a program ends, so it holds the same run
 the text report does.
+
+Saved sessions can also be read without the viewer, which is how a script or a CI job uses them:
+
+.. code-block:: bash
+
+    einsums profiler report session.json                  # hotspots by exclusive time
+    einsums profiler report session.json --tree --format csv
+    einsums profiler diff before.json after.json          # zone by zone, largest change first
+    einsums profiler diff runs.json --fail-above 10       # exit 1 if any zone grew more than 10%
+
+``report`` and ``diff`` take ``--format text|csv|json`` and ``--filter``; ``diff`` compares the
+first and last sessions of a single file that holds several, as repeated
+``--einsums:profile:save`` runs do, and ``--fail-above`` ignores zones under ``--min-ms`` (1 ms).
 
 Finding Out Which Kernel Ran
 ----------------------------
