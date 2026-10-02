@@ -19,17 +19,10 @@
 
 EINSUMS_NAMESPACE_BEGIN(option)
 
-/// Cap the SIMD dispatch rung below the best one this machine supports.
-///
-/// Empty, the default, leaves the choice to Stripes: its STRIPES_ARCH
-/// environment variable if set, and otherwise the highest rung the CPU and
-/// operating system can run. A rung the machine cannot run is replaced, with a
-/// warning, by the next supported one below it, and a rung of another
-/// architecture is ignored, so this can only ever lower the rung. See
-/// stripes::resolve_arch().
-///
-/// The rung is chosen on the first dispatch and kept, so this must be parsed
-/// before then: on the command line or in the environment.
+/// Cap the SIMD dispatch rung. Empty leaves the choice to Stripes (STRIPES_ARCH, else the best the
+/// machine runs). It can only lower the rung: an unsupported rung falls to the next one below, with
+/// a warning (see stripes::resolve_arch()). The rung is fixed at the first dispatch, so set this on
+/// the command line or in the environment.
 inline constinit cl::ConfigOption<std::string> SimdArch = cl::config_opt<std::string>(
     "einsums:simd:arch", "Cap the SIMD dispatch rung: baseline, v2, v3, v4 or sme (empty = the best supported)", "SIMD", "", "RUNG");
 
@@ -43,9 +36,8 @@ EINSUMS_NAMESPACE_BEGIN()
 EINSUMS_EXPORT int register_Einsums_SIMD_options();
 
 /**
- * @brief Hand Stripes, which chooses the dispatch rung, the --einsums:simd:arch setting and Einsums'
- *        logging for its messages. The runtime calls it once the options are parsed and logging is
- *        up, which is before anything dispatches.
+ * @brief Pass --einsums:simd:arch and a log handler to Stripes. Called once options and logging are
+ *        up, before anything dispatches.
  */
 EINSUMS_EXPORT void apply_SIMD_options();
 
