@@ -416,9 +416,14 @@ set(SPHINX_DOCS_OUTPUT_FILE "${SPHINX_DOCS_OUTPUT_DIR}/index.html")
 
 # -n  nitpicky (every dangling cross-reference is a warning)
 # -W  treat warnings as errors  --keep-going  report them all, not just the first
+#
+# Through run_sphinx.py, which drops the cached environment when sphinx fails: sphinx re-reads only
+# changed documents and does not repeat an unchanged one's warnings, so a failed build would
+# otherwise pass on the next run.
 set(SPHINX_DOCS_BUILD_COMMAND
-    ${Sphinx_EXECUTABLE} -b html -n -W --keep-going -d "${CMAKE_CURRENT_BINARY_DIR}/doctree"
-    "${CMAKE_CURRENT_BINARY_DIR}/sphinx" "${SPHINX_DOCS_OUTPUT_DIR}"
+    ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run_sphinx.py" --doctree
+    "${CMAKE_CURRENT_BINARY_DIR}/doctree" -- ${Sphinx_EXECUTABLE} -b html -n -W --keep-going -d
+    "${CMAKE_CURRENT_BINARY_DIR}/doctree" "${CMAKE_CURRENT_BINARY_DIR}/sphinx" "${SPHINX_DOCS_OUTPUT_DIR}"
 )
 
 # The reference is generated statically from headers by apiary, so the
@@ -426,10 +431,17 @@ set(SPHINX_DOCS_BUILD_COMMAND
 # in the apiary tool and PyEinsumsDocs) - NOT on the compiled Einsums
 # library or the PyEinsums (_core) extension. Depending on those would force a
 # full library + extension build for no reason.
+#
+# The rule's output is a stamp touched only after sphinx succeeds, not index.html: with -W sphinx
+# writes the pages and then fails, and an index.html newer than every input reads as up to date, so
+# the next build skipped the failed step and reported the docs clean.
+set(SPHINX_DOCS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/.sphinx_html.stamp")
 add_custom_command(
-  OUTPUT "${SPHINX_DOCS_OUTPUT_FILE}"
-  DEPENDS "${sphinx_source_files_build}"
+  OUTPUT "${SPHINX_DOCS_STAMP}"
+  BYPRODUCTS "${SPHINX_DOCS_OUTPUT_FILE}"
+  DEPENDS "${sphinx_source_files_build}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/run_sphinx.py"
   COMMAND ${SPHINX_DOCS_BUILD_COMMAND}
+  COMMAND ${CMAKE_COMMAND} -E touch "${SPHINX_DOCS_STAMP}"
 )
 
 # Out of ALL by default. The sphinx build is nitpicky and warnings-are-errors,
@@ -439,9 +451,9 @@ add_custom_command(
 # reached by naming the target, which is what the docs workflow already does
 # (`cmake --build <dir> --target docs`, and `docs-html` is the same build).
 if(EINSUMS_WITH_DOCS_IN_ALL)
-  add_custom_target(docs-html-file ALL DEPENDS ${SPHINX_DOCS_OUTPUT_FILE})
+  add_custom_target(docs-html-file ALL DEPENDS ${SPHINX_DOCS_STAMP})
 else()
-  add_custom_target(docs-html-file DEPENDS ${SPHINX_DOCS_OUTPUT_FILE})
+  add_custom_target(docs-html-file DEPENDS ${SPHINX_DOCS_STAMP})
 endif()
 add_dependencies(docs-html docs-html-file)
 add_dependencies(docs docs-html)
