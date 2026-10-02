@@ -28,21 +28,15 @@ EINSUMS_NAMESPACE_BEGIN(detail)
 
 namespace {
 
-/// Every carve is 64-byte aligned, matching einsums::memory::aligned_alloc and
-/// the MemoryPlanning arena, so a pooled tensor's data pointer is as aligned as
-/// any other tensor's.
+/// Carve alignment, matching aligned_alloc and the MemoryPlanning arena.
 constexpr size_t kPoolAlign = 64;
 
 /// A zero-byte tensor still gets real bytes: two tensors sharing one address
 /// would make the graph's span-identity checks ambiguous.
 constexpr size_t kMinCarve = 64;
 
-/// Multi-megabyte blocks only reach about 87.5% of an arena's nominal capacity
-/// (size-class rounding plus mimalloc's own page metadata), so a request for
-/// exactly N bytes of tensors needs an arena meaningfully larger than N. 25%
-/// rather than the measured 12.5%: at the measured figure a reserve sized to
-/// the workload lands exactly on the edge, and overshooting costs address
-/// space while falling short costs an arena.
+/// Multi-megabyte blocks fill only ~87.5% of an arena, so add 25% (not 12.5%, which lands on the
+/// edge): overshooting costs address space, falling short costs an arena.
 size_t with_headroom(size_t bytes) {
     return bytes + (bytes / 100) * 25 + kPoolAlign;
 }
@@ -53,24 +47,18 @@ size_t round_up(size_t value, size_t multiple) {
 
 } // namespace
 
-/// One epoch's carve accounting. Outlives the epoch itself: a keepalive token
-/// carved inside a scope has to be able to decrement the count from any thread,
-/// at any time, including after the scope is gone.
+/// One epoch's carve count. Outlives the epoch, since tokens decrement it from any thread at any time.
 struct ScopeCounter {
     std::atomic<size_t> live{0};
 };
 
-/// One epoch's heaps: at most one per arena, created on first use in that
-/// scope. Allocation walks them newest-arena-first, since the newest arena is
-/// the one with room when the pool has had to grow.
+/// One epoch's heaps, one per arena, walked newest first (the newest arena has room).
 struct PoolScope {
     std::vector<mi_heap_t *>      heaps;
     std::shared_ptr<ScopeCounter> counter{std::make_shared<ScopeCounter>()};
 };
 
-/// The pool's interior, refcounted separately from @ref einsums::MemoryPool so
-/// that a pooled tensor may outlive the pool handle: keepalive tokens hold a
-/// reference, so the arena stays registered until the last carve is gone.
+/// The pool's interior, held by keepalive tokens too, so a pooled tensor may outlive the pool handle.
 struct PoolState {
     std::string                name;
     std::thread::id            owner{std::this_thread::get_id()};
@@ -109,9 +97,7 @@ void *reserve_region(size_t bytes, size_t alignment) {
 #if defined(EINSUMS_WINDOWS)
     return _aligned_malloc(bytes, alignment);
 #else
-    // Raw mmap rather than posix_memalign: the reservation must be LAZY, so a
-    // pool sized with headroom costs address space, not resident memory, until
-    // the carves are actually written. Over-map by the alignment and trim.
+    // mmap, so the reservation is lazy: address space until carves are written. Over-map and trim.
     size_t const padded = bytes + alignment;
     void        *raw    = ::mmap(nullptr, padded, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (raw == MAP_FAILED) {
@@ -129,31 +115,14 @@ void *reserve_region(size_t bytes, size_t alignment) {
 #endif
 }
 
-/// Register another exclusive arena of at least @p bytes usable capacity.
-/// Returns false when the OS refuses the reservation.
+/// Register another exclusive arena of at least @p bytes usable capacity; false if the OS refuses.
 ///
-/// The region is obtained here and handed to mimalloc rather than reserved
-/// through mi_reserve_os_memory_ex, so that the reservation is lazy (see
-/// reserve_region). Whether it is PINNED is the pool's footprint policy:
-/// pinned keeps freed pages resident so a recarve is fault-free (the 0.49 us
-/// warm number on the monotonic fill benchmark), but the pages then never
-/// shrink below the pool's high water for its whole life - correct for small
-/// hot scratch pools, catastrophic for a multi-GB pool on a machine that also
-/// has to hold the rest of the calculation (a 15 GB pinned T0 pool on a 32 GB
-/// host thrashed the whole run). Unpinned, mimalloc purges freed pages after
-/// its purge delay, so the resident set tracks LIVE bytes and only recarves
-/// after a free re-pay first touch; a fill that carves and holds pays nothing.
+/// The region comes from reserve_region (lazy) rather than mi_reserve_os_memory_ex. Pinned keeps
+/// freed pages resident (fault-free recarves, but the high water stays resident: a 15 GB pinned
+/// pool thrashed a 32 GB host); unpinned purges them.
 ///
-/// mi_manage_os_memory_ex silently SHRINKS a region whose base is not
-/// mi_arena_min_alignment()-aligned, hence the aligned reservation.
-///
-/// The alignment constrains the BASE only, so the size is deliberately not
-/// rounded up to it. That distinction was invisible while the alignment was
-/// 64 KiB and a size already rounded to 4 MiB satisfied it for free; mimalloc
-/// 3.5 raised it to 256 MiB, and rounding the size to match turned every pool,
-/// however small, into a quarter-gigabyte reservation that counts in full
-/// against einsums:max-memory. A 32 MiB arena placed on a 256 MiB boundary is
-/// accepted just as readily, and is what reserve_region already produces.
+/// mi_manage_os_memory_ex shrinks a region whose base is not mi_arena_min_alignment()-aligned, so
+/// the base is aligned. The size is not rounded to it: since mimalloc 3.5 that alignment is 256 MiB.
 size_t arena_size_for(size_t bytes) {
     size_t const min_arena = mi_arena_min_size();
     size_t       size      = round_up(with_headroom(bytes), 4u << 20);
@@ -163,19 +132,14 @@ size_t arena_size_for(size_t bytes) {
     return size;
 }
 
-/// Arena bytes counted against einsums:max-memory: every live pool, plus
-/// dead PINNED pools (their pages stay resident to their high water; an
-/// unpinned pool's purge on death returns its pages, so its share is
-/// released in ~PoolState even though the arena registration itself is not).
+/// Arena bytes counted against einsums:max-memory: live pools plus dead pinned ones, whose pages
+/// stay resident.
 std::atomic<size_t> pooled_reserved_total{0};
 
 bool add_arena(PoolState &state, size_t bytes) {
     size_t const size = arena_size_for(bytes);
 
-    // The planning ceiling. Checked here - the one choke point every
-    // reservation passes - on the owning thread, before the OS is asked for
-    // anything. Ordinary carves are never checked: a pool that is already
-    // reserved can always be carved from, so nothing can throw mid-kernel.
+    // The planning ceiling, checked where every reservation passes. Carves are never checked.
     if (size_t const ceiling = string_util::memory_string(config::get(option::MaxMemory)); ceiling != 0) {
         size_t const already = pooled_reserved_total.load(std::memory_order_relaxed);
         if (already + size > ceiling) {
@@ -190,18 +154,14 @@ bool add_arena(PoolState &state, size_t bytes) {
     mi_arena_id_t id = nullptr;
 
     if (void *region = reserve_region(size, mi_arena_min_alignment()); region != nullptr) {
-        // Exclusive: allocations that do not fit come back as null instead of
-        // silently escaping into OS memory, which is what makes overflow a
-        // policy decision rather than an invisible one.
+        // Exclusive, so overflow returns null rather than escaping into OS memory.
         if (mi_manage_os_memory_ex(region, size, /*is_committed=*/true, /*is_pinned=*/state.pinned, /*is_zero=*/false,
                                    /*numa_node=*/-1, /*exclusive=*/true, &id) &&
             id != nullptr) {
             state.arenas.push_back(id);
             state.reserved += size;
             pooled_reserved_total.fetch_add(size, std::memory_order_relaxed);
-            // The region is never released: mimalloc 3.3 has no arena unload,
-            // so handing the pages back would leave the allocator pointing at
-            // memory the OS could reissue.
+            // Never released: mimalloc cannot unload an arena.
             return true;
         }
         // mimalloc refused the region; it never took ownership, so the memory
@@ -213,9 +173,7 @@ bool add_arena(PoolState &state, size_t bytes) {
 #endif
     }
 
-    // Fall back to letting mimalloc do the reservation. Pages are then subject
-    // to its purge policy, which costs first-touch faults on reuse but keeps
-    // the pool working.
+    // Fallback: let mimalloc reserve, under its own purge policy.
     if (mi_reserve_os_memory_ex(size, /*commit=*/true, /*allow_large=*/false, /*exclusive=*/true, &id) != 0 || id == nullptr) {
         return false;
     }
@@ -226,12 +184,8 @@ bool add_arena(PoolState &state, size_t bytes) {
     return true;
 }
 
-/// Try every heap the current scope can reach, newest arena first.
-///
-/// @p zeroed routes through mimalloc's calloc path, which skips the memset for
-/// pages it knows are still OS-fresh. Zeroing a multi-megabyte tensor is a full
-/// memory write, so the pages mimalloc can vouch for are the only ones that
-/// come free.
+/// Try every heap the current scope can reach, newest arena first. @p zeroed uses mimalloc's calloc
+/// path, which skips the memset on OS-fresh pages.
 void *carve(PoolState &state, size_t bytes, bool zeroed) {
     PoolScope &scope = state.scopes.back();
     scope.heaps.resize(state.arenas.size(), nullptr);
@@ -279,9 +233,7 @@ void demote_scope(PoolScope &scope) {
     scope.heaps.clear();
 }
 
-/// Deleter carried by every keepalive token. Runs on whichever thread drops the
-/// last reference, which is why it only ever calls mi_free (thread-safe) and
-/// touches atomics.
+/// Keepalive token deleter. Runs on any thread, so it only calls mi_free and touches atomics.
 struct CarveDeleter {
     std::shared_ptr<PoolState>    state;
     std::shared_ptr<ScopeCounter> counter;
@@ -299,22 +251,14 @@ struct CarveDeleter {
 } // namespace
 
 PoolState::~PoolState() {
-    // The einsums:max-memory ceiling tracks what can be RESIDENT at once. A
-    // dead unpinned pool's blocks are freed and its pages purge, so its
-    // reservation stops counting - even though the arena registration itself
-    // is unreclaimable (address space, not memory). A pinned pool's pages
-    // stay resident to its high water forever, so it keeps counting.
-    // Serial pool lifecycles (a (T0) pool, then the iterative (T)'s own pool
-    // of the same size) depend on this: charging dead pools made the second
-    // reservation exceed a ceiling the machine could honor.
+    // einsums:max-memory tracks what can be resident: a dead unpinned pool's pages purge, so it stops
+    // counting; a pinned pool's stay. Successive pools of one size depend on this.
     if (!pinned) {
         pooled_reserved_total.fetch_sub(reserved, std::memory_order_relaxed);
     }
 
-    // mimalloc heaps belong to the thread that created them, so a state that
-    // outlived its pool and is dying on a worker thread cannot tear them down.
-    // Leaking heap descriptors is the only safe answer; the blocks themselves
-    // are already gone, since a live token would still be holding this state.
+    // Off the owning thread the heaps cannot be torn down, so their descriptors leak; the blocks
+    // are already freed.
     if (std::this_thread::get_id() != owner) {
         EINSUMS_LOG_DEBUG("MemoryPool '{}': destroyed off the owning thread; heaps left to mimalloc.", name);
         return;
@@ -327,14 +271,8 @@ PoolState::~PoolState() {
             }
         }
     }
-    // The arena outlives the pool. mimalloc HAS written mi_arena_unload, and
-    // its preconditions are exactly what add_arena() builds - an exclusive
-    // arena over externally owned memory - but the whole section is commented
-    // out in src/arena.c and its declaration is commented out in mimalloc.h,
-    // in every 3.x release through v3.5.0 (checked 2026-08-20; the conda 3.3.2
-    // dylib exports no such symbol). If a release ever enables it, releasing
-    // an arena here is a few lines: unload, then free the region add_arena
-    // reserved.
+    // The arena outlives the pool: mi_arena_unload exists but is commented out in mimalloc through
+    // v3.5.0. If it is ever enabled, unload here and free the region add_arena reserved.
 }
 
 EINSUMS_NAMESPACE_END(detail)
@@ -375,9 +313,7 @@ MemoryPoolEpoch::~MemoryPoolEpoch() {
 
     auto &scope = _state->scopes.back();
     if (size_t const live = scope.counter->live.load(std::memory_order_relaxed); live != 0) {
-        // A destructor cannot throw, so the loud failure lives in close().
-        // Demoting keeps the surviving blocks valid instead of turning a leak
-        // into a use-after-free.
+        // A destructor cannot throw (close() does): demote so surviving blocks stay valid.
         EINSUMS_LOG_ERROR("MemoryPool '{}': epoch closed with {} carve(s) still borrowed; their memory stays live until released.",
                           _state->name, live);
         detail::demote_scope(scope);
@@ -418,11 +354,7 @@ bool MemoryPoolEpoch::is_open() const noexcept {
 // ── MemoryPool ──────────────────────────────────────────────────────────────
 
 size_t pool_reserve_cost(size_t bytes) {
-    // The MARGINAL planning cost: headroom plus rounding, without the 32 MiB
-    // arena minimum. The minimum is a fixed address-space floor the first
-    // reservation pays once, not a per-chunk resident cost - charging it per
-    // chunk made every budget under 32 MiB unsatisfiable, and small budgets
-    // are how the chunking tests exercise multi-chunk paths.
+    // The marginal cost: headroom and rounding, without the one-time 32 MiB arena minimum.
     return detail::round_up(detail::with_headroom(bytes), 4u << 20);
 }
 
@@ -469,16 +401,11 @@ void *MemoryPool::carve_bytes(size_t bytes, bool zeroed) {
 
     void *ptr = detail::carve(*_state, request, zeroed);
     if (ptr == nullptr) {
-        // The arena is exclusive, so this is exhaustion, not OS pressure. Grow
-        // rather than throw: a throw here could fire inside a kernel's OpenMP
-        // region, which is the failure mode the buffer-size ceiling taught us
-        // to avoid.
+        // Exhaustion of an exclusive arena. Grow rather than throw, which could happen inside a kernel.
         EINSUMS_LOG_WARN("MemoryPool '{}': {} bytes did not fit in {} reserved byte(s); reserving another arena. Raise the pool's "
                          "reserve to avoid this.",
                          _state->name, request, _state->reserved);
-        // Grow geometrically. A growth arena sized to just this request would
-        // hold one or two more blocks and then overflow again, and each
-        // overflow is a fresh OS reservation.
+        // Grow geometrically, so overflow does not recur on the next block or two.
         size_t const growth = std::max(request, _state->reserved / 2);
         if (!detail::add_arena(*_state, growth)) {
             EINSUMS_THROW_EXCEPTION(std::runtime_error,

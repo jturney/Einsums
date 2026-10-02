@@ -47,17 +47,8 @@ EINSUMS_EXPORT void  deallocate(void *);
  *
  * @brief Allocator whose maximum size can be restricted by runtime variables.
  *
- * The maximum size is controlled by the global configuration options. In particular, the option to control the size is
- * @c --einsums:buffer-size and the string in the configuration mapping is @c buffer-size with the standard variants,
- * such as @c BUFFER_SIZE .
- *
- * Use in dynamic allocations with frequent resizing is discouraged, such as in a vector. Resizing requires the buffer
- * to be reallocated while still being allocated. If the buffers are big when resized, this means that the buffer
- * allocation will fail even though the result would be expected to fall within the range of acceptable sizes.
- * However, when using this to allocate a buffer once, this should be fine.
- *
- * This allocator follows the C++ standard for allocators, and can be used in templates that use them, such as
- * containers, smart pointers, and more.
+ * The limit is @c --einsums:buffer-size. Avoid containers that resize often: a resize holds the old and new
+ * buffers at once, which can exceed the limit when the final size would not. A standard allocator.
  *
  * @tparam T The data type returned by this allocator.
  *
@@ -140,8 +131,7 @@ struct BufferAllocator {
     /**
      * @property type_size
      *
-     * The size of the types handled by this allocator. This is needed to handle void pointers, which traditionally
-     * don't have a size, but should be treated as one byte.
+     * The element size, with void counted as one byte.
      *
      * @versionadded{1.1.0}
      */
@@ -194,13 +184,7 @@ struct BufferAllocator {
         pointer out;
 
         if (!reserve(n)) {
-            // available_size() and max_size() are both in ELEMENTS, so reporting
-            // them against a "bytes" label under-stated the ceiling by a factor
-            // of type_size - eightfold for the size_t vectors that fail here
-            // most often, which reads as a 512kB limit when the default is 4MB.
-            // Multiply back, and say which type ran out: one allocator instance
-            // per T shares one global budget, so the element counts alone do not
-            // identify the caller.
+            // The sizes are in elements: report bytes, and name the type, since every T shares one budget.
             EINSUMS_THROW_EXCEPTION(std::runtime_error,
                                     "Could not allocate enough memory for buffers. Requested {} elements of {} bytes ({} bytes), but "
                                     "only {} bytes are available out of {} bytes maximum. Raise --einsums:buffer-size if this "
@@ -226,8 +210,7 @@ struct BufferAllocator {
     /**
      * @brief Reserve a number of elements without allocating.
      *
-     * This function is used when you want to allocate some memory with some other allocator, such as the
-     * default allocator, but still want to track and limit the memory being used.
+     * For memory allocated elsewhere that should still count against the limit.
      *
      * @param n The number of elements to reserve.
      *
@@ -254,8 +237,7 @@ struct BufferAllocator {
     /**
      * @brief Release a number of elements without freeing.
      *
-     * This function is used when you want to deallocate some memory with some other allocator, such as the
-     * default allocator, but still want to track the memory being used.
+     * The counterpart of @ref reserve for memory freed elsewhere.
      *
      * @param n The number of elements to release.
      *

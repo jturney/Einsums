@@ -15,13 +15,6 @@
 
 EINSUMS_NAMESPACE_BEGIN()
 
-/*
- * Set up the internal state of the module. If the module does not need to be set up, then this
- * file can be safely deleted. Make sure that if you do, you also remove its reference in the CMakeLists.txt,
- * as well as the initialization header for the module and the dependence on Einsums_Runtime, assuming these
- * aren't being used otherwise.
- */
-
 int init_Einsums_BufferAllocator() {
     // Auto-generated code. Do not touch if you are unsure of what you are doing.
     // Instead, modify the other functions below.

@@ -10,27 +10,15 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Options/Get.hpp>
 
-/*
- * The buffer allocator's options. Both are memory sizes written the way a
- * person writes them ("4MB"), so they are strings parsed by
- * string_util::memory_string rather than integers.
- */
+// The buffer allocator's options: memory sizes such as "4MB", parsed by string_util::memory_string.
 
 EINSUMS_NAMESPACE_BEGIN(detail)
 
-/// Default for einsums:max-memory: 80% of the machine's physical RAM,
-/// rendered as a memory string. Defined in BufferAllocator.cpp, where the
-/// platform probes live.
+/// Default for einsums:max-memory: 80% of physical RAM, as a memory string.
 EINSUMS_EXPORT std::string default_max_memory();
 
-/*
- * The descriptor below stores the address of its provider, and a descriptor is
- * constant-initialized. An exported function's address resolves through the
- * import table on Windows and so is not known until the loader runs, which
- * leaves it unusable as a constant initializer in anything that consumes the
- * library. This forwards to the exported definition from whatever binary
- * includes this header, where the address is an ordinary link-time constant.
- */
+// An inline forwarder, so the constant-initialized descriptor holds a link-time address; on Windows
+// an exported function's address is not a constant outside the library.
 inline std::string max_memory_provider() {
     return default_max_memory();
 }
@@ -39,27 +27,14 @@ EINSUMS_NAMESPACE_END(detail)
 
 EINSUMS_NAMESPACE_BEGIN(option)
 
-/// Ceiling on the memory einsums PLANS against: chunked algorithms size their
-/// working sets to it, and MemoryPool refuses a reservation that would push
-/// the process's total pooled bytes past it - at the reserve site, on the
-/// owning thread, before the OS is asked for anything. It is a planning
-/// ceiling, not an allocator meter: ordinary tensor allocations are not
-/// checked against it (that is what makes it safe - nothing can throw inside
-/// a kernel). Set to 0 to disable the check.
+/// Ceiling on the memory einsums plans against: chunked algorithms size to it and MemoryPool refuses
+/// reservations past it. Ordinary allocations are not checked, so nothing throws in a kernel. 0 disables.
 inline constinit cl::ConfigOption<std::string> MaxMemory = cl::config_opt_computed<std::string>(
     "einsums:max-memory", "Ceiling on the memory einsums plans against: chunked algorithms and memory pools budget to it. 0 disables.",
     "Buffer Allocator", &detail::max_memory_provider, "size");
 
-/// How much memory the tensor-contraction buffers may hold in total.
-///
-/// The ceiling exists to catch a RUNAWAY temporary with a named error, not to
-/// ration legitimate workspace. 4MB served while one contraction ran at a
-/// time, but the moldable executors run a team's worth of kernels at once and
-/// each may hold transient TTGT scratch of a few hundred kilobytes: ten
-/// concurrent contractions sat within a hair of the old ceiling, and which
-/// side they landed on depended on how the scheduler packed them. 64MB keeps
-/// the runaway protection - a leaked population still hits it - with room for
-/// a wide machine's worth of honest workspace.
+/// Total memory the contraction buffers may hold. Catches a runaway temporary, with room for a
+/// wide machine running many contractions at once.
 inline constinit cl::ConfigOption<std::string> BufferSize = cl::config_opt<std::string>(
     "einsums:buffer-size", "Total size of buffers allocated for tensor contractions", "Buffer Allocator", "64MB", "size");
 
@@ -77,11 +52,6 @@ EINSUMS_NAMESPACE_BEGIN()
 
 /**
  * @brief Give the allocator's options their command-line presence. Idempotent.
- *
- * Run from a namespace-scope initializer rather than from the module's
- * argument hook, because the hook fires part-way through `initialize()` and
- * anything that enumerates the registry earlier - the Python binding layer
- * building argv, for one - would not see these options at all.
  */
 EINSUMS_EXPORT int register_Einsums_BufferAllocator_options();
 

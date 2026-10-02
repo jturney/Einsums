@@ -70,14 +70,9 @@ struct MemoryPoolStats {
  * bulk-frees every carve made inside it, including ones nothing tracked.
  * Epochs nest and must close in reverse order of opening.
  *
- * Two ways out, deliberately different:
- *
- * - @ref close throws if a keepalive token carved in the scope is still held,
- *   which is a use-after-free about to happen. That is the loud path, and the
- *   one Python's @c with statement takes.
- * - The destructor cannot throw, so it logs an error and demotes instead: the
- *   surviving blocks move to the pool's base heap and stay valid, to be freed
- *   individually when their tokens die.
+ * If a keepalive token carved in the scope is still held, @ref close throws (Python's @c with takes
+ * this path), while the destructor logs an error and moves the surviving blocks to the pool's base
+ * heap, where they stay valid until their tokens die.
  *
  * @versionadded{2.0.0}
  */
@@ -116,11 +111,8 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY MemoryPoolEpoch {
     size_t                             _depth{0};
 };
 
-/// The arena bytes a MemoryPool reservation of @p bytes would actually claim:
-/// the request plus the pool's utilization headroom and mimalloc's arena
-/// rounding. Planners packing a working set against a memory budget
-/// (einsums:max-memory, a chunked algorithm's in-core limit) should charge
-/// this, not the raw sum, or the reserve that follows will overshoot the plan.
+/// The arena bytes a reservation of @p bytes actually claims, headroom and rounding included.
+/// Planners budgeting against einsums:max-memory should charge this, not the raw sum.
 APIARY_EXPOSE EINSUMS_EXPORT size_t pool_reserve_cost(size_t bytes);
 
 /// Arena bytes currently charged against einsums:max-memory: every live
@@ -131,28 +123,13 @@ APIARY_EXPOSE EINSUMS_EXPORT size_t pool_reserve_cost(size_t bytes);
 /**
  * @brief A pre-reserved region of memory that mimalloc manages exclusively.
  *
- * A pool is an exclusive mimalloc arena plus a heap bound to it. Carving is a
- * real @c mi_heap_malloc_aligned against memory that is already reserved, which
- * is roughly a microsecond for a multi-megabyte block instead of the tens to
- * hundreds of microseconds an @c mmap-backed allocation costs; freeing returns
- * the bytes to the arena immediately, so a loop whose intermediates die each
- * iteration holds a flat footprint with no pool-specific discipline.
+ * An exclusive mimalloc arena plus a heap bound to it. A carve takes about a microsecond for a
+ * multi-megabyte block, against tens to hundreds for an mmap, and a free returns the bytes at once.
+ * When the arena runs out the pool reserves another and warns, rather than throwing in a kernel.
  *
- * Because the arena is exclusive, exhaustion is a defined event: mimalloc
- * returns null rather than falling back to OS memory. The pool answers by
- * reserving another arena and warning, so a mis-sized @c reserve degrades to a
- * log line rather than a throw inside a kernel.
- *
- * Thread affinity: a mimalloc heap allocates only from the thread that created
- * it, so every @ref allocate must run on the thread that constructed the pool
- * and the pool says so by throwing otherwise. Freeing has no such restriction:
- * a pooled tensor may be destroyed on any thread.
- *
- * Arena address space is never handed back to the OS: mimalloc declares
- * mi_arena_unload in its header but leaves it commented out through v3.5, so
- * there is no supported way to give one back. Arenas are also capped per
- * process. Pools are therefore meant to be FEW, LONG-LIVED, and reserved to
- * their peak size once rather than grown in steps.
+ * @ref allocate must run on the constructing thread (it throws otherwise); freeing may happen on any.
+ * Arenas are capped per process and never returned to the OS, so keep pools few, long-lived and
+ * reserved to their peak size up front.
  *
  * @versionadded{2.0.0}
  */
@@ -161,23 +138,12 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
     /**
      * @brief Reserve a pool.
      *
-     * @param reserve_bytes Bytes the caller expects to carve. The arena is
-     *                      sized with headroom on top, because multi-megabyte
-     *                      blocks only reach about 87% of an arena's nominal
-     *                      capacity, and is never smaller than mimalloc's
-     *                      minimum arena size.
+     * @param reserve_bytes Bytes the caller expects to carve; the arena adds headroom.
      * @param name          Label used in log messages.
-     * @param warn_bytes    Usage threshold that logs a one-shot warning when
-     *                      crossed; zero disables it.
-     * @param pinned        Footprint policy. Unpinned (the default), freed
-     *                      pages purge back to the OS after mimalloc's purge
-     *                      delay, so the resident set tracks live bytes and a
-     *                      recarve after a free re-pays first touch. Pinned,
-     *                      freed pages stay resident and recarves are
-     *                      fault-free, but the pool never shrinks below its
-     *                      high water for its whole life - reserve pinning for
-     *                      small, hot scratch pools that a machine can hold
-     *                      permanently.
+     * @param warn_bytes    Usage that logs a one-shot warning; zero disables it.
+     * @param pinned        Keep freed pages resident, so recarves are fault-free but the pool never
+     *                      shrinks below its high water. For small, hot scratch pools only; unpinned
+     *                      pages purge back to the OS.
      *
      * @throws std::runtime_error if the arena cannot be reserved.
      *
@@ -199,8 +165,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
     /**
      * @brief Carve @p bytes of 64-byte-aligned memory from the pool.
      *
-     * A zero-byte request still returns a distinct address, so no two tensors
-     * ever share one.
+     * A zero-byte request still returns a distinct address.
      *
      * @throws std::runtime_error if called off the owning thread, or if the
      *         pool could neither carve nor grow.
@@ -212,10 +177,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
     /**
      * @brief Carve @p bytes and hand them back zeroed.
      *
-     * Cheaper than @ref allocate plus @c memset only where mimalloc can vouch
-     * that the pages are still OS-fresh; on reused pages it is the same memory
-     * write. Zeroing a multi-megabyte tensor costs full memory bandwidth
-     * either way, which is why the pool's speedup is on uninitialized carves.
+     * Skips the memset only on pages mimalloc knows are OS-fresh.
      *
      * @versionadded{2.0.0}
      */
@@ -227,8 +189,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
     /**
      * @brief Wrap a carve in a keepalive token that frees it when the last holder drops it.
      *
-     * This is what makes a pooled tensor's death its own reclamation: the token
-     * rides along as the tensor's storage owner, on any thread.
+     * The token is a pooled tensor's storage owner, so the tensor's death frees the carve.
      *
      * @versionadded{2.0.0}
      */
@@ -243,10 +204,8 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
     /**
      * @brief Grow the pool so at least @p bytes of capacity are reserved.
      *
-     * A no-op when the pool is already that large. Reserving up front is how a
-     * caller keeps the overflow path from ever running - and it is worth doing
-     * once rather than in steps: each growth takes another arena, mimalloc caps
-     * how many arenas a process may hold, and it never reclaims one.
+     * A no-op when already that large. Reserve once rather than in steps: each growth costs an
+     * arena, and arenas are capped and never reclaimed.
      *
      * @versionadded{2.0.0}
      */
@@ -256,8 +215,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
      * @brief Bulk-free everything the pool holds and start over.
      *
      * @throws std::runtime_error if any keepalive token is outstanding, or if
-     *         an epoch is open. Destroying the heaps under live tensors is a
-     *         use-after-free; this makes it a recoverable error instead.
+     *         an epoch is open.
      *
      * @versionadded{2.0.0}
      */
@@ -285,25 +243,16 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
     /**
      * @brief Place a runtime-rank tensor of type @p TensorT on this pool.
      *
-     * The tensor type is a template parameter rather than a fixed
-     * @c RuntimeTensor because this module sits below the tensor module; see
-     * @c Einsums/Tensor/PooledTensor.hpp for the named @c pool_empty /
-     * @c pool_zeros / @c pool_tensor wrappers.
-     *
-     * The tensor is built deferred, carved into, and handed the keepalive
-     * token, so it is indistinguishable from an owned tensor to every consumer
-     * and frees its bytes back to the pool when it dies.
+     * A template because this module sits below Tensor; see @c Einsums/Tensor/PooledTensor.hpp for
+     * @c pool_empty, @c pool_zeros and @c pool_tensor. The result behaves as an owned tensor and frees
+     * its bytes back to the pool when it dies.
      *
      * @versionadded{2.0.0}
      */
     template <typename TensorT, typename Dims>
     [[nodiscard]] TensorT empty_as(std::string tensor_name, Dims const &dims) {
-        // The tensor types have no move constructor (a user-declared
-        // destructor suppresses it) and their copy constructor deep-copies
-        // external storage, so a non-elided return here would silently
-        // un-pool the result. The shape is the one every compiler applies
-        // NRVO to - one local, one return - and PooledTensor's unit test
-        // asserts the carve survived the return, so a regression is loud.
+        // Must be NRVO'd: the tensor types have no move constructor and their copy deep-copies, which
+        // would un-pool the result. PooledTensor's test checks the carve survives the return.
         TensorT t(typename TensorT::DeferredAlloc{}, std::move(tensor_name), dims);
         place(t);
         return t;
@@ -337,9 +286,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
      * @brief Carve storage for an already-shaped deferred tensor and attach it
      *        with a keepalive token.
      *
-     * The copy-free form: nothing is returned by value, so no tensor type's
-     * deep-copying copy constructor can get between the carve and the caller.
-     * The factories above are the ergonomic form.
+     * The copy-free form of the factories above: nothing is returned by value.
      *
      * @versionadded{2.0.0}
      */
