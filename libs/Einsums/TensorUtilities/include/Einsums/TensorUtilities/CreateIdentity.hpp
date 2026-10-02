@@ -51,10 +51,7 @@ auto create_identity_tensor(std::string const &name, MultiIndex... index) -> Ten
     Tensor<T, sizeof...(MultiIndex)> A{name, std::forward<MultiIndex>(index)...};
     A.zero();
 
-    // The diagonal runs to the SHORTEST axis, not to the first one. Using dim(0) worked only
-    // when it happened to be the smallest: create_identity_tensor("c", 6, 3) walked to 6 and
-    // threw out of range on a tensor whose second axis stops at 3. A rectangular identity is
-    // perfectly well defined, and this is what makes it so for every ordering of the extents.
+    // The diagonal runs to the shortest axis.
     size_t const extent = std::min({static_cast<size_t>(index)...});
 
     for (size_t dim = 0; dim < extent; dim++) {
@@ -67,13 +64,7 @@ auto create_identity_tensor(std::string const &name, MultiIndex... index) -> Ten
 /**
  * @brief Create a runtime-rank identity tensor from a runtime shape vector.
  *
- * RuntimeTensor-returning overload mirroring the typed form above, and matching
- * @ref create_zero_tensor and @ref create_random_tensor, which already take a shape this way.
- * Without it, an identity was the one creator in that group that handed back a statically ranked
- * tensor, so a caller working in runtime ranks had to convert.
- *
- * Ones sit where every index agrees, so the diagonal is as long as the shortest axis and a
- * rectangular shape is as valid as a square one.
+ * The runtime-rank form. The diagonal is as long as the shortest axis.
  *
  * @code
  * auto a = create_identity_tensor<double>("a", {3, 3});     // 3x3 identity

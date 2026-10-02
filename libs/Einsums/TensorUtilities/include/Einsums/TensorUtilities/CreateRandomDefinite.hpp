@@ -23,12 +23,8 @@ EINSUMS_NAMESPACE_BEGIN()
  * A positive definite matrix is a symmetric matrix whose eigenvalues are all positive.
  * Similarly for negative definite matrices.
  *
- * This function first generates a set of random eigenvectors, making sure they are non-singular.
- * Then, it uses these to form an orthonormal eigenbasis for the new matrix. Then, it generates
- * the eigenvalues. The eigenvalues are distributed using a Maxwell-Boltzmann distribution
- * with the given mean, defaulting to 1. Then, the returned matrix is formed
- * by computing @f$P^TDP@f$. If the mean is negative, then the result will be a negative
- * definite matrix.
+ * Random orthonormal eigenvectors P and Maxwell-Boltzmann eigenvalues D with mean @p mean give
+ * @f$P^TDP@f$; a negative mean gives a negative definite matrix.
  *
  * @param[in] name The name for the matrix.
  * @param[in] rows The number of rows.

@@ -22,11 +22,8 @@ EINSUMS_NAMESPACE_BEGIN()
  * A positive semi-definite matrix is a symmetric matrix whose eigenvalues are all non-negative.
  * Similarly for negative semi-definite matrices.
  *
- * This function first generates a set of random eigenvectors, making sure they are non-singular.
- * Then, it uses these to form an orthonormal eigenbasis for the new matrix. Then, it generates
- * the eigenvalues. The eigenvalues are distributed using a Maxwell-Boltzmann distribution
- * with the given mean, defaulting to 1. If desired, a number of eigenvalues can be forced to be zero.
- * Then, the returned matrix is formed by computing @f$P^TDP@f$.
+ * Random orthonormal eigenvectors P and Maxwell-Boltzmann eigenvalues D, some forced to zero, give
+ * @f$P^TDP@f$.
  *
  * @param[in] name The name for the matrix.
  * @param[in] rows The number of rows.

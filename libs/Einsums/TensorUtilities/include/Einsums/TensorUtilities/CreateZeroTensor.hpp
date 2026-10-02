@@ -19,22 +19,9 @@
 
 EINSUMS_NAMESPACE_BEGIN()
 
-// Why none of these call zero() on what they just constructed.
-//
-// A tensor that allocates its own storage is ALREADY zero when the constructor
-// returns: storage is a `std::vector<T>` grown with `resize`, which
-// value-initializes, and every constructor here takes that path - external and
-// aliased storage arrive through `materialize_into`/`alias_to`, never through a
-// dimensioned constructor.
-//
-// Calling zero() on top wrote every element a second time, and the second write
-// is the expensive one: the vector's is a memset, while zero() goes through the
-// impl's strided writer. Measured on a 97.7 MiB (Q|mn) that was 16 ms against
-// 5 ms, and DLPNO's PNO overlap stage spent 19 of its 79 ms allocating.
-//
-// This is load-bearing on the constructor's guarantee. TensorUtilities'
-// CreateZeroTensor test asserts a freshly created tensor reads back zero, so a
-// change to storage that broke it would fail there rather than silently here.
+// None of these call zero(): a self-allocating tensor's storage is value-initialized by resize, and
+// a second strided write cost 16 ms against 5 ms on 97.7 MiB. The CreateZeroTensor test checks the
+// constructor's guarantee.
 
 /**
  * @brief Create a tensor and zero its  data.
@@ -55,12 +42,8 @@ auto create_zero_tensor(std::string const &name, MultiIndex... index) -> Tensor<
     return A;
 }
 
-// Deducing the flag rather than taking a plain `bool` keeps this overload out of
-// the candidate set unless the caller really passed a bool. GCC and the
-// MSVC-compatible front ends still treat any integer constant expression of value
-// zero as a null pointer constant, so a zero-extent call such as
-// create_zero_tensor<T>("out", size_t{0}, size_t{6}) would otherwise match here
-// too, with name = (char const *)0, and be ambiguous.
+// The flag is deduced, not `bool`, so a zero extent cannot match as a null-pointer name
+// (create_zero_tensor<T>("out", size_t{0}, size_t{6}) would be ambiguous).
 template <typename T = double, std::same_as<bool> RowMajor = bool, typename... MultiIndex>
 auto create_zero_tensor(RowMajor row_major, std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     EINSUMS_LOG_TRACE("creating zero tensor {}, {}", name, std::forward_as_tuple(index...));
@@ -72,11 +55,7 @@ auto create_zero_tensor(RowMajor row_major, std::string const &name, MultiIndex.
 /**
  * @brief Create a runtime-rank zero tensor from a runtime shape vector.
  *
- * RuntimeTensor-returning overload mirroring the typed family above.
- * Lets Python callers, and any C++ caller with a runtime shape, avoid
- * the typed-rank cross-product. Annotated for the einsums-pybind
- * codegen and exposed to Python as ``create_zero_tensor``, overloaded
- * across the four bound dtypes.
+ * The runtime-rank form, exposed to Python as ``create_zero_tensor``.
  */
 template <typename T = double>
 APIARY_EXPOSE APIARY_INSTANTIATE_AS("create_zero_tensor", double) APIARY_INSTANTIATE_AS("create_zero_tensor", float)
