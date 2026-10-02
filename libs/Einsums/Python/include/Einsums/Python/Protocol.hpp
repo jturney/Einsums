@@ -5,21 +5,10 @@
 
 #pragma once
 
-// Backend-neutral types that bridge user-side C++ helpers and codegen-emitted
-// pybind11/nanobind binding lambdas (Plan C protocol synthesis).
-//
-// The einsums-pybind codegen tool emits Python protocol bindings (buffer,
-// iterator, subscript) from APIARY_*_PROTOCOL_STD directives. The
-// emitted lambdas live in the codegen TU (where pybind11 is available) and
-// translate Python types (py::tuple, py::slice, py::buffer, ...) into the
-// neutral types declared here, then call user-provided pure-C++ helpers.
-//
-// Goal: user-side helpers — the methods on RuntimeTensor, BlockTensor, etc.
-// that the directives point at — see only these neutral types in their
-// signatures. They never `#include <pybind11/...>`. Switching the codegen
-// target between pybind11 and nanobind requires no changes to user code.
-//
-// This header has no dependencies beyond the standard library.
+// Backend-neutral types between codegen-emitted protocol bindings (buffer, iterator, subscript,
+// from APIARY_*_PROTOCOL_STD) and the C++ helpers they call. The emitted lambdas convert Python
+// objects into these, so the helpers never include pybind11 and do not care whether the backend is
+// pybind11 or nanobind. Standard library only.
 
 #include <Einsums/Config/Namespace.hpp>
 
@@ -31,23 +20,15 @@ EINSUMS_NAMESPACE_BEGIN()
 
 /// @brief One slot in a Python-style index expression.
 ///
-/// ``kind`` is the discriminant. Only the members listed for the active
-/// ``kind`` carry meaningful values. The others keep their defaults and must
-/// not be read. The mapping from Python syntax is:
+/// Only the members for the active ``kind`` are meaningful. From Python syntax:
 ///
 /// - ``t[i]`` becomes ``{Index, index = i}``
 /// - ``t[i:j:k]`` becomes ``{Range, start = i, stop = j, step = k}``
 /// - ``t[:]`` or ``t[...]`` becomes ``{Full}``
 ///
-/// The codegen-emitted ``__getitem__`` and ``__setitem__`` lambdas convert
-/// each slot of the incoming Python tuple, slice, or int into one
-/// ``SliceSpec`` and pass the resulting vector to the user-side helper named
-/// in ``APIARY_INDEX_PROTOCOL_STD``. Negative indices are normalized against
-/// the parent's dim before the struct is built, so user helpers never see
-/// negative values.
+/// Negative indices are normalized against the dimension before the helper sees them.
 struct SliceSpec {
-    /// Indexer kind for this slot. Acts as the discriminant that says which
-    /// of the members below are valid.
+    /// Which of the members below are valid.
     enum class Kind : std::uint8_t {
         Index, ///< Single integer index. Collapses this dimension.
         Range, ///< Slice with a half-open ``[start, stop)`` and a step. May or may not collapse.
@@ -68,22 +49,10 @@ struct SliceSpec {
 
 /// @brief Backend-neutral description of a contiguous or strided buffer.
 ///
-/// This type is used in both directions. On the outgoing path, from a
-/// RuntimeTensor to NumPy, the ``data_fn`` named in
-/// ``APIARY_BUFFER_PROTOCOL_STD`` returns one of these and the codegen lambda
-/// converts it to a ``pybind11::buffer_info`` or ``nb::ndarray`` for the
-/// active backend. On the incoming path, from NumPy to a RuntimeTensor for
-/// bulk assignment, the codegen lambda receives a ``py::buffer`` or
-/// ``nb::ndarray``, fills a ``BufferDescriptor``, and passes it to the user's
-/// ``set_buffer`` helper.
-///
-/// Strides are in element units, matching ``TensorImpl``'s convention. The
-/// backend adapter converts them to byte units when building a
-/// ``buffer_info``.
+/// Used both ways: returned by the ``data_fn`` of ``APIARY_BUFFER_PROTOCOL_STD`` for export to
+/// NumPy, and passed to the ``set_buffer`` helper for import. Strides are in elements.
 struct BufferDescriptor {
-    /// Element type identifier. Matches the format-string-style codes that
-    /// pybind11 and nanobind use to describe scalar element types. Codegen
-    /// lambdas translate to and from the backend's native dtype enum.
+    /// Element type, as the backends' format codes name it.
     enum class ScalarType : std::uint8_t {
         Unknown = 0,
         Int8,

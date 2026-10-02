@@ -6,10 +6,8 @@
 /// @file
 /// The handshake a compiled stage module performs at import.
 ///
-/// `einsums.stages.load_stage_module` refuses to read anything out of a module
-/// that has not done this, and `einsums.sealed.verify_stage_module` is what
-/// does the refusing. This header is the other end of that conversation: one
-/// macro, called once in a stage module's `PYBIND11_MODULE` body.
+/// `einsums.stages.load_stage_module` refuses a module that has not done it (see
+/// `einsums.sealed.verify_stage_module`). Call the macro once in the `PYBIND11_MODULE` body:
 ///
 /// @code
 /// #include <Einsums/Python/StageModule.hpp>
@@ -20,23 +18,12 @@
 /// }
 /// @endcode
 ///
-/// Two things about the expansion are load-bearing, and both are easy to
-/// "simplify" into uselessness.
+/// Two things in the expansion are load-bearing:
 ///
-/// **The registration call is compiled into the stage module, not into
-/// libEinsums.** That is the entire cross-world detection mechanism: the call
-/// resolves through the module's own symbol lookup and therefore lands in
-/// whichever copy of libEinsums the module actually reached. Ask a different
-/// copy afterwards and it reports nothing. A convenience helper inside
-/// libEinsums that registered on the module's behalf would always reach the
-/// library asking the question, and would answer "same world" every time.
-///
-/// **The fingerprints come from the headers, not from `world()`.** They are
-/// `constexpr` functions, so writing them here evaluates them against the
-/// headers this module is being compiled with, which is exactly the quantity a
-/// stale-headers check needs. Reading them from the runtime `world()` record
-/// would make every module agree with every library by construction, which is a
-/// guard that passes for the wrong reason.
+/// - **The registration is compiled into the stage module**, so it lands in whichever libEinsums
+///   the module reached. A helper inside libEinsums would always answer "same world".
+/// - **The fingerprints come from the headers, not `world()`**, so they describe what this module
+///   was compiled against. Read from `world()`, they would always match.
 
 #pragma once
 
@@ -48,9 +35,7 @@
 #include <pybind11/stl.h>
 #include <string>
 
-/// The compiler compiling THIS translation unit, which is the useful one in a
-/// mismatch report. Deliberately not `world().compiler_id`, which is the
-/// library's and would agree with itself.
+/// The compiler of THIS translation unit, not `world().compiler_id`, which is the library's.
 #define EINSUMS_DETAIL_STAGE_STR2(x) #x
 #define EINSUMS_DETAIL_STAGE_STR(x)  EINSUMS_DETAIL_STAGE_STR2(x)
 
@@ -79,11 +64,8 @@
         /* point: world() would report the library's own values and always agree. */                                                         \
         _einsums_info["config_fingerprint"] = ::einsums::sealed::config_fingerprint();                                                       \
         _einsums_info["layout_fingerprint"] = ::einsums::sealed::layout_fingerprint();                                                       \
-        /* Descriptive, for the error message rather than the decision - but    */                                                           \
-        /* header-derived for the same reason the fingerprints are. Reporting   */                                                           \
-        /* the library's own version back at it would print the same string on  */                                                           \
-        /* both lines of a stale-headers refusal, which is the one place the    */                                                           \
-        /* reader most needs them to differ.                                    */                                                           \
+        /* For the error message only, but header-derived like the fingerprints */                                                          \
+        /* so a stale-headers refusal shows two different versions.             */                                                          \
         _einsums_info["version"]           = ::std::to_string(EINSUMS_VERSION_MAJOR) + "." + ::std::to_string(EINSUMS_VERSION_MINOR) + "." + \
                                              ::std::to_string(EINSUMS_VERSION_PATCH);                                                        \
         _einsums_info["compiler"]          = ::std::string(EINSUMS_DETAIL_STAGE_COMPILER);                                                   \
