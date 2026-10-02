@@ -135,15 +135,8 @@ struct MicroKernel {
 };
 
 // ---------------------------------------------------------------------------
-// SIMD micro_kernel implementation shared by float and double.
-// Factored as a helper to avoid duplicating the gather → transpose → scale →
-// fmadd → scatter pipeline for each type.
-//
-// When innerStride is 1 (the common case for contiguous data), we use
-// gather_fixed<1> / scatter_fixed<1> which compile down to a single
-// loadu/storeu with no branch overhead. For other strides, we fall back
-// to the runtime gather/scatter which selects the best available
-// instruction (AVX2 hardware gather, NEON structured loads, or scalar).
+// The SIMD micro_kernel pipeline (gather, transpose, scale, fmadd, scatter) shared by float and
+// double. A unit inner stride compiles to plain loads and stores.
 // ---------------------------------------------------------------------------
 namespace detail_hptt {
 
@@ -198,9 +191,7 @@ static EINSUMS_FORCEINLINE void micro_kernel_simd(T const *A, size_t lda, size_t
 } // namespace detail_hptt
 
 // ---------------------------------------------------------------------------
-// SIMD-accelerated micro_kernel for float and double (non-complex).
-// Uses stripes for portable SIMD across x86 (SSE2/AVX/AVX2/AVX-512)
-// and ARM NEON (including Apple Silicon).
+// SIMD micro_kernel for float and double.
 // ---------------------------------------------------------------------------
 template <bool betaIsZero, bool conjA>
 struct MicroKernel<float, betaIsZero, conjA> {
@@ -235,13 +226,8 @@ struct MicroKernel<stripes::half_t, betaIsZero, conjA> {
 #endif
 
 // ---------------------------------------------------------------------------
-// micro_kernel for bfloat16_t. BF16 has SIMD load/store but no Vec<bf16>×Vec<bf16>
-// multiply that returns BF16; its arithmetic lands in FP32. So we load BF16
-// vectors, transpose them in registers, then for each output row widen BF16 to
-// FP32 (two halves), do alpha·A (+ beta·B) in FP32, and round back to BF16.
-// Everything is Stripes' portable spelling; it needs a Vec<bf16>
-// transpose, which only the NEON backend has, so AVX-512 BF16 keeps the scalar
-// kernel below.
+// micro_kernel for bfloat16_t: transpose in BF16, then scale in FP32 and round back. Needs a
+// Vec<bf16> transpose, which only NEON has; AVX-512 BF16 uses the scalar kernel below.
 // ---------------------------------------------------------------------------
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC)
 template <bool betaIsZero, bool conjA>
@@ -290,9 +276,7 @@ struct MicroKernel<stripes::bfloat16_t, betaIsZero, conjA> {
     }
 };
 #elif defined(__AVX512BF16__)
-// AVX-512BF16 platforms keep the FP32-promoted scalar path; equivalent
-// SIMD work would use _mm512_cvtne2ps_pbh / _mm512_cvtpbh_ps but the
-// hardware isn't available in this dev env to validate.
+// The FP32-promoted scalar path (AVX-512BF16 SIMD is unvalidated for lack of hardware).
 template <bool betaIsZero, bool conjA>
 struct MicroKernel<stripes::bfloat16_t, betaIsZero, conjA> {
     using bf16_t = stripes::bfloat16_t;
@@ -398,7 +382,7 @@ struct MicroKernel<std::complex<double>, betaIsZero, conjA> {
 };
 
 // ---------------------------------------------------------------------------
-// streamingStore and prefetch: now use stripes
+// streamingStore and prefetch
 // ---------------------------------------------------------------------------
 template <typename floatType>
 static void streamingStore(floatType *out, floatType const *in) {
@@ -459,16 +443,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
     constexpr int blocking_micro_ = stripes::native_bits / 8 / sizeof(floatType);
     constexpr int blocking_       = blocking_micro_ * 4;
 
-    // A non-temporal store needs its destination aligned to the rung's vector width: 64 B for
-    // _mm512_stream_pd, 32 B for AVX, 16 B for SSE; aarch64's STNP needs none, and 16 B keeps it
-    // on whole vectors. The gate asks exactly that of B's base and row stride, and that each
-    // buffered tile row is whole vectors.
-    //
-    // It used to keep a 32 B floor on the 16 B rungs, from a July change whose message blamed a
-    // failing Einsum7 on streaming at 16 B. That change also removed a nested `omp for` from
-    // direct_prod, undefined behaviour reported against the same Einsum7 line, and it is what
-    // failed: Einsum7 streams no tile at all under the 16 B gate, and LargeTranspose, which
-    // streams 545 tiles only that gate allows, matches its reference on aarch64.
+    // Non-temporal stores need B's base, row stride and tile rows aligned to the rung's vector width.
     constexpr size_t stream_align       = stripes::native_bits / 8;
     bool const       useStreamingStores = useStreamingStores_ && betaIsZero && (blockingB * sizeof(floatType)) % stream_align == 0 &&
                                           ((uint64_t)B) % stream_align == 0 && (ldb * sizeof(floatType)) % stream_align == 0;
@@ -958,9 +933,7 @@ static void axpy_1D(floatType const *A, floatType *B, size_t const myStart, size
     } else {
         if constexpr (useStreamingStores && streams_run_v<floatType>) {
             if (lda == 1 && ldb == 1) {
-                // Each thread streams one contiguous share and drains it: with spawnThreads this call owns
-                // the whole range and opens the region, otherwise the caller's region already gave this
-                // thread [myStart, myEnd).
+                // Each thread streams its contiguous share, from this region or the caller's.
                 if constexpr (spawnThreads) {
 #ifdef _OPENMP
 #    pragma omp parallel num_threads(numThreads)
@@ -1064,17 +1037,8 @@ static void get_start_end(KernelArgs<floatType> const &a, size_t n, size_t &mySt
     int myLocalThreadId = 0;
 #endif
 
-    // A single-threaded plan whose thread ids were filled in by DEFAULT has
-    // exactly one participant: whoever called it. Matching omp_get_thread_num()
-    // against the thread ids is an execute_expert() concept - it means "the caller
-    // spawned this team and told us which of its threads take part" - and a
-    // default {0} says nothing of the kind.
-    //
-    // execute() routes numThreads == 1 through the no-spawnThreads path, so
-    // without this a 1-thread plan called from inside somebody ELSE's parallel
-    // region saw a thread id that is not 0, decided it was not a participant,
-    // and silently transposed NOTHING. Two concurrent permutes then left one
-    // output untouched, with no error and no crash.
+    // A single-threaded plan with default thread ids belongs to whoever calls it, even from inside
+    // another team, where omp_get_thread_num() is not 0.
     if (!a.callerManagedThreads && a.numThreads == 1) {
         myStart = 0;
         myEnd   = n;
@@ -1152,10 +1116,7 @@ static void execute_expert(KernelArgs<floatType> const &a) noexcept {
             else
                 transpose_int<blocking_, blocking_, betaIsZero, floatType, useStreamingStores, false>(
                     _A, _A, _innerStrideA, _B, _B, _innerStrideB, _alpha, _beta, rootNode);
-            // The macro-kernel streams B when beta is zero, and streamed stores are weakly
-            // ordered: the caller, or another thread past the region's barrier, can read the
-            // old contents of a line this thread already wrote. Drain them once per task, on
-            // the thread that issued them.
+            // Streamed stores are weakly ordered: fence once per task, on the issuing thread.
             if constexpr (useStreamingStores && betaIsZero)
                 stripes::stream_fence();
         } else {

@@ -86,14 +86,9 @@ class TransposeImpl final : public hptt::Transpose<floatType> {
      *                       * This parameter may be NULL, indicating that the offset is zero.
      *                       * If offsetB is not NULL, outerSizeB[i] >= offsetB[i] + sizeB[i] >= 0 for all 0 <= i < dim must hold.
      *                       * This option enables HPTT to operate on intermediate sub-tensors.
-     *                       * This option enables HPTT to operate on sub-tensors.
      * \param[in] innerStrideB integer storing a non-unitary stride for the innermost dimension of B.
-     * \param[in] selectionMethod Determines if auto-tuning should be used. See hptt::SelectionMethod for details.
-     *                            ATTENTION: If you enable auto-tuning (e.g., hptt::MEASURE)
-     *                            then the output data will be used during the
-     *                            auto-tuning process. The original data (i.e., A and B), however, is preserved
-     *                            after this function call completes -- unless your input
-     *                            data (i.e. A) has invalid data (e.g., NaN, inf).
+     * \param[in] selectionMethod Whether to auto-tune (see hptt::SelectionMethod). Auto-tuning writes B
+     *                            but restores it, unless A holds NaN or inf.
      * \param[in] numThreads number of threads that participate in this tensor transposition.
      * \param[in] threadIds Array of OpenMP threadIds that participate in this
      *            tensor transposition. This parameter is only important if you want to call

@@ -130,17 +130,7 @@ void get_prime_factors(std::uint16_t n, std::list<std::uint16_t> &primeFactors) 
             primeFactors.push_back(prime);
         }
 
-        /*
-         * To test if a number is prime, we only need to
-         * check up to its square root. If there is some prime p that is greater than
-         * the square root of n, then p * p > n. The only way for n to be divisible by p
-         * is if there is some other prime p' less than p such that p * p' = n. Since p' < p,
-         * we have already done this check, so there are no more primes to test. We can use the
-         * same logic when doing the factorization. At this point, we have removed all primes less than
-         * p, so we know quotient is not divisible by those. Thus, if p is greater than the square root
-         * of the quotient, we know there are no more primes to check, and either the quotient is 1 or
-         * the quotient is prime.
-         */
+        // Past sqrt(quotient), the remaining quotient is 1 or prime.
         if (prime * prime > quotient) {
             break;
         }
@@ -170,17 +160,7 @@ void get_prime_factors(std::uint32_t n, std::list<std::uint32_t> &primeFactors) 
             primeFactors.push_back(prime);
         }
 
-        /*
-         * To test if a number is prime, we only need to
-         * check up to its square root. If there is some prime p that is greater than
-         * the square root of n, then p * p > n. The only way for n to be divisible by p
-         * is if there is some other prime p' less than p such that p * p' = n. Since p' < p,
-         * we have already done this check, so there are no more primes to test. We can use the
-         * same logic when doing the factorization. At this point, we have removed all primes less than
-         * p, so we know quotient is not divisible by those. Thus, if p is greater than the square root
-         * of the quotient, we know there are no more primes to check, and either the quotient is 1 or
-         * the quotient is prime.
-         */
+        // Past sqrt(quotient), the remaining quotient is 1 or prime.
         if (prime * prime > quotient) {
             break;
         }
@@ -275,17 +255,7 @@ void get_prime_factors(std::int16_t n, std::list<std::int16_t> &primeFactors) {
             primeFactors.push_back(prime);
         }
 
-        /*
-         * To test if a number is prime, we only need to
-         * check up to its square root. If there is some prime p that is greater than
-         * the square root of n, then p * p > n. The only way for n to be divisible by p
-         * is if there is some other prime p' less than p such that p * p' = n. Since p' < p,
-         * we have already done this check, so there are no more primes to test. We can use the
-         * same logic when doing the factorization. At this point, we have removed all primes less than
-         * p, so we know quotient is not divisible by those. Thus, if p is greater than the square root
-         * of the quotient, we know there are no more primes to check, and either the quotient is 1 or
-         * the quotient is prime.
-         */
+        // Past sqrt(quotient), the remaining quotient is 1 or prime.
         if (prime * prime > quotient) {
             break;
         }
@@ -315,17 +285,7 @@ void get_prime_factors(std::int32_t n, std::list<std::int32_t> &primeFactors) {
             primeFactors.push_back(prime);
         }
 
-        /*
-         * To test if a number is prime, we only need to
-         * check up to its square root. If there is some prime p that is greater than
-         * the square root of n, then p * p > n. The only way for n to be divisible by p
-         * is if there is some other prime p' less than p such that p * p' = n. Since p' < p,
-         * we have already done this check, so there are no more primes to test. We can use the
-         * same logic when doing the factorization. At this point, we have removed all primes less than
-         * p, so we know quotient is not divisible by those. Thus, if p is greater than the square root
-         * of the quotient, we know there are no more primes to check, and either the quotient is 1 or
-         * the quotient is prime.
-         */
+        // Past sqrt(quotient), the remaining quotient is 1 or prime.
         if (prime * prime > quotient) {
             break;
         }

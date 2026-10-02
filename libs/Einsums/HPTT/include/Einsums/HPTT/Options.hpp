@@ -29,12 +29,7 @@ EINSUMS_NAMESPACE_BEGIN()
 /// @brief How hard HPTT should search for a plan. Reads
 ///        @ref option::HpttSelectionMethod and maps it to HPTT's enum.
 ///
-/// Defined in the library rather than read from the descriptor at the call
-/// site. A ConfigOption caches the address of its registry entry inside itself,
-/// filled in when its module registers it, and a translation unit that compiles
-/// these headers gets its OWN copy of the descriptor, whose entry is never
-/// filled - so an inline read there quietly returns the default however the
-/// option was set.
+/// Out of line, as an inline read outside the library would see an unregistered copy of the option.
 EINSUMS_EXPORT hptt::SelectionMethod hptt_plan_selection();
 
 EINSUMS_NAMESPACE_END()

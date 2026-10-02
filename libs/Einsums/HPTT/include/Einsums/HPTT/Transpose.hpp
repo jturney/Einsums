@@ -50,15 +50,8 @@ EINSUMS_NAMESPACE_BEGIN(hptt)
  *
  * \brief Arch-neutral interface to a compiled tensor-transposition plan.
  *
- * A plan is created once via hptt::create_plan() (or Transpose::create())
- * and can be executed many times via execute(). To reuse a plan on new
- * buffers, repoint it with set_input_ptr()/set_output_ptr(); scaling
- * factors and conjugation can likewise be updated between executions.
- *
- * This class is a pure interface: the concrete implementation (selected at
- * plan-creation time) lives inside the HPTT module. Copying a plan is done
- * through clone(); plans round-trip through files via write_to_file() and
- * read_from_file().
+ * Create once (hptt::create_plan()), execute() many times; repoint buffers, scales and conjugation
+ * between runs. clone() copies; write_to_file()/read_from_file() persist.
  *
  * @tparam floatType The element type this plan transposes.
  */
@@ -121,9 +114,7 @@ class Transpose {
     /**
      * \brief Create a transposition plan.
      *
-     * This is the factory behind every hptt::create_plan() overload; the
-     * overloads normalize their arguments into this superset signature.
-     * The concrete plan implementation is chosen here, at creation time.
+     * The factory behind every hptt::create_plan() overload.
      *
      * \param[in] sizeA dim-dimensional array with the sizes of each dimension of A.
      * \param[in] perm dim-dimensional array representing the permutation of the indices.

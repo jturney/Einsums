@@ -75,9 +75,7 @@ TransposeImpl<floatType>::TransposeImpl(TransposeKernels<floatType> const &kerne
     : _kernels(&kernels), _A(A), _B(B), _alpha(alpha), _beta(beta), _dim(-1), _innerStrideA(0), _innerStrideB(0), _numThreads(numThreads),
       _masterPlan(nullptr), _selectionMethod(selectionMethod), _maxAutotuningCandidates(-1), _selectedParallelStrategyId(-1),
       _selectedLoopOrderId(-1), _conjA(false) {
-    // The caller's permutation indexes the size and stride arrays below (account_for_row_major reads
-    // sizeA[perm[i]]), so it is checked before anything uses it. A bad argument throws: this is a
-    // library, and ending the caller's process, a Python interpreter included, is not its call.
+    // Validate the permutation before it indexes anything. Throw, never exit: this is a library.
     if (dim < 1) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: dimensionality {} is too low", dim);
     }
@@ -1047,13 +1045,8 @@ void TransposeImpl<floatType>::create_plans(std::vector<std::shared_ptr<Plan>> &
                 auto      plan             = std::make_shared<Plan>(loopOrder, numThreadsAtLoop);
                 int const numTasks         = plan->get_num_tasks();
 
-                // Plan construction is serial: it fills numTasks (~= _numThreads)
-                // ComputeNode chains of trivial integer arithmetic, so an OMP
-                // team here (once per candidate plan, up to hundreds) costs more
-                // in fork/join than it saves. Serial also removes the only
-                // benign-but-noisy TSan reports HPTT emitted outside the actual
-                // transpose kernels. (Execution - execute_expert/axpy/macro_kernel
-                // - stays threaded; that is where the parallelism pays off.)
+                // Serial: building a candidate plan is trivial arithmetic, so a fork per candidate costs
+                // more than it saves. Execution stays threaded.
                 for (int taskId = 0; taskId < numTasks; taskId++) {
                     ComputeNode *currentNode = plan->get_root_node(taskId);
 

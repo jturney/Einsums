@@ -5,14 +5,8 @@
 
 // Arch-neutral plan factory: the one place the SIMD dispatch rung is chosen.
 //
-// The transpose kernels (TransposeKernels.cpp) are compiled once per
-// instruction-set rung by stripes_add_dispatch_sources(), each copy in
-// its own namespace (hptt::arch_baseline, hptt::arch_v3, ...). The planner,
-// TransposeImpl in Transpose.cpp, is compiled once, as is this TU. It declares
-// each rung's kernel table (guarded by the STRIPES_HAS_RUNG_* definitions
-// the CMake helper emits), picks the best built one the machine supports,
-// starting from stripes::selected_arch(), and hands it to TransposeImpl,
-// which plans around its tile size and calls its kernels.
+// The kernels are compiled per rung, each in its own namespace; the planner and this TU once. This
+// picks the best built rung the machine supports and hands its kernel table to TransposeImpl.
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>

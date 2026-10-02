@@ -36,11 +36,7 @@
 EINSUMS_NAMESPACE_BEGIN(hptt)
 
 // ===========================================================================
-// Templatized create_plan overloads.
-//
-// These replace the former 36 (4 types × 9 signatures) non-template overloads
-// with 9 function templates. Each body is a single make_shared call, so they
-// are defined inline in the header.
+// The create_plan overloads.
 // ===========================================================================
 
 /// Create a transposition plan (basic).

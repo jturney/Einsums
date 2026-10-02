@@ -122,12 +122,8 @@ inline constexpr char plan_file_format = 1;
 /**
  * The machine geometry a plan was built for; follows the FileHeader from format version 1 on.
  *
- * A plan stores loop increments equal to the macro-kernel block, which is four vectors of the
- * writing translation unit's register width. A reader compiled for a different width, or for a
- * different element size, steps by one block while the plan steps by another, and silently
- * skips or overruns elements. So the reader refuses a plan whose vector_bits or element_size
- * differs from its own. The rung is recorded for the error message only: two rungs with the
- * same vector width (baseline and x86-64-v2) build identical plans.
+ * A plan's increments are four vectors of the writer's register width, so a reader refuses a plan
+ * whose vector_bits or element_size differ from its own. The rung is for the message only.
  */
 struct PlanTarget {
     uint16_t vector_bits;  ///< Register width, in bits, of the rung that wrote the plan.

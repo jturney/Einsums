@@ -6,12 +6,8 @@
 // The boundary between HPTT's planner, compiled once, and its kernels, compiled once per SIMD
 // dispatch rung (TransposeKernels.cpp, through stripes_add_dispatch_sources).
 //
-// Everything a rung's copy defines must be its own: the linker keeps one definition per name, so a
-// std::vector member or a logging template instantiated in the kernels would be emitted by every rung
-// under the same name, at that rung's flags, and the program would call whichever copy it kept, AVX-512
-// on a CPU without it included. So the kernels see only this header's flat argument block and
-// nothing from the planner's side: no containers, no logging, no assertions. The planner reaches them
-// through the table one rung's copy returns.
+// The kernels see only this flat argument block: any inline function they instantiated (a container,
+// logging) would be emitted by every rung under one name, and the linker might keep the AVX-512 copy.
 
 #pragma once
 
