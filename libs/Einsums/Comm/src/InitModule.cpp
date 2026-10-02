@@ -10,13 +10,8 @@
 #include <Einsums/Runtime/InitRuntime.hpp>
 
 /*
- * Mirrors the BLAS / Tensor / etc. InitModule pattern. setup_Einsums_Comm()
- * registers the pre-startup / shutdown hooks the first time it's called; the
- * companion InitModule.hpp's header-driven static initializer guarantees it
- * IS called from every TU that includes the header (which is what keeps the
- * linker from gc'ing it and what makes the registration actually happen at
- * load time). MPI_Init must run before any other MPI call, so we use
- * register_pre_startup_function rather than the regular startup one.
+ * Registers the hooks on first call (see InitModule.hpp). A pre-startup hook, because MPI_Init must
+ * precede every other MPI call.
  */
 EINSUMS_NAMESPACE_BEGIN()
 

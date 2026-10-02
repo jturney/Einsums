@@ -10,15 +10,9 @@
 #include <Einsums/Config/Namespace.hpp>
 
 /*
- * Header-driven module initialization. The static initializer in detail:: below
- * forces every TU that includes this header to take a reference to
- * setup_Einsums_Comm(), which both (a) prevents `--gc-sections` from dropping
- * the symbol at link time and (b) auto-runs the registration at executable
- * load. This is the same pattern Tensor, BLAS, BufferAllocator, and others use. Comm's
- * register_pre_startup_function(initialize) is what actually flips
- * comm::is_initialized() to true once the runtime starts; without this header
- * being referenced from a public, library-internal TU, the pre-startup hook
- * never fires.
+ * The static initializer below makes every including TU reference setup_Einsums_Comm(), so the
+ * linker keeps it and the registration runs at load. Without it the pre-startup hook that sets
+ * comm::is_initialized() never fires.
  */
 
 EINSUMS_NAMESPACE_BEGIN()

@@ -27,8 +27,7 @@ enum class GridAxis : std::uint8_t {
 /**
  * @brief Type-erased distribution descriptor for a tensor on a 2D process grid.
  *
- * Stored in TensorHandle::distribution_info as shared_ptr<DistributionDescriptor>.
- * Replaces the previous shared_ptr<size_t> (single dimension index).
+ * Stored in TensorHandle::distribution_info.
  *
  * For a GEMM C[i,j] = A[i,k] * B[k,j] on a 2×2 grid:
  * - C: dim_to_axis = {Row, Col}, global_dims = {M, N}

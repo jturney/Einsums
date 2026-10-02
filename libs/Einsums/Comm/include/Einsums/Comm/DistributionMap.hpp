@@ -8,9 +8,7 @@
 /// @file DistributionMap.hpp
 /// @brief Tensor distribution strategies for MPI partitioning.
 ///
-/// Used internally by ComputeGraph passes (DistributionPlanning, Materialization)
-/// to decide how deferred tensors are partitioned across ranks. Users never interact
-/// with these types directly; the pass infrastructure handles everything transparently.
+/// Internal to the ComputeGraph distribution passes (DistributionPlanning, Materialization).
 
 #include <Einsums/Comm/Runtime.hpp>
 #include <Einsums/Config/Namespace.hpp>

@@ -11,15 +11,11 @@
 
 EINSUMS_NAMESPACE_BEGIN(comm)
 
-/// Initialize the communication layer.
-/// With MPI: calls MPI_Init_thread(MPI_THREAD_FUNNELED).
-/// Mock: no-op.
-/// Called automatically via module startup hooks.
+/// Initialize the communication layer: MPI_Init_thread(MPI_THREAD_FUNNELED), or nothing on the
+/// mock backend. Called by the module's startup hook.
 EINSUMS_EXPORT void initialize(int *argc = nullptr, char ***argv = nullptr);
 
-/// Finalize the communication layer.
-/// With MPI: calls MPI_Finalize().
-/// Called automatically via module shutdown hooks.
+/// Finalize the communication layer (MPI_Finalize). Called by the module's shutdown hook.
 EINSUMS_EXPORT void finalize();
 
 /// Check if the communication layer has been initialized.
