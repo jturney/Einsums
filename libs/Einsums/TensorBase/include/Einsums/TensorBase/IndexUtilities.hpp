@@ -112,9 +112,6 @@ template <typename StorageType1, typename StorageType2>
 void sentinel_to_indices(size_t sentinel, StorageType1 const &unique_strides, StorageType2 &out_inds) {
     size_t hold = sentinel;
 
-    // if (out_inds.size() != unique_strides.size()) {
-    //     out_inds.resize(unique_strides.size());
-    // }
 
     if (unique_strides[0] < unique_strides[unique_strides.size() - 1]) {
         for (ptrdiff_t i = unique_strides.size() - 1; i >= 0; i--) {
@@ -523,9 +520,7 @@ inline size_t indices_to_sentinel_negative_check(std::array<std::int64_t, num_un
 /**
  * @brief Converts indices to a sentinel. Checks for negative numbers and converts them.
  *
- * When checking for negative numbers, it will add the appropriate dimension to bring the index into
- * the range for that dimension. Can not be used on GPU since it throws errors. Also, running all those if-statements
- * would be very slow.
+ * Negative indices count from the end. Host only, as it throws.
  */
 template <size_t num_unique_inds, typename... MultiIndex>
     requires(std::is_integral_v<std::decay_t<MultiIndex>> && ...)
@@ -540,9 +535,7 @@ inline size_t indices_to_sentinel_negative_check(std::array<std::int64_t, num_un
 /**
  * @brief Converts indices to a sentinel. Checks for negative numbers and converts them.
  *
- * When checking for negative numbers, it will add the appropriate dimension to bring the index into
- * the range for that dimension. Can not be used on GPU since it throws errors. Also, running all those if-statements
- * would be very slow.
+ * Negative indices count from the end. Host only, as it throws.
  */
 template <typename StorageType1, typename StorageType2, typename StorageType3>
     requires requires {

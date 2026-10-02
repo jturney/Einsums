@@ -18,10 +18,7 @@
 
 EINSUMS_NAMESPACE_BEGIN()
 
-/// Maximum tensor rank that a single symmetry operation can describe. Tensor
-/// rank doesn't need to match this value, since permutations are stored padded.
-/// The value mirrors the practical upper bound used elsewhere in the library,
-/// such as 4-index integrals, rank-5 tests, and HPTT limits.
+/// Maximum rank a symmetry operation can describe; smaller ranks are padded.
 inline constexpr int kMaxSymmetryRank = 8;
 
 /// One generator of a tensor's symmetry group.
@@ -69,11 +66,7 @@ struct EINSUMS_EXPORT SymmetryOp {
 
 /// Describes the symmetry of a tensor as a set of generators.
 ///
-/// The full symmetry group is the closure of the generators under composition.
-/// We store only the generators both because it keeps the descriptor small
-/// (ERIs' 8-fold symmetry fits in three generators) and because callers
-/// usually want to reason about which invariants hold, not enumerate 48
-/// group elements.
+/// The group is the generators' closure; only the generators are stored (ERIs need three).
 ///
 /// @par Common patterns
 /// - ``SymmetryDescriptor::symmetric_pair(i, j)``: ``T(..,i,..,j,..) = T(..,j,..,i,..)``.
@@ -103,10 +96,7 @@ struct EINSUMS_EXPORT SymmetryDescriptor {
     }
 
     [[nodiscard]] bool operator==(SymmetryDescriptor const &other) const noexcept {
-        // Exact generator-list equality (including ordering). Canonicalization
-        // for semantic equality across different generator sets is intentionally
-        // deferred; it's only needed once CSE starts merging symmetric nodes
-        // and we can design that comparator alongside.
+        // Exact generator lists, order included; equal groups from different generators compare unequal.
         return ops == other.ops && tolerance == other.tolerance;
     }
 

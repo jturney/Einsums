@@ -23,11 +23,7 @@ EINSUMS_NAMESPACE_BEGIN()
  * @brief Sentinel value for ``Tensor::Rank`` on tensor types whose rank is
  *        not known at compile time (e.g. ``GeneralRuntimeTensor``).
  *
- * Concepts that compare ``Rank`` across tensor types (``IsSameRankV``,
- * ``SameRank``, ``SameUnderlyingAndRank``) treat any operand whose
- * ``Rank == dynamic_rank`` as a wildcard, so no compile-time mismatch can
- * be inferred against it. Runtime-rank checks remain the caller's
- * responsibility.
+ * Rank-comparing concepts treat it as a wildcard; runtime-rank checks are the caller's job.
  */
 inline constexpr int dynamic_rank = -1;
 
@@ -275,9 +271,8 @@ struct Range : std::array<std::int64_t, 2> {
 /**
  * @struct RemovableRange
  *
- * Holds two values: a starting value and an ending value. It will be treated as a single value if the start and end are the same.
- * The usefulness may not be immediately apparent. This class is mostly used in the Python compatibility layer, but as an example,
- * look at this code segment.
+ * A Range treated as a single index, dropping the dimension, when start equals end. For index
+ * lists that can only hold ranges, mostly from Python:
  *
  * @code
  * RuntimeTensor<double> A{"A", 3, 3, 3}; // A is a rank-3 tensor.
@@ -296,11 +291,7 @@ struct Range : std::array<std::int64_t, 2> {
  * EINSUMS_ASSERT(A_view_4.rank() == 2);
  * @endcode
  *
- * In the first three examples, the RemovableRange is not really needed. It can be replaced with a single value index. However, in the
- * fourth example, we can't use a single value because the vector can only hold ranges. Since RemovableRange extends Range, we can use it in
- * this vector where it will be treated as if it were a single index. If the elements in the range are not the same, such as
- * <tt>RemovableRange{0, 1}</tt>, then it behaves exactly the same as a regular Range. The removable part is a hint to the functions that
- * look for them that they can be removed if needed.
+ * With different start and end it behaves as a plain Range.
  *
  * @versionadded{2.0.0}
  */

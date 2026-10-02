@@ -54,10 +54,7 @@ struct TiledTensor;
 /**
  * @struct BlockTensorNoExtra
  *
- * @brief Specifies that a tensor is a block tensor. Internal use only. Use BlockTensorBase instead.
- *
- * Specifies that a tensor is a block tensor without needing template parameters. Internal use only.
- * Use BlockTensorBase in your code.
+ * @brief Marks a block tensor without template parameters. Internal; use BlockTensorBase.
  */
 struct EINSUMS_EXPORT BlockTensorNoExtra {};
 
