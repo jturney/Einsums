@@ -30,7 +30,7 @@ set(profile_tests test_profile_python.py)
 
 if(EINSUMS_WITH_PROFILER)
   list(PREPEND profile_tests ProfileRingBuffer.cpp ProfileConsumer.cpp ProfileAnnotations.cpp
-       ProfileStringTable.cpp ProfileProducer.cpp)
+       ProfileStringTable.cpp ProfileProducer.cpp ProfileServer.cpp)
 endif()
 
 foreach(test ${profile_tests})

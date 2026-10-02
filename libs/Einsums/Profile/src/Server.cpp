@@ -249,6 +249,13 @@ void Server::shutdown() {
     } catch (...) {                // NOLINT
     }
 
+    // A client that connected since the last tick is still in the listen backlog. Accept it
+    // now, or a short program (one that finishes between two ticks) sends it nothing: its
+    // queued benchmark results and final snapshot are dropped on close.
+    if (_listen_fd >= 0) {
+        accept_clients();
+    }
+
     if (!_client_fds.empty()) {
         EINSUMS_LOG_INFO("Profile server: draining to {} connected viewer(s)...", _client_fds.size());
         for (int i = 0; i < drain_iterations; i++) {
