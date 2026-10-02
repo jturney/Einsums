@@ -62,7 +62,7 @@ std::vector<std::vector<V>> gather(TiledRuntimeTensor<V> const &T, int R, int C)
 
 /// Within 100 epsilon of @p want, relative to it and absolute near zero, for any element type.
 template <typename V>
-bool near(V got, V want) {
+bool close_to(V got, V want) {
     return std::abs(got - want) <= 100.0 * std::numeric_limits<RemoveComplexT<V>>::epsilon() * (1.0 + std::abs(want));
 }
 
@@ -249,7 +249,7 @@ TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - tiled direct_division (eager + cap
     auto Cg = gather(C, 5, 9);
     for (int i = 0; i < 5; ++i) {
         for (int j = 0; j < 9; ++j) {
-            REQUIRE(near<T>(Cg[i][j], alpha * af(i, j) / bf(i, j) + beta * cf(i, j)));
+            REQUIRE(close_to<T>(Cg[i][j], alpha * af(i, j) / bf(i, j) + beta * cf(i, j)));
         }
     }
 
@@ -273,7 +273,7 @@ TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - tiled direct_division (eager + cap
     auto C2g = gather(C2, 5, 9);
     for (int i = 0; i < 5; ++i) {
         for (int j = 0; j < 9; ++j) {
-            REQUIRE(near<T>(C2g[i][j], Cg[i][j]));
+            REQUIRE(close_to<T>(C2g[i][j], Cg[i][j]));
         }
     }
 }

@@ -47,7 +47,7 @@ size_t axpby_input_count(cg::Graph &graph) {
 
 /// Within 100 epsilon of @p want, relative to it and absolute near zero, for any element type.
 template <typename T>
-bool near(T got, T want) {
+bool close_to(T got, T want) {
     return std::abs(got - want) <= 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon() * (1.0 + std::abs(want));
 }
 
@@ -95,7 +95,7 @@ TEMPLATE_LIST_TEST_CASE("AxpbyDescriptor - executor reads live params (single so
 
     graph.execute();
     for (size_t i = 0; i < 4; ++i) {
-        CHECK(near<T>(Y(i), alpha * x0[i] + beta * y0[i]));
+        CHECK(close_to<T>(Y(i), alpha * x0[i] + beta * y0[i]));
     }
 
     // Fold beta -> 0 through the shared params. If the executor still used the
@@ -107,7 +107,7 @@ TEMPLATE_LIST_TEST_CASE("AxpbyDescriptor - executor reads live params (single so
 
     graph.execute();
     for (size_t i = 0; i < 4; ++i) {
-        CHECK(near<T>(Y(i), alpha * x0[i]));
+        CHECK(close_to<T>(Y(i), alpha * x0[i]));
     }
     // The at-capture snapshot is unchanged by the params mutation.
     CHECK(cg::as<T>(d->beta) == beta);

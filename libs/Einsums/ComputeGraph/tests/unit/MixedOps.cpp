@@ -26,7 +26,7 @@ namespace {
 /// Within @p for_double of @p want, relative to it and absolute near zero; a narrower type gets a
 /// hundred ulps of its own precision instead when that is looser.
 template <typename T>
-bool near(T got, T want, double for_double) {
+bool close_to(T got, T want, double for_double) {
     double const tol = std::max(for_double, 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon());
     return std::abs(got - want) <= tol * (1.0 + std::abs(want));
 }
@@ -53,7 +53,7 @@ TEMPLATE_LIST_TEST_CASE("Graph - gemm operation", "[ComputeGraph][Phase2]", test
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(near<T>(C(ii, jj), C_expected(ii, jj), 1e-12));
+            REQUIRE(close_to<T>(C(ii, jj), C_expected(ii, jj), 1e-12));
         }
     }
 }
@@ -76,7 +76,7 @@ TEMPLATE_LIST_TEST_CASE("Graph - gemv operation", "[ComputeGraph][Phase2]", test
     graph.execute();
 
     for (size_t ii = 0; ii < 4; ii++) {
-        REQUIRE(near<T>(y(ii), y_expected(ii), 1e-12));
+        REQUIRE(close_to<T>(y(ii), y_expected(ii), 1e-12));
     }
 }
 
@@ -113,14 +113,14 @@ TEMPLATE_LIST_TEST_CASE("Graph - syev in-place form", "[ComputeGraph][Phase2]", 
             for (size_t kk = 0; kk < 4; kk++) {
                 applied += A0(ii, kk) * A(kk, jj);
             }
-            REQUIRE(near<T>(applied, W(jj) * A(ii, jj), 1e-10));
+            REQUIRE(close_to<T>(applied, W(jj) * A(ii, jj), 1e-10));
         }
         for (size_t kk = 0; kk < 4; kk++) {
             T overlap{0};
             for (size_t ii = 0; ii < 4; ii++) {
                 overlap += A(ii, jj) * A(ii, kk);
             }
-            REQUIRE(near<T>(overlap, T(jj == kk ? 1.0 : 0.0), 1e-10));
+            REQUIRE(close_to<T>(overlap, T(jj == kk ? 1.0 : 0.0), 1e-10));
         }
     }
 }
@@ -139,7 +139,7 @@ TEMPLATE_LIST_TEST_CASE("Graph - qr outside capture", "[ComputeGraph][Phase2]", 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
             T const expected = (ii == jj) ? T(1.0) : T(0.0);
-            REQUIRE(near<T>(QtQ(ii, jj), expected, 1e-10));
+            REQUIRE(close_to<T>(QtQ(ii, jj), expected, 1e-10));
         }
     }
 }
@@ -176,7 +176,7 @@ TEMPLATE_LIST_TEST_CASE("Graph - element_transform", "[ComputeGraph][Phase2]", t
 
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {
-            REQUIRE(near<T>(A(ii, jj), A_expected(ii, jj), 1e-12));
+            REQUIRE(close_to<T>(A(ii, jj), A_expected(ii, jj), 1e-12));
         }
     }
 }
@@ -215,7 +215,7 @@ TEMPLATE_LIST_TEST_CASE("Graph - mixed operations pipeline", "[ComputeGraph][Pha
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(near<T>(D(ii, jj), D_ref(ii, jj), 1e-10));
+            REQUIRE(close_to<T>(D(ii, jj), D_ref(ii, jj), 1e-10));
         }
     }
 }
@@ -239,7 +239,7 @@ TEMPLATE_LIST_TEST_CASE("Graph - axpby operation", "[ComputeGraph][Phase2]", tes
     graph.execute();
 
     for (size_t ii = 0; ii < 5; ii++) {
-        REQUIRE(near<T>(Y(ii), Y_ref(ii), 1e-12));
+        REQUIRE(close_to<T>(Y(ii), Y_ref(ii), 1e-12));
     }
 }
 

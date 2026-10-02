@@ -30,7 +30,7 @@ namespace {
 /// Within @p for_double of @p want, relative to it and absolute near zero; a narrower type gets a
 /// hundred ulps of its own precision instead when that is looser.
 template <typename T>
-bool near(T got, T want, double for_double) {
+bool close_to(T got, T want, double for_double) {
     double const tol = std::max(for_double, 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon());
     return std::abs(got - want) <= tol * (1.0 + std::abs(want));
 }
@@ -61,7 +61,7 @@ TEMPLATE_LIST_TEST_CASE("Operation - ger (rank-1 update) in graph", "[ComputeGra
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(near<T>(A(ii, jj), A_ref(ii, jj), 1e-12));
+            REQUIRE(close_to<T>(A(ii, jj), A_ref(ii, jj), 1e-12));
         }
     }
 }
@@ -88,7 +88,7 @@ TEMPLATE_LIST_TEST_CASE("Operation - direct product in graph", "[ComputeGraph][O
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(near<T>(C(ii, jj), C_ref(ii, jj), 1e-12));
+            REQUIRE(close_to<T>(C(ii, jj), C_ref(ii, jj), 1e-12));
         }
     }
 }
@@ -110,7 +110,7 @@ TEMPLATE_LIST_TEST_CASE("Operation - transpose in graph", "[ComputeGraph][Operat
 
     for (size_t ii = 0; ii < 6; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(near<T>(B(ii, jj), B_ref(ii, jj), 1e-12));
+            REQUIRE(close_to<T>(B(ii, jj), B_ref(ii, jj), 1e-12));
         }
     }
 }
@@ -155,7 +155,7 @@ TEMPLATE_LIST_TEST_CASE("Operation - gesv in graph", "[ComputeGraph][Operations]
             for (size_t kk = 0; kk < 3; kk++) {
                 applied += A(ii, kk) * B_graph(kk, jj);
             }
-            REQUIRE(near<T>(applied, B(ii, jj), 1e-10));
+            REQUIRE(close_to<T>(applied, B(ii, jj), 1e-10));
         }
     }
 }
@@ -282,7 +282,7 @@ TEMPLATE_LIST_TEST_CASE("Operation - chain of mixed ops in graph", "[ComputeGrap
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(near<T>(D(ii, jj), D_ref(ii, jj), 1e-12));
+            REQUIRE(close_to<T>(D(ii, jj), D_ref(ii, jj), 1e-12));
         }
     }
 }
@@ -316,7 +316,7 @@ TEMPLATE_LIST_TEST_CASE("Operation - ger then gemm in graph", "[ComputeGraph][Op
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(near<T>(C(ii, jj), C_ref(ii, jj), 1e-12));
+            REQUIRE(close_to<T>(C(ii, jj), C_ref(ii, jj), 1e-12));
         }
     }
 }

@@ -64,7 +64,7 @@ std::vector<std::vector<V>> gather(TiledRuntimeTensor<V> const &T, int R, int C)
 
 /// Within 100 epsilon of @p want, relative to it and absolute near zero, for any element type.
 template <typename V>
-bool near(V got, V want) {
+bool close_to(V got, V want) {
     return std::abs(got - want) <= 100.0 * std::numeric_limits<RemoveComplexT<V>>::epsilon() * (1.0 + std::abs(want));
 }
 
@@ -92,7 +92,7 @@ TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - tiled einsum GEMM (eager) matches 
             for (int k = 0; k < 3; ++k) {
                 expected += af(i, k) * bf(k, j);
             }
-            REQUIRE(near<T>(Cg[i][j], expected));
+            REQUIRE(close_to<T>(Cg[i][j], expected));
         }
     }
     // Infer-and-create: every output grid cell received a contribution.
@@ -125,7 +125,7 @@ TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - tiled einsum GEMM inside a capture
             for (int k = 0; k < 3; ++k) {
                 expected += af(i, k) * bf(k, j);
             }
-            REQUIRE(near<T>(Cg[i][j], expected));
+            REQUIRE(close_to<T>(Cg[i][j], expected));
         }
     }
 }
@@ -169,7 +169,7 @@ TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - sparse inputs: missing tiles contr
                     expected += af(i, k) * bf(k, j);
                 }
             }
-            REQUIRE(near<T>(Cg[i][j], expected));
+            REQUIRE(close_to<T>(Cg[i][j], expected));
         }
     }
 }

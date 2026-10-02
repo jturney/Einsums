@@ -36,7 +36,7 @@ double route_tolerance() {
 
 /// Within route_tolerance of @p want, relative to it and absolute near zero, for any element type.
 template <typename T>
-bool near(T got, T want) {
+bool close_to(T got, T want) {
     return std::abs(got - want) <= route_tolerance<T>() * (1.0 + std::abs(want));
 }
 
@@ -201,7 +201,7 @@ TEMPLATE_LIST_TEST_CASE("String einsum - pipeline with loop", "[ComputeGraph][St
 
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {
-            REQUIRE(near<T>(acc(ii, jj), T(3.0) * C_ref(ii, jj)));
+            REQUIRE(close_to<T>(acc(ii, jj), T(3.0) * C_ref(ii, jj)));
         }
     }
 }
@@ -566,7 +566,7 @@ TEMPLATE_LIST_TEST_CASE("String permute - rank-3 transpose", "[ComputeGraph][Str
     for (size_t ii = 0; ii < 5; ii++)
         for (size_t jj = 0; jj < 3; jj++)
             for (size_t kk = 0; kk < 4; kk++)
-                REQUIRE(near<T>(C(ii, jj, kk), C_expected(ii, jj, kk)));
+                REQUIRE(close_to<T>(C(ii, jj, kk), C_expected(ii, jj, kk)));
 }
 
 TEMPLATE_LIST_TEST_CASE("String permute - graph capture and execute", "[ComputeGraph][StringPermute]", testing::AllScalarTypes) {
@@ -599,7 +599,7 @@ TEMPLATE_LIST_TEST_CASE("String permute - identity (no reorder)", "[ComputeGraph
 
     for (size_t ii = 0; ii < 3; ii++)
         for (size_t jj = 0; jj < 4; jj++)
-            REQUIRE(near<T>(C(ii, jj), A(ii, jj)));
+            REQUIRE(close_to<T>(C(ii, jj), A(ii, jj)));
 }
 
 namespace {
@@ -688,7 +688,7 @@ TEMPLATE_LIST_TEST_CASE("String einsum - P(ij) matches the hand-expanded pair", 
             for (size_t aa = 0; aa < nv; aa++) {
                 for (size_t bb = 0; bb < nv; bb++) {
                     T const want = base(ii, jj, aa, bb) - base(jj, ii, aa, bb);
-                    REQUIRE(near<T>(C(ii, jj, aa, bb), want));
+                    REQUIRE(close_to<T>(C(ii, jj, aa, bb), want));
                 }
             }
         }
@@ -716,7 +716,7 @@ TEMPLATE_LIST_TEST_CASE("String einsum - P(ij)P(ab) is the CCSD ring term", "[Co
             for (size_t aa = 0; aa < nv; aa++) {
                 for (size_t bb = 0; bb < nv; bb++) {
                     T const want = base(ii, jj, aa, bb) - base(jj, ii, aa, bb) - base(ii, jj, bb, aa) + base(jj, ii, bb, aa);
-                    REQUIRE(near<T>(C(ii, jj, aa, bb), want));
+                    REQUIRE(close_to<T>(C(ii, jj, aa, bb), want));
                 }
             }
         }
@@ -748,7 +748,7 @@ TEMPLATE_LIST_TEST_CASE("String einsum - prefactors apply once, not once per ter
                 for (size_t bb = 0; bb < nv; bb++) {
                     // c_pf ONCE on the old C; ab_pf ONCE on the antisymmetrized sum.
                     T const want = c_pf * C0(ii, jj, aa, bb) + ab_pf * (base(ii, jj, aa, bb) - base(jj, ii, aa, bb));
-                    REQUIRE(near<T>(C(ii, jj, aa, bb), want));
+                    REQUIRE(close_to<T>(C(ii, jj, aa, bb), want));
                 }
             }
         }
@@ -800,7 +800,7 @@ TEMPLATE_LIST_TEST_CASE("String einsum - a zero-extent operand still scales C ex
         for (size_t jj = 0; jj < no; jj++) {
             for (size_t aa = 0; aa < nv; aa++) {
                 for (size_t bb = 0; bb < nv; bb++) {
-                    REQUIRE(near<T>(C(ii, jj, aa, bb), T(0.5) * C0(ii, jj, aa, bb)));
+                    REQUIRE(close_to<T>(C(ii, jj, aa, bb), T(0.5) * C0(ii, jj, aa, bb)));
                 }
             }
         }
@@ -885,7 +885,7 @@ TEMPLATE_LIST_TEST_CASE("String einsum - an operator survives capture and replay
         for (size_t jj = 0; jj < no; jj++) {
             for (size_t aa = 0; aa < nv; aa++) {
                 for (size_t bb = 0; bb < nv; bb++) {
-                    REQUIRE(near<T>(replayed(ii, jj, aa, bb), eager(ii, jj, aa, bb)));
+                    REQUIRE(close_to<T>(replayed(ii, jj, aa, bb), eager(ii, jj, aa, bb)));
                 }
             }
         }
