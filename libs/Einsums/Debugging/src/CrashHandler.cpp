@@ -26,20 +26,13 @@ EINSUMS_NAMESPACE_BEGIN(util)
 
 namespace {
 
-/// Where @ref install_crash_handler was asked to drop the minidump, and the filter it
-/// displaced. Plain globals rather than anything with a destructor: the handler runs
-/// during teardown, after static destructors have begun, so it may only touch storage
-/// that cannot have been destroyed out from under it.
+/// The minidump directory and the displaced filter. Plain globals with no destructors: the handler
+/// can run after static destruction has begun.
 char                         g_dump_directory[MAX_PATH] = {};
 LPTOP_LEVEL_EXCEPTION_FILTER g_previous_filter          = nullptr;
 bool                         g_installed                = false;
 
-/// Write straight to the standard error HANDLE.
-///
-/// Not std::cerr and not stderr: by the time this runs the iostreams objects may have
-/// been destroyed and the CRT may have closed its streams, and a crash report that
-/// disappears because the reporting path itself was torn down is worse than useless.
-/// The raw handle stays valid until the process does.
+/// Write straight to the standard error HANDLE, which outlives std::cerr and the CRT's streams.
 void write_stderr(char const *text) {
     HANDLE const h = GetStdHandle(STD_ERROR_HANDLE);
     if (h == nullptr || h == INVALID_HANDLE_VALUE) {
@@ -49,13 +42,8 @@ void write_stderr(char const *text) {
     WriteFile(h, text, static_cast<DWORD>(std::strlen(text)), &written, nullptr);
 }
 
-/// Heap corruption detected by the allocator. Spelled out rather than taken from
-/// ntstatus.h, which redefines a long list of macros Windows.h has already defined
-/// unless the translation unit is arranged around WIN32_NO_STATUS.
-///
-/// Worth naming despite never reaching the filter: this status is raised through a
-/// fail-fast path that bypasses the unhandled exception filter outright. Seeing it
-/// here at all would mean it arrived some other way, and knowing that is the point.
+/// Heap corruption detected by the allocator, spelled out because ntstatus.h clashes with
+/// Windows.h. It normally bypasses the filter via fail-fast, so seeing it here is itself news.
 constexpr DWORD kStatusHeapCorruption = 0xC0000374UL;
 
 /// Spelling for the exception codes worth recognizing on sight. Anything else is
@@ -121,9 +109,7 @@ bool write_minidump(EXCEPTION_POINTERS *pointers, char (&path_out)[MAX_PATH]) {
     info.ExceptionPointers = pointers;
     info.ClientPointers    = FALSE;
 
-    // Every thread's stack plus the module list, which is the minimum that answers the
-    // question a teardown crash actually poses: which image was executing. The memory
-    // options pull in what the stacks point at without paying for a full heap dump.
+    // Every thread's stack, the module list, and the memory the stacks point at; no full heap.
     auto const type = static_cast<MINIDUMP_TYPE>(MiniDumpWithThreadInfo | MiniDumpWithIndirectlyReferencedMemory | MiniDumpScanMemory);
 
     BOOL const ok = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, type, &info, nullptr, nullptr);
@@ -132,9 +118,7 @@ bool write_minidump(EXCEPTION_POINTERS *pointers, char (&path_out)[MAX_PATH]) {
 }
 
 LONG WINAPI crash_filter(EXCEPTION_POINTERS *pointers) {
-    // Re-entrancy guard. A fault raised while reporting a fault would otherwise
-    // recurse until the stack ran out, replacing a diagnosable crash with an
-    // undiagnosable one.
+    // Re-entrancy guard: a fault while reporting must not recurse.
     static LONG reporting = 0;
     if (InterlockedCompareExchange(&reporting, 1, 0) != 0) {
         return EXCEPTION_CONTINUE_SEARCH;
@@ -143,8 +127,7 @@ LONG WINAPI crash_filter(EXCEPTION_POINTERS *pointers) {
     char buffer[1024];
 
     DWORD const code = pointers->ExceptionRecord->ExceptionCode;
-    // %p is specified for void*, not void const*, so the cast belongs here rather than
-    // at each use.
+    // %p takes void*, not void const*.
     void *const address = pointers->ExceptionRecord->ExceptionAddress;
 
     write_stderr("\n=== einsums: fatal exception ===\n");
@@ -160,9 +143,7 @@ LONG WINAPI crash_filter(EXCEPTION_POINTERS *pointers) {
         write_stderr(buffer);
     }
 
-    // The module the fault landed in. Without private symbols this is the single most
-    // useful line in the report: it separates our code from the BLAS, the OpenMP
-    // runtime, and the interpreter.
+    // The module the fault landed in: without symbols, the most useful line in the report.
     HMODULE module = nullptr;
     if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                            static_cast<LPCSTR>(address), &module) &&
@@ -176,9 +157,7 @@ LONG WINAPI crash_filter(EXCEPTION_POINTERS *pointers) {
         }
     }
 
-    // Best effort, and allowed to fail. Walking the stack allocates and takes locks,
-    // either of which can be exactly what is broken, so a backtrace that does not
-    // arrive must not cost us the rest of the report.
+    // Best effort: walking the stack allocates and locks, which may be what is broken.
     try {
         std::string const trace = backtrace();
         if (!trace.empty()) {
@@ -201,10 +180,7 @@ LONG WINAPI crash_filter(EXCEPTION_POINTERS *pointers) {
 
     write_stderr("=== end einsums fatal exception ===\n");
 
-    // Hand the exception on rather than swallowing it. The process still dies with the
-    // right exception code, a debugger still gets its shot, and a machine configured
-    // to collect dumps out of process still collects one - which is the more reliable
-    // of the two dumps precisely when the fault came from teardown.
+    // Pass the exception on, so the exit code, debuggers and out-of-process dump collection still work.
     InterlockedExchange(&reporting, 0);
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -236,10 +212,7 @@ void remove_crash_handler() {
 
 #else
 
-// POSIX carries its crash diagnostics on the signal handlers the Runtime module
-// installs (see set_signal_handlers), which already report a backtrace. Adding a
-// second mechanism here would only fight them, and would fight the interpreter's
-// faulthandler in a Python process.
+// Elsewhere the Runtime module's signal handlers report crashes; a second mechanism would fight them.
 void install_crash_handler(std::string const & /*dump_directory*/) {
 }
 

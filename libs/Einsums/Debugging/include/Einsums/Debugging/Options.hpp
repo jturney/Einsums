@@ -18,12 +18,8 @@
 
 EINSUMS_NAMESPACE_BEGIN(option)
 
-/// Report a fatal exception and write a minidump instead of dying silently.
-///
-/// Deliberately separate from install-signal-handlers. On Windows the two are
-/// different mechanisms - signals never see a memory fault there - and a Python
-/// process wants to keep its own faulthandler on the signals while still
-/// getting a report out of a hard crash.
+/// Report a fatal exception and write a minidump instead of dying silently. Separate from
+/// install-signal-handlers, so a Python process can keep its faulthandler on the signals.
 inline constinit cl::ConfigOption<bool> CrashHandler = cl::config_flag(
     "einsums:debug:crash-handler", "Install the crash handler that reports a fatal exception and writes a minidump", "Debug", true);
 
