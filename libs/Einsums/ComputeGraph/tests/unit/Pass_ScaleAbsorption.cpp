@@ -312,6 +312,49 @@ TEMPLATE_LIST_TEST_CASE("ScaleAbsorption - a loop body reading the scaled tensor
     }
 }
 
+TEMPLATE_LIST_TEST_CASE("ScaleAbsorption - a conditional that may overwrite the scaled tensor keeps the scale",
+                        "[ComputeGraph][Passes][ControlFlow]", testing::AllScalarTypes) {
+    using T   = TestType;
+    T const s = T(3.0); // real, so the fold would otherwise fire
+    // The fold compensates only the readers, so it is exact only if the next
+    // writer kills the scaled value. A Conditional whose untaken branch
+    // overwrites C does not: C keeps its scaled value, which the caller reads.
+    // Folding s into the einsum and dropping the scale left C unscaled.
+    auto A = create_random_tensor<T>("A", 4, 4);
+    auto B = create_random_tensor<T>("B", 4, 4);
+    auto C = create_random_tensor<T>("C", 4, 4);
+    auto D = create_zero_tensor<T>("D", 4, 4);
+    auto E = create_random_tensor<T>("E", 4, 4);
+
+    auto C_ref = Tensor<T, 2>(C);
+    linear_algebra::scale(s, &C_ref);
+    auto D_ref = create_zero_tensor<T>("Dref", 4, 4);
+    reference_einsum("ij <- ik ; kj", 0.0, &D_ref, 1.0, E, C_ref);
+
+    cg::Graph graph("sa_conditional_writer");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(s, &C);
+        cg::einsum("ik;kj->ij", 0.0, &D, 1.0, E, C); // the only reader
+    }
+    auto [then_g, else_g] = graph.add_conditional("never", [] { return false; });
+    {
+        cg::CaptureGuard const guard(then_g);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B); // overwrites C, but never runs
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::ScaleAbsorption>();
+    CHECK_FALSE(modified);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < tol<T>());
+            REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < tol<T>());
+        }
+    }
+}
+
 TEMPLATE_LIST_TEST_CASE("ScaleAbsorption - two readers with no overwrite keeps the scale", "[ComputeGraph][Passes]",
                         testing::AllScalarTypes) {
     using T   = TestType;

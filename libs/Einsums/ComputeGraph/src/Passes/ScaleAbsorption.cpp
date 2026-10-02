@@ -221,6 +221,18 @@ bool ScaleAbsorption::run(Graph &graph) {
             continue;
         }
 
+        // A fold compensates only the readers, so the scaled value must be dead
+        // once the writer has run: either the writer overwrites it, or it reads
+        // it and is folded as the accumulator. A control-flow writer is
+        // neither, since its branch may not run and leave the value unscaled.
+        bool const writer_is_reader = std::ranges::find(readers, static_cast<size_t>(writer)) != readers.end();
+        if (!writer_overwrites && !writer_is_reader) {
+            note_skip("the next writer may leave the scaled value in place, so it stays observable",
+                      fmt::format("scale node {} on tensor {}, writer {} node {}", scale_node.id, scaled_tensor, nodes[writer].kind,
+                                  nodes[writer].id));
+            continue;
+        }
+
         // The fold below moves a REAL scalar onto a following op. A complex
         // factor is left alone rather than projected onto its real part.
         // The check sits after the dead-scale removal above, which discards
@@ -259,9 +271,8 @@ bool ScaleAbsorption::run(Graph &graph) {
             }
             folds.emplace_back(r, site);
         }
-        // The writer closes the live range. If it does not read the tensor it
-        // is not in `readers` and needs nothing; if it does, it was folded
-        // above as the accumulator.
+        // The writer closes the live range: checked above to either overwrite
+        // the tensor or be folded here as the accumulator.
         if (!all_foldable) {
             // A partial fold would be wrong rather than merely missed, so one
             // unfoldable observer disqualifies the whole scale.
