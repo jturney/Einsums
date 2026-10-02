@@ -125,34 +125,21 @@ char const *signal_name(int signum) {
     }
 }
 
-/// Leave, with a note, when symbolization does not come back.
-///
-/// @ref util::backtrace resolves through cpptrace, which allocates and takes
-/// locks. Either can already be held by the frame this handler interrupted, and
-/// cpptrace's symbol cache is shared between threads, so the walk can block
-/// rather than fail. Waiting on a lock is not an exception, so the catch around
-/// the call never fires: the process then hangs carrying no diagnostic at all,
-/// which is worse than the crash it was trying to explain. An alarm is what
-/// makes "allowed to fail" true.
+/// Leave, with a note, when symbolization blocks: cpptrace allocates and locks, which the
+/// interrupted frame may hold, and a block throws nothing for the catch to see.
 void backtrace_timeout_handler(int) {
     static char const     message[] = "\nbacktrace: symbolizer blocked, leaving without one\n";
     [[maybe_unused]] auto ignored   = write(STDERR_FILENO, message, sizeof(message) - 1);
     _exit(EXIT_FAILURE);
 }
 
-/// How long a backtrace may take before the handler gives up on it. Generous,
-/// because symbolizing a large binary cold is slow and the only cost of a high
-/// bound is how long a genuinely wedged crash takes to fall over.
+/// How long a backtrace may take. Generous: cold symbolization of a large binary is slow.
 constexpr unsigned int backtrace_timeout_seconds = 10;
 
 } // namespace
 
 [[noreturn]] EINSUMS_EXPORT void termination_handler(int signum) {
-    // One reporter at a time. Two threads taking a fatal signal together both
-    // walk into the symbolizer, whose caches are not reentrant, and meet inside
-    // them. A late arrival parks rather than racing: it has nothing to add to a
-    // report already in flight, and the reporter ends the process for both. If
-    // the reporter is the one that wedges, the alarm below gets everybody out.
+    // One reporter at a time, as the symbolizer is not reentrant; a late arrival parks.
     static std::atomic_flag reporting;
     if (reporting.test_and_set()) {
         while (true) {
@@ -170,17 +157,10 @@ constexpr unsigned int backtrace_timeout_seconds = 10;
         attach = true;
     }
 
-    // Report before offering the debugger, not after. attach_debugger() spins until
-    // someone attaches, so anything printed behind it is printed only for a developer
-    // who was already sitting at the process - which is the one case that did not need
-    // it. An unattended run wants the report and never reaches the loop.
+    // Report before offering the debugger, which spins until someone attaches.
     if (diagnostics) {
-        // write(2) rather than the iostreams: this runs in a signal handler, where the
-        // stream objects may be mid-teardown or the lock behind them already held by
-        // the thread we interrupted. The backtrace below allocates and takes locks and
-        // so carries the opposite risk, which is why it is attempted second, bounded
-        // by an alarm, and allowed to fail. The catch alone was not enough: a
-        // symbolizer that blocks never throws.
+        // write(2), not iostreams, inside a signal handler. The backtrace, which allocates and
+        // locks, comes second, bounded by an alarm.
         auto emit = [](char const *text) { [[maybe_unused]] auto ignored = write(STDERR_FILENO, text, std::strlen(text)); };
         emit("\n=== einsums: fatal signal ===\n");
         emit(signal_name(signum));
@@ -238,15 +218,8 @@ void set_signal_handlers() {
 
 void ignore_broken_pipe() {
 #if !defined(EINSUMS_WINDOWS)
-    // SIGPIPE is not a crash. A consumer that stops reading early is ordinary
-    // use - `prog | head`, `prog | grep -q` - and it reaches the writer as a
-    // signal whose default disposition is death mid-write. Ignoring it makes
-    // the write fail with EPIPE instead, which a caller can see and act on.
-    //
-    // It must never share the fatal handler. That handler symbolizes, and the
-    // write that raised SIGPIPE was inside stdio holding the very lock the
-    // symbolizer then waited for, so piping any Einsums program into `head`
-    // hung it forever instead of ending it.
+    // Ignore SIGPIPE so `prog | head` fails the write with EPIPE. Never the fatal handler: it would
+    // symbolize while stdio holds the lock it needs, and hang.
     struct sigaction ignore_action;
     ignore_action.sa_handler = SIG_IGN;
     sigemptyset(&ignore_action.sa_mask);
@@ -257,9 +230,7 @@ void ignore_broken_pipe() {
 
 void shutdown_profiler_and_report() noexcept {
 #if defined(EINSUMS_HAVE_PROFILER)
-    // The session export first, because it goes through the server and Profiler::shutdown stops
-    // it. Nothing else here depends on ordering: the text report below reads the aggregated
-    // tree, which survives shutdown.
+    // The session export first: it needs the server, which Profiler::shutdown stops.
     try {
         auto const save_path = config::get(option::ProfileSave);
         if (!save_path.empty()) {
@@ -268,13 +239,7 @@ void shutdown_profiler_and_report() noexcept {
             if (auto *server = profiler.server(); server != nullptr) {
                 server->export_session(save_path);
             } else {
-                // The export is a Server method, so asking for a session without a server can
-                // only be refused. Say so: silently writing nothing is what sent someone
-                // looking for a lost measurement.
-                //
-                // At error level rather than warning, because a release build logs from level 4
-                // and a warning would be suppressed in exactly the builds people profile. The
-                // caller asked for a file and is not getting one, which is their error to see.
+                // Refuse out loud; an error, since release builds suppress warnings.
                 EINSUMS_LOG_ERROR("--einsums:profile:save was given without --einsums:profile:server, so no session "
                                   "file was written. The text report is unaffected.");
             }
@@ -295,14 +260,8 @@ void shutdown_profiler_and_report() noexcept {
         EINSUMS_LOG_INFO("Exception thrown by the profiler during shutdown. Ignoring.");
     }
 #else
-    // The profile options are registered whatever EINSUMS_WITH_PROFILER says: Options.hpp
-    // carries no conditional and the registration is unguarded. So a caller can ask a build
-    // with no profiler in it for a session file and, without this, get no file and no reason.
-    // That is the same lost-measurement failure the refusal above exists to prevent, reached
-    // from the other side: there the server is missing, here the whole profiler is.
-    //
-    // Naming the build option rather than --einsums:profile:server, which would be a false
-    // lead. Starting a server this build does not contain cannot produce a session.
+    // The profile options exist even without the profiler, so say why no session file appears,
+    // naming the build option (a server cannot help).
     try {
         if (!config::get(option::ProfileSave).empty()) {
             EINSUMS_LOG_ERROR("--einsums:profile:save was given, but this build was configured with "

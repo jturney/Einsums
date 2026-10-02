@@ -97,15 +97,7 @@ void register_arguments(std::function<void()> const &func) {
 }
 
 void RuntimeConfiguration::pre_initialize() {
-    /*
-     * This routine will eventually read a "master" yaml template carrying the
-     * default settings for Einsums and its subsystems.
-     *
-     * The process id and the install prefix used to be written into the config
-     * maps here. They are facts about the running process, not options anyone
-     * sets, so they are current_process_id() and executable_prefix() instead;
-     * nothing read them through the map.
-     */
+    // Will eventually read a template of default settings.
 }
 
 // NOLINTNEXTLINE(modernize-avoid-c-arrays)
@@ -131,15 +123,10 @@ RuntimeConfiguration::RuntimeConfiguration(std::vector<std::string> const &argv,
 }
 
 void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_command_line) {
-    // Imperative that pre_initialize is called first as it is responsible for setting
-    // default values. This is done in the constructor.
-    // There should be a mechanism that allows the user to change the program name.
+    // pre_initialize (run by the constructor) has set the defaults.
 
-    // Every option is readable from the environment under a name derived from
-    // its own: einsums:log:level reads EINSUMS_LOG_LEVEL. Precedence runs
-    // default < config file < environment < command line, so an inherited
-    // variable configures a job without editing its command line, and the
-    // command line still wins when it says so.
+    // Options read the environment too (einsums:log:level reads EINSUMS_LOG_LEVEL); precedence is
+    // default < config file < environment < command line.
     cl::Registry::instance().set_env_prefix("EINSUMS");
 
     {

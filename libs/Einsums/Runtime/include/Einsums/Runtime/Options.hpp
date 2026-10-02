@@ -10,13 +10,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Options/Get.hpp>
 
-/*
- * The runtime's own options, declared where the runtime reads them.
- *
- * Each descriptor is the single place its name, help, type, and default are
- * spelled; the config key and the environment variable derive from the name,
- * and a reader names the descriptor rather than a string.
- */
+// The runtime's own options.
 
 EINSUMS_NAMESPACE_BEGIN(option)
 
@@ -39,9 +33,7 @@ EINSUMS_NAMESPACE_BEGIN()
 /**
  * @brief Give the runtime's options their command-line presence.
  *
- * Idempotent, and run from a namespace-scope initializer below so that
- * including this header is enough: an option a reader can name is an option
- * `--help` lists.
+ * Idempotent; run by a namespace-scope initializer below.
  */
 EINSUMS_EXPORT int register_Einsums_Runtime_options();
 

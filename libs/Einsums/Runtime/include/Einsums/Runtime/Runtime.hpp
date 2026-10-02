@@ -92,47 +92,19 @@ struct EINSUMS_EXPORT Runtime : public design_pats::Lockable<std::recursive_mute
     RuntimeConfiguration       &config();
     RuntimeConfiguration const &config() const;
 
-    /// Add a function to be executed before einsums_main
-    /// but guaranteed to be executed before any startup function registered
-    /// with \a add_startup_function.
-    ///
-    /// \param  f   The function 'f' will be called  before pika_main is executed. This is very useful
-    ///             to setup the runtime environment of the application
-    ///             (install performance counters, etc.)
-    ///
-    /// \note       The difference to a startup function is that all
-    ///             pre-startup functions will be (system-wide) executed
-    ///             before any startup function.
+    /// Add a function to run before einsums_main and before every startup function.
     /// @versionadded{1.0.0}
     virtual void add_pre_startup_function(StartupFunctionType f);
 
-    /// Add a function to be executed before einsums_main
-    ///
-    /// \param  f   The function 'f' will be called before einsums_main is executed. This is very useful
-    ///             to setup the runtime environment of the application
-    ///             (install performance counters, etc.)
+    /// Add a function to run before einsums_main.
     /// @versionadded{1.0.0}
     virtual void add_startup_function(StartupFunctionType f);
 
-    /// Add a function to be executed during
-    /// einsums::finalize, but guaranteed before any of the shutdown functions
-    /// is executed.
-    ///
-    /// \param  f   The function 'f' will be called while einsums::finalize is executed. This is very
-    ///             useful to tear down the runtime environment of the
-    ///             application (uninstall performance counters, etc.)
-    ///
-    /// \note       The difference to a shutdown function is that all
-    ///             pre-shutdown functions will be (system-wide) executed
-    ///             before any shutdown function.
+    /// Add a function to run in einsums::finalize, before every shutdown function.
     /// @versionadded{1.0.0}
     virtual void add_pre_shutdown_function(ShutdownFunctionType f);
 
-    /// Add a function to be executed during einsums::finalize
-    ///
-    /// \param  f   The function 'f' will be called while einsums::finalize is executed. This is very
-    ///             useful to tear down the runtime environment of the
-    ///             application (uninstall performance counters, etc.)
+    /// Add a function to run in einsums::finalize.
     /// @versionadded{1.0.0}
     virtual void add_shutdown_function(ShutdownFunctionType f);
 
@@ -166,24 +138,13 @@ EINSUMS_EXPORT void set_signal_handlers();
 
 /// Make a write to a pipe nobody is reading fail rather than kill the process.
 ///
-/// Deliberately not part of @ref set_signal_handlers: that installs crash
-/// reporting, and a caller who turns crash reporting off has not thereby asked
-/// to be killed mid-write by `head`. The whole test suite runs with
-/// `--einsums:debug:no-install-signal-handlers`, which is precisely where the
-/// two concerns come apart.
+/// Separate from @ref set_signal_handlers: turning off crash reporting should not let `head` kill the process.
 EINSUMS_EXPORT void ignore_broken_pipe();
 
 /// Export the profiler session, stop the profiler, and write its report.
 ///
-/// Both teardown paths call this: @ref einsums::finalize when a caller finalizes explicitly, and
-/// `~Runtime` when nobody does. They ran identical copies of this sequence, which is how the
-/// session export came to exist on only one of them.
-///
-/// Order is the contract. The session export needs a live server, so it runs before
-/// `Profiler::shutdown`; the text report reads the aggregated tree, which outlives shutdown, so
-/// it keeps running after as it always has.
-///
-/// A no-op when the profiler is compiled out. Never throws: teardown is not a place to fail.
+/// Called by both @ref einsums::finalize and `~Runtime`. The session export needs the server, so it
+/// precedes `Profiler::shutdown`; the report reads the tree, which survives it. Never throws.
 EINSUMS_EXPORT void shutdown_profiler_and_report() noexcept;
 } // namespace detail
 
@@ -210,12 +171,7 @@ EINSUMS_EXPORT RuntimeConfiguration &runtime_config();
 
 /// \brief Test whether the runtime system is currently running.
 ///
-/// This function returns whether the runtime system is currently running
-/// or not, e.g.  whether the current state of the runtime system is
-/// \a einsums::RuntimeState::Running
-///
-/// \note   This function needs to be executed on an einsums-thread. It will
-///         return false otherwise.
+/// Whether the state is \a einsums::RuntimeState::Running.
 /// @versionadded{1.0.0}
 APIARY_EXPOSE EINSUMS_EXPORT bool is_running();
 

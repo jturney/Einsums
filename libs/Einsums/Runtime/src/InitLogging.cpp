@@ -27,12 +27,7 @@
 EINSUMS_NAMESPACE_BEGIN(detail)
 
 namespace {
-/*
- * The desired output is "tid/description". Modern operating systems
- * allow you to set a description on a thread that can be accessed.
- * This could be useful in the future when we introduce thread pools
- * The logger can output the thread description to aid in debugging.
- */
+// Formats "tid/----"; the placeholder could become the OS thread description.
 void spdlog_format_thread_id(int pid, spdlog::details::log_msg const &, std::tm const &, spdlog::memory_buf_t &dest) {
     dest.append(fmt::format("{}/----", pid));
 }
@@ -63,10 +58,7 @@ struct ParentThreadIdFormatterFlag : spdlog::custom_flag_formatter {
     }
 };
 
-/*
- * The desired output is "hostname" or eventually when MPI is added
- * "hostname/rank".
- */
+// Formats "hostname" (eventually "hostname/rank").
 struct HostnameFormatterFlag : spdlog::custom_flag_formatter {
     void format(spdlog::details::log_msg const & /*msg*/, std::tm const & /*tm_time*/, spdlog::memory_buf_t &dest) override {
         dest.append(std::string("localhost"));
@@ -136,12 +128,6 @@ void init_logging(RuntimeConfiguration & /*config*/) {
 
     EINSUMS_LOG_INFO("logging submodule has been initialized");
     EINSUMS_LOG_INFO("log level: {} (0=TRACE,1=DEBUG,2=INFO,3=WARN,4=ERROR,5=CRITICAL)", config::get(option::LogLevel));
-    // EINSUMS_LOG_DEBUG("test debug");
-    // EINSUMS_LOG_TRACE("test trace");
-    // EINSUMS_LOG_INFO("test info");
-    // EINSUMS_LOG_WARN("test warn");
-    // EINSUMS_LOG_ERROR("test error");
-    // EINSUMS_LOG_CRITICAL("test critical");
 }
 
 EINSUMS_NAMESPACE_END(detail)

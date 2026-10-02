@@ -28,10 +28,7 @@ EINSUMS_NAMESPACE_BEGIN()
 /**
  * @brief Returns the id of the calling process.
  *
- * Wraps the two spellings the platforms disagree on: @c getpid is the POSIX
- * name, which the Windows CRT deprecates in favour of @c _getpid . Calling
- * either directly means a deprecation warning on one platform or a missing
- * declaration on the other.
+ * @c getpid on POSIX, @c _getpid on Windows.
  *
  * @return The process id.
  *
@@ -40,9 +37,6 @@ EINSUMS_NAMESPACE_BEGIN()
 /**
  * @brief The directory Einsums was installed into, derived from the running
  *        executable's path.
- *
- * A fact about the process rather than something a user configures, so it is a
- * function rather than an option.
  *
  * @versionadded{2.0.0}
  */
@@ -59,9 +53,7 @@ inline int current_process_id() {
 /**
  * @brief Add a function to the list of startup functions to add module-specific command line arguments.
  *
- * This should be called before Einsums is initialized. During initialization, the function given to
- * this will be called, allowing it to set up command line arguments. These arguments will then be
- * processed. This is an example of what can be done with this, taken from the BufferAllocator module.
+ * Call before initialization; the function runs during it to register arguments. For example:
  *
  * @code
  * void add_Einsums_BufferAllocator_arguments() {
@@ -85,12 +77,7 @@ EINSUMS_EXPORT void register_arguments(std::function<void()> const &);
  *
  * Handles the current configuration state of the running instance.
  *
- * Currently, defaults are handled in pre_initialize. Eventually,
- * some kind of configuration file will be implemented that will
- * override the defaults set in pre_initialize.
- *
- * The current instance of the RuntimeConfiguration can be obtained
- * from Runtime::config() or from runtime_config() functions.
+ * Reached through Runtime::config() or runtime_config().
  *
  * @versionadded{1.0.0}
  */

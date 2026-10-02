@@ -91,12 +91,7 @@ int run(std::function<int()> const &f, Runtime &rt, InitParams const &params) {
         result = rt.run();
     }
 
-    // The profiler session is exported during teardown, in
-    // detail::shutdown_profiler_and_report, which both finalize() and ~Runtime call. Exporting
-    // here instead meant the session was written where the runtime handed control back: after
-    // user code for a caller using einsums::start, but directly after start-up for one driving
-    // initialize() and finalize() itself, which wrote a file holding nothing but the runtime's
-    // own start-up zones.
+    // The profiler session is exported at teardown (detail::shutdown_profiler_and_report), not here.
 
     return result;
 }
@@ -124,9 +119,7 @@ int run(std::function<int()> const &f, std::vector<std::string> const &argv, Ini
         EINSUMS_LOG_INFO("\"{}\": {}", key, value);
     }
 
-    // Unconditional, and ahead of the gate below: a closed pipe is ordinary use
-    // rather than a crash, so which way install-signal-handlers is set should not
-    // decide whether `prog | head` ends or dies mid-write.
+    // Unconditional: a closed pipe is not a crash.
     ignore_broken_pipe();
 
     if (einsums::config::get(option::InstallSignalHandlers)) {
@@ -134,20 +127,13 @@ int run(std::function<int()> const &f, std::vector<std::string> const &argv, Ini
         set_signal_handlers();
     }
 
-    // Gated on its own option rather than on install-signal-handlers. This is what
-    // reports a Windows access violation, which the signal handlers above cannot see
-    // (they are a console control handler there), so the callers that turn signal
-    // handling off - the Python test and example harnesses, so the interpreter's
-    // faulthandler stays in charge - still get told when a run dies hard.
+    // Its own option, not install-signal-handlers: the only report of a Windows access violation,
+    // which Python harnesses still want with signal handling off.
     if (einsums::config::get(option::CrashHandler)) {
         EINSUMS_LOG_TRACE("Installing crash handler...");
         util::install_crash_handler(einsums::config::get(option::CrashDumpDir));
     }
 
-    // This is the only initialization routine that needs to be explicitly called here.
-    // This is because the runtime environment depends on the profiler. If the profiler
-    // depended on the runtime environment, then there would be a dependency issue.
-    // profile::initialize();
 
     // Disable HDF5 diagnostic reporting
     H5Eset_auto(0, nullptr, nullptr);
@@ -175,12 +161,8 @@ int run_impl(std::function<int()> f, std::vector<std::string> const &argv, InitP
         pass_argv = &dummy_argv;
     }
 
-    // SIGABRT keeps its default disposition, whatever install-signal-handlers
-    // says. Answering it with a handler that exits turns an abort into an
-    // ordinary exit status: whatever the abort printed into a buffer is lost,
-    // ctest reports "Failed" instead of "Subprocess aborted", and in a Python
-    // process the interpreter's faulthandler, which owns SIGABRT there, never
-    // gets to say where the abort came from.
+    // SIGABRT keeps its default disposition, so an abort stays an abort (and Python's faulthandler
+    // can report it).
     return run(f, *pass_argv, params, blocking);
 }
 
@@ -199,19 +181,7 @@ int start(std::function<int(int, char **)> f, std::vector<std::string> &argv, In
     std::vector<char *> copy_argv(argv.size()); // We do it this way so that the memory gets freed on return.
 
     for (ptrdiff_t i = 0; i < argv.size(); i++) {
-        /*BADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODE
-         *BADCODE                                                                             BADCODE
-         *BADCODE                              BAD CODE ALERT                                 BADCODE
-         *BADCODE                                                                             BADCODE
-         *BADCODE   ATTENTION: THIS IS BAD CODE. IT WILL NEED TO BE REWRITTEN IN THE FUTURE.  BADCODE
-         *BADCODE         MEMORY SAFETY IS NOT ONLY NOT GUARANTEED BUT OUTRIGHT FLOUTED.      BADCODE
-         *BADCODE         WHEN REWRITING, PLEASE ENSURE THAT THE MEMORY IS BOTH SAFE ON       BADCODE
-         *BADCODE         ENTRY TO THE CALL OF THE MAIN FUNCTION AND PROPERLY DESTROYED       BADCODE
-         *BADCODE         ON EXIT. THIS IS A TEMPORARY FIX ONLY.                              BADCODE
-         *BADCODE                                                                             BADCODE
-         *BADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODE
-         */
-        /// @todo Fix bad code.
+        /// @todo Unsafe: a mutable argv aliasing strings the caller owns. Give main its own copy.
         copy_argv[i] = const_cast<char *>(argv[i].c_str());
     }
 
@@ -264,19 +234,7 @@ void initialize(std::function<int(int, char **)> f, std::vector<std::string> &ar
     std::vector<char *> copy_argv(argv.size()); // We do it this way so that the memory gets freed on return.
 
     for (ptrdiff_t i = 0; i < argv.size(); i++) {
-        /*BADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODE
-         *BADCODE                                                                             BADCODE
-         *BADCODE                              BAD CODE ALERT                                 BADCODE
-         *BADCODE                                                                             BADCODE
-         *BADCODE   ATTENTION: THIS IS BAD CODE. IT WILL NEED TO BE REWRITTEN IN THE FUTURE.  BADCODE
-         *BADCODE         MEMORY SAFETY IS NOT ONLY NOT GUARANTEED BUT OUTRIGHT FLOUTED.      BADCODE
-         *BADCODE         WHEN REWRITING, PLEASE ENSURE THAT THE MEMORY IS BOTH SAFE ON       BADCODE
-         *BADCODE         ENTRY TO THE CALL OF THE MAIN FUNCTION AND PROPERLY DESTROYED       BADCODE
-         *BADCODE         ON EXIT. THIS IS A TEMPORARY FIX ONLY.                              BADCODE
-         *BADCODE                                                                             BADCODE
-         *BADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODEBADCODE
-         */
-        /// @todo Fix bad code.
+        /// @todo Unsafe: a mutable argv aliasing strings the caller owns. Give main its own copy.
         copy_argv[i] = const_cast<char *>(argv[i].c_str());
     }
 

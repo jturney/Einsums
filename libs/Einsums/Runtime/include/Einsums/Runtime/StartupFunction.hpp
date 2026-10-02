@@ -17,50 +17,21 @@ EINSUMS_NAMESPACE_BEGIN()
 /// or pre-startup function.
 using StartupFunctionType = std::function<void()>;
 
-/// \brief Add a function to be executed by a pika thread before einsums_main
-/// but guaranteed before any startup function is executed (system-wide).
+/// \brief Add a function to run before einsums_main and before every startup function.
 ///
-/// Any of the functions registered with \a register_pre_startup_function
-/// are guaranteed to be executed by a pika thread before any of the
-/// registered startup functions are executed (see
-/// \a einsums::register_startup_function()).
+/// \param f  [in] The function to register.
 ///
-/// \param f  [in] The function to be registered to run as
-///           a pre-startup function.
-///
-/// \note If this function is called while the pre-startup functions are
-///       being executed or after that point, it will raise a invalid_status
-///       exception.
-///
-///       This function is one of the few API functions which can be called
-///       before the runtime system has been fully initialized. It will
-///       automatically stage the provided startup function to the runtime
-///       system during its initialization (if necessary).
+/// \note Callable before initialization; throws once the pre-startup functions have started.
 ///
 /// \see    \a einsums::register_startup_function()
 /// @versionadded{1.0.0}
 EINSUMS_EXPORT void register_pre_startup_function(StartupFunctionType f);
 
-/// \brief Add a function to be executed before einsums_main
-/// but guaranteed after any pre-startup function is executed (system-wide).
+/// \brief Add a function to run before einsums_main, after every pre-startup function.
 ///
-/// Any of the functions registered with \a register_startup_function
-/// are guaranteed to be executed after any of the
-/// registered pre-startup functions are executed (see:
-/// \a einsums::register_pre_startup_function()), but before \a einsums_main is
-/// being called.
+/// \param f  [in] The function to register.
 ///
-/// \param f  [in] The function to be registered to runas
-///           a startup function.
-///
-/// \note If this function is called while the startup functions are
-///       being executed or after that point, it will raise a invalid_status
-///       exception.
-///
-///       This function is one of the few API functions which can be called
-///       before the runtime system has been fully initialized. It will
-///       automatically stage the provided startup function to the runtime
-///       system during its initialization (if necessary).
+/// \note Callable before initialization; throws once the startup functions have started.
 ///
 /// \see    \a einsums::register_pre_startup_function()
 /// @versionadded{1.0.0}
