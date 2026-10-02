@@ -62,8 +62,7 @@ spdlog::level::level_enum get_spdlog_level(std::string const &env) {
 }
 
 std::shared_ptr<spdlog::sinks::sink> get_spdlog_sink(std::string const &env) {
-    // In the future it might be useful to include a tcp sink option.
-    // Could be useful when we are doing MPI/distributed development.
+    // A TCP sink could be useful for MPI runs.
     if (env.empty()) {
         fmt::print(std::cerr, "Einsums given empty log destination. Using default instead (cerr).\n");
     } else if (env == "cout") {
