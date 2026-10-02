@@ -81,7 +81,7 @@ struct EINSUMS_EXPORT Profiler {
     [[nodiscard]] bool enabled() const { return _enabled.load(std::memory_order_relaxed); }
     void               set_enabled(bool on) { _enabled.store(on, std::memory_order_relaxed); }
 
-    // Start a zone, interning its strings on every call. LabeledSection uses push_interned instead.
+    // Start a zone, interning its strings on every call. WAGGLE_ZONE uses push_interned instead.
     void push(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
         if (!enabled()) {
             return;
@@ -357,7 +357,7 @@ struct EINSUMS_EXPORT Profiler {
 /**
  * @brief The interned name, file and function of one zone call site.
  *
- * @ref LabeledSection makes one a function-local static, so these strings are interned once per
+ * @ref WAGGLE_ZONE makes one a function-local static, so these strings are interned once per
  * site rather than on every entry, under the string table's lock. With a literal name, entering a
  * zone takes no lock at all.
  */
@@ -512,7 +512,7 @@ uint32_t zone_name_id(FormatName const &format_name, Args &&...args) {
 /// Sentinel for an id not interned yet.
 inline constexpr uint32_t kNotInterned = std::numeric_limits<uint32_t>::max();
 
-/// One ProfileAnnotate call site's key id, interned on first use; racing threads store the same id.
+/// One WAGGLE_ANNOTATE call site's key id, interned on first use; racing threads store the same id.
 ///
 /// Values are not held here: ``c ? "T" : "N"`` has a literal's type but not a fixed value.
 struct AnnotateSite {
@@ -692,7 +692,7 @@ inline void annotate_interned(uint32_t key_id, double value) {
 namespace site_cache {
 
 /**
- * @brief The body of @ref ProfileAnnotate.
+ * @brief The body of @ref WAGGLE_ANNOTATE.
  *
  * The literal key is interned once per site, string values once per distinct value through a
  * per-site, per-thread cache. @p get_value runs only when recording.
@@ -827,42 +827,42 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 // fmt::format is called here, not in ScopedZone, because fmt checks format strings at compile time
 // and a format string forwarded through a template parameter is no longer a constant expression.
 //
-// @p name_format must be a literal; use LabeledSectionRuntime otherwise. Expands to two
+// @p name_format must be a literal; use WAGGLE_ZONE_DYNAMIC otherwise. Expands to two
 // declarations, so use it at statement scope.
-#    define LabeledSection(name_format, ...)                                                                                                \
+#    define WAGGLE_ZONE(name_format, ...)                                                                                                   \
         static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};         \
         ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__( \
             , [&](auto &&_zone_f) { return _zone_f(__VA_ARGS__); },                                                                         \
             [](auto &&..._zone_a) { return fmt::format(name_format, std::forward<decltype(_zone_a)>(_zone_a)...); }))
 
-/// A zone named at runtime. Interns, under a lock, on every entry; prefer @ref LabeledSection.
-#    define LabeledSectionRuntime(name_expr)                                                                                               \
+/// A zone named at runtime. Interns, under a lock, on every entry; prefer @ref WAGGLE_ZONE.
+#    define WAGGLE_ZONE_DYNAMIC(name_expr)                                                                                                 \
         static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){"", __FILE__, __LINE__, __func__};                 \
         ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__),           \
                                                                                           [&] { return fmt::format("{}", name_expr); })
-#    define LabeledSection0() LabeledSection(__func__)
+#    define WAGGLE_ZONE_FUNC() WAGGLE_ZONE(__func__)
 #    if defined(EINSUMS_HAVE_PROFILER_INTERNAL)
-#        define LabeledSectionInternal(name_format, ...)                                                                                   \
+#        define WAGGLE_ZONE_DETAIL(name_format, ...)                                                                                       \
             static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};    \
             ::einsums::profile::ScopedZone const EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__( \
                 , [&](auto &&_zone_f) { return _zone_f(__VA_ARGS__); },                                                                    \
                 [](auto &&..._zone_a) { return fmt::format(name_format, std::forward<decltype(_zone_a)>(_zone_a)...); }))
-#        define LabeledSectionInternal0() LabeledSectionInternal(__func__)
+#        define WAGGLE_ZONE_DETAIL_FUNC() WAGGLE_ZONE_DETAIL(__func__)
 #    else
-#        define LabeledSectionInternal(...)
-#        define LabeledSectionInternal0()
+#        define WAGGLE_ZONE_DETAIL(...)
+#        define WAGGLE_ZONE_DETAIL_FUNC()
 #    endif
 
 /// Annotate the open zone. @p key must be a string literal, as its id is cached per site; @p value
 /// is evaluated only when recording.
-#    define ProfileAnnotate(key, value)                                                                                                    \
+#    define WAGGLE_ANNOTATE(key, value)                                                                                                    \
         [&]() {                                                                                                                            \
             static ::einsums::profile::site_cache::AnnotateSite _annotate_site;                                                            \
             ::einsums::profile::site_cache::annotate_at(_annotate_site, key, [&]() -> decltype(auto) { return (value); });                 \
         }()
-#    define ProfileAnnotateDims(key, dims) ::einsums::profile::annotate_dims(key, dims)
-#    define ProfileMemAlloc(bytes)         ::einsums::profile::mem_alloc(static_cast<int64_t>(bytes))
-#    define ProfileMemFree(bytes)          ::einsums::profile::mem_free(static_cast<int64_t>(bytes))
+#    define WAGGLE_ANNOTATE_DIMS(key, dims) ::einsums::profile::annotate_dims(key, dims)
+#    define WAGGLE_MEM_ALLOC(bytes)         ::einsums::profile::mem_alloc(static_cast<int64_t>(bytes))
+#    define WAGGLE_MEM_FREE(bytes)          ::einsums::profile::mem_free(static_cast<int64_t>(bytes))
 
 #else
 
@@ -899,7 +899,7 @@ struct ZoneSite {
     constexpr ZoneSite(std::string_view /*name*/, char const * /*file*/, int /*line*/, char const * /*func*/) {}
 };
 
-/// Stand-in for a zone. A name the caller builds is still built; @ref LabeledSection drops it at
+/// Stand-in for a zone. A name the caller builds is still built; @ref WAGGLE_ZONE drops it at
 /// preprocessing.
 struct ScopedZone {
     explicit ScopedZone(ZoneSite const & /*site*/) {}
@@ -1017,15 +1017,15 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
     return 0;
 }
 
-#    define LabeledSection(...)
-#    define LabeledSection0()
-#    define LabeledSectionRuntime(...)
-#    define LabeledSectionInternal(...)
-#    define LabeledSectionInternal0()
-#    define ProfileAnnotate(key, value)
-#    define ProfileAnnotateDims(key, dims)
-#    define ProfileMemAlloc(bytes)
-#    define ProfileMemFree(bytes)
+#    define WAGGLE_ZONE(...)
+#    define WAGGLE_ZONE_FUNC()
+#    define WAGGLE_ZONE_DYNAMIC(...)
+#    define WAGGLE_ZONE_DETAIL(...)
+#    define WAGGLE_ZONE_DETAIL_FUNC()
+#    define WAGGLE_ANNOTATE(key, value)
+#    define WAGGLE_ANNOTATE_DIMS(key, dims)
+#    define WAGGLE_MEM_ALLOC(bytes)
+#    define WAGGLE_MEM_FREE(bytes)
 #endif
 
 EINSUMS_NAMESPACE_END(profile)

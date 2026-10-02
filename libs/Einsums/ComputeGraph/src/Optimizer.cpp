@@ -477,7 +477,7 @@ bool run_pass_tree(OptimizerPass &pass, Graph &graph) {
 }
 
 bool PassManager::run(Graph &graph) {
-    LabeledSection("PassManager::run({})", graph.name());
+    WAGGLE_ZONE("PassManager::run({})", graph.name());
 
     // Two sources of "skip this pass", and the more specific one wins. The option
     // is what a user types with no rebuild; a switch is what this program said
@@ -537,7 +537,7 @@ bool PassManager::run(Graph &graph) {
             continue;
         }
 
-        LabeledSection("pass:{}", pass->name());
+        WAGGLE_ZONE("pass:{}", pass->name());
 
         size_t nodes_before = graph.num_nodes();
         auto   t0           = std::chrono::high_resolution_clock::now();
@@ -619,7 +619,7 @@ bool PassManager::run(Graph &graph) {
                 any_modified = true;
                 check_observed_writes(graph, baseline, pass->name(), pass->compensated_reads());
             }
-            ProfileAnnotate("modified", modified ? "true" : "false");
+            WAGGLE_ANNOTATE("modified", modified ? "true" : "false");
 
             if (verbose || modified) {
                 EINSUMS_LOG_INFO("PassManager: pass '{}' {} ({} -> {} nodes, {:.2f} ms)", pass->name(), modified ? "MODIFIED" : "no change",
@@ -653,7 +653,7 @@ bool PassManager::run(Graph &graph) {
             if (pass->phase() != PassPhase::Analysis || is_disabled(pass->name())) {
                 continue;
             }
-            LabeledSection("reanalyze:{}", pass->name());
+            WAGGLE_ZONE("reanalyze:{}", pass->name());
             auto const structure_before = graph.structure_version();
             run_pass_tree(*pass, graph);
             check_read_only_phase(graph, *pass, structure_before);

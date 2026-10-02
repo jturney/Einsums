@@ -128,7 +128,7 @@ constexpr std::array<Case, 10> kCases{{
 } // namespace
 
 EINSUMS_TEST_CASE("Bench ParallelGate: where an OpenMP region starts paying", "[PackedGemm][ParallelGate][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     fmt::println("[ParallelGate] min_parallel_flops = {}  omp_region_cost_ns = {:.0f}  max_threads = {}",
                  packed_gemm::cpu_config().min_parallel_flops, packed_gemm::cpu_config().omp_region_cost_ns,
 #ifdef _OPENMP

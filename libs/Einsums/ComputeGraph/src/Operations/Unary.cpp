@@ -30,16 +30,16 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 template <typename T>
 void eager_conj(Impl<T> &A) {
-    LabeledSection("conj eager");
+    WAGGLE_ZONE("conj eager");
     einsums::detail::impl_conj(A);
 }
 
 template <typename T>
 void capture_conj(CaptureContext &ctx, SlotRef a, std::string_view name) {
-    LabeledSection("conj capture");
+    WAGGLE_ZONE("conj capture");
     OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
     auto                  executor = [a_access]() {
-        LabeledSection("conj execute");
+        WAGGLE_ZONE("conj execute");
         einsums::detail::impl_conj(*a_access.impl<T>());
     };
     ctx.record(OpKind::Custom, fmt::format("conj({})", name), {a.first}, {a.first}, std::move(executor));
@@ -88,13 +88,13 @@ constexpr PartLabels const         &labels(ComplexPart part) {
 
 template <typename T>
 void eager_complex_part(ComplexPart part, Impl<T> const &A, Impl<RemoveComplexT<T>> &out) {
-    LabeledSection(labels(part).eager);
+    WAGGLE_ZONE(labels(part).eager);
     run_complex_part<T>(part, A, out);
 }
 
 template <typename T>
 void capture_complex_part(CaptureContext &ctx, ComplexPart part, SlotRef out, SlotRef a) {
-    LabeledSection(labels(part).capture);
+    WAGGLE_ZONE(labels(part).capture);
     record_unary<RemoveComplexT<T>, T>(ctx, labels(part).name, labels(part).execute, out, a,
                                        [part](Impl<RemoveComplexT<T>> &o, Impl<T> const &src) { run_complex_part<T>(part, src, o); });
 }
@@ -126,13 +126,13 @@ void run_sqrt(Impl<T> &o, Impl<T> const &a) {
 
 template <typename T>
 void eager_sqrt(Impl<T> const &A, Impl<T> &out) {
-    LabeledSection("sqrt eager");
+    WAGGLE_ZONE("sqrt eager");
     run_sqrt<T>(out, A);
 }
 
 template <typename T>
 void capture_sqrt(CaptureContext &ctx, SlotRef out, SlotRef a) {
-    LabeledSection("sqrt capture");
+    WAGGLE_ZONE("sqrt capture");
     record_unary<T, T>(ctx, "sqrt", "sqrt execute", out, a, [](Impl<T> &o, Impl<T> const &src) { run_sqrt<T>(o, src); });
 }
 
@@ -152,13 +152,13 @@ void run_diagonal(Impl<T> &o, Impl<T> const &a) {
 
 template <typename T>
 void eager_diagonal(Impl<T> const &A, Impl<T> &out) {
-    LabeledSection("diagonal eager");
+    WAGGLE_ZONE("diagonal eager");
     run_diagonal<T>(out, A);
 }
 
 template <typename T>
 void capture_diagonal(CaptureContext &ctx, SlotRef out, SlotRef a) {
-    LabeledSection("diagonal capture");
+    WAGGLE_ZONE("diagonal capture");
     record_unary<T, T>(ctx, "diagonal", "diagonal execute", out, a, [](Impl<T> &o, Impl<T> const &src) { run_diagonal<T>(o, src); });
 }
 
@@ -177,16 +177,16 @@ void run_shift(T beta, Impl<T> &target) {
 
 template <typename T>
 void eager_shift(T beta, Impl<T> &A) {
-    LabeledSection("shift eager");
+    WAGGLE_ZONE("shift eager");
     run_shift<T>(beta, A);
 }
 
 template <typename T>
 void capture_shift(CaptureContext &ctx, T beta, SlotRef a, std::string_view name) {
-    LabeledSection("shift capture");
+    WAGGLE_ZONE("shift capture");
     OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
     auto                  executor = [beta, a_access]() {
-        LabeledSection("shift execute");
+        WAGGLE_ZONE("shift execute");
         run_shift<T>(beta, *a_access.impl<T>());
     };
     ctx.record(OpKind::Custom, fmt::format("shift({})", name), {a.first}, {a.first}, std::move(executor));

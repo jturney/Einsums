@@ -22,7 +22,7 @@ extern void FC_GLOBAL(zgesv, ZGESV)(int_t *, int_t *, std::complex<double> *, in
 }
 
 auto sgesv(int_t n, int_t nrhs, float *a, int_t lda, int_t *ipiv, float *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(sgesv, SGESV)(&n, &nrhs, a, &lda, ipiv, b, &ldb, &info);
@@ -30,7 +30,7 @@ auto sgesv(int_t n, int_t nrhs, float *a, int_t lda, int_t *ipiv, float *b, int_
 }
 
 auto dgesv(int_t n, int_t nrhs, double *a, int_t lda, int_t *ipiv, double *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(dgesv, DGESV)(&n, &nrhs, a, &lda, ipiv, b, &ldb, &info);
@@ -38,7 +38,7 @@ auto dgesv(int_t n, int_t nrhs, double *a, int_t lda, int_t *ipiv, double *b, in
 }
 
 auto cgesv(int_t n, int_t nrhs, std::complex<float> *a, int_t lda, int_t *ipiv, std::complex<float> *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(cgesv, CGESV)(&n, &nrhs, a, &lda, ipiv, b, &ldb, &info);
@@ -46,7 +46,7 @@ auto cgesv(int_t n, int_t nrhs, std::complex<float> *a, int_t lda, int_t *ipiv, 
 }
 
 auto zgesv(int_t n, int_t nrhs, std::complex<double> *a, int_t lda, int_t *ipiv, std::complex<double> *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(zgesv, ZGESV)(&n, &nrhs, a, &lda, ipiv, b, &ldb, &info);

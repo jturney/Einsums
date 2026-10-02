@@ -126,7 +126,7 @@ void record_unary_custom(char const *name, char const *execute_label, DstType *d
     auto [d_id, d_slot] = ctx.get_slot(*dst);
 
     auto executor = [s_slot, d_slot, apply, execute_label]() {
-        LabeledSection(execute_label);
+        WAGGLE_ZONE(execute_label);
         apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr));
     };
 
@@ -223,17 +223,17 @@ void scale(typename AType::ValueType factor, AType *A) {
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("scale eager");
+            WAGGLE_ZONE("scale eager");
             detail::tiled_scale<T>(factor, A);
             return;
         }
-        LabeledSection("scale capture");
+        WAGGLE_ZONE("scale capture");
         auto [a_id, a_slot] = ctx.get_slot(*A);
         auto label          = fmt::format("tiled scale({})", A->name());
         auto params         = std::make_shared<TiledElementwiseParams>();
         params->alpha       = PrefactorScalar{factor};
         auto executor       = [params, a_slot]() {
-            LabeledSection("scale execute");
+            WAGGLE_ZONE("scale execute");
             detail::tiled_scale<T>(as<T>(params->alpha), static_cast<AType *>(a_slot->ptr));
         };
         // Carries a descriptor so TiledExpansion can lower it per tile; the
@@ -288,15 +288,15 @@ void conj(AType *A) {
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("conj eager");
+            WAGGLE_ZONE("conj eager");
             detail::tiled_conj<T>(A);
             return;
         }
-        LabeledSection("conj capture");
+        WAGGLE_ZONE("conj capture");
         auto [a_id, a_slot] = ctx.get_slot(*A);
         auto label          = fmt::format("tiled conj({})", A->name());
         auto executor       = [a_slot]() {
-            LabeledSection("conj execute");
+            WAGGLE_ZONE("conj execute");
             detail::tiled_conj<T>(static_cast<AType *>(a_slot->ptr));
         };
         ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
@@ -339,11 +339,11 @@ void complex_part_op(ResultType *out, AType const &A) {
             }
         };
         if (!ctx.is_capturing()) {
-            LabeledSection(eager[index]);
+            WAGGLE_ZONE(eager[index]);
             kernel(A, out);
             return;
         }
-        LabeledSection(capture[index]);
+        WAGGLE_ZONE(capture[index]);
         auto [a_id, a_slot] = ctx.get_slot(A);
         auto [r_id, r_slot] = ctx.get_slot(*out);
         auto executor       = [a_slot, r_slot, kernel]() {
@@ -379,11 +379,11 @@ void complex_part_op(ResultType *out, AType const &A) {
             }
         };
         if (!ctx.is_capturing()) {
-            LabeledSection(eager[index]);
+            WAGGLE_ZONE(eager[index]);
             compute(out, &A);
             return;
         }
-        LabeledSection(capture[index]);
+        WAGGLE_ZONE(capture[index]);
         record_unary_custom(name[index], execute[index], out, A, compute);
     }
 }
@@ -503,16 +503,16 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
         }
         auto &tctx = CaptureContext::current();
         if (!tctx.is_capturing()) {
-            LabeledSection("permute eager");
+            WAGGLE_ZONE("permute eager");
             detail::tiled_permute(parsed, beta, C, alpha, A);
             return;
         }
-        LabeledSection("permute capture");
+        WAGGLE_ZONE("permute capture");
         auto [a_id, a_slot] = tctx.get_slot(A);
         auto [c_id, c_slot] = tctx.get_slot(*C);
         auto label    = fmt::format("tiled permute: C[{}] = A[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","));
         auto executor = [parsed, beta, alpha, a_slot, c_slot]() {
-            LabeledSection("permute execute");
+            WAGGLE_ZONE("permute execute");
             detail::tiled_permute(parsed, static_cast<T>(beta), static_cast<CType *>(c_slot->ptr), static_cast<T>(alpha),
                                   *static_cast<AType const *>(a_slot->ptr));
         };
@@ -1192,16 +1192,16 @@ template <CoreTensorConcept CType, typename UnaryOperator>
 void element_transform(CType *C, UnaryOperator unary_op) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("element_transform eager");
+        WAGGLE_ZONE("element_transform eager");
         detail::dense_element_transform(C, unary_op);
         return;
     }
 
-    LabeledSection("element_transform capture");
+    WAGGLE_ZONE("element_transform capture");
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
     auto executor = [c_slot, unary_op]() {
-        LabeledSection("element_transform execute");
+        WAGGLE_ZONE("element_transform execute");
         detail::dense_element_transform(static_cast<CType *>(c_slot->ptr), unary_op);
     };
 
@@ -1215,14 +1215,14 @@ template <TiledTensorConcept CType, typename UnaryOperator>
 void element_transform(CType *C, UnaryOperator unary_op) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("element_transform eager");
+        WAGGLE_ZONE("element_transform eager");
         detail::tiled_element_transform(C, unary_op);
         return;
     }
-    LabeledSection("element_transform capture");
+    WAGGLE_ZONE("element_transform capture");
     auto [c_id, c_slot] = ctx.get_slot(*C);
     auto executor       = [c_slot, unary_op]() {
-        LabeledSection("element_transform execute");
+        WAGGLE_ZONE("element_transform execute");
         detail::tiled_element_transform(static_cast<CType *>(c_slot->ptr), unary_op);
     };
     ctx.record(OpKind::Custom, "tiled element_transform", {c_id}, {c_id}, std::move(executor));
@@ -1376,15 +1376,15 @@ void element_transform_python(TensorType *C, std::function<typename TensorType::
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("element_transform_python eager");
+        WAGGLE_ZONE("element_transform_python eager");
         run(C);
         return;
     }
 
-    LabeledSection("element_transform_python capture");
+    WAGGLE_ZONE("element_transform_python capture");
     auto [c_id, c_slot] = ctx.get_slot(*C);
     auto executor       = [c_slot, run]() {
-        LabeledSection("element_transform_python execute");
+        WAGGLE_ZONE("element_transform_python execute");
         run(static_cast<TensorType *>(c_slot->ptr));
     };
     ctx.record(OpKind::ElementTransform, "element_transform", {c_id}, {c_id}, std::move(executor));
@@ -1480,18 +1480,18 @@ void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
         using T   = typename XType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("axpy eager");
+            WAGGLE_ZONE("axpy eager");
             detail::tiled_axpy<T>(alpha, X, Y);
             return;
         }
-        LabeledSection("axpy capture");
+        WAGGLE_ZONE("axpy capture");
         auto [x_id, x_slot] = ctx.get_slot(X);
         auto [y_id, y_slot] = ctx.get_slot(*Y);
         auto label          = fmt::format("tiled axpy({}, {})", X.name(), Y->name());
         auto params         = std::make_shared<TiledElementwiseParams>();
         params->alpha       = PrefactorScalar{alpha};
         auto executor       = [params, x_slot, y_slot]() {
-            LabeledSection("axpy execute");
+            WAGGLE_ZONE("axpy execute");
             detail::tiled_axpy<T>(as<T>(params->alpha), *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
         };
         TiledElementwiseDescriptor edesc;
@@ -2077,20 +2077,20 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
         detail::capture_dot<ResultT>(ctx, false, a_id, b_id, r_id, 0);
     } else {
         if (!ctx.is_capturing()) {
-            LabeledSection("dot eager");
+            WAGGLE_ZONE("dot eager");
             // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
             blas::SerialVendorScope const serial;
             *result = linear_algebra::dot(A, B);
             return;
         }
 
-        LabeledSection("dot capture");
+        WAGGLE_ZONE("dot capture");
         auto [a_id, a_slot] = ctx.get_slot(A);
         auto [b_id, b_slot] = ctx.get_slot(B);
         TensorId r_id       = ctx.get_or_register_scalar(result, "dot_result");
 
         auto executor = [result, a_slot, b_slot]() {
-            LabeledSection("dot execute");
+            WAGGLE_ZONE("dot execute");
             blas::SerialVendorScope const serial;
             *result = linear_algebra::dot(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
         };
@@ -2120,17 +2120,17 @@ void dot_into(ResultType *result, AType const &A, BType const &B) {
         };
 
         if (!ctx.is_capturing()) {
-            LabeledSection(Conj ? "dotc_python eager" : "dot_python eager");
+            WAGGLE_ZONE(Conj ? "dotc_python eager" : "dot_python eager");
             result->data()[0] = compute(A, B);
             return;
         }
 
-        LabeledSection(Conj ? "dotc_python capture" : "dot_python capture");
+        WAGGLE_ZONE(Conj ? "dotc_python capture" : "dot_python capture");
         auto [a_id, a_slot] = ctx.get_slot(A);
         auto [b_id, b_slot] = ctx.get_slot(B);
         auto [r_id, r_slot] = ctx.get_slot(*result);
         auto executor       = [a_slot, b_slot, r_slot, compute]() {
-            LabeledSection(Conj ? "dotc_python execute" : "dot_python execute");
+            WAGGLE_ZONE(Conj ? "dotc_python execute" : "dot_python execute");
             auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
             r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
         };
@@ -2471,11 +2471,11 @@ void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) 
                       "cg::direct_division with a tiled operand requires all of A, B, C to be TiledRuntimeTensor");
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("direct_division eager");
+            WAGGLE_ZONE("direct_division eager");
             detail::tiled_direct_division<T>(alpha, A, B, beta, C);
             return;
         }
-        LabeledSection("direct_division capture");
+        WAGGLE_ZONE("direct_division capture");
         auto [a_id, a_slot] = ctx.get_slot(A);
         auto [b_id, b_slot] = ctx.get_slot(B);
         auto [c_id, c_slot] = ctx.get_slot(*C);
@@ -2484,7 +2484,7 @@ void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) 
         params->alpha       = PrefactorScalar{alpha};
         params->beta        = PrefactorScalar{beta};
         auto executor       = [params, a_slot, b_slot, c_slot]() {
-            LabeledSection("direct_division execute");
+            WAGGLE_ZONE("direct_division execute");
             detail::tiled_direct_division<T>(as<T>(params->alpha), *static_cast<AType const *>(a_slot->ptr),
                                              *static_cast<BType const *>(b_slot->ptr), as<T>(params->beta),
                                              static_cast<CType *>(c_slot->ptr));
@@ -3874,7 +3874,7 @@ APIARY_INSTANTIATE_AS("grouped_direct_product", std::complex<double>, einsums::R
 // clang-format on
 void grouped_direct_product(std::vector<T> alphas, std::vector<AType const *> a_list, std::vector<BType const *> b_list,
                             std::vector<T> betas, std::vector<CType *> c_list) {
-    LabeledSection("grouped_direct_product");
+    WAGGLE_ZONE("grouped_direct_product");
     detail::grouped_binary_elementwise<T, AType, BType, CType>("cg::grouped_direct_product", OpKind::GroupedDirectProduct, "direct_product",
                                                                alphas, a_list, b_list, betas, c_list);
 }
@@ -3923,7 +3923,7 @@ APIARY_INSTANTIATE_AS("grouped_direct_division", std::complex<double>, einsums::
 // clang-format on
 void grouped_direct_division(std::vector<T> alphas, std::vector<AType const *> a_list, std::vector<BType const *> b_list,
                              std::vector<T> betas, std::vector<CType *> c_list) {
-    LabeledSection("grouped_direct_division");
+    WAGGLE_ZONE("grouped_direct_division");
     detail::grouped_binary_elementwise<T, AType, BType, CType>("cg::grouped_direct_division", OpKind::GroupedDirectDivision,
                                                                "direct_division", alphas, a_list, b_list, betas, c_list);
 }
@@ -4202,19 +4202,19 @@ void norm(RemoveComplexT<typename AType::ValueType> *result, linear_algebra::Nor
     } else {
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("norm eager");
+            WAGGLE_ZONE("norm eager");
             // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
             blas::SerialVendorScope const serial;
             *result = linear_algebra::norm(norm_type, A);
             return;
         }
 
-        LabeledSection("norm capture");
+        WAGGLE_ZONE("norm capture");
         auto [a_id, a_slot] = ctx.get_slot(A);
         TensorId r_id       = ctx.get_or_register_scalar(result, "norm_result");
 
         auto executor = [result, norm_type, a_slot]() {
-            LabeledSection("norm execute");
+            WAGGLE_ZONE("norm execute");
             blas::SerialVendorScope const serial;
             *result = linear_algebra::norm(norm_type, *static_cast<AType const *>(a_slot->ptr));
         };
@@ -4292,17 +4292,17 @@ void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const
 
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("norm_python eager");
+            WAGGLE_ZONE("norm_python eager");
             result->data()[0] = compute(norm_type, A);
             return;
         }
 
-        LabeledSection("norm_python capture");
+        WAGGLE_ZONE("norm_python capture");
         auto [a_id, a_slot] = ctx.get_slot(A);
         auto [r_id, r_slot] = ctx.get_slot(*result);
 
         auto executor = [norm_type, a_slot, r_slot, compute]() {
-            LabeledSection("norm_python execute");
+            WAGGLE_ZONE("norm_python execute");
             auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
             r_ptr->data()[0] = compute(norm_type, *static_cast<AType const *>(a_slot->ptr));
         };
@@ -4438,17 +4438,17 @@ void trace_python(ResultType *result, AType const &A) {
     auto &ctx = CaptureContext::current();
     if constexpr (TiledTensorConcept<AType>) {
         if (!ctx.is_capturing()) {
-            LabeledSection("trace_python eager");
+            WAGGLE_ZONE("trace_python eager");
             result->data()[0] = detail::tiled_trace<T>(A);
             return;
         }
 
-        LabeledSection("trace_python capture");
+        WAGGLE_ZONE("trace_python capture");
         auto [a_id, a_slot] = ctx.get_slot(A);
         auto [r_id, r_slot] = ctx.get_slot(*result);
 
         auto executor = [a_slot, r_slot]() {
-            LabeledSection("trace_python execute");
+            WAGGLE_ZONE("trace_python execute");
             auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
             r_ptr->data()[0] = detail::tiled_trace<T>(*static_cast<AType const *>(a_slot->ptr));
         };
@@ -4534,16 +4534,16 @@ void symm_gemm(AType const &A, BType const &B, CType *C, bool conjugate = false)
     };
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("symm_gemm eager");
+        WAGGLE_ZONE("symm_gemm eager");
         run(A, B, C);
         return;
     }
-    LabeledSection("symm_gemm capture");
+    WAGGLE_ZONE("symm_gemm capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
     auto executor       = [a_slot, b_slot, c_slot, run]() {
-        LabeledSection("symm_gemm execute");
+        WAGGLE_ZONE("symm_gemm execute");
         run(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), static_cast<CType *>(c_slot->ptr));
     };
     ctx.record(OpKind::SymmGemm, "symm_gemm", {a_id, b_id}, {c_id}, std::move(executor));
@@ -4557,21 +4557,21 @@ template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, Ma
 void symm_gemm(AType const &A, BType const &B, CType *C) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("symm_gemm eager");
+        WAGGLE_ZONE("symm_gemm eager");
         linear_algebra::symm_gemm<TransA, TransB>(A, B, C);
         return;
     }
 
-    LabeledSection("symm_gemm capture");
+    WAGGLE_ZONE("symm_gemm capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
     auto executor = [a_slot, b_slot, c_slot]() {
-        LabeledSection("symm_gemm execute");
-        ProfileAnnotate("a_n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
-        ProfileAnnotate("b_m", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(0)));
-        ProfileAnnotate("b_n", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(1)));
+        WAGGLE_ZONE("symm_gemm execute");
+        WAGGLE_ANNOTATE("a_n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
+        WAGGLE_ANNOTATE("b_m", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(0)));
+        WAGGLE_ANNOTATE("b_n", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(1)));
         linear_algebra::symm_gemm<TransA, TransB>(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
                                                   static_cast<CType *>(c_slot->ptr));
     };
@@ -4627,15 +4627,15 @@ void eigh_tiled(AType *A, WType *W) {
     };
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection(Hermitian ? "heev eager" : "syev eager");
+        WAGGLE_ZONE(Hermitian ? "heev eager" : "syev eager");
         kernel(A, W);
         return;
     }
-    LabeledSection(Hermitian ? "heev capture" : "syev capture");
+    WAGGLE_ZONE(Hermitian ? "heev capture" : "syev capture");
     auto [a_id, a_slot] = ctx.get_slot(*A);
     auto [w_id, w_slot] = ctx.get_slot(*W);
     auto executor       = [a_slot, w_slot, kernel]() {
-        LabeledSection(Hermitian ? "heev execute" : "syev execute");
+        WAGGLE_ZONE(Hermitian ? "heev execute" : "syev execute");
         kernel(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
     };
     // No SyevDescriptor, deliberately. A tiled operand is a grid of buffers rather than one,
@@ -5025,12 +5025,12 @@ void diis_step(std::shared_ptr<DiisAccelerator<T>> const &accelerator) {
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("diis_step eager");
+        WAGGLE_ZONE("diis_step eager");
         accelerator->step();
         return;
     }
 
-    LabeledSection("diis_step capture");
+    WAGGLE_ZONE("diis_step capture");
     std::vector<TensorId> inputs, outputs;
     inputs.reserve(2 * accelerator->num_pairs());
     outputs.reserve(accelerator->num_pairs());
@@ -5044,7 +5044,7 @@ void diis_step(std::shared_ptr<DiisAccelerator<T>> const &accelerator) {
     }
 
     auto executor = [accelerator]() {
-        LabeledSection("diis_step execute");
+        WAGGLE_ZONE("diis_step execute");
         accelerator->step();
     };
     ctx.record(OpKind::DiisStep, fmt::format("diis x{}", accelerator->num_pairs()), std::move(inputs), std::move(outputs),
@@ -5547,13 +5547,13 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("einsum eager");
+        WAGGLE_ZONE("einsum eager");
         // Through the library, on the operands' TensorImpls: this file compiles no einsum engine.
         dispatch::erased_string_einsum<T>(parsed, c_pf, C->impl(), ab_pf, A.impl(), B.impl(), conj_a, conj_b);
         return;
     }
 
-    LabeledSection("einsum capture");
+    WAGGLE_ZONE("einsum capture");
     // Registering the operands is what depends on their tensor types; recording the node is done
     // in the library, on the slots and TensorImpls, so this file compiles none of it.
     auto [a_id, a_slot] = ctx.get_slot(A);
@@ -5603,12 +5603,12 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("einsum eager");
+        WAGGLE_ZONE("einsum eager");
         detail::tiled_runtime_einsum<T>(parsed, c_pf, C, ab_pf, A, B);
         return;
     }
 
-    LabeledSection("einsum capture");
+    WAGGLE_ZONE("einsum capture");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
@@ -5620,7 +5620,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
                              fmt::join(parsed.b_indices, ","));
 
     auto executor = [indices, params, a_slot, b_slot, c_slot]() {
-        LabeledSection("einsum execute");
+        WAGGLE_ZONE("einsum execute");
         detail::tiled_runtime_einsum<T>(indices->spec, as<T>(params->c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params->ab_pf),
                                         *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
     };
@@ -5715,7 +5715,7 @@ void einsum(EinsumFormatString spec, typename CType::ValueType c_pf, CType *C,
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("einsum eager (mixed precision)");
+        WAGGLE_ZONE("einsum eager (mixed precision)");
         dispatch::erased_mixed_string_einsum<typename CType::ValueType, typename AType::ValueType, typename BType::ValueType>(
             parsed, c_pf, C->impl(), ab_pf, A.impl(), B.impl(), conj_a, conj_b);
         return;
@@ -5725,7 +5725,7 @@ void einsum(EinsumFormatString spec, typename CType::ValueType c_pf, CType *C,
     // a single-type capture. What it leaves out is every fast path, the GEMM hint and the batched
     // GEMM recordings, since none of them takes mixed types. The executor reads each operand's
     // element type from its accessor and runs the mixed-precision generic loop.
-    LabeledSection("einsum capture (mixed precision)");
+    WAGGLE_ZONE("einsum capture (mixed precision)");
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
@@ -5868,12 +5868,12 @@ void parallel_for(std::string name, size_t begin, size_t end, F &&body, std::tup
                   std::tuple<WriteTensors *...> writes) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("parallel_for eager");
+        WAGGLE_ZONE("parallel_for eager");
         task_pool::TaskPool::get_singleton().parallel_for(name, begin, end, std::forward<F>(body));
         return;
     }
 
-    LabeledSection("parallel_for capture");
+    WAGGLE_ZONE("parallel_for capture");
     // Collect input tensor IDs
     std::vector<TensorId> input_ids;
     std::apply([&](auto *...ptrs) { (input_ids.push_back(ctx.get_or_register(*ptrs)), ...); }, reads);
@@ -5883,7 +5883,7 @@ void parallel_for(std::string name, size_t begin, size_t end, F &&body, std::tup
     std::apply([&](auto *...ptrs) { (output_ids.push_back(ctx.get_or_register(*ptrs)), ...); }, writes);
 
     auto executor = [name, begin, end, body = std::forward<F>(body)]() mutable {
-        LabeledSection("parallel_for execute");
+        WAGGLE_ZONE("parallel_for execute");
         task_pool::TaskPool::get_singleton().parallel_for(name, begin, end, body);
     };
 
@@ -5906,18 +5906,18 @@ template <typename F, CoreBasicTensorConcept... TensorTypes>
 void parallel_for(std::string name, size_t begin, size_t end, F &&body, TensorTypes *...tensors) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("parallel_for eager");
+        WAGGLE_ZONE("parallel_for eager");
         task_pool::TaskPool::get_singleton().parallel_for(name, begin, end, std::forward<F>(body));
         return;
     }
 
-    LabeledSection("parallel_for capture");
+    WAGGLE_ZONE("parallel_for capture");
     // All listed tensors are both inputs and outputs
     std::vector<TensorId> tensor_ids;
     (tensor_ids.push_back(ctx.get_or_register(*tensors)), ...);
 
     auto executor = [name, begin, end, body = std::forward<F>(body)]() mutable {
-        LabeledSection("parallel_for execute");
+        WAGGLE_ZONE("parallel_for execute");
         task_pool::TaskPool::get_singleton().parallel_for(name, begin, end, body);
     };
 
@@ -5944,20 +5944,20 @@ void parallel_reduce(std::string name, size_t begin, size_t end, Acc *result, In
                      TensorTypes *...tensors) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("parallel_reduce eager");
+        WAGGLE_ZONE("parallel_reduce eager");
         *result = task_pool::TaskPool::get_singleton().parallel_reduce<Acc>(name, begin, end, std::forward<InitFactory>(init),
                                                                             std::forward<Body>(body), std::forward<Combiner>(combine));
         return;
     }
 
-    LabeledSection("parallel_reduce capture");
+    WAGGLE_ZONE("parallel_reduce capture");
     // Input tensors
     std::vector<TensorId> tensor_ids;
     (tensor_ids.push_back(ctx.get_or_register(*tensors)), ...);
 
     auto executor = [name, begin, end, result, init = std::forward<InitFactory>(init), body = std::forward<Body>(body),
                      combine = std::forward<Combiner>(combine)]() mutable {
-        LabeledSection("parallel_reduce execute");
+        WAGGLE_ZONE("parallel_reduce execute");
         *result = task_pool::TaskPool::get_singleton().parallel_reduce<Acc>(name, begin, end, init, body, combine);
     };
 

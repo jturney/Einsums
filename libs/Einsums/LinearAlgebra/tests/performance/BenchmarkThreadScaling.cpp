@@ -30,7 +30,7 @@ namespace {
 
 /// Run GEMM at a specific thread count and report.
 void bench_gemm_threads(int N, int nthreads) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N), B("B", N, N), C("C", N, N);
     fill(A);
     fill(B);
@@ -44,10 +44,10 @@ void bench_gemm_threads(int N, int nthreads) {
     char label[64];
     std::snprintf(label, sizeof(label), "gemm-%dt", nthreads);
 
-    ProfileAnnotate("operation", std::string("gemm"));
-    ProfileAnnotate("dtype", std::string("double"));
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("threads", int64_t(nthreads));
+    WAGGLE_ANNOTATE("operation", std::string("gemm"));
+    WAGGLE_ANNOTATE("dtype", std::string("double"));
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("threads", int64_t(nthreads));
     auto s = time_us(label, [&] { blas::gemm('n', 'n', N, N, N, 1.0, A.data(), N, B.data(), N, 0.0, C.data(), N); });
     publish_benchmark_result(label, "t_blas", N, s);
 
@@ -58,7 +58,7 @@ void bench_gemm_threads(int N, int nthreads) {
 
 /// Run the LA gemm wrapper at a specific thread count.
 void bench_la_gemm_threads(int N, int nthreads) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N), B("B", N, N), C("C", N, N);
     fill(A);
     fill(B);
@@ -72,10 +72,10 @@ void bench_la_gemm_threads(int N, int nthreads) {
     char label[64];
     std::snprintf(label, sizeof(label), "la-gemm-%dt", nthreads);
 
-    ProfileAnnotate("operation", std::string("la-gemm"));
-    ProfileAnnotate("dtype", std::string("double"));
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("threads", int64_t(nthreads));
+    WAGGLE_ANNOTATE("operation", std::string("la-gemm"));
+    WAGGLE_ANNOTATE("dtype", std::string("double"));
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("threads", int64_t(nthreads));
     auto s = time_us(label, [&] { linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C); });
     publish_benchmark_result(label, "t_la", N, s);
 

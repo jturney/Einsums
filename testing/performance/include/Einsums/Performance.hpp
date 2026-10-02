@@ -45,19 +45,19 @@ struct TimingStats {
 /// The warmup pass is timed separately to show cold-start cost (JIT, cache).
 template <typename Fn>
 TimingStats time_us(char const *label, Fn &&fn, int reps = 10) {
-    LabeledSection("{}", label);
+    WAGGLE_ZONE("{}", label);
 
     // Warmup — timed separately to show cold-start cost
     double warmup_us;
     {
-        LabeledSection("warmup");
+        WAGGLE_ZONE("warmup");
         auto w0 = Clock::now();
         fn();
         auto w1   = Clock::now();
         warmup_us = std::chrono::duration<double, std::micro>(w1 - w0).count();
     }
-    ProfileAnnotate("warmup_us", warmup_us);
-    ProfileAnnotate("reps", static_cast<int64_t>(reps));
+    WAGGLE_ANNOTATE("warmup_us", warmup_us);
+    WAGGLE_ANNOTATE("reps", static_cast<int64_t>(reps));
 
     // Time each rep individually
     std::vector<double> times(reps);
@@ -88,10 +88,10 @@ TimingStats time_us(char const *label, Fn &&fn, int reps = 10) {
     }
     double const stddev_us = reps > 1 ? std::sqrt(sum_sq_dev / (reps - 1)) : 0.0;
 
-    ProfileAnnotate("avg_us", mean_us);
-    ProfileAnnotate("min_us", min_us);
-    ProfileAnnotate("max_us", max_us);
-    ProfileAnnotate("stddev_us", stddev_us);
+    WAGGLE_ANNOTATE("avg_us", mean_us);
+    WAGGLE_ANNOTATE("min_us", min_us);
+    WAGGLE_ANNOTATE("max_us", max_us);
+    WAGGLE_ANNOTATE("stddev_us", stddev_us);
 
     return {mean_us, min_us, max_us, stddev_us, warmup_us, reps};
 }

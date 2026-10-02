@@ -31,13 +31,13 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 template <typename T>
 void eager_scale(T factor, Impl<T> &A) {
-    LabeledSection("scale eager");
+    WAGGLE_ZONE("scale eager");
     linear_algebra::detail::scale(factor, &A);
 }
 
 template <typename T>
 void capture_scale(CaptureContext &ctx, T factor, TensorId a_id, std::string_view name, std::size_t rank) {
-    LabeledSection("scale capture");
+    WAGGLE_ZONE("scale capture");
 
     // The factor is recorded in the tensor's own scalar type rather than
     // projected onto a double, so a complex scale reads back exactly.
@@ -56,14 +56,14 @@ void capture_scale(CaptureContext &ctx, T factor, TensorId a_id, std::string_vie
 
 template <typename T>
 void eager_axpy(T alpha, Impl<T> const &X, Impl<T> &Y) {
-    LabeledSection("axpy eager");
+    WAGGLE_ZONE("axpy eager");
     linear_algebra::detail::axpy(alpha, X, &Y);
 }
 
 template <typename T>
 void capture_axpy(CaptureContext &ctx, T alpha, TensorId x_id, TensorId y_id, std::string_view x_name, std::string_view y_name,
                   std::size_t rank) {
-    LabeledSection("axpy capture");
+    WAGGLE_ZONE("axpy capture");
 
     // axpy IS an axpby with beta == 1, so it records as one and every
     // scalar-aware pass (ScaleAbsorption, CSE, ElementWiseFusion, ...) sees it
@@ -98,13 +98,13 @@ void capture_axpy(CaptureContext &ctx, T alpha, TensorId x_id, TensorId y_id, st
 
 template <typename T>
 void eager_axpby(T alpha, Impl<T> const &X, T beta, Impl<T> &Y) {
-    LabeledSection("axpby eager");
+    WAGGLE_ZONE("axpby eager");
     linear_algebra::detail::axpby(alpha, X, beta, &Y);
 }
 
 template <typename T>
 void capture_axpby(CaptureContext &ctx, T alpha, T beta, TensorId x_id, TensorId y_id, std::size_t rank) {
-    LabeledSection("axpby capture");
+    WAGGLE_ZONE("axpby capture");
 
     // Live-mutable scalars shared with the executor (single source of truth:
     // a pass that folds a scale into this axpby writes beta through params and
@@ -133,20 +133,20 @@ void capture_axpby(CaptureContext &ctx, T alpha, T beta, TensorId x_id, TensorId
 
 template <typename T>
 void eager_direct_product(T alpha, Impl<T> const &A, Impl<T> const &B, T beta, Impl<T> &C) {
-    LabeledSection("direct_product eager");
+    WAGGLE_ZONE("direct_product eager");
     linear_algebra::detail::direct_product(alpha, A, B, beta, &C);
 }
 
 template <typename T>
 void eager_direct_division(T alpha, Impl<T> const &A, Impl<T> const &B, T beta, Impl<T> &C) {
-    LabeledSection("direct_division eager");
+    WAGGLE_ZONE("direct_division eager");
     linear_algebra::detail::direct_division(alpha, A, B, beta, &C);
 }
 
 void capture_elementwise_binary(CaptureContext &ctx, OpKind kind, PrefactorScalar alpha, PrefactorScalar beta, bool reads_c, TensorId a_id,
                                 TensorId b_id, TensorId c_id, packed_gemm::ScalarType dtype, std::size_t rank) {
     bool const product = kind == OpKind::DirectProduct;
-    LabeledSection(product ? "direct_product capture" : "direct_division capture");
+    WAGGLE_ZONE(product ? "direct_product capture" : "direct_division capture");
 
     // A descriptor, so passes that reason about prefactors can see the node. The
     // product and the division share it; the kind distinguishes them.
@@ -173,7 +173,7 @@ void capture_elementwise_binary(CaptureContext &ctx, OpKind kind, PrefactorScala
 template <typename T>
 void eager_element_transform(Impl<T> &C, std::string_view op_name, std::optional<double> param) {
     auto kernel = element_ops::global_element_op_registry().kernel<T>(op_name, param);
-    LabeledSection("element_transform eager");
+    WAGGLE_ZONE("element_transform eager");
     element_ops::detail::apply_element_op<T>(kernel, &C);
 }
 
@@ -183,7 +183,7 @@ void capture_element_transform(CaptureContext &ctx, TensorId c_id, std::size_t r
     // Looked up only to validate: an unknown name or a parameter the op does not
     // take fails here, at capture, rather than when the graph replays.
     (void)element_ops::global_element_op_registry().kernel<T>(op_name, param);
-    LabeledSection("element_transform capture");
+    WAGGLE_ZONE("element_transform capture");
 
     ElementTransformDescriptor desc;
     desc.op_name = std::string(op_name);

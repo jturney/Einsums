@@ -61,7 +61,7 @@ void measure(std::string const &label, Call &&call) {
 
 // NOLINTBEGIN(einsums-cg-call-outside-capture)
 EINSUMS_TEST_CASE("Bench EagerCallOverhead: tiny eager contractions", "[ComputeGraph][EagerCallOverhead][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     auto A2 = create_random_tensor<double>("A2", 4, 4);
     auto B2 = create_random_tensor<double>("B2", 4, 4);
@@ -86,7 +86,7 @@ EINSUMS_TEST_CASE("Bench EagerCallOverhead: tiny eager contractions", "[ComputeG
 // NOLINTEND(einsums-cg-call-outside-capture)
 
 EINSUMS_TEST_CASE("Bench EagerCallOverhead: control, replay of 100 tiny einsums", "[ComputeGraph][EagerCallOverhead][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     auto      A = create_random_tensor<double>("A", 4, 4);
     auto      B = create_random_tensor<double>("B", 4, 4);

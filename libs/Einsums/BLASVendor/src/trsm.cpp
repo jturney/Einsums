@@ -23,27 +23,27 @@ extern void FC_GLOBAL(ztrsm, ZTRSM)(char *, char *, char *, char *, int_t *, int
 }
 
 void strsm(char side, char uplo, char transa, char diag, int_t m, int_t n, float alpha, float const *a, int_t lda, float *b, int_t ldb) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(strsm, STRSM)(&side, &uplo, &transa, &diag, &m, &n, &alpha, a, &lda, b, &ldb);
 }
 
 void dtrsm(char side, char uplo, char transa, char diag, int_t m, int_t n, double alpha, double const *a, int_t lda, double *b, int_t ldb) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(dtrsm, DTRSM)(&side, &uplo, &transa, &diag, &m, &n, &alpha, a, &lda, b, &ldb);
 }
 
 void ctrsm(char side, char uplo, char transa, char diag, int_t m, int_t n, std::complex<float> alpha, std::complex<float> const *a,
            int_t lda, std::complex<float> *b, int_t ldb) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(ctrsm, CTRSM)(&side, &uplo, &transa, &diag, &m, &n, &alpha, a, &lda, b, &ldb);
 }
 
 void ztrsm(char side, char uplo, char transa, char diag, int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *a,
            int_t lda, std::complex<double> *b, int_t ldb) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(ztrsm, ZTRSM)(&side, &uplo, &transa, &diag, &m, &n, &alpha, a, &lda, b, &ldb);
 }

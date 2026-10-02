@@ -113,10 +113,10 @@ void run_generic(double beta, std::tuple<CI...> c_idx, einsums::Tensor<double, C
 // what MLIR would produce even though einsum() bypasses it here.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-2 contraction N=64 (MLIR direct)", "[mlir][benchmark]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,k]*B[j,k]");
-    ProfileAnnotate("N", int64_t(64));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,k]*B[j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(64));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 64;
     einsums::Tensor<double, 2> A{"A", N, N};
     einsums::Tensor<double, 2> B{"B", N, N};
@@ -171,10 +171,10 @@ EINSUMS_TEST_CASE("Benchmark: rank-2 contraction N=64 (MLIR direct)", "[mlir][be
 // to show the MLIR JIT performance for this contraction.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=32 (MLIR direct)", "[mlir][benchmark]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
-    ProfileAnnotate("N", int64_t(32));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
+    WAGGLE_ANNOTATE("N", int64_t(32));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 32;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 3> A{"A", N, N, N};
@@ -231,10 +231,10 @@ EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=32 (MLIR direct)", "[mlir][be
 // Rank-3 contraction N=64, larger problem size
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=64 (MLIR direct)", "[mlir][benchmark]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
-    ProfileAnnotate("N", int64_t(64));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
+    WAGGLE_ANNOTATE("N", int64_t(64));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 64;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 3> A{"A", N, N, N};
@@ -307,10 +307,10 @@ EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=64 (MLIR direct)", "[mlir][be
 // N=8 gives 8^5 = 32768 FLOPs, fast enough for correctness checking.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-4 contraction C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=8 (MLIR direct)", "[mlir][benchmark]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
-    ProfileAnnotate("N", int64_t(8));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(8));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 8;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 4> A{"A", N, N, N, N}; // i, l, k, m
@@ -368,10 +368,10 @@ EINSUMS_TEST_CASE("Benchmark: rank-4 contraction C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N
 // Rank-2 N=256, GEMM-equivalent large-N (vs BLAS target: MLIR ≤ 2× BLAS)
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-2 contraction N=256 (MLIR direct)", "[mlir][benchmark][large]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,k]*B[j,k]");
-    ProfileAnnotate("N", int64_t(256));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,k]*B[j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(256));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 256;
     einsums::Tensor<double, 2> A{"A", N, N};
     einsums::Tensor<double, 2> B{"B", N, N};
@@ -411,10 +411,10 @@ EINSUMS_TEST_CASE("Benchmark: rank-2 contraction N=256 (MLIR direct)", "[mlir][b
 // Rank-3 N=128, first tiling-benefiting size (link_dim=128 > tile_size=64)
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=128 (MLIR direct)", "[mlir][benchmark][large]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
-    ProfileAnnotate("N", int64_t(128));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
+    WAGGLE_ANNOTATE("N", int64_t(128));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 128;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 3> A{"A", N, N, N};
@@ -463,10 +463,10 @@ EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=128 (MLIR direct)", "[mlir][b
 // Rank-3 N=256, large-N tiling benefit (link_dims 256 >> tile_size 64)
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=256 (MLIR direct)", "[mlir][benchmark][large]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
-    ProfileAnnotate("N", int64_t(256));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
+    WAGGLE_ANNOTATE("N", int64_t(256));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 256;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 3> A{"A", N, N, N};
@@ -515,10 +515,10 @@ EINSUMS_TEST_CASE("Benchmark: rank-3 contraction N=256 (MLIR direct)", "[mlir][b
 // Cache-hit overhead: verify repeated calls reuse the compiled kernel.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: kernel cache hit overhead", "[mlir][benchmark]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
-    ProfileAnnotate("N", int64_t(32));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
+    WAGGLE_ANNOTATE("N", int64_t(32));
+    WAGGLE_ANNOTATE("dtype", "double");
     // Use a rank-3 contraction C[i,l] += A[i,j,k] * B[j,k,l] that MLIR handles
     // (rank-2 GEMM shapes are correctly deferred to BLAS dispatch).
     constexpr size_t           N = 32;
@@ -583,10 +583,10 @@ EINSUMS_TEST_CASE("Benchmark: kernel cache hit overhead", "[mlir][benchmark]") {
 // M/N/K decomposition).  Falls through to the per-topology MLIR kernel.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: Hadamard C[i]+=A[i,i]*B[i] N=256", "[mlir][benchmark][nongemm]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i]+=A[i,i]*B[i]");
-    ProfileAnnotate("N", int64_t(256));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i]+=A[i,i]*B[i]");
+    WAGGLE_ANNOTATE("N", int64_t(256));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 256;
     einsums::Tensor<double, 1> C{"C", N};
     einsums::Tensor<double, 2> A{"A", N, N};
@@ -629,10 +629,10 @@ EINSUMS_TEST_CASE("Benchmark: Hadamard C[i]+=A[i,i]*B[i] N=256", "[mlir][benchma
 // Larger working set than the rank-1 Hadamard above.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: Hadamard C[i,j]+=A[i,i,j]*B[j] N=64", "[mlir][benchmark][nongemm]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,i,j]*B[j]");
-    ProfileAnnotate("N", int64_t(64));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,i,j]*B[j]");
+    WAGGLE_ANNOTATE("N", int64_t(64));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 64;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 3> A{"A", N, N, N};
@@ -685,10 +685,10 @@ EINSUMS_TEST_CASE("Benchmark: Hadamard C[i,j]+=A[i,i,j]*B[j] N=64", "[mlir][benc
 // No packing path; scalar output is always per-topology MLIR.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: scalar output s+=A[i,j]*B[i,j] N=128", "[mlir][benchmark][nongemm]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "s+=A[i,j]*B[i,j]");
-    ProfileAnnotate("N", int64_t(128));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "s+=A[i,j]*B[i,j]");
+    WAGGLE_ANNOTATE("N", int64_t(128));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 128;
     einsums::Tensor<double, 2> A{"A", N, N};
     einsums::Tensor<double, 2> B{"B", N, N};
@@ -729,10 +729,10 @@ EINSUMS_TEST_CASE("Benchmark: scalar output s+=A[i,j]*B[i,j] N=128", "[mlir][ben
 // 3 nested reduction loops.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: scalar output s+=A[i,j,k]*B[i,j,k] N=32", "[mlir][benchmark][nongemm]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "s+=A[i,j,k]*B[i,j,k]");
-    ProfileAnnotate("N", int64_t(32));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "s+=A[i,j,k]*B[i,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(32));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 32;
     einsums::Tensor<double, 3> A{"A", N, N, N};
     einsums::Tensor<double, 3> B{"B", N, N, N};
@@ -777,10 +777,10 @@ EINSUMS_TEST_CASE("Benchmark: scalar output s+=A[i,j,k]*B[i,j,k] N=32", "[mlir][
 // The generic OMP algorithm with nested parallelism on rank-3+ contractions
 // causes stack overflow / memory corruption on OMP worker threads.
 EINSUMS_TEST_CASE("Benchmark: asymmetric C[i,j,k]+=A[i,l]*B[l,j,k] N=32", "[mlir][benchmark][nongemm][!mayfail]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,j,k]+=A[i,l]*B[l,j,k]");
-    ProfileAnnotate("N", int64_t(32));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,j,k]+=A[i,l]*B[l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(32));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 32;
     einsums::Tensor<double, 3> C{"C", N, N, N};
     einsums::Tensor<double, 2> A{"A", N, N};
@@ -836,10 +836,10 @@ EINSUMS_TEST_CASE("Benchmark: asymmetric C[i,j,k]+=A[i,l]*B[l,j,k] N=32", "[mlir
 // The packing path rejects batch dims, so this falls through to MLIR.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: batch C[b,i,j]+=A[b,i,k]*B[b,k,j] B=16 N=32", "[mlir][benchmark][nongemm]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[b,i,j]+=A[b,i,k]*B[b,k,j]");
-    ProfileAnnotate("N", int64_t(32));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[b,i,j]+=A[b,i,k]*B[b,k,j]");
+    WAGGLE_ANNOTATE("N", int64_t(32));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           Nb = 16; // batch size
     constexpr size_t           N  = 32; // spatial dims
     einsums::Tensor<double, 3> C{"C", Nb, N, N};
@@ -896,10 +896,10 @@ EINSUMS_TEST_CASE("Benchmark: batch C[b,i,j]+=A[b,i,k]*B[b,k,j] B=16 N=32", "[ml
 // BLAS should be 10-50x faster than the generic algorithm per slice.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: batch C[b,i,j]+=A[b,i,k]*B[b,k,j] B=4 N=128", "[mlir][benchmark][batch]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[b,i,j]+=A[b,i,k]*B[b,k,j]");
-    ProfileAnnotate("N", int64_t(128));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[b,i,j]+=A[b,i,k]*B[b,k,j]");
+    WAGGLE_ANNOTATE("N", int64_t(128));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           Nb = 4;
     constexpr size_t           N  = 128;
     einsums::Tensor<double, 3> C{"C", Nb, N, N};
@@ -955,10 +955,10 @@ EINSUMS_TEST_CASE("Benchmark: batch C[b,i,j]+=A[b,i,k]*B[b,k,j] B=4 N=128", "[ml
 // each batch slice has contiguous M*K / K*N layout, ideal for direct BLAS GEMM.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: batch C[i,j,b]+=A[i,k,b]*B[k,j,b] B=4 N=128", "[mlir][benchmark][batch]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,j,b]+=A[i,k,b]*B[k,j,b]");
-    ProfileAnnotate("N", int64_t(128));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,j,b]+=A[i,k,b]*B[k,j,b]");
+    WAGGLE_ANNOTATE("N", int64_t(128));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           Nb = 4;
     constexpr size_t           N  = 128;
     einsums::Tensor<double, 3> C{"C", N, N, Nb};
@@ -1013,10 +1013,10 @@ EINSUMS_TEST_CASE("Benchmark: batch C[i,j,b]+=A[i,k,b]*B[k,j,b] B=4 N=128", "[ml
 // Batch dim + 2 link dims.  Tests the batch loop wrapping multi-K flatten+GEMM.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: batch+multiK C[b,i,l]+=A[b,i,j,k]*B[b,j,k,l] B=4 N=32", "[mlir][benchmark][batch]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[b,i,l]+=A[b,i,j,k]*B[b,j,k,l]");
-    ProfileAnnotate("N", int64_t(32));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[b,i,l]+=A[b,i,j,k]*B[b,j,k,l]");
+    WAGGLE_ANNOTATE("N", int64_t(32));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           Nb = 4;
     constexpr size_t           N  = 32;
     einsums::Tensor<double, 3> C{"C", Nb, N, N};
@@ -1076,10 +1076,10 @@ EINSUMS_TEST_CASE("Benchmark: batch+multiK C[b,i,l]+=A[b,i,j,k]*B[b,j,k,l] B=4 N
 // contiguity.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: C[i,k]+=A[i,j,k,l]*B[j,l] N=16", "[mlir][benchmark][nongemm]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,k]+=A[i,j,k,l]*B[j,l]");
-    ProfileAnnotate("N", int64_t(16));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,k]+=A[i,j,k,l]*B[j,l]");
+    WAGGLE_ANNOTATE("N", int64_t(16));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 16;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 4> A{"A", N, N, N, N};
@@ -1130,10 +1130,10 @@ EINSUMS_TEST_CASE("Benchmark: C[i,k]+=A[i,j,k,l]*B[j,l] N=16", "[mlir][benchmark
 // no reduction iterator.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: outer product C[i,j]+=A[i]*B[j] N=256", "[mlir][benchmark][nongemm]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,j]+=A[i]*B[j]");
-    ProfileAnnotate("N", int64_t(256));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i]*B[j]");
+    WAGGLE_ANNOTATE("N", int64_t(256));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 256;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 1> A{"A", N};
@@ -1180,10 +1180,10 @@ EINSUMS_TEST_CASE("Benchmark: outer product C[i,j]+=A[i]*B[j] N=256", "[mlir][be
 // generic/MLIR path.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: tensor dot C[i,l]+=A[i,j,k]*B[k,j,l] N=32", "[mlir][benchmark][nongemm]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,l]+=A[i,j,k]*B[k,j,l]");
-    ProfileAnnotate("N", int64_t(32));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[i,j,k]*B[k,j,l]");
+    WAGGLE_ANNOTATE("N", int64_t(32));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 32;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 3> A{"A", N, N, N};
@@ -1249,11 +1249,11 @@ EINSUMS_TEST_CASE("Benchmark: tensor dot C[i,l]+=A[i,j,k]*B[k,j,l] N=32", "[mlir
 // many KC tiles: K/BLIS_KC = 2048/256 = 8 tiles.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: large-K C[i,j]+=A[i,k]*B[k,j] M=N=64 K=2048", "[mlir][benchmark][nongemm][large]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,k]*B[k,j]");
-    ProfileAnnotate("N", int64_t(64));
-    ProfileAnnotate("K", int64_t(2048));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,k]*B[k,j]");
+    WAGGLE_ANNOTATE("N", int64_t(64));
+    WAGGLE_ANNOTATE("K", int64_t(2048));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           M = 64;
     constexpr size_t           N = 64;
     constexpr size_t           K = 2048;
@@ -1312,10 +1312,10 @@ EINSUMS_TEST_CASE("Benchmark: large-K C[i,j]+=A[i,k]*B[k,j] M=N=64 K=2048", "[ml
 // better picture of MLIR packing overhead at meaningful sizes.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=16", "[mlir][benchmark][nongemm]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
-    ProfileAnnotate("N", int64_t(16));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(16));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 16;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 4> A{"A", N, N, N, N};
@@ -1388,10 +1388,10 @@ EINSUMS_TEST_CASE("Benchmark: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=16", "[mlir
 // No data copying at all; single GEMM call on raw tensor pointers.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: zero-copy both N=64", "[mlir][benchmark][zerocopy]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,l]+=A[i,j,k]*B[l,j,k]");
-    ProfileAnnotate("N", int64_t(64));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[i,j,k]*B[l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(64));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 64;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 3> A{"A", N, N, N};
@@ -1425,10 +1425,10 @@ EINSUMS_TEST_CASE("Benchmark: zero-copy both N=64", "[mlir][benchmark][zerocopy]
 // A passed directly, B copied per KC tile.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: zero-copy A-only N=64", "[mlir][benchmark][zerocopy]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
-    ProfileAnnotate("N", int64_t(64));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[i,j,k]*B[j,k,l]");
+    WAGGLE_ANNOTATE("N", int64_t(64));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 64;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 3> A{"A", N, N, N};
@@ -1462,10 +1462,10 @@ EINSUMS_TEST_CASE("Benchmark: zero-copy A-only N=64", "[mlir][benchmark][zerocop
 // B passed directly, A copied per KC tile.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: zero-copy B-only N=64", "[mlir][benchmark][zerocopy]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,l]+=A[j,i,k]*B[l,j,k]");
-    ProfileAnnotate("N", int64_t(64));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[j,i,k]*B[l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(64));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 64;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 3> A{"A", N, N, N};
@@ -1499,10 +1499,10 @@ EINSUMS_TEST_CASE("Benchmark: zero-copy B-only N=64", "[mlir][benchmark][zerocop
 // Both A and B copied per KC tile.
 // ---------------------------------------------------------------------------
 EINSUMS_TEST_CASE("Benchmark: zero-copy neither N=64", "[mlir][benchmark][zerocopy]") {
-    LabeledSection0();
-    ProfileAnnotate("pattern", "C[i,l]+=A[j,i,k]*B[j,k,l]");
-    ProfileAnnotate("N", int64_t(64));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[j,i,k]*B[j,k,l]");
+    WAGGLE_ANNOTATE("N", int64_t(64));
+    WAGGLE_ANNOTATE("dtype", "double");
     constexpr size_t           N = 64;
     einsums::Tensor<double, 2> C{"C", N, N};
     einsums::Tensor<double, 3> A{"A", N, N, N};

@@ -27,41 +27,41 @@ extern void FC_GLOBAL(zherk, ZHERK)(char *, char *, int_t *, int_t *, double *, 
 }
 
 void ssyrk(char uplo, char trans, int_t n, int_t k, float alpha, float const *a, int_t lda, float beta, float *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(ssyrk, SSYRK)(&uplo, &trans, &n, &k, &alpha, a, &lda, &beta, c, &ldc);
 }
 
 void dsyrk(char uplo, char trans, int_t n, int_t k, double alpha, double const *a, int_t lda, double beta, double *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(dsyrk, DSYRK)(&uplo, &trans, &n, &k, &alpha, a, &lda, &beta, c, &ldc);
 }
 
 void csyrk(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
            std::complex<float> beta, std::complex<float> *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(csyrk, CSYRK)(&uplo, &trans, &n, &k, &alpha, a, &lda, &beta, c, &ldc);
 }
 
 void zsyrk(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
            std::complex<double> beta, std::complex<double> *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(zsyrk, ZSYRK)(&uplo, &trans, &n, &k, &alpha, a, &lda, &beta, c, &ldc);
 }
 
 void cherk(char uplo, char trans, int_t n, int_t k, float alpha, std::complex<float> const *a, int_t lda, float beta,
            std::complex<float> *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(cherk, CHERK)(&uplo, &trans, &n, &k, &alpha, a, &lda, &beta, c, &ldc);
 }
 
 void zherk(char uplo, char trans, int_t n, int_t k, double alpha, std::complex<double> const *a, int_t lda, double beta,
            std::complex<double> *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(zherk, ZHERK)(&uplo, &trans, &n, &k, &alpha, a, &lda, &beta, c, &ldc);
 }

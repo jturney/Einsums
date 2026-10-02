@@ -116,9 +116,9 @@ TEST_CASE("Profiler print produces output", "[profiler][consumer]") {
     REQUIRE(output.find("print_out_test") != std::string::npos);
 }
 
-TEST_CASE("LabeledSection macro works", "[profiler][consumer]") {
+TEST_CASE("WAGGLE_ZONE macro works", "[profiler][consumer]") {
     {
-        LabeledSection("labeled_macro_{}", 42);
+        WAGGLE_ZONE("labeled_macro_{}", 42);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
@@ -335,7 +335,7 @@ TEST_CASE("Profiler - no counter rows without a counter backend", "[profiler][co
     }
     auto &prof = Profiler::instance();
     {
-        LabeledSection("counterless zone");
+        WAGGLE_ZONE("counterless zone");
     }
     prof.flush();
     auto        lock = prof.consumer()->lock_shared();
@@ -352,7 +352,7 @@ TEST_CASE("Profiler - a zone opened in the library nests under the caller's zone
     // the library, not in anything inlined here.
     auto &prof = Profiler::instance();
     {
-        LabeledSection("caller zone across libraries");
+        WAGGLE_ZONE("caller zone across libraries");
         std::array<double, 4> const a{1.0, 2.0, 3.0, 4.0};
         std::array<double, 2> const x{1.0, 1.0};
         std::array<double, 2>       y{};

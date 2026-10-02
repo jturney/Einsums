@@ -73,16 +73,16 @@ T run_max(Impl<T> const &A) {
 
 template <typename T>
 RemoveComplexT<T> eager_norm(char norm_type, Impl<T> const &A) {
-    LabeledSection("norm eager");
+    WAGGLE_ZONE("norm eager");
     return run_norm<T>(norm_type, A);
 }
 
 template <typename T>
 void capture_norm(CaptureContext &ctx, char norm_type, SlotRef a, TensorId r_id, RemoveComplexT<T> *result) {
-    LabeledSection("norm capture");
+    WAGGLE_ZONE("norm capture");
     OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
     auto                  executor = [result, norm_type, a_access]() {
-        LabeledSection("norm execute");
+        WAGGLE_ZONE("norm execute");
         *result = run_norm<T>(norm_type, *a_access.impl<T>());
     };
     ctx.record(OpKind::Norm, "norm", {a.first}, {r_id}, std::move(executor));
@@ -90,12 +90,12 @@ void capture_norm(CaptureContext &ctx, char norm_type, SlotRef a, TensorId r_id,
 
 template <typename T>
 void capture_norm_into(CaptureContext &ctx, char norm_type, SlotRef a, SlotRef r) {
-    LabeledSection("norm_python capture");
+    WAGGLE_ZONE("norm_python capture");
     using R = RemoveComplexT<T>;
     OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
     OperandAccessor const r_access(r.second, packed_gemm::get_scalar_type<R>());
     auto                  executor = [norm_type, a_access, r_access]() {
-        LabeledSection("norm_python execute");
+        WAGGLE_ZONE("norm_python execute");
         r_access.impl<R>()->data()[0] = run_norm<T>(norm_type, *a_access.impl<T>());
     };
     ctx.record(OpKind::Norm, "norm", {a.first}, {r.first}, std::move(executor));
@@ -105,13 +105,13 @@ void capture_norm_into(CaptureContext &ctx, char norm_type, SlotRef a, SlotRef r
 
 template <typename T>
 T eager_sum(Impl<T> const &A) {
-    LabeledSection("sum_python eager");
+    WAGGLE_ZONE("sum_python eager");
     return run_sum<T>(A);
 }
 
 template <typename T>
 void capture_sum(CaptureContext &ctx, SlotRef r, SlotRef a) {
-    LabeledSection("sum_python capture");
+    WAGGLE_ZONE("sum_python capture");
     // The reduction writes one element, so it fits the same one-in one-out node
     // every other elementwise op records.
     record_reduction<T, T>(ctx, "sum", "sum_python execute", r, a, [](Impl<T> const &src) { return run_sum<T>(src); });
@@ -119,13 +119,13 @@ void capture_sum(CaptureContext &ctx, SlotRef r, SlotRef a) {
 
 template <typename T>
 T eager_max(Impl<T> const &A) {
-    LabeledSection("max_python eager");
+    WAGGLE_ZONE("max_python eager");
     return run_max<T>(A);
 }
 
 template <typename T>
 void capture_max(CaptureContext &ctx, SlotRef r, SlotRef a) {
-    LabeledSection("max_python capture");
+    WAGGLE_ZONE("max_python capture");
     record_reduction<T, T>(ctx, "max", "max_python execute", r, a, [](Impl<T> const &src) { return run_max<T>(src); });
 }
 

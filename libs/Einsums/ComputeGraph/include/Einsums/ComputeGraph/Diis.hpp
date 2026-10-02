@@ -110,7 +110,7 @@ APIARY_INSTANTIATE_AS("DiisAcceleratorZ", DiisAccelerator<std::complex<double>>)
 
     /// Push the current (amplitudes, steps) onto the history and extrapolate the amplitudes in place.
     APIARY_EXPOSE void step() {
-        LabeledSection("DiisAccelerator::step");
+        WAGGLE_ZONE("DiisAccelerator::step");
         if (_amplitudes.empty()) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "DiisAccelerator::step: no (amplitude, step) pairs were registered");
         }

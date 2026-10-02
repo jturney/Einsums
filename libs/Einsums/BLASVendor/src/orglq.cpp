@@ -27,7 +27,7 @@ extern void FC_GLOBAL(zunglq, ZUNGLQ)(int_t *, int_t *, int_t *, std::complex<do
 
 #define ORGLQ(Type, lc, uc)                                                                                                                \
     auto lc##orglq(int_t m, int_t n, int_t k, Type *a, int_t lda, const Type *tau) -> int_t {                                              \
-        LabeledSection0();                                                                                                                 \
+        WAGGLE_ZONE_FUNC();                                                                                                                \
                                                                                                                                            \
         int_t info{0};                                                                                                                     \
         int_t lwork{-1};                                                                                                                   \
@@ -59,7 +59,7 @@ ORGLQ(float, s, S);
 
 #define UNGLQ(Type, lc, uc)                                                                                                                \
     auto lc##unglq(int_t m, int_t n, int_t k, Type *a, int_t lda, const Type *tau) -> int_t {                                              \
-        LabeledSection0();                                                                                                                 \
+        WAGGLE_ZONE_FUNC();                                                                                                                \
                                                                                                                                            \
         int_t info{0};                                                                                                                     \
         int_t lwork{-1};                                                                                                                   \

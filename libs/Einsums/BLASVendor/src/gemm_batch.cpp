@@ -248,27 +248,27 @@ void gemm_batch_grouped_impl(char const *transa_array, char const *transb_array,
 
 void sgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, float alpha, float const **a_array, int_t lda, float const **b_array,
                  int_t ldb, float beta, float **c_array, int_t ldc, int_t batch_count) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     gemm_batch_impl<float>(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
 }
 
 void dgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, double alpha, double const **a_array, int_t lda,
                  double const **b_array, int_t ldb, double beta, double **c_array, int_t ldc, int_t batch_count) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     gemm_batch_impl<double>(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
 }
 
 void cgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const **a_array,
                  int_t lda, std::complex<float> const **b_array, int_t ldb, std::complex<float> beta, std::complex<float> **c_array,
                  int_t ldc, int_t batch_count) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     gemm_batch_impl<std::complex<float>>(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
 }
 
 void zgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const **a_array,
                  int_t lda, std::complex<double> const **b_array, int_t ldb, std::complex<double> beta, std::complex<double> **c_array,
                  int_t ldc, int_t batch_count) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     gemm_batch_impl<std::complex<double>>(transa, transb, m, n, k, alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count);
 }
 
@@ -276,7 +276,7 @@ void sgemm_batch_grouped(char const *transa_array, char const *transb_array, int
                          int_t const *k_array, float const *alpha_array, float const **a_array, int_t const *lda_array,
                          float const **b_array, int_t const *ldb_array, float const *beta_array, float **c_array, int_t const *ldc_array,
                          int_t group_count, int_t const *group_size) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     gemm_batch_grouped_impl<float>(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array, b_array,
                                    ldb_array, beta_array, c_array, ldc_array, group_count, group_size);
 }
@@ -285,7 +285,7 @@ void dgemm_batch_grouped(char const *transa_array, char const *transb_array, int
                          int_t const *k_array, double const *alpha_array, double const **a_array, int_t const *lda_array,
                          double const **b_array, int_t const *ldb_array, double const *beta_array, double **c_array, int_t const *ldc_array,
                          int_t group_count, int_t const *group_size) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     gemm_batch_grouped_impl<double>(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array, b_array,
                                     ldb_array, beta_array, c_array, ldc_array, group_count, group_size);
 }
@@ -295,7 +295,7 @@ void cgemm_batch_grouped(char const *transa_array, char const *transb_array, int
                          int_t const *lda_array, std::complex<float> const **b_array, int_t const *ldb_array,
                          std::complex<float> const *beta_array, std::complex<float> **c_array, int_t const *ldc_array, int_t group_count,
                          int_t const *group_size) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     gemm_batch_grouped_impl<std::complex<float>>(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array,
                                                  b_array, ldb_array, beta_array, c_array, ldc_array, group_count, group_size);
 }
@@ -305,7 +305,7 @@ void zgemm_batch_grouped(char const *transa_array, char const *transb_array, int
                          int_t const *lda_array, std::complex<double> const **b_array, int_t const *ldb_array,
                          std::complex<double> const *beta_array, std::complex<double> **c_array, int_t const *ldc_array, int_t group_count,
                          int_t const *group_size) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     gemm_batch_grouped_impl<std::complex<double>>(transa_array, transb_array, m_array, n_array, k_array, alpha_array, a_array, lda_array,
                                                   b_array, ldb_array, beta_array, c_array, ldc_array, group_count, group_size);
 }

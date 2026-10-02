@@ -61,7 +61,7 @@ auto khatri_rao(std::string_view a_indices, AType const &A, std::string_view b_i
     -> Tensor<typename AType::ValueType, 2> {
     using T = typename AType::ValueType;
     detail::reject_if_capturing("cg::khatri_rao returning form cannot be used during graph capture.");
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Tokenized by the spec parser itself, so an index list means what it would as an operand.
     auto parsed = parse_einsum_spec(fmt::format("{} <- {} ; {}", a_indices, a_indices, b_indices));

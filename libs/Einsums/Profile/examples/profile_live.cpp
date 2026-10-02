@@ -28,11 +28,11 @@ namespace {
 std::atomic<bool> g_running{true};
 
 void simulate_microkernel(int M, int N, int K) {
-    LabeledSection("microkernel");
-    ProfileAnnotate("M", static_cast<int64_t>(M));
-    ProfileAnnotate("N", static_cast<int64_t>(N));
-    ProfileAnnotate("K", static_cast<int64_t>(K));
-    ProfileAnnotate("flops", static_cast<int64_t>(2) * M * N * K);
+    WAGGLE_ZONE("microkernel");
+    WAGGLE_ANNOTATE("M", static_cast<int64_t>(M));
+    WAGGLE_ANNOTATE("N", static_cast<int64_t>(N));
+    WAGGLE_ANNOTATE("K", static_cast<int64_t>(K));
+    WAGGLE_ANNOTATE("flops", static_cast<int64_t>(2) * M * N * K);
 
     // Simulate some work proportional to problem size
     double volatile sum = 0.0;
@@ -42,51 +42,51 @@ void simulate_microkernel(int M, int N, int K) {
 
 // NOLINTNEXTLINE(readability-identifier-naming)
 void simulate_pack_A(int MC, int KC) {
-    LabeledSection("pack_A");
-    ProfileAnnotate("MC", static_cast<int64_t>(MC));
-    ProfileAnnotate("KC", static_cast<int64_t>(KC));
+    WAGGLE_ZONE("pack_A");
+    WAGGLE_ANNOTATE("MC", static_cast<int64_t>(MC));
+    WAGGLE_ANNOTATE("KC", static_cast<int64_t>(KC));
 
     // Simulate packing buffer allocation
     int64_t const pack_bytes = static_cast<int64_t>(MC) * KC * 8;
-    ProfileMemAlloc(pack_bytes);
+    WAGGLE_MEM_ALLOC(pack_bytes);
 
     double volatile sum = 0.0;
     for (int i = 0; i < MC * KC / 10; ++i)
         sum += static_cast<double>(i);
 
-    ProfileMemFree(pack_bytes);
+    WAGGLE_MEM_FREE(pack_bytes);
 }
 
 // NOLINTNEXTLINE(readability-identifier-naming)
 void simulate_pack_B(int KC, int NC) {
-    LabeledSection("pack_B");
-    ProfileAnnotate("KC", static_cast<int64_t>(KC));
-    ProfileAnnotate("NC", static_cast<int64_t>(NC));
+    WAGGLE_ZONE("pack_B");
+    WAGGLE_ANNOTATE("KC", static_cast<int64_t>(KC));
+    WAGGLE_ANNOTATE("NC", static_cast<int64_t>(NC));
 
     // Simulate packing buffer allocation
     int64_t const pack_bytes = static_cast<int64_t>(KC) * NC * 8;
-    ProfileMemAlloc(pack_bytes);
+    WAGGLE_MEM_ALLOC(pack_bytes);
 
     double volatile sum = 0.0;
     for (int i = 0; i < KC * NC / 10; ++i)
         sum += static_cast<double>(i);
 
-    ProfileMemFree(pack_bytes);
+    WAGGLE_MEM_FREE(pack_bytes);
 }
 
 void simulate_blis_contraction(int M, int N, int K) {
-    LabeledSection("blis_contraction");
-    ProfileAnnotate("algorithm", "BLIS");
-    ProfileAnnotate("M", static_cast<int64_t>(M));
-    ProfileAnnotate("N", static_cast<int64_t>(N));
-    ProfileAnnotate("K", static_cast<int64_t>(K));
+    WAGGLE_ZONE("blis_contraction");
+    WAGGLE_ANNOTATE("algorithm", "BLIS");
+    WAGGLE_ANNOTATE("M", static_cast<int64_t>(M));
+    WAGGLE_ANNOTATE("N", static_cast<int64_t>(N));
+    WAGGLE_ANNOTATE("K", static_cast<int64_t>(K));
 
     int constexpr MC = 256, NC = 1024, KC = 256, MR = 16, NR = 6;
-    ProfileAnnotate("MC", static_cast<int64_t>(MC));
-    ProfileAnnotate("NC", static_cast<int64_t>(NC));
-    ProfileAnnotate("KC", static_cast<int64_t>(KC));
-    ProfileAnnotate("MR", static_cast<int64_t>(MR));
-    ProfileAnnotate("NR", static_cast<int64_t>(NR));
+    WAGGLE_ANNOTATE("MC", static_cast<int64_t>(MC));
+    WAGGLE_ANNOTATE("NC", static_cast<int64_t>(NC));
+    WAGGLE_ANNOTATE("KC", static_cast<int64_t>(KC));
+    WAGGLE_ANNOTATE("MR", static_cast<int64_t>(MR));
+    WAGGLE_ANNOTATE("NR", static_cast<int64_t>(NR));
 
     int const nc_tiles = (N + NC - 1) / NC;
     int const kc_tiles = (K + KC - 1) / KC;
@@ -104,30 +104,30 @@ void simulate_blis_contraction(int M, int N, int K) {
 }
 
 void simulate_sort_tensor(int rank, int64_t elements) {
-    LabeledSection("sort_tensor");
-    ProfileAnnotate("rank", static_cast<int64_t>(rank));
-    ProfileAnnotate("elements", elements);
+    WAGGLE_ZONE("sort_tensor");
+    WAGGLE_ANNOTATE("rank", static_cast<int64_t>(rank));
+    WAGGLE_ANNOTATE("elements", elements);
 
     // Simulate temporary buffer for sort
     int64_t const sort_bytes = elements * 8;
-    ProfileMemAlloc(sort_bytes);
+    WAGGLE_MEM_ALLOC(sort_bytes);
 
     double volatile sum = 0.0;
     for (int64_t i = 0; i < elements / 100; ++i)
         sum += static_cast<double>(i);
 
-    ProfileMemFree(sort_bytes);
+    WAGGLE_MEM_FREE(sort_bytes);
 }
 
 void simulate_einsum(int M, int N, int K) {
-    LabeledSection("einsum {} {} {}", M, N, K);
-    ProfileAnnotate("algorithm", "GEMM");
-    ProfileAnnotate("C_rank", static_cast<int64_t>(2));
-    ProfileAnnotate("A_rank", static_cast<int64_t>(2));
-    ProfileAnnotate("B_rank", static_cast<int64_t>(2));
-    ProfileAnnotate("flops", static_cast<int64_t>(2) * M * N * K);
-    ProfileAnnotate("bytes_read", static_cast<int64_t>(8) * (M * K + K * N));
-    ProfileAnnotate("bytes_written", static_cast<int64_t>(8) * M * N);
+    WAGGLE_ZONE("einsum {} {} {}", M, N, K);
+    WAGGLE_ANNOTATE("algorithm", "GEMM");
+    WAGGLE_ANNOTATE("C_rank", static_cast<int64_t>(2));
+    WAGGLE_ANNOTATE("A_rank", static_cast<int64_t>(2));
+    WAGGLE_ANNOTATE("B_rank", static_cast<int64_t>(2));
+    WAGGLE_ANNOTATE("flops", static_cast<int64_t>(2) * M * N * K);
+    WAGGLE_ANNOTATE("bytes_read", static_cast<int64_t>(8) * (M * K + K * N));
+    WAGGLE_ANNOTATE("bytes_written", static_cast<int64_t>(8) * M * N);
 
     simulate_sort_tensor(2, static_cast<int64_t>(M) * K);
     simulate_blis_contraction(M, N, K);
@@ -137,7 +137,7 @@ void simulate_einsum(int M, int N, int K) {
 }
 
 void worker_loop(int worker_id) {
-    LabeledSection("worker_{}", worker_id);
+    WAGGLE_ZONE("worker_{}", worker_id);
 
     std::mt19937                       rng(42 + worker_id);
     std::uniform_int_distribution<int> size_dist(32, 256);
@@ -162,7 +162,7 @@ int einsums_main() {
     workers.reserve(num_workers);
 
     {
-        LabeledSection("main");
+        WAGGLE_ZONE("main");
 
         // Launch worker threads
         for (int i = 0; i < num_workers; ++i) {

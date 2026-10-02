@@ -33,7 +33,7 @@ extern void FC_GLOBAL(dlascl, DLASCL)(char *, int_t *, int_t *, double *, double
 // (0, k) tensor has stride(1) == 0). See copy.cpp.
 
 void sscal(int_t n, float alpha, float *vec, int_t inc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -42,7 +42,7 @@ void sscal(int_t n, float alpha, float *vec, int_t inc) {
 }
 
 void dscal(int_t n, double alpha, double *vec, int_t inc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -51,7 +51,7 @@ void dscal(int_t n, double alpha, double *vec, int_t inc) {
 }
 
 void cscal(int_t n, std::complex<float> alpha, std::complex<float> *vec, int_t inc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -60,7 +60,7 @@ void cscal(int_t n, std::complex<float> alpha, std::complex<float> *vec, int_t i
 }
 
 void zscal(int_t n, std::complex<double> alpha, std::complex<double> *vec, int_t inc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -69,7 +69,7 @@ void zscal(int_t n, std::complex<double> alpha, std::complex<double> *vec, int_t
 }
 
 void csscal(int_t n, float alpha, std::complex<float> *vec, int_t inc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -78,7 +78,7 @@ void csscal(int_t n, float alpha, std::complex<float> *vec, int_t inc) {
 }
 
 void zdscal(int_t n, double alpha, std::complex<double> *vec, int_t inc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -87,7 +87,7 @@ void zdscal(int_t n, double alpha, std::complex<double> *vec, int_t inc) {
 }
 
 void srscl(int_t n, float alpha, float *vec, int_t inc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -96,7 +96,7 @@ void srscl(int_t n, float alpha, float *vec, int_t inc) {
 }
 
 void drscl(int_t n, double alpha, double *vec, int_t inc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -105,7 +105,7 @@ void drscl(int_t n, double alpha, double *vec, int_t inc) {
 }
 
 void csrscl(int_t n, float alpha, std::complex<float> *vec, int_t inc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -114,7 +114,7 @@ void csrscl(int_t n, float alpha, std::complex<float> *vec, int_t inc) {
 }
 
 void zdrscl(int_t n, double alpha, std::complex<double> *vec, int_t inc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -123,7 +123,7 @@ void zdrscl(int_t n, double alpha, std::complex<double> *vec, int_t inc) {
 }
 
 int_t slascl(char type, int_t kl, int_t ku, float cfrom, float cto, int_t m, int_t n, float *vec, int_t lda) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info = 0;
     FC_GLOBAL(slascl, SLASCL)(&type, &kl, &ku, &cfrom, &cto, &m, &n, vec, &lda, &info);
@@ -131,7 +131,7 @@ int_t slascl(char type, int_t kl, int_t ku, float cfrom, float cto, int_t m, int
 }
 
 int_t dlascl(char type, int_t kl, int_t ku, double cfrom, double cto, int_t m, int_t n, double *vec, int_t lda) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info = 0;
     FC_GLOBAL(dlascl, DLASCL)(&type, &kl, &ku, &cfrom, &cto, &m, &n, vec, &lda, &info);

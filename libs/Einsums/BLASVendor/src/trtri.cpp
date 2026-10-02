@@ -21,7 +21,7 @@ extern void FC_GLOBAL(ztrtri, ZTRTRI)(char *, char *, int_t *, std::complex<doub
 }
 
 auto strtri(char uplo, char diag, int_t n, float *a, int_t lda) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(strtri, STRTRI)(&uplo, &diag, &n, a, &lda, &info);
@@ -29,7 +29,7 @@ auto strtri(char uplo, char diag, int_t n, float *a, int_t lda) -> int_t {
 }
 
 auto dtrtri(char uplo, char diag, int_t n, double *a, int_t lda) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(dtrtri, DTRTRI)(&uplo, &diag, &n, a, &lda, &info);
@@ -37,7 +37,7 @@ auto dtrtri(char uplo, char diag, int_t n, double *a, int_t lda) -> int_t {
 }
 
 auto ctrtri(char uplo, char diag, int_t n, std::complex<float> *a, int_t lda) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(ctrtri, CTRTRI)(&uplo, &diag, &n, a, &lda, &info);
@@ -45,7 +45,7 @@ auto ctrtri(char uplo, char diag, int_t n, std::complex<float> *a, int_t lda) ->
 }
 
 auto ztrtri(char uplo, char diag, int_t n, std::complex<double> *a, int_t lda) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(ztrtri, ZTRTRI)(&uplo, &diag, &n, a, &lda, &info);

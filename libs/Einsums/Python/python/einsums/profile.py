@@ -6,7 +6,7 @@
 """Profile Python interface.
 
 Surface for ``einsums._core.profile`` plus the ``section`` context manager
-that mirrors the C++ ``LabeledSection`` macro, and the ``profile`` decorator
+that mirrors the C++ ``WAGGLE_ZONE`` macro, and the ``profile`` decorator
 that records every call of a function as a zone. The C-extension submodule
 is loaded lazily on first attribute access, so importing this module does
 not by itself fire ``einsums::initialize()``.
@@ -50,7 +50,7 @@ def __getattr__(name):
 
 @_contextlib.contextmanager
 def section(name, *, file="", line=0, func=""):
-    """Scoped profile region, the Python equivalent of ``LabeledSection``.
+    """Scoped profile region, the Python equivalent of ``WAGGLE_ZONE``.
 
     The optional ``file``, ``line``, and ``func`` arguments parallel the
     C++ macro's compile-time captures so reports can link a Python-side

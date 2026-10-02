@@ -125,40 +125,40 @@ void run_outer_sum(Impl<T> &r, std::vector<Impl<T> const *> const &vecs, std::ve
 
 template <typename T>
 void eager_sum_axes(Impl<T> &out, Impl<T> const &A, std::vector<size_t> const &kept) {
-    LabeledSection("sum_axes eager");
+    WAGGLE_ZONE("sum_axes eager");
     run_sum_axes<T>(out, A, kept);
 }
 
 template <typename T>
 void capture_sum_axes(CaptureContext &ctx, SlotRef out, SlotRef a, std::vector<size_t> kept) {
-    LabeledSection("sum_axes capture");
+    WAGGLE_ZONE("sum_axes capture");
     record_unary<T, T>(ctx, "sum_axes", "sum_axes execute", out, a,
                        [kept = std::move(kept)](Impl<T> &o, Impl<T> const &src) { run_sum_axes<T>(o, src, kept); });
 }
 
 template <typename T>
 void eager_reshape(Impl<T> &out, Impl<T> const &A, bool row_major) {
-    LabeledSection("reshape eager");
+    WAGGLE_ZONE("reshape eager");
     run_reshape<T>(out, A, row_major);
 }
 
 template <typename T>
 void capture_reshape(CaptureContext &ctx, SlotRef out, SlotRef a, bool row_major) {
-    LabeledSection("reshape capture");
+    WAGGLE_ZONE("reshape capture");
     record_unary<T, T>(ctx, "reshape", "reshape execute", out, a,
                        [row_major](Impl<T> &o, Impl<T> const &src) { run_reshape<T>(o, src, row_major); });
 }
 
 template <typename T>
 void eager_outer_sum(Impl<T> &result, std::vector<Impl<T> const *> const &vectors, std::vector<T> const &coeffs) {
-    LabeledSection("outer_sum eager");
+    WAGGLE_ZONE("outer_sum eager");
     run_outer_sum<T>(result, vectors, coeffs);
 }
 
 template <typename T>
 void capture_outer_sum(CaptureContext &ctx, SlotRef result, std::vector<SlotRef> vectors, std::vector<T> coeffs,
                        std::vector<double> coefficients) {
-    LabeledSection("outer_sum capture");
+    WAGGLE_ZONE("outer_sum capture");
     constexpr auto dtype = packed_gemm::get_scalar_type<T>();
     size_t const   N     = vectors.size();
 
@@ -175,7 +175,7 @@ void capture_outer_sum(CaptureContext &ctx, SlotRef result, std::vector<SlotRef>
     // The vector operands are re-read through their slots on every run, so the
     // node follows a rebind, as the eager path reads the caller's originals.
     auto executor = [v_access, r_access, coeffs = std::move(coeffs), N]() {
-        LabeledSection("outer_sum execute");
+        WAGGLE_ZONE("outer_sum execute");
         std::vector<Impl<T> const *> rebound(N);
         for (size_t k = 0; k < N; ++k)
             rebound[k] = v_access[k].impl<T>();

@@ -61,12 +61,12 @@ void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, vo
     Tensor<T, 2> A_panel("A_panel", local_m, local_k_a);
     Tensor<T, 2> B_panel("B_panel", local_k_b, local_n);
 
-    LabeledSection("SUMMA({}x{}x{}, {} panels)", local_m, local_k_a, local_n, panels);
+    WAGGLE_ZONE("SUMMA({}x{}x{}, {} panels)", local_m, local_k_a, local_n, panels);
 
     for (int p = 0; p < panels; p++) {
         // Step 1: broadcast the A panel along the process row.
         {
-            LabeledSection("broadcast_A");
+            WAGGLE_ZONE("broadcast_A");
             if (my_col == p) {
                 std::memcpy(A_panel.data(), A_local->data(), local_m * local_k_a * sizeof(T));
             }
@@ -76,7 +76,7 @@ void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, vo
 
         // Step 2: broadcast the B panel along the process column.
         {
-            LabeledSection("broadcast_B");
+            WAGGLE_ZONE("broadcast_B");
             if (my_row == p) {
                 std::memcpy(B_panel.data(), B_local->data(), local_k_b * local_n * sizeof(T));
             }
@@ -86,7 +86,7 @@ void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, vo
 
         // Step 3: local GEMM accumulate through the string einsum dispatch (enables PackedGemm).
         {
-            LabeledSection("local_gemm");
+            WAGGLE_ZONE("local_gemm");
             static ParsedEinsumSpec const spec = [] {
                 auto parsed = parse_einsum_spec("ij <- ik ; kj");
                 if (!parsed) {

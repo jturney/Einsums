@@ -93,7 +93,7 @@ TEST_CASE("Zone counts are exact across threads, exited ones included", "[profil
     for (int t = 0; t < kThreads; ++t) {
         team.emplace_back([] {
             for (int i = 0; i < kZones; ++i) {
-                LabeledSection("counted zone");
+                WAGGLE_ZONE("counted zone");
             }
         });
     }
@@ -101,7 +101,7 @@ TEST_CASE("Zone counts are exact across threads, exited ones included", "[profil
         th.join();
     }
     {
-        LabeledSection("counted zone on the caller");
+        WAGGLE_ZONE("counted zone on the caller");
     }
 
     CHECK(prof.total_push_count() == pushes0 + std::uint64_t{kThreads} * kZones + 1);

@@ -74,7 +74,7 @@ std::vector<Tensor<double, 2>> make_pool() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench GraphOverhead: capture 100-node chain", "[ComputeGraph][Overhead][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto A    = create_random_tensor<double>("A", kDim, kDim);
     auto pool = make_pool();
 
@@ -87,7 +87,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: capture 100-node chain", "[ComputeGraph]
         kReps);
 
     fmt::println("[GraphOverhead capture 100n] {:.2f} us avg ({:.2f} us/node)", t_capture.avg, t_capture.avg / (2.0 * kChainLen));
-    ProfileAnnotate("nodes", int64_t(2 * kChainLen));
+    WAGGLE_ANNOTATE("nodes", int64_t(2 * kChainLen));
     publish_benchmark_result("GraphOverhead capture 100n", "t_capture", static_cast<int>(2 * kChainLen), t_capture);
 }
 
@@ -98,7 +98,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: capture 100-node chain", "[ComputeGraph]
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench GraphOverhead: apply default pipeline on 100-node chain", "[ComputeGraph][Overhead][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto A    = create_random_tensor<double>("A", kDim, kDim);
     auto pool = make_pool();
 
@@ -125,7 +125,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: apply default pipeline on 100-node chain
     double const t_apply = t_capture_apply.avg - t_capture_only.avg;
     fmt::println("[GraphOverhead apply 100n] capture: {:.2f} us  capture+apply: {:.2f} us  -> apply: {:.2f} us ({} nodes after)",
                  t_capture_only.avg, t_capture_apply.avg, t_apply, nodes_after);
-    ProfileAnnotate("nodes", int64_t(2 * kChainLen));
+    WAGGLE_ANNOTATE("nodes", int64_t(2 * kChainLen));
     publish_benchmark_result("GraphOverhead apply 100n", "t_capture_only", static_cast<int>(2 * kChainLen), t_capture_only);
     publish_benchmark_result("GraphOverhead apply 100n", "t_capture_apply", static_cast<int>(2 * kChainLen), t_capture_apply);
 }
@@ -138,7 +138,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: apply default pipeline on 100-node chain
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench GraphOverhead: serial replay of 100-node chain", "[ComputeGraph][Overhead][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto A    = create_random_tensor<double>("A", kDim, kDim);
     auto pool = make_pool();
 
@@ -161,7 +161,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: serial replay of 100-node chain", "[Comp
     double const per_node_overhead_us = (t_replay.avg - t_eager.avg) / (2.0 * kChainLen);
     fmt::println("[GraphOverhead serial replay 100n] graph: {:.2f} us  eager: {:.2f} us  overhead: {:.2f} us/node", t_replay.avg,
                  t_eager.avg, per_node_overhead_us);
-    ProfileAnnotate("nodes", int64_t(2 * kChainLen));
+    WAGGLE_ANNOTATE("nodes", int64_t(2 * kChainLen));
     publish_benchmark_result("GraphOverhead serial replay 100n", "t_graph", static_cast<int>(2 * kChainLen), t_replay);
     publish_benchmark_result("GraphOverhead serial replay 100n", "t_eager", static_cast<int>(2 * kChainLen), t_eager);
 }
@@ -173,7 +173,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: serial replay of 100-node chain", "[Comp
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench GraphOverhead: dataflow replay of 100-node chain", "[ComputeGraph][Overhead][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto A    = create_random_tensor<double>("A", kDim, kDim);
     auto pool = make_pool();
 
@@ -190,7 +190,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: dataflow replay of 100-node chain", "[Co
     double const scaffold_per_node_us = (t_df.avg - t_seq.avg) / (2.0 * kChainLen);
     fmt::println("[GraphOverhead dataflow replay 100n] seq: {:.2f} us  df: {:.2f} us  scaffold: {:.2f} us/node", t_seq.avg, t_df.avg,
                  scaffold_per_node_us);
-    ProfileAnnotate("nodes", int64_t(2 * kChainLen));
+    WAGGLE_ANNOTATE("nodes", int64_t(2 * kChainLen));
     publish_benchmark_result("GraphOverhead dataflow replay 100n", "t_sequential", static_cast<int>(2 * kChainLen), t_seq);
     publish_benchmark_result("GraphOverhead dataflow replay 100n", "t_dataflow", static_cast<int>(2 * kChainLen), t_df);
 }
@@ -211,7 +211,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: dataflow replay of 100-node chain", "[Co
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench GraphOverhead: dataflow submission of 200 independent no-op nodes", "[ComputeGraph][Overhead][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     constexpr size_t kNoopNodes = 200;
 
     cg::Graph graph("df_submit_bench");
@@ -235,7 +235,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: dataflow submission of 200 independent n
     double const submit_per_node_us = (t_df.avg - t_seq.avg) / static_cast<double>(kNoopNodes);
     fmt::println("[GraphOverhead dataflow submit 200n] seq: {:.2f} us  df: {:.2f} us  submit: {:.3f} us/node", t_seq.avg, t_df.avg,
                  submit_per_node_us);
-    ProfileAnnotate("nodes", int64_t(kNoopNodes));
+    WAGGLE_ANNOTATE("nodes", int64_t(kNoopNodes));
     publish_benchmark_result("GraphOverhead dataflow submit 200n", "t_sequential", static_cast<int>(kNoopNodes), t_seq);
     publish_benchmark_result("GraphOverhead dataflow submit 200n", "t_dataflow", static_cast<int>(kNoopNodes), t_df);
 }
@@ -251,7 +251,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: dataflow submission of 200 independent n
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench GraphOverhead: CSE scan over 500/1000/2000 distinct nodes", "[ComputeGraph][Overhead][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     constexpr size_t kSmall = 8; // tiny tensors: the pass, not the math, is the signal
 
     auto bench_at = [&](size_t count) {

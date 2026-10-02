@@ -23,7 +23,7 @@ extern void FC_GLOBAL(zgetri, ZGETRI)(int_t *, std::complex<double> *, int_t *, 
 }
 
 auto sgetri(int_t n, float *a, int_t lda, int_t const *ipiv) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // A 0x0 inversion is a no-op; OpenBLAS's getri hangs on it.
     if (n == 0) {
@@ -38,7 +38,7 @@ auto sgetri(int_t n, float *a, int_t lda, int_t const *ipiv) -> int_t {
 }
 
 auto dgetri(int_t n, double *a, int_t lda, int_t const *ipiv) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // A 0x0 inversion is a no-op; OpenBLAS's getri hangs on it.
     if (n == 0) {
@@ -53,7 +53,7 @@ auto dgetri(int_t n, double *a, int_t lda, int_t const *ipiv) -> int_t {
 }
 
 auto cgetri(int_t n, std::complex<float> *a, int_t lda, int_t const *ipiv) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // A 0x0 inversion is a no-op; OpenBLAS's getri hangs on it.
     if (n == 0) {
@@ -68,7 +68,7 @@ auto cgetri(int_t n, std::complex<float> *a, int_t lda, int_t const *ipiv) -> in
 }
 
 auto zgetri(int_t n, std::complex<double> *a, int_t lda, int_t const *ipiv) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // A 0x0 inversion is a no-op; OpenBLAS's getri hangs on it.
     if (n == 0) {

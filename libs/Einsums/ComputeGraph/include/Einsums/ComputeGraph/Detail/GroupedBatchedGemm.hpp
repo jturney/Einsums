@@ -143,7 +143,7 @@ void extract_and_run_grouped(GroupedGemmPlan<T> const &p, BatchedGemmOperands co
     // Read the breakdown for where the arithmetic is, never for what the node
     // costs.
     for (size_t g = 0; g < p.size.size(); ++g) {
-        LabeledSectionRuntime(g < p.labels.size() ? p.labels[g] : fmt::format("group {}", g));
+        WAGGLE_ZONE_DYNAMIC(g < p.labels.size() ? p.labels[g] : fmt::format("group {}", g));
         int const off = p.first[g];
         blas::gemm_batch<T>(p.transa[g], p.transb[g], p.m[g], p.n[g], p.k[g], p.alpha[g], a_arr.data() + off, p.lda[g], b_arr.data() + off,
                             p.ldb[g], p.beta[g], c_arr.data() + off, p.ldc[g], p.size[g]);

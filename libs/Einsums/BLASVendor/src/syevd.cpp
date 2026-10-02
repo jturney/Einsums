@@ -25,7 +25,7 @@ extern void FC_GLOBAL(zheevd, ZHEEVD)(char *, char *, int_t *, std::complex<doub
 }
 
 auto ssyevd(char jobz, char uplo, int_t n, float *a, int_t lda, float *w) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     int_t lwork{-1};
@@ -50,7 +50,7 @@ auto ssyevd(char jobz, char uplo, int_t n, float *a, int_t lda, float *w) -> int
 }
 
 auto dsyevd(char jobz, char uplo, int_t n, double *a, int_t lda, double *w) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t  info{0};
     int_t  lwork{-1};
@@ -75,7 +75,7 @@ auto dsyevd(char jobz, char uplo, int_t n, double *a, int_t lda, double *w) -> i
 }
 
 auto cheevd(char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, float *w) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t               info{0};
     int_t               lwork{-1};
@@ -106,7 +106,7 @@ auto cheevd(char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, fl
 }
 
 auto zheevd(char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, double *w) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t                info{0};
     int_t                lwork{-1};

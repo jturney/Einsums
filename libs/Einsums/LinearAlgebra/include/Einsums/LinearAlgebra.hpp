@@ -60,7 +60,7 @@ EINSUMS_NAMESPACE_BEGIN(linear_algebra)
 template <TensorConcept AType>
 void sum_square(AType const &a, RemoveComplexT<typename AType::ValueType> *scale,
                 RemoveComplexT<typename AType::ValueType> *sumsq) noexcept(BasicTensorConcept<AType>) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     detail::sum_square(a, scale, sumsq);
 }
 
@@ -118,7 +118,7 @@ template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, Ma
         requires SameUnderlying<AType, BType, CType>;
     }
 void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::gemm<TransA, TransB>(alpha, A, B, beta, C);
 }
@@ -188,7 +188,7 @@ template <bool TransA, bool TransB, BasicTensorConcept AType, BasicTensorConcept
         requires SameUnderlying<AType, BType, CType>;
     }
 void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     detail::gemm<TransA, TransB>(alpha, A.impl(), B.impl(), beta, &C->impl());
 }
 
@@ -242,7 +242,7 @@ template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, ty
         requires SameUnderlying<AType, BType>;
     }
 [[nodiscard]] auto gemm(U const alpha, AType const &A, BType const &B) -> RemoveViewT<AType> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     RemoveViewT<AType> C{"gemm result", TransA ? A.dim(1) : A.dim(0), TransB ? B.dim(0) : B.dim(1)};
     gemm<TransA, TransB>(static_cast<typename AType::ValueType>(alpha), A, B, static_cast<typename AType::ValueType>(0.0), &C);
@@ -280,7 +280,7 @@ template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, Ma
         requires SameUnderlying<AType, BType, CType>;
     }
 void symm_gemm(AType const &A, BType const &B, CType *C) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::symm_gemm<TransA, TransB>(A, B, C);
 }
@@ -295,7 +295,7 @@ template <bool TransA, bool TransB, BasicTensorConcept AType, BasicTensorConcept
         requires SameUnderlying<AType, BType, CType>;
     }
 void symm_gemm(AType const &A, BType const &B, CType *C) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
@@ -320,7 +320,7 @@ template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, Ma
         requires SameUnderlying<AType, BType, CType>;
     }
 void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::hermitian_symm_gemm<TransA, TransB>(A, B, C);
 }
@@ -334,7 +334,7 @@ template <bool TransA, bool TransB, BasicTensorConcept AType, BasicTensorConcept
         requires SameUnderlying<AType, BType, CType>;
     }
 void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "hermitian_symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(),
@@ -404,7 +404,7 @@ template <bool TransA, MatrixConcept AType, VectorConcept XType, VectorConcept Y
         requires std::convertible_to<U, typename AType::ValueType>;
     }
 void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
-    LabeledSection("gemv<TransA={}>", TransA);
+    WAGGLE_ZONE("gemv<TransA={}>", TransA);
 
     detail::gemv<TransA>(alpha, A, z, beta, y);
 }
@@ -442,7 +442,7 @@ template <MatrixConcept AType, VectorConcept XType, VectorConcept YType, typenam
         requires std::convertible_to<U, typename AType::ValueType>;
     }
 void gemv(char transA, U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
-    LabeledSection("gemv<transA={}>", transA);
+    WAGGLE_ZONE("gemv<transA={}>", transA);
 
     detail::gemv(transA, alpha, A, z, beta, y);
 }
@@ -457,7 +457,7 @@ template <bool TransA, BasicTensorConcept AType, BasicTensorConcept XType, Basic
         requires std::convertible_to<U, typename AType::ValueType>;
     }
 void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
-    LabeledSection("gemv<TransA={}>", TransA);
+    WAGGLE_ZONE("gemv<TransA={}>", TransA);
     detail::gemv<TransA>(alpha, A.impl(), z.impl(), beta, &y->impl());
 }
 
@@ -524,7 +524,7 @@ template <bool ComputeEigenvectors = true, MatrixConcept AType, VectorConcept WT
         requires !Complex<AType>;
     }
 void syev(AType *A, WType *W) {
-    LabeledSection("syev<ComputeEigenvectors={}>", ComputeEigenvectors);
+    WAGGLE_ZONE("syev<ComputeEigenvectors={}>", ComputeEigenvectors);
     detail::syev<ComputeEigenvectors>(A, W);
 }
 
@@ -538,7 +538,7 @@ template <bool ComputeEigenvectors = true, BasicTensorConcept AType, BasicTensor
         requires !Complex<AType>;
     }
 void syev(AType *A, WType *W) {
-    LabeledSection("syev<ComputeEigenvectors={}>", ComputeEigenvectors);
+    WAGGLE_ZONE("syev<ComputeEigenvectors={}>", ComputeEigenvectors);
     detail::syev<ComputeEigenvectors>(&A->impl(), &W->impl());
 }
 
@@ -596,7 +596,7 @@ template <MatrixConcept AType, VectorConcept WType, typename LVecPtr, typename R
 void geev(AType *A, WType *W, LVecPtr lvecs, RVecPtr rvecs) {
     char jobvl = (lvecs == nullptr) ? 'n' : 'v';
     char jobvr = (rvecs == nullptr) ? 'n' : 'v';
-    LabeledSection("geev<jobvl = {}, jobvr = {}>", jobvl, jobvr);
+    WAGGLE_ZONE("geev<jobvl = {}, jobvr = {}>", jobvl, jobvr);
 
     detail::geev(A, W, lvecs, rvecs);
 }
@@ -655,7 +655,7 @@ template <bool ComputeEigenvectors = true, MatrixConcept AType, VectorConcept WT
         requires std::is_same_v<typename WType::ValueType, RemoveComplexT<typename AType::ValueType>>;
     }
 void heev(AType *A, WType *W) {
-    LabeledSection("heev<ComputeEigenvectors={}>", ComputeEigenvectors);
+    WAGGLE_ZONE("heev<ComputeEigenvectors={}>", ComputeEigenvectors);
     detail::heev<ComputeEigenvectors>(A, W);
 }
 
@@ -670,7 +670,7 @@ template <bool ComputeEigenvectors = true, BasicTensorConcept AType, BasicTensor
         requires std::is_same_v<typename WType::ValueType, RemoveComplexT<typename AType::ValueType>>;
     }
 void heev(AType *A, WType *W) {
-    LabeledSection("heev<ComputeEigenvectors={}>", ComputeEigenvectors);
+    WAGGLE_ZONE("heev<ComputeEigenvectors={}>", ComputeEigenvectors);
     detail::syev<ComputeEigenvectors>(&A->impl(), &W->impl());
 }
 
@@ -708,7 +708,7 @@ template <MatrixConcept AType, TensorConcept BType>
     }
 [[nodiscard]] auto gesv(AType *A, BType *B) -> int {
 
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     return detail::gesv(A, B);
 }
 
@@ -720,7 +720,7 @@ template <BasicTensorConcept AType, BasicTensorConcept BType>
         requires SameUnderlying<AType, BType>;
     }
 [[nodiscard]] auto gesv(AType *A, BType *B) -> int {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     return detail::gesv(&A->impl(), &B->impl());
 }
 
@@ -761,7 +761,7 @@ template <BasicTensorConcept AType, BasicTensorConcept BType>
 template <bool ComputeEigenvectors = true, MatrixConcept AType>
     requires(NotComplex<AType>)
 [[nodiscard]] auto syev(AType const &A) -> std::tuple<RemoveViewT<AType>, BasicTensorLike<AType, typename AType::ValueType, 1>> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     EINSUMS_ASSERT(A.dim(0) == A.dim(1));
 
@@ -796,7 +796,7 @@ template <bool ComputeEigenvectors = true, MatrixConcept AType>
  */
 template <TensorConcept AType>
 void scale(typename AType::ValueType scale, AType *A) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::scale(scale, A);
 }
@@ -827,7 +827,7 @@ void scale(typename AType::ValueType scale, AType *A) {
  */
 template <MatrixConcept AType>
 void scale_row(size_t row, typename AType::ValueType scale, AType *A) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::scale_row(row, scale, A);
 }
@@ -858,7 +858,7 @@ void scale_row(size_t row, typename AType::ValueType scale, AType *A) {
  */
 template <MatrixConcept AType>
 void scale_column(size_t col, typename AType::ValueType scale, AType *A) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::scale_column(col, scale, A);
 }
@@ -893,7 +893,7 @@ void scale_column(size_t col, typename AType::ValueType scale, AType *A) {
 template <MatrixConcept AType>
 [[nodiscard]] auto pow(AType const &a, typename AType::ValueType alpha,
                        typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon()) -> RemoveViewT<AType> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return detail::pow(a, alpha, cutoff);
 }
@@ -924,7 +924,7 @@ template <TensorConcept AType, TensorConcept BType>
     }
 [[nodiscard]] auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
 
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return detail::dot(A, B);
 }
@@ -956,7 +956,7 @@ template <TensorConcept AType, TensorConcept BType>
     }
 [[nodiscard]] auto true_dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
 
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return detail::true_dot(A, B);
 }
@@ -987,7 +987,7 @@ template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
 [[nodiscard]] auto dot(AType const &A, BType const &B, CType const &C)
     -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType, typename CType::ValueType> {
 
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     return detail::dot(A, B, C);
 }
 
@@ -1017,7 +1017,7 @@ template <TensorConcept XType, TensorConcept YType>
         requires SameUnderlyingAndRank<XType, YType>;
     }
 void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::axpy(alpha, X, Y);
 }
@@ -1049,7 +1049,7 @@ template <TensorConcept XType, TensorConcept YType>
         requires SameUnderlyingAndRank<XType, YType>;
     }
 void axpby(typename XType::ValueType alpha, XType const &X, typename XType::ValueType beta, YType *Y) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::axpby(alpha, X, beta, Y);
 }
@@ -1081,7 +1081,7 @@ void axpby(typename XType::ValueType alpha, XType const &X, typename XType::Valu
 template <MatrixConcept AType, VectorConcept XType, VectorConcept YType>
     requires requires { requires SameUnderlying<AType, XType, YType>; }
 void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::ger(alpha, X, Y, A);
 }
@@ -1094,7 +1094,7 @@ template <BasicTensorConcept AType, BasicTensorConcept XType, BasicTensorConcept
         requires SameUnderlying<AType, XType, YType>;
     }
 void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     detail::ger(alpha, X.impl(), Y.impl(), &A->impl());
 }
 
@@ -1122,7 +1122,7 @@ void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType 
 template <MatrixConcept AType, VectorConcept XType, VectorConcept YType>
     requires requires { requires SameUnderlying<AType, XType, YType>; }
 void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::gerc(alpha, X, Y, A);
 }
@@ -1136,7 +1136,7 @@ template <BasicTensorConcept AType, BasicTensorConcept XType, BasicTensorConcept
         requires SameUnderlying<AType, XType, YType>;
     }
 void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     detail::impl_gerc(alpha, X.impl(), Y.impl(), A->impl());
 }
 
@@ -1255,7 +1255,7 @@ template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, typename P
         requires std::same_as<blas::int_t, typename Pivots::value_type>;
     }
 [[nodiscard]] auto getrs(AType const &A, Pivots const &pivot, BType *B) -> int {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     return detail::getrs(A.impl(), pivot, &B->impl());
 }
 
@@ -1344,7 +1344,7 @@ void invert(TensorType *A) {
 
 template <SmartPointer SmartPtr>
 void invert(SmartPtr *A) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     invert(A->get());
 }
@@ -1412,7 +1412,7 @@ enum class APIARY_EXPOSE APIARY_MODULE("linalg") Transpose : char{
 template <MatrixConcept AType>
     requires(CoreTensorConcept<AType>)
 [[nodiscard]] auto norm(Norm norm_type, AType const &a) -> RemoveComplexT<typename AType::ValueType> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return detail::norm(static_cast<char>(norm_type), a);
 }
@@ -1425,7 +1425,7 @@ template <BasicTensorConcept AType>
         requires CoreTensorConcept<AType>;
     }
 [[nodiscard]] auto norm(Norm norm_type, AType const &a) -> RemoveComplexT<typename AType::ValueType> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return detail::norm(static_cast<char>(norm_type), a.impl());
 }
@@ -1446,7 +1446,7 @@ template <BasicTensorConcept AType>
  */
 template <TensorConcept AType>
 [[nodiscard]] auto vec_norm(AType const &a) -> RemoveComplexT<typename AType::ValueType> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     return detail::vec_norm(a);
 }
 
@@ -1497,7 +1497,7 @@ template <MatrixConcept AType>
 [[nodiscard]] auto svd(AType const &A, Vectors jobu = Vectors::ALL, Vectors jobvt = Vectors::ALL)
     -> std::tuple<std::optional<Tensor<typename AType::ValueType, 2>>, Tensor<RemoveComplexT<typename AType::ValueType>, 1>,
                   std::optional<Tensor<typename AType::ValueType, 2>>> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return detail::svd(A.impl(), static_cast<char>(jobu), static_cast<char>(jobvt));
 }
@@ -1519,7 +1519,7 @@ template <MatrixConcept AType>
     requires(CoreTensorConcept<AType>)
 auto svd_nullspace(AType const &_A) -> Tensor<typename AType::ValueType, 2> {
     using T = typename AType::ValueType;
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Calling svd will destroy the original data. Make a copy of it.
     Tensor<T, 2> A{false, "A temp", _A.dim(0), _A.dim(1)};
@@ -1633,7 +1633,7 @@ template <MatrixConcept AType>
     -> std::tuple<Tensor<typename AType::ValueType, 2>, Tensor<RemoveComplexT<typename AType::ValueType>, 1>,
                   Tensor<typename AType::ValueType, 2>> {
     using T = typename AType::ValueType;
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     size_t m = _A.dim(0);
     size_t n = _A.dim(1);
@@ -1737,7 +1737,7 @@ template <MatrixConcept AType>
 [[nodiscard]] auto truncated_syev(AType const &A, size_t k)
     -> std::tuple<Tensor<typename AType::ValueType, 2>, Tensor<typename AType::ValueType, 1>> {
     using T = typename AType::ValueType;
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (A.dim(0) != A.dim(1)) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Non-square matrix used as input of truncated_syev!");
@@ -1874,7 +1874,7 @@ template <MatrixConcept AType, typename T>
         requires std::is_same_v<typename AType::ValueType, T>;
     }
 inline auto pseudoinverse(AType const &A, T tol) -> Tensor<T, 2> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     auto [U, S, Vh] = svd_dd(A);
 
@@ -1925,7 +1925,7 @@ template <MatrixConcept AType, MatrixConcept QType>
     }
 inline auto solve_continuous_lyapunov(AType const &A, QType const &Q) -> Tensor<typename AType::ValueType, 2> {
     using T = typename AType::ValueType;
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (A.dim(0) != A.dim(1)) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "solve_continuous_lyapunov: Dimensions of A ({} x {}), do not match", A.dim(0), A.dim(1));
@@ -2019,7 +2019,7 @@ template <MatrixConcept AType>
 template <TensorConcept AType, TensorConcept BType, TensorConcept CType, typename T>
     requires(SameRank<AType, BType, CType>)
 void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::direct_product(alpha, A, B, beta, C);
 }
@@ -2048,7 +2048,7 @@ void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
 template <TensorConcept AType, TensorConcept BType, TensorConcept CType, typename T>
     requires(SameRank<AType, BType, CType>)
 void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     detail::direct_division(alpha, A, B, beta, C);
 }

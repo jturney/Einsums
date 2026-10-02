@@ -281,7 +281,7 @@ void run_gather_rotate_member(Impl<T> &ci, Impl<T> const &si, Impl<T> const &xi,
 template <typename T>
 void eager_grouped_sandwich(std::vector<Impl<T> *> const &c, std::vector<Impl<T> const *> const &a, std::vector<Impl<T> const *> const &m,
                             std::vector<Impl<T> const *> const &p, std::vector<Impl<T> const *> const &s) {
-    LabeledSection("grouped_sandwich eager");
+    WAGGLE_ZONE("grouped_sandwich eager");
     // Members are independent (distinct destinations, each accumulated
     // serially by one thread), and the whole run is one parallel region -
     // an OpenMP team, never a caller-created thread pool (trap 7). An
@@ -293,7 +293,7 @@ void eager_grouped_sandwich(std::vector<Impl<T> *> const &c, std::vector<Impl<T>
 template <typename T>
 void capture_grouped_sandwich(CaptureContext &ctx, std::vector<SlotRef> const &c, std::vector<SlotRef> const &a,
                               std::vector<SlotRef> const &m, std::vector<SlotRef> const &p, std::vector<SlotRef> const &s) {
-    LabeledSection("grouped_sandwich capture");
+    WAGGLE_ZONE("grouped_sandwich capture");
     size_t const          count = c.size();
     std::vector<TensorId> inputs, outputs;
     inputs.reserve(5 * count);
@@ -327,7 +327,7 @@ void capture_grouped_sandwich(CaptureContext &ctx, std::vector<SlotRef> const &c
 
     auto executor = [c_access = std::move(c_access), a_access = std::move(a_access), m_access = std::move(m_access),
                      p_access = std::move(p_access), s_access = std::move(s_access)]() {
-        LabeledSection("grouped_sandwich execute");
+        WAGGLE_ZONE("grouped_sandwich execute");
         run_grouped_members(c_access.size(), [&](size_t i) {
             run_sandwich_member<T>(*c_access[i].template impl<T>(), *a_access[i].template impl<T>(), *m_access[i].template impl<T>(),
                                    *p_access[i].template impl<T>(), *s_access[i].template impl<T>());
@@ -340,7 +340,7 @@ void capture_grouped_sandwich(CaptureContext &ctx, std::vector<SlotRef> const &c
 template <typename T>
 void eager_grouped_gather_rotate(std::vector<Impl<T> *> const &c, Impl<T> const &src, std::vector<Impl<T> const *> const &x,
                                  std::vector<std::vector<size_t>> const &q_list, std::vector<std::vector<size_t>> const &u_list) {
-    LabeledSection("grouped_gather_rotate eager");
+    WAGGLE_ZONE("grouped_gather_rotate eager");
     // Members are independent (distinct destinations, each assigned by one
     // thread), and the whole run is one parallel region - an OpenMP team,
     // never a caller-created thread pool. An exception may not cross the
@@ -352,7 +352,7 @@ void eager_grouped_gather_rotate(std::vector<Impl<T> *> const &c, Impl<T> const 
 template <typename T>
 void capture_grouped_gather_rotate(CaptureContext &ctx, std::vector<SlotRef> const &c, SlotRef src, std::vector<SlotRef> const &x,
                                    std::vector<std::vector<size_t>> q_list, std::vector<std::vector<size_t>> u_list) {
-    LabeledSection("grouped_gather_rotate capture");
+    WAGGLE_ZONE("grouped_gather_rotate capture");
     size_t const          count = c.size();
     std::vector<TensorId> inputs, outputs;
     inputs.reserve(count + 1);
@@ -384,7 +384,7 @@ void capture_grouped_gather_rotate(CaptureContext &ctx, std::vector<SlotRef> con
     // captured node outlives the call, and every replay reads them again.
     auto executor = [s_access, c_access = std::move(c_access), x_access = std::move(x_access), q_list = std::move(q_list),
                      u_list = std::move(u_list)]() {
-        LabeledSection("grouped_gather_rotate execute");
+        WAGGLE_ZONE("grouped_gather_rotate execute");
         run_grouped_members(c_access.size(), [&](size_t i) {
             run_gather_rotate_member<T>(*c_access[i].template impl<T>(), *s_access.template impl<T>(), *x_access[i].template impl<T>(),
                                         q_list[i], u_list[i]);

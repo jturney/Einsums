@@ -31,7 +31,7 @@ extern void FC_GLOBAL(zgees, ZGEES)(char *, char *, int_t (*)(double *, double *
 
 #define GEES(Type, lc, UC)                                                                                                                 \
     auto lc##gees(char jobvs, int_t n, Type *a, int_t lda, int_t *sdim, Type *wr, Type *wi, Type *vs, int_t ldvs) -> int_t {               \
-        LabeledSection0();                                                                                                                 \
+        WAGGLE_ZONE_FUNC();                                                                                                                \
                                                                                                                                            \
         int_t  info  = 0;                                                                                                                  \
         int_t  lwork = -1;                                                                                                                 \
@@ -71,7 +71,7 @@ GEES(float, s, S);
 #define GEES(Type, lc, UC)                                                                                                                 \
     auto lc##gees(char jobvs, int_t n, std::complex<Type> *a, int_t lda, int_t *sdim, std::complex<Type> *w, std::complex<Type> *vs,       \
                   int_t ldvs) -> int_t {                                                                                                   \
-        LabeledSection0();                                                                                                                 \
+        WAGGLE_ZONE_FUNC();                                                                                                                \
                                                                                                                                            \
         int_t  info  = 0;                                                                                                                  \
         int_t  lwork = -1;                                                                                                                 \

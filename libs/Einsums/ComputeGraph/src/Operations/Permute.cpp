@@ -30,14 +30,14 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 template <typename T>
 void eager_permute(ParsedPermuteSpec const &parsed, T beta, Impl<T> &C, T alpha, Impl<T> const &A) {
-    LabeledSection("permute eager");
+    WAGGLE_ZONE("permute eager");
     dispatch::string_permute_impl<T>(parsed, beta, &C, alpha, A);
 }
 
 template <typename T>
 void capture_permute(CaptureContext &ctx, ParsedPermuteSpec const &parsed, T beta, T alpha, TensorId a_id, TensorId c_id,
                      std::size_t rank) {
-    LabeledSection("permute capture");
+    WAGGLE_ZONE("permute capture");
 
     PermuteDescriptor desc;
     if constexpr (IsComplexV<T>) {
@@ -66,13 +66,13 @@ void capture_permute(CaptureContext &ctx, ParsedPermuteSpec const &parsed, T bet
 
 template <typename T>
 void eager_transpose(Impl<T> &C, Impl<T> const &A) {
-    LabeledSection("transpose eager");
+    WAGGLE_ZONE("transpose eager");
     tensor_permute::transpose(&C, A);
 }
 
 template <typename T>
 void capture_transpose(CaptureContext &ctx, TensorId a_id, TensorId c_id, std::size_t rank) {
-    LabeledSection("transpose capture");
+    WAGGLE_ZONE("transpose capture");
 
     // No descriptor, deliberately: a transpose is a fixed permutation with no
     // scalars, so (kind, dtype, rank, operand ids) is its complete content and

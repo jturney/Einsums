@@ -50,7 +50,7 @@ einsums_add_python_unit_test(
   "Modules.Einsums.Runtime" ProfileSessionExport SCRIPT test_profile_session_export_python.py
 )
 # Every zone the runtime records around start-up and teardown is a
-# LabeledSectionInternal, so a build with EINSUMS_WITH_PROFILER_INTERNAL off has
+# WAGGLE_ZONE_DETAIL, so a build with EINSUMS_WITH_PROFILER_INTERNAL off has
 # no teardown zone for the export to be checked against - HelloWorld2 records no
 # zones at all there. Say which build this is rather than letting the test
 # assert on something the preprocessor removed.

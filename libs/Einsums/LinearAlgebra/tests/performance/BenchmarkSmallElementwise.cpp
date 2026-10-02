@@ -56,7 +56,7 @@ void row(std::string const &op, size_t elements, TimingStats const &t) {
 } // namespace
 
 EINSUMS_TEST_CASE("Bench SmallElementwise: per-call floor", "[LinearAlgebra][SmallElementwise][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     for (size_t n : {64UL, 512UL, 4096UL}) {
         auto X = create_random_tensor<double>(std::string("X"), n);

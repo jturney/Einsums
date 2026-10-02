@@ -33,7 +33,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 template <typename T>
 void eager_gemm(char ta, char tb, T alpha, Impl<T> const &A, SymmetryDescriptor const *desc_a, Impl<T> const &B,
                 SymmetryDescriptor const *desc_b, T beta, Impl<T> &C) {
-    LabeledSection("gemm eager");
+    WAGGLE_ZONE("gemm eager");
     // Symmetry-aware fast path, as the typed linear_algebra::gemm takes it: a
     // declared symmetric or Hermitian operand goes to symm / hemm.
     if (desc_a != nullptr || desc_b != nullptr) {
@@ -47,7 +47,7 @@ void eager_gemm(char ta, char tb, T alpha, Impl<T> const &A, SymmetryDescriptor 
 template <typename T>
 void capture_gemm(CaptureContext &ctx, char ta, char tb, bool from_flags, T alpha, T beta, bool reads_c, TensorId a_id, TensorId b_id,
                   TensorId c_id) {
-    LabeledSection("gemm capture");
+    WAGGLE_ZONE("gemm capture");
 
     auto label = from_flags ? fmt::format("gemm<{},{}>", ta == 't' ? "T" : "N", tb == 't' ? "T" : "N") : fmt::format("gemm({},{})", ta, tb);
 
@@ -70,7 +70,7 @@ void capture_gemm(CaptureContext &ctx, char ta, char tb, bool from_flags, T alph
 
 template <typename T>
 T eager_dot(Impl<T> const &A, Impl<T> const &B, bool conjugated) {
-    LabeledSection(conjugated ? "dotc eager" : "dot eager");
+    WAGGLE_ZONE(conjugated ? "dotc eager" : "dot eager");
     // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
     blas::SerialVendorScope const serial;
     return conjugated ? linear_algebra::detail::true_dot(A, B) : linear_algebra::detail::dot(A, B);
@@ -78,7 +78,7 @@ T eager_dot(Impl<T> const &A, Impl<T> const &B, bool conjugated) {
 
 template <typename T>
 void capture_dot(CaptureContext &ctx, bool conjugated, TensorId a_id, TensorId b_id, TensorId r_id, std::size_t rank) {
-    LabeledSection(conjugated ? "dotc capture" : "dot capture");
+    WAGGLE_ZONE(conjugated ? "dotc capture" : "dot capture");
     // The conjugation is the descriptor's one field, and it is the whole
     // difference between dot and dotc: the builder picks true_dot over dot.
     std::vector<TensorId> const inputs{a_id, b_id};
@@ -88,7 +88,7 @@ void capture_dot(CaptureContext &ctx, bool conjugated, TensorId a_id, TensorId b
 
 template <typename T>
 T eager_trace(Impl<T> const &A) {
-    LabeledSection("trace eager");
+    WAGGLE_ZONE("trace eager");
     // The same walk as the replay executor's (build_trace): sequential and in
     // index order, so eager and replay agree bit for bit.
     if (A.rank() != 2) {
@@ -106,7 +106,7 @@ T eager_trace(Impl<T> const &A) {
 
 template <typename T>
 void capture_trace(CaptureContext &ctx, TensorId a_id, TensorId r_id, std::size_t rank) {
-    LabeledSection("trace capture");
+    WAGGLE_ZONE("trace capture");
     ctx.record_built(OpKind::Trace, "trace", packed_gemm::get_scalar_type<T>(), rank, TraceDescriptor{},
                      std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&r_id, 1}, {a_id}, {r_id});
 }
@@ -115,13 +115,13 @@ void capture_trace(CaptureContext &ctx, TensorId a_id, TensorId r_id, std::size_
 
 template <typename T>
 void eager_gemv(char ta, T alpha, Impl<T> const &A, Impl<T> const &x, T beta, Impl<T> &y) {
-    LabeledSection("gemv eager");
+    WAGGLE_ZONE("gemv eager");
     linear_algebra::detail::gemv(ta, alpha, A, x, beta, &y);
 }
 
 template <typename T>
 void capture_gemv(CaptureContext &ctx, char ta, bool from_flags, T alpha, T beta, bool reads_y, SlotRef a, SlotRef x, SlotRef y) {
-    LabeledSection("gemv capture");
+    WAGGLE_ZONE("gemv capture");
     constexpr auto dtype = packed_gemm::get_scalar_type<T>();
 
     auto label = from_flags ? fmt::format("gemv<{}>", ta == 't' ? "T" : "N") : fmt::format("gemv({})", ta);
@@ -132,12 +132,12 @@ void capture_gemv(CaptureContext &ctx, char ta, bool from_flags, T alpha, T beta
     OperandAccessor const x_access(x.second, dtype);
     OperandAccessor const y_access(y.second, dtype);
     auto                  executor = [alpha, beta, ta, from_flags, a_access, x_access, y_access]() {
-        LabeledSection("gemv execute");
+        WAGGLE_ZONE("gemv execute");
         auto const *A = a_access.impl<T>();
         if (from_flags) {
-            ProfileAnnotate("trans", ta == 't' ? "T" : "N");
-            ProfileAnnotate("m", static_cast<int64_t>(A->dim(0)));
-            ProfileAnnotate("n", static_cast<int64_t>(A->dim(1)));
+            WAGGLE_ANNOTATE("trans", ta == 't' ? "T" : "N");
+            WAGGLE_ANNOTATE("m", static_cast<int64_t>(A->dim(0)));
+            WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(1)));
         }
         linear_algebra::detail::gemv(ta, alpha, *A, *x_access.impl<T>(), beta, y_access.impl<T>());
     };
@@ -153,7 +153,7 @@ void capture_gemv(CaptureContext &ctx, char ta, bool from_flags, T alpha, T beta
 
 template <typename T>
 void eager_ger(bool conjugated, T alpha, Impl<T> const &x, Impl<T> const &y, Impl<T> &A) {
-    LabeledSection(conjugated ? "gerc eager" : "ger eager");
+    WAGGLE_ZONE(conjugated ? "gerc eager" : "ger eager");
     if (conjugated) {
         linear_algebra::detail::gerc(alpha, x, y, &A);
     } else {
@@ -163,21 +163,21 @@ void eager_ger(bool conjugated, T alpha, Impl<T> const &x, Impl<T> const &y, Imp
 
 template <typename T>
 void capture_ger(CaptureContext &ctx, bool conjugated, T alpha, SlotRef x, SlotRef y, SlotRef a) {
-    LabeledSection(conjugated ? "gerc capture" : "ger capture");
+    WAGGLE_ZONE(conjugated ? "gerc capture" : "ger capture");
     constexpr auto dtype = packed_gemm::get_scalar_type<T>();
 
     OperandAccessor const x_access(x.second, dtype);
     OperandAccessor const y_access(y.second, dtype);
     OperandAccessor const a_access(a.second, dtype);
     auto                  executor = [alpha, conjugated, x_access, y_access, a_access]() {
-        LabeledSection(conjugated ? "gerc execute" : "ger execute");
+        WAGGLE_ZONE(conjugated ? "gerc execute" : "ger execute");
         auto const *X = x_access.impl<T>();
         auto const *Y = y_access.impl<T>();
         if (conjugated) {
             linear_algebra::detail::gerc(alpha, *X, *Y, a_access.impl<T>());
         } else {
-            ProfileAnnotate("m", static_cast<int64_t>(X->dim(0)));
-            ProfileAnnotate("n", static_cast<int64_t>(Y->dim(0)));
+            WAGGLE_ANNOTATE("m", static_cast<int64_t>(X->dim(0)));
+            WAGGLE_ANNOTATE("n", static_cast<int64_t>(Y->dim(0)));
             linear_algebra::detail::ger(alpha, *X, *Y, a_access.impl<T>());
         }
     };

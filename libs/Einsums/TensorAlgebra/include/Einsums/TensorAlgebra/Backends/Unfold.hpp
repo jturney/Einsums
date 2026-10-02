@@ -68,7 +68,7 @@ constexpr auto get_n(std::tuple<List...> const &) {
  */
 template <unsigned int mode, size_t CRank, typename T>
 Tensor<T, 2> unfold(Tensor<T, CRank> const &source) {
-    LabeledSection("mode-{} unfold", mode);
+    WAGGLE_ZONE("mode-{} unfold", mode);
 
     Dim<2> target_dims;
     target_dims[0] = source.dim(mode);

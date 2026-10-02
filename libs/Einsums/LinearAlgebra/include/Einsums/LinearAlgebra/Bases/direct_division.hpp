@@ -77,7 +77,7 @@ void impl_direct_division_noncontiguous(int depth, int rank, HardDims const &dim
 template <typename AType, typename BType, typename CType>
 void impl_direct_division(CType alpha, einsums::detail::TensorImpl<AType> const &A, einsums::detail::TensorImpl<BType> const &B, CType beta,
                           einsums::detail::TensorImpl<CType> *C) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (A.rank() != B.rank() || A.rank() != C->rank()) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can not combine tensors of different ranks!");

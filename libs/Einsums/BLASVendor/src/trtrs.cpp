@@ -23,7 +23,7 @@ extern void FC_GLOBAL(ztrtrs, ZTRTRS)(char *, char *, char *, int_t *, int_t *, 
 }
 
 auto strtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, float const *a, int_t lda, float *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(strtrs, STRTRS)(&uplo, &trans, &diag, &n, &nrhs, a, &lda, b, &ldb, &info);
@@ -31,7 +31,7 @@ auto strtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, float const *
 }
 
 auto dtrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, double const *a, int_t lda, double *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(dtrtrs, DTRTRS)(&uplo, &trans, &diag, &n, &nrhs, a, &lda, b, &ldb, &info);
@@ -40,7 +40,7 @@ auto dtrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, double const 
 
 auto ctrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, std::complex<float> *b,
             int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(ctrtrs, CTRTRS)(&uplo, &trans, &diag, &n, &nrhs, a, &lda, b, &ldb, &info);
@@ -49,7 +49,7 @@ auto ctrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<
 
 auto ztrtrs(char uplo, char trans, char diag, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, std::complex<double> *b,
             int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(ztrtrs, ZTRTRS)(&uplo, &trans, &diag, &n, &nrhs, a, &lda, b, &ldb, &info);

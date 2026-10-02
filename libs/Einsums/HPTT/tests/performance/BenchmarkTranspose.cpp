@@ -46,7 +46,7 @@ inline int hptt_threads() {
 
 template <typename T>
 void bench_transpose_2d(char const *label, int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     std::vector<T> A(static_cast<size_t>(N) * N), B(static_cast<size_t>(N) * N);
     for (size_t i = 0; i < A.size(); ++i)
         A[i] = static_cast<T>(static_cast<float>(i % 64) * 0.5f);
@@ -56,12 +56,12 @@ void bench_transpose_2d(char const *label, int N) {
     auto const plan = einsums::hptt::create_plan<T>(perm, 2, static_cast<T>(1.0f), A.data(), size, nullptr, static_cast<T>(0.0f), B.data(),
                                                     nullptr, einsums::hptt::ESTIMATE, hptt_threads());
 
-    ProfileAnnotate("rank", int64_t(2));
-    ProfileAnnotate("pattern", "ji<-ij");
-    ProfileAnnotate("dtype", label);
-    ProfileAnnotate("elements", int64_t(N) * N);
-    ProfileAnnotate("bytes", int64_t(2) * N * N * static_cast<int64_t>(sizeof(T)));
-    ProfileAnnotate("threads", int64_t(hptt_threads()));
+    WAGGLE_ANNOTATE("rank", int64_t(2));
+    WAGGLE_ANNOTATE("pattern", "ji<-ij");
+    WAGGLE_ANNOTATE("dtype", label);
+    WAGGLE_ANNOTATE("elements", int64_t(N) * N);
+    WAGGLE_ANNOTATE("bytes", int64_t(2) * N * N * static_cast<int64_t>(sizeof(T)));
+    WAGGLE_ANNOTATE("threads", int64_t(hptt_threads()));
 
     auto t = time_us(label, [&] { plan->execute(); });
     publish_benchmark_result(label, "t_transpose", N, t);

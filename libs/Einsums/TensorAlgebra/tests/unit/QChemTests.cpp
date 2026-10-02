@@ -217,7 +217,7 @@ TEST_CASE("RHF No symmetry", "[qchem]") {
     TEI.zero();
 
     {
-        LabeledSection("Reading tensors");
+        WAGGLE_ZONE("Reading tensors");
         REQUIRE_NOTHROW(read_tensor("data/water_sto3g/S.dat", &S));
         REQUIRE_NOTHROW(read_tensor("data/water_sto3g/T.dat", &T));
         REQUIRE_NOTHROW(read_tensor("data/water_sto3g/V.dat", &V));
@@ -226,7 +226,7 @@ TEST_CASE("RHF No symmetry", "[qchem]") {
 
     // Make sure that the tensors are formatted correctly.
     {
-        LabeledSection("Checking tensors");
+        WAGGLE_ZONE("Checking tensors");
         for (int i = 0; i < 7; i++) {
             for (int j = 0; j < 7; j++) {
                 REQUIRE_THAT(S(i, j), Catch::Matchers::WithinAbs(S(j, i), EINSUMS_ZERO));

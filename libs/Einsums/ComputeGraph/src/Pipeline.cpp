@@ -80,18 +80,18 @@ void Pipeline::propagate_stage_metadata() {
 void Pipeline::run_stages(std::function<void(Graph &)> const &run) {
     for_each_stage([&](Stage &stage, Graph &graph, LoopNode *loop) {
         if (loop == nullptr) {
-            LabeledSection("stage:{}", stage.name);
+            WAGGLE_ZONE("stage:{}", stage.name);
             run(graph);
             return;
         }
 
-        LabeledSection("loop:{}", stage.name);
+        WAGGLE_ZONE("loop:{}", stage.name);
         loop->last_iteration_count = 0;
         for (size_t iter = 0; iter < loop->max_iterations; iter++) {
             // The iteration zone closes before the bookkeeping below, which
             // is what the manual push/pop pair it replaces did.
             {
-                LabeledSection("iteration:{}", iter);
+                WAGGLE_ZONE("iteration:{}", iter);
                 run(graph);
             }
             loop->last_iteration_count = iter + 1;
@@ -103,14 +103,14 @@ void Pipeline::run_stages(std::function<void(Graph &)> const &run) {
 }
 
 void Pipeline::execute() {
-    LabeledSection("Pipeline::execute({})", _name);
+    WAGGLE_ZONE("Pipeline::execute({})", _name);
 
     propagate_stage_metadata();
     run_stages([](Graph &graph) { graph.execute(); });
 }
 
 void Pipeline::execute(Executor &executor) {
-    LabeledSection("Pipeline::execute({}, executor={})", _name, executor.name());
+    WAGGLE_ZONE("Pipeline::execute({}, executor={})", _name, executor.name());
 
     propagate_stage_metadata();
     run_stages([&executor](Graph &graph) { graph.execute(executor); });

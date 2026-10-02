@@ -25,37 +25,37 @@ extern double FC_GLOBAL(dzsum1, DZSUM1)(int_t *n, std::complex<double> const *x,
 }
 
 float sasum(int_t n, float const *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(sasum, SASUM)(&n, x, &incx);
 }
 
 double dasum(int_t n, double const *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(dasum, DASUM)(&n, x, &incx);
 }
 
 float scasum(int_t n, std::complex<float> const *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(scasum, SCASUM)(&n, x, &incx);
 }
 
 double dzasum(int_t n, std::complex<double> const *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(dzasum, DZASUM)(&n, x, &incx);
 }
 
 float scsum1(int_t n, std::complex<float> const *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(scsum1, SCSUM1)(&n, x, &incx);
 }
 
 double dzsum1(int_t n, std::complex<double> const *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(dzsum1, DZSUM1)(&n, x, &incx);
 }

@@ -45,7 +45,7 @@ EINSUMS_NAMESPACE_BEGIN(tensor_permute)
  */
 template <typename T>
 void unfold(std::size_t mode, einsums::detail::TensorImpl<T> *C, einsums::detail::TensorImpl<T> const &A) {
-    LabeledSection("mode-{} unfold", mode);
+    WAGGLE_ZONE("mode-{} unfold", mode);
 
     // One character per axis for the permute kernel: a-z then A-Z.
     constexpr std::size_t max_rank = 52;

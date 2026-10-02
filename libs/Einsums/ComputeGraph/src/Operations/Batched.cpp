@@ -27,13 +27,13 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 template <typename T>
 void eager_batched_gemm(BatchedGemmDescriptor const &d, std::vector<void const *> const &a, std::vector<void const *> const &b,
                         std::vector<void *> const &c) {
-    LabeledSection("batched_gemm eager");
+    WAGGLE_ZONE("batched_gemm eager");
     run_batched_gemm<T>(d, a, b, c);
 }
 
 void capture_batched_gemm(CaptureContext &ctx, BatchedGemmDescriptor const &d, bool reads_c, std::vector<SlotRef> const &a,
                           std::vector<SlotRef> const &b, std::vector<SlotRef> const &c) {
-    LabeledSection("batched_gemm capture");
+    WAGGLE_ZONE("batched_gemm capture");
     size_t const        count = a.size();
     BatchedGemmOperands a_ops, b_ops, c_ops;
     a_ops.reserve(count);
@@ -69,7 +69,7 @@ void capture_batched_gemm(CaptureContext &ctx, BatchedGemmDescriptor const &d, b
 
 void capture_batched_gemm_blocked(CaptureContext &ctx, BatchedGemmDescriptor const &d, bool reads_c, std::vector<SlotRef> const &a,
                                   std::vector<SlotRef> const &b, SlotRef c_base, std::vector<std::size_t> const &c_offsets) {
-    LabeledSection("batched_gemm_blocked capture");
+    WAGGLE_ZONE("batched_gemm_blocked capture");
     size_t const        count = a.size();
     BatchedGemmOperands a_ops, b_ops, c_ops;
     a_ops.reserve(count);
@@ -105,7 +105,7 @@ void capture_batched_gemm_blocked(CaptureContext &ctx, BatchedGemmDescriptor con
 template <typename T>
 void eager_grouped_batched_gemm(GroupedBatchedGemmDescriptor const &d, std::vector<void const *> const &a,
                                 std::vector<void const *> const &b, std::vector<void *> const &c) {
-    LabeledSection("grouped_batched_gemm eager");
+    WAGGLE_ZONE("grouped_batched_gemm eager");
     run_grouped_batched_gemm<T>(d, a, b, c);
 }
 
@@ -113,7 +113,7 @@ void capture_grouped_batched_gemm(CaptureContext &ctx, GroupedBatchedGemmDescrip
                                   std::vector<SlotRef> const &a, std::vector<SlotRef> const &b, std::vector<SlotRef> const &c,
                                   std::vector<SlotRef> const &c_bases, std::vector<std::size_t> const &c_offsets) {
     bool const blocked = !c_bases.empty();
-    LabeledSection(blocked ? "grouped_batched_gemm_blocked capture" : "grouped_batched_gemm capture");
+    WAGGLE_ZONE(blocked ? "grouped_batched_gemm_blocked capture" : "grouped_batched_gemm capture");
     size_t const        count = a.size();
     BatchedGemmOperands a_ops, b_ops, c_ops;
     a_ops.reserve(count);

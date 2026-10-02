@@ -159,21 +159,21 @@ TEST_CASE("Bench ZoneCost: one zone, whole and in pieces", "[Profile][ZoneCost][
     // ── The whole zone ──────────────────────────────────────────────────
     {
         Recording const off(false);
-        show("zone, literal name, recording OFF", per_op([](int) { LabeledSection("bench zone"); }));
+        show("zone, literal name, recording OFF", per_op([](int) { WAGGLE_ZONE("bench zone"); }));
     }
     {
         Recording const on(true);
-        show("zone, literal name, recording on", per_op([](int) { LabeledSection("bench zone"); }));
+        show("zone, literal name, recording on", per_op([](int) { WAGGLE_ZONE("bench zone"); }));
 
         // The shape cg::einsum opens on every call: three joined index lists, formatted and
         // interned per entry.
         std::vector<std::string> const c{"i", "j"}, a{"i", "k"}, b{"k", "j"};
         show("zone, formatted, fmt::join (cached per site)",
-             per_op([&](int) { LabeledSection("cg::einsum: {} <- {} ; {}", fmt::join(c, ","), fmt::join(a, ","), fmt::join(b, ",")); }));
+             per_op([&](int) { WAGGLE_ZONE("cg::einsum: {} <- {} ; {}", fmt::join(c, ","), fmt::join(a, ","), fmt::join(b, ",")); }));
         // The same name through an argument with no value to key on, which is formatted every entry:
         // what every formatted zone cost before the cache.
         show("zone, formatted, no key (formats every entry)",
-             per_op([&](int) { LabeledSection("cg::einsum: {} <- {} ; {}", Unkeyed{c}, Unkeyed{a}, Unkeyed{b}); }));
+             per_op([&](int) { WAGGLE_ZONE("cg::einsum: {} <- {} ; {}", Unkeyed{c}, Unkeyed{a}, Unkeyed{b}); }));
         // The cached path's pieces, for the three joined index lists above.
         {
             std::array<char, prof::site_cache::kNameKeyCapacity> buffer{};
@@ -193,14 +193,14 @@ TEST_CASE("Bench ZoneCost: one zone, whole and in pieces", "[Profile][ZoneCost][
             cache.emplace(key, 7);
             show("  key: find in the cache (hit)", per_op([&](int) { keep(cache.find(std::string_view(key))->second); }));
         }
-        show("zone, formatted from an int (cached per site)", per_op([](int i) { LabeledSection("gemv<TransA={}>", (i & 1) != 0); }));
+        show("zone, formatted from an int (cached per site)", per_op([](int i) { WAGGLE_ZONE("gemv<TransA={}>", (i & 1) != 0); }));
 
         // Annotations attach to the open zone, so open one around the batch.
-        LabeledSection("bench annotate host");
-        show("annotate, int64", per_op([](int i) { ProfileAnnotate("bench key", static_cast<std::int64_t>(i)); }));
-        show("annotate, string literal", per_op([](int) { ProfileAnnotate("bench key", "bench value"); }));
+        WAGGLE_ZONE("bench annotate host");
+        show("annotate, int64", per_op([](int i) { WAGGLE_ANNOTATE("bench key", static_cast<std::int64_t>(i)); }));
+        show("annotate, string literal", per_op([](int) { WAGGLE_ANNOTATE("bench key", "bench value"); }));
         show("annotate, string from a conditional",
-             per_op([](int i) { ProfileAnnotate("bench key", (i & 1) != 0 ? "left" : "right side"); }));
+             per_op([](int i) { WAGGLE_ANNOTATE("bench key", (i & 1) != 0 ? "left" : "right side"); }));
         // The unmacroed call interns key and value on every call, under the string table's lock.
         show("annotate(), string, interned per call", per_op([](int) { prof::annotate("bench key", "bench value"); }));
     }
@@ -271,7 +271,7 @@ Result team_per_op(int threads, Op const &op) {
         for (int t = 0; t < threads; ++t) {
             team.emplace_back([&, t] {
                 {
-                    LabeledSection("bench warm"); // registers the thread's ring outside the timing
+                    WAGGLE_ZONE("bench warm"); // registers the thread's ring outside the timing
                 }
                 ready.fetch_add(1);
                 while (!go.load(std::memory_order_acquire)) {
@@ -311,9 +311,9 @@ TEST_CASE("Bench ZoneCost: zones on several threads at once", "[Profile][ZoneCos
         show(label("empty loop"), team_per_op(threads, [](int i) { keep(i); }));
         {
             Recording const off(false);
-            show(label("zone, literal, recording OFF"), team_per_op(threads, [](int) { LabeledSection("bench zone"); }));
+            show(label("zone, literal, recording OFF"), team_per_op(threads, [](int) { WAGGLE_ZONE("bench zone"); }));
         }
-        show(label("zone, literal"), team_per_op(threads, [](int) { LabeledSection("bench zone"); }));
+        show(label("zone, literal"), team_per_op(threads, [](int) { WAGGLE_ZONE("bench zone"); }));
         show(label("4 x fetch_add, shared atomic"), team_per_op(threads, [](int) {
                  for (int k = 0; k < 4; ++k) {
                      g_shared_counter.fetch_add(1, std::memory_order_relaxed);
@@ -364,14 +364,14 @@ TEST_CASE("Bench ZoneCost: the consumer", "[Profile][ZoneCost][benchmark]") {
         fmt::println("[ZoneCost consumer: {:38s}] min {:7.1f} ns   median {:7.1f} ns   per event", label, ns.front(), ns[ns.size() / 2]);
         publish(fmt::format("consumer, {}", label), "t_per_event", Result{.min_ns = ns.front(), .median_ns = ns[ns.size() / 2]}, 30);
     };
-    drain("literal zones", 2, [](int) { LabeledSection("bench consumer zone"); });
+    drain("literal zones", 2, [](int) { WAGGLE_ZONE("bench consumer zone"); });
     drain("zones with an int annotation", 3, [](int i) {
-        LabeledSection("bench consumer zone");
-        ProfileAnnotate("bench key", static_cast<std::int64_t>(i));
+        WAGGLE_ZONE("bench consumer zone");
+        WAGGLE_ANNOTATE("bench key", static_cast<std::int64_t>(i));
     });
     drain("zones with a string annotation", 3, [](int) {
-        LabeledSection("bench consumer zone");
-        ProfileAnnotate("bench key", "bench value");
+        WAGGLE_ZONE("bench consumer zone");
+        WAGGLE_ANNOTATE("bench key", "bench value");
     });
 
     // CPU the whole process uses while nothing is recorded: the consumer's 1 ms naps and anything
@@ -488,14 +488,14 @@ TEST_CASE("Bench ZoneCost: zones while the rings overflow", "[Profile][ZoneCost]
             for (int t = 0; t < threads; ++t) {
                 team.emplace_back([&, t] {
                     {
-                        LabeledSection("bench warm");
+                        WAGGLE_ZONE("bench warm");
                     }
                     ready.fetch_add(1);
                     while (!go.load(std::memory_order_acquire)) {
                     }
                     auto const t0 = std::chrono::steady_clock::now();
                     for (int i = 0; i < kZones; ++i) {
-                        LabeledSection("bench overflow zone");
+                        WAGGLE_ZONE("bench overflow zone");
                         barrier();
                     }
                     auto const t1 = std::chrono::steady_clock::now();

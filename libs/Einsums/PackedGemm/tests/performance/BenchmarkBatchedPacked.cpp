@@ -98,7 +98,7 @@ void publish_best(char const *label, char const *metric, int n, double seconds, 
 } // namespace
 
 TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_gemm][batched]") {
-    LabeledSection0(); // the zone the GFLOP/s annotations below attach to
+    WAGGLE_ZONE_FUNC(); // the zone the GFLOP/s annotations below attach to
     // The particle-particle ladder, per tile: C[i,j,a,b] += A[i,j,e,f] B[e,f,a,b]
     // with an occupied block of 2 and a virtual block of 4 -- the shape tiled
     // expansion emits for a symmetry-blocked CCSD.
@@ -283,7 +283,7 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
     std::string const label = fmt::format("batched-packed ccsd-ladder ob={} vb={}", ob, vb);
     for (auto const &[metric, t] : {std::pair{"t_per_call", t_per_call}, std::pair{"t_topology", t_topology},
                                     std::pair{"t_prepared", t_prepared}, std::pair{"t_batched", t_batched}}) {
-        ProfileAnnotate("gflops", flops / t / 1e9);
+        WAGGLE_ANNOTATE("gflops", flops / t / 1e9);
         publish_best(label.c_str(), metric, static_cast<int>(NT), t, 20);
     }
 

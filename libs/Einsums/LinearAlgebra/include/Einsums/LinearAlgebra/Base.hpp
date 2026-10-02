@@ -1113,7 +1113,7 @@ template <typename T, typename Pivots, bool is_resizable = requires(Pivots c, ty
         requires std::same_as<blas::int_t, typename Pivots::value_type>;
     }
 [[nodiscard]] auto getrf(einsums::detail::TensorImpl<T> *A, Pivots *pivot) -> int {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (A->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can only decompose rank-2 tensors!");
@@ -1206,7 +1206,7 @@ template <typename T, typename Pivots>
         requires std::same_as<blas::int_t, typename Pivots::value_type>;
     }
 [[nodiscard]] auto getrs(einsums::detail::TensorImpl<T> const &A, Pivots const &pivot, einsums::detail::TensorImpl<T> *B) -> int {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "The factored matrix needs to be rank-2!");
@@ -1292,7 +1292,7 @@ template <typename T, typename Pivots>
         requires std::same_as<blas::int_t, typename Pivots::value_type>;
     }
 void getri(einsums::detail::TensorImpl<T> *A, Pivots const &pivot) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (A->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can only compute the inverses of matrices.");
@@ -1348,7 +1348,7 @@ void getri(TensorType *A, Pivots const &pivot) {
 
 template <typename T>
 void invert(einsums::detail::TensorImpl<T> *A) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (A->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can only compute the inverses of matrices.");
@@ -1412,7 +1412,7 @@ void invert(TensorType *A) {
 template <typename T>
 [[nodiscard]] auto svd(einsums::detail::TensorImpl<T> const &_A, char jobu, char jobvt)
     -> std::tuple<std::optional<Tensor<T, 2>>, Tensor<RemoveComplexT<T>, 1>, std::optional<Tensor<T, 2>>> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     using option = std::optional<Tensor<T, 2>>;
 
@@ -1494,7 +1494,7 @@ template <MatrixConcept AType>
 
 template <typename T>
 [[nodiscard]] auto norm(char norm_type, einsums::detail::TensorImpl<T> const &a) -> RemoveComplexT<T> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (a.rank() > 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "A norm can only be taken on a matrix or vector!");
@@ -1604,7 +1604,7 @@ template <TensorConcept AType>
 template <typename T>
 [[nodiscard]] auto svd_dd(einsums::detail::TensorImpl<T> const &_A, char job)
     -> std::tuple<std::optional<Tensor<T, 2>>, Tensor<RemoveComplexT<T>, 1>, std::optional<Tensor<T, 2>>> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     using option = std::optional<Tensor<T, 2>>;
 
@@ -1685,7 +1685,7 @@ template <MatrixConcept AType>
 
 template <typename T>
 auto qr(einsums::detail::TensorImpl<T> const &_A) -> std::tuple<Tensor<T, 2>, Tensor<T, 2>> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Copy A because it will be overwritten by the QR call.
     Tensor<T, 2>      A = _A;

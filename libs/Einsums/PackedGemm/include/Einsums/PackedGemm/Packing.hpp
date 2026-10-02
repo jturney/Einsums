@@ -816,7 +816,7 @@ template <typename T>
 // NOLINTNEXTLINE(readability-identifier-naming)
 void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, int64_t mc_len, int64_t kc_start, int64_t kc_len, int MR,
             bool conj = false) {
-    LabeledSectionInternal0();
+    WAGGLE_ZONE_DETAIL_FUNC();
     auto const &m_dims  = plan.m_dims;
     auto const &k_dims  = plan.k_dims_in_a;
     bool const  multi_m = (m_dims.size() > 1);
@@ -1131,7 +1131,7 @@ template <typename T>
 // NOLINTNEXTLINE(readability-identifier-naming)
 void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, int64_t kc_len, int64_t nc_start, int64_t nc_len, int NR,
             bool conj = false) {
-    LabeledSectionInternal0();
+    WAGGLE_ZONE_DETAIL_FUNC();
     auto const &n_dims  = plan.n_dims;
     auto const &k_dims  = plan.k_dims_in_b;
     bool const  multi_n = (n_dims.size() > 1);
@@ -1319,7 +1319,7 @@ template <typename T>
 // NOLINTNEXTLINE(readability-identifier-naming)
 void pack_A_flat(T *dst, T const *A_data, PackingPlan const &plan, int64_t mc_start, int64_t mc_len, int64_t kc_start, int64_t kc_len,
                  bool conj = false) {
-    LabeledSectionInternal0();
+    WAGGLE_ZONE_DETAIL_FUNC();
     auto const &m_dims = plan.m_dims;
     auto const &k_dims = plan.k_dims_in_a;
 
@@ -1363,7 +1363,7 @@ template <typename T>
 // NOLINTNEXTLINE(readability-identifier-naming)
 void pack_B_flat(T *dst, T const *B_data, PackingPlan const &plan, int64_t kc_start, int64_t kc_len, int64_t nc_start, int64_t nc_len,
                  bool conj = false) {
-    LabeledSectionInternal0();
+    WAGGLE_ZONE_DETAIL_FUNC();
     auto const &n_dims = plan.n_dims;
     auto const &k_dims = plan.k_dims_in_b;
 
@@ -1417,7 +1417,7 @@ template <typename RealT>
 // NOLINTNEXTLINE(readability-identifier-naming)
 void pack_A_3m_flat(RealT *Ar, RealT *Ai, RealT *As, std::complex<RealT> const *A_data, PackingPlan const &plan, int64_t mc_start,
                     int64_t mc_len, int64_t kc_start, int64_t kc_len, bool conj = false) {
-    LabeledSectionInternal0();
+    WAGGLE_ZONE_DETAIL_FUNC();
     static thread_local std::vector<int64_t> k_offsets_slot, m_offsets_slot;
     auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
     auto                                    &m_offsets = bind_thread_local(m_offsets_slot);
@@ -1444,7 +1444,7 @@ template <typename RealT>
 // NOLINTNEXTLINE(readability-identifier-naming)
 void pack_B_3m_flat(RealT *Br, RealT *Bi, RealT *Bs, std::complex<RealT> const *B_data, PackingPlan const &plan, int64_t kc_start,
                     int64_t kc_len, int64_t nc_start, int64_t nc_len, bool conj = false) {
-    LabeledSectionInternal0();
+    WAGGLE_ZONE_DETAIL_FUNC();
     static thread_local std::vector<int64_t> k_offsets_slot, n_offsets_slot;
     auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
     auto                                    &n_offsets = bind_thread_local(n_offsets_slot);
@@ -1494,7 +1494,7 @@ template <typename RealT>
 // NOLINTNEXTLINE(readability-identifier-naming)
 void pack_A_1m_panels(RealT *Ap, std::complex<RealT> const *A_data, PackingPlan const &plan, int64_t mh_start, int64_t mh_len,
                       int64_t kh_start, int64_t kh_len, int MR, bool conj = false) {
-    LabeledSectionInternal0();
+    WAGGLE_ZONE_DETAIL_FUNC();
     static thread_local std::vector<int64_t> k_offsets_slot, m_offsets_slot;
     auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
     auto                                    &m_offsets = bind_thread_local(m_offsets_slot);
@@ -1536,7 +1536,7 @@ template <typename RealT>
 // NOLINTNEXTLINE(readability-identifier-naming)
 void pack_B_1m_panels(RealT *Bp, std::complex<RealT> const *B_data, PackingPlan const &plan, int64_t kh_start, int64_t kh_len,
                       int64_t nc_start, int64_t nc_len, int NR, bool conj = false) {
-    LabeledSectionInternal0();
+    WAGGLE_ZONE_DETAIL_FUNC();
     static thread_local std::vector<int64_t> k_offsets_slot, n_offsets_slot;
     auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
     auto                                    &n_offsets = bind_thread_local(n_offsets_slot);

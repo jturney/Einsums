@@ -148,7 +148,7 @@ template <bool ConjA = false, typename T>
 std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C_indices, einsums::detail::TensorImpl<T> *C, T alpha,
                                                     std::string const &A_indices, einsums::detail::TensorImpl<T> const &A,
                                                     hptt::SelectionMethod method = hptt::ESTIMATE) {
-    LabeledSection("permute: {} <- {}", C_indices, A_indices);
+    WAGGLE_ZONE("permute: {} <- {}", C_indices, A_indices);
 
     // One letter per axis, and the same letters on both sides. Checked in both directions: a letter
     // on either side alone would reach HPTT as an invalid permutation.
@@ -174,7 +174,7 @@ template <bool ConjA = false, typename T>
 std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::span<int const> c_to_a, einsums::detail::TensorImpl<T> *C, T alpha,
                                                     einsums::detail::TensorImpl<T> const &A,
                                                     hptt::SelectionMethod                 method = hptt::ESTIMATE) {
-    LabeledSection("permute");
+    WAGGLE_ZONE("permute");
     std::size_t const rank = A.rank();
     if (c_to_a.size() != rank || C->rank() != rank) {
         EINSUMS_THROW_EXCEPTION(RankError, "permute: a permutation of {} axes between a rank-{} output and a rank-{} input", c_to_a.size(),

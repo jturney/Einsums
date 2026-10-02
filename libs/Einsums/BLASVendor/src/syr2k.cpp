@@ -30,42 +30,42 @@ extern void FC_GLOBAL(zher2k, ZHER2K)(char *, char *, int_t *, int_t *, std::com
 
 void ssyr2k(char uplo, char trans, int_t n, int_t k, float alpha, float const *a, int_t lda, float const *b, int_t ldb, float beta,
             float *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(ssyr2k, SSYR2K)(&uplo, &trans, &n, &k, &alpha, a, &lda, b, &ldb, &beta, c, &ldc);
 }
 
 void dsyr2k(char uplo, char trans, int_t n, int_t k, double alpha, double const *a, int_t lda, double const *b, int_t ldb, double beta,
             double *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(dsyr2k, DSYR2K)(&uplo, &trans, &n, &k, &alpha, a, &lda, b, &ldb, &beta, c, &ldc);
 }
 
 void csyr2k(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
             std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(csyr2k, CSYR2K)(&uplo, &trans, &n, &k, &alpha, a, &lda, b, &ldb, &beta, c, &ldc);
 }
 
 void zsyr2k(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
             std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(zsyr2k, ZSYR2K)(&uplo, &trans, &n, &k, &alpha, a, &lda, b, &ldb, &beta, c, &ldc);
 }
 
 void cher2k(char uplo, char trans, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
             std::complex<float> const *b, int_t ldb, float beta, std::complex<float> *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(cher2k, CHER2K)(&uplo, &trans, &n, &k, &alpha, a, &lda, b, &ldb, &beta, c, &ldc);
 }
 
 void zher2k(char uplo, char trans, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
             std::complex<double> const *b, int_t ldb, double beta, std::complex<double> *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(zher2k, ZHER2K)(&uplo, &trans, &n, &k, &alpha, a, &lda, b, &ldb, &beta, c, &ldc);
 }

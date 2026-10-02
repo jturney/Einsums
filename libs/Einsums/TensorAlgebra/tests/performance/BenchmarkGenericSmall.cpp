@@ -65,7 +65,7 @@ char const *route_name(tensor_algebra::detail::AlgorithmChoice c) {
 // C(i,j) = sum_k A(i,j,k) * B(k,j). No single GEMM covers it, so the dispatcher
 // falls through to the generic walk.
 EINSUMS_TEST_CASE("Bench GenericSmall: batched contraction", "[TensorAlgebra][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     fmt::println("[GenericSmall] threads={} region_cost_ns={:.0f} min_parallel_flops={} min_parallel_elements={}", omp_get_max_threads(),
                  hardware::omp_region_cost_ns(), hardware::omp_min_parallel_flops(), hardware::omp_min_parallel_elements());
@@ -99,8 +99,8 @@ EINSUMS_TEST_CASE("Bench GenericSmall: batched contraction", "[TensorAlgebra][be
 
         // Into the benchmark database too, with the route alongside: a row whose route
         // changes is a different measurement, not a regression of the same one.
-        ProfileAnnotate("route", std::string_view{route_name(route)});
-        ProfileAnnotate("threads", static_cast<int64_t>(omp_get_max_threads()));
+        WAGGLE_ANNOTATE("route", std::string_view{route_name(route)});
+        WAGGLE_ANNOTATE("threads", static_cast<int64_t>(omp_get_max_threads()));
         publish_benchmark_result("generic-small batched", "t_einsum", n, t);
     }
 }

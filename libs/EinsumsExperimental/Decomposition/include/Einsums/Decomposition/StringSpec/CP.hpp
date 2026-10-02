@@ -41,7 +41,7 @@ template <TensorConcept TTensor, VectorConcept WTensor>
 auto weight_tensor(TTensor const &tensor, WTensor const &weights) -> Tensor<ValueTypeT<TTensor>, TensorRank<TTensor>> {
     using TType            = ValueTypeT<TTensor>;
     constexpr size_t TRank = TensorRank<TTensor>;
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (tensor.dim(0) != weights.dim(0)) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "The first dimension of the tensor and the dimension of the weight DO NOT match");
@@ -74,7 +74,7 @@ auto weight_tensor(TTensor const &tensor, WTensor const &weights) -> Tensor<Valu
  */
 template <size_t TRank, typename TType, typename Alloc>
 auto parafac_reconstruct(std::vector<Tensor<TType, 2>, Alloc> const &factors) -> Tensor<TType, TRank> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     size_t     rank = 0;
     Dim<TRank> dims;
@@ -111,7 +111,7 @@ auto parafac_reconstruct(std::vector<Tensor<TType, 2>, Alloc> const &factors) ->
 
 template <size_t TRank, typename TType, typename Alloc>
 auto initialize_cp(std::vector<Tensor<TType, 2>, Alloc> &folds, size_t rank) -> BufferVector<Tensor<TType, 2>> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     BufferVector<Tensor<TType, 2>> factors;
     factors.reserve(TRank);
@@ -165,7 +165,7 @@ auto initialize_cp(std::vector<Tensor<TType, 2>, Alloc> &folds, size_t rank) -> 
 template <size_t TRank, typename TType>
 auto parafac(Tensor<TType, TRank> const &tensor, size_t rank, int n_iter_max = 100, double tolerance = 1.e-8)
     -> BufferVector<Tensor<TType, 2>> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Compute set of unfolded matrices
     BufferVector<Tensor<TType, 2>> unfolded_matrices;
@@ -271,7 +271,7 @@ auto parafac(Tensor<TType, TRank> const &tensor, size_t rank, int n_iter_max = 1
 template <size_t TRank, typename TType>
 auto weighted_parafac(Tensor<TType, TRank> const &tensor, Tensor<TType, 1> const &weights, size_t rank, int n_iter_max = 100,
                       double tolerance = 1.e-8) -> BufferVector<Tensor<TType, 2>> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Compute set of unfolded matrices (unweighted)
     BufferVector<Tensor<TType, 2>> unfolded_matrices;

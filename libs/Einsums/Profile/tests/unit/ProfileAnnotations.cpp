@@ -103,10 +103,10 @@ TEST_CASE("Annotations appear in print output", "[profiler][annotations]") {
     REQUIRE(output.find("alg=DOT") != std::string::npos);
 }
 
-TEST_CASE("ProfileAnnotate macro works", "[profiler][annotations]") {
+TEST_CASE("WAGGLE_ANNOTATE macro works", "[profiler][annotations]") {
     {
-        LabeledSection("macro_annot_test");
-        ProfileAnnotate("key", "value");
+        WAGGLE_ZONE("macro_annot_test");
+        WAGGLE_ANNOTATE("key", "value");
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
@@ -141,7 +141,7 @@ struct Recording {
 };
 
 void cached_zone(std::vector<std::string> const &c, int n) {
-    LabeledSection("cached_zone: {} n={}", fmt::join(c, ","), n);
+    WAGGLE_ZONE("cached_zone: {} n={}", fmt::join(c, ","), n);
 }
 
 /// A zone argument with no value to key on: only fmt can say what it prints as.
@@ -198,13 +198,12 @@ TEST_CASE("A formatted zone name is cached per call site and stays right", "[pro
 TEST_CASE("A zone argument with no value to key on is formatted every time", "[profiler][annotations][cache]") {
     Recording const on(true);
     for (int const v : {1, 2, 1}) {
-        LabeledSection("unkeyed zone {}", Opaque{v});
+        WAGGLE_ZONE("unkeyed zone {}", Opaque{v});
     }
     // A single-pass range cannot be read once for the key and again to format.
     std::istringstream words("a b");
     {
-        LabeledSection("single-pass zone {}",
-                       fmt::join(std::istream_iterator<std::string>(words), std::istream_iterator<std::string>(), "+"));
+        WAGGLE_ZONE("single-pass zone {}", fmt::join(std::istream_iterator<std::string>(words), std::istream_iterator<std::string>(), "+"));
     }
     Profiler::instance().flush();
     CHECK(zone_calls("unkeyed zone <1>") == 2);
@@ -217,8 +216,8 @@ TEST_CASE("A conditional between two same-length literals annotates each value",
     // type would record whichever value it met first at every later entry.
     Recording const on(true);
     for (int i = 0; i < 4; ++i) {
-        LabeledSection("ternary annotation zone {}", i);
-        ProfileAnnotate("trans", i % 2 != 0 ? "T" : "N");
+        WAGGLE_ZONE("ternary annotation zone {}", i);
+        WAGGLE_ANNOTATE("trans", i % 2 != 0 ? "T" : "N");
     }
     Profiler::instance().flush();
 
@@ -239,9 +238,9 @@ TEST_CASE("Annotation values and zone arguments are not evaluated while recordin
         return int64_t{1};
     };
     {
-        LabeledSection("lazy zone {}", value());
-        ProfileAnnotate("lazy", value());
-        ProfileAnnotate("lazy string", std::to_string(value()));
+        WAGGLE_ZONE("lazy zone {}", value());
+        WAGGLE_ANNOTATE("lazy", value());
+        WAGGLE_ANNOTATE("lazy string", std::to_string(value()));
     }
     CHECK(evaluated == 0);
 }

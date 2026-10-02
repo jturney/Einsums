@@ -250,7 +250,7 @@ template <typename T>
 void run_case(Case const &c, int reps, int threads, CacheTrasher &trash) {
     std::string const label =
         fmt::format("tcb {} {} {}{}", c.group, c.name, c.precision, threads == 1 ? std::string{} : fmt::format(" threads={}", threads));
-    LabeledSectionRuntime(label); // the zone the annotations below attach to
+    WAGGLE_ZONE_DYNAMIC(label); // the zone the annotations below attach to
 
     double const deviation = toy_deviation<T>(c);
     INFO(label << ": toy-extent deviation " << deviation);
@@ -282,15 +282,15 @@ void run_case(Case const &c, int reps, int threads, CacheTrasher &trash) {
     double const pct_of_gemm = gemm_gflops > 0 ? 100.0 * gflops / gemm_gflops : 0.0;
     fmt::println("[TCB] {:<44} {:9.1f} us {:8.2f} GF/s {:6.1f}% of GEMM  {}", label, einsum.min, gflops, pct_of_gemm, route);
 
-    ProfileAnnotate("gflops", gflops);
-    ProfileAnnotate("pct_of_gemm", pct_of_gemm);
-    ProfileAnnotate("route", std::string_view{route});
-    ProfileAnnotate("raw", std::string_view{c.raw});
-    ProfileAnnotate("m", static_cast<int64_t>(shape.m));
-    ProfileAnnotate("n", static_cast<int64_t>(shape.n));
-    ProfileAnnotate("k", static_cast<int64_t>(shape.k));
+    WAGGLE_ANNOTATE("gflops", gflops);
+    WAGGLE_ANNOTATE("pct_of_gemm", pct_of_gemm);
+    WAGGLE_ANNOTATE("route", std::string_view{route});
+    WAGGLE_ANNOTATE("raw", std::string_view{c.raw});
+    WAGGLE_ANNOTATE("m", static_cast<int64_t>(shape.m));
+    WAGGLE_ANNOTATE("n", static_cast<int64_t>(shape.n));
+    WAGGLE_ANNOTATE("k", static_cast<int64_t>(shape.k));
     einsums::performance::publish_benchmark_result(label.c_str(), "t_einsum", einsum);
-    ProfileAnnotate("gflops", gemm_gflops);
+    WAGGLE_ANNOTATE("gflops", gemm_gflops);
     einsums::performance::publish_benchmark_result(label.c_str(), "t_gemm", gemm);
 }
 

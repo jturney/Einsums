@@ -85,7 +85,7 @@ void impl_real_noncontiguous(int depth, int rank, Dims const &dims, std::complex
 
 template <typename T, typename TOther>
 void impl_real(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (in.rank() != out.rank()) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
@@ -202,7 +202,7 @@ void impl_imag_noncontiguous(int depth, int rank, Dims const &dims, std::complex
 
 template <typename T, typename TOther>
 void impl_imag(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (in.rank() != out.rank()) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
@@ -309,7 +309,7 @@ void impl_abs_noncontiguous(int depth, int rank, Dims const &dims, TOther const 
 
 template <typename T, typename TOther>
 void impl_abs(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (in.rank() != out.rank()) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
@@ -409,7 +409,7 @@ void impl_conj_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
 
 template <typename T>
 void impl_conj(TensorImpl<T> &x) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if constexpr (!IsComplexV<T>) {
         return;
@@ -555,7 +555,7 @@ void impl_with_snapshot(TensorImpl<T> const &in, F &&f) {
 
 template <typename T, typename TOther, typename U>
 void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (in.rank() != out.rank()) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can not add two tensors of different ranks!");
@@ -681,7 +681,7 @@ void impl_scal_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
 
 template <typename T, typename U>
 void impl_scal(U alpha, TensorImpl<T> &out) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Scaling by zero assigns zero, as gemm's beta = 0 does, so NaN in an uninitialized destination
     // cannot survive.
@@ -770,7 +770,7 @@ void impl_div_scalar_noncontiguous_vectorable(int depth, int hard_rank, size_t e
 
 template <typename T, typename U>
 void impl_div_scalar(U alpha, TensorImpl<T> &out) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (out.is_totally_vectorable()) {
         EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using scal.");
@@ -864,7 +864,7 @@ void impl_mult_noncontiguous(int depth, int rank, Dims const &dims, TOther const
 
 template <typename T, typename TOther>
 void impl_mult(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (in.rank() != out.rank()) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can not multiply two tensors of different ranks!");
@@ -985,7 +985,7 @@ void impl_div_noncontiguous(int depth, int rank, Dims const &dims, TOther const 
 
 template <typename T, typename TOther>
 void impl_div(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (in.rank() != out.rank()) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can not divide two tensors of different ranks!");
@@ -1110,7 +1110,7 @@ void impl_copy_noncontiguous(int depth, int rank, Dims const &dims, TOther const
 
 template <typename T, typename TOther>
 void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (in.rank() != out.rank()) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
@@ -1228,7 +1228,7 @@ void impl_scalar_add(U alpha, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
-        LabeledSection0();
+        WAGGLE_ZONE_FUNC();
 
         if (out.is_totally_vectorable()) {
             EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using scal.");
@@ -1309,7 +1309,7 @@ void impl_scalar_copy(U alpha, TensorImpl<T> &out) {
         EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
-        LabeledSection0();
+        WAGGLE_ZONE_FUNC();
 
         if (out.is_totally_vectorable()) {
             EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using scal.");

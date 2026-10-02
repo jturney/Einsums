@@ -59,7 +59,7 @@ void report(std::string const &label, size_t elements, TimingStats const &t) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench DispatchRoute: scalar-output full contraction", "[ComputeGraph][DispatchRoute][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     for (size_t n : {32UL, 128UL, 512UL}) {
         auto A = create_random_tensor<double>(std::string("A"), n, n);
         auto B = create_random_tensor<double>(std::string("B"), n, n);
@@ -77,7 +77,7 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: scalar-output full contraction", "[Compu
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench DispatchRoute: elementwise rank-3", "[ComputeGraph][DispatchRoute][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     for (size_t n : {16UL, 48UL, 128UL}) {
         auto A = create_random_tensor<double>(std::string("A"), n, n, n);
         auto B = create_random_tensor<double>(std::string("B"), n, n, n);
@@ -95,7 +95,7 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: elementwise rank-3", "[ComputeGraph][Dis
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench DispatchRoute: conjugated full contraction", "[ComputeGraph][DispatchRoute][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     using C64 = std::complex<double>;
     for (size_t n : {1024UL, 16384UL, 262144UL}) {
         auto x = create_random_tensor<C64>(std::string("x"), n);
@@ -115,7 +115,7 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: conjugated full contraction", "[ComputeG
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench DispatchRoute: mixed typed/runtime GEMM", "[ComputeGraph][DispatchRoute][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     for (size_t n : {32UL, 128UL, 384UL}) {
         auto                  A   = create_random_tensor<double>(std::string("A"), n, n);
         auto                  B_t = create_random_tensor<double>(std::string("B"), n, n);
@@ -138,7 +138,7 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: mixed typed/runtime GEMM", "[ComputeGrap
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench DispatchRoute: elementwise crossover", "[ComputeGraph][DispatchRoute][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     auto parsed = einsums::compute_graph::parse_einsum_spec("ijk <- ijk ; ijk");
     REQUIRE(parsed.has_value());

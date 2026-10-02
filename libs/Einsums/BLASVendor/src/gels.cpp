@@ -25,7 +25,7 @@ extern void FC_GLOBAL(zgels, ZGELS)(char *, int_t *, int_t *, int_t *, std::comp
 }
 
 auto sgels(char trans, int_t m, int_t n, int_t nrhs, float *a, int_t lda, float *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     int_t lwork{-1};
@@ -54,7 +54,7 @@ auto sgels(char trans, int_t m, int_t n, int_t nrhs, float *a, int_t lda, float 
 }
 
 auto dgels(char trans, int_t m, int_t n, int_t nrhs, double *a, int_t lda, double *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t  info{0};
     int_t  lwork{-1};
@@ -83,7 +83,7 @@ auto dgels(char trans, int_t m, int_t n, int_t nrhs, double *a, int_t lda, doubl
 }
 
 auto cgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<float> *a, int_t lda, std::complex<float> *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t               info{0};
     int_t               lwork{-1};
@@ -112,7 +112,7 @@ auto cgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<float> *a, int
 }
 
 auto zgels(char trans, int_t m, int_t n, int_t nrhs, std::complex<double> *a, int_t lda, std::complex<double> *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t                info{0};
     int_t                lwork{-1};

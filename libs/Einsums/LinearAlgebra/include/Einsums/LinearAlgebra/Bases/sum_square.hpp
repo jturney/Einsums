@@ -64,7 +64,7 @@ void impl_sum_square_noncontiguous_vectorable(int depth, int hard_rank, size_t e
 
 template <typename T>
 void impl_sum_square(einsums::detail::TensorImpl<T> const &in, RemoveComplexT<T> *scale, RemoveComplexT<T> *sumsq) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (in.size() == 0) {
         return;

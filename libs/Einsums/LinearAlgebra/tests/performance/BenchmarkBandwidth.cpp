@@ -32,15 +32,15 @@ using namespace einsums::performance;
 namespace {
 
 void bench_copy(size_t N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     std::vector<double> a(N), b(N);
     for (size_t i = 0; i < N; ++i)
         a[i] = static_cast<double>(i);
 
-    ProfileAnnotate("operation", std::string("copy"));
-    ProfileAnnotate("dtype", std::string("double"));
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("bytes", int64_t(2 * N * 8));
+    WAGGLE_ANNOTATE("operation", std::string("copy"));
+    WAGGLE_ANNOTATE("dtype", std::string("double"));
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("bytes", int64_t(2 * N * 8));
     auto s = time_us("stream-copy", [&] {
         for (size_t i = 0; i < N; ++i)
             b[i] = a[i];
@@ -53,21 +53,21 @@ void bench_copy(size_t N) {
                 s.min, s.max, s.stddev, (s.avg > 0) ? (s.stddev / s.avg * 100.0) : 0.0, s.warmup, (s.avg > 0) ? (s.warmup / s.avg) : 0.0);
     std::printf("[stream-copy-bw N=%zu] BW: %.2f GB/s\n", N, gb_s);
     std::fflush(stdout);
-    ProfileAnnotate("bw_gbs", gb_s);
+    WAGGLE_ANNOTATE("bw_gbs", gb_s);
     publish_benchmark_result("stream-copy", "t_stream", static_cast<int>(N), s);
 }
 
 void bench_scale(size_t N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     std::vector<double> a(N), b(N);
     double              alpha = 3.0;
     for (size_t i = 0; i < N; ++i)
         a[i] = static_cast<double>(i);
 
-    ProfileAnnotate("operation", std::string("scale"));
-    ProfileAnnotate("dtype", std::string("double"));
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("bytes", int64_t(2 * N * 8));
+    WAGGLE_ANNOTATE("operation", std::string("scale"));
+    WAGGLE_ANNOTATE("dtype", std::string("double"));
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("bytes", int64_t(2 * N * 8));
     auto s = time_us("stream-scale", [&] {
         for (size_t i = 0; i < N; ++i)
             b[i] = alpha * a[i];
@@ -79,22 +79,22 @@ void bench_scale(size_t N) {
                 s.min, s.max, s.stddev, (s.avg > 0) ? (s.stddev / s.avg * 100.0) : 0.0, s.warmup, (s.avg > 0) ? (s.warmup / s.avg) : 0.0);
     std::printf("[stream-scale-bw N=%zu] BW: %.2f GB/s\n", N, gb_s);
     std::fflush(stdout);
-    ProfileAnnotate("bw_gbs", gb_s);
+    WAGGLE_ANNOTATE("bw_gbs", gb_s);
     publish_benchmark_result("stream-scale", "t_stream", static_cast<int>(N), s);
 }
 
 void bench_add(size_t N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     std::vector<double> a(N), b(N), c(N);
     for (size_t i = 0; i < N; ++i) {
         a[i] = static_cast<double>(i);
         b[i] = static_cast<double>(i) * 2.0;
     }
 
-    ProfileAnnotate("operation", std::string("add"));
-    ProfileAnnotate("dtype", std::string("double"));
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("bytes", int64_t(3 * N * 8));
+    WAGGLE_ANNOTATE("operation", std::string("add"));
+    WAGGLE_ANNOTATE("dtype", std::string("double"));
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("bytes", int64_t(3 * N * 8));
     auto s = time_us("stream-add", [&] {
         for (size_t i = 0; i < N; ++i)
             c[i] = a[i] + b[i];
@@ -106,12 +106,12 @@ void bench_add(size_t N) {
                 s.min, s.max, s.stddev, (s.avg > 0) ? (s.stddev / s.avg * 100.0) : 0.0, s.warmup, (s.avg > 0) ? (s.warmup / s.avg) : 0.0);
     std::printf("[stream-add-bw N=%zu] BW: %.2f GB/s\n", N, gb_s);
     std::fflush(stdout);
-    ProfileAnnotate("bw_gbs", gb_s);
+    WAGGLE_ANNOTATE("bw_gbs", gb_s);
     publish_benchmark_result("stream-add", "t_stream", static_cast<int>(N), s);
 }
 
 void bench_triad(size_t N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     std::vector<double> a(N), b(N), c(N);
     double              alpha = 3.0;
     for (size_t i = 0; i < N; ++i) {
@@ -119,10 +119,10 @@ void bench_triad(size_t N) {
         b[i] = static_cast<double>(i) * 2.0;
     }
 
-    ProfileAnnotate("operation", std::string("triad"));
-    ProfileAnnotate("dtype", std::string("double"));
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("bytes", int64_t(3 * N * 8));
+    WAGGLE_ANNOTATE("operation", std::string("triad"));
+    WAGGLE_ANNOTATE("dtype", std::string("double"));
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("bytes", int64_t(3 * N * 8));
     auto s = time_us("stream-triad", [&] {
         for (size_t i = 0; i < N; ++i)
             c[i] = a[i] + alpha * b[i];
@@ -134,7 +134,7 @@ void bench_triad(size_t N) {
                 s.min, s.max, s.stddev, (s.avg > 0) ? (s.stddev / s.avg * 100.0) : 0.0, s.warmup, (s.avg > 0) ? (s.warmup / s.avg) : 0.0);
     std::printf("[stream-triad-bw N=%zu] BW: %.2f GB/s\n", N, gb_s);
     std::fflush(stdout);
-    ProfileAnnotate("bw_gbs", gb_s);
+    WAGGLE_ANNOTATE("bw_gbs", gb_s);
     publish_benchmark_result("stream-triad", "t_stream", static_cast<int>(N), s);
 }
 

@@ -129,14 +129,14 @@ constexpr std::array<std::pair<size_t, size_t>, 13> kSizes{
 } // namespace
 
 EINSUMS_TEST_CASE("Bench OuterProduct: adjacent operand letters (ijab <- ib ; ja)", "[ComputeGraph][OuterProduct][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     for (auto const &[n_occ, n_vir] : kSizes) {
         bench_one({"i", "b"}, {"j", "a"}, n_occ, n_vir);
     }
 }
 
 EINSUMS_TEST_CASE("Bench OuterProduct: alternating operand letters (ijab <- ia ; jb)", "[ComputeGraph][OuterProduct][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     for (auto const &[n_occ, n_vir] : kSizes) {
         bench_one({"i", "a"}, {"j", "b"}, n_occ, n_vir);
     }

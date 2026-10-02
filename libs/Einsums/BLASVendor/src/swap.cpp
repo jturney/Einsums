@@ -21,25 +21,25 @@ extern void FC_GLOBAL(zswap, ZSWAP)(int_t *, std::complex<double> *, int_t *, st
 }
 
 void sswap(int_t n, float *x, int_t incx, float *y, int_t incy) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(sswap, SSWAP)(&n, x, &incx, y, &incy);
 }
 
 void dswap(int_t n, double *x, int_t incx, double *y, int_t incy) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(dswap, DSWAP)(&n, x, &incx, y, &incy);
 }
 
 void cswap(int_t n, std::complex<float> *x, int_t incx, std::complex<float> *y, int_t incy) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(cswap, CSWAP)(&n, x, &incx, y, &incy);
 }
 
 void zswap(int_t n, std::complex<double> *x, int_t incx, std::complex<double> *y, int_t incy) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(zswap, ZSWAP)(&n, x, &incx, y, &incy);
 }

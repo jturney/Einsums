@@ -202,7 +202,7 @@ in every report without a special flag.
 Instrumenting Your Own Code
 ---------------------------
 
-Use the ``LabeledSection`` macros. They open a zone that closes when the enclosing scope exits, so
+Use the ``WAGGLE_ZONE`` macros. They open a zone that closes when the enclosing scope exits, so
 an early return or a thrown exception cannot leave the tree unbalanced:
 
 .. code-block:: cpp
@@ -210,12 +210,12 @@ an early return or a thrown exception cannot leave the tree unbalanced:
     #include <Einsums/Profile/Profile.hpp>
 
     void build_fock(Tensor<double, 2> &F) {
-        LabeledSection0();                       // zone named after the function
+        WAGGLE_ZONE_FUNC();                       // zone named after the function
 
         for (int iter = 0; iter < n; ++iter) {
-            LabeledSection("iteration {}", iter); // name built per call
-            ProfileAnnotate("stage", "fock");
-            ProfileAnnotate("iter", static_cast<std::int64_t>(iter));
+            WAGGLE_ZONE("iteration {}", iter); // name built per call
+            WAGGLE_ANNOTATE("stage", "fock");
+            WAGGLE_ANNOTATE("iter", static_cast<std::int64_t>(iter));
             // ... work ...
         }
     }
@@ -226,17 +226,17 @@ an early return or a thrown exception cannot leave the tree unbalanced:
 
     * - Macro
       - Use
-    * - ``LabeledSection0()``
+    * - ``WAGGLE_ZONE_FUNC()``
       - A zone named after the enclosing function. The common case.
-    * - ``LabeledSection("literal")``
+    * - ``WAGGLE_ZONE("literal")``
       - A zone with a fixed name, interned once per call site.
-    * - ``LabeledSection("fmt {}", args...)``
+    * - ``WAGGLE_ZONE("fmt {}", args...)``
       - A name built per call. The format string must be a literal.
-    * - ``LabeledSectionRuntime(expr)``
+    * - ``WAGGLE_ZONE_DYNAMIC(expr)``
       - A name only known at run time. Interned on every entry, which takes a lock, so prefer one of the above where the label can be a literal.
-    * - ``ProfileAnnotate(key, value)``
+    * - ``WAGGLE_ANNOTATE(key, value)``
       - Attach a string, integer or double to the enclosing zone.
-    * - ``ProfileAnnotateDims(key, dims)``
+    * - ``WAGGLE_ANNOTATE_DIMS(key, dims)``
       - Attach a sequence of extents as ``key.0``, ``key.1``, ...
 
 These are the library's own instrumentation, used at well over seven hundred call sites, and they

@@ -102,7 +102,7 @@ size_t parallel_threshold() {
 } // namespace
 
 void sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float *z, int_t incz) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (incx == 1 && incy == 1 && incz == 1) {
         auto blocks    = n / 64;
@@ -128,7 +128,7 @@ void sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, 
 }
 
 void ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *y, int_t incy, double *z, int_t incz) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (incx == 1 && incy == 1 && incz == 1) {
         auto blocks    = n / 64;
@@ -155,7 +155,7 @@ void ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *
 
 void cdirprod(int_t n, std::complex<float> alpha, std::complex<float> const *x, int_t incx, std::complex<float> const *y, int_t incy,
               std::complex<float> *z, int_t incz) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (incx == 1 && incy == 1 && incz == 1) {
         auto blocks    = n / 64;
@@ -182,7 +182,7 @@ void cdirprod(int_t n, std::complex<float> alpha, std::complex<float> const *x, 
 
 void zdirprod(int_t n, std::complex<double> alpha, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy,
               std::complex<double> *z, int_t incz) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (incx == 1 && incy == 1 && incz == 1) {
         auto blocks    = n / 64;

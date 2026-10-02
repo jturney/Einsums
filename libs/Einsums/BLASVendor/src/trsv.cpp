@@ -22,25 +22,25 @@ extern void FC_GLOBAL(ztrsv, ZTRSV)(char *, char *, char *, int_t *, std::comple
 }
 
 void strsv(char uplo, char trans, char diag, int_t n, float const *a, int_t lda, float *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(strsv, STRSV)(&uplo, &trans, &diag, &n, a, &lda, x, &incx);
 }
 
 void dtrsv(char uplo, char trans, char diag, int_t n, double const *a, int_t lda, double *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(dtrsv, DTRSV)(&uplo, &trans, &diag, &n, a, &lda, x, &incx);
 }
 
 void ctrsv(char uplo, char trans, char diag, int_t n, std::complex<float> const *a, int_t lda, std::complex<float> *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(ctrsv, CTRSV)(&uplo, &trans, &diag, &n, a, &lda, x, &incx);
 }
 
 void ztrsv(char uplo, char trans, char diag, int_t n, std::complex<double> const *a, int_t lda, std::complex<double> *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(ztrsv, ZTRSV)(&uplo, &trans, &diag, &n, a, &lda, x, &incx);
 }

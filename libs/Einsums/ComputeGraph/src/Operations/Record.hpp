@@ -37,7 +37,7 @@ void record_unary(CaptureContext &ctx, char const *name, char const *execute_lab
     OperandAccessor const d_access(dst.second, packed_gemm::get_scalar_type<TD>());
     OperandAccessor const s_access(src.second, packed_gemm::get_scalar_type<TS>());
     auto                  executor = [d_access, s_access, apply, execute_label]() {
-        LabeledSection(execute_label);
+        WAGGLE_ZONE(execute_label);
         apply(*d_access.impl<TD>(), *s_access.impl<TS>());
     };
     std::vector<TensorId> inputs{src.first};
@@ -53,7 +53,7 @@ void record_reduction(CaptureContext &ctx, char const *name, char const *execute
     OperandAccessor const r_access(r.second, packed_gemm::get_scalar_type<TR>());
     OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<TA>());
     auto                  executor = [r_access, a_access, reduce, execute_label]() {
-        LabeledSection(execute_label);
+        WAGGLE_ZONE(execute_label);
         r_access.impl<TR>()->data()[0] = reduce(*a_access.impl<TA>());
     };
     ctx.record(OpKind::Custom, name, {a.first}, {r.first}, std::move(executor));

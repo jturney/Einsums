@@ -49,7 +49,7 @@ double peak_flops_kernel(size_t iterations) {
 }
 
 void bench_peak_single_thread(size_t N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     double volatile sink = 0;
 
     auto s = time_us("peak-flops-1t", [&] { sink = peak_flops_kernel(N); });
@@ -61,14 +61,14 @@ void bench_peak_single_thread(size_t N) {
                 s.min, s.max, s.stddev, (s.avg > 0) ? (s.stddev / s.avg * 100.0) : 0.0, s.warmup, (s.avg > 0) ? (s.warmup / s.avg) : 0.0);
     std::printf("[peak-flops-1t-gflops N=%zu] GFLOP/s: %.2f\n", N, gflops);
     std::fflush(stdout);
-    ProfileAnnotate("gflops", gflops);
-    ProfileAnnotate("threads", int64_t(1));
+    WAGGLE_ANNOTATE("gflops", gflops);
+    WAGGLE_ANNOTATE("threads", int64_t(1));
     publish_benchmark_result("peak-flops-1t", "t_peak", static_cast<int>(N), s);
     (void)sink;
 }
 
 void bench_peak_all_threads(size_t N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     int nthreads = 1;
 #ifdef _OPENMP
     nthreads = omp_get_max_threads();
@@ -93,8 +93,8 @@ void bench_peak_all_threads(size_t N) {
                 (s.avg > 0) ? (s.warmup / s.avg) : 0.0);
     std::printf("[peak-flops-%dt-gflops N=%zu] GFLOP/s: %.2f\n", nthreads, N, gflops);
     std::fflush(stdout);
-    ProfileAnnotate("gflops", gflops);
-    ProfileAnnotate("threads", int64_t(nthreads));
+    WAGGLE_ANNOTATE("gflops", gflops);
+    WAGGLE_ANNOTATE("threads", int64_t(nthreads));
     publish_benchmark_result("peak-flops-all", "t_peak", static_cast<int>(N), s);
     (void)sink;
 }

@@ -19,7 +19,7 @@
 EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
 PackingPlan compute_packing_topology(ContractionKey const &key) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     PackingPlan plan;
     auto const &spec = key.spec;
 

@@ -28,16 +28,16 @@ namespace {
 // -----------------------------------------------------------------------
 
 void bench_dot(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 1> x("x", N), y("y", N);
     fill(x);
     fill(y);
 
-    ProfileAnnotate("level", "L1");
-    ProfileAnnotate("operation", "dot");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("elements", int64_t(N));
+    WAGGLE_ANNOTATE("level", "L1");
+    WAGGLE_ANNOTATE("operation", "dot");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("elements", int64_t(N));
     auto t_blas = time_us("blas-dot", [&] { blas::dot(N, x.data(), 1, y.data(), 1); });
     publish_benchmark_result("blas-dot", "t_blas", N, t_blas);
 
@@ -46,17 +46,17 @@ void bench_dot(int N) {
 }
 
 void bench_axpy(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 1> x("x", N), y("y", N), y_backup("y_backup", N);
     fill(x);
     fill(y);
     y_backup = y;
 
-    ProfileAnnotate("level", "L1");
-    ProfileAnnotate("operation", "axpy");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("elements", int64_t(N));
+    WAGGLE_ANNOTATE("level", "L1");
+    WAGGLE_ANNOTATE("operation", "axpy");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("elements", int64_t(N));
     auto t_blas = time_us("blas-axpy", [&] {
         y = y_backup;
         blas::axpy(N, 2.0, x.data(), 1, y.data(), 1);
@@ -71,16 +71,16 @@ void bench_axpy(int N) {
 }
 
 void bench_scal(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 1> x("x", N), x_backup("x_backup", N);
     fill(x);
     x_backup = x;
 
-    ProfileAnnotate("level", "L1");
-    ProfileAnnotate("operation", "scal");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("elements", int64_t(N));
+    WAGGLE_ANNOTATE("level", "L1");
+    WAGGLE_ANNOTATE("operation", "scal");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("elements", int64_t(N));
     auto t_blas = time_us("blas-scal", [&] {
         x = x_backup;
         blas::scal(N, 2.0, x.data(), 1);
@@ -99,7 +99,7 @@ void bench_scal(int N) {
 // -----------------------------------------------------------------------
 
 void bench_gemv(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N);
     Tensor<double, 1> x("x", N), y("y", N), y_backup("y_backup", N);
     fill(A);
@@ -107,11 +107,11 @@ void bench_gemv(int N) {
     fill(y);
     y_backup = y;
 
-    ProfileAnnotate("level", "L2");
-    ProfileAnnotate("operation", "gemv");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("elements", int64_t(N) * int64_t(N));
+    WAGGLE_ANNOTATE("level", "L2");
+    WAGGLE_ANNOTATE("operation", "gemv");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("elements", int64_t(N) * int64_t(N));
     auto t_blas = time_us("blas-gemv", [&] {
         y = y_backup;
         blas::gemv('n', N, N, 1.0, A.data(), N, x.data(), 1, 0.0, y.data(), 1);
@@ -126,7 +126,7 @@ void bench_gemv(int N) {
 }
 
 void bench_ger(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 1> x("x", N), y("y", N);
     Tensor<double, 2> A("A", N, N), A_backup("A_backup", N, N);
     fill(x);
@@ -134,11 +134,11 @@ void bench_ger(int N) {
     A.zero();
     A_backup = A;
 
-    ProfileAnnotate("level", "L2");
-    ProfileAnnotate("operation", "ger");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("elements", int64_t(N) * int64_t(N));
+    WAGGLE_ANNOTATE("level", "L2");
+    WAGGLE_ANNOTATE("operation", "ger");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("elements", int64_t(N) * int64_t(N));
     auto t_blas = time_us("blas-ger", [&] {
         A = A_backup;
         blas::ger(N, N, 1.0, x.data(), 1, y.data(), 1, A.data(), N);
@@ -157,17 +157,17 @@ void bench_ger(int N) {
 // -----------------------------------------------------------------------
 
 void bench_gemm(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N), B("B", N, N), C("C", N, N);
     fill(A);
     fill(B);
     C.zero();
 
-    ProfileAnnotate("level", "L3");
-    ProfileAnnotate("operation", "gemm");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("elements", int64_t(N) * int64_t(N));
+    WAGGLE_ANNOTATE("level", "L3");
+    WAGGLE_ANNOTATE("operation", "gemm");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("elements", int64_t(N) * int64_t(N));
     auto t_blas = time_us("blas-gemm", [&] { blas::gemm('n', 'n', N, N, N, 1.0, A.data(), N, B.data(), N, 0.0, C.data(), N); });
     publish_benchmark_result("blas-gemm", "t_blas", N, t_blas);
 

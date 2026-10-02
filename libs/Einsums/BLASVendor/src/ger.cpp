@@ -56,7 +56,7 @@ extern void FC_GLOBAL(zgerc, ZGERC)(int_t *, int_t *, std::complex<double> *, st
 // The m/n guard, as in gemm.cpp: empty operands carry zero increments and lda, which would be rejected.
 
 void sger(int_t m, int_t n, float alpha, float const *x, int_t inc_x, float const *y, int_t inc_y, float *a, int_t lda) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (m <= 0 || n <= 0)
         return;
@@ -66,7 +66,7 @@ void sger(int_t m, int_t n, float alpha, float const *x, int_t inc_x, float cons
 }
 
 void dger(int_t m, int_t n, double alpha, double const *x, int_t inc_x, double const *y, int_t inc_y, double *a, int_t lda) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (m <= 0 || n <= 0)
         return;
@@ -77,7 +77,7 @@ void dger(int_t m, int_t n, double alpha, double const *x, int_t inc_x, double c
 
 void cger(int_t m, int_t n, std::complex<float> alpha, std::complex<float> const *x, int_t inc_x, std::complex<float> const *y, int_t inc_y,
           std::complex<float> *a, int_t lda) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (m <= 0 || n <= 0)
         return;
@@ -88,7 +88,7 @@ void cger(int_t m, int_t n, std::complex<float> alpha, std::complex<float> const
 
 void zger(int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *x, int_t inc_x, std::complex<double> const *y,
           int_t inc_y, std::complex<double> *a, int_t lda) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (m <= 0 || n <= 0)
         return;
@@ -100,7 +100,7 @@ void zger(int_t m, int_t n, std::complex<double> alpha, std::complex<double> con
 
 void cgerc(int_t m, int_t n, std::complex<float> alpha, std::complex<float> const *x, int_t inc_x, std::complex<float> const *y,
            int_t inc_y, std::complex<float> *a, int_t lda) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (m <= 0 || n <= 0)
         return;
@@ -111,7 +111,7 @@ void cgerc(int_t m, int_t n, std::complex<float> alpha, std::complex<float> cons
 
 void zgerc(int_t m, int_t n, std::complex<double> alpha, std::complex<double> const *x, int_t inc_x, std::complex<double> const *y,
            int_t inc_y, std::complex<double> *a, int_t lda) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (m <= 0 || n <= 0)
         return;

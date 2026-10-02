@@ -27,7 +27,7 @@ extern void FC_GLOBAL(zhegv, ZHEGV)(int_t *, char *, char *, int_t *, std::compl
 }
 
 auto ssygv(int_t itype, char jobz, char uplo, int_t n, float *a, int_t lda, float *b, int_t ldb, float *w) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     int_t lwork{-1};
@@ -48,7 +48,7 @@ auto ssygv(int_t itype, char jobz, char uplo, int_t n, float *a, int_t lda, floa
 }
 
 auto dsygv(int_t itype, char jobz, char uplo, int_t n, double *a, int_t lda, double *b, int_t ldb, double *w) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t  info{0};
     int_t  lwork{-1};
@@ -70,7 +70,7 @@ auto dsygv(int_t itype, char jobz, char uplo, int_t n, double *a, int_t lda, dou
 
 auto chegv(int_t itype, char jobz, char uplo, int_t n, std::complex<float> *a, int_t lda, std::complex<float> *b, int_t ldb, float *w)
     -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t               info{0};
     int_t               lwork{-1};
@@ -94,7 +94,7 @@ auto chegv(int_t itype, char jobz, char uplo, int_t n, std::complex<float> *a, i
 
 auto zhegv(int_t itype, char jobz, char uplo, int_t n, std::complex<double> *a, int_t lda, std::complex<double> *b, int_t ldb, double *w)
     -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t                info{0};
     int_t                lwork{-1};

@@ -27,46 +27,46 @@ extern double FC_GLOBAL(dznrm2, DZNRM2)(int_t *n, std::complex<double> const *x,
 }
 
 void slassq(int_t n, float const *x, int_t incx, float *scale, float *sumsq) {
-    LabeledSection("slassq");
+    WAGGLE_ZONE("slassq");
     FC_GLOBAL(slassq, SLASSQ)(&n, x, &incx, scale, sumsq);
 }
 
 void dlassq(int_t n, double const *x, int_t incx, double *scale, double *sumsq) {
-    LabeledSection("dlassq");
+    WAGGLE_ZONE("dlassq");
     FC_GLOBAL(dlassq, DLASSQ)(&n, x, &incx, scale, sumsq);
 }
 
 void classq(int_t n, std::complex<float> const *x, int_t incx, float *scale, float *sumsq) {
-    LabeledSection("classq");
+    WAGGLE_ZONE("classq");
     FC_GLOBAL(classq, CLASSQ)(&n, x, &incx, scale, sumsq);
 }
 
 void zlassq(int_t n, std::complex<double> const *x, int_t incx, double *scale, double *sumsq) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     FC_GLOBAL(zlassq, ZLASSQ)(&n, x, &incx, scale, sumsq);
 }
 
 float snrm2(int_t n, float const *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(snrm2, SNRM2)(&n, x, &incx);
 }
 
 double dnrm2(int_t n, double const *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(dnrm2, DNRM2)(&n, x, &incx);
 }
 
 float scnrm2(int_t n, std::complex<float> const *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(scnrm2, SCNRM2)(&n, x, &incx);
 }
 
 double dznrm2(int_t n, std::complex<double> const *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(dznrm2, DZNRM2)(&n, x, &incx);
 }

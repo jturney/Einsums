@@ -1758,11 +1758,11 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
                                                      "GEMM",    "PACKED_GEMM", "SORT_GEMM", "EMPTY", "INDETERMINATE"};
 #if defined(EINSUMS_HAVE_PROFILER)
         if (retval >= 0 && retval < static_cast<detail::AlgorithmChoice>(sizeof(algo_names) / sizeof(algo_names[0]))) {
-            ProfileAnnotate("algorithm", algo_names[retval]);
+            WAGGLE_ANNOTATE("algorithm", algo_names[retval]);
         }
-        ProfileAnnotate("C_rank", static_cast<int64_t>(CRank));
-        ProfileAnnotate("A_rank", static_cast<int64_t>(ARank));
-        ProfileAnnotate("B_rank", static_cast<int64_t>(BRank));
+        WAGGLE_ANNOTATE("C_rank", static_cast<int64_t>(CRank));
+        WAGGLE_ANNOTATE("A_rank", static_cast<int64_t>(ARank));
+        WAGGLE_ANNOTATE("B_rank", static_cast<int64_t>(BRank));
 #endif
         // Warn once per index pattern (template instantiation) that falls back to the generic loop.
         if (retval == detail::GENERIC) {

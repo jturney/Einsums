@@ -23,17 +23,17 @@ namespace {
 // -----------------------------------------------------------------------
 
 void bench_rank2_gemm(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N), B("B", N, N), C("C", N, N);
     fill(A);
     fill(B);
     C.zero();
 
-    ProfileAnnotate("rank", int64_t(2));
-    ProfileAnnotate("pattern", "ij=ik,kj");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("description", "GEMM-equivalent");
+    WAGGLE_ANNOTATE("rank", int64_t(2));
+    WAGGLE_ANNOTATE("pattern", "ij=ik,kj");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("description", "GEMM-equivalent");
     auto t = time_us("einsum-gemm", [&] { tensor_algebra::einsum(0.0, Indices{i, j}, &C, 1.0, Indices{i, k}, A, Indices{k, j}, B); });
     publish_benchmark_result("einsum-gemm", "t_einsum", N, t);
 }
@@ -43,17 +43,17 @@ void bench_rank2_gemm(int N) {
 // -----------------------------------------------------------------------
 
 void bench_rank2_transpose(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N), B("B", N, N), C("C", N, N);
     fill(A);
     fill(B);
     C.zero();
 
-    ProfileAnnotate("rank", int64_t(2));
-    ProfileAnnotate("pattern", "ij=ki,kj");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("description", "transposed GEMM");
+    WAGGLE_ANNOTATE("rank", int64_t(2));
+    WAGGLE_ANNOTATE("pattern", "ij=ki,kj");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("description", "transposed GEMM");
     auto t = time_us("einsum-gemm-t", [&] { tensor_algebra::einsum(0.0, Indices{i, j}, &C, 1.0, Indices{k, i}, A, Indices{k, j}, B); });
     publish_benchmark_result("einsum-gemm-t", "t_einsum", N, t);
 }
@@ -63,18 +63,18 @@ void bench_rank2_transpose(int N) {
 // -----------------------------------------------------------------------
 
 void bench_rank3(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 3> A("A", N, N, N), C("C", N, N, N);
     Tensor<double, 2> B("B", N, N);
     fill(A);
     fill(B);
     C.zero();
 
-    ProfileAnnotate("rank", int64_t(3));
-    ProfileAnnotate("pattern", "ijl=ijk,lk");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("elements", int64_t(N) * int64_t(N) * int64_t(N));
+    WAGGLE_ANNOTATE("rank", int64_t(3));
+    WAGGLE_ANNOTATE("pattern", "ijl=ijk,lk");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("elements", int64_t(N) * int64_t(N) * int64_t(N));
     auto t =
         time_us("einsum-rank3", [&] { tensor_algebra::einsum(0.0, Indices{i, j, l}, &C, 1.0, Indices{i, j, k}, A, Indices{l, k}, B); });
     publish_benchmark_result("einsum-rank3", "t_einsum", N, t);
@@ -85,18 +85,18 @@ void bench_rank3(int N) {
 // -----------------------------------------------------------------------
 
 void bench_hadamard(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N), B("B", N, N);
     Tensor<double, 1> C("C", N);
     fill(A);
     fill(B);
     C.zero();
 
-    ProfileAnnotate("rank", int64_t(2));
-    ProfileAnnotate("pattern", "i=ij,ji");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("description", "Hadamard");
+    WAGGLE_ANNOTATE("rank", int64_t(2));
+    WAGGLE_ANNOTATE("pattern", "i=ij,ji");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("description", "Hadamard");
     auto t = time_us("einsum-hadamard", [&] { tensor_algebra::einsum(0.0, Indices{i}, &C, 1.0, Indices{i, j}, A, Indices{j, i}, B); });
     publish_benchmark_result("einsum-hadamard", "t_einsum", N, t);
 }
@@ -106,17 +106,17 @@ void bench_hadamard(int N) {
 // -----------------------------------------------------------------------
 
 void bench_trace(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N), B("B", N, N);
     fill(A);
     fill(B);
     double result = 0.0;
 
-    ProfileAnnotate("rank", int64_t(2));
-    ProfileAnnotate("pattern", "=ij,ji");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("description", "trace");
+    WAGGLE_ANNOTATE("rank", int64_t(2));
+    WAGGLE_ANNOTATE("pattern", "=ij,ji");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("description", "trace");
     auto t = time_us("einsum-trace", [&] { tensor_algebra::einsum(0.0, Indices{}, &result, 1.0, Indices{i, j}, A, Indices{j, i}, B); });
     publish_benchmark_result("einsum-trace", "t_einsum", N, t);
 }

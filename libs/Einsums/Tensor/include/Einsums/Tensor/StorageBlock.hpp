@@ -84,7 +84,7 @@ struct StorageBlock final : StorageBase {
     StorageBlock(StorageBlock &&)                 = delete;
     StorageBlock &operator=(StorageBlock &&)      = delete;
 
-    ~StorageBlock() { ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T))); }
+    ~StorageBlock() { WAGGLE_MEM_FREE(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T))); }
 
     /// Republish the live pointer and count the relocation. Call after any
     /// change to @ref owned or @ref external.
@@ -107,17 +107,17 @@ struct StorageBlock final : StorageBase {
 
     /// Resize owned storage. Not with @ref external set; callers detach first.
     void resize_owned(size_t elems) {
-        ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
+        WAGGLE_MEM_FREE(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
         reserve_owned(elems);
         owned.resize(elems);
-        ProfileMemAlloc(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
+        WAGGLE_MEM_ALLOC(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
         refresh();
     }
 
     /// Replace self-allocated storage with a copy of @p src. Used by the
     /// deep-copying tensor copy constructor, which gets a block of its own.
     void copy_owned_from(Vector const &src) {
-        ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
+        WAGGLE_MEM_FREE(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
         if constexpr (IsStdVector<Vector>::value) {
             // Land the copy in advised memory: assign() reuses the capacity
             // reserve_owned just shaped, where `owned = src` may allocate anew.
@@ -129,13 +129,13 @@ struct StorageBlock final : StorageBase {
         }
         external = nullptr;
         external_owner.reset();
-        ProfileMemAlloc(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
+        WAGGLE_MEM_ALLOC(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
         refresh();
     }
 
     /// Take ownership of @p src's buffer, leaving @p src empty.
     void adopt_owned(Vector &&src) {
-        ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
+        WAGGLE_MEM_FREE(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
         owned    = std::move(src);
         external = nullptr;
         external_owner.reset();
@@ -155,7 +155,7 @@ struct StorageBlock final : StorageBase {
     /// Attach caller-owned storage along with a keepalive token for it.
     void attach_external(T *ptr, std::shared_ptr<void const> owner) {
         if (!owned.empty()) {
-            ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
+            WAGGLE_MEM_FREE(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
             owned.clear();
             owned.shrink_to_fit();
         }
@@ -167,7 +167,7 @@ struct StorageBlock final : StorageBase {
     /// Drop both storage modes and return to the unallocated state.
     void clear() {
         if (!owned.empty()) {
-            ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
+            WAGGLE_MEM_FREE(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
             owned.clear();
             owned.shrink_to_fit();
         }

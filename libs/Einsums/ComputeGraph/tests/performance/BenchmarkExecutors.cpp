@@ -31,7 +31,7 @@ namespace cg = einsums::compute_graph;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench Executor: linear chain 4 nodes N=50", "[ComputeGraph][Executor][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     constexpr size_t N = 50;
     auto             A = create_random_tensor<double>("A", N, N);
     auto             B = create_random_tensor<double>("B", N, N);
@@ -79,9 +79,9 @@ EINSUMS_TEST_CASE("Bench Executor: linear chain 4 nodes N=50", "[ComputeGraph][E
     fmt::println("[Executor linear N=50] seq: {:.2f} us  omp: {:.2f} us  df: {:.2f} us", t_seq.avg, t_omp.avg, t_df.avg);
 
     // Publish structured results to profiler server
-    ProfileAnnotate("topology", "linear_chain");
-    ProfileAnnotate("nodes", int64_t(4));
-    ProfileAnnotate("N", int64_t(N));
+    WAGGLE_ANNOTATE("topology", "linear_chain");
+    WAGGLE_ANNOTATE("nodes", int64_t(4));
+    WAGGLE_ANNOTATE("N", int64_t(N));
     publish_benchmark_result("Executor linear N=50", "t_sequential", static_cast<int>(N), t_seq);
     publish_benchmark_result("Executor linear N=50", "t_openmp", static_cast<int>(N), t_omp);
     publish_benchmark_result("Executor linear N=50", "t_dataflow", static_cast<int>(N), t_df);
@@ -92,11 +92,11 @@ EINSUMS_TEST_CASE("Bench Executor: linear chain 4 nodes N=50", "[ComputeGraph][E
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench Executor: 8 independent nodes N=30", "[ComputeGraph][Executor][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     constexpr size_t N = 30;
-    ProfileAnnotate("topology", "fan_out");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("nodes", int64_t(8));
+    WAGGLE_ANNOTATE("topology", "fan_out");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("nodes", int64_t(8));
     auto A = create_random_tensor<double>("A", N, N);
     auto B = create_random_tensor<double>("B", N, N);
 
@@ -154,11 +154,11 @@ EINSUMS_TEST_CASE("Bench Executor: 8 independent nodes N=30", "[ComputeGraph][Ex
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench Executor: diamond DAG N=50", "[ComputeGraph][Executor][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     constexpr size_t N = 50;
-    ProfileAnnotate("topology", "diamond");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("nodes", int64_t(4));
+    WAGGLE_ANNOTATE("topology", "diamond");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("nodes", int64_t(4));
     auto A = create_random_tensor<double>("A", N, N);
     auto B = create_random_tensor<double>("B", N, N);
     auto C = create_zero_tensor<double>("C", N, N);
@@ -215,11 +215,11 @@ EINSUMS_TEST_CASE("Bench Executor: diamond DAG N=50", "[ComputeGraph][Executor][
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench Executor: replay overhead 100 iterations N=20", "[ComputeGraph][Executor][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     constexpr size_t N = 20;
-    ProfileAnnotate("topology", "replay");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("nodes", int64_t(1));
+    WAGGLE_ANNOTATE("topology", "replay");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("nodes", int64_t(1));
     auto A = create_random_tensor<double>("A", N, N);
     auto B = create_random_tensor<double>("B", N, N);
     auto C = create_zero_tensor<double>("C", N, N);
@@ -255,11 +255,11 @@ EINSUMS_TEST_CASE("Bench Executor: replay overhead 100 iterations N=20", "[Compu
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench PassManager: create_default on 10-node graph", "[ComputeGraph][PassManager][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     constexpr size_t N = 10;
-    ProfileAnnotate("topology", "passmanager");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("nodes", int64_t(10));
+    WAGGLE_ANNOTATE("topology", "passmanager");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("nodes", int64_t(10));
     auto A = create_random_tensor<double>("A", N, N);
     auto B = create_random_tensor<double>("B", N, N);
     auto C = create_zero_tensor<double>("C", N, N);

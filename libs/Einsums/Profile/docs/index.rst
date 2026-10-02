@@ -26,7 +26,7 @@ Building without the profiler
 -----------------------------
 
 Configuring with ``-DEINSUMS_WITH_PROFILER=OFF`` compiles the recording machinery out of the library.
-Instrumented code does not have to change: ``LabeledSection`` and its siblings expand to nothing, and the
+Instrumented code does not have to change: ``WAGGLE_ZONE`` and its siblings expand to nothing, and the
 functions above remain callable and do nothing, so a translation unit or a Python script that profiles still
 builds and still runs.
 Ask :cpp:func:`~einsums::profile::available` which kind of build you are on; the readers all report empty

@@ -369,12 +369,12 @@ bool einsum_empty_operands(typename CType::ValueType c_pf, CType *C, AType const
         return total;
     };
     if (total_size(*C) == 0) {
-        ProfileAnnotate("dispatch", "empty_output_noop");
+        WAGGLE_ANNOTATE("dispatch", "empty_output_noop");
         last_dispatch_route() = "empty_output_noop";
         return true;
     }
     if (total_size(A) == 0 || total_size(B) == 0) {
-        ProfileAnnotate("dispatch", "empty_input_scale_only");
+        WAGGLE_ANNOTATE("dispatch", "empty_input_scale_only");
         last_dispatch_route() = "empty_input_scale_only";
         if (c_pf == TC{0}) {
             C->zero();
@@ -632,14 +632,14 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         return;
     }
 
-    LabeledSection("cg::einsum: {} <- {} ; {}", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
-                   fmt::join(parsed.b_indices, ","));
+    WAGGLE_ZONE("cg::einsum: {} <- {} ; {}", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
+                fmt::join(parsed.b_indices, ","));
     // As integers, not std::to_string: the string form was BUILT before
     // annotate() could check whether anything was recording, so every
     // contraction paid three of them whether or not they went anywhere.
-    ProfileAnnotate("a_rank", static_cast<int64_t>(detail::tensor_rank(A)));
-    ProfileAnnotate("b_rank", static_cast<int64_t>(detail::tensor_rank(B)));
-    ProfileAnnotate("c_rank", static_cast<int64_t>(detail::tensor_rank(*C)));
+    WAGGLE_ANNOTATE("a_rank", static_cast<int64_t>(detail::tensor_rank(A)));
+    WAGGLE_ANNOTATE("b_rank", static_cast<int64_t>(detail::tensor_rank(B)));
+    WAGGLE_ANNOTATE("c_rank", static_cast<int64_t>(detail::tensor_rank(*C)));
 
     auto const &c_idx = parsed.c_indices;
     auto const &a_idx = parsed.a_indices;
@@ -728,7 +728,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             return;
         }
 
-        ProfileAnnotate("dispatch", "generic_loop_repeated_indices");
+        WAGGLE_ANNOTATE("dispatch", "generic_loop_repeated_indices");
         last_dispatch_route() = "generic_loop_repeated_indices";
         generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
         return;
@@ -797,7 +797,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             return;
         }
 
-        ProfileAnnotate("dispatch", "generic_loop_lone_summed");
+        WAGGLE_ANNOTATE("dispatch", "generic_loop_lone_summed");
         last_dispatch_route() = "generic_loop_lone_summed";
         generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
         return;
@@ -833,7 +833,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         }
 
         bool const conjugating = conj_a || conj_b;
-        ProfileAnnotate("dispatch", conjugating ? "true_dot_runtime" : "dot_runtime");
+        WAGGLE_ANNOTATE("dispatch", conjugating ? "true_dot_runtime" : "dot_runtime");
         last_dispatch_route() = conjugating ? "true_dot_runtime" : "dot_runtime";
         // A zero output prefactor assigns rather than multiplies, as on every other route: 0 * NaN is
         // NaN, so a dot into a never-written output would keep whatever it held.
@@ -881,7 +881,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         // ── GEMV: matrix × vector → vector ───────────────────────────
         if (a_rank == 2 && b_rank == 1 && c_rank == 1) {
             if (links.size() == 1 && addressable(A)) {
-                ProfileAnnotate("dispatch", "gemv_mat_vec_runtime");
+                WAGGLE_ANNOTATE("dispatch", "gemv_mat_vec_runtime");
                 last_dispatch_route() = "gemv_mat_vec_runtime";
                 char const trans      = (a_idx[0] == links[0]) ? 't' : 'n';
                 la::gemv(trans, ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
@@ -892,7 +892,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         // ── GEMV: vector × matrix → vector ───────────────────────────
         if (a_rank == 1 && b_rank == 2 && c_rank == 1) {
             if (links.size() == 1 && addressable(B)) {
-                ProfileAnnotate("dispatch", "gemv_vec_mat_runtime");
+                WAGGLE_ANNOTATE("dispatch", "gemv_vec_mat_runtime");
                 last_dispatch_route() = "gemv_vec_mat_runtime";
                 char const trans      = (b_idx[1] == links[0]) ? 'n' : 't';
                 la::gemv(trans, ab_pf, B.impl(), A.impl(), c_pf, &C->impl());
@@ -903,7 +903,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         // ── GER: vector × vector → matrix ────────────────────────────
         if (a_rank == 1 && b_rank == 1 && c_rank == 2) {
             if (links.empty()) {
-                ProfileAnnotate("dispatch", "ger_runtime");
+                WAGGLE_ANNOTATE("dispatch", "ger_runtime");
                 last_dispatch_route() = "ger_runtime";
                 if (c_pf != T{1}) {
                     la::scale(c_pf, &C->impl());
@@ -924,7 +924,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         // ── GEMM: matrix × matrix → matrix ───────────────────────────
         if (a_rank == 2 && b_rank == 2 && c_rank == 2) {
             if (links.size() == 1 && !route_prefers_packed && addressable(A) && addressable(B) && addressable(*C)) {
-                ProfileAnnotate("dispatch", "gemm_direct_runtime");
+                WAGGLE_ANNOTATE("dispatch", "gemm_direct_runtime");
                 last_dispatch_route() = "gemm_direct_runtime";
                 // C = [freeA, freeB] is op(A) op(B); the transposed output C = [freeB, freeA]
                 // is op(B) op(A). Honoring C's order is what keeps a transposed-output
@@ -948,7 +948,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         // The rank-erased kernel takes any rank, so the ranks are only
         // checked here.
         if (a_rank == b_rank && b_rank == c_rank && links.empty() && a_idx == b_idx && a_idx == c_idx) {
-            ProfileAnnotate("dispatch", "direct_product_runtime");
+            WAGGLE_ANNOTATE("dispatch", "direct_product_runtime");
             last_dispatch_route() = "direct_product_runtime";
             la::direct_product(ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
             return;
@@ -989,7 +989,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             in_c_order(a_idx, A.impl(), a_scratch, a_impl);
             in_c_order(b_idx, B.impl(), b_scratch, b_impl);
 
-            ProfileAnnotate("dispatch", "direct_product_permuted_runtime");
+            WAGGLE_ANNOTATE("dispatch", "direct_product_permuted_runtime");
             last_dispatch_route() = "direct_product_permuted_runtime";
             la::direct_product(ab_pf, a_impl, b_impl, c_pf, &C->impl());
             return;
@@ -1026,7 +1026,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         packed_gemm::ContractionSpec const &spec = reuse_spec ? pg_site->key.spec : built;
 
         if (packed_gemm::try_packed_gemm<AType, BType, CType>(spec, c_pf, C, ab_pf, A, B, /*allow_scatter=*/true, pg_site)) {
-            ProfileAnnotate("dispatch", "packed_gemm");
+            WAGGLE_ANNOTATE("dispatch", "packed_gemm");
             last_dispatch_route() = "packed_gemm";
             return;
         }
@@ -1036,7 +1036,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // Reached when no fast path applies: pure outer products, mixed-dtype
     // edge cases, or contractions that even PackedGemm can't form into a
     // valid GEMM shape (no M-dims, no N-dims, no links).
-    ProfileAnnotate("dispatch", "generic_loop");
+    WAGGLE_ANNOTATE("dispatch", "generic_loop");
     last_dispatch_route() = "generic_loop";
     generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
 }
@@ -1069,8 +1069,8 @@ void mixed_string_einsum(ParsedEinsumSpec const &parsed, typename CType::ValueTy
                                 "into a tensor of one type first, or convert the operands",
                                 parsed.raw);
     }
-    LabeledSection("cg::einsum (mixed precision): {} <- {} ; {}", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
-                   fmt::join(parsed.b_indices, ","));
+    WAGGLE_ZONE("cg::einsum (mixed precision): {} <- {} ; {}", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
+                fmt::join(parsed.b_indices, ","));
 
     std::vector<std::string> const  links_storage = precomputed_links == nullptr ? parsed.link_indices() : std::vector<std::string>{};
     std::vector<std::string> const &links         = precomputed_links != nullptr ? *precomputed_links : links_storage;
@@ -1080,7 +1080,7 @@ void mixed_string_einsum(ParsedEinsumSpec const &parsed, typename CType::ValueTy
     }
     reject_output_alias(parsed, *C, A, B);
 
-    ProfileAnnotate("dispatch", "generic_loop_mixed_precision");
+    WAGGLE_ANNOTATE("dispatch", "generic_loop_mixed_precision");
     last_dispatch_route() = "generic_loop_mixed_precision";
     generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
 }

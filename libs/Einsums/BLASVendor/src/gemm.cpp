@@ -91,7 +91,7 @@ extern void FC_GLOBAL(zgemm, ZGEMM)(char *, char *, int_t *, int_t *, int_t *, s
 
 void sgemm(char transa, char transb, int_t m, int_t n, int_t k, float alpha, float const *a, int_t lda, float const *b, int_t ldb,
            float beta, float *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (m == 0 || n == 0)
         return;
@@ -118,7 +118,7 @@ void sgemm(char transa, char transb, int_t m, int_t n, int_t k, float alpha, flo
 
 void dgemm(char transa, char transb, int_t m, int_t n, int_t k, double alpha, double const *a, int_t lda, double const *b, int_t ldb,
            double beta, double *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (m == 0 || n == 0)
         return;
@@ -145,7 +145,7 @@ void dgemm(char transa, char transb, int_t m, int_t n, int_t k, double alpha, do
 
 void cgemm(char transa, char transb, int_t m, int_t n, int_t k, std::complex<float> alpha, std::complex<float> const *a, int_t lda,
            std::complex<float> const *b, int_t ldb, std::complex<float> beta, std::complex<float> *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (m == 0 || n == 0)
         return;
@@ -172,7 +172,7 @@ void cgemm(char transa, char transb, int_t m, int_t n, int_t k, std::complex<flo
 
 void zgemm(char transa, char transb, int_t m, int_t n, int_t k, std::complex<double> alpha, std::complex<double> const *a, int_t lda,
            std::complex<double> const *b, int_t ldb, std::complex<double> beta, std::complex<double> *c, int_t ldc) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (m == 0 || n == 0)
         return;

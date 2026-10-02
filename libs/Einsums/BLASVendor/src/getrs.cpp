@@ -23,7 +23,7 @@ extern void FC_GLOBAL(zgetrs, ZGETRS)(char *, int_t *, int_t *, std::complex<dou
 }
 
 auto sgetrs(char trans, int_t n, int_t nrhs, float const *a, int_t lda, int_t const *ipiv, float *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(sgetrs, SGETRS)(&trans, &n, &nrhs, a, &lda, ipiv, b, &ldb, &info);
@@ -31,7 +31,7 @@ auto sgetrs(char trans, int_t n, int_t nrhs, float const *a, int_t lda, int_t co
 }
 
 auto dgetrs(char trans, int_t n, int_t nrhs, double const *a, int_t lda, int_t const *ipiv, double *b, int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(dgetrs, DGETRS)(&trans, &n, &nrhs, a, &lda, ipiv, b, &ldb, &info);
@@ -40,7 +40,7 @@ auto dgetrs(char trans, int_t n, int_t nrhs, double const *a, int_t lda, int_t c
 
 auto cgetrs(char trans, int_t n, int_t nrhs, std::complex<float> const *a, int_t lda, int_t const *ipiv, std::complex<float> *b, int_t ldb)
     -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(cgetrs, CGETRS)(&trans, &n, &nrhs, a, &lda, ipiv, b, &ldb, &info);
@@ -49,7 +49,7 @@ auto cgetrs(char trans, int_t n, int_t nrhs, std::complex<float> const *a, int_t
 
 auto zgetrs(char trans, int_t n, int_t nrhs, std::complex<double> const *a, int_t lda, int_t const *ipiv, std::complex<double> *b,
             int_t ldb) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     int_t info{0};
     FC_GLOBAL(zgetrs, ZGETRS)(&trans, &n, &nrhs, a, &lda, ipiv, b, &ldb, &info);

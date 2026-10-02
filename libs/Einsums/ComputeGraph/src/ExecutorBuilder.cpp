@@ -73,7 +73,7 @@ std::function<void()> build_scale(packed_gemm::ScalarType dtype, ScaleDescriptor
     auto params = live_or_private_params(desc.params, desc.factor, PrefactorScalar{double{0}});
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         return [params, a]() {
-            LabeledSection("scale execute");
+            WAGGLE_ZONE("scale execute");
             linear_algebra::detail::scale(as<T>(params->alpha), a.impl<T>());
         };
     });
@@ -96,7 +96,7 @@ std::function<void()> build_permute(packed_gemm::ScalarType dtype, PermuteDescri
 
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         return [params, parsed, a, c]() {
-            LabeledSection("permute execute");
+            WAGGLE_ZONE("permute execute");
             dispatch::string_permute_impl<T>(parsed, as<T>(params->beta), c.impl<T>(), as<T>(params->alpha), *a.impl<T>());
         };
     });
@@ -114,7 +114,7 @@ std::function<void()> build_permute(packed_gemm::ScalarType dtype, PermuteDescri
 std::function<void()> build_transpose(packed_gemm::ScalarType dtype, OperandAccessor const &a, OperandAccessor const &c) {
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         return [a, c]() {
-            LabeledSection("transpose execute");
+            WAGGLE_ZONE("transpose execute");
             // transpose checks the ranks and that the output can hold the result on every replay:
             // a rebind validates dims against the slot, not against the operand this node pairs.
             tensor_permute::transpose(c.impl<T>(), *a.impl<T>());
@@ -133,7 +133,7 @@ std::function<void()> build_axpby(packed_gemm::ScalarType dtype, AxpbyDescriptor
     auto params = live_or_private_params(desc.params, desc.alpha, desc.beta);
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         return [params, x, y]() {
-            LabeledSection("axpby execute");
+            WAGGLE_ZONE("axpby execute");
             auto const  alpha  = as<T>(params->alpha);
             auto const  beta   = as<T>(params->beta);
             auto const *source = x.impl<T>();
@@ -158,17 +158,17 @@ std::function<void()> build_elementwise_binary(OpKind kind, packed_gemm::ScalarT
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         if (divide) {
             return [params, a, b, c]() {
-                LabeledSection("direct_division execute");
+                WAGGLE_ZONE("direct_division execute");
                 auto *out = c.impl<T>();
-                ProfileAnnotate("size", static_cast<std::int64_t>(out->size()));
+                WAGGLE_ANNOTATE("size", static_cast<std::int64_t>(out->size()));
                 linear_algebra::detail::direct_division<T, T, T>(as<T>(params->alpha), *a.impl<T>(), *b.impl<T>(), as<T>(params->beta),
                                                                  out);
             };
         }
         return [params, a, b, c]() {
-            LabeledSection("direct_product execute");
+            WAGGLE_ZONE("direct_product execute");
             auto *out = c.impl<T>();
-            ProfileAnnotate("size", static_cast<std::int64_t>(out->size()));
+            WAGGLE_ANNOTATE("size", static_cast<std::int64_t>(out->size()));
             linear_algebra::detail::direct_product<T, T, T>(as<T>(params->alpha), *a.impl<T>(), *b.impl<T>(), as<T>(params->beta), out);
         };
     });
@@ -243,7 +243,7 @@ std::function<void()> build_mixed_einsum(std::shared_ptr<EinsumParams> const &pa
                     };
                     auto views = std::make_shared<Views>(*a.impl<TA>(), *b.impl<TB>(), *c.impl<TC>());
                     return [params, indices, views, a, b, c]() {
-                        LabeledSection("einsum execute (mixed precision)");
+                        WAGGLE_ZONE("einsum execute (mixed precision)");
                         views->a.impl() = *a.impl<TA>();
                         views->b.impl() = *b.impl<TB>();
                         views->c.impl() = *c.impl<TC>();
@@ -322,10 +322,10 @@ std::function<void()> build_einsum(packed_gemm::ScalarType dtype, EinsumDescript
         auto batched = make_strided_batch_state(indices->spec, indices->link_indices, *a.impl<T>(), *b.impl<T>(), *c.impl<T>());
 
         return [params, indices, site, views, batched, a, b, c]() {
-            LabeledSection("einsum execute");
+            WAGGLE_ZONE("einsum execute");
             if (batched != nullptr && !params->conj_a && !params->conj_b &&
                 batched->still_applies(indices->spec, *a.impl<T>(), *b.impl<T>(), *c.impl<T>())) {
-                ProfileAnnotate("dispatch", "strided_batched_gemm");
+                WAGGLE_ANNOTATE("dispatch", "strided_batched_gemm");
                 dispatch::last_dispatch_route() = "strided_batched_gemm";
                 detail::run_strided_batch<T>(batched->plan, as<T>(params->ab_pf), as<T>(params->c_pf), a.impl<T>()->data(),
                                              b.impl<T>()->data(), c.impl<T>()->data(), batched->tables);
@@ -337,9 +337,9 @@ std::function<void()> build_einsum(packed_gemm::ScalarType dtype, EinsumDescript
             views->a.impl() = *a.impl<T>();
             views->b.impl() = *b.impl<T>();
             views->c.impl() = *c.impl<T>();
-            ProfileAnnotate("a_size", static_cast<std::int64_t>(views->a.size()));
-            ProfileAnnotate("b_size", static_cast<std::int64_t>(views->b.size()));
-            ProfileAnnotate("c_size", static_cast<std::int64_t>(views->c.size()));
+            WAGGLE_ANNOTATE("a_size", static_cast<std::int64_t>(views->a.size()));
+            WAGGLE_ANNOTATE("b_size", static_cast<std::int64_t>(views->b.size()));
+            WAGGLE_ANNOTATE("c_size", static_cast<std::int64_t>(views->c.size()));
             // The spec goes BY REFERENCE, so an index rewrite (PermuteFusion)
             // is honored without rebuilding it: the pass writes into this very
             // object. link_indices was computed once, so a replay spares three
@@ -369,13 +369,13 @@ std::function<void()> build_dot(packed_gemm::ScalarType dtype, DotDescriptor con
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         if (conjugated) {
             return [a, b, result]() {
-                LabeledSection("dotc execute");
+                WAGGLE_ZONE("dotc execute");
                 blas::SerialVendorScope const serial;
                 *result.address<T>() = linear_algebra::detail::true_dot(*a.impl<T>(), *b.impl<T>());
             };
         }
         return [a, b, result]() {
-            LabeledSection("dot execute");
+            WAGGLE_ZONE("dot execute");
             blas::SerialVendorScope const serial;
             *result.address<T>() = linear_algebra::detail::dot(*a.impl<T>(), *b.impl<T>());
         };
@@ -397,7 +397,7 @@ std::function<void()> build_dot(packed_gemm::ScalarType dtype, DotDescriptor con
 std::function<void()> build_trace(packed_gemm::ScalarType dtype, OperandAccessor const &a, ScalarAccessor const &result) {
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         return [a, result]() {
-            LabeledSection("trace execute");
+            WAGGLE_ZONE("trace execute");
             auto const *source = a.impl<T>();
             if (source->rank() != 2) {
                 EINSUMS_THROW_EXCEPTION(RankError, "cg::trace: input must be rank-2; got rank {}.", source->rank());
@@ -479,7 +479,7 @@ std::function<void()> build_element_transform(packed_gemm::ScalarType dtype, Ele
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         auto kernel = registry.kernel<T>(desc.op_name, desc.param);
         return [kernel = std::move(kernel), c]() {
-            LabeledSection("element_transform execute");
+            WAGGLE_ZONE("element_transform execute");
             element_ops::detail::apply_element_op<T>(kernel, c.impl<T>());
         };
     });
@@ -629,7 +629,7 @@ std::function<void()> build_laplace_quadrature(packed_gemm::ScalarType dtype, La
                                     "build_executor(LaplaceQuadrature): a complex element type reached the real-only quadrature");
         } else {
             return [desc, energies, exponentials, points, weights, error]() {
-                LabeledSection("laplace_quadrature execute");
+                WAGGLE_ZONE("laplace_quadrature execute");
 
                 std::vector<double> low;
                 std::vector<double> high;
@@ -722,7 +722,7 @@ std::function<void()> build_laplace_quadrature(packed_gemm::ScalarType dtype, La
 std::function<void()> build_write_param(WriteParamDescriptor const &desc, std::shared_ptr<ParamTable> params,
                                         ScalarAccessor const &source) {
     return [name = desc.name, type = desc.source_type, params = std::move(params), source]() {
-        LabeledSection("write_param execute");
+        WAGGLE_ZONE("write_param execute");
         if (!params) {
             EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::write_param executor: no ParamTable bound to graph");
         }
@@ -744,7 +744,7 @@ std::function<void()> build_write_param(WriteParamDescriptor const &desc, std::s
  */
 std::function<void()> build_write_param_expr(std::string name, BoundExpr expr, std::shared_ptr<ParamTable> params) {
     return [name = std::move(name), expr = std::move(expr), params = std::move(params)]() {
-        LabeledSection("write_param execute");
+        WAGGLE_ZONE("write_param execute");
         if (!params) {
             EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::write_param executor: no ParamTable bound to graph");
         }
@@ -778,13 +778,13 @@ std::function<void()> build_gemm(packed_gemm::ScalarType dtype, GemmDescriptor c
         auto const alpha = as<T>(desc.alpha);
         auto const beta  = as<T>(desc.beta);
         return [alpha, beta, ta, tb, transposed_a, trans_label, a, b, c]() {
-            LabeledSection("gemm execute");
+            WAGGLE_ZONE("gemm execute");
             auto const *a_impl = a.impl<T>();
             auto       *c_impl = c.impl<T>();
-            ProfileAnnotate("trans", trans_label);
-            ProfileAnnotate("m", static_cast<std::int64_t>(c_impl->dim(0)));
-            ProfileAnnotate("n", static_cast<std::int64_t>(c_impl->dim(1)));
-            ProfileAnnotate("k", static_cast<std::int64_t>(transposed_a ? a_impl->dim(0) : a_impl->dim(1)));
+            WAGGLE_ANNOTATE("trans", trans_label);
+            WAGGLE_ANNOTATE("m", static_cast<std::int64_t>(c_impl->dim(0)));
+            WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(c_impl->dim(1)));
+            WAGGLE_ANNOTATE("k", static_cast<std::int64_t>(transposed_a ? a_impl->dim(0) : a_impl->dim(1)));
             linear_algebra::detail::gemm(ta, tb, alpha, *a_impl, *b.impl<T>(), beta, c_impl);
         };
     });
@@ -826,16 +826,16 @@ std::function<void()> build_syev(packed_gemm::ScalarType dtype, SyevDescriptor c
         if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
             if (compute_eigenvectors) {
                 return [a, w]() {
-                    LabeledSection("syev execute");
+                    WAGGLE_ZONE("syev execute");
                     auto *matrix = a.impl<T>();
-                    ProfileAnnotate("n", static_cast<std::int64_t>(matrix->dim(0)));
+                    WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(matrix->dim(0)));
                     linear_algebra::detail::syev<true>(matrix, w.impl<T>());
                 };
             }
             return [a, w]() {
-                LabeledSection("syev execute");
+                WAGGLE_ZONE("syev execute");
                 auto *matrix = a.impl<T>();
-                ProfileAnnotate("n", static_cast<std::int64_t>(matrix->dim(0)));
+                WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(matrix->dim(0)));
                 linear_algebra::detail::syev<false>(matrix, w.impl<T>());
             };
         } else {
@@ -929,7 +929,7 @@ std::function<void()> build_grouped_dot(packed_gemm::ScalarType dtype, GroupedDo
     }
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         return [a = std::move(a), b = std::move(b), results = std::move(results)]() {
-            LabeledSection("grouped_dot execute");
+            WAGGLE_ZONE("grouped_dot execute");
             blas::SerialVendorScope const serial;
             for (std::size_t i = 0; i < results.size(); ++i) {
                 *results[i].address<T>() = linear_algebra::detail::dot(*a[i].impl<T>(), *b[i].impl<T>());
@@ -980,7 +980,7 @@ std::function<void()> build_grouped_axpby(packed_gemm::ScalarType dtype, Grouped
             betas.push_back(as<T>(desc.betas[i]));
         }
         return [alphas = std::move(alphas), betas = std::move(betas), x = std::move(x), y = std::move(y)]() {
-            LabeledSection("grouped_axpby execute");
+            WAGGLE_ZONE("grouped_axpby execute");
             for (std::size_t i = 0; i < y.size(); ++i) {
                 linear_algebra::detail::axpby(alphas[i], *x[i].impl<T>(), betas[i], y[i].impl<T>());
             }
@@ -1042,14 +1042,14 @@ std::function<void()> build_grouped_elementwise(OpKind kind, packed_gemm::Scalar
         }
         if (kind == OpKind::GroupedPermute) {
             return [parsed, alphas = std::move(alphas), betas = std::move(betas), a = std::move(a), c = std::move(c)]() {
-                LabeledSection("grouped_permute execute");
+                WAGGLE_ZONE("grouped_permute execute");
                 detail::run_grouped_members(c.size(), [&](std::size_t i) {
                     dispatch::string_permute_impl<T>(parsed, betas[i], c[i].impl<T>(), alphas[i], *a[i].impl<T>());
                 });
             };
         }
         return [divide, alphas = std::move(alphas), betas = std::move(betas), a = std::move(a), b = std::move(b), c = std::move(c)]() {
-            LabeledSection("grouped_elementwise execute");
+            WAGGLE_ZONE("grouped_elementwise execute");
             detail::run_grouped_members(c.size(), [&](std::size_t i) {
                 if (divide) {
                     linear_algebra::detail::direct_division<T, T, T>(alphas[i], *a[i].impl<T>(), *b[i].impl<T>(), betas[i], c[i].impl<T>());

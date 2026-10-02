@@ -758,7 +758,7 @@ void flush_c_block_transposed(T *C_data, T const *Cb, int64_t mc, int64_t mc_len
 template <typename ValueType, einsums::BasicTensorConcept CType, einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType>
 void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType const &B, ValueType alpha, ValueType beta,
                       bool conj_a = false, bool conj_b = false, bool prefer_packed = false) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Resolve the rung's tile kernel and its register-block shape once per contraction, so the
     // panels are packed in the geometry that kernel expects and rung resolution stays out of the
@@ -857,7 +857,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         }
 
         if (can_batch && !conj_a && !conj_b) {
-            LabeledSection("gemm_batch fast path");
+            WAGGLE_ZONE("gemm_batch fast path");
             last_contraction_route() = "gemm_batch";
 
             // Precompute pointer arrays
@@ -931,7 +931,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // under prefer_packed the packed loops take the contraction instead.
         if (plan.k_dims_in_a.size() > 1 && !scatter_c && !plan.synthetic && !prefer_packed) {
             // Multi-K fast path: only for single-M, single-N (can map to flat BLAS GEMM).
-            LabeledSection("flatten + GEMM");
+            WAGGLE_ZONE("flatten + GEMM");
             last_contraction_route() = "flatten_gemm";
             // NOLINTNEXTLINE(readability-identifier-naming)
             using blas_int = einsums::blas::int_t;
@@ -1696,7 +1696,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         }
 
         {
-            LabeledSection("C++ packing and kernel");
+            WAGGLE_ZONE("C++ packing and kernel");
             // The work items are the grid's: N blocks by M groups, each group taken by one team.
             int64_t const n_items    = n_nc_blocks * m_groups;
             auto const    group_rows = [&](int64_t item, int64_t part, int64_t parts, int64_t &m_lo, int64_t &m_hi) {
@@ -1751,7 +1751,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                                                   &states[static_cast<size_t>(team_id)], tid % members, members, &base}
                                            : TeamPanel<ValueType>{nullptr, nullptr, 0, 1, &base};
                 TeamPanel<ValueType> const *const team = &ctx;
-                LabeledSectionInternal("team: all items of one thread");
+                WAGGLE_ZONE_DETAIL("team: all items of one thread");
 
                 // One work item: an N block and one M group of it, whose M blocks the team's
                 // members claim. Every thread owns the buffer it packs A into and the region of C
@@ -1936,7 +1936,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 // Skipped entirely when the scatters below store.
                                 bool const store_c = overwrite_c && kc == 0;
                                 if (kc == 0 && beta != ValueType{1} && !overwrite_c) {
-                                    LabeledSectionInternal("C beta prescale");
+                                    WAGGLE_ZONE_DETAIL("C beta prescale");
                                     for (int64_t mi = 0; mi < mc_len; ++mi) {
                                         int64_t const m_off = c_m_offsets[static_cast<size_t>(mi)];
                                         for (int64_t ni = 0; ni < nc_len; ++ni) {
@@ -1984,7 +1984,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 pack_A_flat(tls_Af.data(), A_data, plan, mc, mc_len, kc, kc_len, conj_a);
 
                                 {
-                                    LabeledSectionInternal("block GEMM (vendor)");
+                                    WAGGLE_ZONE_DETAIL("block GEMM (vendor)");
                                     // Swapping the operands computes Bf * Af^T, so the block
                                     // temporary comes out transposed and the n-inner scatter reads
                                     // it contiguously. Striding the temporary instead would sweep
@@ -2006,7 +2006,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
                                 // Scatter-accumulate the contiguous block into C, in contiguous
                                 // runs wherever C's fastest flat coordinate has unit stride.
-                                LabeledSectionInternal("C block scatter");
+                                WAGGLE_ZONE_DETAIL("C block scatter");
                                 if (scatter_n_inner) {
                                     // Mirror of the loop below with m and n exchanged; tls_Cb is
                                     // nc_len x mc_len here.
@@ -2094,12 +2094,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             int64_t const p0     = (panels * team->member) / team->size;
                             int64_t const p1     = (panels * (team->member + 1)) / team->size;
                             if (p1 > p0) {
-                                LabeledSectionInternal("team: pack B slice");
+                                WAGGLE_ZONE_DETAIL("team: pack B slice");
                                 pack_B(Bp + p0 * kc_len * NR, B_data, plan, kc, kc_len, nc + p0 * NR,
                                        std::min(nc_len - p0 * NR, (p1 - p0) * NR), NR, conj_b);
                             }
                             {
-                                LabeledSectionInternal("team: wait for the packed panel");
+                                WAGGLE_ZONE_DETAIL("team: wait for the packed panel");
                                 team->state->barrier.wait();
                             }
                             bp_packed = true;
@@ -2138,7 +2138,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             // than scale it.
                             bool const store_c = overwrite_c && kc == 0 && needs_c_scatter;
                             if (kc == 0 && beta != ValueType{1} && !store_c) {
-                                LabeledSectionInternal("C beta prescale");
+                                WAGGLE_ZONE_DETAIL("C beta prescale");
                                 if (needs_c_scatter) {
                                     // Multi-M/N: element-by-element prescale via the offset tables
                                     for (int64_t mi = 0; mi < mc_len; ++mi) {
@@ -2183,7 +2183,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             int64_t const num_ir = (mc_len + MR - 1) / MR;
 
                             if (needs_c_scatter && !scatter_n_inner && (blk_compose || blk_runs_stream || use_a_order)) {
-                                LabeledSectionInternal("micro-kernel loop, C block");
+                                WAGGLE_ZONE_DETAIL("micro-kernel loop, C block");
                                 // ---- Cache-resident C block ----
                                 //
                                 // The tiles accumulate into one contiguous mc_len x nc_len block,
@@ -2245,7 +2245,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                         }
                                     }
 
-                                    LabeledSectionInternal("C block scatter");
+                                    WAGGLE_ZONE_DETAIL("C block scatter");
 
                                     if (use_a_order && (mc % blk_aorder.xa) == 0 && (mc_len % blk_aorder.xa) == 0) {
                                         flush_c_block_transposed<ValueType>(C_data, Cb, mc, mc_len, nb, nb_cur, c_m_offsets, c_n_offsets,
@@ -2356,7 +2356,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     }
                                 } // next C block chunk
                             } else if (needs_c_scatter) {
-                                LabeledSectionInternal("micro-kernel loop, tile scatter");
+                                WAGGLE_ZONE_DETAIL("micro-kernel loop, tile scatter");
                                 // Multi-M/N: run the kernel into a contiguous temporary tile, then
                                 // scatter it to C. Where the inner group's fastest index has unit
                                 // stride, the scatter walks it in runs that stay inside one extent
@@ -2461,7 +2461,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     }
                                 }
                             } else {
-                                LabeledSectionInternal("micro-kernel loop, direct C");
+                                WAGGLE_ZONE_DETAIL("micro-kernel loop, direct C");
                                 // Single-M, single-N: the kernel accumulates directly into C.
                                 for (int64_t jr = 0; jr < num_jr; ++jr) {
                                     int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nc_len - jr * NR);
@@ -2490,7 +2490,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             if (streamed_c) {
                                 stripes::stream_fence();
                             }
-                            LabeledSectionInternal("team: wait for the panel to be consumed");
+                            WAGGLE_ZONE_DETAIL("team: wait for the panel to be consumed");
                             team->state->barrier.wait();
                         }
                     }
@@ -2551,8 +2551,8 @@ template <einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType, 
 bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> C_prefactor, CType *C,
                      einsums::BiggestTypeT<typename AType::ValueType, typename BType::ValueType> AB_prefactor, AType const &A,
                      BType const &B, bool allow_scatter = true, ContractionSite *site = nullptr) {
-    LabeledSection("packed_gemm: {} <- {} ; {}", fmt::join(spec_in.c_indices, ","), fmt::join(spec_in.a_indices, ","),
-                   fmt::join(spec_in.b_indices, ","));
+    WAGGLE_ZONE("packed_gemm: {} <- {} ; {}", fmt::join(spec_in.c_indices, ","), fmt::join(spec_in.a_indices, ","),
+                fmt::join(spec_in.b_indices, ","));
 
     using ValueType  = typename AType::ValueType;
     using ValueTypeB = typename BType::ValueType;
@@ -2560,11 +2560,11 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     constexpr ScalarType st   = get_scalar_type<ValueType>();
     constexpr ScalarType st_b = get_scalar_type<ValueTypeB>();
     if constexpr (st == ScalarType::Unknown) {
-        ProfileAnnotate("packed_gemm_skip", "unknown_scalar_type");
+        WAGGLE_ANNOTATE("packed_gemm_skip", "unknown_scalar_type");
         return false;
     }
     if constexpr (st != st_b) {
-        ProfileAnnotate("packed_gemm_skip", "mixed_dtype");
+        WAGGLE_ANNOTATE("packed_gemm_skip", "mixed_dtype");
         return false;
     }
 
@@ -2579,10 +2579,10 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     if (site != nullptr && site->resolved && site->allow_scatter == allow_scatter &&
         (site->plan != nullptr || site->declined_packed == prefer_packed) && site_key_matches(site->key, spec_in, st, A, B, *C)) {
         if (site->plan == nullptr) {
-            ProfileAnnotate("packed_gemm_skip", "site_declined");
+            WAGGLE_ANNOTATE("packed_gemm_skip", "site_declined");
             return false;
         }
-        ProfileAnnotate("packed_gemm_plan", "site");
+        WAGGLE_ANNOTATE("packed_gemm_plan", "site");
         blis_contraction<ValueType>(*site->plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor),
                                     site->plan->swap_ab ? spec_in.conj_b : spec_in.conj_a,
                                     site->plan->swap_ab ? spec_in.conj_a : spec_in.conj_b, prefer_packed);
@@ -2677,7 +2677,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             return std::ranges::any_of(raw, [&](std::string const &x) { return other.count(x) == 0 && c_set.count(x) == 0; });
         };
         if (has_lone(a_raw, b_set) || has_lone(b_raw, a_set)) {
-            ProfileAnnotate("packed_gemm_skip", "lone_summed_index");
+            WAGGLE_ANNOTATE("packed_gemm_skip", "lone_summed_index");
             remember(key, nullptr);
             return false;
         }
@@ -2687,7 +2687,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // A matrix BLAS cannot address stays here too, since the direct route would run a loop.
         if (m_count == 1 && n_count == 1 && link.size() == 1 && !spec.conj_a && !spec.conj_b && m_count + n_count == target.size() &&
             !prefer_packed && blas_addressable(A) && blas_addressable(B) && blas_addressable(*C)) {
-            ProfileAnnotate("packed_gemm_skip", "defer_to_direct_gemm");
+            WAGGLE_ANNOTATE("packed_gemm_skip", "defer_to_direct_gemm");
             remember(key, nullptr);
             return false; // Deferred to direct BLAS GEMM, not a rejection.
         }
@@ -2771,11 +2771,11 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                 // kOuterGemmMaxElems GEMM's blocking overhead outgrows that pass. A strided operand
                 // has no ldb to express, so it takes ger.
                 if (inc_r == 1 && inc_c2 == 1 && (static_cast<size_t>(rows) * cols) < kOuterGemmMaxElems) {
-                    ProfileAnnotate("packed_gemm_path", "direct_outer_gemm");
+                    WAGGLE_ANNOTATE("packed_gemm_path", "direct_outer_gemm");
                     einsums::blas::gemm<ValueType>('n', 'n', rows, cols, 1, alpha, rp, rows, cq, 1, beta, cp, ldc);
                     return true;
                 }
-                ProfileAnnotate("packed_gemm_path", "direct_ger");
+                WAGGLE_ANNOTATE("packed_gemm_path", "direct_ger");
                 if (beta == ValueType{0}) {
                     std::fill(cp, cp + (m * n), ValueType{0});
                 } else if (beta != ValueType{1}) {
@@ -2848,7 +2848,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                         if (lda < static_cast<int_t>(m)) {
                             return false;
                         }
-                        ProfileAnnotate("packed_gemm_path", "direct_gemv");
+                        WAGGLE_ANNOTATE("packed_gemm_path", "direct_gemv");
                         einsums::blas::gemv<ValueType>('n', static_cast<int_t>(m), static_cast<int_t>(k), alpha, sp, lda, vp,
                                                        static_cast<int_t>(inc_v), beta, cp, static_cast<int_t>(inc_c));
                         return true;
@@ -2862,7 +2862,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                         if (lda < static_cast<int_t>(k)) {
                             return false;
                         }
-                        ProfileAnnotate("packed_gemm_path", "direct_gemv");
+                        WAGGLE_ANNOTATE("packed_gemm_path", "direct_gemv");
                         einsums::blas::gemv<ValueType>('t', static_cast<int_t>(k), static_cast<int_t>(m), alpha, sp, lda, vp,
                                                        static_cast<int_t>(inc_v), beta, cp, static_cast<int_t>(inc_c));
                         return true;
@@ -2964,7 +2964,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                     }
                 }
 
-                ProfileAnnotate("packed_gemm_path", "stream");
+                WAGGLE_ANNOTATE("packed_gemm_path", "stream");
                 last_contraction_route() = "stream";
                 stream_contract<ValueType>(S.data(), s_layout, {std::move(term)}, partition_axes);
                 return true;
@@ -2981,12 +2981,12 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // is slower than the packed path, so they keep it. A GEMV-shaped contraction gets here only
         // when the gemv and stream routes above declined.
         if (!allow_scatter && m_count == 0 && n_count == 0) {
-            ProfileAnnotate("packed_gemm_skip", "defer_to_generic_batch_dot");
+            WAGGLE_ANNOTATE("packed_gemm_skip", "defer_to_generic_batch_dot");
             remember(key, nullptr);
             return false;
         }
         if (!allow_scatter && (m_count == 0 || n_count == 0)) {
-            ProfileAnnotate("packed_gemm_skip", "defer_to_generic_gemv_shaped");
+            WAGGLE_ANNOTATE("packed_gemm_skip", "defer_to_generic_gemv_shaped");
             remember(key, nullptr);
             return false;
         }
@@ -3017,10 +3017,10 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             // Re-look-up so `cached` names the cache's copy, not this frame's: a site remembers the
             // pointer, and only cache entries live long enough.
             cached = PackingPlanCache::instance().lookup(key);
-            ProfileAnnotate("packed_gemm_plan", "computed");
+            WAGGLE_ANNOTATE("packed_gemm_plan", "computed");
         }
     } else {
-        ProfileAnnotate("packed_gemm_plan", "cached");
+        WAGGLE_ANNOTATE("packed_gemm_plan", "cached");
     }
     PackingPlan const &plan = (cached != nullptr) ? *cached : computed;
     if (plan.valid) {
@@ -3038,7 +3038,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // comparison is always against the generic loop: the crossover moves whenever that loop
         // does, and it differs between machines.
         if (outer_shaped && plan.M_total * plan.N_total < kOuterProductFloor) {
-            ProfileAnnotate("packed_gemm_skip", "defer_small_outer_to_generic");
+            WAGGLE_ANNOTATE("packed_gemm_skip", "defer_small_outer_to_generic");
             remember(key, nullptr);
             return false;
         }
@@ -3047,14 +3047,14 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // scatter path or the shape is batched: Sort+GEMM's per-batch GEMMs beat the scatter
         // engines on batched shapes at every size tested.
         if (needs_scatter && ttgt_exists && !allow_scatter && (!micro_kernel_shape<ValueType>().fast_scatter || plan.batch_total > 1)) {
-            ProfileAnnotate("packed_gemm_skip", "scatter_defer_to_ttgt");
+            WAGGLE_ANNOTATE("packed_gemm_skip", "scatter_defer_to_ttgt");
             EINSUMS_LOG_INFO("PackedGemm: declining — scatter-path shape, the caller has a TTGT fallback, "
                              "and this rung's kernel does not beat it for this shape.");
             remember(key, nullptr);
             return false;
         }
 
-        ProfileAnnotate("packed_gemm_path", needs_scatter ? "scatter" : "single_mn");
+        WAGGLE_ANNOTATE("packed_gemm_path", needs_scatter ? "scatter" : "single_mn");
         // Only a cache-owned plan is stable enough to remember. If the re-lookup above missed, skip
         // the memo rather than record a null plan, which would read as declined.
         if (cached != nullptr) {
@@ -3064,7 +3064,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                                     plan.swap_ab ? spec.conj_b : spec.conj_a, plan.swap_ab ? spec.conj_a : spec.conj_b, prefer_packed);
         return true;
     } else {
-        ProfileAnnotate("packed_gemm_skip", "invalid_topology");
+        WAGGLE_ANNOTATE("packed_gemm_skip", "invalid_topology");
         EINSUMS_LOG_INFO("PackedGemm: skipping — packing topology invalid for this contraction pattern.");
         remember(key, nullptr);
     }

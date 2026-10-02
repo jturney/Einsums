@@ -21,7 +21,7 @@ namespace detail {
 template <typename AType, typename XType, typename YType>
 void impl_gemv_noncontiguous(char transA, YType alpha, einsums::detail::TensorImpl<AType> const &A,
                              einsums::detail::TensorImpl<XType> const &X, YType beta, einsums::detail::TensorImpl<YType> *Y) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     char const   tA            = std::tolower(transA);
     size_t const a_link_stride = (tA == 'n') ? A.stride(1) : A.stride(0), a_target_stride = (tA == 'n') ? A.stride(0) : A.stride(1);

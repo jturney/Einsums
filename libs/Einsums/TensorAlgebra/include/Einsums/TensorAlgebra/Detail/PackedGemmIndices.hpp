@@ -38,7 +38,7 @@ bool try_packed_gemm_indices(einsums::ValueTypeT<CType> C_prefactor, std::tuple<
                              einsums::BiggestTypeT<typename AType::ValueType, typename BType::ValueType> AB_prefactor,
                              std::tuple<AIndices...> const & /*A_indices_tup*/, AType const &A,
                              std::tuple<BIndices...> const & /*B_indices_tup*/, BType const &B, bool allow_scatter = true) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Scalar-output (CType is `T`, not a tensor) is not yet routed through the
     // runtime entry point, so keep the original handling for that one shape.

@@ -32,7 +32,7 @@ extern void FC_GLOBAL(cgesvd, CGESVD)(char *jobu, char *jobvt, int_t *m, int_t *
 #define GESVD(Type, lcletter, UCLETTER)                                                                                                    \
     auto lcletter##gesvd(char jobu, char jobvt, int_t m, int_t n, Type *a, int_t lda, Type *s, Type *u, int_t ldu, Type *vt, int_t ldvt,   \
                          Type *superb) -> int_t {                                                                                          \
-        LabeledSection0();                                                                                                                 \
+        WAGGLE_ZONE_FUNC();                                                                                                                \
                                                                                                                                            \
         int_t info  = 0;                                                                                                                   \
         int_t lwork = -1;                                                                                                                  \
@@ -87,7 +87,7 @@ GESVD(float, s, S);
 #define GESVD_complex(Type, lcletter, UCLETTER)                                                                                            \
     auto lcletter##gesvd(char jobu, char jobvt, int_t m, int_t n, std::complex<Type> *a, int_t lda, Type *s, std::complex<Type> *u,        \
                          int_t ldu, std::complex<Type> *vt, int_t ldvt, std::complex<Type> *superb) -> int_t {                             \
-        LabeledSection0();                                                                                                                 \
+        WAGGLE_ZONE_FUNC();                                                                                                                \
                                                                                                                                            \
         int_t info  = 0;                                                                                                                   \
         int_t lwork = -1;                                                                                                                  \

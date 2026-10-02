@@ -61,7 +61,7 @@ void row(std::string const &op, size_t blocks, size_t extent, TimingStats const 
 } // namespace
 
 EINSUMS_TEST_CASE("Bench BlockTileReduction: block dot", "[LinearAlgebra][BlockTileReduction][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Few small blocks is the case the gate exists for; many large blocks is
     // the case that genuinely wants the team. The break-even is between them.
@@ -79,7 +79,7 @@ EINSUMS_TEST_CASE("Bench BlockTileReduction: block dot", "[LinearAlgebra][BlockT
 }
 
 EINSUMS_TEST_CASE("Bench BlockTileReduction: tiled dot", "[LinearAlgebra][BlockTileReduction][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // A tiled tensor's reduction walks the whole grid, so the interesting axis
     // is the grid size rather than the tile size: a fine grid of small tiles is

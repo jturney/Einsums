@@ -25,7 +25,7 @@ extern void FC_GLOBAL(zaxpy, ZAXPY)(int_t *, std::complex<double> *, std::comple
 // The n guards: Accelerate aborts on a zero increment, which empty tensors carry (see copy.cpp).
 
 void saxpy(int_t n, float alpha_x, float const *x, int_t inc_x, float *y, int_t inc_y) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -34,7 +34,7 @@ void saxpy(int_t n, float alpha_x, float const *x, int_t inc_x, float *y, int_t 
 }
 
 void daxpy(int_t n, double alpha_x, double const *x, int_t inc_x, double *y, int_t inc_y) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -43,7 +43,7 @@ void daxpy(int_t n, double alpha_x, double const *x, int_t inc_x, double *y, int
 }
 
 void caxpy(int_t n, std::complex<float> alpha_x, std::complex<float> const *x, int_t inc_x, std::complex<float> *y, int_t inc_y) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -52,7 +52,7 @@ void caxpy(int_t n, std::complex<float> alpha_x, std::complex<float> const *x, i
 }
 
 void zaxpy(int_t n, std::complex<double> alpha_x, std::complex<double> const *x, int_t inc_x, std::complex<double> *y, int_t inc_y) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -61,7 +61,7 @@ void zaxpy(int_t n, std::complex<double> alpha_x, std::complex<double> const *x,
 }
 
 void saxpby(int_t const n, float const a, float const *x, int_t const incx, float const b, float *y, int_t const incy) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     // x aliasing y: scaling y first would scale x too, so use y = (a + b) * y.
     if (x == y && incx == incy) {
         if (incy == 0) {
@@ -80,7 +80,7 @@ void saxpby(int_t const n, float const a, float const *x, int_t const incx, floa
 }
 
 void daxpby(int_t const n, double const a, double const *x, int_t const incx, double const b, double *y, int_t const incy) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     // See saxpby: alias-safe path when x == y.
     if (x == y && incx == incy) {
         if (incy == 0) {
@@ -100,7 +100,7 @@ void daxpby(int_t const n, double const a, double const *x, int_t const incx, do
 
 void caxpby(int_t const n, std::complex<float> const a, std::complex<float> const *x, int_t const incx, std::complex<float> const b,
             std::complex<float> *y, int_t const incy) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     // See saxpby: alias-safe path when x == y.
     if (x == y && incx == incy) {
         if (incy == 0) {
@@ -120,7 +120,7 @@ void caxpby(int_t const n, std::complex<float> const a, std::complex<float> cons
 
 void zaxpby(int_t const n, std::complex<double> const a, std::complex<double> const *x, int_t const incx, std::complex<double> const b,
             std::complex<double> *y, int_t const incy) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     // See saxpby: alias-safe path when x == y.
     if (x == y && incx == incy) {
         if (incy == 0) {

@@ -33,7 +33,7 @@ namespace {} // namespace
 template <typename T>
 void eager_grouped_dot(std::vector<Impl<T> *> const &results, std::vector<Impl<T> const *> const &a,
                        std::vector<Impl<T> const *> const &b) {
-    LabeledSection("grouped_dot eager");
+    WAGGLE_ZONE("grouped_dot eager");
     blas::SerialVendorScope const serial;
     for (size_t i = 0; i < results.size(); i++) {
         results[i]->data()[0] = linear_algebra::detail::dot(*a[i], *b[i]);
@@ -43,7 +43,7 @@ void eager_grouped_dot(std::vector<Impl<T> *> const &results, std::vector<Impl<T
 template <typename T>
 void capture_grouped_dot(CaptureContext &ctx, std::vector<SlotRef> const &results, std::vector<SlotRef> const &a,
                          std::vector<SlotRef> const &b) {
-    LabeledSection("grouped_dot capture");
+    WAGGLE_ZONE("grouped_dot capture");
     size_t const count = results.size();
     // Inputs interleaved A_0, B_0, A_1, B_1, ... and outputs in entry order, so
     // entry i indexes both. The same convention the batched nodes use.
@@ -57,7 +57,7 @@ void capture_grouped_dot(CaptureContext &ctx, std::vector<SlotRef> const &result
     }
 
     auto executor = [r_access = accessors<T>(results), a_access = accessors<T>(a), b_access = accessors<T>(b)]() {
-        LabeledSection("grouped_dot execute");
+        WAGGLE_ZONE("grouped_dot execute");
         blas::SerialVendorScope const serial;
         for (size_t i = 0; i < r_access.size(); i++) {
             r_access[i].template impl<T>()->data()[0] =
@@ -75,7 +75,7 @@ void capture_grouped_dot(CaptureContext &ctx, std::vector<SlotRef> const &result
 template <typename T>
 void eager_grouped_axpby(std::vector<T> const &alphas, std::vector<Impl<T> const *> const &x, std::vector<T> const &betas,
                          std::vector<Impl<T> *> const &y) {
-    LabeledSection("grouped_axpby eager");
+    WAGGLE_ZONE("grouped_axpby eager");
     for (size_t i = 0; i < x.size(); i++) {
         linear_algebra::detail::axpby(alphas[i], *x[i], betas[i], y[i]);
     }
@@ -84,7 +84,7 @@ void eager_grouped_axpby(std::vector<T> const &alphas, std::vector<Impl<T> const
 template <typename T>
 void capture_grouped_axpby(CaptureContext &ctx, std::vector<T> alphas, std::vector<T> betas, std::vector<SlotRef> const &x,
                            std::vector<SlotRef> const &y) {
-    LabeledSection("grouped_axpby capture");
+    WAGGLE_ZONE("grouped_axpby capture");
     size_t const          count = x.size();
     std::vector<TensorId> inputs, outputs;
     inputs.reserve(2 * count);
@@ -109,7 +109,7 @@ void capture_grouped_axpby(CaptureContext &ctx, std::vector<T> alphas, std::vect
     }
 
     auto executor = [alphas = std::move(alphas), betas = std::move(betas), x_access = accessors<T>(x), y_access = accessors<T>(y)]() {
-        LabeledSection("grouped_axpby execute");
+        WAGGLE_ZONE("grouped_axpby execute");
         for (size_t i = 0; i < x_access.size(); i++) {
             linear_algebra::detail::axpby(alphas[i], *x_access[i].template impl<T>(), betas[i], y_access[i].template impl<T>());
         }
@@ -123,14 +123,14 @@ void capture_grouped_axpby(CaptureContext &ctx, std::vector<T> alphas, std::vect
 template <typename T>
 void eager_grouped_permute(ParsedPermuteSpec const &parsed, std::vector<T> const &c_pfs, std::vector<Impl<T> *> const &c,
                            std::vector<T> const &a_pfs, std::vector<Impl<T> const *> const &a) {
-    LabeledSection("grouped_permute eager");
+    WAGGLE_ZONE("grouped_permute eager");
     run_grouped_members(c.size(), [&](size_t i) { dispatch::string_permute_impl<T>(parsed, c_pfs[i], c[i], a_pfs[i], *a[i]); });
 }
 
 template <typename T>
 void capture_grouped_permute(CaptureContext &ctx, ParsedPermuteSpec parsed, std::vector<T> c_pfs, std::vector<T> a_pfs,
                              std::vector<SlotRef> const &a, std::vector<SlotRef> const &c) {
-    LabeledSection("grouped_permute capture");
+    WAGGLE_ZONE("grouped_permute capture");
     size_t const          count = c.size();
     std::vector<TensorId> inputs, outputs;
     inputs.reserve(2 * count);
@@ -159,7 +159,7 @@ void capture_grouped_permute(CaptureContext &ctx, ParsedPermuteSpec parsed, std:
 
     auto executor = [parsed = std::move(parsed), c_pfs = std::move(c_pfs), a_pfs = std::move(a_pfs), c_access = accessors<T>(c),
                      a_access = accessors<T>(a)]() {
-        LabeledSection("grouped_permute execute");
+        WAGGLE_ZONE("grouped_permute execute");
         run_grouped_members(c_access.size(), [&](size_t i) {
             dispatch::string_permute_impl<T>(parsed, c_pfs[i], c_access[i].template impl<T>(), a_pfs[i], *a_access[i].template impl<T>());
         });
@@ -184,7 +184,7 @@ template <typename T>
 void eager_grouped_binary(OpKind kind, std::vector<T> const &alphas, std::vector<Impl<T> const *> const &a,
                           std::vector<Impl<T> const *> const &b, std::vector<T> const &betas, std::vector<Impl<T> *> const &c) {
     bool const division = kind == OpKind::GroupedDirectDivision;
-    LabeledSection(division ? "grouped_direct_division eager" : "grouped_direct_product eager");
+    WAGGLE_ZONE(division ? "grouped_direct_division eager" : "grouped_direct_product eager");
     run_grouped_members(c.size(), [&](size_t i) { run_binary<T>(division, alphas[i], *a[i], *b[i], betas[i], c[i]); });
 }
 
@@ -192,7 +192,7 @@ template <typename T>
 void capture_grouped_binary(CaptureContext &ctx, OpKind kind, char const *label, std::vector<T> const &alphas, std::vector<T> const &betas,
                             std::vector<SlotRef> const &a, std::vector<SlotRef> const &b, std::vector<SlotRef> const &c) {
     bool const division = kind == OpKind::GroupedDirectDivision;
-    LabeledSection(division ? "grouped_direct_division capture" : "grouped_direct_product capture");
+    WAGGLE_ZONE(division ? "grouped_direct_division capture" : "grouped_direct_product capture");
     size_t const          count = c.size();
     std::vector<TensorId> inputs, outputs;
     inputs.reserve(3 * count);

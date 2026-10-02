@@ -64,7 +64,7 @@ bool is_dense_block(Dims const &dims, Strides const &strides) {
 template <CoreTensorConcept CType, typename UnaryOperator>
     requires BasicTensorConcept<CType> && RankTensorConcept<CType>
 void dense_element_transform(CType *C, UnaryOperator unary_op) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     using T               = typename CType::ValueType;
     constexpr size_t Rank = CType::Rank;
 

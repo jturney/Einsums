@@ -21,25 +21,25 @@ extern int_t FC_GLOBAL(izamax, IZAMAX)(int_t *, std::complex<double> const *, in
 }
 
 auto isamax(int_t n, float const *x, int_t incx) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(isamax, ISAMAX)(&n, x, &incx) - 1;
 }
 
 auto idamax(int_t n, double const *x, int_t incx) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(idamax, IDAMAX)(&n, x, &incx) - 1;
 }
 
 auto icamax(int_t n, std::complex<float> const *x, int_t incx) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(icamax, ICAMAX)(&n, x, &incx) - 1;
 }
 
 auto izamax(int_t n, std::complex<double> const *x, int_t incx) -> int_t {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     return FC_GLOBAL(izamax, IZAMAX)(&n, x, &incx) - 1;
 }

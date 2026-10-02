@@ -21,7 +21,7 @@ TEST_CASE("Test dependence timing", "[jobs]") {
     auto D = create_tensor("D", 100, 100);
 
     SECTION("Sequential") {
-        LabeledSection("Sequential");
+        WAGGLE_ZONE("Sequential");
 
         for (int sentinel = 0; sentinel < 10; sentinel++) {
             einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B);
@@ -33,7 +33,7 @@ TEST_CASE("Test dependence timing", "[jobs]") {
 #pragma omp parallel
 #pragma omp single
         {
-            LabeledSection("Tasked");
+            WAGGLE_ZONE("Tasked");
 
             for (int sentinel = 0; sentinel < 10; sentinel++) {
 #pragma omp task depend(in : A, B), depend(out : C)

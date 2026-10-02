@@ -25,7 +25,7 @@ EINSUMS_NAMESPACE_BEGIN(decomposition::string_spec)
 template <size_t TRank, typename TType, typename Alloc>
 auto tucker_reconstruct(Tensor<TType, TRank> const &g_tensor, std::vector<Tensor<TType, 2>, Alloc> const &factors) -> Tensor<TType, TRank> {
     using TTensor = Tensor<TType, TRank>;
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Dimension workspace for temps
     Dim<TRank> dims_buffer = g_tensor.dims();
@@ -73,7 +73,7 @@ auto tucker_reconstruct(Tensor<TType, TRank> const &g_tensor, std::vector<Tensor
 
 template <size_t Rank, MatrixConcept TTensor, typename Alloc, ContainerOf<size_t> Ranks>
 auto initialize_tucker(std::vector<TTensor, Alloc> &folds, Ranks &ranks) -> BufferVector<TTensor> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     BufferVector<TTensor> factors;
     factors.reserve(TensorRank<TTensor>);
@@ -107,7 +107,7 @@ auto initialize_tucker(std::vector<TTensor, Alloc> &folds, Ranks &ranks) -> Buff
 template <size_t TRank, ContainerOf<size_t> Ranks, typename TType, ContainerOf<Tensor<TType, 2>> Folds>
 auto tucker_ho_svd(Tensor<TType, TRank> const &tensor, Ranks &ranks, Folds const &folds)
     -> std::tuple<Tensor<TType, TRank>, BufferVector<Tensor<TType, 2>>> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Compute set of unfolded matrices
     BufferVector<Tensor<TType, 2>> unfolded_matrices;
@@ -182,7 +182,7 @@ auto tucker_ho_svd(Tensor<TType, TRank> const &tensor, Ranks &ranks) -> std::tup
 template <size_t TRank, ContainerOf<size_t> Ranks, typename TType>
 auto tucker_ho_oi(Tensor<TType, TRank> const &tensor, Ranks &ranks, int n_iter_max = 100, double tolerance = 1.e-8)
     -> std::tuple<Tensor<TType, TRank>, BufferVector<Tensor<TType, 2>>> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     // Use HO SVD as a starting guess
     auto ho_svd_guess = tucker_ho_svd(tensor, ranks);

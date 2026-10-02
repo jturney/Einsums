@@ -22,7 +22,7 @@ extern void FC_GLOBAL(zlacgv, ZLACGV)(int_t *n, std::complex<double> *x, int_t *
 // The n guard: Accelerate aborts on a zero increment, which empty tensors carry (see copy.cpp).
 
 void clacgv(int_t n, std::complex<float> *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;
@@ -31,7 +31,7 @@ void clacgv(int_t n, std::complex<float> *x, int_t incx) {
 }
 
 void zlacgv(int_t n, std::complex<double> *x, int_t incx) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return;

@@ -25,28 +25,28 @@ extern void FC_GLOBAL(zcopy, ZCOPY)(int_t *, std::complex<double> const *, int_t
 // and aborts the process on a zero one, which empty tensors and broadcast scalars carry.
 
 void scopy(int_t n, float const *x, int_t inc_x, float *y, int_t inc_y) {
-    LabeledSection("scopy");
+    WAGGLE_ZONE("scopy");
     if (n <= 0)
         return;
     FC_GLOBAL(scopy, SCOPY)(&n, x, &inc_x, y, &inc_y);
 }
 
 void dcopy(int_t n, double const *x, int_t inc_x, double *y, int_t inc_y) {
-    LabeledSection("dcopy");
+    WAGGLE_ZONE("dcopy");
     if (n <= 0)
         return;
     FC_GLOBAL(dcopy, DCOPY)(&n, x, &inc_x, y, &inc_y);
 }
 
 void ccopy(int_t n, std::complex<float> const *x, int_t inc_x, std::complex<float> *y, int_t inc_y) {
-    LabeledSection("ccopy");
+    WAGGLE_ZONE("ccopy");
     if (n <= 0)
         return;
     FC_GLOBAL(ccopy, CCOPY)(&n, x, &inc_x, y, &inc_y);
 }
 
 void zcopy(int_t n, std::complex<double> const *x, int_t inc_x, std::complex<double> *y, int_t inc_y) {
-    LabeledSection("zcopy");
+    WAGGLE_ZONE("zcopy");
     if (n <= 0)
         return;
     FC_GLOBAL(zcopy, ZCOPY)(&n, x, &inc_x, y, &inc_y);

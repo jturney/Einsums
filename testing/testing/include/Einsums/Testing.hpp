@@ -36,7 +36,7 @@
 #define EINSUMS_TEST_CASE2_(impl_name, ...)                                                                                                \
     static void impl_name();                                                                                                               \
     TEST_CASE(__VA_ARGS__) {                                                                                                               \
-        LabeledSectionRuntime((Catch::getResultCapture().getCurrentTestName()));                                                       \
+        WAGGLE_ZONE_DYNAMIC((Catch::getResultCapture().getCurrentTestName()));                                                       \
         impl_name();                                                                                                                       \
     }                                                                                                                                      \
     static void impl_name()
@@ -52,7 +52,7 @@
     template <typename TestType>                                                                                                           \
     static void impl_name();                                                                                                               \
     TEMPLATE_TEST_CASE(Name, Tags, __VA_ARGS__) {                                                                                          \
-        LabeledSection("{} <{}>", Catch::getResultCapture().getCurrentTestName(), einsums::type_name<TestType>());                          \
+        WAGGLE_ZONE("{} <{}>", Catch::getResultCapture().getCurrentTestName(), einsums::type_name<TestType>());                          \
         impl_name<TestType>();                                                                                                             \
     }                                                                                                                                      \
     template <typename TestType>                                                                                                           \

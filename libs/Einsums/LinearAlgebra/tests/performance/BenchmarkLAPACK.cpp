@@ -26,14 +26,14 @@ namespace {
 // -----------------------------------------------------------------------
 
 void bench_syev(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N);
     fill_spd(A);
 
-    ProfileAnnotate("operation", "syev");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("description", "eigendecomposition");
+    WAGGLE_ANNOTATE("operation", "syev");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("description", "eigendecomposition");
     auto t_blas = time_us("blas-syev", [&] {
         Tensor<double, 2>   work_A = A;
         std::vector<double> w(N);
@@ -51,14 +51,14 @@ void bench_syev(int N) {
 // -----------------------------------------------------------------------
 
 void bench_getrf(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N);
     fill_spd(A);
 
-    ProfileAnnotate("operation", "getrf");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("description", "LU factorization");
+    WAGGLE_ANNOTATE("operation", "getrf");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("description", "LU factorization");
     auto t_blas = time_us("blas-getrf", [&] {
         Tensor<double, 2>        work_A = A;
         std::vector<blas::int_t> ipiv(N);
@@ -79,14 +79,14 @@ void bench_getrf(int N) {
 // -----------------------------------------------------------------------
 
 void bench_gesvd(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N);
     fill(A);
 
-    ProfileAnnotate("operation", "gesvd");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("description", "SVD");
+    WAGGLE_ANNOTATE("operation", "gesvd");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("description", "SVD");
     auto t_blas = time_us("blas-gesvd", [&] {
         Tensor<double, 2>   work_A = A;
         auto                NN     = static_cast<size_t>(N);
@@ -104,14 +104,14 @@ void bench_gesvd(int N) {
 // -----------------------------------------------------------------------
 
 void bench_geqrf(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     Tensor<double, 2> A("A", N, N);
     fill(A);
 
-    ProfileAnnotate("operation", "geqrf");
-    ProfileAnnotate("dtype", "double");
-    ProfileAnnotate("N", int64_t(N));
-    ProfileAnnotate("description", "QR factorization");
+    WAGGLE_ANNOTATE("operation", "geqrf");
+    WAGGLE_ANNOTATE("dtype", "double");
+    WAGGLE_ANNOTATE("N", int64_t(N));
+    WAGGLE_ANNOTATE("description", "QR factorization");
     auto t_blas = time_us("blas-geqrf", [&] {
         Tensor<double, 2>   work_A = A;
         std::vector<double> tau(N);

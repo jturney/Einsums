@@ -136,7 +136,7 @@ expected<void, CommError> allreduce(std::span<T const> send, std::span<T> recv, 
     EINSUMS_UNUSED(comm)
     EINSUMS_UNUSED(op)
 
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 #if defined(EINSUMS_HAVE_MPI)
     return check_mpi(
         MPI_Allreduce(send.data(), recv.data(), static_cast<int>(send.size()), mpi_type_for<T>(), mpi_op_for(op), get_mpi_comm(comm)),
@@ -151,7 +151,7 @@ expected<void, CommError> allreduce(std::span<T const> send, std::span<T> recv, 
 
 template <Communicable T>
 expected<void, CommError> allreduce_inplace(std::span<T> buf, ReduceOp op, Communicator const &comm) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 #if defined(EINSUMS_HAVE_MPI)
     return check_mpi(
         MPI_Allreduce(MPI_IN_PLACE, buf.data(), static_cast<int>(buf.size()), mpi_type_for<T>(), mpi_op_for(op), get_mpi_comm(comm)),
@@ -166,7 +166,7 @@ expected<void, CommError> allreduce_inplace(std::span<T> buf, ReduceOp op, Commu
 
 template <Communicable T>
 expected<void, CommError> broadcast(std::span<T> buf, int root, Communicator const &comm) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 #if defined(EINSUMS_HAVE_MPI)
     return check_mpi(MPI_Bcast(buf.data(), static_cast<int>(buf.size()), mpi_type_for<T>(), root, get_mpi_comm(comm)), "MPI_Bcast");
 #else
@@ -237,7 +237,7 @@ expected<void, CommError> recv(std::span<T> buf, int src, int tag, Communicator 
 }
 
 expected<void, CommError> barrier(Communicator const &comm) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 #if defined(EINSUMS_HAVE_MPI)
     return check_mpi(MPI_Barrier(get_mpi_comm(comm)), "MPI_Barrier");
 #else

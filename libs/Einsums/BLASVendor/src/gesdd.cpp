@@ -29,7 +29,7 @@ extern void FC_GLOBAL(cgesdd, CGESDD)(char *, int_t *, int_t *, std::complex<flo
 
 #define GESDD(Type, lcletter, UCLETTER)                                                                                                    \
     auto lcletter##gesdd(char jobz, int_t m, int_t n, Type *a, int_t lda, Type *s, Type *u, int_t ldu, Type *vt, int_t ldvt) -> int_t {    \
-        LabeledSection0();                                                                                                                 \
+        WAGGLE_ZONE_FUNC();                                                                                                                \
                                                                                                                                            \
         /* Query optimal working array(s) */                                                                                               \
         int_t info{0};                                                                                                                     \
@@ -72,7 +72,7 @@ extern void FC_GLOBAL(cgesdd, CGESDD)(char *, int_t *, int_t *, std::complex<flo
 #define GESDD_complex(Type, lc, UC)                                                                                                        \
     auto lc##gesdd(char jobz, int_t m, int_t n, std::complex<Type> *a, int_t lda, Type *s, std::complex<Type> *u, int_t ldu,               \
                    std::complex<Type> *vt, int_t ldvt) -> int_t {                                                                          \
-        LabeledSection0();                                                                                                                 \
+        WAGGLE_ZONE_FUNC();                                                                                                                \
                                                                                                                                            \
         int_t                            info{0};                                                                                          \
         int_t                            lwork{-1};                                                                                        \

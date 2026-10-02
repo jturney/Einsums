@@ -11,17 +11,17 @@ using namespace einsums::profile;
 
 namespace {
 void microkernel() {
-    LabeledSection("microkernel");
+    WAGGLE_ZONE("microkernel");
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
 }
 
 void pack() {
-    LabeledSection("pack");
+    WAGGLE_ZONE("pack");
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
 }
 
 void contract() {
-    LabeledSection("contract");
+    WAGGLE_ZONE("contract");
     ScopedZone const z("contract");
     pack();
     microkernel();
@@ -30,9 +30,9 @@ void contract() {
 
 int einsums_main() {
     {
-        LabeledSection("main");
+        WAGGLE_ZONE("main");
         std::thread t([] {
-            LabeledSection("worker thread");
+            WAGGLE_ZONE("worker thread");
             contract();
         });
 

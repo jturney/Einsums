@@ -44,14 +44,14 @@ inline int hptt_threads() {
 }
 
 void bench_plan(int N) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     std::vector<float> A(static_cast<size_t>(N) * N, 1.0f), B(static_cast<size_t>(N) * N);
     int const          perm[2]{1, 0};
     size_t const       size[2]{static_cast<size_t>(N), static_cast<size_t>(N)};
 
-    ProfileAnnotate("rank", int64_t(2));
-    ProfileAnnotate("dtype", "float");
-    ProfileAnnotate("elements", int64_t(N) * N);
+    WAGGLE_ANNOTATE("rank", int64_t(2));
+    WAGGLE_ANNOTATE("dtype", "float");
+    WAGGLE_ANNOTATE("elements", int64_t(N) * N);
 
     auto t_uncached = time_us("plan-uncached", [&] {
         auto const plan = einsums::hptt::create_plan<float>(perm, 2, 1.0f, A.data(), size, nullptr, 0.0f, B.data(), nullptr,

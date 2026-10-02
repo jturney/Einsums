@@ -121,7 +121,7 @@ BiggestTypeT<T, TOther> impl_dot_noncontiguous(int depth, int rank, Dims const &
 
 template <typename T, typename TOther>
 BiggestTypeT<T, TOther> impl_dot(einsums::detail::TensorImpl<T> const &in, einsums::detail::TensorImpl<TOther> const &out) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (in.rank() != out.rank()) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can not dot two tensors of different ranks!");
@@ -252,7 +252,7 @@ BiggestTypeT<T, TOther> impl_true_dot_noncontiguous(int depth, int rank, Dims co
 
 template <typename T, typename TOther>
 BiggestTypeT<T, TOther> impl_true_dot(einsums::detail::TensorImpl<T> const &in, einsums::detail::TensorImpl<TOther> const &out) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (in.rank() != out.rank()) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can not dot two tensors of different ranks!");
@@ -392,7 +392,7 @@ BiggestTypeT<A, B, C> impl_dot_noncontiguous(int depth, int rank, Dims const &di
 template <typename A, typename B, typename C>
 BiggestTypeT<A, B, C> impl_dot(einsums::detail::TensorImpl<A> const &a, einsums::detail::TensorImpl<B> const &b,
                                einsums::detail::TensorImpl<C> const &c) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (a.rank() != b.rank() || a.rank() != c.rank()) {
         EINSUMS_THROW_EXCEPTION(RankError, "Can not dot three tensors of different ranks!");

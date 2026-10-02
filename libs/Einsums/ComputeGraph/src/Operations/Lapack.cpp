@@ -40,21 +40,21 @@ void run_syev(bool compute_eigenvectors, Impl<T> *A, Impl<RemoveComplexT<T>> *W)
 
 template <typename T>
 void eager_syev(bool compute_eigenvectors, Impl<T> &A, Impl<RemoveComplexT<T>> &W) {
-    LabeledSection(IsComplexV<T> ? "heev eager" : "syev eager");
+    WAGGLE_ZONE(IsComplexV<T> ? "heev eager" : "syev eager");
     run_syev<T>(compute_eigenvectors, &A, &W);
 }
 
 template <typename T>
 void capture_syev(CaptureContext &ctx, bool compute_eigenvectors, SlotRef a, SlotRef w) {
     constexpr bool hermitian = IsComplexV<T>;
-    LabeledSection(hermitian ? "heev capture" : "syev capture");
+    WAGGLE_ZONE(hermitian ? "heev capture" : "syev capture");
 
     OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
     OperandAccessor const w_access(w.second, packed_gemm::get_scalar_type<RemoveComplexT<T>>());
     auto                  executor = [compute_eigenvectors, a_access, w_access]() {
-        LabeledSection(hermitian ? "heev execute" : "syev execute");
+        WAGGLE_ZONE(hermitian ? "heev execute" : "syev execute");
         auto *A = a_access.impl<T>();
-        ProfileAnnotate("n", static_cast<int64_t>(A->dim(0)));
+        WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(0)));
         run_syev<T>(compute_eigenvectors, A, w_access.impl<RemoveComplexT<T>>());
     };
 
@@ -75,23 +75,23 @@ void capture_syev(CaptureContext &ctx, bool compute_eigenvectors, SlotRef a, Slo
 
 template <typename T>
 int eager_gesv(Impl<T> &A, Impl<T> &B) {
-    LabeledSection("gesv eager");
+    WAGGLE_ZONE("gesv eager");
     return linear_algebra::detail::gesv(&A, &B);
 }
 
 template <typename T>
 void capture_gesv(CaptureContext &ctx, SlotRef a, SlotRef b) {
-    LabeledSection("gesv capture");
+    WAGGLE_ZONE("gesv capture");
     constexpr auto        dtype = packed_gemm::get_scalar_type<T>();
     OperandAccessor const a_access(a.second, dtype);
     OperandAccessor const b_access(b.second, dtype);
     auto                  executor = [a_access, b_access]() {
-        LabeledSection("gesv execute");
+        WAGGLE_ZONE("gesv execute");
         auto *A = a_access.impl<T>();
         auto *B = b_access.impl<T>();
-        ProfileAnnotate("n", static_cast<int64_t>(A->dim(0)));
+        WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(0)));
         // A rank-1 right-hand side is one column; dim(1) would be out of range.
-        ProfileAnnotate("nrhs", static_cast<int64_t>(B->rank() > 1 ? B->dim(1) : 1));
+        WAGGLE_ANNOTATE("nrhs", static_cast<int64_t>(B->rank() > 1 ? B->dim(1) : 1));
         std::ignore = linear_algebra::detail::gesv(A, B);
     };
     ctx.record(OpKind::Gesv, "gesv", {a.first, b.first}, {a.first, b.first}, std::move(executor));
@@ -101,18 +101,18 @@ void capture_gesv(CaptureContext &ctx, SlotRef a, SlotRef b) {
 
 template <typename T>
 void eager_invert(Impl<T> &A) {
-    LabeledSection("invert eager");
+    WAGGLE_ZONE("invert eager");
     linear_algebra::detail::invert(&A);
 }
 
 template <typename T>
 void capture_invert(CaptureContext &ctx, SlotRef a) {
-    LabeledSection("invert capture");
+    WAGGLE_ZONE("invert capture");
     OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
     auto                  executor = [a_access]() {
-        LabeledSection("invert execute");
+        WAGGLE_ZONE("invert execute");
         auto *A = a_access.impl<T>();
-        ProfileAnnotate("n", static_cast<int64_t>(A->dim(0)));
+        WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(0)));
         linear_algebra::detail::invert(A);
     };
     ctx.record(OpKind::Invert, "invert", {a.first}, {a.first}, std::move(executor));
@@ -134,18 +134,18 @@ int run_getrf(Impl<T> *A, std::vector<blas::int_t> *pivots) {
 
 template <typename T>
 int eager_getrf(Impl<T> &A, LuPivots &pivots) {
-    LabeledSection("getrf eager");
+    WAGGLE_ZONE("getrf eager");
     return run_getrf<T>(&A, pivots.buffer().get());
 }
 
 template <typename T>
 void capture_getrf(CaptureContext &ctx, SlotRef a, LuPivots const &pivots) {
-    LabeledSection("getrf capture");
+    WAGGLE_ZONE("getrf capture");
     OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
     auto                  executor = [a_access, buffer = pivots.buffer()]() {
-        LabeledSection("getrf execute");
+        WAGGLE_ZONE("getrf execute");
         auto *A = a_access.impl<T>();
-        ProfileAnnotate("n", static_cast<int64_t>(A->dim(0)));
+        WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(0)));
         std::ignore = run_getrf<T>(A, buffer.get());
     };
     ctx.record(OpKind::Getrf, "getrf", {a.first}, {a.first}, std::move(executor));
@@ -153,20 +153,20 @@ void capture_getrf(CaptureContext &ctx, SlotRef a, LuPivots const &pivots) {
 
 template <typename T>
 int eager_getrs(Impl<T> const &A, LuPivots const &pivots, Impl<T> &B) {
-    LabeledSection("getrs eager");
+    WAGGLE_ZONE("getrs eager");
     return linear_algebra::detail::getrs(A, *pivots.buffer(), &B);
 }
 
 template <typename T>
 void capture_getrs(CaptureContext &ctx, SlotRef a, LuPivots const &pivots, SlotRef b) {
-    LabeledSection("getrs capture");
+    WAGGLE_ZONE("getrs capture");
     constexpr auto        dtype = packed_gemm::get_scalar_type<T>();
     OperandAccessor const a_access(a.second, dtype);
     OperandAccessor const b_access(b.second, dtype);
     auto                  executor = [a_access, b_access, buffer = pivots.buffer()]() {
-        LabeledSection("getrs execute");
+        WAGGLE_ZONE("getrs execute");
         auto const *A = a_access.impl<T>();
-        ProfileAnnotate("n", static_cast<int64_t>(A->dim(0)));
+        WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(0)));
         std::ignore = linear_algebra::detail::getrs(*A, *buffer, b_access.impl<T>());
     };
     ctx.record(OpKind::Getrs, "getrs", {a.first, b.first}, {b.first}, std::move(executor));

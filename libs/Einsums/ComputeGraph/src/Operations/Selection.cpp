@@ -103,14 +103,14 @@ void run_scatter(bool accumulate, Impl<T> &d, Impl<T> const &s, std::vector<std:
 template <typename T>
 void eager_block_copy(Impl<T> &dst, Impl<T> const &src, std::vector<size_t> const &dst_offsets, std::vector<size_t> const &src_offsets,
                       std::vector<size_t> const &extents) {
-    LabeledSection("block_copy eager");
+    WAGGLE_ZONE("block_copy eager");
     run_block_copy<T>(dst, src, dst_offsets, src_offsets, extents);
 }
 
 template <typename T>
 void capture_block_copy(CaptureContext &ctx, SlotRef dst, SlotRef src, std::vector<size_t> dst_offsets, std::vector<size_t> src_offsets,
                         std::vector<size_t> extents) {
-    LabeledSection("block_copy capture");
+    WAGGLE_ZONE("block_copy capture");
     record_unary<T, T>(ctx, "block_copy", "block_copy execute", dst, src,
                        [dst_offsets = std::move(dst_offsets), src_offsets = std::move(src_offsets), extents = std::move(extents)](
                            Impl<T> &d, Impl<T> const &s) { run_block_copy<T>(d, s, dst_offsets, src_offsets, extents); });
@@ -119,14 +119,14 @@ void capture_block_copy(CaptureContext &ctx, SlotRef dst, SlotRef src, std::vect
 template <typename T>
 void eager_gather(Impl<T> &dst, Impl<T> const &src, std::vector<std::vector<size_t>> const &indices, std::vector<size_t> const &extents,
                   std::vector<size_t> const &dst_axis) {
-    LabeledSection("gather eager");
+    WAGGLE_ZONE("gather eager");
     run_gather<T>(dst, src, indices, extents, dst_axis);
 }
 
 template <typename T>
 void capture_gather(CaptureContext &ctx, SlotRef dst, SlotRef src, std::vector<std::vector<size_t>> indices, std::vector<size_t> extents,
                     std::vector<size_t> dst_axis) {
-    LabeledSection("gather capture");
+    WAGGLE_ZONE("gather capture");
     record_unary<T, T>(ctx, "gather", "gather execute", dst, src,
                        [indices = std::move(indices), extents = std::move(extents),
                         dst_axis = std::move(dst_axis)](Impl<T> &d, Impl<T> const &s) { run_gather<T>(d, s, indices, extents, dst_axis); });
@@ -135,14 +135,14 @@ void capture_gather(CaptureContext &ctx, SlotRef dst, SlotRef src, std::vector<s
 template <typename T>
 void eager_scatter(bool accumulate, Impl<T> &dst, Impl<T> const &src, std::vector<std::vector<size_t>> const &indices,
                    std::vector<size_t> const &extents) {
-    LabeledSection(accumulate ? "scatter_add eager" : "scatter eager");
+    WAGGLE_ZONE(accumulate ? "scatter_add eager" : "scatter eager");
     run_scatter<T>(accumulate, dst, src, indices, extents);
 }
 
 template <typename T>
 void capture_scatter(CaptureContext &ctx, bool accumulate, SlotRef dst, SlotRef src, std::vector<std::vector<size_t>> indices,
                      std::vector<size_t> extents) {
-    LabeledSection(accumulate ? "scatter_add capture" : "scatter capture");
+    WAGGLE_ZONE(accumulate ? "scatter_add capture" : "scatter capture");
     // dst is BOTH an input and an output: a scatter leaves everything outside
     // the selection untouched, so whatever wrote those elements has to be
     // ordered before this node; a scatter_add accumulates onto what is there.

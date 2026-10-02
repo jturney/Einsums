@@ -1072,7 +1072,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
         if (&other == this)
             return *this;
 
-        LabeledSection("operator=");
+        WAGGLE_ZONE("operator=");
         bool realloc{false};
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (dim(i) == 0 || (dim(i) != other.dim(i))) {
@@ -1106,7 +1106,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
     template <typename Alloc2>
     auto operator=(GeneralTensor<T, Rank, Alloc2> const &other) -> GeneralTensor & {
-        LabeledSection("operator=");
+        WAGGLE_ZONE("operator=");
         bool realloc{false};
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (dim(i) == 0 || (dim(i) != other.dim(i))) {
@@ -1149,7 +1149,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     template <typename TOther, typename Alloc2>
         requires(!std::same_as<T, TOther>)
     auto operator=(GeneralTensor<TOther, Rank, Alloc2> const &other) -> GeneralTensor & {
-        LabeledSection("operator=");
+        WAGGLE_ZONE("operator=");
         bool realloc{false};
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (dim(i) == 0 || (dim(i) != other.dim(i))) {
@@ -1195,7 +1195,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     auto operator=(OtherTensor const &other) -> GeneralTensor & {
         static_assert(!IsDeviceTensor, "Element-wise assignment from a non-basic tensor is not supported for device tensors. "
                                        "Use bulk operations (memcpy, BLAS) or the ComputeGraph instead.");
-        LabeledSection("operator=");
+        WAGGLE_ZONE("operator=");
         size_t size = this->size();
 
         EINSUMS_OMP_PARALLEL_FOR
@@ -1213,7 +1213,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      */
     template <typename TOther>
     auto operator=(TensorView<TOther, Rank> const &other) -> GeneralTensor & {
-        LabeledSection("operator=");
+        WAGGLE_ZONE("operator=");
         // Unqualified call resolves to einsums::detail::copy_to via ADL on
         // TensorImpl (a stray 'detail:' label used to sit here).
         copy_to(other.impl(), _impl);
@@ -1225,7 +1225,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * Fill this tensor with a value.
      */
     auto operator=(T const &fill_value) -> GeneralTensor & {
-        LabeledSection("operator= value");
+        WAGGLE_ZONE("operator= value");
         set_all(fill_value);
         return *this;
     }

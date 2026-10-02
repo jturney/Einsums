@@ -36,7 +36,7 @@ EINSUMS_DISABLE_WARNING_POP
 // An empty dot is zero.
 
 auto sdot(int_t n, float const *x, int_t incx, float const *y, int_t incy) -> float {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return 0;
@@ -45,7 +45,7 @@ auto sdot(int_t n, float const *x, int_t incx, float const *y, int_t incy) -> fl
 }
 
 auto ddot(int_t n, double const *x, int_t incx, double const *y, int_t incy) -> double {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return 0;
@@ -54,7 +54,7 @@ auto ddot(int_t n, double const *x, int_t incx, double const *y, int_t incy) -> 
 }
 
 auto cdot(int_t n, std::complex<float> const *x, int_t incx, std::complex<float> const *y, int_t incy) -> std::complex<float> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return std::complex<float>{};
@@ -65,7 +65,7 @@ auto cdot(int_t n, std::complex<float> const *x, int_t incx, std::complex<float>
 }
 
 auto zdot(int_t n, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy) -> std::complex<double> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return std::complex<double>{};
@@ -76,7 +76,7 @@ auto zdot(int_t n, std::complex<double> const *x, int_t incx, std::complex<doubl
 }
 
 auto cdotc(int_t n, std::complex<float> const *x, int_t incx, std::complex<float> const *y, int_t incy) -> std::complex<float> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return std::complex<float>{};
@@ -87,7 +87,7 @@ auto cdotc(int_t n, std::complex<float> const *x, int_t incx, std::complex<float
 }
 
 auto zdotc(int_t n, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy) -> std::complex<double> {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     if (n <= 0)
         return std::complex<double>{};

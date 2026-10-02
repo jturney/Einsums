@@ -81,7 +81,7 @@ namespace {
 template <typename... CI, typename... AI, typename... BI, size_t CR, size_t AR, size_t BR>
 bool run_packed_gemm(double beta, std::tuple<CI...> c_idx, einsums::Tensor<double, CR> &C, double alpha, std::tuple<AI...> a_idx,
                      einsums::Tensor<double, AR> const &A, std::tuple<BI...> b_idx, einsums::Tensor<double, BR> const &B) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     return einsums::tensor_algebra::detail::try_packed_gemm_indices<false, false>(beta, c_idx, &C, alpha, a_idx, A, b_idx, B);
 }
 
@@ -90,7 +90,7 @@ template <typename... CI, typename... AI, typename... BI, size_t CR, size_t AR, 
 einsums::tensor_algebra::detail::AlgorithmChoice run_einsum(double beta, std::tuple<CI...> c_idx, einsums::Tensor<double, CR> &C,
                                                             double alpha, std::tuple<AI...> a_idx, einsums::Tensor<double, AR> const &A,
                                                             std::tuple<BI...> b_idx, einsums::Tensor<double, BR> const &B) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     einsums::tensor_algebra::detail::AlgorithmChoice alg;
     einsums::tensor_algebra::einsum(beta, c_idx, &C, alpha, a_idx, A, b_idx, B, &alg);
     return alg;
@@ -100,7 +100,7 @@ einsums::tensor_algebra::detail::AlgorithmChoice run_einsum(double beta, std::tu
 template <typename... CI, typename... AI, typename... BI, size_t CR, size_t AR, size_t BR>
 void run_generic(double beta, std::tuple<CI...> c_idx, einsums::Tensor<double, CR> &C, double alpha, std::tuple<AI...> a_idx,
                  einsums::Tensor<double, AR> const &A, std::tuple<BI...> b_idx, einsums::Tensor<double, BR> const &B) {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     einsums::tensor_algebra::detail::einsum<true, false, false, false>(beta, c_idx, &C, alpha, a_idx, A, b_idx, B);
 }
 
@@ -134,11 +134,11 @@ void report_paths(char const *label, int N, TimingStats const &s_generic, Timing
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=32", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(3));
-    ProfileAnnotate("pattern", "C[i,l]+=A[i,k,j]*B[l,j,k]");
-    ProfileAnnotate("N", int64_t(32));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(3));
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[i,k,j]*B[l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(32));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t N = 32;
 
@@ -201,11 +201,11 @@ TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=32", "[packed-gemm][ben
 }
 
 TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=64", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(3));
-    ProfileAnnotate("pattern", "C[i,l]+=A[i,k,j]*B[l,j,k]");
-    ProfileAnnotate("N", int64_t(64));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(3));
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[i,k,j]*B[l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(64));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t N = 64;
 
@@ -256,11 +256,11 @@ TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=64", "[packed-gemm][ben
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=8", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(4));
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
-    ProfileAnnotate("N", int64_t(8));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(4));
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(8));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t N = 8;
 
@@ -324,11 +324,11 @@ TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=8", "[packed-gemm][
 }
 
 TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=16", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(4));
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
-    ProfileAnnotate("N", int64_t(16));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(4));
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(16));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t N = 16;
 
@@ -382,11 +382,11 @@ TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=16", "[packed-gemm]
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Sort+GEMM: rank-4 rectangular C[i,j]+=A[i,k,l,m]*B[j,m,k,l]", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(4));
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,k,l,m]*B[j,m,k,l]");
-    ProfileAnnotate("N", int64_t(0));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(4));
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,k,l,m]*B[j,m,k,l]");
+    WAGGLE_ANNOTATE("N", int64_t(0));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t Ni = 32, Nj = 32, Nk = 16, Nl = 16, Nm = 8;
 
@@ -462,11 +462,11 @@ TEST_CASE("Sort+GEMM: rank-4 rectangular C[i,j]+=A[i,k,l,m]*B[j,m,k,l]", "[packe
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=32", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(3));
-    ProfileAnnotate("pattern", "C[j,i]+=A[k,i,l]*B[l,j,k]");
-    ProfileAnnotate("N", int64_t(32));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(3));
+    WAGGLE_ANNOTATE("pattern", "C[j,i]+=A[k,i,l]*B[l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(32));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t N = 32;
 
@@ -533,11 +533,11 @@ TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=32", "[packed
 }
 
 TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=64", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(3));
-    ProfileAnnotate("pattern", "C[j,i]+=A[k,i,l]*B[l,j,k]");
-    ProfileAnnotate("N", int64_t(64));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(3));
+    WAGGLE_ANNOTATE("pattern", "C[j,i]+=A[k,i,l]*B[l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(64));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t N = 64;
 
@@ -584,11 +584,11 @@ TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=64", "[packed
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=128", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(3));
-    ProfileAnnotate("pattern", "C[i,l]+=A[i,k,j]*B[l,j,k]");
-    ProfileAnnotate("N", int64_t(128));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(3));
+    WAGGLE_ANNOTATE("pattern", "C[i,l]+=A[i,k,j]*B[l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(128));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t N = 128;
 
@@ -626,11 +626,11 @@ TEST_CASE("Sort+GEMM: rank-3 C[i,l]+=A[i,k,j]*B[l,j,k] N=128", "[packed-gemm][be
 }
 
 TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=128", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(3));
-    ProfileAnnotate("pattern", "C[j,i]+=A[k,i,l]*B[l,j,k]");
-    ProfileAnnotate("N", int64_t(128));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(3));
+    WAGGLE_ANNOTATE("pattern", "C[j,i]+=A[k,i,l]*B[l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(128));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t N = 128;
 
@@ -672,11 +672,11 @@ TEST_CASE("Sort+GEMM: rank-3 scrambled C[j,i]+=A[k,i,l]*B[l,j,k] N=128", "[packe
 }
 
 TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=32", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(4));
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
-    ProfileAnnotate("N", int64_t(32));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(4));
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,l,k,m]*B[m,l,j,k]");
+    WAGGLE_ANNOTATE("N", int64_t(32));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t N = 32;
 
@@ -722,11 +722,11 @@ TEST_CASE("Sort+GEMM: rank-4 C[i,j]+=A[i,l,k,m]*B[m,l,j,k] N=32", "[packed-gemm]
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Sort+GEMM: rank-4 rect C[i,j]+=A[i,k,l,m]*B[j,m,k,l] (64x64x32x16x8)", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(4));
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,k,l,m]*B[j,m,k,l]");
-    ProfileAnnotate("N", int64_t(0));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(4));
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,k,l,m]*B[j,m,k,l]");
+    WAGGLE_ANNOTATE("N", int64_t(0));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t Ni = 64, Nj = 64, Nk = 32, Nl = 16, Nm = 8;
 
@@ -775,11 +775,11 @@ TEST_CASE("Sort+GEMM: rank-4 rect C[i,j]+=A[i,k,l,m]*B[j,m,k,l] (64x64x32x16x8)"
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=8", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
-    ProfileAnnotate("rank", int64_t(5));
-    ProfileAnnotate("pattern", "C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k]");
-    ProfileAnnotate("N", int64_t(8));
-    ProfileAnnotate("dtype", "double");
+    WAGGLE_ZONE_FUNC();
+    WAGGLE_ANNOTATE("rank", int64_t(5));
+    WAGGLE_ANNOTATE("pattern", "C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k]");
+    WAGGLE_ANNOTATE("N", int64_t(8));
+    WAGGLE_ANNOTATE("dtype", "double");
 
     constexpr size_t N = 8;
 
@@ -843,7 +843,7 @@ TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=8", "[packed-ge
 }
 
 TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=16", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     constexpr size_t N = 16;
 
@@ -888,7 +888,7 @@ TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=16", "[packed-g
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Sort+GEMM: rank-5 rect C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] (32x32x16x8x8x4)", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     constexpr size_t Ni = 32, Nj = 32, Nk = 16, Nl = 8, Nm = 8, Nn = 4;
 
@@ -964,7 +964,7 @@ TEST_CASE("Sort+GEMM: rank-5 rect C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] (32x32x16x8x
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Sort+GEMM: rank-5 scrambled C[j,i]+=A[l,i,k,m,n]*B[n,j,m,l,k] N=8", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     constexpr size_t N = 8;
 
@@ -1035,7 +1035,7 @@ TEST_CASE("Sort+GEMM: rank-5 scrambled C[j,i]+=A[l,i,k,m,n]*B[n,j,m,l,k] N=8", "
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=6", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     constexpr size_t N = 6;
 
@@ -1101,7 +1101,7 @@ TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=6", "[packe
 }
 
 TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=8", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     constexpr size_t N = 8;
 
@@ -1147,7 +1147,7 @@ TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=8", "[packe
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Sort+GEMM: rank-6 rect C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] (16x16x8x8x4x4x4)", "[packed-gemm][benchmark][sort]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
 
     constexpr size_t Ni = 16, Nj = 16, Nk = 8, Nl = 8, Nm = 4, Nn = 4, No = 4;
 

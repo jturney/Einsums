@@ -90,7 +90,7 @@ def test_section_pops_on_exception():
 
 
 def test_section_accepts_location_kwargs():
-    """file/line/func kwargs are accepted (mirrors LabeledSection capture)."""
+    """file/line/func kwargs are accepted (mirrors WAGGLE_ZONE capture)."""
     with prof.section("loc", file=__file__, line=42, func="test_loc"):
         pass
 

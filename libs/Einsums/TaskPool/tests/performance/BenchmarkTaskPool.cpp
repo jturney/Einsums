@@ -26,9 +26,9 @@ namespace tp = einsums::task_pool;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench TaskPool: submit+get latency (empty task)", "[TaskPool][latency][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
-    ProfileAnnotate("category", "latency");
+    WAGGLE_ANNOTATE("category", "latency");
 
     auto t = time_us(
         "submit+get empty",
@@ -43,9 +43,9 @@ EINSUMS_TEST_CASE("Bench TaskPool: submit+get latency (empty task)", "[TaskPool]
 }
 
 EINSUMS_TEST_CASE("Bench TaskPool: submit+get latency (returning int)", "[TaskPool][latency][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
-    ProfileAnnotate("category", "latency");
+    WAGGLE_ANNOTATE("category", "latency");
 
     auto t = time_us(
         "submit+get int",
@@ -64,10 +64,10 @@ EINSUMS_TEST_CASE("Bench TaskPool: submit+get latency (returning int)", "[TaskPo
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench TaskPool: .then() chain length 1", "[TaskPool][continuation][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
-    ProfileAnnotate("category", "continuation");
-    ProfileAnnotate("chain_length", int64_t(1));
+    WAGGLE_ANNOTATE("category", "continuation");
+    WAGGLE_ANNOTATE("chain_length", int64_t(1));
 
     auto t = time_us(
         "then-1",
@@ -82,10 +82,10 @@ EINSUMS_TEST_CASE("Bench TaskPool: .then() chain length 1", "[TaskPool][continua
 }
 
 EINSUMS_TEST_CASE("Bench TaskPool: .then() chain length 5", "[TaskPool][continuation][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
-    ProfileAnnotate("category", "continuation");
-    ProfileAnnotate("chain_length", int64_t(5));
+    WAGGLE_ANNOTATE("category", "continuation");
+    WAGGLE_ANNOTATE("chain_length", int64_t(5));
 
     auto t = time_us(
         "then-5",
@@ -109,10 +109,10 @@ EINSUMS_TEST_CASE("Bench TaskPool: .then() chain length 5", "[TaskPool][continua
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench TaskPool: 100 independent tasks", "[TaskPool][throughput][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
-    ProfileAnnotate("category", "throughput");
-    ProfileAnnotate("tasks", int64_t(100));
+    WAGGLE_ANNOTATE("category", "throughput");
+    WAGGLE_ANNOTATE("tasks", int64_t(100));
 
     auto t = time_us(
         "100-tasks",
@@ -133,10 +133,10 @@ EINSUMS_TEST_CASE("Bench TaskPool: 100 independent tasks", "[TaskPool][throughpu
 }
 
 EINSUMS_TEST_CASE("Bench TaskPool: 1000 independent tasks", "[TaskPool][throughput][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
-    ProfileAnnotate("category", "throughput");
-    ProfileAnnotate("tasks", int64_t(1000));
+    WAGGLE_ANNOTATE("category", "throughput");
+    WAGGLE_ANNOTATE("tasks", int64_t(1000));
 
     auto t = time_us(
         "1000-tasks",
@@ -157,10 +157,10 @@ EINSUMS_TEST_CASE("Bench TaskPool: 1000 independent tasks", "[TaskPool][throughp
 }
 
 EINSUMS_TEST_CASE("Bench TaskPool: 10000 independent tasks", "[TaskPool][throughput][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
-    ProfileAnnotate("category", "throughput");
-    ProfileAnnotate("tasks", int64_t(10000));
+    WAGGLE_ANNOTATE("category", "throughput");
+    WAGGLE_ANNOTATE("tasks", int64_t(10000));
 
     auto t = time_us(
         "10000-tasks",
@@ -185,12 +185,12 @@ EINSUMS_TEST_CASE("Bench TaskPool: 10000 independent tasks", "[TaskPool][through
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench TaskPool: parallel_for N=1000 (light work)", "[TaskPool][parallel_for][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
 
     std::vector<double> data(1000);
-    ProfileAnnotate("category", "parallel_for");
-    ProfileAnnotate("N", int64_t(1000));
+    WAGGLE_ANNOTATE("category", "parallel_for");
+    WAGGLE_ANNOTATE("N", int64_t(1000));
 
     auto t_seq = time_us(
         "seq",
@@ -210,12 +210,12 @@ EINSUMS_TEST_CASE("Bench TaskPool: parallel_for N=1000 (light work)", "[TaskPool
 }
 
 EINSUMS_TEST_CASE("Bench TaskPool: parallel_for N=100000 (light work)", "[TaskPool][parallel_for][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
 
     std::vector<double> data(100000);
-    ProfileAnnotate("category", "parallel_for");
-    ProfileAnnotate("N", int64_t(100000));
+    WAGGLE_ANNOTATE("category", "parallel_for");
+    WAGGLE_ANNOTATE("N", int64_t(100000));
 
     auto t_seq = time_us(
         "seq",
@@ -235,12 +235,12 @@ EINSUMS_TEST_CASE("Bench TaskPool: parallel_for N=100000 (light work)", "[TaskPo
 }
 
 EINSUMS_TEST_CASE("Bench TaskPool: parallel_for N=1000000 (light work)", "[TaskPool][parallel_for][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
 
     std::vector<double> data(1000000);
-    ProfileAnnotate("category", "parallel_for");
-    ProfileAnnotate("N", int64_t(1000000));
+    WAGGLE_ANNOTATE("category", "parallel_for");
+    WAGGLE_ANNOTATE("N", int64_t(1000000));
 
     auto t_seq = time_us(
         "seq",
@@ -264,7 +264,7 @@ EINSUMS_TEST_CASE("Bench TaskPool: parallel_for N=1000000 (light work)", "[TaskP
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench TaskPool: parallel_reduce N=100000 (dot product)", "[TaskPool][parallel_reduce][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
 
     std::vector<double> a(100000), b(100000);
@@ -272,8 +272,8 @@ EINSUMS_TEST_CASE("Bench TaskPool: parallel_reduce N=100000 (dot product)", "[Ta
         a[i] = static_cast<double>(i) * 0.001;
         b[i] = 1.0 / (static_cast<double>(i) + 1.0);
     }
-    ProfileAnnotate("category", "parallel_reduce");
-    ProfileAnnotate("N", int64_t(100000));
+    WAGGLE_ANNOTATE("category", "parallel_reduce");
+    WAGGLE_ANNOTATE("N", int64_t(100000));
 
     double volatile seq_result = 0.0;
     auto t_seq                 = time_us(
@@ -304,7 +304,7 @@ EINSUMS_TEST_CASE("Bench TaskPool: parallel_reduce N=100000 (dot product)", "[Ta
 }
 
 EINSUMS_TEST_CASE("Bench TaskPool: parallel_reduce N=10000000 (dot product)", "[TaskPool][parallel_reduce][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
 
     std::vector<double> a(10000000), b(10000000);
@@ -312,8 +312,8 @@ EINSUMS_TEST_CASE("Bench TaskPool: parallel_reduce N=10000000 (dot product)", "[
         a[i] = static_cast<double>(i) * 0.0001;
         b[i] = 1.0 / (static_cast<double>(i) + 1.0);
     }
-    ProfileAnnotate("category", "parallel_reduce");
-    ProfileAnnotate("N", int64_t(10000000));
+    WAGGLE_ANNOTATE("category", "parallel_reduce");
+    WAGGLE_ANNOTATE("N", int64_t(10000000));
 
     double volatile seq_result = 0.0;
     auto t_seq                 = time_us(
@@ -348,11 +348,11 @@ EINSUMS_TEST_CASE("Bench TaskPool: parallel_reduce N=10000000 (dot product)", "[
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench TaskPool: work-stealing imbalanced 100 tasks", "[TaskPool][steal][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool   = tp::TaskPool::get_singleton();
     auto  before = pool.snapshot_metrics();
-    ProfileAnnotate("category", "work-stealing");
-    ProfileAnnotate("tasks", int64_t(100));
+    WAGGLE_ANNOTATE("category", "work-stealing");
+    WAGGLE_ANNOTATE("tasks", int64_t(100));
 
     auto t = time_us(
         "imbalanced",
@@ -388,10 +388,10 @@ EINSUMS_TEST_CASE("Bench TaskPool: work-stealing imbalanced 100 tasks", "[TaskPo
 // ═══════════════════════════════════════════════════════════════════════════════
 
 EINSUMS_TEST_CASE("Bench TaskPool: submit_group 100 tasks", "[TaskPool][group][benchmark]") {
-    LabeledSection0();
+    WAGGLE_ZONE_FUNC();
     auto &pool = tp::TaskPool::get_singleton();
-    ProfileAnnotate("category", "submit_group");
-    ProfileAnnotate("tasks", int64_t(100));
+    WAGGLE_ANNOTATE("category", "submit_group");
+    WAGGLE_ANNOTATE("tasks", int64_t(100));
 
     auto t = time_us(
         "group-100",
