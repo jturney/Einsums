@@ -32,11 +32,8 @@ extern void cblas_zdotc_sub(int_t n, void const *x, int_t incx, void const *y, i
 }
 EINSUMS_DISABLE_WARNING_POP
 
-// The n guards below are the same defence as copy.cpp's and scal.cpp's:
-// Accelerate validates the increments before the length and ABORTS THE PROCESS
-// on a zero one, while an empty tensor legitimately carries a zero increment.
-// An empty dot is zero, which is what the reference implementations return and
-// what the sum over no elements means.
+// The n guards: Accelerate aborts on a zero increment, which empty tensors carry (see copy.cpp).
+// An empty dot is zero.
 
 auto sdot(int_t n, float const *x, int_t incx, float const *y, int_t incy) -> float {
     LabeledSection0();

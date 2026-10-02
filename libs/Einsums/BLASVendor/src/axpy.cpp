@@ -22,10 +22,7 @@ extern void FC_GLOBAL(zaxpy, ZAXPY)(int_t *, std::complex<double> *, std::comple
                                     int_t *);
 }
 
-// The n guards below are the same defence as copy.cpp's and scal.cpp's:
-// Accelerate validates the increments before the length and ABORTS THE PROCESS
-// on a zero one, while an empty tensor legitimately carries a zero increment.
-// `axpby` scales then adds, so the same zero-extent operand reaches both.
+// The n guards: Accelerate aborts on a zero increment, which empty tensors carry (see copy.cpp).
 
 void saxpy(int_t n, float alpha_x, float const *x, int_t inc_x, float *y, int_t inc_y) {
     LabeledSection0();
@@ -65,9 +62,7 @@ void zaxpy(int_t n, std::complex<double> alpha_x, std::complex<double> const *x,
 
 void saxpby(int_t const n, float const a, float const *x, int_t const incx, float const b, float *y, int_t const incy) {
     LabeledSection0();
-    // If x aliases y, the scal-then-axpy split below would scale y (and hence x)
-    // before axpy reads it -- corrupting the result (e.g. b==0 zeroes x first).
-    // For that case y = a*x + b*y = (a + b)*y, a single scaling.
+    // x aliasing y: scaling y first would scale x too, so use y = (a + b) * y.
     if (x == y && incx == incy) {
         if (incy == 0) {
             *y *= (a + b);

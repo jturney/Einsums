@@ -21,14 +21,8 @@
 
 EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 
-// Batch GEMM: perform batch_count independent GEMMs.
-// All batches share the same transa, transb, m, n, k, alpha, beta, lda, ldb, ldc.
-// Only the data pointers differ (passed as arrays).
-//
-// This is a fallback implementation that calls the regular Fortran GEMM in a
-// parallel loop. If a vendor provides a native batch GEMM (MKL Fortran
-// dgemm_batch, or OpenBLAS cblas_dgemm_batch), a vendor-specific override
-// can be added here behind a CMake config define.
+// Batch GEMM: batch_count GEMMs sharing every parameter but the pointers, as the vendor GEMM in a
+// parallel loop. A native vendor batch could be added behind a config define.
 
 extern "C" {
 extern void FC_GLOBAL(sgemm, SGEMM)(char *, char *, int_t *, int_t *, int_t *, float *, float const *, int_t *, float const *, int_t *,
@@ -108,21 +102,9 @@ void small_gemm(char transa, char transb, int_t m, int_t n, int_t k, T alpha, T 
 
 /// Should this batch run on the inline kernel rather than on the vendor GEMM?
 ///
-/// Only when the loop below will actually be concurrent. A vendor GEMM beats the
-/// kernel on a single thread at every size - 0.11 us against 0.22 for 9x9 doubles
-/// here - because it is a better kernel. What it does not survive is being called
-/// concurrently: OpenBLAS serializes inside each call, so the same 4000-element
-/// 9x9 batch costs 0.44 ms on one thread and 1.04 ms on ten, while the kernel below
-/// shares nothing and goes 0.85 -> 0.21.
-///
-/// So the crossover is not a property of the shape alone: it rises with the team,
-/// because a wider team is what makes the vendor's serialization expensive enough
-/// to be worth a worse kernel. Measured here it sits at dim 10 on four threads and
-/// dim 16 on ten, which is the line below. Pinning it at the ten-thread value for
-/// every team - which is what a single constant did - inverts on a narrow one: at
-/// two threads a 12x12 through 16x16 batch ran 0.61-0.82x the speed of the same
-/// batch on one thread, having given up the vendor kernel to buy a second thread
-/// that could not pay for it.
+/// The vendor GEMM is faster alone but serializes when called concurrently (a 9x9 batch: 0.44 ms on
+/// one thread, 1.04 ms on ten; the inline kernel goes 0.85 -> 0.21). So the cutoff rises with the
+/// team: dim 10 at four threads, 16 at ten.
 inline int_t small_gemm_cutoff(int_t threads) {
     return std::min<int_t>(small_gemm_dim, 6 + threads);
 }
@@ -142,15 +124,7 @@ inline bool use_small_gemm(int_t m, int_t n, int_t k) {
 
 /// One vendor GEMM, with the Fortran-ABI pointer plumbing hidden.
 ///
-/// The scalars are taken BY VALUE on purpose. LAPACK's gemm takes them by
-/// pointer, and passing the addresses of a shared caller's locals meant every
-/// OMP worker read the same stack slots. Harmless in fact - workers only read,
-/// and gemm never writes its inputs - but TSan cannot see libgomp's barrier and
-/// so reported a race against any later write to that stack region (the next
-/// fmt formatting in the caller, say). The old code bought private copies with
-/// ``firstprivate`` on each pragma; taking them by value here gives every call
-/// its own copies structurally, which is one fewer thing for a new loop to
-/// remember.
+/// Scalars by value, so workers never share the caller's stack slots (which TSan flags).
 /// @{
 inline void vendor_gemm(char transa, char transb, int_t m, int_t n, int_t k, float alpha, float const *a, int_t lda, float const *b,
                         int_t ldb, float beta, float *c, int_t ldc) {
@@ -179,17 +153,9 @@ void gemm_batch_impl(char transa, char transb, int_t m, int_t n, int_t k, T alph
         return;
     }
 
-    // Uniform shapes mean uniform cost, so the small kernel's loop takes a
-    // static schedule and saves the dynamic one's atomic. The vendor GEMM's
-    // cost is less predictable (it packs, and it may itself defer), so that
-    // loop keeps the dynamic schedule it has always had.
-    // A batch reached from inside someone else's team does not open one of its
-    // own. Under the runtime's default of one active level such a region is
-    // handed a single thread anyway, so the fork is pure entry cost; were that
-    // default ever raised, it would become a genuine nested team wrapped around
-    // a vendor GEMM, which is the shape an OpenMP-built OpenBLAS miscomputes.
-    // The extractor these members' pointers come from guards on the same
-    // condition (ComputeGraph/Detail/GroupedBatchedGemm.hpp).
+    // Static schedule for the uniform small kernel, dynamic for the vendor GEMM. Inside another team,
+    // open no region of our own: a nested team around an OpenMP OpenBLAS miscomputes (the extractor
+    // in ComputeGraph/Detail/GroupedBatchedGemm.hpp guards the same way).
     if (use_small_gemm(m, n, k)) {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static) if (!omp_in_parallel())
@@ -210,13 +176,8 @@ void gemm_batch_impl(char transa, char transb, int_t m, int_t n, int_t k, T alph
 
 /// The grouped batch: every group's members flattened into one parallel loop.
 ///
-/// The point of the entry point is that the OpenMP region is entered once for
-/// the whole call rather than once per shape. So everything that varies per
-/// group is resolved into small per-group tables first, and the loop body then
-/// costs one binary search over @c group_count to find which group an item
-/// belongs to. That search is a handful of predictable branches against work
-/// that is at minimum a GEMM, and it buys us not having to materialize a
-/// group index per member.
+/// One OpenMP region for the whole call. Per-group values go into small tables, and each item finds
+/// its group by binary search.
 template <typename T>
 void gemm_batch_grouped_impl(char const *transa_array, char const *transb_array, int_t const *m_array, int_t const *n_array,
                              int_t const *k_array, T const *alpha_array, T const **a_array, int_t const *lda_array, T const **b_array,
@@ -226,12 +187,8 @@ void gemm_batch_grouped_impl(char const *transa_array, char const *transb_array,
         return;
     }
 
-    // ``offset`` indexes the flattened pointer arrays, which are laid out in
-    // the caller's group order and so must keep it. ``live`` holds only the
-    // groups that have work, with a running total of their members: an empty
-    // group (m or n zero, or no members) writes nothing, exactly as the
-    // uniform entry point quick-returns on the same condition. A zero ``k``
-    // is NOT empty - it still scales C by beta - so it stays in.
+    // ``live`` holds the groups with work (m, n and members nonzero) and running member totals. A zero
+    // k is not empty: it still scales C by beta.
     std::vector<int_t> live;
     std::vector<int_t> live_start;
     std::vector<int_t> live_offset;
@@ -256,10 +213,7 @@ void gemm_batch_grouped_impl(char const *transa_array, char const *transb_array,
     }
     live_start.push_back(total);
 
-    // Which kernel each group wants, decided per group by its own dims. The
-    // uniform path decides this once per call; here the groups differ, and a
-    // grouped call that took the vendor kernel for every one of them would
-    // regress the shapes the small kernel exists for.
+    // Each group picks its kernel by its own dims.
     std::vector<char> small(live.size());
     for (size_t s = 0; s < live.size(); ++s) {
         int_t const g = live[s];

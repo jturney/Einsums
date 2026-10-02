@@ -19,20 +19,11 @@
 // ---------------------------------------------------------------------------
 // Direct-product kernels (operate on a unit-stride block of 64 elements).
 //
-// These are defined in C++ using std::complex rather than C99 `_Complex` on
-// purpose: `_Complex` multiplication lowers to the compiler-rt libcalls
-// __mulsc3/__muldc3 (Annex G full-range semantics), which are not resolvable
-// on the Windows clang-cl link line. std::complex::operator* is inlined with
-// the naive formula and emits no libcall, so it links on every toolchain.
-// std::complex<T> and `_Complex T` share the same x86-64 ABI, so the AVX2
-// assembly kernels (Linux only) are called unchanged.
+// std::complex, not `_Complex`, whose multiply calls __mulsc3/__muldc3, unavailable to clang-cl. The
+// ABI is shared, so the AVX2 assembly kernels are called unchanged.
 //
-// The scalar fallbacks use EINSUMS_OMP_SIMD (a vectorize-only hint), NOT
-// EINSUMS_OMP_SIMD_PRAGMA(for): the latter expands to `#pragma omp for`
-// (worksharing) on clang/gcc, and these kernels run inside the caller's
-// `#pragma omp parallel for` over blocks - nesting worksharing regions
-// deadlocks. (The former .c file was built without -fopenmp, so its pragma
-// was inert; compiling here as C++ activates it.)
+// The fallbacks use EINSUMS_OMP_SIMD, not EINSUMS_OMP_SIMD_PRAGMA(for): they run inside the
+// caller's parallel for, and nested worksharing deadlocks.
 // ---------------------------------------------------------------------------
 #if defined(__AVX2__) && defined(__FMA3__) && !defined(__ICC) && !defined(__INTEL_COMPILER)
 // The AVX2 kernels are hand-written assembly, so these keep C linkage.
@@ -103,12 +94,7 @@ namespace {
 
 /// Element count below which a direct product runs serially.
 ///
-/// Forking a thread team costs tens of microseconds when the workers are
-/// parked, and these routines used to do it unconditionally the moment the
-/// operand reached one 64-element block: a 64-element Hadamard product paid a
-/// full fork to run a single block, measured at ~23 us against 0.1 us serial.
-/// Elementwise kernels elsewhere already gate on this same threshold, which is
-/// derived from the measured region cost (see omp_min_parallel_elements).
+/// The shared elementwise threshold (omp_min_parallel_elements); a fork cost ~23 us against 0.1 us serial.
 size_t parallel_threshold() {
     return ::einsums::hardware::omp_min_parallel_elements();
 }

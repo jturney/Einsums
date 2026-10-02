@@ -97,10 +97,8 @@ void sgemm(char transa, char transb, int_t m, int_t n, int_t k, float alpha, flo
         return;
 
     if (k == 0) {
-        // BLAS semantics: an empty contraction still scales the output,
-        // C = beta*C (beta == 0 assigns zero, never propagating stale NaNs).
-        // Handled here because empty A/B legitimately carry ld 0, which
-        // GEMM_CHECK would reject even though no element is read.
+        // An empty contraction still applies C = beta*C (beta 0 assigns zero). Done here because empty
+        // A/B carry ld 0, which GEMM_CHECK would reject.
         for (int_t j = 0; j < n; j++) {
             for (int_t i = 0; i < m; i++) {
                 if (beta == decltype(beta){0}) {
@@ -126,10 +124,8 @@ void dgemm(char transa, char transb, int_t m, int_t n, int_t k, double alpha, do
         return;
 
     if (k == 0) {
-        // BLAS semantics: an empty contraction still scales the output,
-        // C = beta*C (beta == 0 assigns zero, never propagating stale NaNs).
-        // Handled here because empty A/B legitimately carry ld 0, which
-        // GEMM_CHECK would reject even though no element is read.
+        // An empty contraction still applies C = beta*C (beta 0 assigns zero). Done here because empty
+        // A/B carry ld 0, which GEMM_CHECK would reject.
         for (int_t j = 0; j < n; j++) {
             for (int_t i = 0; i < m; i++) {
                 if (beta == decltype(beta){0}) {
@@ -155,10 +151,8 @@ void cgemm(char transa, char transb, int_t m, int_t n, int_t k, std::complex<flo
         return;
 
     if (k == 0) {
-        // BLAS semantics: an empty contraction still scales the output,
-        // C = beta*C (beta == 0 assigns zero, never propagating stale NaNs).
-        // Handled here because empty A/B legitimately carry ld 0, which
-        // GEMM_CHECK would reject even though no element is read.
+        // An empty contraction still applies C = beta*C (beta 0 assigns zero). Done here because empty
+        // A/B carry ld 0, which GEMM_CHECK would reject.
         for (int_t j = 0; j < n; j++) {
             for (int_t i = 0; i < m; i++) {
                 if (beta == decltype(beta){0}) {
@@ -184,10 +178,8 @@ void zgemm(char transa, char transb, int_t m, int_t n, int_t k, std::complex<dou
         return;
 
     if (k == 0) {
-        // BLAS semantics: an empty contraction still scales the output,
-        // C = beta*C (beta == 0 assigns zero, never propagating stale NaNs).
-        // Handled here because empty A/B legitimately carry ld 0, which
-        // GEMM_CHECK would reject even though no element is read.
+        // An empty contraction still applies C = beta*C (beta 0 assigns zero). Done here because empty
+        // A/B carry ld 0, which GEMM_CHECK would reject.
         for (int_t j = 0; j < n; j++) {
             for (int_t i = 0; i < m; i++) {
                 if (beta == decltype(beta){0}) {

@@ -19,10 +19,7 @@ extern void FC_GLOBAL(clacgv, CLACGV)(int_t *n, std::complex<float> *x, int_t *i
 extern void FC_GLOBAL(zlacgv, ZLACGV)(int_t *n, std::complex<double> *x, int_t *incx);
 }
 
-// Same n guard as copy.cpp, scal.cpp and axpy.cpp: Accelerate validates the
-// increment before the length and ABORTS THE PROCESS on a zero one, and an
-// empty tensor legitimately carries a zero increment. Conjugating an empty
-// complex tensor reaches here.
+// The n guard: Accelerate aborts on a zero increment, which empty tensors carry (see copy.cpp).
 
 void clacgv(int_t n, std::complex<float> *x, int_t incx) {
     LabeledSection0();

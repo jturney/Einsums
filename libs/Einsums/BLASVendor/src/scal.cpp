@@ -29,18 +29,8 @@ extern void FC_GLOBAL(slascl, SLASCL)(char *, int_t *, int_t *, float *, float *
 extern void FC_GLOBAL(dlascl, DLASCL)(char *, int_t *, int_t *, double *, double *, int_t *, int_t *, double *, int_t *, int_t *);
 }
 
-// Each routine below quick-returns on an empty vector rather than handing it to
-// the vendor. Reference BLAS returns on n < 1 before validating anything, but
-// Accelerate validates the increment first and ABORTS THE PROCESS on a zero
-// one -- and an empty tensor legitimately carries a zero increment, because
-// `get_incx` reports the smallest stride over the extent > 1 axes and a
-// column-major (0, k) tensor has stride(1) == dim(0) == 0. `axpby` on such a
-// tensor scales before it adds, so a grouped run holding one zero-extent entry
-// was enough to kill the process on macOS/Accelerate while passing everywhere
-// else.
-//
-// Same reasoning as the m/n guards in gemm.cpp and gemv.cpp, and the n guard in
-// copy.cpp.
+// The n guards: Accelerate aborts on a zero increment, which an empty tensor carries (a column-major
+// (0, k) tensor has stride(1) == 0). See copy.cpp.
 
 void sscal(int_t n, float alpha, float *vec, int_t inc) {
     LabeledSection0();

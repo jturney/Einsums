@@ -53,10 +53,7 @@ extern void FC_GLOBAL(zgerc, ZGERC)(int_t *, int_t *, std::complex<double> *, st
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "Ninth parameter (lda) in ger call ({}) is less than max(1, n ({})).", lda, n);        \
     }
 
-// The m/n guard is the same one gemm.cpp and gemv.cpp carry: an empty rank-1
-// update writes nothing, and its operands legitimately carry zero increments
-// and a zero lda, which ger_parameter_check would reject and Accelerate would
-// abort on -- even though no element is read or written.
+// The m/n guard, as in gemm.cpp: empty operands carry zero increments and lda, which would be rejected.
 
 void sger(int_t m, int_t n, float alpha, float const *x, int_t inc_x, float const *y, int_t inc_y, float *a, int_t lda) {
     LabeledSection0();
