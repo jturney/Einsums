@@ -183,22 +183,9 @@ bool SUMMAExpansion::run(Graph &graph) {
             continue;
         }
 
-        // Extract dimensions:
-        // A_local = (M/Pr, K/Pc), B_local = (K/Pr, N/Pc), C_local = (M/Pr, N/Pc)
-        // SUMMA iterates over Pc panels (for A broadcast) or Pr panels (for B broadcast).
-        // Since A: k→Col and B: k→Row, the panels iterate over the same K dimension.
-        // Number of panels = max(Pc, Pr), but for a consistent SUMMA, we iterate over
-        // the grid dimension that splits K in A (which is Pc) for A-broadcasts,
-        // and the grid dimension that splits K in B (which is Pr) for B-broadcasts.
-        //
-        // Standard SUMMA with Pc == Pr: iterate over Pc panels.
-        // For non-square grids, we need Pc panels for A (broadcast along rows of size Pc)
-        // and Pr panels for B (broadcast along cols of size Pr).
-        // But K must be consistently split: K/Pc for A's k-dim, K/Pr for B's k-dim.
-        // These are only equal when Pc == Pr. For non-square, the inner dimension sizes differ.
-        //
-        // Simplification: for the initial implementation, require Pc == Pr.
-        // For non-square grids, fall back to outer-product (skip SUMMA).
+        // A_local = (M/Pr, K/Pc), B_local = (K/Pr, N/Pc), C_local = (M/Pr, N/Pc).
+        // K is split K/Pc in A and K/Pr in B, which agree only when Pc == Pr, so
+        // SUMMA requires a square grid; non-square grids fall back to the outer product.
         if (grid.rows() != grid.cols()) {
             EINSUMS_LOG_INFO("SUMMAExpansion: skipping non-square grid {}x{} (not yet supported)", grid.rows(), grid.cols());
             continue;

@@ -172,8 +172,7 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     // Every operand must expose a rank-erased TensorImpl. That covers runtime
     // tensors AND statically typed Tensor<T, Rank>: the impl carries data, dims and
     // strides as runtime values, so one dtype dispatch serves every rank and no
-    // static-rank cast is needed -- which is what used to restrict this to runtime
-    // tensors. Only tile-wise sparse tensors lack an impl; they have no single
+    // static-rank cast is needed. Only tile-wise sparse tensors lack an impl; they have no single
     // buffer to contract over, so a pass must not route them here.
     if (!a_h.impl_fn || !b_h.impl_fn || !c_h.impl_fn) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
@@ -229,17 +228,14 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
                                : std::move(label);
     // RMW convention: a nonzero output prefactor means the node READS its output,
     // so the output must appear as an input too or the schedulers and the liveness
-    // passes cannot see the accumulation ordering (bug-1009).
+    // passes cannot see the accumulation ordering.
     node.inputs  = is_zero(c_pf) ? std::vector<TensorId>{a_id, b_id} : std::vector<TensorId>{a_id, b_id, c_id};
     node.outputs = {c_id};
 
-    // One lowering, shared with capture and with a future loader: the executor
-    // is derived from (kind, dtype, rank, descriptor, operand ids) and nothing
-    // else (design part 3.2). It resolves operands through the graph's slots,
-    // so rebind() and redirect_slot() are honored, and reads the descriptor's
-    // live params and indices, so a pass that rewrites a prefactor or an index
-    // list takes effect on the next execute rather than being silently ignored
-    // (the desync class of bug-1002).
+    // One lowering, shared with capture and the loader: the executor is derived
+    // from (kind, dtype, rank, descriptor, operand ids). It resolves operands
+    // through the graph's slots and reads the descriptor's live params and
+    // indices, so rebinds and pass rewrites take effect on the next execute.
     node.op_data = std::move(desc);
     node.execute = build_executor(OpKind::Einsum, dtype, c_h.rank, node.op_data, *this, std::span<TensorId const>{node.inputs},
                                   std::span<TensorId const>{node.outputs});

@@ -143,11 +143,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 /**
  * @brief Fold @p v into the running hash @p h.
  *
- * The golden-ratio mix every pass that keys an ``unordered_map`` on a composite
- * struct needs. Each of them used to spell its own, and two of those spellings
- * combined terms with a bare XOR, which is commutative: a key holding index
- * lists hashed the same under any permutation of them, so exactly the groups
- * these passes exist to tell apart landed in one bucket.
+ * The golden-ratio mix for keying an ``unordered_map`` on a composite struct.
+ * Use it instead of a bare XOR, which is commutative: permuted index lists
+ * would land in one bucket.
  *
  * Only bucketing depends on this. Two keys that compare equal still hash equal,
  * because the fold is a pure function of the values fed to it in order.

@@ -35,9 +35,7 @@ namespace {
 // recurse into loop bodies.
 // EscapeAnalysis::stable answers both in one call: exactly one value-writer in this graph, and no
 // descendant sub-graph touching the buffer. Shared with LoopInvariantHoisting
-// and the region framework rather than counted a second time here, because
-// three derivations of one relation disagreeing in the corner nobody tested is
-// this module's signature bug.
+// and the region framework so the derivations cannot disagree.
 
 /// Try to push an inferred descriptor to a graph-owned tensor handle.
 /// Returns true if the descriptor was applied (either taking on a new value

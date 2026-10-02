@@ -34,24 +34,13 @@ void register_builtin_element_ops(ElementOpRegistry &registry) {
         "sqrt_or_zero", []<std::floating_point T>(T x) { return x > T{0} ? std::sqrt(x) : T{0}; },
         ElementOpSignature{.arity = 1, .domain = ElementOpDomain::RealOnly, .description = "sqrt(x) for x > 0, else 0"});
 
-    // The kernel a symmetric inverse square root is made of. Guarded the same way its
-    // partner is, and for a reason rather than for symmetry: the matrices this is applied
-    // to are metrics, a metric of a nearly linearly dependent basis has eigenvalues at or
-    // below zero, and 1/sqrt of one of those is an infinity that propagates through
-    // everything the factorization then touches. Zeroing the offending direction is what
-    // every orthogonalization does with it.
+    // The kernel of a symmetric inverse square root. A metric of a nearly linearly dependent
+    // basis has eigenvalues at or below zero, and 1/sqrt of one poisons everything downstream,
+    // so the offending direction is zeroed, as every orthogonalization does.
     //
-    // The threshold is a POLICY NUMBER and therefore a parameter rather than a constant.
-    // Testing x > 0 catches the direction that has already gone negative and misses the one
-    // that has not quite: an eigenvalue at +1e-17 passes the guard and comes back as a 1/sqrt
-    // of about 3e8, which is worse than the infinity because nothing downstream looks wrong.
-    // Real orthogonalizations drop BELOW A THRESHOLD, and the number is the caller's because
-    // it depends on what their metric is a metric of.
-    //
-    // The default is zero, which is exactly the guard this op has always had. That is the
-    // documented default of the compatibility policy rather than a recommendation: a file
-    // written before a node could carry a threshold has to keep computing what it computed,
-    // and a caller who wants a real one says so. MetricFitFactorization does.
+    // The threshold is a parameter because it is a policy: x > 0 alone lets +1e-17 through as
+    // a silent 3e8. The default of zero is the compatibility default (a saved node without a
+    // threshold keeps its meaning), not a recommendation; MetricFitFactorization passes one.
     registry.register_op(
         "inv_sqrt_or_zero",
         []<std::floating_point T>(T x, double threshold) {

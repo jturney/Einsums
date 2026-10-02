@@ -445,11 +445,8 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         // cannot do it for us: an accumulation buffer has several writers, and its
         // single-writer guard is there to stop readers being redirected onto a
         // buffer that is mutated again.
-        // A consumer that wants the same sum scaled reuses it too: the scale rides
-        // on the contraction's ab_pf, which costs nothing, instead of paying for a
-        // second buffer and a second axpy chain. CCSD consumes tau with 1/4 in
-        // W_mnij and W_abef and with 1/2 in the T2 equation, so this is the common
-        // case rather than a corner one.
+        // A consumer that wants the same sum scaled reuses it too, with the scale
+        // on its ab_pf (CCSD uses tau at 1/4 and 1/2).
         auto const              identity = sum_identity(available);
         std::optional<TensorId> reuse_id;
         double                  reuse_scale = 1.0;
@@ -568,14 +565,8 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
 
         // Emit the factorization as ORDINARY nodes: zero T, accumulate each
         // non-shared operand into it, contract once against the shared operand.
-        //
-        // An earlier version fused all of that into one OpKind::Custom node whose
-        // executor swapped a slot pointer so the first member's baked einsum
-        // executor would read T. That worked, but it made the factorization opaque:
-        // T's construction was invisible to every other pass, so two consumers of
-        // the same sum each built their own copy (CSE has no nodes to match) and a
-        // sum that is loop-invariant could not be hoisted out of a CC iteration.
-        // Explicit nodes cost nothing at execute and let those passes do their job.
+        // Explicit nodes cost nothing at execute and let CSE share T and
+        // LoopInvariantHoisting hoist it.
         auto const *first_desc = nodes[first_pos].op_data.get_if<EinsumDescriptor>();
         if (first_desc == nullptr) {
             continue;

@@ -96,11 +96,9 @@ struct DeferredEntry {
 //
 // A SETUP body met on the way is not descended into. Its workspace is materialized inside the
 // body, whatever depth the body sits at, and the body is handed back through @p nested_setups so
-// the setup-body arm can do that. Hoisting a setup's workspace to the outermost parent gave it a
-// lifecycle the body's own validation could not see: a body checks its own nodes and its
-// descendants for the Materialize, never its ancestors, and the parent-placed node had no edge to
-// the loop the body sat in, so whether it had run first was a matter of schedule order. That
-// order differed between platforms, which is how one program passed on three and failed on one.
+// the setup-body arm can do that. Hoisted to the parent, the lifecycle would be invisible to the
+// body's validation (which never checks ancestors) and have no edge to the enclosing loop, so its
+// order would vary by platform.
 void collect_deferred(Graph &graph, std::vector<DeferredEntry> &out, std::vector<std::pair<Graph *, std::string>> &nested_setups) {
     for (auto const &[tid, handle] : graph.tensors_map()) {
         if (handle.alloc_state == AllocState::Deferred) {
@@ -129,11 +127,10 @@ void collect_deferred(Graph &graph, std::vector<DeferredEntry> &out, std::vector
 
 /// The storage every Materialize in @p graph and its descendants brings to life, by tensor pointer.
 ///
-/// The identity a body and its parent agree on. A second run of this pass used to meet a body's
-/// handle for a buffer the first run had already given a hoisted Materialize, find it still
-/// deferred (the handle only learns otherwise at execute), and hoist a second lifecycle, whose
-/// Initialize re-zeroed a value the parent had written by then. Keyed by name the check misses it,
-/// because a body may name the buffer differently from the parent that owns its Materialize.
+/// The identity a body and its parent agree on. A second run must not hoist a second lifecycle for a
+/// buffer the first already gave a Materialize (the handle stays deferred until execute), or its
+/// Initialize re-zeroes a value the parent wrote. Names do not work: a body may name the buffer
+/// differently from its parent.
 // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
 void collect_materialized_ptrs(Graph const &graph, std::unordered_set<void const *> &out) {
     for (auto const &node : graph.nodes()) {
@@ -326,8 +323,7 @@ bool Materialization::run(Graph &graph) {
     }
 
     // ── 3. First-use index for parent's own deferred tensors ──────────────
-    // Shared UsageAnalysis instead of a private scan. Two deliberate
-    // semantic upgrades over the old raw loop: alias chains resolve (a view
+    // From the shared UsageAnalysis: alias chains resolve (a view
     // of a deferred tensor counts as a use of the owner), and a use that
     // exists only inside a Loop/Conditional body surfaces at the
     // control-flow node's position (the Materialize then lands right before
@@ -418,15 +414,12 @@ bool Materialization::run(Graph &graph) {
         // A body's handle survives a rewrite that moves or deletes the node it was an operand of:
         // hoisting the body's only statement out of the loop leaves the handle behind, and a
         // re-association of the resulting chain then reads the two inputs directly and drops the
-        // intermediate altogether. Nothing anywhere uses the buffer at that point, and hoisting a
-        // lifecycle for it allocates a tensor whose whole point was to stop existing. The parent's
-        // arm has declined that since the CCSD tau terms; the descendants' arm asked only whether
-        // a body HELD a deferred handle, which a body goes on doing after its last use is gone.
+        // intermediate altogether. Nothing uses the buffer then, and a body goes on HOLDING the
+        // handle after its last use, so holding it is not enough to hoist a lifecycle.
         //
         // Intermediacy is read off the DECLARATION rather than off the body's handle. A body
-        // registers an operand of its own at capture and that registration carries no ownership
-        // claim, so a parent intermediate reaches the body's table with the flag clear; asking
-        // the body would decline to skip anything and the check would be inert. The buffer is the
+        // registers an operand of its own at capture with no ownership claim, so a parent
+        // intermediate reaches the body's table with the flag clear. The buffer is the
         // identity the two tables share, which is what @c find_tensor_by_ptr resolves.
         bool used = false;
         if (auto const *use = h.handle_owner->usage().find_owner(h.tid)) {
@@ -456,11 +449,9 @@ bool Materialization::run(Graph &graph) {
     //
     // The setup may sit BELOW the node at that position rather than be it: a fitting emitted into
     // a loop body puts its setup inside the loop, and the parent holds a handle for that setup's
-    // workspace whose first use is the Loop node. Looking only at the node itself sent such a
-    // workspace to a parent-level lifecycle the nested body's validation could not see, and
-    // whether execute reached the body before or after that lifecycle was a matter of schedule
-    // order. So the search descends through loops and branches to the setup that writes the
-    // buffer, at any depth.
+    // workspace whose first use is the Loop node. So the search descends through loops and
+    // branches to the setup that writes the buffer, at any depth; a parent-level lifecycle
+    // would be invisible to the body's validation and ordered only by chance.
     auto body_writes = [](Graph &body, void const *ptr) {
         for (auto const &node : body.nodes()) {
             for (TensorId const out : node.outputs) {
@@ -571,8 +562,7 @@ bool Materialization::run(Graph &graph) {
         if (Graph *body = setup_body_writing(handle.tensor_ptr); body != nullptr) {
             if (auto const body_tid = body_tid_for(*body, handle.tensor_ptr); body_tid.has_value()) {
                 auto body_nodes = lifecycle_for(handle, *body_tid);
-                // Named after the body the search FOUND. It used to name the node sitting at the
-                // request's position, which is the node the search stopped trusting.
+                // Named after the body the search FOUND, not the node at the request's position.
                 report(2, fmt::format("materialize deferred tensor '{}' inside setup body '{}'", handle.name, body->name()));
                 insert_at_front(*body, std::move(body_nodes));
                 continue;
@@ -596,26 +586,19 @@ bool Materialization::run(Graph &graph) {
     // covers only loop bodies and conditional branches, where a hoisted lifecycle is what
     // stops an allocation happening per iteration.
     //
-    // AFTER the request loop, deliberately, and the ordering is a fix rather than a tidy-up.
-    // The comment below says a body's copy of a parent-declared tensor carries no allocating
-    // hook and is therefore skipped here; that is false for a deferred runtime tensor, which
-    // capture adopts into the body complete with one. So a setup output the parent declared
-    // got a lifecycle from BOTH arms, and every graph with a setup body has carried two
-    // Materialize nodes per fitting since setup bodies shipped. Running second means the
-    // name-keyed guard below sees the request loop's node, which is the one built from the
-    // PARENT's handle and is the one that has to win: it allocates the buffer the parent's
+    // AFTER the request loop, deliberately: a deferred runtime tensor the parent declared is
+    // adopted into the body WITH an allocating hook, so both arms would otherwise give it a
+    // lifecycle. Running second lets the name-keyed guard below see the request loop's node,
+    // built from the PARENT's handle, which must win: it allocates the buffer the parent's
     // readers hold.
     //
     // Inside rather than hoisted, because a setup body runs once per bound problem and is
     // skipped by every replay after. A parent-placed Materialize would allocate the fitting's
     // scratch on every replay to feed a body that does not run.
     //
-    // The provider used to do this itself, by applying a pass manager to the body before
-    // handing it over. That was wrong for a reason worth keeping written down: a Materialize
-    // node carries an allocating closure, a closure is the one thing a file cannot hold, and
-    // allocation is a resource decision that the design says is re-derived on load rather than
-    // saved. Doing it at capture baked a resource decision into structure and made the fitting
-    // unsaveable, which is the one thing a factorization exists to avoid.
+    // Here, not in the provider at capture: a Materialize node carries an allocating closure a
+    // file cannot hold, and allocation is a resource decision re-derived on load, so doing it at
+    // capture would make the fitting unsaveable.
     std::vector<std::pair<Graph *, std::string>> setup_bodies;
     for (auto const &node : nodes) {
         if (auto const *setup = node.op_data.get_if<SetupDescriptor>(); setup != nullptr && setup->body) {

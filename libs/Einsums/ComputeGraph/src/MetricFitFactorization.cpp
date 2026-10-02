@@ -130,9 +130,7 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
             // rather than once, because it is a property of the metric that is bound now.
             // The entries are exactly zero only where inv_sqrt_or_zero assigned zero, so the
             // indicator is reading that guard's decision rather than testing a float for
-            // equality in the usual mistaken way. It reads the THRESHOLD's decision too, at
-            // no extra cost: the direction that used to slip through as a huge 1/sqrt is now
-            // dropped, and this is what says so.
+            // equality in the usual mistaken way. It counts the threshold's drops too.
             //
             // The dot of the indicator with ITSELF is the count, since every entry is 0 or 1.
             // A dot against a vector of ones would say the same thing and need a fifth tensor

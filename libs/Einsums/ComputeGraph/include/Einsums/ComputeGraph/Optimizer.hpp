@@ -382,8 +382,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * Controls whether the PassManager automatically descends into
      * loop bodies and conditional branches (via
      * ``Graph::for_each_subgraph``) and calls ``run()`` again at each
-     * level. Default ``false``, preserves the historical flat-graph
-     * behavior.
+     * level. Default ``false``.
      *
      * Passes whose semantics are *correct on a flat sub-graph* (CSE,
      * ScaleAbsorption, PermuteFusion, …) should return ``true`` once
@@ -402,8 +401,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * opt out here while walking the tree THEMSELVES inside ``run()``, which
      * is not the same as not running on bodies.
      *
-     * Two passes this paragraph used to name have since earned their way in,
-     * and what they had to grow is the useful part:
+     * What it takes to recurse safely, by example:
      * ``ConstantFolding`` folds only nodes whose tensors are materialized at
      * pass time, so a body's deferred workspace is skipped rather than
      * executed against unallocated storage;
@@ -411,19 +409,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * ``last_writer``, which is exactly what keeps a loop-carried
      * read-before-write ahead of the write that would otherwise overtake it.
      *
-     * Known gap, measured rather than assumed: the program-order guard in
-     * ``PassManager::run`` checks the TOP-LEVEL graph only, so a pass that
-     * returns ``true`` here rewrites bodies with that guard switched off.
-     * Extending the guard over the sub-graph tree was tried on 2026-08-08 and
-     * withdrawn. It reports false positives in bodies, because its
-     * "was there an earlier writer of this buffer in scan order" test is a
-     * proxy for "this read has a producer", and Reorder - which builds real
-     * RAW edges and never inverts a genuine producer/consumer pair - trips the
-     * proxy without changing semantics. Sixteen control-flow fuzz programs
-     * flagged, all four dtypes, and all 798 numerically identical with the
-     * check disabled. Closing the gap needs the guard to reason from real
-     * dependence edges rather than scan position, which is a bigger change
-     * than the guard is.
+     * Known gap: the program-order guard in ``PassManager::run`` checks the
+     * TOP-LEVEL graph only, so a pass that returns ``true`` here rewrites
+     * bodies unguarded. Extending it to bodies gives false positives: its
+     * scan-order "earlier writer" test is only a proxy for "this read has a
+     * producer", and Reorder trips it without changing semantics. Closing the
+     * gap needs the guard to use real dependence edges.
      *
      * One thing recursion does NOT buy you: a rewrite that bakes a lambda over
      * ``TensorHandle::tensor_ptr`` is wrong at every level, loop or not. Use

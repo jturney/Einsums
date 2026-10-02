@@ -41,10 +41,8 @@ struct NodeCost {
 /// How a node's kind behaves, for the two questions this pass asks of it: which
 /// speedup curve it scales along, and how its serial time is modeled.
 ///
-/// One partition rather than two. The two switches used to be written out
-/// separately and they drifted: the batched kinds were listed here but not
-/// there, and the planner priced the CC residual's dominant kernel as a memcpy
-/// until that was noticed.
+/// One partition answering both, so the two cannot drift (a kind missing from
+/// one would be priced as a memcpy).
 enum class KindClass {
     Gemm,        ///< A single dense contraction, priced from its GEMM shape.
     BatchedGemm, ///< Many small contractions behind one launch, priced from their flops.

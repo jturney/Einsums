@@ -626,11 +626,8 @@ Value write_node(Node const &node, std::size_t dense_id, Graph const &graph, Gra
     // a fragment tensor is matched to an enclosing frame by address and a frame that has not
     // interned the buffer yet reports no match. The body then writes its own tensor record,
     // the load allocates a second buffer for it, and the two ends of one boundary quietly
-    // become two tensors.
-    //
-    // It went unnoticed while every such buffer happened to be mentioned by an EARLIER node.
-    // A setup node holding a fitting is the case where that cannot be true: it is spliced at
-    // the front precisely so it runs before the consumers that mention what it produces.
+    // become two tensors. (A setup node is spliced at the front, so nothing earlier has
+    // interned its buffers.)
     //
     // Walked in program order over the subtree's nodes rather than over its tensor map, which
     // is unordered: the dense numbering is what makes two captures of one program produce
@@ -718,10 +715,8 @@ Value write_fragment(Graph const &graph, Graph const &root, Frame const *parent,
 /// The provenance block. Data, never instructions; see GraphIR.hpp.
 ///
 /// The pass list comes from the GRAPH, which records each structural-algebraic pass that
-/// rewrote it, unless the caller supplied one. It used to come only from the caller, which meant
-/// it was accurate exactly as often as someone remembered to fill it in - and the block exists
-/// to answer "what shaped this file" for a graph whose numbers turn out wrong, which is the
-/// moment nobody has that information to hand.
+/// rewrote it, unless the caller supplied one, so "what shaped this file" is answered without
+/// anyone remembering to fill it in.
 ///
 /// A caller who does supply a list still wins, because a tool assembling a file from pieces
 /// knows things the graph does not.

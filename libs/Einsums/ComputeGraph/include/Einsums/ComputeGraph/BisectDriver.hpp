@@ -9,21 +9,10 @@
  * @file BisectDriver.hpp
  * @brief Which pass made the number wrong, in one run.
  *
- * @par The question this answers
- * "CCSD is wrong with optimization on" is a report nobody can act on. It names a pipeline of
- * twenty passes and says one of them, or some interaction between them, changed an answer. Turning
- * that into "`MultiTermFactorization` is wrong on this graph" is a mechanical job: run the program
- * once with no optimization, then once per structural pass with only that pass, and compare. Doing
- * it by hand means twenty edit-build-run cycles and a spreadsheet.
- *
- * @par Why now and not earlier
- * Every structural pass in this library used to be a recognizer: deterministic, individually
- * tested, and wrong only in ways its own test would catch. A driver against that pass set is a
- * slower way to run tests that already exist, which is why this waited. `MultiTermFactorization`
- * is a search whose plan depends on a cost comparison over a whole region, and two of the three
- * passes in its phase now RE-ASSOCIATE, which changes what the question even is: not "which pass
- * changed the number", since a re-associating pass is supposed to, but "which pass changed it past
- * the bound its tier promises". Nothing but a driver asks that.
+ * Turns "the answer is wrong with optimization on" into "this pass is wrong on this graph": run
+ * the program once with no optimization, then once per structural pass with only that pass, and
+ * compare. Since some passes re-associate, the question is not which pass changed the number but
+ * which changed it past the bound its tier promises.
  *
  * @par What a trial holds fixed
  * Exactly one thing varies between the baseline and a trial: the structural pass under test. Every
@@ -39,14 +28,9 @@
  * sides cannot either. That is the whole of the method.
  *
  * @par Why a builder and not a graph
- * Comparing two optimizations means running the same computation twice from the same starting
- * state, and @ref Graph is non-copyable. Only the caller knows how to produce that state: an
- * accumulating program reads its output tensor's initial contents, so re-running it is not
- * replaying a graph but rebuilding one. Hence the ``Builder`` this takes, a callable that captures
- * the program afresh. That is the same shape the differential fuzz corpus already uses, and it is
- * more general than the alternative: cloning through @ref save_graph_string and rebinding would
- * work for a saveable graph and refuse the ones holding a node the IR cannot reconstruct, which is
- * the wrong direction for a debugging tool.
+ * @ref Graph is non-copyable, and an accumulating program reads its output's initial contents, so
+ * each run must be rebuilt from scratch by the caller's ``Builder``. Cloning through
+ * @ref save_graph_string would refuse graphs holding a node the IR cannot reconstruct.
  *
  * @par What counts as divergence
  * The gap is norm-relative over every interface OUTPUT the two runs both write, and it is measured
@@ -54,12 +38,10 @@
  * a re-associating one to a generous multiple of epsilon, and a lossy one is not held to a constant
  * at all: its bound is what it recorded through @ref Graph::approximation_tolerance.
  *
- * An output the trial stops writing is NOT a divergence. A structural pass may legitimately
- * dissolve a producer, and comparing a buffer nothing filled against one something did would
- * report the pass's whole purpose as its failure; such an output is excluded with a note that says
- * so.
+ * An output the trial stops writing is NOT a divergence (a pass may legitimately dissolve its
+ * producer); it is excluded with a note.
  *
- * @see Optimizer.hpp for @ref tier_bound, the number this drove into existence
+ * @see Optimizer.hpp for @ref tier_bound
  */
 
 #include <Einsums/Config.hpp>

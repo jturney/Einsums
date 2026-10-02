@@ -155,9 +155,7 @@ struct EINSUMS_EXPORT ParsedEinsumSpec {
     bool                     conj_a{false}; ///< A wrapped in conj(...) in the spec
     bool                     conj_b{false}; ///< B wrapped in conj(...) in the spec
 
-    /// Permutation operators prefixing the term, in source order. Empty for
-    /// every spec that does not write one, which is every spec written before
-    /// they existed.
+    /// Permutation operators prefixing the term, in source order; empty if none.
     /// @see PermutationOperator, expand_permutation_operators
     /// @versionadded{2.0.0}
     std::vector<PermutationOperator> operators;
@@ -165,11 +163,9 @@ struct EINSUMS_EXPORT ParsedEinsumSpec {
     /**
      * @brief The canonical `"c <- a ; b"` spelling of these index lists.
      *
-     * @ref raw holds whatever string the spec was parsed from, which for a spec a
-     * pass or the IR loader assembled from index lists is nothing at all. Every
-     * such producer used to format the join by hand, and the spelling has to agree
-     * across all of them: it is what an execute-time diagnostic quotes, and the IR
-     * round-trip goldens compare byte for byte.
+     * @ref raw is empty for a spec a pass or the IR loader assembled from index
+     * lists. This is the one spelling diagnostics quote and the IR round-trip
+     * goldens compare byte for byte.
      *
      * Multi-character indices are comma-separated, which parses back to the same
      * lists under either notation.
@@ -219,9 +215,8 @@ struct LinkPlacement {
 /**
  * @brief What one index letter does in a contraction ``C <- A ; B``.
  *
- * Every letter of a contraction plays exactly one of these parts, and the passes that reason in
- * GEMM terms (batch, M, N, K) differ only in what they do with each. They used to classify the
- * letters themselves, and differed on the lone letters: one counted them as reduced, one declined.
+ * Every letter of a contraction plays exactly one of these parts. Passes that reason in GEMM terms
+ * (batch, M, N, K) share this classification so they agree on the lone letters.
  */
 enum class IndexRole : std::uint8_t {
     Batch,     ///< In A, B and C: the contraction repeats along it.

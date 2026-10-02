@@ -208,13 +208,10 @@ std::optional<std::vector<ExprStatement>> emit_tree(EmitRequest const &request) 
             // space variable and one anonymously, and the self-check that compares the two
             // derivations fires on a rewrite that is perfectly correct.
             //
-            // Per axis rather than all or nothing, which is the change a grid rewrite forced.
-            // The letters a provider introduces resolve and the basis letters of a program
-            // nobody annotated do not, so every intermediate that mixes the two got no
-            // annotation at all and the self-check could not be turned on for a grid fit. A
-            // hole made deliberately is what annotate_space_axis is for. It says less than a
-            // complete annotation and nothing false, and it says the one thing the two
-            // derivations have to agree on, which is that the grid axis is the grid.
+            // Per axis rather than all or nothing: a provider's new letters resolve while an
+            // unannotated program's basis letters do not, and a partial annotation (holes via
+            // annotate_space_axis) still says the one thing the two derivations must agree on,
+            // that the grid axis is the grid.
             if (request.graph->find_tensor(target) != nullptr) {
                 for (std::size_t axis = 0; axis < axes.size(); ++axis) {
                     if (axes[axis].space.valid()) {
@@ -1053,22 +1050,16 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             // degree four however large the problem grows, which is the whole DF argument and
             // is what a saved graph rebound to a bigger problem will rely on.
             //
-            // It is also blind to constants, and an auxiliary index larger than the product it
-            // replaces is a real case rather than a pathological one. A pass that rewrote a
-            // graph into something slower at the size it was captured at would be trading a
-            // measurable regression for a promise, so the bound extents get a veto.
-            // The bound extents belong on the comparison itself, as the rung below scale order
-            // and typical extents that Part 2's chain puts them on. Without them a grid
-            // rewrite's verdict was decided by the documented lexicographic tie-break: the
-            // substituted cost mentions a variable the captured one does not, which no
-            // domination rule can order, and a grid space declares no typical extent. The
-            // tie-break is arbitrary on purpose, so "symbolically cheaper" was a phrase over an
-            // arbitrary answer. The table the search ranked its brackets with supplies them.
+            // It is blind to constants, and an auxiliary index larger than the product it replaces
+            // is a real case, so the bound extents get a veto.
             //
-            // Withheld where the veto abstains and for the same reason. A symbolically
-            // annotated axis is one a later bind resizes, so its capture-time number is a
-            // placeholder, and ranking two forms of an equation by it would settle the family
-            // question on a toy geometry, which is the failure the abstention exists to stop.
+            // The bound extents also go on the comparison itself, below scale order and typical
+            // extents: a grid rewrite's substituted cost mentions a variable the captured one
+            // does not, and a grid space declares no typical extent, so otherwise the arbitrary
+            // lexicographic tie-break would decide. The search's bracket table supplies them.
+            //
+            // Withheld where the veto abstains: a symbolically annotated axis is resized by a
+            // later bind, so its capture-time number is a placeholder.
             ComparisonContext accept_ctx;
             accept_ctx.registry = ctx.registry;
             if (!any_symbolic_extent) {
@@ -1168,20 +1159,12 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         // Create the factors. Tensors only: a node added here would move the region out from
         // under the splice that is about to replace it.
         //
-        // Factors under ONE name are one tensor, which is not a shortcut but the commonest
-        // case there is: a metric-fitted factorization writes its tensor as B[Q,m,n] B[Q,p,q],
-        // the same B twice with different letters, and a tensor-hypercontraction chain writes
-        // one collocation matrix four times. Creating one per mention would fit the same thing
-        // several times and store the largest tensor in the calculation several times. A
-        // contraction whose operands share a tensor is already legal, so nothing downstream
-        // needs to know.
-        // Fitted ONCE per tagged tensor, however many contractions read it. An amplitude a
-        // residual reads three times is the ordinary case rather than a corner, and fitting it
-        // three times would store the factors three times, run the fitting three times per bind,
-        // and, because the three fittings name their workspace identically, present the storage
-        // auditor with one tensor materialized three times. The factors are the same object for
-        // every candidate over one tagged tensor and one provider, so the second candidate reuses
-        // what the first declared and emits no second setup.
+        // Factors under ONE name are one tensor: a metric fit writes B[Q,m,n] B[Q,p,q] and a
+        // THC chain one collocation matrix four times, and one tensor per mention would fit and
+        // store the largest tensor several times.
+        //
+        // Likewise fitted ONCE per (tagged tensor, provider), however many contractions read it:
+        // later candidates reuse what the first declared and emit no second setup.
         std::vector<std::vector<TensorId>> factor_ids(fits.size());
         std::vector<bool>                  already_fitted(fits.size(), false);
         for (std::size_t which = 0; which < fits.size(); ++which) {

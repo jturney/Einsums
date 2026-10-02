@@ -23,10 +23,6 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
-// The live scalar accessors this file used to define for itself (live_c_prefactor and friends)
-// now live beside the descriptors they read, in Node.hpp: CSE was not the only caller that
-// needed them, and two copies of "prefer the shared params over the snapshot" is one too many.
-
 /// Do two einsum descriptors describe the same contraction topology?
 ///
 /// Checks the at-capture ContractionSpec snapshot AND the live ParsedEinsumSpec
@@ -319,10 +315,9 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
     // not compare every pair.
     //
     // Walking the nodes once and matching each against the earlier SURVIVORS
-    // that share a key is the same answer the pairwise scan gave - the earliest
-    // equivalent node still wins - at a fraction of the work. It matters
-    // because TiledExpansion emits thousands of nodes (its default budget is
-    // 4096) where almost nothing matches, and the quadratic term dominated.
+    // that share a key gives the pairwise answer (the earliest equivalent node
+    // wins) without the quadratic term, which dominates on TiledExpansion's
+    // thousands of nodes.
     //
     // The key deliberately excludes op_data: two nodes differing only in a
     // prefactor must land in the same bucket for the proportional merge below
@@ -332,10 +327,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
     // map grows as the scan runs. A redirect key is always the output of an
     // already-removed node, and a node's inputs only ever name outputs of nodes
     // before it, so by the time any node is keyed every redirect that could
-    // affect it has been recorded. (This also fixes an asymmetry in the old
-    // scan, which redirected the candidate's inputs but compared them against
-    // the survivor's RAW inputs, and so missed matches whose shared operand had
-    // itself been redirected.)
+    // affect it has been recorded. Both sides are compared redirected.
     struct CandidateKey {
         OpKind                kind{};
         std::vector<TensorId> inputs;
@@ -399,10 +391,9 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
             if (!ratio)
                 continue;
 
-            // Guard G: the outputs must hold the same element types. Equal
-            // op_data and inputs used to imply it, but a mixed-precision
-            // einsum's output type is its own: `f <- d*d` and `d <- d*d` over
-            // the same operands are the same node except for C.
+            // Guard G: the outputs must hold the same element types. A
+            // mixed-precision einsum's output type is its own: `f <- d*d` and
+            // `d <- d*d` over the same operands are the same node except for C.
             bool same_types = true;
             for (size_t k = 0; k < nodes[i].outputs.size() && same_types; k++) {
                 auto const *hi = graph.find_tensor(nodes[i].outputs[k]);

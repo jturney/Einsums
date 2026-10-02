@@ -34,9 +34,8 @@ bool Reorder::run(Graph &graph) {
     //   WAR (anti):  reader → writer, the overwrite can't happen until
     //                                    every reader of the old value is done.
     //
-    // Tracking only ``last_writer`` (the original implementation) covered RAW
-    // and WAW but silently dropped WAR, so e.g. a gemm reading t0 followed by
-    // an axpy overwriting t0 had no edge and could be swapped. Every edge added
+    // Without WAR, a gemm reading t0 followed by an axpy overwriting t0 would
+    // have no edge and could be swapped. Every edge added
     // here points from a lower to a higher program index, so program order
     // remains a valid topological order and no cycle is ever introduced.
     //

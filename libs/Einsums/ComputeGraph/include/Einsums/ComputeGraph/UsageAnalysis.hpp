@@ -27,8 +27,7 @@ class Graph;
  * order in this IR). @c via_subtree distinguishes uses that only exist through
  * a control-flow node's sub-graph (Loop bodies, Conditional branches, found
  * via effective-IO expansion) from uses recorded on the node's own
- * input/output lists; consumers that historically scanned raw lists filter on
- * it to keep their exact semantics.
+ * input/output lists; consumers that want only the latter filter on it.
  */
 struct TensorUse {
     std::uint32_t pos;         ///< Node position in the current (sorted) node order
@@ -79,12 +78,7 @@ struct EINSUMS_EXPORT TensorUsage {
 
 /**
  * @brief Graph-wide reader/writer/liveness index: one forward scan, shared by
- *        every pass that used to build its own.
- *
- * Before this existed, ~14 passes each rebuilt some slice of this table per
- * run (several inside per-candidate loops, turning O(n) questions into O(n²)
- * scans), with three different alias conventions between them. Build once,
- * query everywhere.
+ *        every pass, with one alias convention. Build once, query everywhere.
  *
  * Canonical semantics: TensorIds are resolved through Graph::resolve_alias,
  * control-flow nodes contribute their sub-graphs' IO via effective-IO

@@ -136,7 +136,7 @@ void record_einsum(CaptureContext &ctx, ParsedEinsumSpec const &parsed, Prefacto
     auto desc = detail::build_einsum_descriptor(parsed, c_pf, ab_pf, conj_a, conj_b);
     detail::attach_live_state(desc, parsed.raw);
 
-    // Index-space binding (design part 1.3). A space is a property of the SLOT an index occupies,
+    // Index-space binding. A space is a property of the SLOT an index occupies,
     // not of the letter globally, so the letters of this one contraction are resolved against the
     // operands' annotations here and the result is stored per node. Costs nothing for a program that
     // annotates nothing: every operand's `spaces` is empty and the map comes back empty.

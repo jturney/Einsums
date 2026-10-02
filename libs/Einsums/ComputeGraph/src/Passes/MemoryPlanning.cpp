@@ -64,7 +64,7 @@ MemStats analyze_one(Graph &graph) {
     std::unordered_map<TensorId, LiveInterval> intervals;
 
     // Liveness intervals come from the shared UsageAnalysis (owner-resolved:
-    // a view and its parent count as ONE buffer, so bytes are no longer
+    // a view and its parent count as ONE buffer, so bytes are not
     // double-counted). Subtree expansion is OFF: this pass aggregates body
     // tensors through its own recursive walk, and effective-IO's orphan
     // parent handles would double-count them here. The device-residency
@@ -107,7 +107,7 @@ MemStats analyze_one(Graph &graph) {
 
     // ── Host + device memory analysis ───────────────────────────────────────
     // Peak via an event sweep (+bytes at first_use, -bytes past last_use):
-    // O(n + tids) instead of the old O(n * tids) per-position rescan.
+    // O(n + tids) rather than a per-position O(n * tids) rescan.
     std::vector<long long> delta(n + 1, 0);
     std::vector<long long> device_delta(n + 1, 0);
     for (auto const &[tid, interval] : intervals) {
@@ -202,35 +202,20 @@ ArenaPlan plan_arena(Graph &graph, NoteSkip const &note) {
     // references tensors invisibly to plain node lists, and GPU placement
     // swaps buffers behind the slots.
     //
-    // Body-tensor status quo (safe by construction - do not "optimize" without
-    // reading the wraparound note): a Loop/Conditional at THIS level makes
-    // plan_arena bail here, and every body-resident intermediate has already
-    // had its whole lifecycle (Materialize/Initialize/Free) HOISTED into this
-    // parent by Materialization + FreeInsertion. So a body graph never holds a
-    // Materialize/Free bracket and is never arena-planned from either side.
-    // That is exactly what keeps the interval test below sound: it uses
-    // body-LOCAL node positions and is BLIND to cross-iteration liveness. A
-    // value written in iteration i and read in i+1 looks dead in the gap
-    // between its body-local Free and the next iteration's Materialize, so two
-    // iteration-crossing tensors with body-local-disjoint intervals would be
-    // wrongly aliased (last-iteration write clobbered before the next read).
-    // No in-body bracket is reachable today; the Pass_MemoryPlanning
-    // wraparound canary fires if FreeInsertion ever places an in-body Free. If
-    // that changes, treat any iteration-crossing tensor as always-live here (or
-    // refuse to plan inside Loop bodies outright - cross-iteration liveness is
-    // not derivable from the body graph alone).
+    // Bodies are safe by construction (read before "optimizing"): a
+    // Loop/Conditional at THIS level bails here, and Materialization +
+    // FreeInsertion hoist every body intermediate's lifecycle into this parent,
+    // so a body is never arena-planned. That keeps the interval test sound: it
+    // uses body-LOCAL positions and is blind to cross-iteration liveness, so a
+    // value written in iteration i and read in i+1 would look dead in between.
+    // The Pass_MemoryPlanning wraparound canary fires if FreeInsertion ever
+    // places an in-body Free; then treat iteration-crossing tensors as
+    // always-live, or refuse to plan inside Loop bodies.
     //
     // A Setup node is deliberately NOT in that bail, though is_control_flow
-    // counts it: that predicate answers "does this node own a sub-graph", which
-    // is the right question for whoever walks or expands one and the wrong one
-    // here. What this bail protects against is a lifetime the interval test
-    // cannot see, and a Setup body's version of that reaches exactly the
-    // tensors it touches. Its outputs live ACROSS replays, so they must not
-    // share a slot with a neighbour whose window merely looks disjoint at this
-    // level; every other intermediate here is written and consumed inside one
-    // replay and was never at risk. Declining the whole level instead costs the
-    // arena on every graph a Setup appears in, which is every fitting graph and
-    // every graph an antisymmetrizer fold has guarded.
+    // counts it. Only the tensors a Setup body touches may live ACROSS replays,
+    // so they alone are excluded below; declining the whole level would cost
+    // the arena on every fitting graph and every guarded antisymmetrizer fold.
     bool has_setup = false;
     for (auto const &node : nodes) {
         if (node.kind == OpKind::Loop || node.kind == OpKind::Conditional || node.target == Target::GPU ||
@@ -251,8 +236,7 @@ ArenaPlan plan_arena(Graph &graph, NoteSkip const &note) {
         // held by an unattached shell, adds no pointer and so reports its
         // tensor "untouched" - the one wrong answer this caller cannot absorb,
         // because it ends in two live buffers sharing a slot. Where the subtree
-        // cannot be read exactly, decline the level as this pass did for every
-        // Setup before the exclusion existed.
+        // cannot be read exactly, decline the whole level.
         if (escapes->subtree_refs_unresolved()) {
             note("a setup subtree holds references that cannot be resolved to buffers", graph.name());
             return plan;

@@ -932,10 +932,8 @@ void write_param(std::string name, T &source) {
 
     auto label = fmt::format("write_param: {} <- scalar", name);
 
-    // The executor no longer closes over ``source``. It reads the address the
-    // graph holds for that scalar on every call, so repointing the handle moves
-    // the read - which is the whole point of the source being a graph tensor
-    // rather than a captured reference.
+    // The executor reads the address the graph holds for ``source`` on every
+    // call, so repointing the handle moves the read.
     //
     // Rank is keyed on the destination, and this node's destination is a
     // ParamTable entry that no tensor names: 0.

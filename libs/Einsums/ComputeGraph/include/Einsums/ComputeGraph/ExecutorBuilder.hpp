@@ -10,39 +10,20 @@
  * @brief The single point where a @ref Node::execute callable is derived from data.
  *
  * @par Why this exists
- * A captured node used to carry its operation inside a lambda that capture
- * baked at the call site: the tensor types, the ranks, and the prefactors were
- * all closed over. Two consequences followed, and both are bugs rather than
- * inconveniences.
- *
- * The first is the desync class. A node's descriptor and its executor were two
- * independent records of one operation, so a pass that rewrote the descriptor
- * changed what every analysis believed and nothing about what the next
- * ``graph.execute()`` computed. ``PermuteDescriptor`` was written at capture
- * and read by five passes while its executor ignored it entirely.
- *
- * The second is that a closure cannot be written to a file, which is what
- * blocks graph serialization: there is no way to reconstruct a node from what
- * a file can hold.
- *
- * @ref build_executor answers both. It derives the callable from
- * ``(kind, dtype, rank, descriptor, operand ids)`` and nothing else, so
- * capture, a pass that rewrites a node, and a future loader all reach the same
- * code, and a rewritten descriptor is honored because it is the only place the
- * operation is recorded.
+ * @ref build_executor derives the callable from
+ * ``(kind, dtype, rank, descriptor, operand ids)`` and nothing else. The
+ * descriptor is then the only record of the operation, so a pass that rewrites
+ * it changes what replay computes, and a node can be reconstructed from a file.
+ * Capture, passes and the IR loader all go through it.
  *
  * @par Operand-passing convention
  * Operands come from the node's own @ref Node::inputs and @ref Node::outputs
  * lists, positionally, in the order capture records them. Descriptors do NOT
  * carry a second copy of the operand ids.
  *
- * The reason is that the dataflow lists are what every pass already rewrites -
- * CSE's redirect, DeadNodeElimination, Reorder's hazard scan, InputSlicing -
- * so a descriptor copy of the same ids would be a second place to keep in step
- * and would desync exactly the way the baked prefactors did.
- * ``ViewDescriptor::parent_id`` is the exception that proves the rule: a view's
- * parent is a STRUCTURAL relation (it sets ``TensorHandle::aliases``) that
- * outlives the node's dataflow, not an operand slot.
+ * The dataflow lists are what every pass already rewrites, so a second copy
+ * would drift. ``ViewDescriptor::parent_id`` is the exception: a view's parent
+ * is a structural relation (it sets ``TensorHandle::aliases``), not an operand.
  *
  * Positions, per kind (an accumulating op repeats its destination as the LAST
  * input, which is why the leading positions are stable):
@@ -54,15 +35,14 @@
  * - DirectProduct and DirectDivision: ``A = inputs[0]``, ``B = inputs[1]``, ``C = outputs[0]``.
  * - Einsum: ``A = inputs[0]``, ``B = inputs[1]``, ``C = outputs[0]``. An
  *   accumulating einsum (nonzero C prefactor) also lists C as ``inputs[2]``,
- *   which is the RMW convention of bug-1009 and carries no operand of its own.
+ *   which is the RMW convention and carries no operand of its own.
  * - Dot: ``A = inputs[0]``, ``B = inputs[1]``, ``result = outputs[0]``.
  * - Trace: ``A = inputs[0]``, ``result = outputs[0]``.
  * - Gemm: ``A = inputs[0]``, ``B = inputs[1]``, ``C = outputs[0]``. An
  *   accumulating gemm (nonzero beta) repeats C as ``inputs[2]``, the same RMW
  *   convention the einsum uses.
  * - WriteParam: ``source = inputs[0]``, no outputs, and no operands at all on
- *   the expression arm. Its whole effect is a write into the @ref ParamTable,
- *   which no TensorId names.
+ *   the expression arm. Its whole effect is a write into the @ref ParamTable.
  * - ElementTransform: ``C = outputs[0]``. The operation is a read-modify-write,
  *   so capture lists the same tensor as ``inputs[0]`` too; the builder reads
  *   only the output, as ``Scale`` does.
@@ -74,70 +54,45 @@
  * @par How a built executor reaches its operands
  * Once, at build time, through @ref resolve_operand; thereafter through the
  * resolved @ref TensorSlot on every call. A slot's address is stable for the
- * graph's lifetime, and the slot is what ``Graph::rebind`` and
- * ``Graph::redirect_slot`` repoint, so a built executor follows both for free -
- * the property ``Optimizer.hpp`` warns pass authors to preserve by hand. The
- * live geometry comes from @ref TensorSlot::impl_of, a function pointer, so a
- * replay pays one indirect call per operand and allocates nothing. An operand
- * with no slot falls back to @ref TensorHandle::impl_fn, resolved at build time
- * as well.
+ * graph's lifetime and is what ``Graph::rebind`` and ``Graph::redirect_slot``
+ * repoint, so a built executor follows both. Live geometry comes from
+ * @ref TensorSlot::impl_of: one indirect call per operand, no allocation. An
+ * operand with no slot falls back to @ref TensorHandle::impl_fn.
  *
  * @par How live-mutable scalars reach a built executor
  * Through the descriptor's shared params block (@ref ElementwiseParams,
  * @ref AxpbyParams), which the executor holds by ``shared_ptr`` and reads on
- * every call. Pointing at the node's ``op_data`` directly is not an option:
- * nodes live in a ``std::vector`` that passes insert into, erase from and
- * reorder, so a pointer into one is dangling by construction. The shared block
- * is the pattern @ref EinsumDescriptor and @ref AxpbyDescriptor already
- * established and it survives every node move.
+ * every call. A pointer into the node's ``op_data`` would dangle, since passes
+ * insert, erase and reorder the node vector.
  *
- * The division of labour that follows is worth stating once: a pass that
- * rewrites a PREFACTOR writes the live params and needs no rebuild; a pass that
- * rewrites a STRUCTURAL field (index lists, operands) rewrites the descriptor
- * and calls @ref build_executor again.
+ * So a pass that rewrites a PREFACTOR writes the live params and needs no
+ * rebuild; one that rewrites a STRUCTURAL field (index lists, operands)
+ * rewrites the descriptor and calls @ref build_executor again.
  *
  * @par Dispatch routes
- * Every kind converted so far takes the RANK-ERASED route: the kernel is
- * reached through ``einsums::detail::TensorImpl<T>``, which carries data, dims
- * and strides as runtime values, so one dtype dispatch covers every rank and
- * no static-rank cast is needed. @p rank is therefore validated rather than
- * dispatched on. It stays in the key because the design's lowering point is
- * keyed on it.
+ * Every kind takes the RANK-ERASED route through
+ * ``einsums::detail::TensorImpl<T>``, which carries dims and strides at run
+ * time, so one dtype dispatch covers every rank. @p rank is validated, not
+ * dispatched on.
  *
- * ``Gemm`` is rank-erased too, and it is worth saying which entry it reaches,
- * because ``linear_algebra`` has two that differ. The tensor-object overload
- * taking transpose CHARS carries a symmetry-aware fast path that dispatches a
- * declared-symmetric operand to ``symm``/``hemm``; the ``TensorImpl`` overload
- * beneath it does not. Nothing is lost by taking the lower entry, because none
- * of the three ``cg::gemm`` capture overloads ever reached the higher one:
- * the two bool overloads go straight to the impl-level kernel, and the
- * char overload's runtime-rank arm does the same. The builder therefore lands
- * on the same ``linear_algebra::detail::gemm(char, char, alpha, impl, impl,
- * beta, impl*)`` all three already used, which is what makes the conversion
- * bitwise identical rather than merely close. No @ref dispatch_by_rank is
- * needed anywhere: a gemm is rank-2 by definition and the impl entry checks it.
+ * ``Gemm`` reaches ``linear_algebra::detail::gemm(char, char, alpha, impl,
+ * impl, beta, impl*)``, not the tensor-object overload with the
+ * ``symm``/``hemm`` fast path, because that is the entry ``cg::gemm`` capture
+ * has always used.
  *
- * ``Einsum`` takes the same route, by wrapping each operand's live impl in a
- * ``RuntimeTensorView<T>``. That is one dtype dispatch over the whole
- * dispatch cascade instead of one instantiation per (dtype, rank_a, rank_b,
- * rank_c) triple, and it is what pass-rebuilt einsum nodes have always done.
- * The three views are built ONCE, at build time, and re-seated from the live
- * impls on each call, so a replay pays three ``TensorImpl`` assignments -
- * which reuse the ``std::vector`` capacity they already hold - rather than
- * three constructions. See ``build_einsum``.
+ * ``Einsum`` wraps each operand's live impl in a ``RuntimeTensorView<T>``: one
+ * dtype dispatch instead of one instantiation per rank triple. The views are
+ * built once and re-seated on each call, reusing their vector capacity. See
+ * ``build_einsum``.
  *
  * @par Scalar destinations
  * ``Dot`` and ``Trace`` write ONE number, and the tensor that number lands in
- * is a rank-0 handle the capture site registered with
- * ``CaptureContext::get_or_register_scalar`` -- a plain ``T *``, with no
- * ``TensorImpl`` and therefore no slot. Their executors used to close over that
- * pointer directly, which is the baked-lambda class again: the graph knew the
- * destination and the executor did not consult it. @ref ScalarAccessor is the
- * answer, and it resolves the same two ways round: a real tensor destination
- * (``dot_python`` hands the graph a rank-1 tensor so Python has a graph-native
- * scalar handle) goes through its slot and gets element 0, while a registered
- * raw scalar goes through @ref TensorHandle::tensor_ptr, read on every call so
- * that repointing the handle moves the write.
+ * may be a rank-0 handle registered with
+ * ``CaptureContext::get_or_register_scalar``: a plain ``T *`` with no slot.
+ * @ref ScalarAccessor handles both shapes: a tensor destination (as
+ * ``dot_python`` uses) goes through its slot to element 0, a raw scalar
+ * through @ref TensorHandle::tensor_ptr, read on every call so repointing the
+ * handle moves the write.
  *
  * @see GraphIR.hpp, whose loader rebuilds every node through this same point
  */
@@ -261,10 +216,9 @@ class OperandAccessor {
  * accessor.
  *
  * Resolution prefers the tensor route, so a destination that HAS a slot follows
- * ``Graph::rebind`` and ``Graph::redirect_slot`` for free. The raw-scalar route
- * reads @ref TensorHandle::tensor_ptr on every call rather than copying it at
- * build time, so repointing the handle moves the write -- which is exactly what
- * the raw pointer these executors used to close over could not do.
+ * ``Graph::rebind`` and ``Graph::redirect_slot``. The raw-scalar route reads
+ * @ref TensorHandle::tensor_ptr on every call, so repointing the handle moves
+ * the write.
  *
  * Neither path allocates: a handle's address is stable for the graph's lifetime
  * (the tensor table is a node-based map), and the tensor route is one
@@ -317,11 +271,10 @@ class ScalarAccessor {
 /**
  * @brief Derive a node's @ref GemmHint, or decide it has none.
  *
- * The ONE derivation. Capture (``cg::einsum``) and @ref Graph::make_einsum_node
- * both call this, because the two used to carry independent copies of the same
- * gate and the same m/n/k arithmetic, and a hint that describes a matrix
- * product the einsum does not perform is invisible until GEMMBatching forms a
- * batch from it and ``gemm_batch`` silently miscomputes.
+ * The one derivation, shared by capture (``cg::einsum``) and
+ * @ref Graph::make_einsum_node. A hint describing a product the einsum does not
+ * perform stays invisible until GEMMBatching batches it and ``gemm_batch``
+ * miscomputes.
  *
  * @param[in]     dtype Element type shared by the three operands.
  * @param[in]     spec  The contraction's index lists and link set.
@@ -383,40 +336,27 @@ class ScalarAccessor {
  *       capture can produce a complex ``Syev`` node, so the refusal is aimed at
  *       a file that describes one.
  *
- * @note ``WriteParam`` was the first kind where the true bit covers only PART of
- *       what the kind records, and the split is worth stating because it is not
- *       the tiled-variant story. A tiled node is a different operation wearing a
- *       shared kind; ``write_param``'s arms are one operation reading its value
- *       several ways. Four kinds follow that precedent now, and in every one of
- *       them the arm that blocks is a closure held in an otherwise data-shaped
+ * @note For four kinds the true bit covers only PART of what the kind records:
+ *       the arm that blocks is a closure held in an otherwise data-shaped
  *       descriptor:
  *
  *       - ``WriteParam``: a @ref BoundExpr source, whose ``Callback`` arm is a
  *         ``std::function`` a file cannot hold.
  *       - ``Conditional`` and ``Loop``: a @ref PredExpr predicate, same story.
- *         Note what does NOT block them: holding a SUBGRAPH is not a blocker
- *         here. Whether that subgraph can itself be written is a separate
- *         question, and the milestone that answers it (the design's C) answers
- *         it for the graph, not for the node that names it.
+ *         Holding a SUBGRAPH does not block them; whether
+ *         the subgraph can be written is a question for the graph.
  *       - ``ElementTransform``: a named kernel rebuilds; the lambda-taking
  *         overloads record no descriptor at all and cannot.
  *
  *       So the kind is reconstructible and a callback-arm node is not, and only
  *       @ref reconstruction_blocker can tell them apart. @ref build_executor
- *       builds BOTH: a closure sitting in a descriptor is still content the
- *       builder can lower in this process, and refusing it there would only
- *       force the capture site to hand-bake a lambda again, which is the thing
- *       this file exists to stop.
+ *       builds both, since a closure in a descriptor still lowers in this
+ *       process.
  *
- * @note The GROUPED family is the one place the two questions come apart at the
- *       KIND level rather than per node, and it is a decision rather than a
- *       gap. @ref build_executor has an entry for every grouped kind, because a
- *       region rewrite that raised one has the live operands in front of it and
- *       rebuilds the node's shape parameters from them; this predicate stays
- *       false for all of them, because a group table is a function of ONE
- *       problem's extents and writing it to a file would freeze that problem
- *       into the file. Saving a grouped node means saving the algebraic form
- *       and re-grouping on load, which is a different piece of work.
+ * @note The GROUPED kinds are deliberately false although @ref build_executor
+ *       handles them: a group table is a function of one problem's extents,
+ *       and saving it would freeze that problem into the file. Saving one
+ *       means saving the algebraic form and re-grouping on load.
  */
 [[nodiscard]] constexpr bool is_reconstructible(OpKind kind) noexcept {
     switch (kind) {

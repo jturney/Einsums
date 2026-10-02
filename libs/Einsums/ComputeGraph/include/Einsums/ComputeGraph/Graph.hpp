@@ -478,16 +478,11 @@ struct GraphState {
     /// table and so quadratic over a capture; a DLPNO-MP2 graph registers ~13k
     /// tensors.
     ///
-    /// LAST registration wins - @ref register_tensor uses ``insert_or_assign``, because an
-    /// address freed during a capture can be reused by a different tensor and the index has to
-    /// name the tensor that lives there NOW. That is also what makes it the right thing for
-    /// every by-address lookup to go through: a scan of @ref _tensors, which is what these
-    /// lookups used to be, returns whichever equal-keyed handle it happens to reach first, so
-    /// two handles naming one address made the answer depend on the hash order.
+    /// LAST registration wins (``insert_or_assign``): an address freed during a capture can be
+    /// reused by a different tensor, and the index must name the one that lives there now. Every
+    /// by-address lookup goes through it; scanning @ref _tensors would depend on hash order.
     ///
-    /// ``rebind_impl`` maintains it too, for the same reason: a repoint moves a handle's
-    /// ``tensor_ptr``, and an index that did not follow went on naming storage a bound graph
-    /// no longer uses while reporting the storage it was rebound to as unregistered.
+    /// ``rebind_impl`` keeps it in step when a repoint moves a handle's ``tensor_ptr``.
     std::unordered_map<void const *, TensorId> _ptr_index;
 
     bool _sorted{false};
@@ -3468,12 +3463,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * Uses runtime type dispatch. Only supports rank-2 tensors (matrices).
      *
-     * A thin forwarder onto @ref build_executor with a @ref GemmDescriptor: one
-     * kernel, one operand-resolution rule, one place that decides what a Gemm
-     * node computes. It used to be the second such place, and it was the worse
-     * one - it cast @ref TensorHandle::tensor_ptr straight to ``Tensor<T, 2> *``
-     * whatever the tensor actually was, and it read the handle rather than the
-     * slot, so a ``redirect_slot`` never reached it.
+     * A thin forwarder onto @ref build_executor with a @ref GemmDescriptor, so
+     * there is one place that decides what a Gemm node computes.
      *
      * A caller that wants the node as well as the callable should build the
      * descriptor itself and record both, so the node it produces is
@@ -3492,10 +3483,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /**
      * @brief Build a FIRST-CLASS einsum node for a pass that synthesizes a contraction.
      *
-     * THE way a pass synthesizes a contraction. Its predecessor handed back a bare
-     * closure with the dims, spec and scalars all baked at pass time, paired with a
-     * descriptor-less ``OpKind::Gemm`` node; this returns a complete
-     * ``OpKind::Einsum`` node that behaves like a captured one:
+     * Returns a complete ``OpKind::Einsum`` node that behaves like a captured one:
      *
      * - a full @ref EinsumDescriptor, so every pass that reads the descriptor or
      *   the contraction spec (CSE, DeadNodeElimination, ScaleAbsorption,
@@ -3504,25 +3492,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * - freshly allocated *shared* @ref EinsumParams and @ref EinsumIndices, with an
      *   executor that reads THROUGH those handles on every call. A pass that folds a
      *   scale into ``ab_prefactor`` or rewrites the index lists therefore takes
-     *   effect on the next execute, rather than being silently ignored the way a
-     *   baked closure would ignore it (the desync class of bug-1002);
+     *   effect on the next execute;
      * - operands resolved through the graph's slots at call time, so ``rebind()``,
      *   ``redirect_slot()`` and Materialization are honored, and the RMW input
      *   convention applied for you (the output is declared as an input when
-     *   @p c_pf is nonzero, the omission that was bug-1009).
+     *   @p c_pf is nonzero).
      *
      * The executor itself comes from @ref build_executor, the same lowering
      * ``cg::einsum`` uses at capture, so a node this assembles is
-     * indistinguishable from a captured one and there is no second code path to
-     * drift (design part 3.2).
+     * indistinguishable from a captured one.
      *
      * @par Limits
      * One dtype across the three operands. Rank and static tensor type are NOT
      * restricted: each operand is re-viewed through its rank-erased
      * ``TensorImpl``, which carries data, dims and strides as runtime values, so a
      * statically typed ``Tensor<T, Rank>`` works alongside a runtime tensor and a
-     * single dtype dispatch covers every rank -- no static-rank cast, so none of
-     * the type confusion of bug-1015. Tile-wise sparse tensors have no single impl
+     * single dtype dispatch covers every rank with no static-rank cast. Tile-wise sparse tensors have no single impl
      * and are rejected; so is a dtype mismatch. Both throw, since a pass reaching
      * here without gating has a bug.
      *
@@ -3552,10 +3537,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * The counterpart to @ref make_einsum_node for the passes that assemble an
      * accumulator (DistributiveFactoring's summed operand, TiledExpansion's
-     * per-tile axpy). Each of them used to reserve the id, set the kind and the
-     * dataflow, allocate an @ref AxpbyParams, mirror the scalars into an
-     * @ref AxpbyDescriptor and build the executor by hand, which is five chances
-     * to let the descriptor and the executor disagree about what replay computes.
+     * per-tile axpy), so the descriptor and the executor cannot disagree about
+     * what replay computes.
      *
      * The scalars live in the shared params the executor reads on every replay,
      * with the descriptor holding the same handle, so a later pass that folds a
@@ -3610,10 +3593,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /**
      * @brief Build a ready-to-splice node whose executor comes from @ref build_executor.
      *
-     * What every pass that emits a node needs and used to spell out: reserve the id, attach the
-     * descriptor, and derive the executor from the descriptor and the operand ids, so the node is
-     * exactly what its descriptor says and saves, rebuilds and rewrites like a captured one. The
-     * executor's rank is the first output's.
+     * Reserves the id, attaches the descriptor, and derives the executor from the descriptor and the
+     * operand ids, so the node saves, rebuilds and rewrites like a captured one. The executor's rank
+     * is the first output's.
      *
      * @param[in] kind       The node's kind.
      * @param[in] dtype      The element type the executor runs in.
@@ -4839,14 +4821,9 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
     // What this slot named BEFORE the repoint, which is how a sub-graph's slot for the
     // same operand is recognised.
     //
-    // The HANDLE's address, not the slot's, and the difference is the whole of a bug
-    // this used to have. Capture ADOPTS an operand, so a slot points at a graph-owned
-    // stand-in rather than at the caller's tensor, and a parent and a body that captured
-    // the same operand hold two DIFFERENT stand-ins for it. Comparing stand-in addresses
-    // therefore never matched across the boundary, and a rebind of a graph with a body
-    // repointed the parent while the body went on writing through the storage it had
-    // adopted. The handle records the caller's own address, which is the identity both
-    // sides agree on.
+    // The HANDLE's address, not the slot's: capture ADOPTS an operand, so a parent and a
+    // body that captured the same operand hold two different stand-ins for it. The handle
+    // records the caller's own address, which both sides agree on.
     void *const old_ptr = [&]() -> void * {
         TensorHandle const *handle = find_tensor(id);
         return handle != nullptr && handle->tensor_ptr != nullptr ? handle->tensor_ptr : slot->ptr;
@@ -4958,8 +4935,7 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
         note_rebind_geometry(th_it->second, new_data, new_dims, new_strides);
     }
 
-    // Rebind is a mutation-declaration point (see analysis_version), which
-    // until now it only claimed to be.
+    // Rebind is a mutation-declaration point (see analysis_version).
     _analysis_version++;
 
     if (descend) {

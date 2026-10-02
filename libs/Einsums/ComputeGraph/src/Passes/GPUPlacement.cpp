@@ -43,14 +43,10 @@ namespace {
 ///
 /// try_gpu_blas_dispatch in GpuDispatch.cpp keys on the DESCRIPTOR carried by the
 /// node, not on its OpKind, so this predicate does too. OpKind::Gemm for
-/// instance carries a GemmDescriptor, which no dispatcher looks at - placing it
-/// only bought a host-to-device round trip around work that then ran on the
-/// CPU anyway.
+/// instance carries a GemmDescriptor, which no dispatcher looks at, so placing
+/// it would buy a round trip for work that runs on the CPU anyway.
 ///
-/// This list used to name about twenty kinds, including the whole LAPACK
-/// surface (Syev, Heev, Gesv, Getrf, Getrs, Getri, Invert, SVD, SVD_DD, QR,
-/// Geev) for which gpu::solver has no implementation at all. Keep it in step
-/// with try_gpu_blas_dispatch.
+/// Keep it in step with try_gpu_blas_dispatch.
 bool node_is_dispatchable(Node const &node, Graph const &graph);
 
 /// Can the executor actually dispatch THIS einsum to the GPU?

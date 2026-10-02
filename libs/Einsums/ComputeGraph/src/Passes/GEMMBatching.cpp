@@ -35,8 +35,7 @@ namespace {
 
 /// The exact bits of a prefactor's real and imaginary parts. The batch applies ONE alpha and ONE
 /// beta to every member, so members must agree on the value itself: comparing bits keeps 1.0 apart
-/// from 0.9999... and orders NaNs too. A hash of the value used to stand in for it here, and two
-/// prefactors that collided would have been batched under the first member's.
+/// from 0.9999... and orders NaNs too. A hash would let colliding prefactors batch together.
 struct PrefactorBits {
     std::uint64_t real;
     std::uint64_t imag;
@@ -258,13 +257,9 @@ bool GEMMBatching::run(Graph &graph) {
             // The operands come from the node's own DATAFLOW LISTS rather than from the ids the
             // hint records, which is the authority rule the descriptors state: a recorded id is a
             // structural record of what capture saw, and the node's inputs and outputs are what
-            // every pass rewrites. A node MOVED between graphs is where the two part company.
-            // `LoopInvariantHoisting` lifts a body statement into the parent and remaps the lists
-            // it carries, because a body id means nothing in the parent's table, and the hint's
-            // copy of the same ids stays as capture left it. Resolving through those against the
-            // parent then reaches a different buffer or none, which is a batch writing somewhere
-            // else: the two hoisted contractions left their destinations untouched, and a wider
-            // program segfaulted inside the batch.
+            // every pass rewrites. They part company when a node MOVES between graphs:
+            // `LoopInvariantHoisting` remaps the lists but not the hint, whose body ids would
+            // resolve to the wrong buffer in the parent.
             //
             // Bound to the graph's slots, so the batch follows every later rebind() and
             // redirect_slot() the way the member einsums did.
@@ -282,11 +277,7 @@ bool GEMMBatching::run(Graph &graph) {
         // beta != 0 means gemm_batch READS every destination before writing it.
         // Only A and B are copied above, so without this the batched node claims
         // to overwrite each C without reading it, and the RAW edge from whoever
-        // produced that C is gone. The members carried those reads themselves --
-        // an accumulating einsum lists its output among its inputs (bug-1009) --
-        // and collapsing them must not drop the convention. The failure is a
-        // scheduling race, so it shows up intermittently as a destination read
-        // before it is written.
+        // produced that C is gone: an intermittent scheduling race.
         if (d.beta != std::complex<double>{0.0, 0.0}) {
             batched_inputs.insert(batched_inputs.end(), batched_outputs.begin(), batched_outputs.end());
         }

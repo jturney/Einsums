@@ -10,22 +10,12 @@
  * @brief A strict, consumed-key JSON document model for the graph IR.
  *
  * @par Why a document model of our own
- * This module already had two JSON stories and neither is the one a graph IR
- * needs. ``Graph::to_json`` writes a debug view and never reads it back.
- * ``CostModel``'s hand parser scans for a field name and silently skips every
- * row it does not recognise, which is the same failure mode that got Glaze
- * rejected for this job: a file whose content the reader half-understood loads
- * as if it were fully understood, and the part that was dropped is discovered
- * as a wrong number much later.
- *
- * So the rule here is the opposite one, and it is a POLICY rather than a
- * courtesy: every object records which of its keys a reader consumed, and the
- * loader refuses a document that still has an unconsumed key, naming the key
- * and its path. A field this build does not know about is an error, not a
- * shrug. Additive schema evolution stays possible because the compatibility
- * policy makes the READER responsible for knowing the field (a newer build loads
- * an older IR, never the reverse), so an unconsumed key genuinely
- * means "this file was written by something this build does not understand".
+ * A reader that silently skips unknown fields loads a half-understood file as
+ * if it were fully understood, and the dropped part surfaces later as a wrong
+ * number. So every object records which keys a reader consumed, and the loader
+ * refuses a document with an unconsumed key, naming the key and its path.
+ * Additive schema evolution still works because a newer build loads an older
+ * IR, never the reverse.
  *
  * @par The value model
  * Deliberately small: null, bool, int64, double, string, array, object. Two

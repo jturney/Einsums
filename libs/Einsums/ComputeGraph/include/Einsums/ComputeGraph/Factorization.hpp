@@ -131,9 +131,7 @@ struct FactorizationPlan {
     /// the object through the parent's handle for it, which carries the address. Handing over
     /// the id alone would make the one thing every provider must do the one thing it cannot.
     ///
-    /// The expression is spelled in prose rather than as a call, because a cross-reference or
-    /// an inline literal followed immediately by a parameter list renders as a literal whose
-    /// start-string is never terminated, and the docs build treats that warning as an error.
+    /// (Prose, not a call expression: a reference followed by a parameter list breaks the nitpicky docs build.)
     std::function<void(Graph &parent, Graph &body, std::vector<TensorId> const &factors)> emit_setup;
 
     /// Whether @ref emit_setup reads the TAGGED tensor rather than some other tensor the

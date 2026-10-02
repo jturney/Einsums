@@ -54,20 +54,15 @@ class WidthGuard {
     explicit WidthGuard(int width, bool blas_follows_width = true, bool moldable_scope = true) : _moldable_scope(moldable_scope) {
         int const requested = std::max(1, width);
 
-        // Both counts are READ before either is written, and the order is not
-        // cosmetic. A thread that never set a vendor count of its own has one
-        // derived from its OpenMP ICV - MKL_Get_Max_Threads() reports 4 on a
-        // thread that just called omp_set_num_threads(4) - so reading the
-        // vendor after raising the ICV reads back the width instead of the
-        // baseline, and the restore below would then pin the thread to the
-        // node's width for good. Pool workers hid this: they set an explicit
-        // vendor count of 1 at startup, and an explicit count outranks the ICV.
-        // The thread that called execute() sets none, and `help_until` runs
-        // nodes there.
+        // Read both counts before writing either: a thread with no explicit
+        // vendor count derives it from the OpenMP ICV (MKL_Get_Max_Threads()
+        // reports 4 after omp_set_num_threads(4)), so reading it after raising
+        // the ICV would save the width, not the baseline, and the restore would
+        // pin the thread to it. The thread that called execute() is such a
+        // thread; pool workers set an explicit 1.
         //
-        // A vendor that cannot be read cannot be set either (both are the same
-        // build-time switch), so a zero here means there is no vendor state to
-        // save, and restoring the 0 would ask for a nonsense thread count.
+        // Zero means the vendor count cannot be read (nor set), so there is
+        // nothing to restore.
         _prev_blas = blas::get_num_threads_this_thread();
 #ifdef _OPENMP
         _prev_omp = omp_get_max_threads();

@@ -369,8 +369,8 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
 
     // One dense reduction over per-tile pairs: r[0] = sum_i dot(a_i, b_i),
     // true_dot when conjugated. A single node whose inputs are the PER-TILE
-    // ids, which is what frees the whole-tensor tiled ids from the stranding
-    // fixpoint - the entire reason a tiled dot used to poison expansion.
+    // ids, which keeps the whole-tensor tiled ids out of the stranding
+    // fixpoint.
     auto emit_tiled_dot = [&graph](std::vector<TensorId> as_, std::vector<TensorId> bs, TensorId r, bool conj, packed_gemm::ScalarType dt,
                                    std::string label) {
         Node nd;
@@ -1478,7 +1478,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
         sc.label  = "tile_scatter(C)";
         sc.inputs = {idc};
         // A nonzero prefactor reads the destination, so declare it an input too
-        // (bug-1009's RMW convention) or a later pass may reorder past the read.
+        // (the RMW convention) or a later pass may reorder past the read.
         for (size_t i = 0; i < outs.size(); ++i) {
             if (!is_zero(pfs[i])) {
                 sc.inputs.push_back(outs[i]);

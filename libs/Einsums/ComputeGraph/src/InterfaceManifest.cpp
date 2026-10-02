@@ -231,12 +231,9 @@ InterfaceManifest Graph::manifest() {
         entry.spaces.reserve(handle.spaces.size());
         for (SpaceId const space : handle.spaces) {
             if (!space.valid()) {
-                // An axis nobody has named, which is what a PARTIAL annotation is made of and
-                // what annotate_space_axis exists to build. This used to be refused as corrupt,
-                // on the reading that a whole vector says something about every axis; that is
-                // right for the vector a caller hands to annotate_spaces and wrong for the
-                // handle, which is where the deliberate hole lives. It renders as the empty
-                // name, and a bind checks the axes that name something.
+                // An axis nobody has named: a PARTIAL annotation, as annotate_space_axis
+                // builds. It renders as the empty name, and a bind checks only the axes that
+                // name something.
                 entry.spaces.emplace_back();
                 continue;
             }
@@ -280,9 +277,7 @@ InterfaceManifest Graph::manifest() {
     // A NAME IS A SLOT, and one slot may stand over more than one handle. Two factorization
     // providers handed one collocation matrix each capture their own view of it into their own
     // setup body, and a capture identity is the view OBJECT's address, so the graph ends up
-    // holding two handles over one buffer under one name. Refusing that outright made the
-    // caller hand each provider a matrix of its own and bind the same numbers twice, which is
-    // a workaround for the manifest rather than anything the algebra wanted.
+    // holding two handles over one buffer under one name.
     //
     // So entries sharing a name are FOLDED, and the fold is refused where the ambiguity is
     // real: the handles must agree on the whole shape contract, and they must either name the
@@ -290,13 +285,9 @@ InterfaceManifest Graph::manifest() {
     // nothing is allocated until a bind, which is what lets one file's slot be supplied once.
     // Two different live buffers under one name are still the ambiguity they always were.
     //
-    // AGREEING is not the same as saying the same thing, and the difference is an axis NOBODY
-    // HAS NAMED. That is a hole rather than a contradiction, which is the reading every other
-    // consumer of the annotation already takes one axis at a time: annotate_space_axis exists
-    // to make exactly such a hole, and it renders as the empty name here. A handle a pass
-    // registered for a caller's tensor carries no annotation at all, so refusing it against
-    // the annotated handle beside it refuses a slot the caller described once and completely.
-    // What a fold cannot do is take two DIFFERENT answers for one axis, and it does not.
+    // An axis NOBODY HAS NAMED (the empty name, as annotate_space_axis leaves) is a hole,
+    // not a contradiction, and agrees with anything; a handle a pass registered for a
+    // caller's tensor carries no annotation at all. Two DIFFERENT names for one axis refuse.
     auto const reconcile = [](std::vector<std::string> &into, std::vector<std::string> const &from) {
         if (from.empty()) {
             return true;

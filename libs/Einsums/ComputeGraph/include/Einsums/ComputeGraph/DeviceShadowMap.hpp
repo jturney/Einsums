@@ -22,8 +22,7 @@ struct DeviceFree {
 };
 
 // One owned device buffer, so replacing, erasing, destroying and move-assigning all free what they
-// drop. DeviceShadowMap used to hold raw pointers with a defaulted move-assignment, which overwrote
-// a non-empty map's buffers without freeing them.
+// drop.
 struct DeviceShadow {
     std::unique_ptr<void, DeviceFree> ptr;
     size_t                            bytes{0}; // what ptr holds; zero when the allocation failed
@@ -48,12 +47,9 @@ class DeviceShadowMap {
     void *ensure(TensorId tid, size_t bytes) {
         auto it = _shadows.find(tid);
         if (it != _shadows.end()) {
-            // First writer wins on size, and the two call sites disagree about
-            // what to pass: the HostToDevice path uses TransferDescriptor::
-            // size_bytes while the GPU-node path uses TensorHandle::total_bytes().
-            // If those ever diverge, whichever ran first silently sizes the
-            // allocation and the other overruns it. Grow rather than truncate,
-            // since a too-small device buffer is a heap corruption on the device.
+            // The two callers size differently (TransferDescriptor::size_bytes vs
+            // TensorHandle::total_bytes()), so grow rather than let the first
+            // writer's size stand: a too-small buffer corrupts device memory.
             if (bytes > it->second.bytes) {
                 it->second = allocate(bytes);
             }

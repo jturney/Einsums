@@ -178,8 +178,8 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
     // whose index list is IDENTICAL to C's, on the grounds that every element is
     // then read immediately before its own overwrite. That holds for the
     // elementwise BLAS routes, but NOT here - this loop clears C before reading
-    // anything, so an aliased operand would be read back as zeros and the whole
-    // result would be zero ("ab <- ab ; b" with C aliasing A hit exactly this).
+    // anything, so an aliased operand would be read back as zeros (e.g.
+    // "ab <- ab ; b" with C aliasing A).
     // Snapshot any operand whose storage overlaps C's and read the copy, which
     // leaves the loop below (and so the summation order, and so the exact
     // floating-point result) untouched.
@@ -263,27 +263,17 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
     };
     // Order the TARGET axes for the layout, then merge the ones that compose.
     //
-    // The odometer below runs its LAST axis fastest, and the axes arrive in the
-    // order the caller spelled C's indices, so the fastest-moving loop walked
-    // C's last axis. Every tensor einsums builds is first-index-fastest - a
-    // 200^3 double has strides 1, 200, 40000 - which makes that the WIDEST
-    // stride in the tensor. A step per element wider than a page is a step the
-    // hardware prefetcher cannot follow, so each element was a demand miss even
-    // when the whole contraction fit in cache.
-    //
-    // Sorting by C's step fixes it, and is layout agnostic rather than a second
-    // hardcoded guess: a row-major operand sorts back to the order this code
-    // always used. C decides it because C is written, and a scattered store
-    // pays read-for-ownership on top of the miss that a scattered load does not.
+    // The odometer below runs its LAST axis fastest. In C's spelled order that
+    // is the widest stride of a column-major tensor, a step the prefetcher
+    // cannot follow. Sorting by C's step is layout agnostic; C decides because
+    // a scattered store also pays read-for-ownership.
     //
     // Merging then folds any adjacent pair whose steps compose in A, B and C
     // alike. An elementwise contraction collapses to a single axis, which also
     // takes `advance` and its carry chain out of the per-element path.
     //
     // Only the TARGET axes move. The link axes keep the caller's order, so the
-    // sum still accumulates in the sequence it always did and the result is
-    // bit-for-bit what it was - the iteration order over C changes, but each
-    // element is still visited exactly once and computed from its own fresh sum.
+    // sum's accumulation order, and so the result bits, do not depend on it.
     auto order_for_layout = [](std::vector<Axis> axes) {
         std::stable_sort(axes.begin(), axes.end(), [](Axis const &l, Axis const &r) { return l.c_step > r.c_step; });
 
@@ -397,8 +387,7 @@ bool einsum_empty_operands(typename CType::ValueType c_pf, CType *C, AType const
 }
 
 /// Output aliasing an input is rejected: contractions read operands while writing C, so overlap
-/// silently corrupts results (the GEMM-shaped case computed garbage before this check existed). The
-/// one provably safe shape is carved out: when C's index list is IDENTICAL to the aliased operand's,
+/// silently corrupts results. The one provably safe shape is carved out: when C's index list is IDENTICAL to the aliased operand's,
 /// every element is read exactly once immediately before its own overwrite (pure elementwise update,
 /// e.g. "ij <- ij ; ij" with C aliasing A). A and B sharing a buffer is always fine - inputs are
 /// read-only. Must run after the zero-size check so the span arithmetic never sees a zero dimension.
@@ -753,8 +742,8 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // indices only, so a lone index is neither iterated nor summed (PackedGemm
     // declines it). The operand is summed over its lone letters first
     // (reduce_lone_letters) and the smaller contraction is dispatched like any
-    // other: "ij <- ikm ; j" used to multiply every A(i, k, m) by every B(j) in
-    // the loop, n^4 work for an n^3 answer. This runs before every fast path so
+    // other (otherwise "ij <- ikm ; j" is n^4 work in the loop for an n^3
+    // answer). This runs before every fast path so
     // both the empty-link case ("ij <- ijk ; ij") and the link+lone case land here.
     auto const has_lone_summed_index = [&] {
         for (auto const *idx : {&a_idx, &b_idx}) {
@@ -871,7 +860,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // packed_gemm::prefer_packed_route): a caller whose node has a pinned route
     // gets it here too, so the shape cannot take one route at this gate and the
     // other inside try_packed_gemm. A caller with no site - eager, or an
-    // unplanned graph - reads the thread regime exactly as before.
+    // unplanned graph - reads the thread regime.
     if (!conj_a && !conj_b) {
         bool const        route_prefers_packed = packed_gemm::prefer_packed_route(pg_site);
         std::size_t const a_rank               = detail::tensor_rank(A);
@@ -879,9 +868,8 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         std::size_t const c_rank               = detail::tensor_rank(*C);
 
         // Every route below hands the operands' own TensorImpls to the rank-erased kernels.
-        // They used to be upcast to TensorView<T, K> first, and building those views (a
-        // TensorImpl each, whose dims and strides are heap vectors) cost about 230 ns per
-        // call for three operands, a third of a small contraction's whole eager call.
+        // Building TensorView<T, K> wrappers instead costs about 230 ns for three operands,
+        // a third of a small contraction's eager call.
         namespace la = linear_algebra::detail;
 
         // The GEMV and GEMM routes hand their matrices to BLAS, which needs a unit stride along
@@ -958,8 +946,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 
         // ── Direct product at ANY rank ───────────────────────────────
         // The rank-erased kernel takes any rank, so the ranks are only
-        // checked here. It used to be gated on rank 2, which sent
-        // "i <- i ; i" and "ijk <- ijk ; ijk" to the serial generic loop.
+        // checked here.
         if (a_rank == b_rank && b_rank == c_rank && links.empty() && a_idx == b_idx && a_idx == c_idx) {
             ProfileAnnotate("dispatch", "direct_product_runtime");
             last_dispatch_route() = "direct_product_runtime";

@@ -105,14 +105,10 @@ inline std::size_t offset_of(std::vector<std::size_t> const &idx, std::vector<st
 // Walk an index-list selection, one maximal contiguous run at a time.
 //
 // gather, scatter and scatter_add are the same traversal: one side is addressed
-// through the index lists, the other runs 0..extent on every axis. Written
-// directly it is an odometer that rebuilds both offsets from scratch per
-// element, which costs a multiply-add per axis per element and, worse, hides
-// the shape the callers hit most. Domain restriction routinely selects a whole
-// axis with ``range(n)`` - gather has no wildcard, so callers spell it out -
-// and when that is the FASTEST axis and both sides step by one, the selection
-// along it is a contiguous block that the element loop was copying a
-// multiply-add at a time.
+// through the index lists, the other runs 0..extent on every axis. Domain
+// restriction routinely selects a whole axis with ``range(n)``, and when that
+// is the FASTEST axis and both sides step by one it collapses into one
+// contiguous run instead of a per-element odometer step.
 //
 // @p op is called as ``op(indexed_offset, linear_offset, length)``, with length
 // 1 unless the fastest axis collapsed into a run.

@@ -274,21 +274,17 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     //
     // Accesses through views with STATICALLY DISJOINT extents do not conflict:
     // per-slice writes like the CCSD ladder's ``r2[i,j] += ...`` touch
-    // provably different elements of one parent, and serializing them (the old
-    // owner-only scan) chained every slice of a tensor behind every other,
-    // leaving parallel executors no width. Each describable view gets a
+    // provably different elements of one parent, and serializing them would
+    // leave parallel executors no width. Each describable view gets a
     // per-ROOT-axis interval box; two accesses conflict only when their boxes
     // may overlap. Anything unprovable - a runtime bound, a non-injective
     // parent layout, a whole-tensor access - keeps a null box, which overlaps
-    // everything (the previous behavior). Element-disjoint writes commute
-    // bitwise, so relaxing the order cannot change results.
+    // everything. Element-disjoint writes commute bitwise, so relaxing the
+    // order cannot change results.
     //
     // The box comes from StructuralAliasResolver, the SAME derivation
-    // link_alias_structural writes onto the handles, and deliberately so: two
-    // derivations of one alias relation disagreeing is the shape of both the
-    // full-cover bug and the 32-hop cap. Sharing it also widened what is
-    // describable here, since the walk composes chains - a permuted view and a
-    // view of a view were both refused outright by the scan this replaces.
+    // link_alias_structural writes onto the handles, so the two cannot
+    // disagree about one alias relation.
     std::unordered_map<TensorId, Box>      view_box;    // view tid -> box in root axis space
     std::unordered_map<TensorId, TensorId> view_parent; // view tid -> alias ROOT tid
     StructuralAliasResolver                resolver(*this);
@@ -422,11 +418,8 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
             // overlapped. Anything later that reaches the covered writer
             // reaches this one too, so it takes an edge from this one, which
             // already carries an edge from the covered writer: the order
-            // survives as a path. What that saves is quadratic - a buffer
-            // written n times in a row used to keep all n writers and emit an
-            // edge from every one of them to every later access - and it used
-            // to be spelled as a whole-tensor special case, which stopped
-            // applying the moment the write carried a box.
+            // survives as a path. Otherwise a buffer written n times keeps all
+            // n writers, each with an edge to every later access: quadratic.
             std::erase_if(wl, [&](Access const &w) { return covered_by(w.box, box); });
             wl.push_back({.pos = i, .box = box});
         }
@@ -1024,10 +1017,8 @@ void Graph::topological_sort() {
     // Kahn's algorithm, taking the smallest ready POSITION rather than FIFO.
     // Hazard edges always point from an earlier to a later position, so
     // program order is itself a valid topological order and this reproduces
-    // it exactly. A FIFO queue does not: a zero-in-degree node late in
-    // program order pops ahead of an earlier node that waits on any edge, so
-    // an edge the hazard scan missed became a REORDER that broke even serial
-    // replay, instead of staying harmless there.
+    // it exactly. A FIFO queue would not, and an edge the hazard scan missed
+    // would then become a reorder that breaks even serial replay.
     std::priority_queue<size_t, std::vector<size_t>, std::greater<>> ready;
     for (size_t i = 0; i < n; i++) {
         if (in_degree[i] == 0) {

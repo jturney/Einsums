@@ -78,14 +78,9 @@ struct GemmOperand {
  * reads m/n/k to size a node. Non-GEMM contractions leave
  * ``gemm_hint == nullptr``.
  *
- * Every field is DATA. The operands used to be three ``std::function`` members that
- * resolved a live pointer plus leading dimension at call time; a closure
- * cannot be written to a file, and it was the last thing standing between an
- * einsum node and being reconstructible from its descriptor
- * (@ref is_reconstructible). Resolution moved into the batched executor, which
- * reaches the same live geometry through the graph's slots and therefore
- * honors ``rebind`` and ``redirect_slot`` by construction rather than by each
- * closure remembering to.
+ * Every field is DATA, so an einsum node stays reconstructible
+ * (@ref is_reconstructible). The batched executor resolves live geometry
+ * through the graph's slots, so ``rebind`` and ``redirect_slot`` are honored.
  *
  * @see derive_gemm_hint, the single derivation both capture and
  *      @ref Graph::make_einsum_node use.
@@ -204,19 +199,15 @@ struct EinsumDescriptor {
 ///
 /// The executor reads its prefactors from here on every call, so a pass that rewrites one
 /// writes it through this handle and the change takes effect on the next ``graph.execute()``.
-/// That is the whole point: the executors these kinds used to carry baked their scalars into a
-/// closure, so a descriptor rewrite was silently ignored at replay.
 ///
 /// A descriptor also keeps an at-capture SNAPSHOT of the same scalars, which is what analysis
 /// passes read; a rewriter must write both, and the ``live_*`` accessors below are how a reader
 /// stays right about which one matters.
 ///
 /// @par One type, three names
-/// Axpby, the dense element-wise kinds and the tiled element-wise kinds each used to declare
-/// their own field-for-field identical struct. They are NOT variant alternatives - each is
-/// reached through its own descriptor's ``params`` member - so nothing ever discriminated
-/// between them, and three definitions were only three things to keep in step. The aliases
-/// below keep each descriptor reading in its own vocabulary.
+/// Axpby, the dense element-wise kinds and the tiled element-wise kinds share it; each is reached
+/// through its own descriptor's ``params``, never discriminated, and the aliases below keep each
+/// descriptor in its own vocabulary.
 ///
 /// Not every kind uses both halves: a Scale is an in-place multiply with no destination
 /// prefactor, and a tiled Scale or Axpy is the same, so @ref beta stays at its default there.
@@ -245,12 +236,9 @@ struct AxpbyDescriptor {
  * Used by ScaleAbsorption to detect scales a following overwrite makes dead,
  * and by ElementWiseFusion to merge consecutive scales of one tensor.
  *
- * @ref factor is a @ref PrefactorScalar rather than the plain @c double it was
- * until the executor builder landed. Capture filled the old field from
- * ``factor.real()``, so a complex scale read back as its real part: CSE merged
- * scales differing only in the imaginary part, and ScaleAbsorption folded the
- * truncated value into the following op. The variant records exactly what the
- * executor applies.
+ * @ref factor is a @ref PrefactorScalar, not a @c double, so a complex scale
+ * records exactly what the executor applies (CSE and ScaleAbsorption compare
+ * and fold it).
  *
  * @ref params is null on nodes a pass built by hand rather than through
  * @ref build_executor; readers must gate on it.
@@ -897,9 +885,6 @@ struct LoopDescriptor {
 
     /// @brief How many iterations the most recent execute() ran.
     /// @return The count, or 0 when the node has never run or carries no live state.
-    ///
-    /// This used to be a plain field, and the executor wrote it into its own
-    /// COPY of the descriptor, so it was never observable on the node at all.
     [[nodiscard]] size_t last_iteration_count() const noexcept { return state ? state->last_iteration_count : 0; }
 };
 
@@ -1224,9 +1209,8 @@ EINSUMS_EXPORT void derive_index_roles(packed_gemm::ContractionSpec &spec);
 
 /// Give @p desc fresh live params, indices and packed-GEMM site, all seeded from its snapshot.
 ///
-/// Every builder of an einsum node goes through this: capture, @ref Graph::make_einsum_node and the
-/// loader. Each used to assemble the blocks itself, and they drifted - one set the conjugation flags on
-/// the index block and the others did not, and the captured ones left the diagnostic text empty.
+/// Every builder of an einsum node goes through this (capture, @ref Graph::make_einsum_node and the
+/// loader), so they agree on the conjugation flags and the diagnostic text.
 EINSUMS_EXPORT void attach_live_state(EinsumDescriptor &desc, std::string raw = {});
 
 /**

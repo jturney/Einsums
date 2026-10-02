@@ -99,9 +99,7 @@ using BatchedGemmOperands = std::vector<BatchedGemmOperand>;
  * already replays whole graphs as a team, and nesting a second one inside a node
  * is how the OpenMP-built OpenBLAS gets miscomputed.
  *
- * And the pointers land in typed arrays directly. They used to be extracted into
- * `void const *` vectors and copied into typed ones, which is a second
- * allocation and a second pass over the batch for nothing.
+ * The pointers land in typed arrays directly, with no intermediate copy.
  *
  * @par Leading dimensions come from the live operands
  * The descriptor's @c lda / @c ldb / @c ldc were recorded when the node was

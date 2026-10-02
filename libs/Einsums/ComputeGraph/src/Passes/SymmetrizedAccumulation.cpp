@@ -353,8 +353,8 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
         }
         ++_num_matched;
 
-        // s2 is axpby2's alpha. Requires the axpby descriptor (which cg::axpy
-        // now carries too); without it - a pass-built node - the scalar is
+        // s2 is axpby2's alpha. Requires the axpby descriptor (cg::axpy
+        // carries one too); without it - a pass-built node - the scalar is
         // unreadable and we cannot fold. Read it through the live params when
         // present: an earlier pass that folded a scale into this accumulate
         // wrote it there, and that is the value the executor will use.

@@ -439,11 +439,8 @@ bool try_gpu_scale(Node const &node, std::unordered_map<TensorId, TensorHandle> 
 
 /// Try Axpy/Axpby dispatch: y = alpha * x + beta * y
 ///
-/// The scalars come from the AxpbyDescriptor. They used to be read from a
-/// ScaleDescriptor, which an axpy/axpby node never carries, so `alpha` silently
-/// defaulted to 1.0 and every prefactor was dropped on the device path - a
-/// wrong answer, not a slow one. A node whose scalars cannot be read now
-/// declines here and runs its own (correct) CPU executor instead of guessing.
+/// The scalars come from the AxpbyDescriptor. A node whose scalars cannot be
+/// read declines and runs its CPU executor rather than guessing.
 bool try_gpu_axpy(Node const &node, std::unordered_map<TensorId, TensorHandle> const &tensors, DeviceShadowMap &shadows) {
     if (node.kind != OpKind::Axpby)
         return false;

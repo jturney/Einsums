@@ -114,8 +114,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     ///       rank-2 double tensor converts to, ``Tensor<double, N>`` and
     ///       ``RuntimeTensor<double>`` alike. That is what lets a Python caller register this
     ///       provider at all, since the bindings carry runtime-rank tensors and nothing else.
-    ///       A view also holds a reference to the storage it names, where the raw pointers
-    ///       this used to keep did not.
+    ///       A view also holds a reference to the storage it names.
     MetricFitFactorization(std::string tag, RuntimeTensorView<double> three_index, RuntimeTensorView<double> metric, double bound,
                            double drop_threshold = default_drop_threshold, std::string name = "MetricFit");
 

@@ -51,8 +51,7 @@ void capture_permute(CaptureContext &ctx, ParsedPermuteSpec const &parsed, T bet
     desc.a_indices = parsed.a_indices;
     desc.operators = parsed.operators;
     // Live scalars in the operands' own type, so a pass that rewrites a
-    // prefactor is obeyed on the next replay. The executor used to bake
-    // copies of these and ignore the descriptor entirely.
+    // prefactor is obeyed on the next replay.
     desc.params        = std::make_shared<ElementwiseParams>();
     desc.params->alpha = PrefactorScalar{alpha};
     desc.params->beta  = PrefactorScalar{beta};

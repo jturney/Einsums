@@ -215,7 +215,7 @@ inline bool strided_byte_span(void const *data, std::span<std::size_t const> dim
  *
  * Either a dense, in-core basic tensor (GeneralTensor, TensorView,
  * RuntimeTensor, ...) or a tile-wise sparse in-core tensor
- * (TiledRuntimeTensor). The latter no longer satisfies BasicTensorConcept (a
+ * (TiledRuntimeTensor). The latter does not satisfy BasicTensorConcept (a
  * tiled tensor isn't a single-buffer tensor), but it still exposes the metadata
  * surface make_handle needs, name/rank/dim/stride/data (with data() null for
  * the multi-tile case), so we admit it explicitly here.
@@ -656,10 +656,6 @@ struct TensorHandle {
  * Materializing first is the whole reason this is not simply ``zero()``: a deferred tensor has
  * no storage until the @ref passes::Materialization pass reaches it, and an Initialize node runs
  * against whatever the handle was given at declaration time.
- *
- * Written out identically at seven sites across four headers before this existed. That is the
- * shape worth naming rather than the count: a declaration site's job is to say WHICH
- * initialization a tensor gets, and it was restating what each one IS every time.
  *
  * @see make_random_fn
  */

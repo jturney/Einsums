@@ -271,11 +271,9 @@ struct ManifestEntry {
     /// A name is a slot, and one slot may stand over more than one handle. Two factorization
     /// providers handed one collocation matrix each capture their own view of it into their own
     /// setup body, and each view object is a separate capture identity, so the graph holds two
-    /// handles over one buffer under one name. The manifest binds by name and used to refuse
-    /// that outright, which made the caller give each provider a matrix of its own and bind the
-    /// same numbers twice.
+    /// handles over one buffer under one name.
     ///
-    /// The entry folds them instead, and this is what the fold has to remember: @ref Graph::bind
+    /// The entry folds them, and this is what the fold has to remember: @ref Graph::bind
     /// repoints every id here alongside @ref id, so the caller supplies the matrix ONCE. Folding
     /// is refused unless the handles agree on the whole shape contract and are either the same
     /// storage or all still unbound, so two different buffers that merely share a name are still

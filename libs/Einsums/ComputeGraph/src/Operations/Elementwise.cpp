@@ -65,19 +65,10 @@ void capture_axpy(CaptureContext &ctx, T alpha, TensorId x_id, TensorId y_id, st
                   std::size_t rank) {
     LabeledSection("axpy capture");
 
-    // axpy IS an axpby with beta == 1, so it records as one. It used to be
-    // its own OpKind carrying no op_data at all, which made the op opaque:
-    // a pass could see "something accumulates into Y" but not by how much,
-    // so every scalar-aware rewrite (ScaleAbsorption, CSE, ElementWiseFusion,
-    // SymmetrizedAccumulation, ...) gated on OpKind::Axpby and skipped it.
-    // Since `Y += X` is how this operation is spelled in every other
-    // library, the most natural spelling was the one the optimizer could not
-    // see.
-    //
-    // Recording the same kind rather than a parallel one is what makes those
-    // passes work on it, with no per-pass special-casing. The kernel choice
-    // is the executor's, not the kind's: it still calls the BLAS axpy fast
-    // path whenever beta == 1, which is every capture from here.
+    // axpy IS an axpby with beta == 1, so it records as one and every
+    // scalar-aware pass (ScaleAbsorption, CSE, ElementWiseFusion, ...) sees it
+    // without special-casing. The executor still takes the BLAS axpy fast
+    // path whenever beta == 1.
     auto params   = std::make_shared<AxpbyParams>();
     params->alpha = PrefactorScalar{alpha};
     params->beta  = PrefactorScalar{T{1}};
@@ -157,9 +148,8 @@ void capture_elementwise_binary(CaptureContext &ctx, OpKind kind, PrefactorScala
     bool const product = kind == OpKind::DirectProduct;
     LabeledSection(product ? "direct_product capture" : "direct_division capture");
 
-    // The scalars used to be baked into the executor with no descriptor at all,
-    // so the node was opaque to every pass that reasons about prefactors. The
-    // product and the division share the descriptor; the kind distinguishes them.
+    // A descriptor, so passes that reason about prefactors can see the node. The
+    // product and the division share it; the kind distinguishes them.
     ElementwiseBinaryDescriptor desc;
     desc.alpha         = alpha;
     desc.beta          = beta;

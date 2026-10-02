@@ -141,10 +141,8 @@ std::string DeviceProfileDB::detect_gpu_name() {
 namespace {
 
 /// The CPU data-cache hierarchy, in L1 -> L3 order, taken from the one detector
-/// (Einsums_Hardware). This used to run its own sysctl/sysfs query, which is how
-/// it and PackedGemm ended up disagreeing about which L2 to report on Apple
-/// Silicon. Bandwidth and latency stay unmeasured (zero) - consumers key off
-/// size_bytes.
+/// (Einsums_Hardware), so it agrees with PackedGemm. Bandwidth and latency stay
+/// unmeasured (zero) - consumers key off size_bytes.
 std::vector<CacheLevel> detect_cpu_caches() {
     auto const             &cache = einsums::hardware::cpu_info().cache;
     std::vector<CacheLevel> levels;
@@ -555,9 +553,8 @@ DeviceProfile read_profile(json::Object const &obj) {
     p.pcie_bandwidth_gbps       = number_or(obj, "pcie_bandwidth_gbps", 0.0);
     p.gpu_launch_latency_us     = number_or(obj, "gpu_launch_latency_us", 0.0);
 
-    // The three network figures used to be dropped on the floor: the writer
-    // never emitted them, so a calibrated profile carrying a measured fabric
-    // reloaded with the struct defaults and every collective was priced wrong.
+    // The network figures round-trip too; dropping them would reload a
+    // calibrated fabric with the struct defaults.
     p.inter_node_bandwidth_gbps = number_or(obj, "inter_node_bandwidth_gbps", 0.0);
     p.inter_node_latency_us     = number_or(obj, "inter_node_latency_us", 1.0);
     p.nccl_bandwidth_gbps       = number_or(obj, "nccl_bandwidth_gbps", 0.0);

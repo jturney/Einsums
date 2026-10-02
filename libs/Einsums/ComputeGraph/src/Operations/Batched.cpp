@@ -56,7 +56,7 @@ void capture_batched_gemm(CaptureContext &ctx, BatchedGemmDescriptor const &d, b
         c_ops.push_back(BatchedGemmOperand{.accessor = OperandAccessor{c[i].second}, .offset = 0});
     }
     // beta != 0 means gemm_batch reads every destination before writing it, so
-    // the RAW edge from whoever produced each C must survive (bug-1009).
+    // the RAW edge from whoever produced each C must survive.
     if (reads_c) {
         inputs.insert(inputs.end(), outputs.begin(), outputs.end());
     }
@@ -91,7 +91,7 @@ void capture_batched_gemm_blocked(CaptureContext &ctx, BatchedGemmDescriptor con
 
     std::vector<TensorId> outputs{c_base.first};
     // beta != 0 means gemm_batch reads every destination before writing it, so
-    // the RAW edge from whoever produced c_base must survive (bug-1009).
+    // the RAW edge from whoever produced c_base must survive.
     if (reads_c) {
         inputs.push_back(c_base.first);
     }
@@ -143,7 +143,7 @@ void capture_grouped_batched_gemm(CaptureContext &ctx, GroupedBatchedGemmDescrip
                                            .offset   = blocked ? static_cast<std::ptrdiff_t>(c_offsets[i]) : 0});
     }
     // beta != 0 means every destination is read before it is written, so the
-    // RAW edge from whoever produced each C must survive (bug-1009).
+    // RAW edge from whoever produced each C must survive.
     if (reads_c) {
         inputs.insert(inputs.end(), outputs.begin(), outputs.end());
     }

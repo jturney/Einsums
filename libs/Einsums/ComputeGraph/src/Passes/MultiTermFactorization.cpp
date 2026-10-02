@@ -557,10 +557,8 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
 
     // Which statements ABSORB each definition.
     //
-    // The rule the first version had was "exactly one reader" and the second's was "every reader
-    // resolves to one consumer". Both leave a value two consumers want as a stored leaf that pins
-    // the algebra around it, and neither is what soundness asks for: what is unsound is
-    // DISSOLVING a definition something still reads, not inlining it where it pays. So this is a
+    // Soundness forbids only DISSOLVING a definition something still reads, not inlining it where
+    // it pays, so a value two consumers want need not stay a stored leaf. This is a
     // SET of consuming statements, walked backwards so a reader's own consumer is known before its
     // producer's is asked for, and the definition is kept for whichever of them does not profit.
     //
@@ -1081,9 +1079,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     //
     // A definition kept for one consumer and copied into another is a term of two factors, and a
     // consumer that wants exactly that product does not need a second tensor for it: the
-    // definition is the shared intermediate. Without this the search declares one beside it and
-    // the program forms one value twice, which is what a full-axis energy does the moment its
-    // exchange half keeps the integral its opposite-spin half went past.
+    // definition is the shared intermediate. Without this the program would form one value twice.
     //
     // Four things have to hold, and each of them is a way for the substitution to name a value the
     // tensor does not hold: the term must be exactly the pair, in the axis order the definition's

@@ -232,13 +232,9 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
     // groups by the FoldKey itself, which is unique because it is the map key.
     // Together those make the order a total one that depends only on the graph.
     //
-    // The size comparison alone was not: `groups` is an unordered_map keyed by a
-    // hash, so equal-sized groups came out of it in hash-iteration order, which
-    // differs between standard libraries (libc++ and libstdc++ iterate a bucket
-    // newest-first, the MSVC STL in insertion order) and moves whenever the hash
-    // does. Fold order decides which group gets which ordinal in the emitted node
-    // labels and `_lccf_L_<n>` tensor names, so one and the same input produced a
-    // different graph, and different saved IR bytes, per platform.
+    // Size alone is not: `groups` iterates in hash order, which differs between
+    // standard libraries, and fold order decides the ordinals in node labels and
+    // `_lccf_L_<n>` names, so saved IR bytes would differ per platform.
     std::ranges::sort(valid, [](ValidGroup const &a, ValidGroup const &b) {
         if (a.candidates.size() != b.candidates.size()) {
             return a.candidates.size() > b.candidates.size();
@@ -393,14 +389,9 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         //   A: L = sum_k (ab_k/ab0) * P_k(B)      -- reads only the non-shared operand
         //   B: out = c_pf0*out + ab0 * (shared op L)
         //
-        // Building L inside the contraction's executor made it invisible: the
-        // combined node reads the varying shared operand, so nothing could tell
-        // that the L half depends only on B. In a loop that meant L was rebuilt
-        // from scratch on every replay even when B was loop-invariant, which is
-        // the common case (B is an integral block, one-time setup). Split out,
-        // node A has invariant inputs, a single writer, and a destination it does
-        // not read, so LoopInvariantHoisting's existing criteria lift it out of
-        // the loop with no changes to that pass.
+        // Split so LoopInvariantHoisting can lift A out of a loop when B is
+        // invariant (the common case: B is an integral block). Fused, the node
+        // would read the varying shared operand and be rebuilt every replay.
         //
         // Both operands are read through accessors bound here, which go through the
         // slot first: a rebind or a redirected slot of B lands on the next replay, and
@@ -440,7 +431,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // instead of stepping over an opaque Custom node. The factory also applies
         // the RMW input convention for the accumulating case.
         //
-        // Operand ORDER matters now: a real einsum node's descriptor implies
+        // Operand ORDER matters: an einsum node's descriptor implies
         // inputs[0] is operand A, so L has to land in the slot the non-shared
         // operand occupied.
         TensorId const a_operand = shared_first ? shared_id : l_id;

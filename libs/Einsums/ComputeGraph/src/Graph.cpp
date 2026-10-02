@@ -625,7 +625,7 @@ void Graph::redirect_slot(TensorId from, TensorId to) {
     from_slot->resync_of  = to_slot->resync_of;
     _slot_redirects[from] = to;
     _slots_validated      = false;
-    // Buffer-keyed analyses (UsageAnalysis, the hazard scan) keyed @p from on its own id until now.
+    // Buffer-keyed analyses (UsageAnalysis, the hazard scan) keyed @p from on its own id.
     _deps_valid = false;
     _analysis_version++;
     // Anything already redirected to `from` now follows the same terminal.

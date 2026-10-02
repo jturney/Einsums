@@ -102,7 +102,7 @@ void rebuild_node(Graph &graph, Node &nd, TensorId old_id, TensorId new_id) {
         TensorId const a = sub(nd.inputs[0]);
         TensorId const b = sub(nd.inputs[1]);
         TensorId const c = sub(nd.outputs[0]);
-        // The live indices/params are what the old executor read each call, so
+        // The live indices/params are what the executor reads each call, so
         // the rebuild starts from them, not from the capture-time snapshots.
         Node rebuilt = graph.make_einsum_node(a, b, c, d->indices->spec, d->params->c_pf, d->params->ab_pf, d->params->conj_a,
                                               d->params->conj_b, nd.label);
@@ -113,8 +113,7 @@ void rebuild_node(Graph &graph, Node &nd, TensorId old_id, TensorId new_id) {
 
     // Permute and Axpby: the descriptor already says everything the executor does, its live
     // params included, so the node keeps it and only the operand ids change. The executor comes
-    // from build_executor, as for a captured node. (A hand-built permute executor used to drop the
-    // permutation operators and read the snapshot scalars.) Only the ids change in the operand
+    // from build_executor, as for a captured node. Only the ids change in the operand
     // lists, so an accumulating axpby or permute keeps listing its destination as an input.
     for (auto &tid : nd.inputs) {
         tid = sub(tid);

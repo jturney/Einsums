@@ -86,9 +86,8 @@ std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, PredExpr 
 
 std::tuple<Graph &, Graph &> Graph::add_conditional_flag(std::string label, GateFlags const &flags, size_t index) {
     // The buffer, not the handle: the node has to keep reading the same array after the caller's
-    // GateFlags goes out of scope, and a shared_ptr copy is what makes that true. This used to be
-    // a lambda closing over that buffer; PredExpr::FlagTest is the same load expressed as data,
-    // so the node is now saveable as well as GIL-free.
+    // GateFlags goes out of scope, and a shared_ptr copy is what makes that true. PredExpr::FlagTest
+    // expresses the load as data, so the node is saveable as well as GIL-free.
     return add_conditional(std::move(label), PredExpr::flag(flags, index));
 }
 

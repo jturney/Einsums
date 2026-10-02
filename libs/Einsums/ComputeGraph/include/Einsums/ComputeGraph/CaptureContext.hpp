@@ -270,25 +270,17 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
     std::unordered_map<void *, CachedId> _ptr_to_id; ///< Maps tensor address → TensorId for deduplication
 };
 
-// get_or_register and get_slot are defined outside the class so that they are
-// not implicitly inline: an explicit instantiation declaration suppresses the
-// instantiation of a non-inline function only. Each builds a TensorHandle for
-// its tensor type (make_handle's closures, operand adoption, the slot), which
-// cost a caller about 0.7 s of compile per tensor type; the common dense types
-// below are instantiated once, in the library, and every other type still
-// instantiates here.
+// Defined outside the class so they are not implicitly inline: an explicit
+// instantiation declaration only suppresses non-inline functions. Each costs
+// about 0.7 s of compile per tensor type, so the common dense types are
+// instantiated once in the library.
 template <GraphCapturableTensor TensorType>
 TensorId CaptureContext::get_or_register(TensorType const &tensor) {
     void *ptr = const_cast<void *>(static_cast<void const *>(&tensor));
 
-    // Both caches below are keyed by address, and an address does not
-    // identify a tensor across a capture that frees them: a destroyed
-    // wrapper's address is immediately reusable, so a tensor allocated on
-    // top of a dead one would inherit its TensorId and every node referring
-    // to it would silently operate on the wrong operand. The liveness token
-    // tells the two apart. (Callers used to dodge this by keeping every
-    // captured temporary alive for the whole capture; operand adoption
-    // removed the reason to, which is what exposed it.)
+    // Both caches are keyed by address, and a destroyed tensor's address is
+    // immediately reusable: a new tensor there would inherit the dead one's
+    // TensorId. The liveness token tells the two apart.
     std::weak_ptr<void> const token = detail::liveness_token_of(tensor);
 
     // Check capture-local cache first

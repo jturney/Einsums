@@ -334,17 +334,11 @@ void DataflowExecutor::Scaffold::reset(Graph &graph, size_t node_count) {
     mem_current.store(0, std::memory_order_relaxed);
     deferred.clear();
 
-    // A PLAN switches widths on as surely as a width above one does, and a
-    // planner that looked at every node and gave each of them ONE thread has
-    // still decided something: that this graph's parallelism is the count of
-    // its nodes rather than any node's width, which is exactly the shape a
-    // graph of many independent chains has. Reading that plan as "unplanned"
-    // ran every one of those nodes with the whole machine's worth of vendor
-    // threads while several of them ran at once - oversubscription against the
-    // one invariant WidthBudget exists to hold - and left the thread count a
-    // kernel saw depending on what else happened to be running, which is a
-    // kernel's summation order. Measured on the DLPNO-(T) residual, one replay
-    // in eight came back with a different last bit.
+    // A PLAN switches widths on even if every width is ONE: that plan says the
+    // parallelism is across nodes. Treating it as unplanned would run several
+    // nodes at once with the whole machine's vendor threads each, oversubscribing
+    // and making a kernel's summation order depend on what else was running
+    // (one DLPNO-(T) replay in eight differed in the last bit).
     //
     // A hand-set width still counts on its own: planned_thread_count() is
     // nonzero only after plan_threads(), and a caller that writes a width
@@ -524,25 +518,15 @@ void DataflowExecutor::Scaffold::run_node(size_t i) {
                 // from inside the kernel can lend the width back while it
                 // waits. Costs nothing for a node that acquired nothing.
                 task_pool::WidthBudget::HoldScope const hold(widths_active ? admitted[i].load(std::memory_order_relaxed) : 0U);
-                // A planned width is honored by giving the executing thread
-                // that many threads for the node and no longer. A width of 1 is
-                // a width like any other and gets the guard too: `help_until`
-                // runs nodes on the thread that called execute(), and that
-                // thread is not one of the pool's workers - it never pinned its
-                // OpenMP ICV or its vendor thread count to 1, so a node left
-                // unguarded there computes with the whole machine's worth of
-                // vendor threads while the budget has it charged for one. That
-                // is oversubscription against the one invariant WidthBudget
-                // exists to hold, and it is visible in the answer: whether a
-                // given node ran on a worker or on the helper decides how a
-                // threaded vendor GEMM splits its k loop, so the same planned
-                // graph replayed twice does not return the same bits.
+                // A planned width gives the executing thread exactly that many
+                // threads for the node. Width 1 is guarded too: `help_until`
+                // runs nodes on the thread that called execute(), which never
+                // pinned its ICV or vendor count to 1, so unguarded it would
+                // oversubscribe and make results depend on which thread ran
+                // the node (a threaded GEMM splits k differently).
                 //
-                // Width 0 - unplanned - still takes the original path
-                // untouched: no thread-count is read, none is written, and the
-                // per-node submission cost is unchanged. A stale plan reaches
-                // here with widths_active false and is run as though every node
-                // were unplanned.
+                // Width 0 (unplanned, or a stale plan with widths_active
+                // false) takes the plain path: no thread count read or written.
                 if (widths_active && node.thread_width > 0) {
                     detail::WidthGuard const width(node.thread_width);
                     execute_node(node);
@@ -675,10 +659,7 @@ void DataflowExecutor::Scaffold::enqueue_task(size_t i, std::vector<std::functio
 
     // Both closures capture exactly a pointer and an index, which fits inside
     // std::function's inline buffer - so submitting a node allocates nothing.
-    // The old path went through submit_detached(node.label, lambda), which
-    // copied the label into a wrapper closure and heap-allocated the wrapper
-    // AND the wrapped callable, per node per replay. The zone that wrapper
-    // provided is now taken inside the run_* bodies from a pre-interned name.
+    // The profiling zone is taken inside the run_* bodies from a pre-interned name.
     //
     // `batch` is passed only by the root-seeding loop, which runs on the
     // calling thread and so would otherwise take the pool's external-queue

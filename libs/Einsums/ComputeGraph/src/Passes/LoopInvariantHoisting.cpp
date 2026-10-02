@@ -112,12 +112,9 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             // parametric View at whatever the first iteration resolved to. A
             // parameter-bound View is the mirror image: invariant parent, moving
             // slice. Neither is inspectable as dataflow, so both are refused
-            // outright rather than proven safe. (The View case is also caught
-            // today by the single-writer guard below, but incidentally -- that
-            // guard resolves a view's output through its alias to the parent
-            // buffer, which usually has no writer in the body at all -- so it
-            // stops holding the moment the parent is written once per
-            // iteration, which is exactly what a blocked residual does.)
+            // outright. (The single-writer guard below catches the View case
+            // only incidentally, and not once the parent is written per
+            // iteration, as a blocked residual does.)
             if (bnode.kind == OpKind::WriteParam || has_runtime_view_bounds(bnode)) {
                 note_skip("node's per-iteration effect is a parameter write or a parameter-bound slice, not visible as dataflow",
                           fmt::format("body node '{}'", bnode.label));

@@ -117,8 +117,7 @@ LoadedTensor adopt_outer_tensor(Graph &graph, IrTensor const &spec, LoadedTensor
     }
     // The fragment's declaration and the enclosing tensor must describe the same storage: the
     // object is cast to the type the declaration names, and the body's nodes were built against
-    // its extents. A file that pointed a body at a differently shaped or typed tensor used to be
-    // adopted as is, and the loop wrote into the wrong tensor.
+    // its extents.
     if (outer.dtype != spec.dtype) {
         throw BuildFailure(fmt::format("tensor '{}' is declared {} but the enclosing frame's tensor it names holds {}", spec.name,
                                        spec.dtype, outer.dtype));

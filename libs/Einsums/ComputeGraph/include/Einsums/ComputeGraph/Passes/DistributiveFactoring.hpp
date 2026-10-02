@@ -38,10 +38,8 @@ enum class APIARY_EXPOSE APIARY_MODULE("graph") Factor : std::uint8_t{
  *
  * The lowering is ordinary nodes, not one fused node: a Scale that zeros the
  * intermediate, one Axpy per summed operand carrying that member's product
- * prefactor, and one Einsum with ``ab_pf = 1``. An earlier version fused all of
- * it into an ``OpKind::Custom`` node that swapped a slot pointer so the first
- * member's baked executor read the intermediate. That ran correctly but hid the
- * intermediate from every other pass, so nothing could share or hoist it.
+ * prefactor, and one Einsum with ``ab_pf = 1``, so other passes can share or
+ * hoist the intermediate.
  *
  * Groups that sum the same operands, up to an overall factor, share one
  * intermediate, so a quantity several terms consume is built once. This is the

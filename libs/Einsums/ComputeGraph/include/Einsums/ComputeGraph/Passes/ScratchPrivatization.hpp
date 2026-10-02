@@ -37,7 +37,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *
  * Renaming a node means rebuilding its executor: captured executors resolve operands through TensorSlot
  * pointers baked at capture time, so editing ``Node::inputs`` alone would change the schedule but not the
- * computation (the CSE baked-lambda lesson). Einsum nodes are rebuilt through ``Graph::make_einsum_node``;
+ * computation. Einsum nodes are rebuilt through ``Graph::make_einsum_node``;
  * Permute and Axpby nodes get executors that resolve their operands by TensorId at call time.
  *
  * In the default pipeline (after LoopInvariantHoisting, before ContractionPlanning): late enough that the

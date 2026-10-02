@@ -128,9 +128,8 @@ struct StructuralAlias {
 /// This is the counterpart of the pointer-derived containment search in
 /// @ref Graph::link_alias_storage and it is what a loaded graph has instead of
 /// one, because a graph read from a file has allocated nothing and the tensors
-/// bound to it afterwards are not the tensors that were captured. It is also
-/// STRICTLY more general than the View-node scan the hazard pass used to run
-/// inline, which refused a permuted view and a view of a view; both compose here.
+/// bound to it afterwards are not the tensors that were captured. Permuted views
+/// and views of views compose here.
 ///
 /// **Composition.** A view's descriptor gives, per parent axis, the interval that
 /// axis is restricted to (a whole axis, a constant Range, or the single index a

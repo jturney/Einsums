@@ -11,15 +11,11 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
- * @brief Element-wise operation fusion: collapses consecutive in-place Scale ops on the same tensor into a single node.
- *
- * Detects a run of adjacent `Scale` nodes that all write the same tensor and merges them into the first: their factors are
- * multiplied and their executors composed into one closure. Each merge removes a node (and its per-replay executor call). The
- * forward scan stops at the first node that is not a same-tensor scale, so only a textually consecutive scale chain fuses.
+ * @brief Element-wise operation fusion: collapses directly consecutive Scale or axpby ops on the same tensor into a single node.
  *
  * In the default pipeline (populate_default; also the O1 cleanup cluster in PassManager::create_for). Runs after
- * SymmetrizedAccumulation, which must fold its `r2 += s*(tmp + P(tmp))` idiom before this pass composes the two axpby into one
- * executor and hides the pattern.
+ * SymmetrizedAccumulation, which must fold its `r2 += s*(tmp + P(tmp))` idiom before this pass merges the two axpby and hides
+ * the pattern.
  *
  * @par Example (C++)
  * @code
@@ -52,8 +48,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   `Y = (a2 + b2·a1)·X + (b2·b1)·Y`. axpby reads its scalars from live shared params, so this is a real fusion - the result is
  *   ONE sweep over Y. If the composed `beta` is zero the node stops listing Y as an input, since it no longer reads it.
  * - **Scale-into-Scale** on the same tensor: the factors multiply. Also a real fusion - the composed factor is written to the
- *   scale's live params and the merged node applies ONE multiply. It used to chain the two executors instead, removing a node but
- *   not a sweep, because `ScaleDescriptor` carried a plain `double` that the executor did not read.
+ *   scale's live params and the merged node applies ONE multiply.
  *
  * @par Limitations
  * - Both fusions need live shared params on every participant, so a Scale or Axpby some pass assembled by hand without them is

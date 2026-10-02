@@ -344,8 +344,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
   private:
     /// Record a region turned away, counting the reason for the structural report as well as
-    /// for the skip tally. One call rather than two statements at each site, because the two
-    /// used to drift: the count said three declines and the tally named one.
+    /// for the skip tally, in one call so the two cannot drift.
     void decline(std::string_view reason, std::string_view detail = {});
 
   private:

@@ -309,14 +309,10 @@ void Graph::execute() {
                         // explicit HostToDevice node and marks the tensor
                         // Residency::Device, in which case this is skipped.
                         //
-                        // Doing it here as well is what keeps the executor correct
-                        // independently of which passes ran. Previously this branch
-                        // called ensure() and swapped the pointer but never copied,
-                        // so a GPU node reached without a preceding H2D - a graph
-                        // with Target::GPU set by hand, or one where
-                        // TransferElimination dropped an H2D it judged redundant -
-                        // computed on uninitialized device memory. Under unified
-                        // memory the swap is a no-op, so the bug was invisible.
+                        // Doing it here as well keeps the executor correct whichever
+                        // passes ran: a GPU node reached without a preceding H2D (a
+                        // hand-set Target::GPU, or an H2D TransferElimination dropped)
+                        // would otherwise compute on uninitialized device memory.
                         if (!device_valid.count(tid)) {
                             // Non-null by construction: checked above before any
                             // operand of this node was placed.
@@ -355,13 +351,9 @@ void Graph::execute() {
             if (!gpu_dispatched) {
                 profile::annotate("gpu_dispatch", "cpu_fallback");
 
-                // The CPU lambda must run on HOST pointers. Restoring them first
-                // is not a tidiness detail: on a discrete device the tensors are
-                // currently pointing at cudaMalloc'd shadows, so calling a host
-                // BLAS kernel on them is a segfault. This code used to run the
-                // fallback "with pointers still swapped to shadows" - harmless
-                // only because every backend that ever executed it had unified
-                // memory, which made the swap a no-op.
+                // The CPU lambda must run on HOST pointers: on a discrete device
+                // the tensors currently point at cudaMalloc'd shadows, and a host
+                // BLAS kernel on them segfaults.
                 //
                 // Inputs that were copied up must also come back down, because a
                 // preceding GPU node in the same chain may have produced them on
@@ -559,15 +551,10 @@ bool Graph::apply(PassManager &pm) {
     // Storage-level aliasing must be resolved before anything reasons about
     // which buffer a node touches; cheap and idempotent after the first call.
     //
-    // Recursively, and that is not a refinement. Fourteen passes opt into
-    // ``recurse_into_subgraphs()`` and rewrite loop bodies, and every one of
-    // them asks ``Graph::resolve_alias`` which buffer a node touches. Linking
-    // the root alone left every body unlinked, so inside a loop that question
-    // answered "this view aliases nothing": Reorder's hazard scan then missed
-    // the view/parent edges entirely and was free to move a writer past a
-    // reader of the same buffer. Silent, and invisible to a straight-line test.
-    // At every depth: a loop nested in a loop needs linking as much as the
-    // outer one does.
+    // Recursively, at every depth: passes that rewrite loop bodies ask
+    // ``Graph::resolve_alias`` which buffer a node touches, and an unlinked
+    // body answers "aliases nothing", so Reorder could move a writer past a
+    // reader of the same buffer.
     link_alias_storage();
     for_each_descendant([](Graph &sub) { sub.link_alias_storage(); });
     std::scoped_lock const lock(_content_mutex);

@@ -275,8 +275,8 @@ namespace {
 /// into a different kernel or none.
 bool raisable_here(Graph const &graph, Node const &node, RegionOptions const &options) {
     // A barrier rather than a member the raise later refuses: a refusal costs the whole region,
-    // and in a flat graph the region is the whole graph, so one P(ij) anywhere used to switch the
-    // client off for every node, including the ones that share nothing with it.
+    // and in a flat graph the region is the whole graph, so one P(ij) anywhere would switch the
+    // client off for every node.
     if (!options.understood.covers(features_of(graph, node))) {
         return false;
     }

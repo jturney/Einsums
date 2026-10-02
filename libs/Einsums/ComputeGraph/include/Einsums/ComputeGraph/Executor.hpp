@@ -68,8 +68,7 @@ struct DependencyInfo {
     /// k; every node in a level is independent of the others.
     ///
     /// Computed with the lists above (positions are topological, so one forward pass) and
-    /// invalidated with them - executors that schedule level-by-level
-    /// (OpenMPExecutor) previously re-derived this on every execute.
+    /// invalidated with them.
     std::vector<std::vector<size_t>> levels;
 };
 
@@ -183,18 +182,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HO
 
     /// Pool of scaffolds to reuse across replays.
     ///
-    /// A replay of an unchanged graph rebuilt all of this from scratch: a
-    /// shared_ptr control block, a vector<atomic<int>> of counters, a timing
-    /// vector, and a heap-allocated std::function per node. An SCF/CC loop
-    /// replays the same graph hundreds of times, so all of it is allocation
-    /// churn that buys nothing.
+    /// Saves the per-replay allocations (counters, timings, a std::function
+    /// per node) that an SCF/CC loop would otherwise repeat hundreds of times.
     ///
-    /// It is a POOL rather than one cached scaffold because execute() must
-    /// stay reentrant and thread-safe: one executor instance can be installed
-    /// on several loop bodies (set_executor takes a shared_ptr), and a Loop
-    /// node replaying its body nests one execute() inside another. A run takes
-    /// a scaffold for its duration and returns it, so concurrent and nested
-    /// runs get their own. The mutex is taken twice per RUN, not per node.
+    /// A pool rather than one scaffold because execute() is reentrant: one
+    /// executor can serve several loop bodies, and a Loop node nests
+    /// execute() calls. A run borrows a scaffold and returns it; the mutex is
+    /// taken twice per run, not per node.
     std::mutex                             _scaffold_mutex;
     std::vector<std::unique_ptr<Scaffold>> _scaffolds;
 };

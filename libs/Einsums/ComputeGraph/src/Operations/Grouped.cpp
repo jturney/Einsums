@@ -92,7 +92,7 @@ void capture_grouped_axpby(CaptureContext &ctx, std::vector<T> alphas, std::vect
     for (size_t i = 0; i < count; i++) {
         inputs.push_back(x[i].first);
         // beta != 0 means this entry reads its destination before writing it, so
-        // the RAW edge from whoever produced Y must survive (bug-1009).
+        // the RAW edge from whoever produced Y must survive.
         if (betas[i] != T{0}) {
             inputs.push_back(y[i].first);
         }

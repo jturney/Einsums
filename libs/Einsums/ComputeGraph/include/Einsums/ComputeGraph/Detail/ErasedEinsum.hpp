@@ -37,11 +37,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::dispatch)
 /// eager API's AlgorithmChoice out-parameter. Thread-local; not an API for
 /// steering execution.
 ///
-/// Defined OUT OF LINE, and exported, so the whole process shares one slot. An
-/// inline function's thread-local gets a copy per shared object under hidden
-/// visibility, and a graph whose executors were built inside the library (which
-/// is every einsum node since @ref build_executor took over the lowering) would
-/// then write a slot no test executable can read.
+/// Defined out of line and exported so the process shares one slot: an inline
+/// thread-local gets a copy per shared object under hidden visibility, and
+/// executors built inside the library would write a slot tests cannot read.
 [[nodiscard]] EINSUMS_EXPORT char const *&last_dispatch_route();
 
 /**

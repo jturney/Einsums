@@ -54,14 +54,11 @@ bool ScaleAbsorption::run(Graph &graph) {
     // Alias-aware family test, and the reason this pass needs one.
     //
     // Node I/O lists carry TensorIds, and a view of a tensor is a DIFFERENT id
-    // whose handle aliases the parent. A raw id comparison therefore does not
-    // see an accumulation into a SLICE of the scaled store at all: DLPNO's
-    // residual clears a whole pair store with `scale(0, R)`, accumulates into
-    // per-pair slice views of it, and finally folds `Rn` into `R` whole. The
-    // raw scan saw only that last whole-store axpby, called it the sole
-    // observer, and folded the zeroing factor into its beta - deleting every
-    // slice accumulation in between. The program-order validator caught it
-    // (it resolves aliases), but the fold was wrong, not merely unverifiable.
+    // whose handle aliases the parent. A raw id comparison does not see an
+    // accumulation into a SLICE of the scaled store: DLPNO's residual clears a
+    // pair store with `scale(0, R)`, accumulates into slice views, then folds
+    // `Rn` into `R` whole, and a raw scan would fold the zero into that last
+    // axpby's beta, deleting every slice accumulation in between.
     //
     // A partial access cannot take the factor: a slice consumer's prefactor
     // scales only its own span, while the scale zeroes (or scales) the WHOLE
@@ -225,9 +222,7 @@ bool ScaleAbsorption::run(Graph &graph) {
         }
 
         // The fold below moves a REAL scalar onto a following op. A complex
-        // factor is left alone rather than projected onto its real part: the
-        // descriptor used to be a plain double filled from `factor.real()`, so
-        // a complex scale folded a wrong value here with nothing to warn on.
+        // factor is left alone rather than projected onto its real part.
         // The check sits after the dead-scale removal above, which discards
         // the factor whatever its value.
         if (!is_real_valued(live_scale)) {

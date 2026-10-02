@@ -42,14 +42,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * so complex dtypes are exact and the coefficients are real; and the (K+1)-sized system solves with ``gesv``.
  *
  * @par Why the interior is BLAS and memcpy rather than tensor operations
- * Every tensor here is dense, contiguous, of a known dtype, and mostly owned by this object, so the eager tensor layer has nothing left
- * to decide - and its per-call cost is what dominates at the sizes a local-correlation solver produces. A DLPNO-(T) iteration hands the
- * accelerator several hundred pairs, which puts a step near ten thousand operations on operands of a few thousand elements each; through
- * the eager layer each one pays a profiling section, rank and shape checks, a vectorability query and a dispatch, all of which cost more
- * than the arithmetic they guard. So the hot path calls the BLAS wrappers and @c std::copy_n on raw pointers directly. The operations
- * are the SAME ones the eager layer would have reached - it lowers a contiguous ``axpby`` to @c scal plus @c axpy and a contiguous
- * ``true_dot`` to @c dot / @c dotc - which is what keeps the results bit for bit what they were. An operand that is NOT one flat vector
- * (a strided view) keeps the eager path, because that is the code that knows how to walk it.
+ * A DLPNO-(T) step is near ten thousand operations on operands of a few thousand elements, where the eager layer's per-call overhead
+ * (profiling, shape checks, dispatch) costs more than the arithmetic. So contiguous operands go straight to the same BLAS calls the eager
+ * layer would reach (@c scal + @c axpy, @c dot / @c dotc), keeping results bitwise identical; a strided view keeps the eager path.
  *
  * The B entries are CACHED across steps, keyed by snapshot identity: a step adds one snapshot, so only one row is new. Each entry sums
  * its components in registration order, one @c dot per component, which is what the cross-implementation bit-identity gate rests on: one
@@ -120,10 +115,8 @@ APIARY_INSTANTIATE_AS("DiisAcceleratorZ", DiisAccelerator<std::complex<double>>)
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "DiisAccelerator::step: no (amplitude, step) pairs were registered");
         }
 
-        // Every kernel a step runs is BLAS level 1 over at most a few tens of thousands of elements, which a vendor that opens a thread
-        // team per call loses on outright - at (T) scale that measured eight times the cost of the same calls made serially - and the
-        // fence also fixes the reduction order of the B entries, so the coefficients are a function of the inputs rather than of the
-        // inputs and the machine's thread count.
+        // Small BLAS-1 calls lose to a per-call thread team (measured 8x at (T) scale), and serial also fixes the reduction order of the
+        // B entries, so the coefficients do not depend on the thread count.
         blas::SerialVendorScope const serial;
         snapshot();
         extrapolate();

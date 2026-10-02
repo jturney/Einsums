@@ -633,11 +633,9 @@ bool ContractionPlanning::run(Graph &graph) {
             //
             // A RUNTIME-rank tensor that happens to be rank 2 is fine. The
             // emitted executor goes through each tensor's impl and the
-            // dynamic-rank gemm overload, so there is no Tensor<T,2>* cast to
-            // be confused by - which is what used to force runtime chains
-            // (everything captured from Python) to analysis-only. A runtime
-            // tensor still needs an impl to reach: tile-wise sparse handles
-            // have none and stay out.
+            // dynamic-rank gemm overload, so there is no Tensor<T,2>* cast.
+            // A runtime tensor still needs an impl to reach: tile-wise sparse
+            // handles have none and stay out.
             bool all_rank2 = true;
             for (auto const &ci : chain) {
                 for (auto tid : {ci.input_a_tid, ci.input_b_tid, ci.output_tid}) {

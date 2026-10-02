@@ -1209,8 +1209,7 @@ void element_transform(CType *C, UnaryOperator unary_op) {
 }
 
 /// Tiled element_transform: apply @p unary_op to every stored tile. (The generic
-/// overload requires BasicTensorConcept, which a tiled tensor no longer
-/// satisfies, so this is selected unambiguously for tiled operands.)
+/// overload requires BasicTensorConcept, which a tiled tensor does not satisfy.)
 template <TiledTensorConcept CType, typename UnaryOperator>
     requires(!std::convertible_to<UnaryOperator, std::string_view>)
 void element_transform(CType *C, UnaryOperator unary_op) {
@@ -1502,9 +1501,7 @@ void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
         // Y += alpha*X, so it reads its destination. Omitting it hides the
         // accumulation from the scheduler and the liveness passes -- Reorder could
         // move this past another writer of Y, and DeadNodeElimination could treat
-        // the value being accumulated onto as dead. This is the convention the
-        // dense axpy already uses (bug-1009); the tiled overload was written later
-        // and missed it.
+        // the value being accumulated onto as dead. Same convention as dense axpy.
         ctx.record(OpKind::Custom, std::move(label), {x_id, y_id}, {y_id}, std::move(executor), std::move(edesc));
     } else {
         static_assert(detail::ImplBackedTensor<XType> && detail::ImplBackedTensor<YType>,
@@ -2021,11 +2018,8 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float,               
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-// Tiled operands. A tiled dot reduces over the grid, which is the shape a
-// per-iteration amplitude container has, and it was reachable from C++ only -
-// so the loop that reduces over it could not be measured from Python at all,
-// which is how it went unnoticed that it opened a parallel region per call
-// whatever the grid held. See BenchmarkBlockTileReduction.
+// Tiled operands: a tiled dot reduces over the grid, the shape of a
+// per-iteration amplitude container. See BenchmarkBlockTileReduction.
 APIARY_INSTANTIATE_AS("dot", einsums::TiledRuntimeTensor<float>,                einsums::TiledRuntimeTensor<float>)
 APIARY_INSTANTIATE_AS("dot", einsums::TiledRuntimeTensor<double>,               einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("dot", einsums::TiledRuntimeTensor<std::complex<float>>,  einsums::TiledRuntimeTensor<std::complex<float>>)
@@ -3231,10 +3225,8 @@ void grouped_batched_gemm(double alpha, std::vector<AType const *> a_list, std::
 
     // Two members sharing a destination race, because the call gives no
     // ordering between them. @ref batched_gemm carries the same contract and
-    // leaves it to the caller, but this entry point exists to MERGE calls that
-    // used to be separate, and merging two that accumulate into one C is
-    // exactly the mistake it makes newly reachable. Cheap to catch here, and
-    // silently wrong if it is not.
+    // leaves it to the caller, but merging separate calls is exactly how two
+    // accumulations into one C arise, so check here.
     detail::require_distinct_destinations(c_list, "cg::grouped_batched_gemm");
 
     auto &ctx = CaptureContext::current();
@@ -3571,7 +3563,7 @@ void grouped_dot(std::vector<ResultType *> results, std::vector<AType const *> a
 /// The grouped counterpart of @ref axpby, and the accumulating half of the
 /// pattern @ref grouped_dot reduces into: a local-correlation residual computes
 /// a scalar per pair or per neighbour and then adds it, scaled, into one element
-/// of a shared matrix, and both halves used to cost a node apiece.
+/// of a shared matrix; this makes that one node.
 ///
 /// Entries run SEQUENTIALLY inside the node, in the order they were passed. That
 /// is load-bearing twice over. It makes each entry the same bits the single call
@@ -4158,8 +4150,7 @@ void grouped_gather_rotate(std::vector<CType *> c_list, SrcType const &src, std:
 
     // Two members sharing a destination race, because the run gives no ordering
     // between them - the same contract @ref grouped_batched_gemm carries, and
-    // the same reason: this entry point exists to MERGE calls that used to be
-    // separate.
+    // the same reason: it merges separate calls.
     detail::require_distinct_destinations(c_list, "cg::grouped_gather_rotate");
 
     auto &ctx = CaptureContext::current();

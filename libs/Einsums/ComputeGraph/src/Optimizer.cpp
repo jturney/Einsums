@@ -601,7 +601,7 @@ bool PassManager::run(Graph &graph) {
             case PassPhase::StructuralAlgebraic:
                 // What a save persists is this phase's output, so this is the phase whose
                 // membership the provenance block is about. Recorded here rather than asked of
-                // the caller, which is what it used to be and what nobody remembered to supply.
+                // the caller.
                 if (modified) {
                     graph.note_structural_pass(pass->name());
                 }
@@ -899,10 +899,9 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // so the algebraic passes below and the check after it see a fully annotated program when the
     // user annotated only the inputs; the end-of-run re-analysis refreshes it after the rewrites.
     // The check then asks whether any contraction letter binds a slot of one space against a slot
-    // of another, which is a question about what the author wrote. It used to run after
-    // Materialization, by which point DeltaElimination below had already reduced a contraction over
-    // disjoint spaces to its prefactor, the two responses the design pairs had become one, and the
-    // error the author needed was gone. Read-only and silent unless something is wrong: the
+    // of another, which is a question about what the author wrote, so it must run before
+    // DeltaElimination reduces a contraction over disjoint spaces to its prefactor and hides the
+    // error. Read-only and silent unless something is wrong: the
     // findings reach graph.explain() and print_report(), never stdout.
     list.push_back(std::make_shared<passes::SpacePropagation>());
     list.push_back(std::make_shared<passes::CrossSpaceValidation>());
@@ -922,15 +921,11 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // before Materialization / GPU placement so those passes don't
     // allocate / place tensors that are about to be removed.
     //
-    // First of the group: lowering a contraction's permutation operator emits an
-    // ordinary einsum plus a run of permuted accumulations, and everything below
-    // should see THAT rather than one opaque node. It also moves the temporary
-    // the operator needs out of a per-call allocation and into a graph
-    // intermediate, which is only worth anything if MemoryPlanning and the
-    // lifetime passes downstream get to place it. Declines instantly on any
-    // graph whose specs name no operator, which is every graph today.
-    // The antisymmetrizer cluster, ahead of the expansion that strips the
-    // operator and so removes what all four of them match on.
+    // First of the group: the antisymmetrizer cluster, then the expansion that
+    // lowers a permutation operator into an einsum plus permuted accumulations
+    // (so later passes see ordinary nodes and MemoryPlanning places the
+    // temporary). The cluster must precede the expansion, which strips the
+    // operator all four match on.
     //
     // The order within it is forced. Detection establishes leaf facts by reading
     // the bound inputs; linearity pulls `V := W + P(X)` into one operator so the
@@ -938,10 +933,8 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // carries the leaf facts to the premise the fold needs; the fold collapses
     // the contraction and emits its own per-bind guard.
     //
-    // Each declines on a graph that names no operator, which is every graph
-    // written before they existed, at the cost of one walk over the node list.
-    // Detection reads DATA, so that gate is what keeps it from touching a byte of
-    // anyone's tensors unless an operator asked a question about them.
+    // Each declines after one walk on a graph that names no operator, so
+    // Detection never reads tensor data unless an operator asked about it.
     //
     // Measured on the naive whole-tensor (T) of examples/toy: 1.4x, with
     // detection costing about 70 ms once against roughly 9 ms saved per
@@ -1011,9 +1004,7 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // chains using the shared cost model and declares DEFERRED intermediates,
     // so it must precede GEMMBatching/Reorder (which schedule the final
     // node set) and DistributionPlanning/Materialization (which size and
-    // allocate the intermediates it introduces). It used to run dead-last,
-    // where its restructured nodes got no placement or memory management and
-    // its eagerly-created intermediates leaked for the graph's lifetime.
+    // allocate the intermediates it introduces).
     list.push_back(std::make_shared<passes::ContractionPlanning>(cost_model));
     // GEMMBatching collapses groups of independent, shape-compatible
     // 2D×2D→2D einsums into a single BatchedGemm node backed by

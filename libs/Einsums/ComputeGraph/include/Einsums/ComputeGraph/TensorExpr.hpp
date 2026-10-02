@@ -309,8 +309,7 @@ struct ExprStatement {
     /// NOT consult it, see the file note.
     NodeId origin{0};
 
-    /// The node's kind at raise time, for reports that want to say what the
-    /// algebra used to be.
+    /// The node's kind at raise time, for reports.
     OpKind origin_kind{OpKind::Custom};
 
     /// The origin node's label, carried through a lowering so a report reads the

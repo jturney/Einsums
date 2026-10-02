@@ -40,9 +40,7 @@ namespace {
 // recurse into loop bodies.
 // EscapeAnalysis::stable answers both in one call: exactly one value-writer in this graph, and no
 // descendant sub-graph touching the buffer. Shared with SymmetryPropagation,
-// LoopInvariantHoisting and the region framework rather than counted a fourth
-// time here, because several derivations of one relation disagreeing in the
-// corner nobody tested is this module's signature bug.
+// LoopInvariantHoisting and the region framework so the derivations agree.
 
 /// What one rule did with one node. A rule declines far more often than it
 /// fires, and the interesting declines (operands that disagree about a letter)

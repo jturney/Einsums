@@ -257,8 +257,8 @@ void Graph::link_alias_storage() {
 
     // Running max of hi over the prefix. Only a span starting at or before this
     // one can contain it, so once the best hi in that prefix falls short of our
-    // end there is nothing left to find and the backward walk stops. Without it
-    // the walk is the O(n^2) scan this replaces.
+    // end there is nothing left to find and the backward walk stops (otherwise
+    // O(n^2)).
     std::vector<char const *> prefix_max_hi(spans.size());
     char const               *running = nullptr;
     for (size_t i = 0; i < spans.size(); ++i) {
@@ -298,16 +298,11 @@ void Graph::link_alias_storage() {
                     // resolve_alias walks the chain on every hazard-scan
                     // lookup and gives up after a bounded number of hops.
                     //
-                    // Without this, N handles covering the SAME bytes (the
-                    // tie-break below the containment test links each to the
-                    // one before it) form a chain of depth N, and past the hop
-                    // limit resolve_alias returns a different mid-chain id for
-                    // each of them. The hazard scan then keys their accesses
-                    // under different owners and emits no edge between any of
-                    // them, which under a threading executor is a silent data
-                    // race - DLPNO-(T0) hit exactly this with one scratch
-                    // buffer shared by 40 triplets, and the schedule's widest
-                    // level came out at exactly (triplets - hop limit).
+                    // Otherwise N handles covering the SAME bytes form a chain
+                    // of depth N, and past the hop limit resolve_alias returns
+                    // different mid-chain ids, so the hazard scan emits no edges
+                    // between them: a data race under a threading executor
+                    // (e.g. one scratch buffer shared by 40 DLPNO-(T0) triplets).
                     //
                     // Owners sort before their aliases and the outer loop runs
                     // in sorted order, so the owner's own link is already final
@@ -344,9 +339,8 @@ void Graph::link_alias_storage() {
     // The fix is to give each run of mutually overlapping spans ONE root, so
     // the scan keys their accesses together. It cannot be exact: `aliases`
     // names a container, and a run like this has none, so the members' regions
-    // are no longer expressible in the root's axis space. They lose their boxes
-    // and conflict conservatively - which is the honest answer for a relation
-    // this model does not describe, and still far better than no edge at all.
+    // are not expressible in the root's axis space. They lose their boxes
+    // and conflict conservatively.
     //
     // A run whose members ALREADY share one root is left completely alone. That
     // is the common case and the important one: a registered parent and its

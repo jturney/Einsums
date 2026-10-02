@@ -519,9 +519,7 @@ std::function<void()> build_conditional(ConditionalDescriptor const &desc, std::
  * an absent ``std::function`` condition always did: run to the safety limit.
  *
  * The iteration count is written through the descriptor's shared
- * @ref LoopState. It used to be written into the executor lambda's own COPY of
- * the descriptor, so the count on the node stayed 0 forever and nothing could
- * observe how many iterations a loop actually ran.
+ * @ref LoopState, so it is observable on the node.
  */
 std::function<void()> build_loop(LoopDescriptor const &desc, std::shared_ptr<ParamTable> params) {
     if (!desc.body) {

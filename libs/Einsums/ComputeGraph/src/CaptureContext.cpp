@@ -35,7 +35,7 @@ void CaptureContext::end_capture() {
     // Reset capture state and balance the profiler push unconditionally,
     // before running validation/finalization that can throw. If validation
     // fails the caller still sees the exception, but the next `with
-    // cg.capture(...)` is no longer locked out by a stale capture state.
+    // cg.capture(...)` is not locked out by a stale capture state.
     Graph *g = _graph;
     _graph   = nullptr;
     _ptr_to_id.clear();
