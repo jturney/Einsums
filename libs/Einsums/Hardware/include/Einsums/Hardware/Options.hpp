@@ -14,16 +14,9 @@
 #include <limits>
 
 /*
- * The hardware detector's options, declared where the detector reads them.
- *
- * Each one replaces a detected or measured fact, so a benchmark can compare
- * two settings from ONE binary (the benchmarks involved swing by tens of
- * percent across rebuilds) and a test can pin the machine model it asserts
- * against on a runner whose own hardware would give another.
- *
- * The detector memoizes the facts on first use, so an option only takes
- * effect when it is parsed before then: on the command line or in the
- * environment, not through a config::set after the first contraction.
+ * The hardware detector's options. Each overrides a detected or measured fact, for same-binary
+ * A/B runs and for tests that pin a machine model. Facts are memoized on first use, so set these
+ * on the command line or in the environment.
  */
 
 EINSUMS_NAMESPACE_BEGIN(option)
@@ -51,37 +44,23 @@ inline constinit cl::ConfigOption<std::string> CacheDir = cl::config_opt<std::st
     "einsums:cache-dir", "Directory for measured constants kept between runs (empty = the platform cache location)", "Hardware", "",
     "PATH");
 
-/// The calibration file the OpenMP region cost is read from.
-///
-/// Empty, the default, means a host-keyed file under @ref CacheDir. Either way
-/// the file is optional: a missing or unreadable one means measure. It mirrors
-/// `einsums:hardware:profile`, which does the same for the ComputeGraph cost
-/// model, and like that file it is only ever written by `calibrate_hardware`.
+/// The optional calibration file for the OpenMP region cost; empty means a host-keyed file under
+/// @ref CacheDir. Written only by `calibrate_hardware`.
 inline constinit cl::ConfigOption<std::string> HardwareCalibration = cl::config_opt<std::string>(
     "einsums:hardware:calibration", "Calibration file for the OpenMP region cost (empty = a host-keyed file under the cache directory)",
     "Hardware", "", "PATH");
 
-/// Pin the cost of entering an OpenMP parallel region, in nanoseconds.
-///
-/// Negative, the default, takes the calibrated value when there is one and
-/// measures otherwise. A pin beats both, so a benchmark can hold the rate
-/// fixed across machines without touching any file.
+/// Pin the cost of entering an OpenMP parallel region, in nanoseconds. Negative calibrates or measures.
 inline constinit cl::ConfigOption<double> HardwareOmpRegionCostNs = cl::config_opt<double>(
     "einsums:hardware:omp-region-cost-ns", "Pin the cost of entering an OpenMP parallel region, in ns (-1 = calibrate or measure)",
     "Hardware", -1.0, "NS", cl::RangeBetween(-1.0, 1e9));
 
-/// Pin the element count at which elementwise kernels open a parallel region.
-///
-/// Negative, the default, derives it from the region cost. Zero parallelizes
-/// every loop.
+/// Pin the element count at which elementwise kernels go parallel. Negative derives it; zero always.
 inline constinit cl::ConfigOption<std::int64_t> HardwareOmpMinParallelElements = cl::config_opt<std::int64_t>(
     "einsums:hardware:omp-min-parallel-elements", "Elements at which elementwise kernels go parallel (-1 = derive from the region cost)",
     "Hardware", -1, "N", cl::RangeBetween<std::int64_t>(-1, (std::numeric_limits<std::int64_t>::max)()));
 
-/// Pin the flop count at which a contraction opens a parallel region.
-///
-/// Negative, the default, derives it from the region cost. Zero parallelizes
-/// every contraction.
+/// Pin the flop count at which a contraction goes parallel. Negative derives it; zero always.
 inline constinit cl::ConfigOption<std::int64_t> HardwareOmpMinParallelFlops = cl::config_opt<std::int64_t>(
     "einsums:hardware:omp-min-parallel-flops", "Flops at which a contraction goes parallel (-1 = derive from the region cost)", "Hardware",
     -1, "N", cl::RangeBetween<std::int64_t>(-1, (std::numeric_limits<std::int64_t>::max)()));

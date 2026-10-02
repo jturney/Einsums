@@ -51,9 +51,7 @@ namespace {
 CacheSizes detect_cache_sizes() {
     CacheSizes cs;
 
-    // Diagnostic override, so a blocking change can be measured against the old
-    // sizes from ONE binary. Comparing across rebuilds is not reliable for these
-    // benchmarks. A level left at zero keeps the detected value.
+    // Diagnostic override for same-binary A/B runs. A level left at zero keeps the detected value.
     auto const apply_override = [&cs]() {
         if (auto const l1 = config::get(option::HardwareL1CacheSize); l1 > 0) {
             cs.l1 = l1;
@@ -76,12 +74,8 @@ CacheSizes detect_cache_sizes() {
         return fallback;
     };
     cs.l1 = sysctl_i64("hw.l1dcachesize", cs.l1);
-    // Plain hw.l2cachesize reports the EFFICIENCY cluster on Apple Silicon, which
-    // is not where this work runs: on an M-series machine it reads 4 MB against
-    // the performance cluster's 16 MB, so blocking derived from it sized the A
-    // panel a quarter of what the cores actually have. hw.perflevel0 is the
-    // performance cluster. Same rule ComputeGraph's CostModel already used;
-    // the two detectors disagreeing is exactly why they should be one.
+    // On Apple Silicon hw.l2cachesize is the efficiency cluster's; hw.perflevel0 is the
+    // performance cluster, where the work runs.
     cs.l2 = std::max(sysctl_i64("hw.perflevel0.l2cachesize", 0), sysctl_i64("hw.l2cachesize", cs.l2));
     cs.l3 = sysctl_i64("hw.l3cachesize", cs.l3);
     // Apple Silicon may report L3 as 0; fall back to a reasonable default.
@@ -149,10 +143,7 @@ CacheSizes detect_cache_sizes() {
     return cs;
 }
 
-/// Time entering and leaving an empty parallel region. The team is warmed first
-/// so this measures steady-state fork/join rather than one-off thread creation,
-/// and the best of several trials is taken because anything else running on the
-/// machine only ever makes it look slower.
+/// Time an empty parallel region: warm team, best of several trials (interference only adds).
 double measure_omp_region_cost_ns() {
 #ifdef _OPENMP
     if (omp_get_max_threads() <= 1) {
@@ -185,12 +176,8 @@ double measure_omp_region_cost_ns() {
 #endif
 }
 
-/// Where a measured constant may be remembered between runs, or "" if nowhere.
-///
-/// option::CacheDir first so a test or a CI job can point this somewhere
-/// disposable, then the platform's own cache location. Never a fatal condition:
-/// a machine with nowhere to write simply measures every time, which is what
-/// happened before there was a cache at all.
+/// Where measured constants may be kept between runs: option::CacheDir, else the platform cache
+/// location, else "" (then nothing is kept).
 std::filesystem::path cache_directory() {
     if (auto const dir = config::get(option::CacheDir); !dir.empty()) {
         return std::filesystem::path(dir);
@@ -235,13 +222,8 @@ std::string host_tag() {
     return tag;
 }
 
-/// The calibration file this machine's measurements are read from.
-///
-/// option::HardwareCalibration first, mirroring the contract
-/// ``--einsums:hardware:profile`` already has for the ComputeGraph cost model:
-/// an explicit file, missing is fine, never load-bearing. Otherwise a default
-/// under the cache directory, keyed by host so a shared home directory cannot
-/// hand one machine's fork/join cost to another.
+/// The calibration file: option::HardwareCalibration, else one under the cache directory keyed by
+/// host, so a shared home directory cannot mix machines.
 std::filesystem::path calibration_file() {
     if (auto const file = config::get(option::HardwareCalibration); !file.empty()) {
         return std::filesystem::path(file);
@@ -253,12 +235,8 @@ std::filesystem::path calibration_file() {
     return dir / ("hardware-calibration-v1-" + host_tag() + ".txt");
 }
 
-/// One ``omp_region_cost_ns <threads> <value>`` entry, if the file has one.
-///
-/// Deliberately a line-oriented key/value format rather than JSON. This module
-/// sits below the one that owns a JSON parser, and a calibration file a person
-/// is expected to read, diff and delete is better off in a format that needs no
-/// parser at all.
+/// One ``omp_region_cost_ns <threads> <value>`` entry, if the file has one. Plain lines, not JSON:
+/// no parser is available at this level, and people read and diff the file.
 std::optional<double> read_calibrated_region_cost(std::filesystem::path const &path, int threads) {
     if (path.empty()) {
         return std::nullopt;
@@ -292,21 +270,9 @@ std::optional<double> read_calibrated_region_cost(std::filesystem::path const &p
     return std::nullopt;
 }
 
-/// The region cost: pinned, else calibrated, else measured here and now.
-///
-/// Measured per process this drifts by tens of percent with whatever else the
-/// machine is doing at startup. That is harmless for a threshold - a few percent
-/// either way does not move "is this loop worth a team" - and not harmless for a
-/// chooser that ranks discrete options against the rate, which is what the DLPNO
-/// example does when it weighs padded elements against batched calls.
-///
-/// So a calibrated value wins when there is one, and it gets there because
-/// somebody ran ``calibrate_hardware``. Nothing in this library writes that file.
-/// That is the whole point: a value the library caches for itself pins the first
-/// measurement it happens to take, and a measurement taken while the machine was
-/// busy is indistinguishable from a slower machine. A file somebody chose to
-/// generate can be regenerated, inspected, diffed and deleted, and its staleness
-/// is a question with an obvious answer rather than a silent one.
+/// The region cost: pinned, else calibrated, else measured now. A per-process measurement drifts
+/// by tens of percent, which is fine for a threshold but not for ranking options against it. The
+/// library never caches its own measurement: one taken on a busy machine looks like a slow machine.
 struct ResolvedRegionCost {
     double value{0.0};
     bool   calibrated{false};
@@ -349,9 +315,7 @@ int compiled_simd_width_f64() {
 #endif
 }
 
-/// SIMD width in doubles of the rung the process will dispatch to. Reads the
-/// same answer the kernel ladders read, so a pinned `--einsums:simd:arch` (or `STRIPES_ARCH`) lowers
-/// this too and the blocking built from it stays consistent with the kernel.
+/// SIMD width in doubles of the rung the kernels dispatch to, so it follows `--einsums:simd:arch`.
 int runtime_simd_width_f64() {
     return stripes::vector_bits(stripes::selected_arch()) / 64;
 }
@@ -393,9 +357,7 @@ bool write_calibration(std::string const &path, std::string *error) {
     int const max_threads = 1;
 #endif
 
-    // Every team size the process could later run at, because the cost is a
-    // function of the team and a run at four threads must not be handed the
-    // ten-thread number. Each entry is a few milliseconds.
+    // Every team size, since the cost depends on the team. A few milliseconds each.
     std::string body;
     body += "# einsums hardware calibration, format 1\n";
     body += "# host " + host_tag() + "\n";
@@ -453,17 +415,8 @@ bool write_calibration(std::string const &path, std::string *error) {
 
 namespace {
 
-/// The resolved cost for a team size, memoized so the measurement happens at
-/// most once per size and a calibration file makes it happen none.
-///
-/// Resolved against the CURRENT team size, not frozen at first use. The cost is
-/// a function of the team, and the team is not fixed for the life of a process:
-/// importing psi4 clamps process-wide OpenMP to one thread and the caller
-/// restores it afterwards, so anything that touched this in between - any
-/// elementwise kernel consulting omp_min_parallel_elements will do it - used to
-/// freeze the serial answer of zero and hand it to every later caller. The DLPNO
-/// bucket chooser then saw no per-call cost on ten threads and picked the finest
-/// bucketing available, which is the worst one there.
+/// The resolved cost for the current team size, memoized per size. Not frozen at first use: the
+/// team size changes during a process (importing psi4 clamps OpenMP to one thread for a while).
 ResolvedRegionCost const &region_cost_for_current_team() {
     static std::mutex                        memo_mutex;
     static std::map<int, ResolvedRegionCost> memo;
@@ -493,20 +446,12 @@ bool region_cost_is_calibrated() {
 }
 
 std::size_t omp_min_parallel_elements() {
-    // Derived per call for the same reason omp_region_cost_ns is: a threshold
-    // frozen while OpenMP was clamped to one thread is zero forever after.
-    //
-    // Diagnostic override, so a threshold can be measured against the
-    // unthresholded behaviour from ONE binary. Comparing across rebuilds is
-    // not viable for this: the benchmarks involved swing by tens of percent
-    // with unrelated machine activity, and only a same-binary A/B holds its
-    // controls steady. Zero restores "always parallelize".
+    // Derived per call, since the team size can change. The override is for same-binary A/B runs;
+    // zero means always parallelize.
     if (auto const pinned = config::get(option::HardwareOmpMinParallelElements); pinned >= 0) {
         return static_cast<std::size_t>(pinned);
     }
-    // Elementwise kernels are bandwidth-bound. One element per nanosecond is a
-    // conservative rate for cache-resident data, so the break-even element
-    // count is numerically the region cost in nanoseconds.
+    // At a conservative one element per nanosecond, the break-even count is the cost in ns.
     return static_cast<std::size_t>(omp_region_cost_ns());
 }
 
@@ -517,43 +462,15 @@ std::int64_t omp_min_parallel_flops() {
         return pinned;
     }
 
-    // Work is worth a parallel region once it takes longer than entering one,
-    // so the break-even scales with the measured region cost. This constant is
-    // what that cost is multiplied by, in flops per nanosecond, and it is a
-    // CALIBRATION rather than a flop rate - see below.
-    //
-    // It had been 1.0, on the reasoning that the smallest contractions manage
-    // about 1 GFLOP/s. That rate is real but it is the rate of work far below
-    // the break-even, which never decides anything; using it dragged the
-    // threshold down to a few tens of KFLOP and handed a region to everything.
-    // A tiled CCSD residual at 50 spin orbitals expands to 3751 contractions
-    // of ~295 KFLOP each, and forking for every one of them cost 71 ms of that
-    // replay's 72 ms einsum time, against 32 ms with the regions declined.
-    //
-    // The rate achieved AT the break-even is what a straight calculation would
-    // want, and BenchmarkParallelGate measures it on a `ijab <- ijcd ; cdab`
-    // ladder:
-    //
-    //   flops     8k    295k    524k    2.7M     13M
-    //   GFLOP/s  4.2    34.3    23.8    60.2    61.1
-    //
-    // But ~32 over-excludes. Measured end to end on two tiled CCSD residuals,
-    // same binary, threshold forced by the environment override:
+    // The break-even scales with the region cost; this multiplier (flops per ns) is a calibration,
+    // not a flop rate. Measured end to end on two tiled CCSD residuals, same binary:
     //
     //   threshold      26 spin-orb     50 spin-orb
-    //   26k (old)      3.9-4.1 ms      66.9-68.7 ms
+    //   26k            3.9-4.1 ms      66.9-68.7 ms
     //   300k           4.0-4.1 ms      33.6-34.3 ms
-    //   835k (=32x)    4.2-4.3 ms      33.5-33.6 ms
+    //   835k           4.2-4.3 ms      33.5-33.6 ms
     //
-    // 300k keeps the whole win on the large residual and costs the small one
-    // nothing, where 835k costs it ~6% for no further gain. The gap is that a
-    // region does not cost the full isolated figure when it is entered from a
-    // stream that keeps the team hot, so the naive break-even is too
-    // conservative. 12 is the multiplier that lands on the measured optimum;
-    // it is not a claim about achieved GFLOP/s.
-    //
-    // Measured on arm64 (Apple M4 Pro, 10 threads) only - x86 wants the same
-    // sweep before this is trusted there.
+    // 12 lands on ~300k. Measured on arm64 (M4 Pro, 10 threads) only; x86 wants the same sweep.
     constexpr double kBreakEvenFlopsPerNs = 12.0;
     return static_cast<std::int64_t>(omp_region_cost_ns() * kBreakEvenFlopsPerNs);
 }
