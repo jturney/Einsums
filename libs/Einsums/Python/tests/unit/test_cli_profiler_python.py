@@ -4,10 +4,10 @@
 # ----------------------------------------------------------------------------------------------
 
 """``python -m einsums``'s commands, and what Einsums adds to Waggle's viewer: the TaskPool panel and
-the compute-graph screen. The viewer itself is tested with Waggle (``libs/Waggle/tests/python``).
+the compute-graph screen. The viewer itself is tested in Waggle's repository.
 
 One test starts a real profiler server in a child interpreter and checks the viewer draws what it
-sends, so a change to the wire format in Waggle's ``src/Server.cpp`` that the viewer does not follow
+sends, so a change to the wire format in Waggle's server that the viewer does not follow
 fails here rather than in someone's terminal.
 """
 

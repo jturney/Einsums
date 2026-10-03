@@ -6,7 +6,7 @@
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # The Einsums side of the profiler: its command-line options, the spdlog sink, the recording check
-# and the einsums.profile Python surface. The profiler itself is Waggle (libs/Waggle).
+# and the einsums.profile Python surface. The profiler itself is Waggle (cmake/Einsums_SetupWaggle.cmake).
 set(ProfileHeaders Einsums/Profile/Profile.hpp Einsums/Profile/Options.hpp Einsums/Profile/Recording.hpp
                    Einsums/Profile/SpdlogSink.hpp
 )

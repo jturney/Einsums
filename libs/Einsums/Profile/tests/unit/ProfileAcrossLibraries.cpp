@@ -3,7 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Einsums' zones and its callers' land in one tree. Waggle's own tests live in libs/Waggle/tests;
+// Einsums' zones and its callers' land in one tree. Waggle's own tests live in its repository;
 // these need a zone opened inside libEinsums.
 
 #include <Einsums/Config.hpp>

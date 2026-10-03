@@ -1165,20 +1165,9 @@ include(Einsums_SetupApiary)
 # them so the registration function exists by the time they run.
 include(Einsums_PythonExtensionRegistry)
 
-# Waggle, the profiler Einsums shares with the other libraries in a process. A project of its own,
-# built here until it moves to its own repository; before libs/, whose Profile module links it.
-set(WAGGLE_BUILD_TESTS ${EINSUMS_WITH_TESTS_UNIT})
-set(WAGGLE_TEST_PREFIX "Tests.Unit.Waggle.")
-if(Python_EXECUTABLE)
-  # The interpreter Einsums found, for Waggle's viewer tests.
-  set(Python3_EXECUTABLE "${Python_EXECUTABLE}")
-endif()
-if(EINSUMS_BUILD_PYTHON)
-  # Waggle's viewer beside the einsums package, which `einsums profiler` imports it from.
-  set(WAGGLE_PYTHON_STAGING_DIR "${CMAKE_BINARY_DIR}/lib")
-  set(WAGGLE_PYTHON_INSTALL_DIR "${EINSUMS_INSTALL_PYMODDIR}")
-endif()
-add_subdirectory(libs/Waggle)
+# Waggle, the profiler Einsums shares with the other libraries in a process; before libs/, whose
+# Profile module links it.
+include(Einsums_SetupWaggle)
 
 add_subdirectory(libs)
 
