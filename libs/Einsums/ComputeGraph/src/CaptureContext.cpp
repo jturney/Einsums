@@ -11,6 +11,8 @@
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Profile.hpp>
 
+#include <utility>
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 CaptureContext &CaptureContext::current() {
@@ -22,7 +24,11 @@ void CaptureContext::begin_capture(Graph &graph) {
     if (is_capturing()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext: already capturing. Nested captures are not supported.");
     }
-    profile::Profiler::instance().push(fmt::format("ComputeGraph::capture({})", graph.name()));
+    // Read once, so end_capture closes exactly the zone this opened.
+    _recording = profile::recording();
+    if (_recording) {
+        profile::Profiler::instance().push(fmt::format("ComputeGraph::capture({})", graph.name()));
+    }
     _graph = &graph;
     _ptr_to_id.clear();
 }
@@ -39,12 +45,17 @@ void CaptureContext::end_capture() {
     Graph *g = _graph;
     _graph   = nullptr;
     _ptr_to_id.clear();
-    profile::Profiler::instance().pop();
+    bool const recording = std::exchange(_recording, false);
+    if (recording) {
+        profile::Profiler::instance().pop();
+    }
 
     g->topological_sort();
     g->validate_shapes_at_capture();
-    profile::annotate("num_nodes", static_cast<int64_t>(g->num_nodes()));
-    profile::annotate("num_tensors", static_cast<int64_t>(g->num_tensors()));
+    if (recording) {
+        profile::annotate("num_nodes", static_cast<int64_t>(g->num_nodes()));
+        profile::annotate("num_tensors", static_cast<int64_t>(g->num_tensors()));
+    }
     register_graph(g);
 }
 

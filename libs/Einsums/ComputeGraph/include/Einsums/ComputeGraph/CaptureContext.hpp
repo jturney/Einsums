@@ -267,7 +267,8 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
     };
 
     Graph                               *_graph{nullptr};
-    std::unordered_map<void *, CachedId> _ptr_to_id; ///< Maps tensor address → TensorId for deduplication
+    bool                                 _recording{false}; ///< Whether begin_capture opened a profiler zone to close
+    std::unordered_map<void *, CachedId> _ptr_to_id;        ///< Maps tensor address → TensorId for deduplication
 };
 
 // Defined outside the class so they are not implicitly inline: an explicit

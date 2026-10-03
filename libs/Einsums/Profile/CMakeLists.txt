@@ -19,6 +19,7 @@ set(ProfileHeaders
     Einsums/Profile/Diagnostics.hpp
     Einsums/Profile/SpdlogSink.hpp
     Einsums/Profile/Options.hpp
+    Einsums/Profile/Recording.hpp
     Einsums/Profile/TickClock.hpp
 )
 

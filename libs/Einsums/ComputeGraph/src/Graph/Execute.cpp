@@ -30,6 +30,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Profile/Profile.hpp>
+#include <Einsums/Profile/Recording.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
 #include <fmt/format.h>
@@ -56,6 +57,29 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 using namespace gpu_dispatch;
+
+namespace {
+
+// The call sites every graph's zones report. The NAMES are per graph and per node and come
+// pre-interned from _profile_strings; a site supplies the file, function and line, the same every
+// time. Accessors, not function-local statics in execute(): a static there is built, and the
+// profiler with it, even by a replay that records nothing.
+profile::ZoneSite const &graph_exec_site() {
+    static profile::ZoneSite const site{"ComputeGraph::execute", __FILE__, __LINE__, "execute"};
+    return site;
+}
+
+profile::ZoneSite const &graph_node_site() {
+    static profile::ZoneSite const site{"ComputeGraph::node", __FILE__, __LINE__, "execute"};
+    return site;
+}
+
+profile::ZoneSite const &graph_executor_site() {
+    static profile::ZoneSite const site{"ComputeGraph::execute(executor)", __FILE__, __LINE__, "execute"};
+    return site;
+}
+
+} // namespace
 
 void Graph::resync_slot_storage() {
     // Slots carrying an adopted stand-in, and only those. A slot without one
@@ -143,13 +167,7 @@ void Graph::execute() {
     // Read once so the zone pushes and their matching pops agree even if
     // another thread flips recording mid-run: an unbalanced zone deepens the
     // profiler tree without bound.
-    bool const recording = profile::Profiler::instance().enabled();
-
-    // Two call sites shared by every graph and every node. The NAMES are per
-    // graph and per node and come pre-interned from _profile_strings; the site
-    // supplies the file/function/line, which are the same every time.
-    static profile::ZoneSite const kGraphExecSite{"ComputeGraph::execute", __FILE__, __LINE__, __func__};
-    static profile::ZoneSite const kGraphNodeSite{"ComputeGraph::node", __FILE__, __LINE__, __func__};
+    bool const recording = profile::recording();
 
     // All fmt::format work for zones/annotations is precomputed, and so is the
     // string interning behind them; replays of an unchanged graph only pay the
@@ -162,7 +180,7 @@ void Graph::execute() {
     // profiler zone, or the tree depth grows without bound across failed runs.
     std::optional<profile::ScopedZone> exec_zone;
     if (recording) {
-        exec_zone.emplace(kGraphExecSite, _exec_zone_id);
+        exec_zone.emplace(graph_exec_site(), _exec_zone_id);
     }
 
     // A node whose cache entry does not match falls back to its bare label
@@ -188,7 +206,7 @@ void Graph::execute() {
                 (idx < _profile_strings.size() && _profile_strings[idx].node_id == node.id) ? _profile_strings[idx] : kEmptyEntry;
 
             if (ps.zone_id != 0) {
-                node_zone.emplace(kGraphNodeSite, ps.zone_id);
+                node_zone.emplace(graph_node_site(), ps.zone_id);
             } else {
                 node_zone.emplace(node.label);
             }
@@ -527,9 +545,11 @@ void Graph::execute(Executor &executor) {
         // recording off pays neither the fmt::format nor executor.name()'s
         // returned std::string - this fired on every replay regardless of
         // profiler state.
-        static profile::ZoneSite const site{"ComputeGraph::execute(executor)", __FILE__, __LINE__, __func__};
-        profile::ScopedZone const _zone(site,
-                                        [&]() { return fmt::format("ComputeGraph::execute({}, executor={})", _name, executor.name()); });
+        std::optional<profile::ScopedZone> zone;
+        if (profile::recording()) {
+            zone.emplace(graph_executor_site(),
+                         [&]() { return fmt::format("ComputeGraph::execute({}, executor={})", _name, executor.name()); });
+        }
         executor.execute(*this);
     }
     _executed = true;

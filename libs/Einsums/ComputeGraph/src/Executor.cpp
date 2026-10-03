@@ -10,6 +10,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile/Profile.hpp>
+#include <Einsums/Profile/Recording.hpp>
 #include <Einsums/Runtime/RuntimeConfiguration.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
 #include <Einsums/TaskPool/WidthBudget.hpp>
@@ -724,7 +725,7 @@ void DataflowExecutor::execute(Graph &graph) {
     Scaffold &s = *scaffold;
     s.reset(graph, n);
     s.budget    = _memory_budget;
-    s.recording = profile::Profiler::instance().enabled();
+    s.recording = profile::recording();
     if (s.recording) {
         s.refresh_zone_ids(graph);
     }
