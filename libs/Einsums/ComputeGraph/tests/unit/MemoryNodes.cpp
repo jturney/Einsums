@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <optional>
 #include <sstream>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -89,12 +90,15 @@ namespace {
 /// The zone named @p name anywhere below @p node: in a build with detail zones the runtime's own
 /// may enclose the test's.
 std::optional<waggle::SnapshotNode> find_zone(waggle::SnapshotNode const &node, std::string const &name) {
-    for (auto const &child : node.children()) {
-        if (child.name() == name) {
-            return child;
-        }
-        if (auto found = find_zone(child, name)) {
-            return found;
+    std::vector<waggle::SnapshotNode> pending{node};
+    while (!pending.empty()) {
+        auto const current = pending.back();
+        pending.pop_back();
+        for (auto const &child : current.children()) {
+            if (child.name() == name) {
+                return child;
+            }
+            pending.push_back(child);
         }
     }
     return std::nullopt;

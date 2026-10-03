@@ -160,6 +160,13 @@ auto Profiler::thread_channel() -> ThreadChannel & {
 }
 
 Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
+    // Statics are destroyed in the reverse order of their construction, and a program that never
+    // calls finalize leaves this destructor to drain the rings and stop the server at exit. So
+    // what those reach is built here, before this profiler is, and is destroyed after it.
+    (void)get_counter_backend().slot_name(0);
+    (void)StringTable::unknown_string();
+    (void)TickClock::instance();
+
     Settings s;
     {
         std::scoped_lock const lock(_settings_mutex);

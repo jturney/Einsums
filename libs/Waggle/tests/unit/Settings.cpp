@@ -3,9 +3,11 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Config.hpp>
+#include "Settings.hpp"
 
-#include <Einsums/Profile/Profile.hpp>
+#include <Waggle/Config.hpp>
+
+#include <Waggle/Waggle.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
@@ -18,7 +20,6 @@
 
 #include "Diagnostics.hpp"
 #include "Profiler.hpp"
-#include "Settings.hpp"
 
 #ifndef _WIN32
 #    include <arpa/inet.h>
@@ -136,10 +137,11 @@ TEST_CASE("Overriding replaces a setting whoever set it", "[profiler][settings]"
 }
 
 // Libraries share one profiler, so one finishing must not stop it for the others: only the last
-// finalize writes the outputs and stops the consumer. Einsums holds one reference for this whole
-// test run, so a client released here leaves the profiler recording.
+// finalize writes the outputs and stops the consumer.
 TEST_CASE("A library's finalize leaves the profiler running for the others", "[profiler][settings]") {
     auto &prof = Profiler::instance();
+    // Another library, holding its reference for the rest of the run.
+    prof.init({.name = "other-client"});
     prof.init({.name = "test-client"});
     prof.finalize("test-client");
 

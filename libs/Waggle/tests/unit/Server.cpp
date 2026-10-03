@@ -3,9 +3,11 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Config.hpp>
+#include "Server.hpp"
 
-#include <Einsums/Profile/Profile.hpp>
+#include <Waggle/Config.hpp>
+
+#include <Waggle/Waggle.hpp>
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -24,7 +26,6 @@
 #include "LogQueue.hpp"
 #include "Profiler.hpp"
 #include "RequestHandlers.hpp"
-#include "Server.hpp"
 #include "StringTable.hpp"
 
 #ifndef _WIN32
@@ -176,7 +177,7 @@ TEST_CASE("A session file embeds every registered section", "[profiler][server]"
     handlers.add_session_section("test_section", [] { return std::string(R"([1,2,3])"); });
     Server server(consumer, strings, handlers, "127.0.0.1", free_port());
 
-    auto const path = std::filesystem::temp_directory_path() / "einsums_profile_session_sections.json";
+    auto const path = std::filesystem::temp_directory_path() / "waggle_session_sections.json";
     std::filesystem::remove(path);
     server.export_session(path.string(), "sections");
     server.shutdown();

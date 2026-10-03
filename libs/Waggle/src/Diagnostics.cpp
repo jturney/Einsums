@@ -14,14 +14,16 @@ WAGGLE_NAMESPACE_BEGIN
 
 namespace {
 
-std::mutex &handler_mutex() {
-    static std::mutex mutex;
-    return mutex;
-}
+/// Where messages go. Never destroyed: the profiler reports while it shuts down at exit, and a
+/// static first used after the profiler was built would be destroyed before it.
+struct HandlerState {
+    std::mutex        mutex;
+    DiagnosticHandler handler;
+};
 
-DiagnosticHandler &handler_slot() {
-    static DiagnosticHandler handler;
-    return handler;
+HandlerState &state() {
+    static auto *const s = new HandlerState; // NOLINT(cppcoreguidelines-owning-memory): deliberately never freed
+    return *s;
 }
 
 void write_to_stderr(DiagnosticLevel level, std::string_view message) {
@@ -34,15 +36,17 @@ void write_to_stderr(DiagnosticLevel level, std::string_view message) {
 } // namespace
 
 void install_diagnostic_handler(DiagnosticHandler handler) {
-    std::scoped_lock const lock(handler_mutex());
-    handler_slot() = std::move(handler);
+    auto                  &s = state();
+    std::scoped_lock const lock(s.mutex);
+    s.handler = std::move(handler);
 }
 
 void diagnostic(DiagnosticLevel level, std::string_view message) {
     DiagnosticHandler handler;
     {
-        std::scoped_lock const lock(handler_mutex());
-        handler = handler_slot();
+        auto                  &s = state();
+        std::scoped_lock const lock(s.mutex);
+        handler = s.handler;
     }
     if (handler) {
         handler(level, message);

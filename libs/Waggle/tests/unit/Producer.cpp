@@ -8,10 +8,10 @@
 // thread shared; it now reads the CPU's counter twice and writes only its own thread's memory.
 // These cases pin what that must not have cost.
 
-#include <Einsums/Config.hpp>
+#include <Waggle/Config.hpp>
 
-#include <Einsums/Profile/Profile.hpp>
 #include <Waggle/Clock.hpp>
+#include <Waggle/Waggle.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>

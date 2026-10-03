@@ -3,15 +3,15 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Config.hpp>
+#include "StringTable.hpp"
+
+#include <Waggle/Config.hpp>
 
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
 #include <string>
 #include <thread>
-
-#include "StringTable.hpp"
 
 using namespace waggle;
 

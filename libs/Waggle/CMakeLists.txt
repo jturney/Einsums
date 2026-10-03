@@ -69,6 +69,24 @@ target_include_directories(waggle_internal INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(waggle_internal INTERFACE waggle)
 add_library(Waggle::internal ALIAS waggle_internal)
 
+# ── Tests ──────────────────────────────────────────────────────────────────
+# On when Waggle is the project being built; a project that adds Waggle decides for itself, and may
+# set a prefix that fits its own test names.
+option(WAGGLE_BUILD_TESTS "Build Waggle's tests" ${PROJECT_IS_TOP_LEVEL})
+set(WAGGLE_TEST_PREFIX
+    "Waggle."
+    CACHE STRING "Prefix of every Waggle test's name"
+)
+if(WAGGLE_BUILD_TESTS)
+  if(NOT TARGET Catch2::Catch2WithMain)
+    find_package(Catch2 3 REQUIRED)
+  endif()
+  if(PROJECT_IS_TOP_LEVEL)
+    enable_testing()
+  endif()
+  add_subdirectory(tests)
+endif()
+
 # ── Install ──────────────────────────────────────────────────────────────────
 install(
   TARGETS waggle

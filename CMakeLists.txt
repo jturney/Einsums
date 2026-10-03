@@ -1167,6 +1167,8 @@ include(Einsums_PythonExtensionRegistry)
 
 # Waggle, the profiler Einsums shares with the other libraries in a process. A project of its own,
 # built here until it moves to its own repository; before libs/, whose Profile module links it.
+set(WAGGLE_BUILD_TESTS ${EINSUMS_WITH_TESTS_UNIT})
+set(WAGGLE_TEST_PREFIX "Tests.Unit.Waggle.")
 add_subdirectory(libs/Waggle)
 
 add_subdirectory(libs)

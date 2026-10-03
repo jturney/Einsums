@@ -5,11 +5,12 @@
 
 // Snapshots, reset and the recording switch, through Waggle's public interface only.
 
-#include <Einsums/Config.hpp>
+#include <Waggle/Config.hpp>
 
-#include <Einsums/Profile/Profile.hpp>
+#include <Waggle/Waggle.hpp>
 
 #include <atomic>
+#include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -17,8 +18,6 @@
 #include <string>
 #include <thread>
 #include <utility>
-
-#include <Einsums/Testing.hpp>
 
 namespace {
 

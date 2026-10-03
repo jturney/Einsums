@@ -21,16 +21,14 @@ function(_einsums_snake_to_camel out_var snake)
   set(${out_var} "${_camel}" PARENT_SCOPE)
 endfunction()
 
-# The C++ suites drive the recording machinery directly (ring buffers, the
-# aggregating consumer, the annotation tree), none of which is compiled when the
-# profiler is off. The Python suite runs either way: it covers the binding
-# surface, which stays in place as no-ops, and skips the assertions that need
-# something to have been recorded.
+# Waggle's own tests are in libs/Waggle/tests. What is here needs Einsums: a zone opened inside
+# libEinsums, which exists only when the profiler is on. The Python suite runs either way: it covers
+# the binding surface, which stays in place as no-ops, and skips the assertions that need something
+# to have been recorded.
 set(profile_tests test_profile_python.py)
 
 if(EINSUMS_WITH_PROFILER)
-  list(PREPEND profile_tests ProfileRingBuffer.cpp ProfileConsumer.cpp ProfileAnnotations.cpp
-       ProfileStringTable.cpp ProfileProducer.cpp ProfileServer.cpp ProfileSettings.cpp ProfileSites.cpp ProfileSnapshot.cpp)
+  list(PREPEND profile_tests ProfileAcrossLibraries.cpp)
 endif()
 
 foreach(test ${profile_tests})
@@ -78,9 +76,6 @@ foreach(test ${profile_tests})
     SOURCES ${Sources} ${${TestName}_${TestExtension}_FLAGS}
     NOINSTALL
   )
-  # These test the collector's internals, whose headers only Waggle's own tests see.
-  target_link_libraries(${TestName}_test PRIVATE Waggle::internal)
-
   einsums_add_unit_test("Modules.Profile" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS})
 endforeach()
 

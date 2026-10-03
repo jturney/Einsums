@@ -3,9 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Config.hpp>
+#include <Waggle/Config.hpp>
 
-#include <Einsums/Profile/Profile.hpp>
+#include <Waggle/Waggle.hpp>
 
 #include <fmt/ranges.h>
 
