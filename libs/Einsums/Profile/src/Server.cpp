@@ -178,13 +178,6 @@ auto ns_to_ms(ns t) -> double {
     return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t).count();
 }
 
-auto compute_inclusive_ms(AggNode const &n) -> double { // NOLINT
-    double total = ns_to_ms(n.total_exclusive);
-    for (auto const &ch : n.children)
-        total += compute_inclusive_ms(*ch.second);
-    return total;
-}
-
 } // namespace
 
 Server::Server(Consumer &consumer, StringTable &strings, RequestHandlers const &handlers, std::string const &bind_addr, uint16_t port)
@@ -349,7 +342,7 @@ void Server::write_node_json(std::string &out, AggNode const &n) { // NOLINT
     out += R"({"name":")" + escape_json_str(n.name) + "\"";
     out += ",\"call_count\":" + std::to_string(n.call_count);
     out += ",\"exclusive_ms\":" + std::to_string(ns_to_ms(n.total_exclusive));
-    out += ",\"inclusive_ms\":" + std::to_string(compute_inclusive_ms(n));
+    out += ",\"inclusive_ms\":" + std::to_string(ns_to_ms(inclusive_time(n)));
 
     // Min exclusive
     if (n.call_count == 0 || n.exclusive_min.count() == kMinSentinel)

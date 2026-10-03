@@ -8,6 +8,8 @@
 #include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/Profile/Profile.hpp>
 
+#include <fmt/format.h>
+
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -368,4 +370,48 @@ TEST_CASE("Profiler - a zone opened in the library nests under the caller's zone
         nested = nested || child.second->name == "dgemv";
     }
     CHECK(nested);
+}
+
+// The report's per-thread header summed only the outermost zones' exclusive time, so a thread whose
+// time was all in nested zones reported almost nothing: 0.000 ms over a worker that ran 14 ms. The
+// thread is named before its first zone, which the automatic name used to overwrite.
+TEST_CASE("The report's thread total includes nested zones", "[profiler][consumer][report]") {
+    auto &prof = Profiler::instance();
+    prof.flush();
+
+    uint32_t    tid = 0;
+    std::thread worker([&] {
+        tid = Profiler::current_thread_id();
+        prof.set_thread_name("report-total-test");
+        prof.push("report_total_outer");
+        prof.push("report_total_inner");
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        prof.pop();
+        prof.pop();
+    });
+    worker.join();
+    prof.flush();
+
+    double expected_ms        = 0.0;
+    double outer_exclusive_ms = 0.0;
+    {
+        auto lock = prof.consumer()->lock_shared();
+        auto it   = prof.consumer()->thread_data().find(tid);
+        REQUIRE(it != prof.consumer()->thread_data().end());
+        auto const *outer = find_node(it->second.root, "report_total_outer");
+        REQUIRE(outer != nullptr);
+        expected_ms        = std::chrono::duration<double, std::milli>(inclusive_time(it->second.root)).count();
+        outer_exclusive_ms = std::chrono::duration<double, std::milli>(outer->total_exclusive).count();
+    }
+    REQUIRE(expected_ms >= 3.0);
+    REQUIRE(outer_exclusive_ms < 1.0); // what the header used to show
+
+    std::ostringstream report;
+    prof.print(false, report);
+    std::string const text   = report.str();
+    std::string const header = fmt::format("Thread: report-total-test ({})  (total exclusive:", tid);
+    auto const        at     = text.find(header);
+    REQUIRE(at != std::string::npos);
+    double const shown = std::stod(text.substr(at + header.size()));
+    CHECK_THAT(shown, Catch::Matchers::WithinAbs(expected_ms, 0.001));
 }

@@ -332,12 +332,12 @@ auto Profiler::register_thread() -> ThreadChannel & {
     _consumer->register_thread(tid, std::shared_ptr<EventRingBuffer>(channel, &channel->ring));
     get_counter_backend().open_thread_counters();
 
-    // Auto-name the thread: the first thread to initialize is "main"
+    // Auto-name the thread, the first to register "main", unless the program named it already.
     static std::atomic<bool> first_thread{true};
     if (first_thread.exchange(false, std::memory_order_acq_rel)) {
-        _consumer->set_thread_name(tid, "main");
+        _consumer->name_thread_if_unnamed(tid, "main");
     } else {
-        _consumer->set_thread_name(tid, "thread-" + std::to_string(tid));
+        _consumer->name_thread_if_unnamed(tid, "thread-" + std::to_string(tid));
     }
 
     std::scoped_lock const lock(_channels_mutex);
@@ -482,10 +482,8 @@ void Profiler::print(bool detailed, std::ostream &os) {
         auto const &thread_id = tkv.first;
         auto const &ts        = tkv.second;
 
-        double thread_total_ms = 0.0;
-        for (auto const &c : ts.root.children) {
-            thread_total_ms += ns_to_ms(c.second->total_exclusive);
-        }
+        // Every zone's exclusive time on the thread, nested ones included.
+        double const thread_total_ms = ns_to_ms(inclusive_time(ts.root));
 
         // header
         std::string       tname        = _consumer->thread_name(thread_id);

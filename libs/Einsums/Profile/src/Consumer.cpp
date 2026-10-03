@@ -55,6 +55,15 @@ void Consumer::set_thread_name(uint32_t thread_id, std::string name) {
     _thread_names[thread_id] = std::move(name);
 }
 
+void Consumer::name_thread_if_unnamed(uint32_t thread_id, std::string name) {
+    std::unique_lock const lock(_tree_mutex);
+    if (auto it = _thread_names.find(thread_id); it != _thread_names.end() && !it->second.empty()) {
+        return;
+    }
+    _threads[thread_id].name = name;
+    _thread_names[thread_id] = std::move(name);
+}
+
 void Consumer::shutdown() {
     if (!_running.exchange(false, std::memory_order_acq_rel))
         return;            // already shut down
@@ -210,6 +219,20 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
     frame.node = it->second.get();
 
     ts.stack.push_back(frame);
+}
+
+auto inclusive_time(AggNode const &node) -> ns {
+    ns                           total{0};
+    std::vector<AggNode const *> pending{&node};
+    while (!pending.empty()) {
+        AggNode const *n = pending.back();
+        pending.pop_back();
+        total += n->total_exclusive;
+        for (auto const &child : n->children) {
+            pending.push_back(child.second.get());
+        }
+    }
+    return total;
 }
 
 void AggNode::record_exclusive(ns exclusive) {

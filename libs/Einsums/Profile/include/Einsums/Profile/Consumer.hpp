@@ -131,6 +131,10 @@ struct AggNode {
     EINSUMS_EXPORT void record_exclusive(ns exclusive);
 };
 
+/// The time spent in @p node and everything below it: its exclusive time plus its descendants'.
+/// Walks with an explicit stack, as recursion overflowed the stack under TSan on deep trees.
+EINSUMS_EXPORT auto inclusive_time(AggNode const &node) -> ns;
+
 // ---------------------- Timeline event for Gantt chart ----------------------
 struct TimelineEvent {
     uint32_t    thread_id;
@@ -181,6 +185,10 @@ class EINSUMS_EXPORT Consumer {
 
     /// Set a human-readable name for a thread.
     void set_thread_name(uint32_t thread_id, std::string name);
+
+    /// Name @p thread_id @p name unless something already named it: an automatic name must not
+    /// replace one a program gave the thread before its first zone.
+    void name_thread_if_unnamed(uint32_t thread_id, std::string name);
 
     /// Get the human-readable name for a thread (empty string if not set).
     /// Caller must hold shared lock on tree.
