@@ -52,7 +52,7 @@ einsums_add_module(
   SOURCES ${GPUSources}
   HEADERS ${GPUHeaders}
   DEPENDENCIES ${GPU_VENDOR_DEPS}
-  MODULE_DEPENDENCIES Einsums_Config Einsums_CXX23 Einsums_Errors Einsums_Logging Einsums_BLAS Einsums_BLASVendor
+  MODULE_DEPENDENCIES Einsums_Config Einsums_CXX23 Einsums_Errors Einsums_Logging Einsums_BLAS Einsums_BLASVendor Einsums_Profile
   CMAKE_SUBDIRS examples tests
 )
 

@@ -443,3 +443,31 @@ def test_a_live_tensor_is_listed_with_its_address_and_zone(tmp_path):
     assert mine, f"{address} is not among the live allocations {memory['live']}"
     assert mine[0]["bytes"] == 64 * 32 * 8
     assert mine[0]["zone"] == "make tensor"
+
+
+# Option parsing once called into OpenMP (a buffer size divided by omp_get_num_threads), which
+# started the runtime before Einsums handed the profiler its options; the runtime asks for a tool
+# only when it starts, so --einsums:profile:sources=openmp was always too late.
+@recording
+def test_the_openmp_source_attaches_through_the_einsums_option(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    report = tmp_path / "report.txt"
+    script = (
+        "import numpy as np, einsums, einsums.profile as prof\n"
+        "A = einsums.RuntimeTensorD('A', [200, 300])\n"
+        "np.asarray(A)[:] = 1.0\n"
+        "with prof.section('option test'):\n"
+        "    T = einsums.RuntimeTensorD('T', [300, 200])\n"
+        "    einsums.permute('ji <- ij', T, A)\n"
+    )
+    env = dict(os.environ, EINSUMS_PROFILE_SOURCES="openmp", EINSUMS_PROFILE_REPORT="1", EINSUMS_PROFILE_FILENAME=str(report))
+    proc = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    text = report.read_text()
+    assert "source openmp is missed" not in text, text
+    # Built against an OpenMP runtime without OMPT (GCC's libgomp), the source waits and says so.
+    if "source openmp is waiting" not in text:
+        assert "omp parallel: " in text or "omp work: " in text, text

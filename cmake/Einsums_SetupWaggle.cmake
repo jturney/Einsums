@@ -30,7 +30,7 @@ endif()
 fetchcontent_declare(
   Waggle
   GIT_REPOSITORY https://github.com/Einsums/Waggle.git
-  GIT_TAG ad9fd4f7703c53df0bba6db876756c155be363f5 # main, 2026-10-03
+  GIT_TAG cf97906db6574d1e5b9a33498847e966aa3bae35 # main, 2026-10-03
   FIND_PACKAGE_ARGS
   0.1
   CONFIG

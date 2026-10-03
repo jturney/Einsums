@@ -9,6 +9,9 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config.hpp>
 #include <Einsums/GPU/Platform.hpp>
+#include <Einsums/Profile/Profile.hpp>
+
+#include <Waggle/Metal.h>
 
 #if defined(EINSUMS_HAVE_MPS)
 
@@ -207,6 +210,7 @@ bool mps_gemm_impl(char transa, char transb, int m, int n, int k,
                     void const *b, int ldb,
                     double beta, void *c, int ldc,
                     MPSDataType dataType, size_t elementSize) {
+    WAGGLE_ZONE("mps gemm"); // the host's side: wrapping or copying buffers, encoding, waiting
     ensure_initialized();
     if (!g_device || !g_command_queue)
         return false;
@@ -262,6 +266,7 @@ bool mps_gemm_impl(char transa, char transb, int m, int n, int k,
 
     id<MTLCommandBuffer> cmdBuf = [g_command_queue commandBuffer];
     [gemm encodeToCommandBuffer:cmdBuf leftMatrix:matA rightMatrix:matB resultMatrix:matC];
+    WAGGLE_METAL_ZONE(cmdBuf, "mps gemm (gpu)"); // the GPU's time, beside the host zone around the call
 
     bool ok = execute_and_check(cmdBuf, "GEMM");
 
@@ -304,6 +309,7 @@ void sgemv(char trans, int m, int n,
             float alpha, float const *a, int lda,
             float const *x, int incx,
             float beta, float *y, int incy) {
+    WAGGLE_ZONE("mps gemv"); // the host's side: wrapping or copying buffers, encoding, waiting
     ensure_initialized();
     if (!g_device || !g_command_queue)
         return;
@@ -372,6 +378,7 @@ void sgemv(char trans, int m, int n,
 
     id<MTLCommandBuffer> cmdBuf = [g_command_queue commandBuffer];
     [gemv encodeToCommandBuffer:cmdBuf inputMatrix:matA inputVector:vecX resultVector:vecY];
+    WAGGLE_METAL_ZONE(cmdBuf, "mps gemv (gpu)"); // the GPU's time, beside the host zone around the call
 
     bool ok = execute_and_check(cmdBuf, "GEMV");
 

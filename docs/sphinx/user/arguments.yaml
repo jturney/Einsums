@@ -269,6 +269,19 @@
     parent's ``(other)`` entry instead, whose ``distinct`` annotation counts the names it holds. The
     names that appeared first keep their own entries.
 
+"einsums:profile:sources":
+  added: "2.0.0"
+  body: |
+    The profiler's optional instruments to turn on, comma-separated; each is off unless named here.
+    The profile report and the viewer say why one that was asked for records nothing.
+
+    ``openmp`` records each OpenMP parallel region, named after the function it is in, each
+    thread's share of the region, and the barrier waits inside, through the runtime's OMPT
+    interface. The OpenMP runtime must support OMPT: LLVM's libomp does, and runs GCC-compiled code
+    too; GCC's own libgomp does not. The runtime looks for a tool once, when it starts, so the
+    option must be given before the program's first OpenMP call, as it is on the command line or in
+    the environment.
+
 "einsums:pass:disable":
   added: "2.0.0"
   body: |

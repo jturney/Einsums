@@ -31,6 +31,7 @@ void configure_profiler_from_options() {
     update.port                  = config::try_get(option::ProfilePort);
     update.wait_for_viewer       = config::try_get(option::ProfileWaitForViewer);
     update.max_distinct_children = config::try_get(option::ProfileMaxDistinctChildren);
+    update.sources               = config::try_get(option::ProfileSources);
 
     waggle::configure(update);
     // EINSUMS_BUILD_TYPE is a bare identifier (release, debug), so stringify it.
@@ -59,6 +60,7 @@ int register_Einsums_Profile_options() {
     cl::register_option(option::ProfilePort);
     cl::register_option(option::ProfileWaitForViewer);
     cl::register_option(option::ProfileMaxDistinctChildren);
+    cl::register_option(option::ProfileSources);
     return 0;
 }
 
