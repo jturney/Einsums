@@ -135,6 +135,15 @@ struct WAGGLE_EXPORT Profiler {
     /// The id of the library named @p name, registering it if new. Thread-safe.
     auto register_domain(std::string_view name) -> uint32_t { return _domains.add(name); }
 
+    /// Record a second copy of the collector, which switched itself off (waggle_note_duplicate_v1).
+    void note_duplicate(DuplicateCollector duplicate) { _handlers.add_duplicate(std::move(duplicate)); }
+
+    /// The second copies recorded so far.
+    [[nodiscard]] auto duplicates() const -> std::vector<DuplicateCollector> { return _handlers.duplicates(); }
+
+    /// The libraries sites were registered for.
+    [[nodiscard]] auto domain_table() const -> DomainTable const & { return _domains; }
+
     /// The call sites registered so far.
     auto sites() const -> SiteTable const & { return _sites; }
 

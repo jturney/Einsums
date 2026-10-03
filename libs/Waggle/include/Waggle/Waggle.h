@@ -236,6 +236,9 @@ WAGGLE_C_EXPORT char const *waggle_node_file(waggle_node const *node, size_t *le
 WAGGLE_C_EXPORT int         waggle_node_line(waggle_node const *node);
 WAGGLE_C_EXPORT char const *waggle_node_function(waggle_node const *node, size_t *length);
 
+/* The library the node's site belongs to (its domain); empty for the unnamed domain. */
+WAGGLE_C_EXPORT char const *waggle_node_domain(waggle_node const *node, size_t *length);
+
 /* Number of log2 histogram buckets: bucket i counts calls whose exclusive time was in
  * [2^i, 2^(i+1)) microseconds, the first also holding everything shorter. */
 #define WAGGLE_HISTOGRAM_BUCKETS 21

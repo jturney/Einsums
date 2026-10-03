@@ -488,6 +488,12 @@ void Profiler::print(bool detailed, std::ostream &os) {
     auto        lock       = _consumer->lock_shared();
     auto const &thread_map = _consumer->thread_data();
 
+    for (auto const &d : _handlers.duplicates()) {
+        styled_line(os, fmt::emphasis::bold | fg(fmt::color::yellow),
+                    "Not recorded: zones of the libraries using a second copy of Waggle, {} (interface {}.{})", d.path, d.abi_major,
+                    d.abi_minor);
+    }
+
     for (auto const &tkv : thread_map) {
         auto const &thread_id = tkv.first;
         auto const &ts        = tkv.second;

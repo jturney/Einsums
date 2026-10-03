@@ -18,8 +18,9 @@ WAGGLE_NAMESPACE_BEGIN
 namespace {
 
 /// @p from's statistics and annotations, without its children.
-void copy_node(AggNode const &from, waggle_node &to) {
+void copy_node(AggNode const &from, waggle_node &to, DomainTable const &domains) {
     to.name     = from.name;
+    to.domain   = domains.name(from.domain);
     to.file     = from.file;
     to.line     = from.line;
     to.function = from.function;
@@ -100,7 +101,7 @@ void merge_node(waggle_node const &from, waggle_node &into) {
 }
 
 /// Copy the tree below @p from into @p snap, under @p to.
-void copy_tree(waggle_snapshot &snap, AggNode const &from, waggle_node &to) {
+void copy_tree(waggle_snapshot &snap, AggNode const &from, waggle_node &to, DomainTable const &domains) {
     // An explicit stack: the trees can be deeper than the call stack allows.
     std::vector<std::pair<AggNode const *, waggle_node *>> pending{{&from, &to}};
     while (!pending.empty()) {
@@ -108,7 +109,7 @@ void copy_tree(waggle_snapshot &snap, AggNode const &from, waggle_node &to) {
         pending.pop_back();
         for (auto const &child : src->children) {
             auto &copy = snap.nodes.emplace_back();
-            copy_node(*child.second, copy);
+            copy_node(*child.second, copy, domains);
             dst->children.push_back(&copy);
             pending.emplace_back(child.second.get(), &copy);
         }
@@ -159,7 +160,7 @@ void compute_inclusive(waggle_node &root) {
 
 } // namespace
 
-auto take_snapshot(Consumer &consumer, bool merge_threads) -> waggle_snapshot * {
+auto take_snapshot(Consumer &consumer, DomainTable const &domains, bool merge_threads) -> waggle_snapshot * {
     auto snap = std::make_unique<waggle_snapshot>();
     {
         auto const lock = consumer.lock_shared();
@@ -170,8 +171,8 @@ auto take_snapshot(Consumer &consumer, bool merge_threads) -> waggle_snapshot * 
         }
         for (auto const &[id, state] : threads) {
             auto &root = snap->nodes.emplace_back();
-            copy_node(state->root, root);
-            copy_tree(*snap, state->root, root);
+            copy_node(state->root, root, domains);
+            copy_tree(*snap, state->root, root, domains);
             snap->threads.push_back({.id = id, .name = consumer.thread_name(id), .root = &root});
         }
     }

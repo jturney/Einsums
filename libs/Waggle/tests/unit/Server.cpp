@@ -232,13 +232,14 @@ class LineReader {
     std::string _buffer;
 };
 
-TEST_CASE("The meta message lists every client", "[profiler][server]") {
+TEST_CASE("The meta message lists every client and every switched-off collector", "[profiler][server]") {
     StringTable     strings;
     SiteTable       sites;
     Consumer        consumer(strings, sites);
     RequestHandlers handlers;
     handlers.add_client({.name = "first-lib", .version = "1.2.3", .git_commit = "abc123"});
     handlers.add_client({.name = "second-lib", .version = "0.1"});
+    handlers.add_duplicate({.path = "/opt/lib/libwaggle.0.dylib", .abi_major = 0, .abi_minor = 1});
     handlers.add("zeta_method", [](std::string const &) { return std::string("{}"); });
     handlers.add("alpha_method", [](std::string const &) { return std::string("{}"); });
     uint16_t const port = free_port();
@@ -258,6 +259,8 @@ TEST_CASE("The meta message lists every client", "[profiler][server]") {
     CHECK(meta.find(R"("git_commit":"abc123","git_branch":"","git_dirty":false,"build_type":"","clients":[)") != std::string::npos);
     // What the viewer may ask this program, sorted, so it shows only the panels it can fill.
     CHECK(meta.find(R"("handlers":["alpha_method","zeta_method"])") != std::string::npos);
+    // Copies of the collector that switched themselves off: their libraries' zones are missing.
+    CHECK(meta.find(R"("duplicates":[{"path":"/opt/lib/libwaggle.0.dylib","abi":"0.1"}])") != std::string::npos);
     ::close(client);
     server.shutdown();
 }

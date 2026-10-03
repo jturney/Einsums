@@ -25,6 +25,7 @@ struct waggle_node {
     std::string file;
     int         line = 0;
     std::string function;
+    std::string domain;
 
     waggle_node_stats stats{};
 
@@ -57,7 +58,7 @@ WAGGLE_NAMESPACE_BEGIN
 
 /// Copy @p consumer's trees, one per thread or, with @p merge_threads, merged into one. Takes the
 /// consumer's shared lock; the caller flushes first.
-WAGGLE_EXPORT auto take_snapshot(Consumer &consumer, bool merge_threads) -> waggle_snapshot *;
+WAGGLE_EXPORT auto take_snapshot(Consumer &consumer, DomainTable const &domains, bool merge_threads) -> waggle_snapshot *;
 
 /// The node at the '/'-separated @p path below @p root, or null.
 WAGGLE_EXPORT auto find_node(waggle_node const *root, std::string_view path) -> waggle_node const *;

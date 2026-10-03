@@ -303,7 +303,7 @@ namespace {
 /// The one call site every dataflow task's zone reports; the NAME comes from
 /// the node and is interned once per graph in Scaffold::zone_ids.
 waggle::ZoneSite const &dataflow_task_site() {
-    static waggle::ZoneSite const site{"dataflow task", __FILE__, __LINE__, __func__};
+    static waggle::ZoneSite const site{"dataflow task", __FILE__, __LINE__, __func__, WAGGLE_CURRENT_DOMAIN};
     return site;
 }
 

@@ -43,6 +43,7 @@ struct AggNode {
     std::string file;
     int         line = 0;
     std::string function;
+    uint32_t    domain = 0; ///< the library of the site that created the node (a DomainTable id)
 
     // counts and times (ns)
     uint64_t call_count = 0;

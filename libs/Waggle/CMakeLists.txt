@@ -33,6 +33,7 @@ add_library(
   src/Consumer.cpp
   src/CounterBackend.cpp
   src/Diagnostics.cpp
+  src/Duplicates.cpp
   src/Server.cpp
   src/Settings.cpp
   src/Snapshot.cpp
@@ -47,7 +48,7 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 target_compile_definitions(waggle PRIVATE WAGGLE_EXPORTS)
-target_link_libraries(waggle PUBLIC fmt::fmt PRIVATE Threads::Threads)
+target_link_libraries(waggle PUBLIC fmt::fmt PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
 if(WIN32)
   target_link_libraries(waggle PRIVATE ws2_32)
 endif()

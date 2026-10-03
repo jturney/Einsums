@@ -92,6 +92,18 @@ std::string clients_json(std::vector<ClientInfo> const &clients) {
     return out + "]";
 }
 
+/// @p duplicates as a JSON array of objects.
+std::string duplicates_json(std::vector<DuplicateCollector> const &duplicates) {
+    std::string out = "[";
+    for (auto const &d : duplicates) {
+        if (out.size() > 1) {
+            out += ",";
+        }
+        out += fmt::format(R"({{"path":"{}","abi":"{}.{}"}})", escape_json_str(d.path), d.abi_major, d.abi_minor);
+    }
+    return out + "]";
+}
+
 // TODO: Don't we already have this in RuntimeConfiguration?
 auto get_executable_path() -> std::string {
 #ifdef __APPLE__
@@ -507,6 +519,9 @@ void Server::send_snapshot_to(int fd) {
             msg += R"(,"build_type":")" + escape_json_str(first.build_type) + "\"";
         }
         msg += ",\"clients\":" + clients_json(clients);
+        // Other copies of the collector that switched themselves off: their libraries' zones are
+        // missing from this session.
+        msg += ",\"duplicates\":" + duplicates_json(_handlers.duplicates());
         // What a viewer can ask this program, so it shows only the panels this program can fill.
         msg += ",\"handlers\":" + methods_json(_handlers.methods());
     }

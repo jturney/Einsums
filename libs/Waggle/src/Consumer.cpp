@@ -262,6 +262,7 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
                 node->file     = _strings.get(site.file_id);
                 node->line     = site.line;
                 node->function = _strings.get(site.func_id);
+                node->domain   = site.domain;
 
                 parent->children[_other_id] = std::move(node);
                 other                       = parent->children.find(_other_id);
@@ -279,6 +280,7 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
         node->file     = _strings.get(site.file_id);
         node->line     = site.line;
         node->function = _strings.get(site.func_id);
+        node->domain   = site.domain;
 
         parent->children[name_id] = std::move(node);
         it                        = parent->children.find(name_id);

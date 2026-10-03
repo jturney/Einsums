@@ -65,17 +65,17 @@ namespace {
 // time. Accessors, not function-local statics in execute(): a static there is built, and the
 // profiler with it, even by a replay that records nothing.
 waggle::ZoneSite const &graph_exec_site() {
-    static waggle::ZoneSite const site{"ComputeGraph::execute", __FILE__, __LINE__, "execute"};
+    static waggle::ZoneSite const site{"ComputeGraph::execute", __FILE__, __LINE__, "execute", WAGGLE_CURRENT_DOMAIN};
     return site;
 }
 
 waggle::ZoneSite const &graph_node_site() {
-    static waggle::ZoneSite const site{"ComputeGraph::node", __FILE__, __LINE__, "execute"};
+    static waggle::ZoneSite const site{"ComputeGraph::node", __FILE__, __LINE__, "execute", WAGGLE_CURRENT_DOMAIN};
     return site;
 }
 
 waggle::ZoneSite const &graph_executor_site() {
-    static waggle::ZoneSite const site{"ComputeGraph::execute(executor)", __FILE__, __LINE__, "execute"};
+    static waggle::ZoneSite const site{"ComputeGraph::execute(executor)", __FILE__, __LINE__, "execute", WAGGLE_CURRENT_DOMAIN};
     return site;
 }
 

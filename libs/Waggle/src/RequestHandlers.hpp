@@ -10,6 +10,7 @@
 #include <Waggle/Types.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -32,6 +33,14 @@ WAGGLE_NAMESPACE_BEGIN
  * progress, and an owner that removes its handlers in its destructor is never called once gone.
  * For the same reason a handler must not register or remove handlers itself.
  */
+/// Another copy of the collector, loaded beside this one, which found this one and switched itself
+/// off.
+struct DuplicateCollector {
+    std::string path;      ///< the copy's library file
+    uint32_t    abi_major; ///< the C interface version it was built with
+    uint32_t    abi_minor;
+};
+
 class RequestHandlers {
   public:
     /// Register @p handler for @p method, replacing any earlier one.
@@ -81,6 +90,19 @@ class RequestHandlers {
         _sections.emplace_back(std::move(key), std::move(section));
     }
 
+    /// Record that another copy of the collector was loaded and switched itself off, so the
+    /// zones of the libraries that use it are missing.
+    void add_duplicate(DuplicateCollector duplicate) {
+        std::unique_lock const lock(_mutex);
+        _duplicates.push_back(std::move(duplicate));
+    }
+
+    /// The other copies of the collector this one was told about.
+    [[nodiscard]] auto duplicates() const -> std::vector<DuplicateCollector> {
+        std::shared_lock const lock(_mutex);
+        return _duplicates;
+    }
+
     /// Add @p client to the libraries using the profiler.
     void add_client(ClientInfo client) {
         std::unique_lock const lock(_mutex);
@@ -122,6 +144,7 @@ class RequestHandlers {
     std::unordered_map<std::string, RequestHandler>     _handlers;
     std::vector<std::pair<std::string, SessionSection>> _sections;
     std::vector<ClientInfo>                             _clients;
+    std::vector<DuplicateCollector>                     _duplicates;
 };
 
 WAGGLE_NAMESPACE_END

@@ -32,6 +32,11 @@
 #include <string>
 #include <string_view>
 
+// Every zone written in namespace einsums, in its headers too, belongs to the einsums domain.
+EINSUMS_NAMESPACE_BEGIN()
+WAGGLE_DEFINE_DOMAIN("einsums")
+EINSUMS_NAMESPACE_END()
+
 EINSUMS_NAMESPACE_BEGIN(profile)
 
 // ---------------------- Python bindings ----------------------

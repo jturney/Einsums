@@ -369,11 +369,23 @@ inline std::vector<std::pair<std::string, std::string>> open_zone_annotations() 
  * entering a zone takes no lock at all.
  */
 struct ZoneSite {
-    ZoneSite(std::string_view name, char const *file, int line, char const *func)
-        : site_id{waggle_register_site(name.data(), name.size(), file, line, func, 0)} {}
+    /// @p domain names the library the site belongs to; the zone macros pass
+    /// @ref WAGGLE_CURRENT_DOMAIN.
+    ZoneSite(std::string_view name, char const *file, int line, char const *func, std::string_view domain = {})
+        : site_id{waggle_register_site(name.data(), name.size(), file, line, func, register_domain(domain))} {}
 
     uint32_t site_id{0};
 };
+
+/**
+ * @brief The argument of a domain lookup; see @ref WAGGLE_DEFINE_DOMAIN.
+ *
+ * The unnamed domain's function takes a @c domain_lookup exactly and each library's takes its base,
+ * so where using-directives bring several into view, the unnamed one is the best match rather than
+ * an ambiguity.
+ */
+struct domain_any {};
+struct domain_lookup : domain_any {};
 
 namespace site_cache {
 
@@ -717,6 +729,8 @@ class SnapshotNode {
     [[nodiscard]] std::string_view file() const { return text(waggle_node_file); }
     [[nodiscard]] int              line() const { return waggle_node_line(_node); }
     [[nodiscard]] std::string_view function() const { return text(waggle_node_function); }
+    /// The library the zone belongs to; empty for the unnamed domain.
+    [[nodiscard]] std::string_view domain() const { return text(waggle_node_domain); }
 
     [[nodiscard]] NodeStats stats() const {
         NodeStats s{};
@@ -841,6 +855,29 @@ inline void reset() {
 
 WAGGLE_NAMESPACE_END
 
+// ---------------------- Domains ----------------------
+//
+// A zone's domain is the library it belongs to, found by name lookup from where the zone is
+// written: a library declares its domain once, in its namespace, with WAGGLE_DEFINE_DOMAIN, and
+// every zone in that namespace, in its headers too, takes it. Lookup sees the same declaration in
+// every translation unit, so a zone in an inline function or template belongs to the library that
+// wrote it wherever it is compiled. Outside every library's namespace a zone takes the unnamed
+// domain declared here.
+
+/// The unnamed domain.
+constexpr char const *waggle_domain(::waggle::domain_lookup /*unused*/) noexcept {
+    return "";
+}
+
+/// Declare, inside a library's namespace, that its zones belong to the domain @p name.
+#define WAGGLE_DEFINE_DOMAIN(name)                                                                                                         \
+    [[maybe_unused]] constexpr char const *waggle_domain(::waggle::domain_any /*unused*/) noexcept {                                       \
+        return name;                                                                                                                       \
+    }
+
+/// The domain of the code where it is written.
+#define WAGGLE_CURRENT_DOMAIN waggle_domain(::waggle::domain_lookup{})
+
 // ---------------------- Instrumentation macros ----------------------
 //
 // WAGGLE_DISABLE, defined before this header, makes every macro below expand to nothing; the API
@@ -867,20 +904,22 @@ WAGGLE_NAMESPACE_END
 // @p name_format must be a literal; use WAGGLE_ZONE_DYNAMIC otherwise. Expands to two
 // declarations, so use it at statement scope.
 #    define WAGGLE_ZONE(name_format, ...)                                                                                                  \
-        static ::waggle::ZoneSite const WAGGLE_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};                   \
+        static ::waggle::ZoneSite const WAGGLE_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__,                    \
+                                                                             WAGGLE_CURRENT_DOMAIN};                                       \
         ::waggle::ScopedZone const      WAGGLE_PP_CAT(_scoped_zone_, __LINE__)(WAGGLE_PP_CAT(_zone_site_, __LINE__) __VA_OPT__(            \
             , [&](auto &&_zone_f) { return _zone_f(__VA_ARGS__); },                                                                        \
             [](auto &&..._zone_a) { return fmt::format(name_format, std::forward<decltype(_zone_a)>(_zone_a)...); }))
 
 /// A zone named at runtime. Interns, under a lock, on every entry; prefer @ref WAGGLE_ZONE.
 #    define WAGGLE_ZONE_DYNAMIC(name_expr)                                                                                                 \
-        static ::waggle::ZoneSite const WAGGLE_PP_CAT(_zone_site_, __LINE__){"", __FILE__, __LINE__, __func__};                            \
+        static ::waggle::ZoneSite const WAGGLE_PP_CAT(_zone_site_, __LINE__){"", __FILE__, __LINE__, __func__, WAGGLE_CURRENT_DOMAIN};     \
         ::waggle::ScopedZone const      WAGGLE_PP_CAT(_scoped_zone_, __LINE__)(WAGGLE_PP_CAT(_zone_site_, __LINE__),                       \
                                                                                [&] { return fmt::format("{}", name_expr); })
 #    define WAGGLE_ZONE_FUNC() WAGGLE_ZONE(__func__)
 #    if defined(WAGGLE_DETAIL)
 #        define WAGGLE_ZONE_DETAIL(name_format, ...)                                                                                       \
-            static ::waggle::ZoneSite const WAGGLE_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};               \
+            static ::waggle::ZoneSite const WAGGLE_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__,                \
+                                                                                 WAGGLE_CURRENT_DOMAIN};                                   \
             ::waggle::ScopedZone const      WAGGLE_PP_CAT(_scoped_zone_, __LINE__)(WAGGLE_PP_CAT(_zone_site_, __LINE__) __VA_OPT__(        \
                 , [&](auto &&_zone_f) { return _zone_f(__VA_ARGS__); },                                                                    \
                 [](auto &&..._zone_a) { return fmt::format(name_format, std::forward<decltype(_zone_a)>(_zone_a)...); }))
