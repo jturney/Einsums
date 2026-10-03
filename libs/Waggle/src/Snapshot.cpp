@@ -130,6 +130,7 @@ void merge_tree(waggle_snapshot &snap, waggle_node const &from, waggle_node &int
                 copy.file       = child->file;
                 copy.line       = child->line;
                 copy.function   = child->function;
+                copy.domain     = child->domain;
                 copy.stats.size = sizeof(waggle_node_stats);
                 dst->children.push_back(&copy);
                 it = std::prev(dst->children.end());

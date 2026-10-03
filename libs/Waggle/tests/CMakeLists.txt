@@ -33,6 +33,18 @@ foreach(_name IN LISTS _waggle_unit_tests)
   set_tests_properties(${WAGGLE_TEST_PREFIX}${_name} PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
 endforeach()
 
+# The C interface from C: the header must compile as strict C, without the C++ layer.
+enable_language(C)
+add_executable(waggle_CApi_test unit/CApi.c)
+target_link_libraries(waggle_CApi_test PRIVATE Waggle::waggle)
+set_target_properties(waggle_CApi_test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+if(NOT MSVC)
+  target_compile_options(waggle_CApi_test PRIVATE -Wall -Wextra -pedantic -Werror)
+endif()
+add_dependencies(waggle_tests waggle_CApi_test)
+add_test(NAME ${WAGGLE_TEST_PREFIX}CApi COMMAND waggle_CApi_test)
+set_tests_properties(${WAGGLE_TEST_PREFIX}CApi PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
+
 # A plain program, not a Catch2 case: what it checks happens after main returns.
 add_executable(waggle_ExitWithoutFinalize_test unit/ExitWithoutFinalize.cpp)
 target_link_libraries(waggle_ExitWithoutFinalize_test PRIVATE Waggle::waggle)

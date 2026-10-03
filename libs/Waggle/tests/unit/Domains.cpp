@@ -119,4 +119,10 @@ TEST_CASE("A zone belongs to the library whose namespace it is written in", "[pr
     CHECK(domain_of("domains: lib_a inline") == "lib_a");
     CHECK(domain_of("domains: lib_b") == "lib_b");
     CHECK(domain_of("domains: application") == "");
+
+    // Merging threads keeps each zone's domain.
+    auto const merged = waggle::Snapshot::take(true);
+    auto const zone   = merged.find(0, "domains: lib_b");
+    REQUIRE(zone);
+    CHECK(zone->domain() == "lib_b");
 }
