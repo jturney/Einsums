@@ -220,6 +220,34 @@ class InsertionOrderedMap {
         _map.erase(key);
         return 1;
     }
+
+    /// Remove every entry for which @p pred is true, keeping the others' order, in one pass.
+    /// Returns how many were removed.
+    template <class Pred>
+    size_type erase_if(Pred pred) {
+        std::vector<map_iterator> kept;
+        kept.reserve(_order.size());
+        size_type removed = 0;
+        for (auto it : _order) {
+            if (pred(*it)) {
+                _pos.erase(it->first);
+                _map.erase(it);
+                ++removed;
+            } else {
+                _pos[it->first] = kept.size();
+                kept.push_back(it);
+            }
+        }
+        _order = std::move(kept);
+        return removed;
+    }
+
+    /// Remove every entry.
+    void clear() {
+        _order.clear();
+        _pos.clear();
+        _map.clear();
+    }
 };
 
 } // namespace detail

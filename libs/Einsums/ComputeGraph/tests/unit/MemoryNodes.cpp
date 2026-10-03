@@ -12,13 +12,10 @@
 
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <sstream>
 
 #include <Einsums/Testing.hpp>
-
-#if defined(EINSUMS_HAVE_PROFILER)
-#    include "Profiler.hpp"
-#endif
 
 using einsums::testing::reference_einsum;
 
@@ -89,16 +86,18 @@ TEST_CASE("free_tensor - inserts Free node", "[ComputeGraph][Memory]") {
 #if defined(EINSUMS_HAVE_PROFILER)
 namespace {
 
-waggle::AggNode const *find_zone(waggle::AggNode const &node, std::string const &name) {
-    for (auto const &child : node.children) {
-        if (child.second->name == name) {
-            return child.second.get();
+/// The zone named @p name anywhere below @p node: in a build with detail zones the runtime's own
+/// may enclose the test's.
+std::optional<waggle::SnapshotNode> find_zone(waggle::SnapshotNode const &node, std::string const &name) {
+    for (auto const &child : node.children()) {
+        if (child.name() == name) {
+            return child;
         }
-        if (auto const *found = find_zone(*child.second, name)) {
+        if (auto found = find_zone(child, name)) {
             return found;
         }
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 } // namespace
@@ -108,9 +107,8 @@ waggle::AggNode const *find_zone(waggle::AggNode const &node, std::string const 
 // made the tensor. Both used to report at capture, which counted the tensor twice and logged a free
 // for storage the graph still owned.
 TEST_CASE("Alloc and Free nodes report no memory of their own", "[ComputeGraph][Memory][Profile]") {
-    auto      &profiler = waggle::Profiler::instance();
-    bool const was      = profiler.enabled();
-    profiler.set_enabled(true);
+    bool const was = waggle::enabled();
+    waggle::set_enabled(true);
 
     std::string const zone_name = "MemoryNodes: alloc and free nodes";
     {
@@ -121,27 +119,25 @@ TEST_CASE("Alloc and Free nodes report no memory of their own", "[ComputeGraph][
         REQUIRE(alloc_desc != nullptr);
         graph.free_tensor(alloc_desc->tensor_id, "tmp", tmp.size() * sizeof(double));
     }
-    profiler.flush();
 
-    {
-        auto const             lock = profiler.consumer()->lock_shared();
-        waggle::AggNode const *node = nullptr;
-        for (auto const &thread : profiler.consumer()->thread_data()) {
-            node = find_zone(thread.second.root, zone_name);
-            if (node != nullptr) {
-                break;
-            }
+    auto const                          snapshot = waggle::Snapshot::take();
+    std::optional<waggle::SnapshotNode> node;
+    for (auto const &thread : snapshot.threads()) {
+        node = find_zone(thread.root, zone_name);
+        if (node) {
+            break;
         }
-        REQUIRE(node != nullptr);
-        CHECK(node->mem_alloc_count == 1);
-        CHECK(node->mem_alloc_bytes == static_cast<int64_t>(4 * 5 * sizeof(double)));
-        // The one free is the graph releasing tmp when it is destroyed, still inside the zone;
-        // free_tensor only marks a lifetime end.
-        CHECK(node->mem_free_count == 1);
-        CHECK(node->mem_free_bytes == static_cast<int64_t>(4 * 5 * sizeof(double)));
     }
+    REQUIRE(node);
+    auto const stats = node->stats();
+    CHECK(stats.mem_alloc_count == 1);
+    CHECK(stats.mem_alloc_bytes == static_cast<int64_t>(4 * 5 * sizeof(double)));
+    // The one free is the graph releasing tmp when it is destroyed, still inside the zone;
+    // free_tensor only marks a lifetime end.
+    CHECK(stats.mem_free_count == 1);
+    CHECK(stats.mem_free_bytes == static_cast<int64_t>(4 * 5 * sizeof(double)));
 
-    profiler.set_enabled(was);
+    waggle::set_enabled(was);
 }
 #endif
 

@@ -197,6 +197,10 @@ class WAGGLE_EXPORT Consumer {
     /// Drain all ring buffers now, blocking until done. Call before reading the tree.
     void flush();
 
+    /// Drain, then clear every statistic, annotation and timeline entry and drop every node not
+    /// on some thread's stack of open zones. An open zone keeps its node and is timed from now.
+    void reset();
+
     /// Access the aggregated tree (under shared lock for concurrent readers).
     auto lock_shared() -> std::shared_lock<std::shared_mutex> { return std::shared_lock<std::shared_mutex>(_tree_mutex); }
 

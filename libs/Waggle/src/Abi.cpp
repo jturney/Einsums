@@ -9,6 +9,7 @@
 
 #include <Waggle/Waggle.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -19,6 +20,7 @@
 #include "Diagnostics.hpp"
 #include "Profiler.hpp"
 #include "Settings.hpp"
+#include "Snapshot.hpp"
 
 struct waggle_reply {
     std::string data;
@@ -35,6 +37,14 @@ auto profiler() -> Profiler & {
 /// @p s as a view, empty for null.
 auto view(char const *s) -> std::string_view {
     return s != nullptr ? std::string_view(s) : std::string_view{};
+}
+
+/// @p s for a C caller: its characters, terminated, and its length through @p length.
+auto text(std::string const &s, size_t *length) -> char const * {
+    if (length != nullptr) {
+        *length = s.size();
+    }
+    return s.c_str();
 }
 
 /// Owns a C caller's user pointer, releasing it once when the last copy of the wrapper goes.
@@ -104,8 +114,12 @@ void waggle_set_enabled(int on) {
     profiler().set_enabled(on != 0);
 }
 
-void waggle_zone_begin(uint32_t site, uint32_t name_id) {
-    profiler().push_interned(site, name_id);
+int32_t const *waggle_enabled_flag(void) {
+    return profiler().enabled_flag();
+}
+
+int waggle_zone_begin(uint32_t site, uint32_t name_id) {
+    return profiler().push_interned(site, name_id) ? 1 : 0;
 }
 
 void waggle_zone_end(void) {
@@ -276,6 +290,90 @@ void waggle_open_zone_annotations(waggle_pair_fn fn, void *user) {
     for (auto const &[key, value] : consumer->collect_zone_annotations(Profiler::current_thread_id())) {
         fn(user, key.data(), key.size(), value.data(), value.size());
     }
+}
+
+waggle_snapshot *waggle_snapshot_take(uint32_t flags) {
+    auto &prof = profiler();
+    prof.flush();
+    return waggle::take_snapshot(*prof.consumer(), (flags & WAGGLE_SNAPSHOT_MERGE_THREADS) != 0);
+}
+
+void waggle_snapshot_release(waggle_snapshot *snapshot) {
+    delete snapshot; // NOLINT(cppcoreguidelines-owning-memory): owned by the caller until here
+}
+
+size_t waggle_snapshot_thread_count(waggle_snapshot const *snapshot) {
+    return snapshot->threads.size();
+}
+
+uint32_t waggle_snapshot_thread_id(waggle_snapshot const *snapshot, size_t thread) {
+    return thread < snapshot->threads.size() ? snapshot->threads[thread].id : 0;
+}
+
+char const *waggle_snapshot_thread_name(waggle_snapshot const *snapshot, size_t thread, size_t *length) {
+    static constexpr char none[] = ""; // NOLINT(modernize-avoid-c-arrays)
+    if (thread >= snapshot->threads.size()) {
+        if (length != nullptr) {
+            *length = 0;
+        }
+        return none;
+    }
+    return text(snapshot->threads[thread].name, length);
+}
+
+waggle_node const *waggle_snapshot_root(waggle_snapshot const *snapshot, size_t thread) {
+    return thread < snapshot->threads.size() ? snapshot->threads[thread].root : nullptr;
+}
+
+waggle_node const *waggle_snapshot_find(waggle_snapshot const *snapshot, size_t thread, char const *path, size_t length) {
+    return waggle::find_node(waggle_snapshot_root(snapshot, thread), std::string_view(path, length));
+}
+
+size_t waggle_node_child_count(waggle_node const *node) {
+    return node->children.size();
+}
+
+waggle_node const *waggle_node_child(waggle_node const *node, size_t index) {
+    return index < node->children.size() ? node->children[index] : nullptr;
+}
+
+char const *waggle_node_name(waggle_node const *node, size_t *length) {
+    return text(node->name, length);
+}
+
+char const *waggle_node_file(waggle_node const *node, size_t *length) {
+    return text(node->file, length);
+}
+
+int waggle_node_line(waggle_node const *node) {
+    return node->line;
+}
+
+char const *waggle_node_function(waggle_node const *node, size_t *length) {
+    return text(node->function, length);
+}
+
+void waggle_node_stats_get(waggle_node const *node, waggle_node_stats *stats) {
+    // Only what the caller's version of the struct holds, and its size left as the caller set it.
+    uint32_t const size = stats->size;
+    std::memcpy(stats, &node->stats, std::min<size_t>(size, sizeof(waggle_node_stats)));
+    stats->size = size;
+}
+
+void waggle_node_annotations(waggle_node const *node, waggle_pair_fn fn, void *user) {
+    for (auto const &[key, value] : node->annotations) {
+        fn(user, key.data(), key.size(), value.data(), value.size());
+    }
+}
+
+void waggle_node_numeric_annotations(waggle_node const *node, waggle_numeric_fn fn, void *user) {
+    for (auto const &n : node->numeric_annotations) {
+        fn(user, n.key.data(), n.key.size(), n.total, n.min, n.max, n.count);
+    }
+}
+
+void waggle_reset(void) {
+    profiler().reset();
 }
 
 } // extern "C"

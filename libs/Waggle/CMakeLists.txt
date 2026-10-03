@@ -35,6 +35,7 @@ add_library(
   src/Diagnostics.cpp
   src/Server.cpp
   src/Settings.cpp
+  src/Snapshot.cpp
   src/Waggle.cpp
 )
 add_library(Waggle::waggle ALIAS waggle)

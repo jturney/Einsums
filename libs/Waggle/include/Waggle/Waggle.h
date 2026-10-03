@@ -65,9 +65,16 @@ WAGGLE_C_EXPORT uint32_t waggle_register_site(char const *name, size_t name_leng
 WAGGLE_C_EXPORT int  waggle_enabled(void);
 WAGGLE_C_EXPORT void waggle_set_enabled(int on);
 
-/* Open a zone at `site`, named `name_id`, or by its site when `name_id` is 0. */
-WAGGLE_C_EXPORT void waggle_zone_begin(uint32_t site, uint32_t name_id);
-/* Close the calling thread's innermost zone. */
+/* The recording switch itself, 1 or 0, so a caller can skip a call into the collector while
+ * recording is off. Read it only with a relaxed atomic load (C11 atomic_load_explicit, C++
+ * std::atomic_ref); never write it. The address is fixed for the life of the process. */
+WAGGLE_C_EXPORT int32_t const *waggle_enabled_flag(void);
+
+/* Open a zone at `site`, named `name_id`, or by its site when `name_id` is 0. Returns 1 when it
+ * opened one and 0 when recording is off; call waggle_zone_end exactly when it returned 1, so a
+ * switch of recording while the zone is open cannot unbalance the pairs. */
+WAGGLE_C_EXPORT int waggle_zone_begin(uint32_t site, uint32_t name_id);
+/* Close the zone the calling thread opened last. */
 WAGGLE_C_EXPORT void waggle_zone_end(void);
 
 /* Annotate the calling thread's innermost zone. */
@@ -188,6 +195,90 @@ typedef void (*waggle_pair_fn)(void *user, char const *key, size_t key_length, c
 /* Call `fn` with each string annotation on the calling thread's open zones, outermost first,
  * after a flush. */
 WAGGLE_C_EXPORT void waggle_open_zone_annotations(waggle_pair_fn fn, void *user);
+
+/* ---- Snapshots and reset ----------------------------------------------------------------- */
+
+/* A copy of the aggregated trees, owned by the caller until waggle_snapshot_release. Recording
+ * continues while it is read. */
+typedef struct waggle_snapshot waggle_snapshot; /* NOLINT(modernize-use-using) */
+
+/* One zone in a snapshot, valid until its snapshot is released. */
+typedef struct waggle_node waggle_node; /* NOLINT(modernize-use-using) */
+
+/* Merge every thread's tree into one, zones matched by their name path as within a thread. */
+#define WAGGLE_SNAPSHOT_MERGE_THREADS 1u
+
+/* Flush, then copy the trees. `flags` is 0 or WAGGLE_SNAPSHOT_MERGE_THREADS. */
+WAGGLE_C_EXPORT waggle_snapshot *waggle_snapshot_take(uint32_t flags);
+WAGGLE_C_EXPORT void             waggle_snapshot_release(waggle_snapshot *snapshot);
+
+/* The snapshot's threads, by index: one, with id 0 and no name, in a merged snapshot. */
+WAGGLE_C_EXPORT size_t   waggle_snapshot_thread_count(waggle_snapshot const *snapshot);
+WAGGLE_C_EXPORT uint32_t waggle_snapshot_thread_id(waggle_snapshot const *snapshot, size_t thread);
+WAGGLE_C_EXPORT char const *waggle_snapshot_thread_name(waggle_snapshot const *snapshot, size_t thread, size_t *length);
+
+/* The unnamed node above a thread's outermost zones; null for an index out of range. */
+WAGGLE_C_EXPORT waggle_node const *waggle_snapshot_root(waggle_snapshot const *snapshot, size_t thread);
+
+/* The zone at `path` below a thread's root: names joined by '/', so "solve/iterate/gemm". Null
+ * when there is none. A name that itself contains '/' cannot be found this way; walk the
+ * children instead. */
+WAGGLE_C_EXPORT waggle_node const *waggle_snapshot_find(waggle_snapshot const *snapshot, size_t thread, char const *path, size_t length);
+
+/* A node's children, in the order they were first entered. */
+WAGGLE_C_EXPORT size_t             waggle_node_child_count(waggle_node const *node);
+WAGGLE_C_EXPORT waggle_node const *waggle_node_child(waggle_node const *node, size_t index);
+
+/* Where a node was entered: its name, and the file, line and function of its call site. The
+ * strings are terminated and live as long as the snapshot. */
+WAGGLE_C_EXPORT char const *waggle_node_name(waggle_node const *node, size_t *length);
+WAGGLE_C_EXPORT char const *waggle_node_file(waggle_node const *node, size_t *length);
+WAGGLE_C_EXPORT int         waggle_node_line(waggle_node const *node);
+WAGGLE_C_EXPORT char const *waggle_node_function(waggle_node const *node, size_t *length);
+
+/* Number of log2 histogram buckets: bucket i counts calls whose exclusive time was in
+ * [2^i, 2^(i+1)) microseconds, the first also holding everything shorter. */
+#define WAGGLE_HISTOGRAM_BUCKETS 21
+
+/* A node's statistics. Times are nanoseconds, exclusive of the node's children unless named
+ * inclusive. Fields are only ever appended: set `size` to sizeof(waggle_node_stats) and the
+ * collector fills no more than that. */
+typedef struct waggle_node_stats { /* NOLINT(modernize-use-using,readability-identifier-naming): a C type */
+    uint32_t size;
+    uint64_t call_count;
+    int64_t  exclusive_ns;
+    int64_t  inclusive_ns;
+    int64_t  exclusive_min_ns; /* 0 when never called */
+    int64_t  exclusive_max_ns;
+    double   exclusive_mean_ns;
+    double   exclusive_m2; /* sum of squared deviations from the mean: variance = m2 / count */
+    uint64_t mem_alloc_count;
+    uint64_t mem_free_count;
+    int64_t  mem_alloc_bytes;
+    int64_t  mem_free_bytes;
+    int64_t  mem_peak_bytes;
+    uint64_t histogram[WAGGLE_HISTOGRAM_BUCKETS];
+} waggle_node_stats;
+
+/* Fill `stats` up to stats->size bytes. */
+WAGGLE_C_EXPORT void waggle_node_stats_get(waggle_node const *node, waggle_node_stats *stats);
+
+/* Call `fn` with each of a node's annotations as text, in the order they were first made: each
+ * key's latest value, numeric ones included. */
+WAGGLE_C_EXPORT void waggle_node_annotations(waggle_node const *node, waggle_pair_fn fn, void *user);
+
+/* Receives one numeric annotation: its key, and the total, smallest, largest and count of the
+ * values given it. */
+typedef void (*waggle_numeric_fn)(void *user, char const *key, size_t key_length, double total, double min, double max, /* NOLINT(modernize-use-using) */
+                                  uint64_t count);
+
+/* Call `fn` with each of a node's numeric annotations, in the order they were first made. */
+WAGGLE_C_EXPORT void waggle_node_numeric_annotations(waggle_node const *node, waggle_numeric_fn fn, void *user);
+
+/* Flush, then clear every statistic, annotation and timeline entry and drop every zone not open
+ * on some thread. A zone open across the reset keeps its node and is timed from the reset. Ids
+ * are kept. Process-wide: it clears every library's data. */
+WAGGLE_C_EXPORT void waggle_reset(void);
 
 #ifdef __cplusplus
 }

@@ -80,8 +80,18 @@ struct WAGGLE_EXPORT Profiler {
     static auto instance() -> Profiler &;
 
     /// Whether zones and annotations are recorded. When off, each entry point costs one relaxed load.
-    [[nodiscard]] bool enabled() const { return _enabled.load(std::memory_order_relaxed); }
-    void               set_enabled(bool on) { _enabled.store(on, std::memory_order_relaxed); }
+    [[nodiscard]] bool enabled() const { return std::atomic_ref<int32_t>(_enabled).load(std::memory_order_relaxed) != 0; }
+    void               set_enabled(bool on) { std::atomic_ref<int32_t>(_enabled).store(on ? 1 : 0, std::memory_order_relaxed); }
+
+    /// The recording switch, for callers that check it before calling in (waggle_enabled_flag).
+    [[nodiscard]] auto enabled_flag() const -> int32_t const * { return &_enabled; }
+
+    /// Drain, then clear what the trees and the timeline hold (Consumer::reset).
+    void reset() {
+        if (_consumer) {
+            _consumer->reset();
+        }
+    }
 
     // Start a zone, registering its site on every call. WAGGLE_ZONE uses push_interned instead.
     void push(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
@@ -92,12 +102,14 @@ struct WAGGLE_EXPORT Profiler {
     }
 
     /// Start a zone at site @p site_id (see @ref ZoneSite), named @p name_id, or by its site when
-    /// @p name_id is 0.
-    void push_interned(uint32_t site_id, uint32_t name_id) {
+    /// @p name_id is 0. Returns whether it opened one: only then is there a zone for @ref pop to
+    /// close.
+    auto push_interned(uint32_t site_id, uint32_t name_id) -> bool {
         if (!enabled()) {
-            return;
+            return false;
         }
         write_push(thread_channel(), site_id, name_id);
+        return true;
     }
 
     /// The id of the call site at @p file : @p line in @p func, named @p name, of the library
@@ -127,12 +139,9 @@ struct WAGGLE_EXPORT Profiler {
     auto sites() const -> SiteTable const & { return _sites; }
 
     // Stop timer region
-    void pop() {
-        if (!enabled()) {
-            return;
-        }
-        write_pop(thread_channel());
-    }
+    /// Close the zone a @ref push_interned that returned true opened, whatever the switch says
+    /// now.
+    void pop() { write_pop(thread_channel()); }
 
     // Print the report: exclusive time, percent, name, file:line and function. @p detailed adds
     // min/max/avg and counters.
@@ -391,7 +400,10 @@ struct WAGGLE_EXPORT Profiler {
     std::atomic<Server *>   _server_ptr{nullptr};
 
     /// Recording switch, from Settings::record.
-    std::atomic<bool> _enabled{true};
+    /// Read and written only through std::atomic_ref, here and by every library that checks it
+    /// inline: a plain int32_t is the one type the C interface can hand out. Mutable, as
+    /// std::atomic_ref takes no const object, even to load.
+    alignas(std::atomic_ref<int32_t>::required_alignment) mutable int32_t _enabled{1};
 
     /// The settings and who set them; under @ref _settings_mutex.
     mutable std::mutex _settings_mutex;

@@ -27,6 +27,7 @@
 #include <exception>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -117,13 +118,24 @@ auto apply_settings(SettingsUpdate const &update, Set set) -> int {
     return set(keys.data(), values.data(), keys.size());
 }
 
+/**
+ * @brief Whether recording is on, read inline from the collector's switch.
+ *
+ * A zone or annotation checks this before calling into the collector, so with recording off it
+ * costs a load and a branch rather than a call. The switch's address is looked up once.
+ */
+inline bool recording() {
+    static std::int32_t *const flag = const_cast<std::int32_t *>(waggle_enabled_flag()); // NOLINT(cppcoreguidelines-pro-type-const-cast)
+    return std::atomic_ref<std::int32_t>(*flag).load(std::memory_order_relaxed) != 0;
+}
+
 } // namespace detail
 
 // ---------------------- Recording ----------------------
 
 /// Whether zones and annotations are recorded now.
 inline bool enabled() {
-    return waggle_enabled() != 0;
+    return detail::recording();
 }
 
 /// Turn recording on or off for the whole process.
@@ -149,9 +161,12 @@ inline void push(std::string_view name, char const *file = "", int line = 0, cha
     }
 }
 
-/// Close the calling thread's innermost zone.
+/// Close the calling thread's innermost zone, if recording is on: a @ref push made while it was
+/// off opened none. Prefer @ref ScopedZone, which pairs them whatever the switch does between.
 inline void pop() {
-    waggle_zone_end();
+    if (enabled()) {
+        waggle_zone_end();
+    }
 }
 
 /// Name the calling thread in reports and viewers.
@@ -517,17 +532,17 @@ struct AnnotateSite {
 
 struct ScopedZone {
     /// Enter a zone with a fixed name. Takes no lock: the site holds every id.
-    explicit ScopedZone(ZoneSite const &site) { waggle_zone_begin(site.site_id, 0); }
+    explicit ScopedZone(ZoneSite const &site) : _open(detail::recording() && waggle_zone_begin(site.site_id, 0) != 0) {}
 
     /// Enter a zone whose name is built per call; only the name is interned. It arrives as a callable
     /// so nothing is built when recording is off.
     template <typename MakeName>
         requires std::invocable<MakeName>
     ScopedZone(ZoneSite const &site, MakeName &&make_name) {
-        if (waggle_enabled() == 0) {
+        if (!detail::recording()) {
             return;
         }
-        waggle_zone_begin(site.site_id, detail::intern(make_name()));
+        _open = waggle_zone_begin(site.site_id, detail::intern(make_name())) != 0;
     }
 
     /**
@@ -541,29 +556,38 @@ struct ScopedZone {
     template <typename ApplyArgs, typename FormatName>
         requires std::is_class_v<std::remove_cvref_t<ApplyArgs>> && std::is_class_v<FormatName>
     ScopedZone(ZoneSite const &site, ApplyArgs &&apply_args, FormatName const &format_name) {
-        if (waggle_enabled() == 0) {
+        if (!detail::recording()) {
             return;
         }
         std::forward<ApplyArgs>(apply_args)([&](auto &&...args) {
-            waggle_zone_begin(site.site_id, site_cache::zone_name_id(format_name, std::forward<decltype(args)>(args)...));
+            _open = waggle_zone_begin(site.site_id, site_cache::zone_name_id(format_name, std::forward<decltype(args)>(args)...)) != 0;
         });
     }
 
     /// Enter a zone with a name the caller interned (@ref intern_string), for callers with a stable
     /// set of runtime names, such as graph replay. Takes no lock.
-    ScopedZone(ZoneSite const &site, uint32_t name_id) { waggle_zone_begin(site.site_id, name_id); }
+    ScopedZone(ZoneSite const &site, uint32_t name_id) : _open(detail::recording() && waggle_zone_begin(site.site_id, name_id) != 0) {}
 
     /// Enter a zone at a site described at run time, registered on every entry.
     explicit ScopedZone(std::string_view name, char const *file = "", int line = 0, char const *func = "") {
-        if (waggle_enabled() != 0) {
-            waggle_zone_begin(waggle_register_site(name.data(), name.size(), file, line, func, 0), 0);
+        if (detail::recording()) {
+            _open = waggle_zone_begin(waggle_register_site(name.data(), name.size(), file, line, func, 0), 0) != 0;
         }
     }
 
-    ~ScopedZone() { waggle_zone_end(); }
+    /// Leave the zone, if entering opened one: switching recording while it is open changes
+    /// nothing about which zones close.
+    ~ScopedZone() {
+        if (_open) {
+            waggle_zone_end();
+        }
+    }
 
     ScopedZone(ScopedZone const &)            = delete;
     ScopedZone &operator=(ScopedZone const &) = delete;
+
+  private:
+    bool _open = false;
 };
 
 /// Intern @p s, for callers that cache their own ids. Ids are stable for the life of the process.
@@ -575,21 +599,21 @@ inline uint32_t intern_string(std::string_view s) {
 
 /// Attach a string annotation to the current profiling zone.
 inline void annotate(std::string_view key, std::string_view value) {
-    if (waggle_enabled() != 0) {
+    if (detail::recording()) {
         waggle_annotate_str(detail::intern(key), detail::intern(value));
     }
 }
 
 /// Attach an integer annotation to the current profiling zone.
 inline void annotate(std::string_view key, int64_t value) {
-    if (waggle_enabled() != 0) {
+    if (detail::recording()) {
         waggle_annotate_i64(detail::intern(key), value);
     }
 }
 
 /// Attach a floating-point annotation to the current profiling zone.
 inline void annotate(std::string_view key, double value) {
-    if (waggle_enabled() != 0) {
+    if (detail::recording()) {
         waggle_annotate_f64(detail::intern(key), value);
     }
 }
@@ -597,17 +621,23 @@ inline void annotate(std::string_view key, double value) {
 /// Attach a string annotation with a pre-interned key and value, skipping the per-call interning
 /// (and lock) of @ref annotate.
 inline void annotate_interned(uint32_t key_id, uint32_t value_id) {
-    waggle_annotate_str(key_id, value_id);
+    if (detail::recording()) {
+        waggle_annotate_str(key_id, value_id);
+    }
 }
 
 /// Attach an integer annotation under a pre-interned key.
 inline void annotate_interned(uint32_t key_id, int64_t value) {
-    waggle_annotate_i64(key_id, value);
+    if (detail::recording()) {
+        waggle_annotate_i64(key_id, value);
+    }
 }
 
 /// Attach a floating-point annotation under a pre-interned key.
 inline void annotate_interned(uint32_t key_id, double value) {
-    waggle_annotate_f64(key_id, value);
+    if (detail::recording()) {
+        waggle_annotate_f64(key_id, value);
+    }
 }
 
 namespace site_cache {
@@ -620,7 +650,7 @@ namespace site_cache {
  */
 template <std::size_t N, typename GetValue>
 void annotate_at(AnnotateSite &site, char const (&key)[N], GetValue &&get_value) {
-    if (waggle_enabled() == 0) {
+    if (!detail::recording()) {
         return;
     }
     uint32_t const key_id = AnnotateSite::fill(site.key_id, key);
@@ -648,7 +678,7 @@ inline void annotate_dims(std::string_view key, std::span<int64_t const> dims) {
 /// an empty tensor reports freeing its old, zero-byte storage. @p address, when given, is the
 /// allocation's, for matching it to its free.
 inline void mem_alloc(int64_t bytes, void const *address = nullptr) {
-    if (bytes != 0) {
+    if (bytes != 0 && detail::recording()) {
         waggle_mem_alloc(address, bytes);
     }
 }
@@ -657,9 +687,156 @@ inline void mem_alloc(int64_t bytes, void const *address = nullptr) {
 /// The size is the caller's to give: a buffer freed on another thread than the one that allocated
 /// it can be processed before its allocation, so the collector cannot look it up.
 inline void mem_free(int64_t bytes, void const *address = nullptr) {
-    if (bytes != 0) {
+    if (bytes != 0 && detail::recording()) {
         waggle_mem_free(address, bytes);
     }
+}
+
+// ---------------------- Snapshots and reset ----------------------
+
+/// A zone's statistics, as waggle_node_stats holds them.
+using NodeStats = waggle_node_stats;
+
+/// One numeric annotation of a zone: the total, smallest, largest and count of its values.
+struct NumericAnnotation {
+    std::string key;
+    double      total = 0.0;
+    double      min   = 0.0;
+    double      max   = 0.0;
+    uint64_t    count = 0;
+};
+
+/**
+ * @brief One zone of a @ref Snapshot, valid while the snapshot lives.
+ */
+class SnapshotNode {
+  public:
+    explicit SnapshotNode(waggle_node const *node) : _node(node) {}
+
+    [[nodiscard]] std::string_view name() const { return text(waggle_node_name); }
+    [[nodiscard]] std::string_view file() const { return text(waggle_node_file); }
+    [[nodiscard]] int              line() const { return waggle_node_line(_node); }
+    [[nodiscard]] std::string_view function() const { return text(waggle_node_function); }
+
+    [[nodiscard]] NodeStats stats() const {
+        NodeStats s{};
+        s.size = sizeof(NodeStats);
+        waggle_node_stats_get(_node, &s);
+        return s;
+    }
+
+    [[nodiscard]] std::vector<SnapshotNode> children() const {
+        std::vector<SnapshotNode> out;
+        size_t const              n = waggle_node_child_count(_node);
+        out.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            out.emplace_back(waggle_node_child(_node, i));
+        }
+        return out;
+    }
+
+    /// Every annotation's latest value as text, numeric ones included, in the order they were
+    /// first made.
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> annotations() const {
+        std::vector<std::pair<std::string, std::string>> out;
+        waggle_node_annotations(
+            _node,
+            [](void *user, char const *key, size_t key_length, char const *value, size_t value_length) {
+                static_cast<std::vector<std::pair<std::string, std::string>> *>(user)->emplace_back(std::string(key, key_length),
+                                                                                                    std::string(value, value_length));
+            },
+            &out);
+        return out;
+    }
+
+    /// The numeric annotations, in the order they were first made.
+    [[nodiscard]] std::vector<NumericAnnotation> numeric_annotations() const {
+        std::vector<NumericAnnotation> out;
+        waggle_node_numeric_annotations(
+            _node,
+            [](void *user, char const *key, size_t key_length, double total, double min, double max, uint64_t count) {
+                static_cast<std::vector<NumericAnnotation> *>(user)->push_back(
+                    {.key = std::string(key, key_length), .total = total, .min = min, .max = max, .count = count});
+            },
+            &out);
+        return out;
+    }
+
+  private:
+    [[nodiscard]] std::string_view text(char const *(*get)(waggle_node const *, size_t *)) const {
+        size_t      length = 0;
+        char const *s      = get(_node, &length);
+        return {s, length};
+    }
+
+    waggle_node const *_node;
+};
+
+/**
+ * @brief A copy of the aggregated trees, read while recording continues.
+ *
+ * Every zone opened so far on every thread, with its statistics and annotations. Taking one
+ * flushes the threads' events first, so it holds everything recorded before the call.
+ */
+class Snapshot {
+  public:
+    struct Thread {
+        uint32_t     id;
+        std::string  name;
+        SnapshotNode root; ///< unnamed, above the thread's outermost zones
+    };
+
+    /// Take a snapshot: one tree per thread, or with @p merge_threads one tree for the process,
+    /// zones matched by their name path.
+    static Snapshot take(bool merge_threads = false) {
+        return Snapshot(waggle_snapshot_take(merge_threads ? WAGGLE_SNAPSHOT_MERGE_THREADS : 0U));
+    }
+
+    [[nodiscard]] std::vector<Thread> threads() const {
+        std::vector<Thread> out;
+        size_t const        n = waggle_snapshot_thread_count(_snapshot.get());
+        out.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            size_t      length = 0;
+            char const *name   = waggle_snapshot_thread_name(_snapshot.get(), i, &length);
+            out.push_back({.id   = waggle_snapshot_thread_id(_snapshot.get(), i),
+                           .name = std::string(name, length),
+                           .root = SnapshotNode(waggle_snapshot_root(_snapshot.get(), i))});
+        }
+        return out;
+    }
+
+    /// The zone at @p path ("solve/iterate/gemm") below thread @p thread's root (an index into
+    /// @ref threads), if there is one.
+    [[nodiscard]] std::optional<SnapshotNode> find(size_t thread, std::string_view path) const {
+        auto const *node = waggle_snapshot_find(_snapshot.get(), thread, path.data(), path.size());
+        return node == nullptr ? std::nullopt : std::optional<SnapshotNode>(SnapshotNode(node));
+    }
+
+    /// The zone at @p path on the first thread that has one.
+    [[nodiscard]] std::optional<SnapshotNode> find(std::string_view path) const {
+        size_t const n = waggle_snapshot_thread_count(_snapshot.get());
+        for (size_t i = 0; i < n; ++i) {
+            if (auto node = find(i, path)) {
+                return node;
+            }
+        }
+        return std::nullopt;
+    }
+
+  private:
+    explicit Snapshot(waggle_snapshot *snapshot) : _snapshot(snapshot) {}
+
+    struct Release {
+        void operator()(waggle_snapshot *snapshot) const { waggle_snapshot_release(snapshot); }
+    };
+    std::unique_ptr<waggle_snapshot, Release> _snapshot;
+};
+
+/// Clear every statistic, annotation and timeline entry, keeping the zones open now, which are
+/// timed from here. Process-wide: every library's data goes.
+inline void reset() {
+    waggle_reset();
 }
 
 WAGGLE_NAMESPACE_END

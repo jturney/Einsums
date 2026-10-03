@@ -172,7 +172,7 @@ Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
 }
 
 void Profiler::apply(Settings const &s) {
-    _enabled.store(s.record, std::memory_order_relaxed);
+    set_enabled(s.record);
     _consumer->set_max_distinct_children(s.max_distinct_children);
     if (s.server) {
         start_server(static_cast<uint16_t>(s.port));

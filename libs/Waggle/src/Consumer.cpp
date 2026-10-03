@@ -10,7 +10,10 @@
 #include <Waggle/Clock.hpp>
 
 #include <algorithm>
+#include <limits>
 #include <string>
+#include <unordered_set>
+#include <vector>
 
 WAGGLE_NAMESPACE_BEGIN
 
@@ -77,6 +80,70 @@ void Consumer::shutdown() {
 void Consumer::flush() {
     _wake_cv.notify_one(); // Wake consumer thread to drain immediately
     drain_all();
+}
+
+namespace {
+
+/// Clear what @p node has recorded, keeping where it was entered and its children.
+void clear_statistics(AggNode &node) {
+    node.call_count           = 0;
+    node.total_exclusive      = ns{0};
+    node.total_exclusive_mean = 0.0;
+    node.total_exclusive_M2   = 0.0;
+    node.exclusive_min        = ns{std::numeric_limits<int64_t>::max()};
+    node.exclusive_max        = ns{0};
+    node.counters_total.clear();
+    node.counters_min.clear();
+    node.counters_max.clear();
+    node.annotations.clear();
+    node.numeric_annotations.clear();
+    node.mem_alloc_count   = 0;
+    node.mem_free_count    = 0;
+    node.mem_alloc_bytes   = 0;
+    node.mem_free_bytes    = 0;
+    node.mem_current_bytes = 0;
+    node.mem_peak_bytes    = 0;
+    std::ranges::fill(node.histogram, 0);
+    node.folded_names.clear();
+}
+
+} // namespace
+
+void Consumer::reset() {
+    flush();
+    std::unique_lock const lock(_tree_mutex);
+
+    // The nodes open zones accumulate into, which must survive: their frames point at them.
+    std::unordered_set<AggNode const *> open;
+    for (auto const &[id, ts] : _threads) {
+        for (auto const &frame : ts.stack) {
+            open.insert(frame.node);
+        }
+    }
+
+    TimePoint const now = TickClock::instance().to_time_point(TickClock::now());
+    for (auto &[id, ts] : _threads) {
+        // An explicit stack, as everywhere the tree is walked.
+        std::vector<AggNode *> pending{&ts.root};
+        while (!pending.empty()) {
+            AggNode *node = pending.back();
+            pending.pop_back();
+            clear_statistics(*node);
+            node->children.erase_if([&](auto const &child) { return !open.contains(child.second.get()); });
+            for (auto &child : node->children) {
+                pending.push_back(child.second.get());
+            }
+        }
+        // Open zones are timed from now. Their counter readings stay those of their push: a
+        // reading is taken only on the zone's own thread.
+        for (auto &frame : ts.stack) {
+            frame.start      = now;
+            frame.child_time = ns{0};
+        }
+    }
+
+    _timeline.clear();
+    _timeline_next = 0;
 }
 
 void Consumer::consumer_loop() {
