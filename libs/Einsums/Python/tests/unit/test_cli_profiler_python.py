@@ -29,7 +29,7 @@ from einsums.cli import build_parser
 from einsums.cli.profiler import analysis, format as fmt
 from einsums.cli.profiler.client import ProfileClient, StreamState, parse_endpoint, read_recording, Recorder
 from einsums.cli.profiler.disasm import match_symbol, strip_listing
-from einsums.cli.profiler.model import ProfileNode, node_to_dict, parse_node, parse_snapshot
+from einsums.cli.profiler.model import ProfileNode, meta_to_dict, node_to_dict, parse_meta, parse_node, parse_snapshot
 from einsums.cli.profiler.session import (
     Session,
     export_snapshot,
@@ -206,6 +206,37 @@ def test_loads_the_servers_appended_multi_session_format(tmp_path):
     assert all(s.snapshot for s in sessions)
 
 
+def test_loads_library_data_from_either_session_layout(tmp_path):
+    graphs = [{"name": "scf", "nodes": [], "tensors": [], "edges": []}]
+    current = server_export() | {"format": "waggle-session", "version": 1, "extensions": {"einsums.compute_graphs": graphs}}
+    # Files written before the profiler became Waggle kept Einsums' graphs at the top level.
+    legacy = server_export() | {"compute_graphs": graphs}
+    for record in (current, legacy):
+        path = tmp_path / "s.json"
+        path.write_text(json.dumps(record))
+        [loaded] = read_session_file(path)
+        assert session_from_dict(loaded, "s1").extensions == {"einsums.compute_graphs": graphs}
+
+
+def test_meta_carries_the_programs_handlers_and_clients():
+    meta = parse_meta(dict(META) | {"handlers": ["get_taskpool_metrics"], "clients": [{"name": "einsums", "version": "2.0.0"}]})
+    assert meta.handlers == ["get_taskpool_metrics"]
+    assert [c["name"] for c in meta.clients] == ["einsums"]
+    assert parse_meta(meta_to_dict(meta)) == meta
+    # A server from before advertised nothing, which is not the same as advertising no handlers.
+    assert parse_meta(dict(META)).handlers is None
+    assert parse_meta(dict(META) | {"handlers": []}).handlers == []
+
+
+def test_a_handler_registered_after_connecting_reaches_the_viewer():
+    # ComputeGraph registers get_compute_graphs on its first graph, often after the viewer
+    # connected; the meta message is sent once, so snapshots repeat the list.
+    state = StreamState()
+    state.apply({"type": "meta"} | dict(META) | {"handlers": []})
+    state.apply(snapshot_msg() | {"handlers": ["get_compute_graphs"]})
+    assert state.meta.handlers == ["get_compute_graphs"]
+
+
 def test_saved_sessions_load_back(tmp_path):
     session = Session("s1", "mine", snapshot=parse_snapshot(snapshot_msg()), bookmarks={"inner"})
     session.record_snapshot(session.snapshot)
@@ -216,6 +247,17 @@ def test_saved_sessions_load_back(tmp_path):
         assert len(loaded) == count
         assert loaded[0].snapshot == session.snapshot and loaded[0].bookmarks == {"inner"}
         assert list(loaded[0].history["inner"]) == [5.0]
+
+
+def test_saved_sessions_say_what_they_are(tmp_path):
+    session = Session("s1", "mine", snapshot=parse_snapshot(snapshot_msg()))
+    session.extensions["einsums.compute_graphs"] = [{"name": "g"}]
+    path = tmp_path / "s.json"
+    write_session_file(path, [session])
+    data = json.loads(path.read_text())
+    assert (data["format"], data["version"]) == ("waggle-session", 1)
+    assert data["extensions"] == {"einsums.compute_graphs": [{"name": "g"}]}
+    assert "compute_graphs" not in data
 
 
 def test_export_writes_json_and_one_csv_row_per_node(tmp_path):
@@ -378,14 +420,24 @@ def app_module():
     return app
 
 
+def einsums_plugins():
+    from einsums.cli.profiler.einsums_plugin import einsums_viewer_plugin
+
+    return [einsums_viewer_plugin()]
+
+
 @needs_textual
 def test_every_key_has_an_action():
     KEYMAP, ProfilerApp = app_module().KEYMAP, app_module().ProfilerApp
-    app = ProfilerApp(load=["unused"], mdns=False)
+    app = ProfilerApp(load=["unused"], mdns=False, plugins=einsums_plugins())
     for _, keys in KEYMAP:
         for key, action, _, _ in keys:
             name = action.split("(")[0]
             assert key == "space" or hasattr(app, f"action_{name}"), action
+    # A plugin's keys are bound per app, to the two plugin actions.
+    plugin_keys = {b.key: b.action for bindings in app._bindings.key_to_bindings.values() for b in bindings}
+    assert plugin_keys["W"] == "plugin_panel('einsums', 'taskpool')"
+    assert plugin_keys["K"] == "plugin_action('einsums', 'compute_graphs')"
 
 
 async def wait_for(pilot, condition, timeout=10.0):
@@ -505,6 +557,7 @@ def test_viewer_follows_the_real_server():
         child.kill()
         _, err = child.communicate()
     assert session.meta.pid == child.pid, err
+    assert "einsums" in [c.get("name") for c in session.meta.clients], session.meta.clients
     outer = next(node for node in session.snapshot.all_roots() if node.name == "outer")
     assert outer.call_count > 0 and analysis.numeric_annotation(outer.annotations, "flops") == 2_000_000
 
@@ -594,10 +647,10 @@ def test_taskpool_metrics_and_their_absence():
 def test_graph_screen_from_a_saved_session(tmp_path):
     ProfilerApp = app_module().ProfilerApp
     path = tmp_path / "s.json"
-    path.write_text(json.dumps(server_export() | {"compute_graphs": GRAPHS["graphs"]}))
+    path.write_text(json.dumps(server_export() | {"extensions": {"einsums.compute_graphs": GRAPHS["graphs"]}}))
 
     async def main():
-        app = ProfilerApp(load=[str(path)], mdns=False)
+        app = ProfilerApp(load=[str(path)], mdns=False, plugins=einsums_plugins())
         async with app.run_test(size=(140, 50)) as pilot:
             await wait_for(pilot, lambda: app.active_view is not None and app.active_view._rows)
             await pilot.press("K")
@@ -608,8 +661,51 @@ def test_graph_screen_from_a_saved_session(tmp_path):
             assert len(tree.root.children) == 1 and len(tree.root.children[0].children) == 2
             detail = app.screen.query_one("#graph-detail-text", Static)
             assert "scf" in str(detail.render())
+            # TaskPool metrics come only from a live program, so a loaded session does not open the panel.
             await pilot.press("escape", "W")
-            await wait_for(pilot, lambda: "live connection" in app.query_one("#taskpool")._text)
+            await pilot.pause()
+            assert not app.query_one("#einsums-taskpool").has_class("visible")
             await pilot.press("q")
 
     asyncio.run(main())
+
+
+@needs_textual
+@pytest.mark.parametrize("advertised", [True, False])
+def test_a_plugin_panel_opens_only_for_a_program_that_answers_it(advertised):
+    ProfilerApp = app_module().ProfilerApp
+    metrics = {"total_submitted": 4, "total_completed": 1, "total_steals": 0, "active_workers": 1,
+               "num_workers": 2, "per_worker_executed": [1, 0], "per_worker_stolen": [0, 0]}  # fmt: skip
+    meta = META | {"handlers": ["get_taskpool_metrics"] if advertised else []}
+
+    async def main():
+        server, port = await fake_server(
+            [(json.dumps(m) + "\n").encode() for m in (meta, snapshot_msg(1))],
+            on_request=lambda method: metrics if method == "get_taskpool_metrics" else {"error": "unknown method"},
+        )
+        app = ProfilerApp([("127.0.0.1", port)], mdns=False, plugins=einsums_plugins())
+        async with app.run_test(size=(140, 50)) as pilot:
+            await wait_for(pilot, lambda: app.active_view is not None and app.active_view._rows)
+            await pilot.press("W")
+            panel = app.query_one("#einsums-taskpool")
+            if advertised:
+                await wait_for(pilot, lambda: "pending 3" in panel._text)
+            else:
+                await pilot.pause()
+                assert not panel.has_class("visible")
+            await pilot.press("q")
+        server.close()
+
+    asyncio.run(main())
+
+
+def test_a_server_from_before_advertising_handlers_keeps_every_panel():
+    from einsums.cli.profiler.plugin import Requirement
+    from einsums.cli.profiler.session import Session
+
+    requirement = Requirement(handler="get_taskpool_metrics")
+    old = Session("s1", "old", meta=parse_meta(dict(META)))  # no handler list at all
+    assert requirement.met_by(old, live=True)
+    told_none = Session("s2", "new", meta=parse_meta(dict(META) | {"handlers": []}))
+    assert not requirement.met_by(told_none, live=True)
+    assert not requirement.met_by(old, live=False)  # and never without a live program

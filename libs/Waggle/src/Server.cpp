@@ -67,6 +67,15 @@ void close_socket(SOCKET fd) {
 // Use the shared json_escape from TypeSupport, aliased to keep call sites unchanged.
 auto const &escape_json_str = detail::json_escape;
 
+/// @p methods as a JSON array of strings.
+std::string methods_json(std::vector<std::string> const &methods) {
+    std::string out = "[";
+    for (auto const &method : methods) {
+        out += std::string(out.size() > 1 ? "," : "") + "\"" + escape_json_str(method) + "\"";
+    }
+    return out + "]";
+}
+
 /// @p clients as a JSON array of objects.
 std::string clients_json(std::vector<ClientInfo> const &clients) {
     std::string out = "[";
@@ -496,6 +505,8 @@ void Server::send_snapshot_to(int fd) {
             msg += R"(,"build_type":")" + escape_json_str(first.build_type) + "\"";
         }
         msg += ",\"clients\":" + clients_json(clients);
+        // What a viewer can ask this program, so it shows only the panels this program can fill.
+        msg += ",\"handlers\":" + methods_json(_handlers.methods());
     }
 
     auto &cb = get_counter_backend();
@@ -509,6 +520,7 @@ void Server::send_snapshot_to(int fd) {
 
     // Snapshot line
     msg += R"({"type":"snapshot","seq":)" + std::to_string(++_seq);
+    msg += ",\"handlers\":" + methods_json(_handlers.methods());
     msg += ",\"dropped\":" + std::to_string(_consumer.dropped_count());
     msg += ",\"threads\":{";
     bool first_thread = true;
@@ -583,6 +595,7 @@ void Server::send_updates() {
     // Build a snapshot update line
     std::string msg;
     msg += R"({"type":"snapshot","seq":)" + std::to_string(++_seq);
+    msg += ",\"handlers\":" + methods_json(_handlers.methods());
     msg += ",\"dropped\":" + std::to_string(_consumer.dropped_count());
     msg += ",\"threads\":{";
     bool first_thread = true;
@@ -825,8 +838,8 @@ void Server::register_mdns(uint16_t port) {
     // Service name: "exe-PID" to distinguish multiple instances
     std::string service_name = s_executable_name + "-" + pid_str;
 
-    DNSServiceErrorType err = DNSServiceRegister(&_mdns_ref, 0, 0, service_name.c_str(), "_einsums-profile._tcp", nullptr, nullptr,
-                                                 htons(port), TXTRecordGetLength(&txt), TXTRecordGetBytesPtr(&txt), nullptr, nullptr);
+    DNSServiceErrorType err = DNSServiceRegister(&_mdns_ref, 0, 0, service_name.c_str(), "_waggle._tcp", nullptr, nullptr, htons(port),
+                                                 TXTRecordGetLength(&txt), TXTRecordGetBytesPtr(&txt), nullptr, nullptr);
 
     TXTRecordDeallocate(&txt);
 
@@ -867,6 +880,8 @@ void Server::export_session(std::string const &path, std::string const &label,
     std::string const session_label = label.empty() ? s_executable_name : label;
 
     json += "{\n";
+    json += "  \"format\": \"waggle-session\",\n";
+    json += "  \"version\": " + std::to_string(kSessionFormatVersion) + ",\n";
     json += R"(  "label": ")" + escape_json_str(session_label) + "\",\n";
     json += "  \"type\": \"snapshot\",\n";
 
@@ -923,10 +938,14 @@ void Server::export_session(std::string const &path, std::string const &label,
         json += ",\n  \"" + escape_json_str(key) + "\": " + value;
     }
 
-    // Include what libraries registered for session files.
+    // What libraries registered for session files, each under its own key.
+    json += ",\n  \"extensions\": {";
+    bool first_section = true;
     for (auto const &[key, value] : _handlers.session_sections()) {
-        json += ",\n  \"" + escape_json_str(key) + "\": " + value;
+        json += std::string(first_section ? "" : ",") + "\n    \"" + escape_json_str(key) + "\": " + value;
+        first_section = false;
     }
+    json += first_section ? "}" : "\n  }";
 
     json += "\n}\n";
 

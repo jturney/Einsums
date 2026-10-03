@@ -68,6 +68,8 @@ def dispatch(args: argparse.Namespace) -> int:
 def run(args: argparse.Namespace) -> int:
     try:
         from .app import ProfilerApp
+        from .einsums_plugin import einsums_viewer_plugin
+        from .plugin import discover_plugins, merge_plugins
     except ImportError as exc:
         print(f"einsums profiler needs Textual ({exc}); install it with: conda install -c conda-forge textual")
         return 1
@@ -83,5 +85,8 @@ def run(args: argparse.Namespace) -> int:
         replay_speed=args.speed,
         record=args.record,
         mdns=not args.no_mdns,
+        # Einsums' own panels always, then any other library's an installed package registers.
+        plugins=merge_plugins([einsums_viewer_plugin()], discover_plugins()),
+        title="Einsums profiler",
     ).run()
     return 0

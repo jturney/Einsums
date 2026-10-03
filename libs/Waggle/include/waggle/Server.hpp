@@ -27,7 +27,7 @@ WAGGLE_NAMESPACE_BEGIN
 
 /// TCP server that streams profiling data as JSON Lines to connected clients.
 /// Binds to localhost by default, accepts up to 4 simultaneous clients.
-/// On macOS, advertises via Bonjour/mDNS as "_einsums-profile._tcp".
+/// On macOS, advertises via Bonjour/mDNS as "_waggle._tcp".
 class WAGGLE_EXPORT Server {
   public:
     /// @param consumer  The aggregated trees and timeline the server streams.
@@ -72,6 +72,10 @@ class WAGGLE_EXPORT Server {
     /// with a ``"type"`` member of @p type added. Thread-safe. The oldest messages are dropped
     /// past @ref kMaxPublished.
     void publish(std::string_view type, std::string_view json_object);
+
+    /// The session-file layout export_session writes: a ``"format": "waggle-session"`` record
+    /// with library data under ``"extensions"``. Raised when a reader must change.
+    static constexpr int kSessionFormatVersion = 1;
 
     /// Messages @ref publish holds for viewers before dropping the oldest.
     static constexpr size_t kMaxPublished = 10000;

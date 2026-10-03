@@ -24,8 +24,8 @@ from .discovery import HAVE_ZEROCONF, ServerBrowser
 from .disasm import disassemble
 from .format import sparkline
 from .model import ProfileMeta, ProfileNode
-from .graphs import parse_graphs, parse_taskpool, taskpool_text
-from .screens import CompareScreen, ConfirmDialog, GraphScreen, HelpScreen, PromptDialog, SessionsDialog
+from .plugin import PluginPanel, ViewerPlugin
+from .screens import CompareScreen, ConfirmDialog, HelpScreen, PromptDialog, SessionsDialog
 from .session import Session, export_snapshot, read_session_file, session_from_dict, write_session_file
 from .widgets.graphs import FlameGraph, GanttChart, RooflinePlot, TimelinePlot
 from .widgets.panels import (
@@ -78,8 +78,6 @@ KEYMAP: list[tuple[str, list[tuple[str, str, str, str | None]]]] = [
         ("A", "toggle_panel('disasm')", "Disassembly", None),
         ("V", "toggle_panel('source')", "Source", None),
         ("L", "toggle_panel('log')", "Log", None),
-        ("W", "toggle_panel('taskpool')", "TaskPool workers (live sessions)", None),
-        ("K", "compute_graphs", "Compute graphs: nodes, tensors, timings", None),
         ("l", "cycle_log_level", "Log level: INFO → WARN → ERROR → TRACE → DEBUG", None),
     ]),
     ("Sessions", [
@@ -96,15 +94,18 @@ KEYMAP: list[tuple[str, list[tuple[str, str, str, str | None]]]] = [
     ]),
 ]  # fmt: skip
 
-#: Panel name -> widget id. Every one starts hidden.
-PANELS = ("hotspots", "flame", "timeline", "roofline", "gantt", "counters", "disasm", "source", "log", "taskpool")
-TASKPOOL_INTERVAL = 1.0  # seconds between metric requests while the panel is open
+#: Panel name -> widget id. Every one starts hidden. Plugins add panels of their own.
+PANELS = ("hotspots", "flame", "timeline", "roofline", "gantt", "counters", "disasm", "source", "log")
 
 REFRESH_INTERVAL = 0.25  # seconds between redraws of sessions with new data
 
 
 def _widget_id(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", text)
+
+
+def _plugin_widget_id(plugin: ViewerPlugin, panel: PluginPanel) -> str:
+    return _widget_id(f"{plugin.name}-{panel.name}")
 
 
 @dataclass
@@ -116,7 +117,7 @@ class SessionUI:
 
 
 class ProfilerApp(App):
-    TITLE = "Einsums profiler"
+    TITLE = "Waggle profiler"
     CSS_PATH = "profiler.tcss"
     BINDINGS = [
         Binding(key, action, footer or desc, show=footer is not None, priority=(key == "q"))
@@ -134,9 +135,19 @@ class ProfilerApp(App):
         replay_speed: float = 1.0,
         record: str | None = None,
         mdns: bool = True,
+        plugins: list[ViewerPlugin] | None = None,
+        title: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        if title:
+            self.title = title
+        self._plugins = list(plugins or [])
+        for plugin in self._plugins:
+            for panel in plugin.panels:
+                self.bind(panel.key, f"plugin_panel('{plugin.name}', '{panel.name}')", description=panel.description, show=False)
+            for action in plugin.actions:
+                self.bind(action.key, f"plugin_action('{plugin.name}', '{action.name}')", description=action.description, show=False)
         self._load = load or []
         self._replay = replay
         self._replay_speed = max(0.1, replay_speed)
@@ -177,7 +188,9 @@ class ProfilerApp(App):
         yield TextPanel("Select a row to see its details", id="detail")
         yield ResizeHandle("log", id="log-resize")
         yield LogPanel(id="log", classes="panel")
-        yield TextPanel("", id="taskpool", classes="panel")
+        for plugin in self._plugins:
+            for panel in plugin.panels:
+                yield panel.make_widget(_plugin_widget_id(plugin, panel))
         yield Input(placeholder="Filter zones by name (regex)", id="filter")
         yield StatusBar(id="status")
         yield Footer()
@@ -195,7 +208,10 @@ class ProfilerApp(App):
             if self._listen:
                 self._browser.start()
         self.set_interval(REFRESH_INTERVAL, self._flush)
-        self.set_interval(TASKPOOL_INTERVAL, self._poll_taskpool)
+        for plugin in self._plugins:
+            for panel in plugin.panels:
+                if panel.interval is not None:
+                    self.set_interval(panel.interval, lambda p=plugin, q=panel: self._refresh_plugin_panel(p, q))
         self._update_status()
 
     # -- sessions -------------------------------------------------------------
@@ -351,14 +367,15 @@ class ProfilerApp(App):
             # Redraws reach here four times a second; only a new function starts a lookup.
             if target != self._disasm_target:
                 self._disasm_target = target
-                self._disassemble(*target)
+                clients = [c.get("name", "") for c in session.meta.clients] if session.meta else []
+                self._disassemble(*target, clients)
 
     @work(exclusive=True, group="disasm")
-    async def _disassemble(self, function: str, executable: str) -> None:
+    async def _disassemble(self, function: str, executable: str, clients: list[str]) -> None:
         # Exclusive: moving to another row cancels this, which kills its nm/objdump.
         panel = self.query_one("#disasm", TextPanel)
         panel.show(f"Looking for {function}…")
-        panel.show(highlight_asm(await disassemble(function, executable)))
+        panel.show(highlight_asm(await disassemble(function, executable, clients)))
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if isinstance(event.data_table, ProfileTable):
@@ -461,33 +478,42 @@ class ProfilerApp(App):
         client = self._session_clients.get(session.session_id) if session else None
         return client if client is not None and client.connected else None
 
-    async def _poll_taskpool(self) -> None:
-        if not self._visible("taskpool"):
-            return
-        panel = self.query_one("#taskpool", TextPanel)
-        client = self._live_client()
-        if client is None:
-            panel.show(taskpool_text(None, "metrics come from a live connection; this session has none"))
-            return
-        reply = await client.request("get_taskpool_metrics", timeout=2.0)
-        panel.show(taskpool_text(parse_taskpool(reply), reply.get("error", "") if "unknown method" not in str(reply) else ""))
+    # -- plugins ----------------------------------------------------------------
 
-    async def action_compute_graphs(self) -> None:
+    def _plugin(self, name: str) -> ViewerPlugin:
+        return next(p for p in self._plugins if p.name == name)
+
+    async def _refresh_plugin_panel(self, plugin: ViewerPlugin, panel: PluginPanel) -> None:
+        widget = self.query_one(f"#{_plugin_widget_id(plugin, panel)}")
+        session = self.active_session
+        if widget.has_class("visible") and session is not None:
+            await panel.refresh(self, widget, session, self._live_client())
+
+    async def action_plugin_panel(self, plugin_name: str, panel_name: str) -> None:
+        plugin = self._plugin(plugin_name)
+        panel = plugin.panel(panel_name)
+        widget = self.query_one(f"#{_plugin_widget_id(plugin, panel)}")
+        session = self.active_session
+        if not widget.has_class("visible"):
+            live = self._live_client() is not None
+            if session is None or not panel.requirement.met_by(session, live):
+                self.notify(panel.requirement.explain(live), severity="warning")
+                return
+        widget.toggle_class("visible")
+        if widget.has_class("visible"):
+            await self._refresh_plugin_panel(plugin, panel)
+
+    async def action_plugin_action(self, plugin_name: str, action_name: str) -> None:
+        action = self._plugin(plugin_name).action(action_name)
         session = self.active_session
         if session is None:
             self.notify("No session", severity="warning")
             return
-        payload: object = session.compute_graphs
-        if client := self._live_client():
-            reply = await client.request("get_compute_graphs")
-            if "error" not in reply:
-                payload = reply
-                session.compute_graphs = reply.get("graphs", [])  # kept, so Save includes them
-        graphs = parse_graphs(payload)
-        if not graphs:
-            self.notify("No compute graphs: the program registered none, or the session file has none", severity="warning")
+        client = self._live_client()
+        if not action.requirement.met_by(session, client is not None):
+            self.notify(action.requirement.explain(client is not None), severity="warning")
             return
-        self.push_screen(GraphScreen(session.label, graphs))
+        await action.run(self, session, client)
 
     # -- replay -------------------------------------------------------------------
 
@@ -521,7 +547,11 @@ class ProfilerApp(App):
 
     def action_help(self) -> None:
         keymap = [(section, [(k, d) for k, _, d, _ in keys]) for section, keys in KEYMAP]
-        self.push_screen(HelpScreen(keymap))
+        for plugin in self._plugins:
+            keys = [(p.key, p.description) for p in plugin.panels] + [(a.key, a.description) for a in plugin.actions]
+            if keys:
+                keymap.append((plugin.title, keys))
+        self.push_screen(HelpScreen(keymap, title=self.title))
 
     def action_filter(self) -> None:
         box = self.query_one("#filter", Input)
@@ -651,8 +681,6 @@ class ProfilerApp(App):
             self.query_one(LogPanel).reset()
         if panel == "disasm":
             self._disasm_target = None
-        if panel == "taskpool" and widget.has_class("visible"):
-            self.call_later(self._poll_taskpool)
         if panel == "flame" and not widget.has_class("visible"):
             self.query_one(FlameGraph).zoom_reset()
         if widget.has_class("visible"):

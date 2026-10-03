@@ -7,7 +7,7 @@ A zone records ``__func__``, the bare function name. ``nm`` lists each binary's 
 twice, mangled and demangled in the same order, which finds the mangled name of a text
 symbol whose demangled name is ``...name(``; ``objdump --disassemble=<mangled>`` then
 decodes only that symbol. Disassembling a whole library to search it would take minutes
-for libEinsums.
+for a library the size of libEinsums.
 
 The tools run as asyncio subprocesses, killed if the request is cancelled (the user moved
 to another row), so a slow binary never holds the app.
@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
 _TEXT_TYPES = frozenset("TtWw")
@@ -28,11 +29,14 @@ def _tool(*names: str) -> str | None:
     return next((path for name in names if (path := shutil.which(name))), None)
 
 
-def candidate_binaries(executable: str | Path) -> list[Path]:
-    """The executable, then shared libraries beside it and in ``../lib`` (libEinsums first).
+def candidate_binaries(executable: str | Path, prefer: Sequence[str] = ()) -> list[Path]:
+    """The executable, then shared libraries beside it and in ``../lib``.
 
-    Symlinks are skipped, so ``libX.so -> libX.so.1 -> libX.so.1.2`` is searched once.
+    Libraries named for *prefer* (the profiled program's clients, as ``einsums`` names
+    ``libEinsums``) come first: they hold the instrumented functions. Symlinks are skipped, so
+    ``libX.so -> libX.so.1 -> libX.so.1.2`` is searched once.
     """
+    wanted = tuple(f"lib{name.lower()}" for name in prefer if name)
     exe = Path(executable)
     libs: list[Path] = []
     for directory in (exe.parent, exe.parent.parent / "lib"):
@@ -42,7 +46,7 @@ def candidate_binaries(executable: str | Path) -> list[Path]:
                 for entry in directory.iterdir()
                 if (entry.suffix in (".so", ".dylib") or ".so." in entry.name) and not entry.is_symlink()
             ]
-    return [exe] + sorted(set(libs), key=lambda p: (not p.name.startswith("libEinsums"), p.name))
+    return [exe] + sorted(set(libs), key=lambda p: (not p.name.lower().startswith(wanted) if wanted else True, p.name))
 
 
 async def _run(*cmd: str, stdin: str | None = None, timeout: float = 60.0) -> str | None:
@@ -88,8 +92,9 @@ def strip_listing(objdump_output: str) -> str:
     return "\n".join(body)
 
 
-async def disassemble(func_name: str, executable: str) -> str:
-    """The disassembly of *func_name*, or a sentence saying why there is none."""
+async def disassemble(func_name: str, executable: str, prefer: Sequence[str] = ()) -> str:
+    """The disassembly of *func_name*, or a sentence saying why there is none. *prefer* names the
+    libraries to search first (see :func:`candidate_binaries`)."""
     key = (func_name, executable)
     if key in _cache:
         return _cache[key]
@@ -103,7 +108,7 @@ async def disassemble(func_name: str, executable: str) -> str:
     is_llvm = "LLVM" in (await _run(objdump, "--version") or "")
     select = "--disassemble-symbols=" if is_llvm else "--disassemble="
     result = f"No symbol named {func_name} in the executable or the libraries beside it (it may have been inlined)"
-    for binary in candidate_binaries(executable):
+    for binary in candidate_binaries(executable, prefer):
         mangled = await _run(nm, "--defined-only", str(binary))
         demangled = await _run(nm, "--defined-only", "-C", str(binary)) if mangled else None
         symbol = match_symbol(mangled or "", demangled or "", func_name)

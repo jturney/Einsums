@@ -187,7 +187,7 @@ Dialog {
     padding: 0 1;
 }
 
-#taskpool {
+#einsums-taskpool {
     height: auto;
     max-height: 20;
 }

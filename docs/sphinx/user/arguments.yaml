@@ -170,7 +170,7 @@
     It streams JSON Lines over TCP, binds to ``127.0.0.1``, and accepts up to four simultaneous
     clients. There is no authentication and no transport security of any kind, so the loopback
     bind is what keeps it private and is not something to work around. On macOS it also advertises
-    itself over Bonjour as ``_einsums-profile._tcp``.
+    itself over Bonjour as ``_waggle._tcp``.
 
     See :option:`--einsums:profile:port` for the port it listens on, and
     :option:`--einsums:profile:wait-for-viewer` to hold a short run open until a viewer has

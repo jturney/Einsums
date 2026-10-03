@@ -26,7 +26,9 @@ from .model import LogEntry, ProfileMeta, ProfileSnapshot, TimelineEvent, parse_
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 19216
 #: The service type ``Server::register_mdns`` advertises (macOS only, through Bonjour).
-MDNS_SERVICE = "_einsums-profile._tcp.local."
+#: Service types servers advertise over mDNS: the current one, and the one servers used before the
+#: profiler became Waggle, which the viewer still finds.
+MDNS_SERVICES = ("_waggle._tcp.local.", "_einsums-profile._tcp.local.")
 
 
 def parse_endpoint(text: str, default_host: str = DEFAULT_HOST) -> tuple[str, int]:
@@ -56,6 +58,10 @@ class StreamState:
             self.meta = parse_meta(msg)
         elif kind == "snapshot":
             self.snapshot = parse_snapshot(msg)
+            # A library can register a handler after the meta message (ComputeGraph does on its
+            # first graph), so each snapshot repeats the list.
+            if self.meta is not None and isinstance(msg.get("handlers"), list):
+                self.meta.handlers = list(msg["handlers"])
         elif kind == "timeline":
             self.timeline = parse_timeline(msg)
         elif kind in ("log", "output"):
@@ -138,7 +144,7 @@ class ProfileClient:
         await self.close()
 
     async def request(self, method: str, params: dict[str, Any] | None = None, timeout: float = 5.0) -> dict[str, Any]:
-        """Call a handler registered with ``Server::register_handler``, e.g. ``get_compute_graphs``.
+        """Call a handler registered with ``waggle::Profiler::register_handler``, e.g. ``get_compute_graphs``.
 
         The reply is read by :meth:`messages`, so call this from a task other than the one
         iterating it; awaited inside that loop it can only time out.

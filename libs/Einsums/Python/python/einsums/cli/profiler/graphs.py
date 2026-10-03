@@ -4,8 +4,8 @@
 """ComputeGraph structure as the profiler reports it, and TaskPool metrics.
 
 ``get_compute_graphs`` (``ComputeGraph/src/Graph/Report.cpp``) answers with
-``{"graphs": [...]}``; ``--einsums:profile:save`` stores the same list under
-``compute_graphs``. Each graph has ``tensors`` (id, name, dims, dtype), ``nodes``
+``{"graphs": [...]}``; ``--einsums:profile:save`` stores the same list as the session's
+``einsums.compute_graphs`` extension. Each graph has ``tensors`` (id, name, dims, dtype), ``nodes``
 (id, kind, label, target, stream_id, inputs/outputs as tensor ids, optional timing_ms
 and einsum indices) and ``edges`` (from, to, tensor_id). No Textual here.
 """
@@ -96,7 +96,7 @@ def parse_graph(data: dict[str, Any]) -> Graph:
 
 
 def parse_graphs(payload: Any) -> list[Graph]:
-    """The graphs in a ``get_compute_graphs`` reply or a session's ``compute_graphs`` list."""
+    """The graphs in a ``get_compute_graphs`` reply or a session's ``einsums.compute_graphs`` list."""
     if isinstance(payload, dict):
         payload = payload.get("graphs", [])
     return [parse_graph(g) for g in payload or [] if isinstance(g, dict)]

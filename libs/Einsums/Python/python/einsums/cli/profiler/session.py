@@ -11,6 +11,11 @@ Two writers produce session files, and both shapes load:
 
 Either may be wrapped as ``{"sessions": [...]}``; the server appends to an existing
 file that way, so repeated runs accumulate for comparison.
+
+Both now mark a record ``"format": "waggle-session"`` with a ``"version"``, and keep what a
+library adds (Einsums' compute graphs) under ``"extensions"``, keyed by the library's namespace.
+Records from before carry Einsums' graphs at the top level as ``compute_graphs``, which loads
+as the ``einsums.compute_graphs`` extension.
 """
 
 from __future__ import annotations
@@ -36,6 +41,10 @@ from .model import (
 
 HISTORY_LENGTH = 20
 
+#: What session records this viewer writes say they are.
+SESSION_FORMAT = "waggle-session"
+SESSION_FORMAT_VERSION = 1
+
 
 @dataclass
 class Session:
@@ -52,7 +61,8 @@ class Session:
     log_total: int = 0
     #: Where the session came from: an endpoint, a file, or a recording.
     source: str = ""
-    compute_graphs: list[Any] = field(default_factory=list)
+    #: What libraries added to the session, by namespaced key (``einsums.compute_graphs``).
+    extensions: dict[str, Any] = field(default_factory=dict)
 
     def record_snapshot(self, snap: ProfileSnapshot) -> None:
         self.snapshot = snap
@@ -61,7 +71,12 @@ class Session:
 
 
 def session_to_dict(session: Session) -> dict[str, Any]:
-    data: dict[str, Any] = {"session_id": session.session_id, "label": session.label}
+    data: dict[str, Any] = {
+        "format": SESSION_FORMAT,
+        "version": SESSION_FORMAT_VERSION,
+        "session_id": session.session_id,
+        "label": session.label,
+    }
     if session.meta:
         data["meta"] = meta_to_dict(session.meta)
     if session.bookmarks:
@@ -70,8 +85,8 @@ def session_to_dict(session: Session) -> dict[str, Any]:
         data["snapshot"] = snapshot_to_dict(session.snapshot)
     if session.history:
         data["node_history"] = {name: list(values) for name, values in session.history.items()}
-    if session.compute_graphs:
-        data["compute_graphs"] = session.compute_graphs
+    if session.extensions:
+        data["extensions"] = session.extensions
     return data
 
 
@@ -90,7 +105,10 @@ def session_from_dict(data: dict[str, Any], session_id: str, source: str = "") -
         session.snapshot = parse_snapshot(data)
     for name, values in (data.get("node_history") or {}).items():
         session.history[name] = deque(values, maxlen=HISTORY_LENGTH)
-    session.compute_graphs = list(data.get("compute_graphs") or [])
+    if isinstance(data.get("extensions"), dict):
+        session.extensions = dict(data["extensions"])
+    if "compute_graphs" in data and "einsums.compute_graphs" not in session.extensions:
+        session.extensions["einsums.compute_graphs"] = list(data["compute_graphs"] or [])
     return session
 
 
@@ -107,7 +125,9 @@ def read_session_file(path: str | Path) -> list[dict[str, Any]]:
 
 def write_session_file(path: str | Path, sessions: list[Session]) -> None:
     payload: dict[str, Any] = (
-        session_to_dict(sessions[0]) if len(sessions) == 1 else {"sessions": [session_to_dict(s) for s in sessions]}
+        session_to_dict(sessions[0])
+        if len(sessions) == 1
+        else {"format": SESSION_FORMAT, "version": SESSION_FORMAT_VERSION, "sessions": [session_to_dict(s) for s in sessions]}
     )
     with Path(path).open("w") as f:
         json.dump(payload, f, indent=2)

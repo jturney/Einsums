@@ -90,6 +90,11 @@ class ProfileMeta:
     git_branch: str = ""
     build_type: str = ""
     counters: list[str] = field(default_factory=list)
+    #: Request handlers the program registered: what a viewer can ask it. None when the server
+    #: predates advertising them, which says nothing about what it answers.
+    handlers: list[str] | None = None
+    #: The libraries using the profiler, each a dict of name, version and build.
+    clients: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def label(self) -> str:
@@ -182,6 +187,8 @@ def parse_meta(data: dict[str, Any]) -> ProfileMeta:
         git_branch=data.get("git_branch", ""),
         build_type=data.get("build_type", ""),
         counters=list(data.get("counters") or []),
+        handlers=list(data["handlers"]) if isinstance(data.get("handlers"), list) else None,
+        clients=[c for c in data.get("clients") or [] if isinstance(c, dict)],
     )
 
 
@@ -267,4 +274,5 @@ def meta_to_dict(meta: ProfileMeta) -> dict[str, Any]:
         "git_branch": meta.git_branch,
         "build_type": meta.build_type,
         "counters": meta.counters,
-    }
+        "clients": meta.clients,
+    } | ({"handlers": meta.handlers} if meta.handlers is not None else {})

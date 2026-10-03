@@ -471,7 +471,7 @@ void register_graph(Graph *graph) {
     std::call_once(profiler_wired, [] {
         auto &prof = waggle::Profiler::instance();
         prof.register_handler("get_compute_graphs", [](std::string const &) { return registered_graphs_json(); });
-        prof.register_session_section("compute_graphs", [] {
+        prof.register_session_section("einsums.compute_graphs", [] {
             // The bare array of graphs, as session files have always held it.
             std::string const json  = registered_graphs_json();
             auto const        first = json.find('[');

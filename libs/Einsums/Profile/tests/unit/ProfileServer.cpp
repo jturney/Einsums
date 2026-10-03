@@ -181,7 +181,13 @@ TEST_CASE("A session file embeds every registered section", "[profiler][server]"
     std::stringstream contents;
     contents << in.rdbuf();
     std::filesystem::remove(path);
-    CHECK(contents.str().find(R"("test_section": [1,2,3])") != std::string::npos);
+    std::string const text = contents.str();
+    CHECK(text.find(R"("format": "waggle-session")") != std::string::npos);
+    CHECK(text.find(R"("version": 1)") != std::string::npos);
+    // A library's data sits under "extensions", by its namespaced key, not beside the profiler's.
+    auto const extensions = text.find(R"("extensions": {)");
+    REQUIRE(extensions != std::string::npos);
+    CHECK(text.find(R"("test_section": [1,2,3])", extensions) != std::string::npos);
 }
 
 /// Reads a server's JSON Lines stream, keeping what arrived past the line it returned.
@@ -227,6 +233,8 @@ TEST_CASE("The meta message lists every client", "[profiler][server]") {
     RequestHandlers handlers;
     handlers.add_client({.name = "first-lib", .version = "1.2.3", .git_commit = "abc123"});
     handlers.add_client({.name = "second-lib", .version = "0.1"});
+    handlers.add("zeta_method", [](std::string const &) { return std::string("{}"); });
+    handlers.add("alpha_method", [](std::string const &) { return std::string("{}"); });
     uint16_t const port = free_port();
     Server         server(consumer, strings, handlers, "127.0.0.1", port);
     REQUIRE(server.is_running());
@@ -242,6 +250,8 @@ TEST_CASE("The meta message lists every client", "[profiler][server]") {
     CHECK(meta.find(R"({"name":"second-lib","version":"0.1")") != std::string::npos);
     // The first client's build stays at the top level, where viewers read it.
     CHECK(meta.find(R"("git_commit":"abc123","git_branch":"","git_dirty":false,"build_type":"","clients":[)") != std::string::npos);
+    // What the viewer may ask this program, sorted, so it shows only the panels it can fill.
+    CHECK(meta.find(R"("handlers":["alpha_method","zeta_method"])") != std::string::npos);
     ::close(client);
     server.shutdown();
 }

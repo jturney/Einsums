@@ -13,7 +13,7 @@ import socket
 from collections.abc import Callable
 from typing import Any
 
-from .client import DEFAULT_HOST, MDNS_SERVICE
+from .client import DEFAULT_HOST, MDNS_SERVICES
 
 try:
     from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf
@@ -46,7 +46,7 @@ class ServerBrowser:
         if not HAVE_ZEROCONF or self.running:
             return self.running
         self._zeroconf = Zeroconf()
-        self._browser = ServiceBrowser(self._zeroconf, MDNS_SERVICE, handlers=[self._on_change])
+        self._browser = ServiceBrowser(self._zeroconf, list(MDNS_SERVICES), handlers=[self._on_change])
         return True
 
     def stop(self) -> None:

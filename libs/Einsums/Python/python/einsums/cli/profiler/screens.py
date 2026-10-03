@@ -190,9 +190,10 @@ PANEL_HELP = """\
 class HelpScreen(Dialog):
     BINDINGS = [Binding("escape,question_mark,q", "cancel", "Close")]
 
-    def __init__(self, keymap: list[tuple[str, list[tuple[str, str]]]], **kwargs: Any) -> None:
+    def __init__(self, keymap: list[tuple[str, list[tuple[str, str]]]], *, title: str = "Waggle profiler", **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._keymap = keymap
+        self._title = title
 
     def compose(self) -> ComposeResult:
         lines = ["[bold underline]Keys[/]  (also searchable in the command palette, ctrl+p)"]
@@ -200,7 +201,7 @@ class HelpScreen(Dialog):
             lines.append(f"\n[bold]{section}[/]")
             lines += [f"  [bold cyan]{escape(key):<10}[/] {escape(desc)}" for key, desc in keys]
         with Vertical(classes="dialog large"):
-            yield Label("[bold]Einsums profiler[/bold]")
+            yield Label(f"[bold]{escape(self._title)}[/bold]")
             with VerticalScroll():
                 yield Static("\n".join(lines) + "\n\n" + COLUMN_HELP + "\n" + PANEL_HELP)
 

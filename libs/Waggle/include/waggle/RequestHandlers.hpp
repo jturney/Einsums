@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -68,7 +69,20 @@ class RequestHandlers {
         return it->second(params);
     }
 
-    /// Register @p section under @p key in every session file, replacing any earlier one.
+    /// The methods handlers are registered for, sorted: what a viewer can ask this program.
+    [[nodiscard]] auto methods() const -> std::vector<std::string> {
+        std::shared_lock const   lock(_mutex);
+        std::vector<std::string> out;
+        out.reserve(_handlers.size());
+        for (auto const &entry : _handlers) {
+            out.push_back(entry.first);
+        }
+        std::ranges::sort(out);
+        return out;
+    }
+
+    /// Register @p section under @p key in every session file, replacing any earlier one. Keys are
+    /// namespaced by the library, as in ``einsums.compute_graphs``.
     void add_session_section(std::string key, SessionSection section) {
         std::unique_lock const lock(_mutex);
         for (auto &entry : _sections) {
