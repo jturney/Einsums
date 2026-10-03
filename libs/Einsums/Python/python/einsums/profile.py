@@ -91,16 +91,20 @@ def annotate_dims(key, dims):
         _waggle().annotate_dims(key, dims)
 
 
-def mem_alloc(bytes):
-    """Record an allocation of ``bytes`` in the current zone."""
+def mem_alloc(bytes, address=0):
+    """Record an allocation of ``bytes`` in the current zone.
+
+    Given the block's ``address``, the viewer's allocation track lists it until a free at the same
+    address.
+    """
     if available():
-        _waggle().mem_alloc(int(bytes))
+        _waggle().mem_alloc(int(bytes), int(address))
 
 
-def mem_free(bytes):
-    """Record a free of ``bytes`` in the current zone."""
+def mem_free(bytes, address=0):
+    """Record a free of ``bytes`` in the current zone, at ``address`` if its allocation gave one."""
     if available():
-        _waggle().mem_free(int(bytes))
+        _waggle().mem_free(int(bytes), int(address))
 
 
 def flush():

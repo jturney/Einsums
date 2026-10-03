@@ -412,3 +412,34 @@ def test_decorator_refuses_coroutines_and_generators():
     for func in (coroutine, generator, async_generator):
         with pytest.raises(TypeError, match="coroutine or generator"):
             prof.profile(func)
+
+
+# A tensor's buffer was recorded without its address, so the viewer's allocation track counted it
+# on the curve but could never list it, nor say which zone made it.
+@recording
+def test_a_live_tensor_is_listed_with_its_address_and_zone(tmp_path):
+    import os
+    import socket
+    import subprocess
+    import sys
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    session = tmp_path / "session.json"
+    script = (
+        "import numpy as np, einsums, einsums.profile as prof\n"
+        "with prof.section('make tensor'):\n"
+        "    t = einsums.RuntimeTensorD('t', [64, 32])\n"
+        "print(hex(np.asarray(t).ctypes.data), flush=True)\n"
+    )  # t lives until exit, when the session is written
+    env = dict(os.environ, WAGGLE_SERVER="1", WAGGLE_PORT=str(port), WAGGLE_SAVE=str(session), WAGGLE_REPORT="0")
+    proc = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    address = proc.stdout.strip()
+
+    memory = json.loads(session.read_text())["memory"]
+    mine = [a for a in memory["live"] if a["address"] == address]
+    assert mine, f"{address} is not among the live allocations {memory['live']}"
+    assert mine[0]["bytes"] == 64 * 32 * 8
+    assert mine[0]["zone"] == "make tensor"
