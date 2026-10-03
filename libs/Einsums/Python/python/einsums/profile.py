@@ -3,13 +3,12 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-"""Profile Python interface.
+"""Profile Python code alongside Einsums.
 
-Surface for ``einsums._core.profile`` plus the ``section`` context manager
-that mirrors the C++ ``WAGGLE_ZONE`` macro, and the ``profile`` decorator
-that records every call of a function as a zone. The C-extension submodule
-is loaded lazily on first attribute access, so importing this module does
-not by itself fire ``einsums::initialize()``.
+The profiler is Waggle's, shared with every other library in the process, and so is this API:
+``einsums.profile`` is :mod:`waggle` under the names Einsums has always used, so zones opened here
+and the zones Einsums opens inside its library land in one tree. A build with
+``EINSUMS_WITH_PROFILER=OFF`` keeps every name callable and records nothing.
 
 Typical usage::
 
@@ -26,119 +25,129 @@ Typical usage::
 
     prof.flush()
     prof.print_report(detailed=True)
+
+Use :class:`waggle.Zone` directly for a zone entered often: it registers its site once.
 """
 
 import contextlib as _contextlib
 import functools as _functools
-import inspect as _inspect
 import importlib as _importlib
 
-
-def _core():
-    """Resolve and cache the compiled ``einsums._core.profile`` submodule."""
-    return _importlib.import_module("._core.profile", "einsums")
+_recording = None
 
 
-def __getattr__(name):
-    """PEP 562 lazy attribute access, mirroring ``einsums.graph``."""
-    if name.startswith("_"):
-        raise AttributeError(name)
-    attr = getattr(_core(), name)
-    globals()[name] = attr
-    return attr
+def available():
+    """Whether this build records anything: ``False`` for ``EINSUMS_WITH_PROFILER=OFF``."""
+    global _recording
+    if _recording is None:
+        _recording = bool(_importlib.import_module("._core.profile", "einsums").available())
+    return _recording
 
 
-@_contextlib.contextmanager
+def _waggle():
+    import waggle
+
+    return waggle
+
+
 def section(name, *, file="", line=0, func=""):
-    """Scoped profile region, the Python equivalent of ``WAGGLE_ZONE``.
-
-    The optional ``file``, ``line``, and ``func`` arguments parallel the
-    C++ macro's compile-time captures so reports can link a Python-side
-    region to a specific source location. Defaults leave them empty, in
-    which case the report falls back to the region name alone.
-
-    Usage::
+    """Scoped profile region, the Python equivalent of ``WAGGLE_ZONE``::
 
         with section("contract_dgemm"):
             ...
+
+    The optional ``file``, ``line`` and ``func`` parallel the C++ macro's captures, so reports can
+    point a Python region at its source. The site is registered once and reused.
     """
-    push = _core().push
-    pop = _core().pop
-    push(name, file, line, func)
-    try:
-        yield
-    finally:
-        pop()
+    if not available():
+        return _contextlib.nullcontext()
+    return _waggle().zone(name, file=file, line=line, func=func)
 
 
 def profile(func=None, /, *, name=None):
-    """Record every call of a function as a profile zone.
-
-    Usable bare, or with a zone name of your own::
-
-        @profile
-        def build_fock(density):
-            ...
-
-        @profile(name="SCF iteration")
-        def iterate(state):
-            ...
-
-    The zone is named after the function's qualified name unless ``name`` is
-    given, and carries the function's source file, first line and name, so the
-    report points at where it is defined. Stack it beneath ``@staticmethod`` or
-    ``@classmethod``, so that it wraps the function itself.
-
-    Coroutine and generator functions are refused. A zone must close before any
-    zone opened after it on the same thread, and one held open across an
-    ``await`` or a ``yield`` would stay open while other code runs and opens and
-    closes zones of its own. Time the synchronous work inside them with
-    :func:`section` instead.
-
-    The compiled module is looked up on the first call, not here, so that
-    decorating a function does not start the runtime when its module is
-    imported. In a build without the profiler a call then costs one check.
-    """
+    """Record every call of a function as a profile zone; see :func:`waggle.profile`."""
     if func is None:
         return lambda f: profile(f, name=name)
-
-    if _inspect.iscoroutinefunction(func) or _inspect.isasyncgenfunction(func) or _inspect.isgeneratorfunction(func):
-        raise TypeError(
-            f"profile cannot time {getattr(func, '__qualname__', func)!r}: it is a coroutine or generator "
-            "function, and a zone held open across an await or a yield would not close before zones "
-            "opened after it on the same thread. Use profile.section() around its synchronous parts."
-        )
-    code = getattr(func, "__code__", None)
-    qualname = getattr(func, "__qualname__", getattr(func, "__name__", repr(func)))
-    file = code.co_filename if code is not None else ""
-    line = code.co_firstlineno if code is not None else 0
-    zone = name if name is not None else qualname
-    hooks = []  # filled on the first call: (push, pop), or None where nothing records
+    waggled = _waggle().profile(func, name=name)  # refuses what cannot be timed, either way
+    if available():
+        return waggled
 
     @_functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        if not hooks:
-            core = _core()
-            hooks.append((core.push, core.pop) if core.available() else None)
-        if hooks[0] is None:
-            return func(*args, **kwargs)
-        push, pop = hooks[0]
-        push(zone, file, line, qualname)
-        try:
-            return func(*args, **kwargs)
-        finally:
-            pop()
+    def wrapper(*args, **kwargs):  # nothing records here: only the call
+        return func(*args, **kwargs)
 
     return wrapper
 
 
-def annotate_dims(key, dims):
-    """Attach a sequence of dimension sizes as ``<key>.<i>`` annotations.
+def annotate(key, value):
+    """Attach a string, integer or floating-point annotation to the current zone."""
+    if available():
+        _waggle().annotate(key, value)
 
-    Mirrors the C++ ``annotate_dims`` helper; emitted entries are
-    individual scalar annotations so they show up next to the parent
-    region in the report.
-    """
-    a = _core().annotate
-    for i, d in enumerate(dims):
-        a(f"{key}.{i}", int(d))
+
+def annotate_dims(key, dims):
+    """Attach a sequence of dimension sizes as ``<key>.<i>`` annotations."""
+    if available():
+        _waggle().annotate_dims(key, dims)
+
+
+def mem_alloc(bytes):
+    """Record an allocation of ``bytes`` in the current zone."""
+    if available():
+        _waggle().mem_alloc(int(bytes))
+
+
+def mem_free(bytes):
+    """Record a free of ``bytes`` in the current zone."""
+    if available():
+        _waggle().mem_free(int(bytes))
+
+
+def flush():
+    """Drain every thread's recorded events, so ``print_report`` and ``export_json`` see them."""
+    if available():
+        _waggle().flush()
+
+
+def print_report(detailed=False):
+    """Print the compact (or detailed) report to standard output."""
+    if available():
+        _waggle().print_report(detailed)
+
+
+def export_json(path="einsums_profile.json"):
+    """Write the aggregated profile to JSON; the path on success, ``None`` otherwise."""
+    if available() and _waggle().export_json(path):
+        return path
+    return None
+
+
+def set_thread_name(name):
+    """Name the calling thread in reports and viewers."""
+    if available():
+        _waggle().set_thread_name(name)
+
+
+def current_thread_id():
+    """The profiler's id for the calling thread; 0 where nothing records."""
+    return _waggle().current_thread_id() if available() else 0
+
+
+def total_push_count():
+    """Zones opened so far, on every thread."""
+    return _waggle().total_push_count() if available() else 0
+
+
+def total_pop_count():
+    """Zones closed so far, on every thread."""
+    return _waggle().total_pop_count() if available() else 0
+
+
+def avg_push_overhead_ns():
+    """What opening a recorded zone costs, in nanoseconds."""
+    return _waggle().push_overhead_ns() if available() else 0.0
+
+
+def avg_pop_overhead_ns():
+    """What closing a recorded zone costs, in nanoseconds."""
+    return _waggle().pop_overhead_ns() if available() else 0.0

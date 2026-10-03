@@ -40,9 +40,9 @@ EINSUMS_NAMESPACE_END()
 EINSUMS_NAMESPACE_BEGIN(profile)
 
 // ---------------------- Python bindings ----------------------
-// Free functions over Waggle, so einsums.profile need not bind the non-copyable Profiler. With
-// EINSUMS_WITH_PROFILER=OFF each does nothing, so instrumented scripts run on that build too.
-// Parameters keep their names: they are the bindings' keyword arguments.
+// einsums.profile is Waggle's own Python API (waggle._core). What Einsums adds is whether its build
+// records: with EINSUMS_WITH_PROFILER=OFF, einsums.profile keeps every name callable and records
+// nothing, so instrumented scripts run on that build too.
 
 /// Whether this build records anything. ``False`` means einsums was built with
 /// ``EINSUMS_WITH_PROFILER=OFF``: the API still exists but does nothing.
@@ -51,137 +51,6 @@ APIARY_EXPOSE APIARY_MODULE("profile") constexpr bool available() {
     return true;
 #else
     return false;
-#endif
-}
-
-/// Attach a string annotation to the current profiling zone.
-APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate([[maybe_unused]] std::string_view key,
-                                                            [[maybe_unused]] std::string_view value) {
-#if defined(EINSUMS_HAVE_PROFILER)
-    waggle::annotate(key, value);
-#endif
-}
-
-/// Attach an integer annotation to the current profiling zone.
-APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate([[maybe_unused]] std::string_view key, [[maybe_unused]] int64_t value) {
-#if defined(EINSUMS_HAVE_PROFILER)
-    waggle::annotate(key, value);
-#endif
-}
-
-/// Attach a floating-point annotation to the current profiling zone.
-APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate([[maybe_unused]] std::string_view key, [[maybe_unused]] double value) {
-#if defined(EINSUMS_HAVE_PROFILER)
-    waggle::annotate(key, value);
-#endif
-}
-
-/// Record a memory allocation in the current profiling zone.
-APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_alloc([[maybe_unused]] int64_t bytes) {
-#if defined(EINSUMS_HAVE_PROFILER)
-    waggle::mem_alloc(bytes);
-#endif
-}
-
-/// Record a memory deallocation in the current profiling zone.
-APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_free([[maybe_unused]] int64_t bytes) {
-#if defined(EINSUMS_HAVE_PROFILER)
-    waggle::mem_free(bytes);
-#endif
-}
-
-/// Begin a profile region. Pair it with ``pop()``, usually through the
-/// ``einsums.profile.section(name)`` context manager.
-APIARY_EXPOSE APIARY_MODULE("profile") inline void push([[maybe_unused]] std::string const &name,
-                                                        [[maybe_unused]] std::string const &file = "", [[maybe_unused]] int line = 0,
-                                                        [[maybe_unused]] std::string const &func = "") {
-#if defined(EINSUMS_HAVE_PROFILER)
-    waggle::push(name, file.c_str(), line, func.c_str());
-#endif
-}
-
-/// End the innermost profile region.
-APIARY_EXPOSE APIARY_MODULE("profile") inline void pop() {
-#if defined(EINSUMS_HAVE_PROFILER)
-    waggle::pop();
-#endif
-}
-
-/// Drain the per-thread ring buffers into the aggregated tree, so ``print_report``
-/// and ``export_json`` see recent events.
-APIARY_EXPOSE APIARY_MODULE("profile") inline void flush() {
-#if defined(EINSUMS_HAVE_PROFILER)
-    waggle::flush();
-#endif
-}
-
-/// Print the compact (or detailed) report to standard output.
-APIARY_EXPOSE APIARY_MODULE("profile") inline void print_report([[maybe_unused]] bool detailed = false) {
-#if defined(EINSUMS_HAVE_PROFILER)
-    waggle::print_report(detailed);
-#endif
-}
-
-/// Write the aggregated profile to JSON. Returns the resolved path on
-/// success or ``None`` on failure.
-APIARY_EXPOSE APIARY_MODULE("profile") inline std::optional<std::string>
-export_json([[maybe_unused]] std::string const &path = "einsums_profile.json") {
-#if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::export_json(path);
-#else
-    return std::nullopt;
-#endif
-}
-
-/// Set a human-readable name for the calling thread.
-APIARY_EXPOSE APIARY_MODULE("profile") inline void set_thread_name([[maybe_unused]] std::string const &name) {
-#if defined(EINSUMS_HAVE_PROFILER)
-    waggle::set_thread_name(name);
-#endif
-}
-
-/// Return the profiler's thread id for the calling thread.
-APIARY_EXPOSE APIARY_MODULE("profile") inline uint32_t current_thread_id() {
-#if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::current_thread_id();
-#else
-    return 0;
-#endif
-}
-
-/// Average per-call overhead of ``push`` in nanoseconds.
-APIARY_EXPOSE APIARY_MODULE("profile") inline double avg_push_overhead_ns() {
-#if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::push_overhead_ns();
-#else
-    return 0.0;
-#endif
-}
-
-/// Average per-call overhead of ``pop`` in nanoseconds.
-APIARY_EXPOSE APIARY_MODULE("profile") inline double avg_pop_overhead_ns() {
-#if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::pop_overhead_ns();
-#else
-    return 0.0;
-#endif
-}
-
-/// Total number of ``push`` calls observed since process start.
-APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_push_count() {
-#if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::total_push_count();
-#else
-    return 0;
-#endif
-}
-
-/// Total number of ``pop`` calls observed since process start.
-APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
-#if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::total_pop_count();
-#else
-    return 0;
 #endif
 }
 

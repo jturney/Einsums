@@ -8,31 +8,33 @@
 Profiling
 =========
 
-This module contains symbols for profiling Einsums.
+Einsums profiles itself with `Waggle <https://github.com/Einsums/Waggle>`_, the profiler it shares with the other libraries in a process, so the zones Einsums opens and the zones your own code opens land in one tree.
+This module is Einsums' side of that: the header that includes Waggle with Einsums' configuration, the ``--einsums:profile:*`` options, and ``einsums.profile`` in Python.
 
-See the :ref:`API reference <modules_Einsums_Profile_api>` of this module for more
-details.
+See the :ref:`API reference <modules_Einsums_Profile_api>` of this module for more details.
 
 --------------
-Public Symbols
+From C++
 --------------
 
-- :cpp:func:`~einsums::profile::print_report` - print the compact (or detailed) profiling report to standard output.
-- :cpp:func:`~einsums::profile::export_json` - write the aggregated profile to a JSON file.
-- :cpp:func:`~einsums::profile::flush` - drain the per-thread ring buffers so that recent events are visible in reports.
+Include ``<Einsums/Profile/Profile.hpp>`` rather than Waggle's header, so that Einsums' configuration reaches the zone macros.
+Then ``WAGGLE_ZONE``, ``WAGGLE_ANNOTATE`` and the rest of Waggle's C++ API are available, and the zones written inside ``namespace einsums`` belong to the ``einsums`` domain.
+``waggle::flush()``, ``waggle::print_report()`` and ``waggle::export_json()`` read what has been recorded.
+
+--------------
+From Python
+--------------
+
+``einsums.profile`` is Waggle's Python API under the names Einsums has always used:
+``section`` (a zone around a ``with`` block), the ``profile`` decorator, ``annotate``, ``flush``, ``print_report`` and ``export_json``.
+For a zone entered often, ``waggle.Zone`` registers its site once and is the cheaper choice.
 
 -----------------------------
 Building without the profiler
 -----------------------------
 
-Configuring with ``-DEINSUMS_WITH_PROFILER=OFF`` compiles the recording machinery out of the library.
-Instrumented code does not have to change: ``WAGGLE_ZONE`` and its siblings expand to nothing, and the
-functions above remain callable and do nothing, so a translation unit or a Python script that profiles still
-builds and still runs.
-Ask :cpp:func:`~einsums::profile::available` which kind of build you are on; the readers all report empty
-rather than fail.
+Configuring with ``-DEINSUMS_WITH_PROFILER=OFF`` takes Einsums' own zones out of the library.
+Instrumented code does not have to change: ``WAGGLE_ZONE`` and its siblings expand to nothing in Einsums' translation units, and ``einsums.profile`` stays callable and records nothing, so a script that profiles still runs.
+Ask ``einsums.profile.available()`` which kind of build you are on; the readers all report empty rather than fail.
 
-What does not survive is the profiler's machinery.
-The ring buffers, the aggregating consumer and the TCP server that the viewer connects to are absent
-entirely, so the few call sites that reach for one of those must guard themselves with
-``#if defined(EINSUMS_HAVE_PROFILER)``.
+Waggle itself is still built and linked, since other libraries in the process may use it.

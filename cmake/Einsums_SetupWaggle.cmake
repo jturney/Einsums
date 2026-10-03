@@ -20,16 +20,17 @@ if(Python_EXECUTABLE)
   set(Python3_EXECUTABLE "${Python_EXECUTABLE}")
 endif()
 if(EINSUMS_BUILD_PYTHON)
-  # The waggle package beside the einsums package, which `einsums profiler` imports it from, in the
-  # build tree and in the install.
+  # The waggle package beside the einsums package, in the build tree and in the install:
+  # `einsums profiler` runs its viewer, and einsums.profile is its waggle._core.
   set(WAGGLE_PYTHON_STAGING_DIR "${CMAKE_BINARY_DIR}/lib")
   set(WAGGLE_PYTHON_INSTALL_DIR "${EINSUMS_INSTALL_PYMODDIR}")
+  set(WAGGLE_BUILD_PYTHON ON)
 endif()
 
 fetchcontent_declare(
   Waggle
   GIT_REPOSITORY https://github.com/Einsums/Waggle.git
-  GIT_TAG fb901aa2a6615257a254857d6716b0843c2f9a62 # main, 2026-10-03
+  GIT_TAG db115162f9dfbb4354f0f853c4085b5716fda563 # main, 2026-10-03
   FIND_PACKAGE_ARGS
   0.1
   CONFIG
