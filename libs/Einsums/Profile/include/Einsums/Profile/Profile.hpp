@@ -8,7 +8,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Print.hpp>
 #include <Einsums/Profile/Consumer.hpp>
 #include <Einsums/Profile/CounterBackend.hpp>
 #include <Einsums/Profile/Event.hpp>
@@ -20,6 +19,9 @@
 #include <Einsums/Profile/TickClock.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/TypeSupport/InsertionOrderedMap.hpp>
+
+#include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <array>
 #include <atomic>
@@ -115,8 +117,6 @@ struct EINSUMS_EXPORT Profiler {
 
     // Stop the consumer (with a final drain) and the server.
     void shutdown() {
-        // The print sink points into the server's queue, so detach it first.
-        einsums::print::clear_output_sink();
         if (_consumer)
             _consumer->shutdown();
         if (_server)
@@ -135,12 +135,17 @@ struct EINSUMS_EXPORT Profiler {
     /// The settings in force.
     [[nodiscard]] auto settings() const -> Settings;
 
-    /// Count a library, named @p client, as using the profiler until its matching @ref finalize.
-    void init(std::string client);
+    /// Count @p client as using the profiler until its matching @ref finalize. Viewers and session
+    /// files list every client.
+    void init(ClientInfo client);
 
-    /// Release one @ref init. The last one writes the session file and the report the settings ask
-    /// for, then stops the consumer and the server; recording ends there for the whole process.
-    void finalize();
+    /// Release the @ref init of the client named @p client. The last release writes the session
+    /// file and the report the settings ask for, then stops the consumer and the server; recording
+    /// ends there for the whole process.
+    void finalize(std::string const &client);
+
+    /// The libraries using the profiler, in the order they arrived.
+    [[nodiscard]] auto clients() const -> std::vector<ClientInfo> { return _handlers.clients(); }
 
     /// Hold the calling thread until a viewer connects, if the settings ask for that and a server
     /// is listening. Returns at once otherwise.
@@ -186,6 +191,14 @@ struct EINSUMS_EXPORT Profiler {
     void register_session_section(std::string key, SessionSection section) {
         _handlers.add_session_section(std::move(key), std::move(section));
     }
+
+    /// Stream a log message to connected viewers' log panel. @p level runs 0 (trace) to 5
+    /// (critical), spdlog's numbering. Returns at once when no server runs, before formatting.
+    void log(int level, std::chrono::system_clock::time_point when, std::string_view file, int line, std::string_view function,
+             std::string_view message);
+
+    /// Stream one line the program printed to connected viewers. Returns at once without a server.
+    void output(std::string_view message);
 
     /// Send @p json_object (a JSON object) to every connected viewer as a message of type @p type.
     /// Dropped when no server runs: nothing would ever read it.
@@ -320,10 +333,9 @@ struct EINSUMS_EXPORT Profiler {
     mutable std::mutex _settings_mutex;
     SettingsStore      _settings;
 
-    /// Libraries between @ref init and @ref finalize, by name; under @ref _lifecycle_mutex.
-    std::mutex               _lifecycle_mutex;
-    std::vector<std::string> _clients;
-    bool                     _finalized{false};
+    /// Serializes @ref init and @ref finalize; the clients themselves are in @ref _handlers.
+    std::mutex _lifecycle_mutex;
+    bool       _finalized{false};
 
     /// Every thread's channel, for the life of the process; see @ref ThreadChannel.
     mutable std::mutex                          _channels_mutex;

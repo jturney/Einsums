@@ -12,6 +12,7 @@
 #include <Einsums/Debugging/CrashHandler.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Profile/Server.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
@@ -239,7 +240,11 @@ void shutdown_profiler_and_report() noexcept {
                               "file was written. The text report is unaffected.");
         }
         // Einsums' release. Whichever library releases last writes the session file and the report.
-        profiler.finalize();
+        profiler.finalize("einsums");
+        // The profiler outlives this runtime's logger and output hooks, so hand its messages back
+        // to stderr and stop forwarding println before either goes away.
+        profile::set_diagnostic_handler({});
+        einsums::print::clear_output_sink();
     } catch (...) {
         EINSUMS_LOG_INFO("Exception thrown by the profiler during shutdown. Ignoring.");
     }

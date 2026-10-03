@@ -5,6 +5,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Profile/Diagnostics.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Profile/Settings.hpp>
 
@@ -12,6 +13,9 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 using namespace einsums::profile;
 
@@ -126,8 +130,8 @@ TEST_CASE("Overriding replaces a setting whoever set it", "[profiler][settings]"
 // test run, so a client released here leaves the profiler recording.
 TEST_CASE("A library's finalize leaves the profiler running for the others", "[profiler][settings]") {
     auto &prof = Profiler::instance();
-    prof.init("test-client");
-    prof.finalize();
+    prof.init({.name = "test-client"});
+    prof.finalize("test-client");
 
     REQUIRE(prof.enabled());
     std::string const name = "settings: recording after a client's finalize";
@@ -146,4 +150,29 @@ TEST_CASE("A library's finalize leaves the profiler running for the others", "[p
     }
     REQUIRE(node != nullptr);
     CHECK(node->call_count == 1);
+}
+
+// A refused setting must be visible, and through the host's logger when it installed one, not lost
+// to a stderr nobody reads.
+TEST_CASE("A refused setting is reported through the diagnostic handler", "[profiler][settings]") {
+    std::vector<std::pair<DiagnosticLevel, std::string>> seen;
+    set_diagnostic_handler([&seen](DiagnosticLevel level, std::string_view message) { seen.emplace_back(level, std::string(message)); });
+
+    auto          &prof = Profiler::instance();
+    SettingsUpdate first;
+    first.save = "first-library.json";
+    prof.override_settings(first);
+    SettingsUpdate second;
+    second.save = "second-library.json";
+    prof.configure(second);
+
+    set_diagnostic_handler({});
+    SettingsUpdate restore;
+    restore.save = "";
+    prof.override_settings(restore);
+
+    REQUIRE(seen.size() == 1);
+    CHECK(seen.front().first == DiagnosticLevel::Warning);
+    CHECK(seen.front().second.find("first-library.json") != std::string::npos);
+    CHECK(seen.front().second.find("second-library.json") != std::string::npos);
 }

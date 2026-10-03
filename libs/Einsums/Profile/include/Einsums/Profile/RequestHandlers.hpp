@@ -28,9 +28,19 @@ using RequestHandler = std::function<std::string(std::string const &params)>;
 /// Produces one JSON value for a session file.
 using SessionSection = std::function<std::string()>;
 
+/// A library using the profiler, as viewers and session files name it.
+struct ClientInfo {
+    std::string name;
+    std::string version{};
+    std::string git_commit{};
+    std::string git_branch{};
+    bool        git_dirty{false};
+    std::string build_type{};
+};
+
 /**
- * @brief What libraries add to the profiler's server and session files: request handlers a viewer
- * calls by name, and sections a session file embeds.
+ * @brief What libraries add to the profiler's server and session files: themselves, request
+ * handlers a viewer calls by name, and sections a session file embeds.
  *
  * The profiler owns the table, not the server, so a library can register at any time, whether or
  * not a server is running yet or ever will. Registration and calls may come from any thread.
@@ -75,6 +85,31 @@ class RequestHandlers {
         _sections.emplace_back(std::move(key), std::move(section));
     }
 
+    /// Add @p client to the libraries using the profiler.
+    void add_client(ClientInfo client) {
+        std::unique_lock const lock(_mutex);
+        _clients.push_back(std::move(client));
+    }
+
+    /// Remove one client named @p name; returns whether there was one.
+    auto remove_client(std::string const &name) -> bool {
+        std::unique_lock const lock(_mutex);
+        // The most recent first, so a library registered twice leaves in the order it came.
+        for (auto it = _clients.rbegin(); it != _clients.rend(); ++it) {
+            if (it->name == name) {
+                _clients.erase(std::next(it).base());
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// The libraries using the profiler, in the order they arrived.
+    [[nodiscard]] auto clients() const -> std::vector<ClientInfo> {
+        std::shared_lock const lock(_mutex);
+        return _clients;
+    }
+
     /// Every session section as a key and its JSON value, in registration order.
     [[nodiscard]] auto session_sections() const -> std::vector<std::pair<std::string, std::string>> {
         std::shared_lock const                           lock(_mutex);
@@ -90,6 +125,7 @@ class RequestHandlers {
     mutable std::shared_mutex                           _mutex;
     std::unordered_map<std::string, RequestHandler>     _handlers;
     std::vector<std::pair<std::string, SessionSection>> _sections;
+    std::vector<ClientInfo>                             _clients;
 };
 
 EINSUMS_NAMESPACE_END(profile)

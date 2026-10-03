@@ -8,7 +8,10 @@
 #include <Einsums/Profile/Options.hpp>
 
 #if defined(EINSUMS_HAVE_PROFILER)
+#    include <Einsums/Config/Version.hpp>
 #    include <Einsums/Profile/Profile.hpp>
+
+#    include <fmt/format.h>
 #endif
 
 EINSUMS_NAMESPACE_BEGIN()
@@ -31,7 +34,18 @@ void configure_profiler_from_options() {
 
     auto &profiler = profile::Profiler::instance();
     profiler.configure(update);
-    profiler.init("einsums");
+    // EINSUMS_BUILD_TYPE is a bare identifier (release, debug), so stringify it.
+#    define EINSUMS_PROFILE_STRINGIFY_(x) #x
+#    define EINSUMS_PROFILE_STRINGIFY(x)  EINSUMS_PROFILE_STRINGIFY_(x)
+    profiler.init(
+        {.name       = "einsums",
+         .version    = fmt::format("{}.{}.{}{}", EINSUMS_VERSION_MAJOR, EINSUMS_VERSION_MINOR, EINSUMS_VERSION_PATCH, EINSUMS_VERSION_TAG),
+         .git_commit = std::string(git_commit()),
+         .git_branch = std::string(git_branch()),
+         .git_dirty  = git_dirty(),
+         .build_type = EINSUMS_PROFILE_STRINGIFY(EINSUMS_BUILD_TYPE)});
+#    undef EINSUMS_PROFILE_STRINGIFY
+#    undef EINSUMS_PROFILE_STRINGIFY_
 #endif
 }
 

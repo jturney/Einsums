@@ -185,3 +185,13 @@ def test_waggle_environment_sits_below_einsums_options(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert (tmp_path / "from-flag.txt").exists(), "the explicit option lost to the environment"
     assert not (tmp_path / "from-env-2.txt").exists()
+
+
+# The report's colors were written into the file too: escape codes that only a terminal renders.
+@needs_profiler
+def test_report_file_holds_no_terminal_escapes(tmp_path):
+    proc = _run(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    text = (tmp_path / "profile.txt").read_text()
+    assert "Profiler overhead" in text
+    assert "\x1b[" not in text

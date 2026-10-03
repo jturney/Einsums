@@ -12,7 +12,7 @@
 #if defined(EINSUMS_HAVE_PROFILER)
 
 #    include <Einsums/Profile/Consumer.hpp>
-#    include <Einsums/Profile/LogSink.hpp>
+#    include <Einsums/Profile/LogQueue.hpp>
 #    include <Einsums/Profile/RequestHandlers.hpp>
 #    include <Einsums/Profile/StringTable.hpp>
 
@@ -56,6 +56,10 @@ class EINSUMS_EXPORT Server {
     /// @param viewer_requested Whether the program was told to wait for a viewer, which earns a
     ///        longer final drain and a short wait for one that is late.
     void shutdown(bool viewer_requested = false);
+
+    /// The port the server listens on, which is the requested one or the first free one after it;
+    /// 0 when not listening.
+    [[nodiscard]] auto port() const -> uint16_t { return _bound_port; }
 
     /// Whether the server is active.
     [[nodiscard]] auto is_running() const -> bool { return _listen_fd >= 0; }
@@ -102,7 +106,8 @@ class EINSUMS_EXPORT Server {
     Consumer    &_consumer;
     StringTable &_strings;
 
-    int _listen_fd = -1;
+    int      _listen_fd  = -1;
+    uint16_t _bound_port = 0;
 
     /// Connected viewers. Owned by the thread driving tick(): the consumer thread, then the main
     /// thread in shutdown() after the consumer is joined. Other threads use _has_client.

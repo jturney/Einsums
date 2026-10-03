@@ -6,19 +6,23 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Profile/Consumer.hpp>
-#include <Einsums/Profile/LogSink.hpp>
+#include <Einsums/Profile/LogQueue.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Profile/RequestHandlers.hpp>
 #include <Einsums/Profile/Server.hpp>
 #include <Einsums/Profile/StringTable.hpp>
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #ifndef _WIN32
@@ -121,15 +125,11 @@ TEST_CASE("A handler registered before the server starts is answered", "[profile
     auto &prof = Profiler::instance();
     prof.register_handler("test_early_handler", [](std::string const &) { return std::string(R"({"answer":42})"); });
 
-    uint16_t const port = free_port();
-    prof.start_server(port);
+    prof.start_server(free_port()); // a no-op if another case started it first
     REQUIRE(prof.server() != nullptr);
-    if (!prof.server()->is_running()) {
-        // Another case started the singleton's server first; this one cannot pick the port.
-        SKIP("the profiler's server already runs on another port");
-    }
+    REQUIRE(prof.server()->is_running());
 
-    int const         client   = connect_to(port);
+    int const         client   = connect_to(prof.server()->port());
     std::string const response = request(client, "test_early_handler");
     CHECK(response.find(R"("data":{"answer":42})") != std::string::npos);
 
@@ -182,6 +182,93 @@ TEST_CASE("A session file embeds every registered section", "[profiler][server]"
     contents << in.rdbuf();
     std::filesystem::remove(path);
     CHECK(contents.str().find(R"("test_section": [1,2,3])") != std::string::npos);
+}
+
+/// Reads a server's JSON Lines stream, keeping what arrived past the line it returned.
+class LineReader {
+  public:
+    explicit LineReader(int fd) : _fd(fd) {
+        timeval timeout{};
+        timeout.tv_sec = 1;
+        ::setsockopt(_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    }
+
+    /// The next line holding every string in @p wanted, skipping others; fails after 10 s. The
+    /// deadline is overall, since a server streaming snapshots never lets a per-recv timeout expire.
+    std::string next(std::initializer_list<std::string_view> wanted) {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (true) {
+            for (size_t end; (end = _buffer.find('\n')) != std::string::npos;) {
+                std::string record = _buffer.substr(0, end);
+                _buffer.erase(0, end + 1);
+                if (std::ranges::all_of(wanted, [&](std::string_view w) { return record.find(w) != std::string::npos; })) {
+                    return record;
+                }
+            }
+            REQUIRE(std::chrono::steady_clock::now() < deadline);
+            char          chunk[4096];
+            ssize_t const n = ::recv(_fd, chunk, sizeof(chunk), 0);
+            if (n > 0) {
+                _buffer.append(chunk, static_cast<size_t>(n));
+            } else {
+                REQUIRE((n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))); // a timeout, not a closed connection
+            }
+        }
+    }
+
+  private:
+    int         _fd;
+    std::string _buffer;
+};
+
+TEST_CASE("The meta message lists every client", "[profiler][server]") {
+    StringTable     strings;
+    Consumer        consumer(strings);
+    RequestHandlers handlers;
+    handlers.add_client({.name = "first-lib", .version = "1.2.3", .git_commit = "abc123"});
+    handlers.add_client({.name = "second-lib", .version = "0.1"});
+    uint16_t const port = free_port();
+    Server         server(consumer, strings, handlers, "127.0.0.1", port);
+    REQUIRE(server.is_running());
+    CHECK(server.port() == port);
+
+    int const client = connect_to(port);
+    wait_until_queued(client);
+    server.tick(); // accepts the viewer and sends it the meta line
+
+    LineReader        reader(client);
+    std::string const meta = reader.next({R"("type":"meta")"});
+    CHECK(meta.find(R"({"name":"first-lib","version":"1.2.3","git_commit":"abc123")") != std::string::npos);
+    CHECK(meta.find(R"({"name":"second-lib","version":"0.1")") != std::string::npos);
+    // The first client's build stays at the top level, where viewers read it.
+    CHECK(meta.find(R"("git_commit":"abc123","git_branch":"","git_dirty":false,"build_type":"","clients":[)") != std::string::npos);
+    ::close(client);
+    server.shutdown();
+}
+
+// Einsums wired its log sink and println forwarding only if a server existed while logging was
+// set up, so a server started later showed an empty log panel. Both now go through the profiler,
+// which forwards to whatever server runs when the message arrives.
+TEST_CASE("Log messages and program output reach a server started later", "[profiler][server]") {
+    auto &prof = Profiler::instance();
+    prof.start_server(free_port()); // a no-op if an earlier case started it
+    REQUIRE(prof.server() != nullptr);
+    REQUIRE(prof.server()->is_running());
+
+    int const client = connect_to(prof.server()->port());
+    // Messages go to the viewers connected when the server next ticks, so wait until the consumer's
+    // tick has accepted this one: its meta line says so.
+    LineReader reader(client);
+    (void)reader.next({R"("type":"meta")"});
+    prof.log(3, std::chrono::system_clock::now(), "/some/dir/source.cpp", 42, "a_function", "late-server log line");
+    prof.output("late-server output line");
+
+    std::string const log = reader.next({R"("type":"log")", "late-server log line"});
+    CHECK(log.find(R"("level":3)") != std::string::npos);
+    CHECK(log.find(R"("file":"source.cpp")") != std::string::npos); // the basename
+    CHECK(log.find(R"("line":42)") != std::string::npos);
+    CHECK_FALSE(reader.next({R"("type":"output")", "late-server output line"}).empty());
+    ::close(client);
 }
 
 // Regression: shutdown() drained only to clients the server had already accepted, so one still

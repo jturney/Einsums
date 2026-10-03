@@ -10,8 +10,10 @@
 
 #    include <Einsums/Config.hpp>
 
-#    include <Einsums/Logging.hpp>
+#    include <Einsums/Profile/Diagnostics.hpp>
 #    include <Einsums/TypeSupport/JsonEscape.hpp>
+
+#    include <fmt/format.h>
 
 #    ifndef _WIN32
 #        include <arpa/inet.h>
@@ -69,6 +71,20 @@ void close_socket(SOCKET fd) {
 
 // Use the shared json_escape from TypeSupport, aliased to keep call sites unchanged.
 auto const &escape_json_str = ::einsums::json_escape;
+
+/// @p clients as a JSON array of objects.
+std::string clients_json(std::vector<ClientInfo> const &clients) {
+    std::string out = "[";
+    for (auto const &c : clients) {
+        if (out.size() > 1) {
+            out += ",";
+        }
+        out += R"({"name":")" + escape_json_str(c.name) + R"(","version":")" + escape_json_str(c.version) + R"(","git_commit":")" +
+               escape_json_str(c.git_commit) + R"(","git_branch":")" + escape_json_str(c.git_branch) + R"(","git_dirty":)" +
+               (c.git_dirty ? "true" : "false") + R"(,"build_type":")" + escape_json_str(c.build_type) + "\"}";
+    }
+    return out + "]";
+}
 
 // TODO: Don't we already have this in RuntimeConfiguration?
 auto get_executable_path() -> std::string {
@@ -176,7 +192,7 @@ Server::Server(Consumer &consumer, StringTable &strings, RequestHandlers const &
 #    ifndef _WIN32
     _listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (_listen_fd < 0) {
-        EINSUMS_LOG_WARN("Profile server: failed to create socket");
+        diagnostic(DiagnosticLevel::Warning, "Profile server: failed to create socket");
         return;
     }
 
@@ -199,29 +215,32 @@ Server::Server(Consumer &consumer, StringTable &strings, RequestHandlers const &
             break;
         }
         if (attempt == 0) {
-            EINSUMS_LOG_INFO("Profile server: port {} in use, trying next...", try_port);
+            diagnostic(DiagnosticLevel::Info, fmt::format("Profile server: port {} in use, trying next...", try_port));
         }
     }
 
     if (bound_port == 0) {
-        EINSUMS_LOG_WARN("Profile server: failed to bind to {}:{}-{}", bind_addr, port, port + kMaxPortAttempts - 1);
+        diagnostic(DiagnosticLevel::Warning,
+                   fmt::format("Profile server: failed to bind to {}:{}-{}", bind_addr, port, port + kMaxPortAttempts - 1));
         close_socket(_listen_fd);
         _listen_fd = -1;
         return;
     }
 
     if (listen(_listen_fd, 4) < 0) {
-        EINSUMS_LOG_WARN("Profile server: failed to listen");
+        diagnostic(DiagnosticLevel::Warning, "Profile server: failed to listen");
         close_socket(_listen_fd);
         _listen_fd = -1;
         return;
     }
 
-    EINSUMS_LOG_INFO("Profile server listening on {}:{}", bind_addr, bound_port);
+    _bound_port = bound_port;
+    diagnostic(DiagnosticLevel::Info, fmt::format("Profile server listening on {}:{}", bind_addr, bound_port));
 
     register_mdns(bound_port);
 #    else
-    EINSUMS_LOG_WARN("Profile server: not supported on Windows; {}:{} will not be served", bind_addr, port);
+    diagnostic(DiagnosticLevel::Warning,
+               fmt::format("Profile server: not supported on Windows; {}:{} will not be served", bind_addr, port));
 #    endif
 }
 
@@ -245,7 +264,7 @@ void Server::shutdown(bool viewer_requested) {
     }
 
     if (!_client_fds.empty()) {
-        EINSUMS_LOG_INFO("Profile server: draining to {} connected viewer(s)...", _client_fds.size());
+        diagnostic(DiagnosticLevel::Info, fmt::format("Profile server: draining to {} connected viewer(s)...", _client_fds.size()));
         for (int i = 0; i < drain_iterations; i++) {
             accept_clients();
             recv_requests();
@@ -257,12 +276,12 @@ void Server::shutdown(bool viewer_requested) {
         send_updates();
     } else if (drain_iterations > 5) {
         // No client connected yet but wait-for-viewer was set, so give viewer a chance to connect late
-        EINSUMS_LOG_INFO("Profile server: waiting briefly for late viewer connections...");
+        diagnostic(DiagnosticLevel::Info, "Profile server: waiting briefly for late viewer connections...");
         for (int i = 0; i < drain_iterations; i++) {
             accept_clients();
             if (!_client_fds.empty()) {
                 // Client just connected; drain remaining data
-                EINSUMS_LOG_INFO("Profile server: late viewer connected, draining...");
+                diagnostic(DiagnosticLevel::Info, "Profile server: late viewer connected, draining...");
                 for (int j = 0; j < 10; j++) {
                     recv_requests();
                     send_updates();
@@ -288,6 +307,7 @@ void Server::shutdown(bool viewer_requested) {
         close_socket(_listen_fd);
         _listen_fd = -1;
     }
+    _bound_port = 0;
 }
 
 void Server::tick() {
@@ -315,7 +335,7 @@ void Server::accept_clients() {
 #        endif
         _client_fds.push_back(fd);
         _has_client.store(true, std::memory_order_relaxed);
-        EINSUMS_LOG_INFO("Profile server: client connected (fd={})", fd);
+        diagnostic(DiagnosticLevel::Info, fmt::format("Profile server: client connected (fd={})", fd));
 
         // Send initial snapshot
         send_snapshot_to(fd);
@@ -477,16 +497,17 @@ void Server::send_snapshot_to(int fd) {
     msg += R"(,"executable":")" + escape_json_str(s_executable_name) + "\"";
     msg += R"(,"executable_path":")" + escape_json_str(s_executable_path) + "\"";
     msg += R"(,"start_time":")" + escape_json_str(s_start_time) + "\"";
-    msg += R"(,"git_commit":")" + escape_json_str(std::string(git_commit())) + "\"";
-    msg += R"(,"git_branch":")" + escape_json_str(std::string(git_branch())) + "\"";
-    msg += std::string(",\"git_dirty\":") + (git_dirty() ? "true" : "false");
     {
-        // EINSUMS_BUILD_TYPE is a bare identifier (e.g. release, debug), so stringify it.
-#    define EINSUMS_STRINGIFY_HELPER_(x) #x
-#    define EINSUMS_STRINGIFY_(x)        EINSUMS_STRINGIFY_HELPER_(x)
-        msg += R"(,"build_type":")" + escape_json_str(EINSUMS_STRINGIFY_(EINSUMS_BUILD_TYPE)) + "\"";
-#    undef EINSUMS_STRINGIFY_
-#    undef EINSUMS_STRINGIFY_HELPER_
+        auto const clients = _handlers.clients();
+        // The first client's build at the top level too, where viewers have always read it.
+        if (!clients.empty()) {
+            auto const &first = clients.front();
+            msg += R"(,"git_commit":")" + escape_json_str(first.git_commit) + "\"";
+            msg += R"(,"git_branch":")" + escape_json_str(first.git_branch) + "\"";
+            msg += std::string(",\"git_dirty\":") + (first.git_dirty ? "true" : "false");
+            msg += R"(,"build_type":")" + escape_json_str(first.build_type) + "\"";
+        }
+        msg += ",\"clients\":" + clients_json(clients);
     }
 
     auto &cb = get_counter_backend();
@@ -632,7 +653,7 @@ void Server::send_updates() {
         if (sent > 0) {
             alive.push_back(fd);
         } else {
-            EINSUMS_LOG_INFO("Profile server: client disconnected (fd={})", fd);
+            diagnostic(DiagnosticLevel::Info, fmt::format("Profile server: client disconnected (fd={})", fd));
             close_socket(fd);
         }
 #    endif
@@ -822,9 +843,9 @@ void Server::register_mdns(uint16_t port) {
     TXTRecordDeallocate(&txt);
 
     if (err == kDNSServiceErr_NoError) {
-        EINSUMS_LOG_INFO("Profile server: registered mDNS service '{}' on port {}", service_name, port);
+        diagnostic(DiagnosticLevel::Info, fmt::format("Profile server: registered mDNS service '{}' on port {}", service_name, port));
     } else {
-        EINSUMS_LOG_WARN("Profile server: mDNS registration failed (error {})", static_cast<int>(err));
+        diagnostic(DiagnosticLevel::Warning, fmt::format("Profile server: mDNS registration failed (error {})", static_cast<int>(err)));
         _mdns_ref = nullptr;
     }
 #    else
@@ -837,7 +858,7 @@ void Server::unregister_mdns() {
     if (_mdns_ref) {
         DNSServiceRefDeallocate(_mdns_ref);
         _mdns_ref = nullptr;
-        EINSUMS_LOG_INFO("Profile server: unregistered mDNS service");
+        diagnostic(DiagnosticLevel::Info, "Profile server: unregistered mDNS service");
     }
 #    endif
 }
@@ -874,6 +895,7 @@ void Server::export_session(std::string const &path, std::string const &label,
     json += R"(    "executable": ")" + escape_json_str(s_executable_name) + "\",\n";
     json += R"(    "start_time": ")" + escape_json_str(s_start_time) + "\",\n";
     json += R"(    "executable_path": ")" + escape_json_str(s_executable_path) + "\",\n";
+    json += "    \"clients\": " + clients_json(_handlers.clients()) + ",\n";
     json += "    \"counters\": [";
     auto &cb = get_counter_backend();
     for (int i = 0; i < kNumCounterSlots; ++i) {
@@ -968,9 +990,9 @@ void Server::export_session(std::string const &path, std::string const &label,
     if (file.is_open()) {
         file << output;
         file.close();
-        EINSUMS_LOG_INFO("Profile session exported to '{}' ({} bytes)", path, output.size());
+        diagnostic(DiagnosticLevel::Info, fmt::format("Profile session exported to '{}' ({} bytes)", path, output.size()));
     } else {
-        EINSUMS_LOG_WARN("Failed to export profile session to '{}'", path);
+        diagnostic(DiagnosticLevel::Warning, fmt::format("Failed to export profile session to '{}'", path));
     }
 }
 

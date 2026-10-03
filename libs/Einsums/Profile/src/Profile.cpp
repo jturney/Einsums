@@ -4,17 +4,27 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Logging.hpp>
-#include <Einsums/Print.hpp>
+#include <Einsums/Profile/Diagnostics.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TypeSupport/JsonEscape.hpp>
 
+#include <fmt/color.h>
+#include <fmt/format.h>
+
 #include <cstdio>
+#include <ctime>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <thread>
+
+#if defined(_WIN32)
+#    include <io.h>
+#else
+#    include <unistd.h>
+#endif
 
 #if defined(__x86_64__) || defined(_M_X64)
 #    if defined(_MSC_VER) && !defined(__clang__)
@@ -28,6 +38,38 @@
 EINSUMS_NAMESPACE_BEGIN(profile)
 
 namespace {
+
+/// Whether @p os writes to a terminal, so color and links help rather than litter a file.
+bool is_terminal(std::ostream const &os) {
+#    ifdef _WIN32
+    if (&os == &std::cout)
+        return _isatty(_fileno(stdout)) != 0;
+    if (&os == &std::cerr)
+        return _isatty(_fileno(stderr)) != 0;
+#    else
+    if (&os == &std::cout)
+        return isatty(fileno(stdout)) != 0;
+    if (&os == &std::cerr)
+        return isatty(fileno(stderr)) != 0;
+#    endif
+    return false;
+}
+
+/// One line of the report.
+template <typename... Args>
+void line(std::ostream &os, fmt::format_string<Args...> format, Args &&...args) {
+    os << fmt::format(format, std::forward<Args>(args)...) << '\n';
+}
+
+/// One line of the report, in @p style on a terminal and plain anywhere else.
+template <typename... Args>
+void styled_line(std::ostream &os, fmt::text_style const &style, fmt::format_string<Args...> format, Args &&...args) {
+    if (is_terminal(os)) {
+        os << fmt::format(style, format, std::forward<Args>(args)...) << '\n';
+    } else {
+        os << fmt::format(format, std::forward<Args>(args)...) << '\n';
+    }
+}
 
 auto strip_ansi_sequences(std::string const &s) -> std::string {
     std::string out;
@@ -122,7 +164,7 @@ Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings)) {
     {
         std::scoped_lock const lock(_settings_mutex);
         for (auto const &problem : _settings.apply_environment(SettingsStore::process_environment())) {
-            fmt::print(stderr, "{}\n", problem);
+            diagnostic(DiagnosticLevel::Warning, problem);
         }
         s = _settings.current();
     }
@@ -142,7 +184,7 @@ void Profiler::configure(SettingsUpdate const &update) {
     {
         std::scoped_lock const lock(_settings_mutex);
         for (auto const &refusal : _settings.configure(update)) {
-            fmt::print(stderr, "{}\n", refusal);
+            diagnostic(DiagnosticLevel::Warning, refusal);
         }
         s = _settings.current();
     }
@@ -164,18 +206,19 @@ auto Profiler::settings() const -> Settings {
     return _settings.current();
 }
 
-void Profiler::init(std::string client) {
+void Profiler::init(ClientInfo client) {
     std::scoped_lock const lock(_lifecycle_mutex);
-    _clients.push_back(std::move(client));
+    _handlers.add_client(std::move(client));
 }
 
-void Profiler::finalize() {
+void Profiler::finalize(std::string const &client) {
     {
         std::scoped_lock const lock(_lifecycle_mutex);
-        if (!_clients.empty()) {
-            _clients.pop_back();
+        if (!_handlers.remove_client(client)) {
+            diagnostic(DiagnosticLevel::Warning, fmt::format("finalize for \"{}\", which never called init; ignoring it", client));
+            return;
         }
-        if (!_clients.empty() || _finalized) {
+        if (!_handlers.clients().empty() || _finalized) {
             return;
         }
         _finalized = true;
@@ -191,7 +234,7 @@ void Profiler::finalize() {
             }
         }
     } catch (std::exception const &e) {
-        fmt::print(stderr, "waggle: could not write the session file {}: {}\n", s.save, e.what());
+        diagnostic(DiagnosticLevel::Error, fmt::format("could not write the session file {}: {}", s.save, e.what()));
     }
 
     shutdown();
@@ -202,8 +245,54 @@ void Profiler::finalize() {
             print(s.report_detailed, out);
         }
     } catch (std::exception const &e) {
-        fmt::print(stderr, "waggle: could not write the report {}: {}\n", s.report_file, e.what());
+        diagnostic(DiagnosticLevel::Error, fmt::format("could not write the report {}: {}", s.report_file, e.what()));
     }
+}
+
+namespace {
+/// @p when as ISO 8601 local time with milliseconds, as the viewer shows it.
+std::string iso8601_ms(std::chrono::system_clock::time_point when) {
+    auto const time = std::chrono::system_clock::to_time_t(when);
+    auto const ms   = std::chrono::duration_cast<std::chrono::milliseconds>(when.time_since_epoch()) % 1000;
+    std::tm    tm{};
+#    ifdef _WIN32
+    localtime_s(&tm, &time);
+#    else
+    localtime_r(&time, &tm);
+#    endif
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
+    return fmt::format("{}.{:03d}", buf, static_cast<int>(ms.count()));
+}
+} // namespace
+
+void Profiler::log(int level, std::chrono::system_clock::time_point when, std::string_view file, int line, std::string_view function,
+                   std::string_view message) {
+    auto *srv = server();
+    if (srv == nullptr) {
+        return;
+    }
+    LogEntry entry;
+    entry.level     = level;
+    entry.timestamp = iso8601_ms(when);
+    entry.file      = std::string(file.substr(file.find_last_of("/\\") + 1)); // the basename
+    entry.line      = line;
+    entry.function  = std::string(function);
+    entry.message   = std::string(message);
+    srv->log_queue().push(std::move(entry));
+}
+
+void Profiler::output(std::string_view message) {
+    auto *srv = server();
+    if (srv == nullptr) {
+        return;
+    }
+    LogEntry entry;
+    entry.level     = 2; // info
+    entry.timestamp = iso8601_ms(std::chrono::system_clock::now());
+    entry.line      = 0;
+    entry.message   = std::string(message);
+    srv->output_queue().push(std::move(entry));
 }
 
 void Profiler::wait_for_viewer() {
@@ -212,7 +301,8 @@ void Profiler::wait_for_viewer() {
     if (!s.wait_for_viewer || srv == nullptr || !srv->is_running()) {
         return;
     }
-    std::fprintf(stderr, "\n*** Waiting for profiler viewer to connect on port %d ***\n", static_cast<int>(s.port));
+    // The bound port, which is the next free one when the requested port was taken.
+    std::fprintf(stderr, "\n*** Waiting for profiler viewer to connect on port %d ***\n", static_cast<int>(srv->port()));
     std::fprintf(stderr, "*** Launch the viewer and connect, then execution will begin ***\n\n");
     // The consumer thread ticks the server, which accepts the viewer; ticking here as well would
     // race it on the server's client list.
@@ -400,19 +490,18 @@ void Profiler::print(bool detailed, std::ostream &os) {
         // header
         std::string       tname        = _consumer->thread_name(thread_id);
         std::string const thread_label = tname.empty() ? fmt::format("{}", thread_id) : fmt::format("{} ({})", tname, thread_id);
-        fprintln(os);
-        fprintln(os, fmt::emphasis::bold | fg(fmt::color::white), "Thread: {}  (total exclusive: {:-7.3f} ms)", thread_label,
-                 thread_total_ms);
-        fprintln(os, "{:-^157}", "");
+        os << '\n';
+        styled_line(os, fmt::emphasis::bold | fg(fmt::color::white), "Thread: {}  (total exclusive: {:-7.3f} ms)", thread_label,
+                    thread_total_ms);
+        line(os, "{:-^157}", "");
 
         if (!detailed) {
-            fprintln(os, " {:>10}  {:^10}  {:^13}  {:<60}  {:<30}  {:<}", "total(ms)", "count", "mean(ms)", "name", "file:line",
-                     "function");
-            fprintln(os, "{:-^157}", "");
+            line(os, " {:>10}  {:^10}  {:^13}  {:<60}  {:<30}  {:<}", "total(ms)", "count", "mean(ms)", "name", "file:line", "function");
+            line(os, "{:-^157}", "");
         } else {
-            fprintln(os, " {:>10}  {:<60}  {:<30}  {:<20}  {:>8} {:>8} {:>8}", "total(ms)", "name", "file:line", "function", "min", "max",
-                     "avg");
-            fprintln(os, "{:-^120}", "");
+            line(os, " {:>10}  {:<60}  {:<30}  {:<20}  {:>8} {:>8} {:>8}", "total(ms)", "name", "file:line", "function", "min", "max",
+                 "avg");
+            line(os, "{:-^120}", "");
         }
 
         std::vector<AggNode const *> nodes;
@@ -422,30 +511,30 @@ void Profiler::print(bool detailed, std::ostream &os) {
         for (auto const *n : nodes) {
             print_node_recursive(os, n, thread_total_ms, 0, detailed);
         }
-        fprintln(os);
+        os << '\n';
     }
 
     // Print profiler overhead summary
-    fprintln(os);
-    fprintln(os, fmt::emphasis::bold | fg(fmt::color::white), "Profiler overhead");
-    fprintln(os, "{:-^80}", "");
+    os << '\n';
+    styled_line(os, fmt::emphasis::bold | fg(fmt::color::white), "Profiler overhead");
+    line(os, "{:-^80}", "");
     // Estimates: the calibrated per-call cost times the number of calls.
     auto const pushes = total_push_count();
     auto const pops   = total_pop_count();
-    fprintln(os, "  push():  {:.1f} ns each, calibrated  ({} calls, ~{:.3f} ms total)", avg_push_overhead_ns(), pushes,
-             avg_push_overhead_ns() * static_cast<double>(pushes) / 1'000'000.0);
-    fprintln(os, "  pop():   {:.1f} ns each, calibrated  ({} calls, ~{:.3f} ms total)", avg_pop_overhead_ns(), pops,
-             avg_pop_overhead_ns() * static_cast<double>(pops) / 1'000'000.0);
-    fprintln(os, "  clock:   {}, {:.3f} ns per tick", TickClock::instance().source, TickClock::instance().ns_per_tick);
+    line(os, "  push():  {:.1f} ns each, calibrated  ({} calls, ~{:.3f} ms total)", avg_push_overhead_ns(), pushes,
+         avg_push_overhead_ns() * static_cast<double>(pushes) / 1'000'000.0);
+    line(os, "  pop():   {:.1f} ns each, calibrated  ({} calls, ~{:.3f} ms total)", avg_pop_overhead_ns(), pops,
+         avg_pop_overhead_ns() * static_cast<double>(pops) / 1'000'000.0);
+    line(os, "  clock:   {}, {:.3f} ns per tick", TickClock::instance().source, TickClock::instance().ns_per_tick);
     auto dropped = _consumer->dropped_count();
     if (dropped > 0) {
-        fprintln(os, fg(fmt::color::red), "  dropped events: {}", dropped);
+        styled_line(os, fg(fmt::color::red), "  dropped events: {}", dropped);
     }
     // A zone missing its Push or Pop contributes no time, so totals above it are short.
     if (auto const unmatched = _consumer->unmatched_zone_count(); unmatched > 0) {
-        fprintln(os, fg(fmt::color::red), "  zones left unmeasured by those drops: {}", unmatched);
+        styled_line(os, fg(fmt::color::red), "  zones left unmeasured by those drops: {}", unmatched);
     }
-    fprintln(os);
+    os << '\n';
 }
 
 auto Profiler::export_json(std::string const &path) -> std::optional<std::string> {
@@ -565,7 +654,7 @@ void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /
                 shortname = node->file;
             }
             std::string const file_display = fmt::format("{}:{}", shortname, node->line);
-            if (detail::is_terminal(os)) {
+            if (is_terminal(os)) {
                 std::string const clickable = make_clickable_file_line(node->file, node->line, file_display);
                 // Pad based on visible width (excludes ANSI escape sequences)
                 size_t const vlen = visible_width(clickable);
@@ -592,14 +681,14 @@ void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /
             }
         }
 
-        fprintln(os, " {:10.3f}  {:10}  {:13}  {:<60}  {}  {:<}{}", excl_ms, node->call_count, mean_str, name, file_field, node->function,
-                 annotations_str);
+        line(os, " {:10.3f}  {:10}  {:13}  {:<60}  {}  {:<}{}", excl_ms, node->call_count, mean_str, name, file_field, node->function,
+             annotations_str);
 
         if (detailed) {
             double const min_ms = ns_to_ms(node->exclusive_min);
             double const max_ms = ns_to_ms(node->exclusive_max);
             double const avg_ms = (node->call_count > 0) ? (ns_to_ms(node->total_exclusive) / static_cast<double>(node->call_count)) : 0.0;
-            fprintln(os, "{:6}   {:>10.3f}  (min {:>6.3f}  max {:>6.3f}  avg {:>6.3f})", "", excl_ms, min_ms, max_ms, avg_ms);
+            line(os, "{:6}   {:>10.3f}  (min {:>6.3f}  max {:>6.3f}  avg {:>6.3f})", "", excl_ms, min_ms, max_ms, avg_ms);
             if (!node->counters_total.empty()) {
                 std::string counters = fmt::format("{:6}   Counters:", "");
                 for (auto const &c : node->counters_total) {
@@ -609,7 +698,7 @@ void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /
                     double   avg = (node->call_count > 0) ? static_cast<double>(tot) / static_cast<double>(node->call_count) : 0.0;
                     counters += fmt::format(" {}(tot={},min={},max={},avg={:.1f})", c.first, tot, mn, mx, avg);
                 }
-                fprintln(os, counters);
+                os << counters << '\n';
             }
             // Show numeric annotation stats in detailed mode
             if (!node->numeric_annotations.empty()) {
@@ -619,7 +708,7 @@ void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /
                     annot_stats +=
                         fmt::format(" {}(avg={:.1f},min={:.1f},max={:.1f})", na.first, avg, na.second.min_val, na.second.max_val);
                 }
-                fprintln(os, annot_stats);
+                os << annot_stats << '\n';
             }
         }
 

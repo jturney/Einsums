@@ -8,12 +8,14 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Logging/Options.hpp>
+#include <Einsums/Print.hpp>
 #include <Einsums/Runtime/Detail/InitLogging.hpp>
 #include <Einsums/Runtime/RuntimeConfiguration.hpp>
 
 #if defined(EINSUMS_HAVE_PROFILER)
-#    include <Einsums/Profile/LogSink.hpp>
+#    include <Einsums/Profile/Diagnostics.hpp>
 #    include <Einsums/Profile/Profile.hpp>
+#    include <Einsums/Profile/SpdlogSink.hpp>
 #endif
 
 #include <fmt/format.h>
@@ -87,39 +89,33 @@ void init_logging(RuntimeConfiguration & /*config*/) {
     get_einsums_logger().set_level(static_cast<spdlog::level::level_enum>(config::get(option::LogLevel)));
 
 #if defined(EINSUMS_HAVE_PROFILER)
+    // Log messages and println output reach the profiler's viewers whenever a server runs, including
+    // one started after this point, so these are installed whether or not a server exists yet.
     {
-        auto *srv = profile::Profiler::instance().server();
-        if (srv) {
-            auto profiler_sink_ptr = std::make_shared<profile::ProfilerSinkMt>(&srv->log_queue());
-            profiler_sink_ptr->set_level(spdlog::level::trace);
-            sinks.push_back(profiler_sink_ptr);
+        auto profiler_sink = std::make_shared<profile::SpdlogSink>();
+        profiler_sink->set_level(spdlog::level::trace);
+        sinks.push_back(profiler_sink);
 
-            // Wire println output to the profiler TCP server
-            auto *output_q = &srv->output_queue();
-            einsums::print::set_output_sink([output_q](std::string const &msg) {
-                profile::LogEntry entry;
-                entry.level = 2; // INFO-equivalent
+        einsums::print::set_output_sink([](std::string const &msg) { profile::Profiler::instance().output(msg); });
 
-                // Format timestamp as ISO 8601 with milliseconds
-                auto    now        = std::chrono::system_clock::now();
-                auto    time_t_val = std::chrono::system_clock::to_time_t(now);
-                auto    ms         = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
-                std::tm tm{};
-#    ifdef _WIN32
-                localtime_s(&tm, &time_t_val);
-#    else
-                localtime_r(&time_t_val, &tm);
-#    endif
-                char ts_buf[32];
-                std::strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%dT%H:%M:%S", &tm);
-                char ms_buf[8];
-                std::snprintf(ms_buf, sizeof(ms_buf), ".%03d", static_cast<int>(ms.count()));
-                entry.timestamp = std::string(ts_buf) + ms_buf;
-
-                entry.message = msg;
-                output_q->push(std::move(entry));
-            });
-        }
+        // The profiler's own messages go to this logger, under its run-time level, rather than to
+        // stderr. The logger object, not EINSUMS_LOG_*, which the build's level can compile out.
+        profile::set_diagnostic_handler([](profile::DiagnosticLevel level, std::string_view message) {
+            auto const spd_level = [level] {
+                switch (level) {
+                case profile::DiagnosticLevel::Debug:
+                    return spdlog::level::debug;
+                case profile::DiagnosticLevel::Info:
+                    return spdlog::level::info;
+                case profile::DiagnosticLevel::Warning:
+                    return spdlog::level::warn;
+                case profile::DiagnosticLevel::Error:
+                    break;
+                }
+                return spdlog::level::err;
+            }();
+            get_einsums_logger().log(spd_level, "profiler: {}", message);
+        });
     }
 #endif
 

@@ -82,7 +82,7 @@ auto SettingsStore::apply_environment(EnvironmentReader const &getenv) -> std::v
             if (auto const value = parse_bool(*raw)) {
                 into = invert ? !*value : *value;
             } else {
-                problems.push_back(fmt::format("waggle: ignoring {}=\"{}\": expected 1/0, true/false, on/off or yes/no", name, *raw));
+                problems.push_back(fmt::format("ignoring {}=\"{}\": expected 1/0, true/false, on/off or yes/no", name, *raw));
             }
         }
     };
@@ -91,7 +91,7 @@ auto SettingsStore::apply_environment(EnvironmentReader const &getenv) -> std::v
             if (auto const value = parse_int(*raw)) {
                 into = *value;
             } else {
-                problems.push_back(fmt::format("waggle: ignoring {}=\"{}\": expected an integer", name, *raw));
+                problems.push_back(fmt::format("ignoring {}=\"{}\": expected an integer", name, *raw));
             }
         }
     };
@@ -131,7 +131,7 @@ auto SettingsStore::configure(SettingsUpdate const &update) -> std::vector<std::
             current          = *wanted;
             _explicit[index] = true;
         } else if (current != *wanted) {
-            refused.push_back(fmt::format("waggle: {} was already set to {}; keeping it, not {}", name, show(current), show(*wanted)));
+            refused.push_back(fmt::format("{} was already set to {}; keeping it, not {}", name, show(current), show(*wanted)));
         }
     });
     return refused;
