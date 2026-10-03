@@ -3,11 +3,6 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Profile/Diagnostics.hpp>
-#include <Einsums/Profile/Profile.hpp>
-#include <Einsums/TypeSupport/JsonEscape.hpp>
-
 #include <fmt/color.h>
 #include <fmt/format.h>
 
@@ -19,6 +14,10 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <waggle/Config.hpp>
+#include <waggle/Detail/JsonEscape.hpp>
+#include <waggle/Diagnostics.hpp>
+#include <waggle/Waggle.hpp>
 
 #if defined(_WIN32)
 #    include <io.h>
@@ -34,24 +33,23 @@
 #    endif
 #endif
 
-#if defined(EINSUMS_HAVE_PROFILER)
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 namespace {
 
 /// Whether @p os writes to a terminal, so color and links help rather than litter a file.
 bool is_terminal(std::ostream const &os) {
-#    ifdef _WIN32
+#ifdef _WIN32
     if (&os == &std::cout)
         return _isatty(_fileno(stdout)) != 0;
     if (&os == &std::cerr)
         return _isatty(_fileno(stderr)) != 0;
-#    else
+#else
     if (&os == &std::cout)
         return isatty(fileno(stdout)) != 0;
     if (&os == &std::cerr)
         return isatty(fileno(stderr)) != 0;
-#    endif
+#endif
     return false;
 }
 
@@ -141,7 +139,7 @@ auto ns_to_ms(ns const t) -> double {
 }
 
 // Use the shared json_escape from TypeSupport.
-auto const &escape_json = ::einsums::json_escape;
+auto const &escape_json = detail::json_escape;
 
 } // namespace
 
@@ -255,11 +253,11 @@ std::string iso8601_ms(std::chrono::system_clock::time_point when) {
     auto const time = std::chrono::system_clock::to_time_t(when);
     auto const ms   = std::chrono::duration_cast<std::chrono::milliseconds>(when.time_since_epoch()) % 1000;
     std::tm    tm{};
-#    ifdef _WIN32
+#ifdef _WIN32
     localtime_s(&tm, &time);
-#    else
+#else
     localtime_r(&time, &tm);
-#    endif
+#endif
     char buf[32];
     std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
     return fmt::format("{}.{:03d}", buf, static_cast<int>(ms.count()));
@@ -392,11 +390,11 @@ auto TickClock::instance() -> TickClock const & {
 }
 
 namespace {
-#    if defined(__x86_64__) || defined(_M_X64)
+#if defined(__x86_64__) || defined(_M_X64)
 /// Whether the TSC ticks at a constant rate whatever the core's frequency and power state
 /// (CPUID leaf 0x80000007, EDX bit 8). Without that its ticks are not a clock.
 bool invariant_tsc() {
-#        if defined(_MSC_VER) && !defined(__clang__)
+#    if defined(_MSC_VER) && !defined(__clang__)
     int regs[4];
     __cpuid(regs, 0x80000000);
     if (static_cast<unsigned>(regs[0]) < 0x80000007u) {
@@ -404,21 +402,21 @@ bool invariant_tsc() {
     }
     __cpuid(regs, 0x80000007);
     return (regs[3] & (1 << 8)) != 0;
-#        else
+#    else
     unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
     if (__get_cpuid_max(0x80000000u, nullptr) < 0x80000007u) {
         return false;
     }
     __get_cpuid(0x80000007u, &eax, &ebx, &ecx, &edx);
     return (edx & (1u << 8)) != 0;
-#        endif
-}
 #    endif
+}
+#endif
 } // namespace
 
 TickClock::TickClock() {
     // Reads the counters directly: now() goes through instance() on x86, which is this object.
-#    if (defined(__aarch64__) || defined(_M_ARM64)) && !defined(_MSC_VER)
+#if (defined(__aarch64__) || defined(_M_ARM64)) && !defined(_MSC_VER)
     std::uint64_t freq = 0;
     asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
     ns_per_tick     = 1e9 / static_cast<double>(freq);
@@ -428,7 +426,7 @@ TickClock::TickClock() {
         asm volatile("mrs %0, cntvct_el0" : "=r"(v));
         return v;
     };
-#    elif defined(__x86_64__) || defined(_M_X64)
+#elif defined(__x86_64__) || defined(_M_X64)
     uses_tsc        = invariant_tsc();
     auto const read = [this] { return uses_tsc ? static_cast<std::uint64_t>(__rdtsc()) : fallback_now(); };
     if (uses_tsc) {
@@ -464,9 +462,9 @@ TickClock::TickClock() {
             std::chrono::duration<double, std::nano>(end.time - start.time).count() / static_cast<double>(end.ticks - start.ticks);
         source = "rdtsc";
     }
-#    else
+#else
     auto const read = [] { return fallback_now(); };
-#    endif
+#endif
     anchor_time  = std::chrono::steady_clock::now();
     anchor_ticks = read();
 }
@@ -721,5 +719,4 @@ void Profiler::print_node_recursive(std::ostream &os, AggNode const *n, double /
     }
 }
 
-EINSUMS_NAMESPACE_END(profile)
-#endif
+WAGGLE_NAMESPACE_END

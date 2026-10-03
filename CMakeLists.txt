@@ -1165,6 +1165,10 @@ include(Einsums_SetupApiary)
 # them so the registration function exists by the time they run.
 include(Einsums_PythonExtensionRegistry)
 
+# Waggle, the profiler Einsums shares with the other libraries in a process. A project of its own,
+# built here until it moves to its own repository; before libs/, whose Profile module links it.
+add_subdirectory(libs/Waggle)
+
 add_subdirectory(libs)
 
 # ##################################################################################################

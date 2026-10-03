@@ -30,11 +30,11 @@ EINSUMS_NAMESPACE_BEGIN(profile)
 class SpdlogSink final : public spdlog::sinks::base_sink<std::mutex> {
   protected:
     void sink_it_(spdlog::details::log_msg const &msg) override {
-        Profiler::instance().log(static_cast<int>(msg.level), msg.time,
-                                 msg.source.filename != nullptr ? std::string_view(msg.source.filename) : std::string_view{},
-                                 msg.source.line > 0 ? msg.source.line : 0,
-                                 msg.source.funcname != nullptr ? std::string_view(msg.source.funcname) : std::string_view{},
-                                 std::string_view(msg.payload.data(), msg.payload.size()));
+        waggle::Profiler::instance().log(static_cast<int>(msg.level), msg.time,
+                                         msg.source.filename != nullptr ? std::string_view(msg.source.filename) : std::string_view{},
+                                         msg.source.line > 0 ? msg.source.line : 0,
+                                         msg.source.funcname != nullptr ? std::string_view(msg.source.funcname) : std::string_view{},
+                                         std::string_view(msg.payload.data(), msg.payload.size()));
     }
 
     void flush_() override {}

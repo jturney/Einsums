@@ -5,19 +5,14 @@
 
 #pragma once
 
-#include <Einsums/Config.hpp>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
+#include <waggle/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
-#if defined(EINSUMS_HAVE_PROFILER)
-
-#    include <deque>
-#    include <mutex>
-#    include <string>
-#    include <utility>
-#    include <vector>
-
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 /// One log message or program output line, queued for the viewer.
 struct LogEntry {
@@ -53,6 +48,4 @@ class LogMessageQueue {
     std::deque<LogEntry> _queue;
 };
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

@@ -5,16 +5,15 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Profile/Event.hpp>
-#include <Einsums/Profile/RingBuffer.hpp>
-#include <Einsums/Profile/TickClock.hpp>
-
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <thread>
 #include <vector>
+#include <waggle/Clock.hpp>
+#include <waggle/Event.hpp>
+#include <waggle/RingBuffer.hpp>
 
-using namespace einsums::profile;
+using namespace waggle;
 
 TEST_CASE("RingBuffer basic push/pop", "[profiler][ringbuffer]") {
     RingBuffer<int, 16> rb;

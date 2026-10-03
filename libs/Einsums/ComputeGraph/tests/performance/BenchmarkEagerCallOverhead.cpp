@@ -113,7 +113,7 @@ EINSUMS_TEST_CASE("Bench EagerCallOverhead: what the profiler adds to one call",
     // share is what is left once the zones are paid for. On and off are interleaved batch by batch in
     // one process, so load and ordering fall on both alike, and the consumer is drained between
     // batches so the ring never fills.
-    auto      &profiler = profile::Profiler::instance();
+    auto      &profiler = waggle::Profiler::instance();
     bool const was      = profiler.enabled();
 
     auto A = create_random_tensor<double>("A", 4, 4);

@@ -302,8 +302,8 @@ namespace {
 
 /// The one call site every dataflow task's zone reports; the NAME comes from
 /// the node and is interned once per graph in Scaffold::zone_ids.
-profile::ZoneSite const &dataflow_task_site() {
-    static profile::ZoneSite const site{"dataflow task", __FILE__, __LINE__, __func__};
+waggle::ZoneSite const &dataflow_task_site() {
+    static waggle::ZoneSite const site{"dataflow task", __FILE__, __LINE__, __func__};
     return site;
 }
 
@@ -433,7 +433,7 @@ void DataflowExecutor::Scaffold::refresh_zone_ids(Graph const &graph) {
     }
     zone_ids.resize(n);
     for (size_t i = 0; i < n; i++) {
-        zone_ids[i] = profile::intern_string((*nodes)[i].label);
+        zone_ids[i] = waggle::intern_string((*nodes)[i].label);
     }
     zone_graph   = &graph;
     zone_version = graph.analysis_version();
@@ -509,7 +509,7 @@ void DataflowExecutor::Scaffold::run_node(size_t i) {
     // (execute() rethrows the first exception; partial results are unspecified
     // either way).
     if (!failed.load(std::memory_order_acquire)) {
-        std::optional<profile::ScopedZone> zone;
+        std::optional<waggle::ScopedZone> zone;
         if (recording) {
             zone.emplace(dataflow_task_site(), zone_ids[i]);
         }
@@ -554,7 +554,7 @@ void DataflowExecutor::Scaffold::run_node(size_t i) {
 void DataflowExecutor::Scaffold::run_async_start(size_t i) {
     Node &node = (*nodes)[i];
     if (!failed.load(std::memory_order_acquire)) {
-        std::optional<profile::ScopedZone> zone;
+        std::optional<waggle::ScopedZone> zone;
         if (recording) {
             zone.emplace(dataflow_task_site(), zone_ids[i]);
         }
@@ -577,7 +577,7 @@ void DataflowExecutor::Scaffold::run_async_start(size_t i) {
 void DataflowExecutor::Scaffold::run_async_finish(size_t i) {
     Node &node = (*nodes)[i];
     if (!failed.load(std::memory_order_acquire)) {
-        std::optional<profile::ScopedZone> zone;
+        std::optional<waggle::ScopedZone> zone;
         if (recording) {
             zone.emplace(dataflow_task_site(), zone_ids[i]);
         }

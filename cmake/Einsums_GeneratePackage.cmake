@@ -61,6 +61,7 @@ install(
 # which EinsumsConfig locates relative to itself so the tree stays relocatable.
 set(EINSUMS_BUILD_TREE_SPDLOG_DIR "")
 set(EINSUMS_BUILD_TREE_STRIPES_DIR "")
+set(EINSUMS_BUILD_TREE_WAGGLE_DIR "")
 configure_file(
   cmake/templates/EinsumsConfig.cmake.in
   "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/EinsumsConfig.cmake" ESCAPE_QUOTES @ONLY
@@ -78,6 +79,8 @@ if(stripes_BINARY_DIR)
 else()
   set(EINSUMS_BUILD_TREE_STRIPES_DIR "${Stripes_DIR}")
 endif()
+# Waggle is built here, and configures its package files in its binary directory.
+set(EINSUMS_BUILD_TREE_WAGGLE_DIR "${Waggle_BINARY_DIR}")
 configure_file(
   cmake/templates/EinsumsConfig.cmake.in
   "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/${EINSUMS_PACKAGE_NAME}/EinsumsConfig.cmake" ESCAPE_QUOTES

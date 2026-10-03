@@ -5,19 +5,14 @@
 
 #pragma once
 
-#include <Einsums/Config.hpp>
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
+#include <vector>
+#include <waggle/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
-#if defined(EINSUMS_HAVE_PROFILER)
-
-#    include <cstdint>
-#    include <functional>
-#    include <optional>
-#    include <string>
-#    include <vector>
-
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 /// Everything the profiler can be told, with the values it uses when nobody says otherwise.
 struct Settings {
@@ -58,7 +53,7 @@ using EnvironmentReader = std::function<std::optional<std::string>(char const *n
  * profiler, so when two set one setting to different values the first keeps it: the second is
  * reported, never applied, and no library's choice changes under it.
  */
-class EINSUMS_EXPORT SettingsStore {
+class WAGGLE_EXPORT SettingsStore {
   public:
     /// The process environment.
     static auto process_environment() -> EnvironmentReader;
@@ -85,6 +80,4 @@ class EINSUMS_EXPORT SettingsStore {
     bool _explicit[10]{}; // NOLINT(modernize-avoid-c-arrays)
 };
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

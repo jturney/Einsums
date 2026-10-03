@@ -22,7 +22,7 @@
 #include <thread>
 #include <vector>
 
-using namespace einsums::profile;
+using namespace waggle;
 
 namespace {
 std::atomic<bool> g_running{true};

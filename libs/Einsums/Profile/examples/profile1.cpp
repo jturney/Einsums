@@ -7,7 +7,7 @@
 #include <Einsums/Profile.hpp>
 #include <Einsums/Runtime.hpp>
 
-using namespace einsums::profile;
+using namespace waggle;
 
 namespace {
 void microkernel() {

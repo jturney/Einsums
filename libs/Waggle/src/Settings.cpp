@@ -3,9 +3,6 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Profile/Settings.hpp>
-
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -13,9 +10,10 @@
 #include <charconv>
 #include <cstdlib>
 #include <type_traits>
+#include <waggle/Config.hpp>
+#include <waggle/Settings.hpp>
 
-#if defined(EINSUMS_HAVE_PROFILER)
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 namespace {
 
@@ -146,5 +144,4 @@ void SettingsStore::override_settings(SettingsUpdate const &update) {
     });
 }
 
-EINSUMS_NAMESPACE_END(profile)
-#endif
+WAGGLE_NAMESPACE_END

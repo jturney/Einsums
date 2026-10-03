@@ -5,25 +5,13 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(ProfileHeaders
-    Einsums/Profile/Profile.hpp
-    Einsums/Profile/Event.hpp
-    Einsums/Profile/StringTable.hpp
-    Einsums/Profile/RingBuffer.hpp
-    Einsums/Profile/Consumer.hpp
-    Einsums/Profile/CounterBackend.hpp
-    Einsums/Profile/Server.hpp
-    Einsums/Profile/RequestHandlers.hpp
-    Einsums/Profile/Settings.hpp
-    Einsums/Profile/LogQueue.hpp
-    Einsums/Profile/Diagnostics.hpp
-    Einsums/Profile/SpdlogSink.hpp
-    Einsums/Profile/Options.hpp
-    Einsums/Profile/Recording.hpp
-    Einsums/Profile/TickClock.hpp
+# The Einsums side of the profiler: its command-line options, the spdlog sink, the recording check
+# and the einsums.profile Python surface. The profiler itself is Waggle (libs/Waggle).
+set(ProfileHeaders Einsums/Profile/Profile.hpp Einsums/Profile/Options.hpp Einsums/Profile/Recording.hpp
+                   Einsums/Profile/SpdlogSink.hpp
 )
 
-set(ProfileSources Profile.cpp Consumer.cpp CounterBackend.cpp Diagnostics.cpp Options.cpp Server.cpp Settings.cpp)
+set(ProfileSources Options.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -31,6 +19,7 @@ einsums_add_module(
   PYBIND
   SOURCES ${ProfileSources}
   HEADERS ${ProfileHeaders}
-  MODULE_DEPENDENCIES Einsums_Options Einsums_Config Einsums_Logging Einsums_Print Einsums_Preprocessor Einsums_TypeSupport
+  DEPENDENCIES Waggle::waggle
+  MODULE_DEPENDENCIES Einsums_Options Einsums_Config Einsums_Logging
   CMAKE_SUBDIRS examples tests
 )

@@ -5,22 +5,17 @@
 
 #pragma once
 
-#include <Einsums/Config.hpp>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <shared_mutex>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+#include <waggle/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
-#if defined(EINSUMS_HAVE_PROFILER)
-
-#    include <functional>
-#    include <mutex>
-#    include <optional>
-#    include <shared_mutex>
-#    include <string>
-#    include <unordered_map>
-#    include <utility>
-#    include <vector>
-
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 /// Answers a viewer request: receives the request's params as a JSON object, returns JSON.
 using RequestHandler = std::function<std::string(std::string const &params)>;
@@ -128,6 +123,4 @@ class RequestHandlers {
     std::vector<ClientInfo>                             _clients;
 };
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

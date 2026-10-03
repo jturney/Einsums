@@ -76,7 +76,7 @@ TaskPool::TaskPool() {
     // The viewer's TaskPool panel asks for these. Registered whether or not a server runs yet.
 #if defined(EINSUMS_HAVE_PROFILER)
     {
-        profile::Profiler::instance().register_handler("get_taskpool_metrics", [this](std::string const &) {
+        waggle::Profiler::instance().register_handler("get_taskpool_metrics", [this](std::string const &) {
             auto        m    = snapshot_metrics();
             std::string json = "{\"total_submitted\":" + std::to_string(m.total_submitted);
             json += ",\"total_completed\":" + std::to_string(m.total_completed);
@@ -105,7 +105,7 @@ TaskPool::TaskPool() {
 TaskPool::~TaskPool() {
 #if defined(EINSUMS_HAVE_PROFILER)
     // The handler captures this pool, and the profiler, constructed first, outlives it.
-    profile::Profiler::instance().unregister_handler("get_taskpool_metrics");
+    waggle::Profiler::instance().unregister_handler("get_taskpool_metrics");
 #endif
     shutdown();
 }
@@ -146,7 +146,7 @@ void TaskPool::worker_loop(size_t worker_id) {
     // Name the thread in the profiler.
 #if defined(EINSUMS_HAVE_PROFILER)
     try {
-        profile::Profiler::instance().set_thread_name(fmt::format("taskpool-worker-{}", worker_id));
+        waggle::Profiler::instance().set_thread_name(fmt::format("taskpool-worker-{}", worker_id));
     } catch (...) { // NOLINT
         // Profiler may not be initialized yet during early startup
     }

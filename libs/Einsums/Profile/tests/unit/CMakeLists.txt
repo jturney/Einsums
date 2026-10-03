@@ -81,3 +81,46 @@ foreach(test ${profile_tests})
 
   einsums_add_unit_test("Modules.Profile" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS})
 endforeach()
+
+# Waggle, the profiler, is its own library and must stay buildable without Einsums. Each probe is
+# compiled with the compiler's include listing on, and the gate fails if any listed header lies under
+# libs/Einsums, through any chain of includes. The probe links Waggle alone, so an Einsums include
+# would not even compile; the listing catches what a shared include path would hide. The self-test
+# probe links Einsums and includes one of its headers, and must fail, which shows the listing is read.
+if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  set(_waggle_include_listing_flag /showIncludes)
+else()
+  set(_waggle_include_listing_flag -H)
+endif()
+foreach(_probe WaggleHeaderClosureProbe WaggleHeaderClosureProbeSelfTest)
+  add_library(Profile_${_probe} OBJECT EXCLUDE_FROM_ALL ${_probe}.cpp)
+  target_link_libraries(Profile_${_probe} PRIVATE Waggle::waggle)
+  if(_probe STREQUAL "WaggleHeaderClosureProbeSelfTest")
+    target_link_libraries(Profile_${_probe} PRIVATE Einsums::Einsums)
+  endif()
+  target_compile_options(Profile_${_probe} PRIVATE ${_waggle_include_listing_flag})
+  set_target_properties(Profile_${_probe} PROPERTIES FOLDER "Tests/Unit/Modules/Profile")
+endforeach()
+foreach(_gate WaggleHeaderClosure WaggleHeaderClosureSelfTest)
+  if(_gate STREQUAL "WaggleHeaderClosure")
+    set(_probe WaggleHeaderClosureProbe)
+  else()
+    set(_probe WaggleHeaderClosureProbeSelfTest)
+  endif()
+  # Only include-listing lines (". path" from -H, "including file: path" from /showIncludes), so
+  # the build's own status lines, which name this directory, never match.
+  add_test(
+    NAME Tests.Unit.Modules.Profile.${_gate}
+    COMMAND
+      ${CMAKE_COMMAND} "-DOBJECT=$<TARGET_OBJECTS:Profile_${_probe}>" "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
+      "-DTARGET=Profile_${_probe}" "-DFORBID=(\\.|including file:) [^\n]*libs[/\\\\]Einsums[/\\\\]"
+      "-DEXPECT=waggle[/\\\\]Waggle\\.hpp" "-DCONFIG=$<CONFIG>" -P ${PROJECT_SOURCE_DIR}/cmake/scripts/check_header_closure.cmake
+  )
+  # A build of the shared tree, like the header compile tests, so it takes their lock.
+  set_tests_properties(Tests.Unit.Modules.Profile.${_gate} PROPERTIES LABELS "UNIT_ONLY" RESOURCE_LOCK "einsums_build_tree")
+endforeach()
+# The self-test passes only on the gate's own verdict: a build failure or a missing listing also
+# exits nonzero, and WILL_FAIL would count either as the gate working.
+set_tests_properties(
+  Tests.Unit.Modules.Profile.WaggleHeaderClosureSelfTest PROPERTIES PASS_REGULAR_EXPRESSION "FORBIDDEN_HEADER_REACHED"
+)

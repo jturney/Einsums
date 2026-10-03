@@ -3,22 +3,20 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Profile/CounterBackend.hpp>
+#include <waggle/Config.hpp>
+#include <waggle/CounterBackend.hpp>
 
-#if defined(EINSUMS_HAVE_PROFILER)
+#ifdef __linux__
+#    include <cstring>
+#    include <linux/perf_event.h>
+#    include <sys/ioctl.h>
+#    include <sys/syscall.h>
+#    include <unistd.h>
+#endif
 
-#    ifdef __linux__
-#        include <cstring>
-#        include <linux/perf_event.h>
-#        include <sys/ioctl.h>
-#        include <sys/syscall.h>
-#        include <unistd.h>
-#    endif
+WAGGLE_NAMESPACE_BEGIN
 
-EINSUMS_NAMESPACE_BEGIN(profile)
-
-#    ifdef __linux__
+#ifdef __linux__
 
 static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu, int group_fd, unsigned long flags) {
     return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
@@ -119,15 +117,13 @@ auto get_counter_backend() -> CounterBackend & {
     return backend;
 }
 
-#    else // not __linux__
+#else // not __linux__
 
 auto get_counter_backend() -> CounterBackend & {
     static NoopCounterBackend backend;
     return backend;
 }
 
-#    endif
-
-EINSUMS_NAMESPACE_END(profile)
-
 #endif
+
+WAGGLE_NAMESPACE_END

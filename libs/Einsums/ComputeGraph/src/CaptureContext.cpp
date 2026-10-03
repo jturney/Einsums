@@ -27,7 +27,7 @@ void CaptureContext::begin_capture(Graph &graph) {
     // Read once, so end_capture closes exactly the zone this opened.
     _recording = profile::recording();
     if (_recording) {
-        profile::Profiler::instance().push(fmt::format("ComputeGraph::capture({})", graph.name()));
+        waggle::Profiler::instance().push(fmt::format("ComputeGraph::capture({})", graph.name()));
     }
     _graph = &graph;
     _ptr_to_id.clear();
@@ -47,14 +47,14 @@ void CaptureContext::end_capture() {
     _ptr_to_id.clear();
     bool const recording = std::exchange(_recording, false);
     if (recording) {
-        profile::Profiler::instance().pop();
+        waggle::Profiler::instance().pop();
     }
 
     g->topological_sort();
     g->validate_shapes_at_capture();
     if (recording) {
-        profile::annotate("num_nodes", static_cast<int64_t>(g->num_nodes()));
-        profile::annotate("num_tensors", static_cast<int64_t>(g->num_tensors()));
+        waggle::annotate("num_nodes", static_cast<int64_t>(g->num_nodes()));
+        waggle::annotate("num_tensors", static_cast<int64_t>(g->num_tensors()));
     }
     register_graph(g);
 }

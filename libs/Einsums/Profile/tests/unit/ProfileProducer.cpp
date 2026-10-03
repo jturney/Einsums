@@ -11,7 +11,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/Profile/TickClock.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -19,8 +18,9 @@
 #include <cstdint>
 #include <thread>
 #include <vector>
+#include <waggle/Clock.hpp>
 
-using namespace einsums::profile;
+using namespace waggle;
 
 namespace {
 

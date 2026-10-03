@@ -203,7 +203,7 @@ inline void publish_benchmark_result(char const *label, char const *metric, int 
 
     // 2. Send structured result to profiler server
 #if defined(EINSUMS_HAVE_PROFILER)
-    auto &prof = profile::Profiler::instance();
+    auto &prof = waggle::Profiler::instance();
     auto *srv  = prof.server();
     if (srv) {
         // Collect annotations from the full zone stack
@@ -214,7 +214,7 @@ inline void publish_benchmark_result(char const *label, char const *metric, int 
             consumer->flush();
 
             auto lock   = consumer->lock_shared();
-            auto tid    = profile::Profiler::current_thread_id();
+            auto tid    = waggle::Profiler::current_thread_id();
             auto merged = consumer->collect_zone_annotations(tid);
 
             bool first = true;

@@ -5,24 +5,19 @@
 
 #pragma once
 
-#include <Einsums/Config.hpp>
+#include <chrono>
+#include <cstdint>
+#include <waggle/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
-#if defined(EINSUMS_HAVE_PROFILER)
-
-#    include <chrono>
-#    include <cstdint>
-
-#    if (defined(__x86_64__) || defined(_M_X64))
-#        if defined(_MSC_VER) && !defined(__clang__)
-#            include <intrin.h>
-#        else
-#            include <x86intrin.h>
-#        endif
+#if (defined(__x86_64__) || defined(_M_X64))
+#    if defined(_MSC_VER) && !defined(__clang__)
+#        include <intrin.h>
+#    else
+#        include <x86intrin.h>
 #    endif
+#endif
 
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 /**
  * @brief The clock profiling events are stamped with: the CPU's own counter, read raw.
@@ -38,21 +33,21 @@ EINSUMS_NAMESPACE_BEGIN(profile)
  *
  * Ticks are comparable only with ticks from the same process.
  */
-struct EINSUMS_EXPORT TickClock {
+struct WAGGLE_EXPORT TickClock {
     /// The counter as it stands, in ticks. Monotonic; a few nanoseconds or less to read.
     static inline std::uint64_t now() noexcept {
-#    if (defined(__aarch64__) || defined(_M_ARM64)) && !defined(_MSC_VER)
+#if (defined(__aarch64__) || defined(_M_ARM64)) && !defined(_MSC_VER)
         std::uint64_t v;
         asm volatile("mrs %0, cntvct_el0" : "=r"(v));
         return v;
-#    elif defined(__x86_64__) || defined(_M_X64)
+#elif defined(__x86_64__) || defined(_M_X64)
         if (instance().uses_tsc) {
             return __rdtsc();
         }
         return fallback_now();
-#    else
+#else
         return fallback_now();
-#    endif
+#endif
     }
 
     /// The steady_clock instant @p ticks corresponds to.
@@ -86,6 +81,4 @@ struct EINSUMS_EXPORT TickClock {
     TickClock();
 };
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

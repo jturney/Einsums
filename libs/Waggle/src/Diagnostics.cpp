@@ -3,14 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Profile/Diagnostics.hpp>
-
 #include <cstdio>
 #include <mutex>
+#include <waggle/Config.hpp>
+#include <waggle/Diagnostics.hpp>
 
-#if defined(EINSUMS_HAVE_PROFILER)
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 namespace {
 
@@ -51,5 +49,4 @@ void diagnostic(DiagnosticLevel level, std::string_view message) {
     }
 }
 
-EINSUMS_NAMESPACE_END(profile)
-#endif
+WAGGLE_NAMESPACE_END

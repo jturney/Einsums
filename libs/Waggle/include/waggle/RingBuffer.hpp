@@ -5,17 +5,12 @@
 
 #pragma once
 
-#include <Einsums/Config.hpp>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <waggle/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
-#if defined(EINSUMS_HAVE_PROFILER)
-
-#    include <atomic>
-#    include <cstddef>
-#    include <cstdint>
-
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 /// Single-producer, single-consumer ring buffer that never blocks the producer.
 ///
@@ -142,6 +137,4 @@ class RingBuffer {
     alignas(cache_line) T _buffer[Capacity]; // NOLINT(modernize-avoid-c-arrays)
 };
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

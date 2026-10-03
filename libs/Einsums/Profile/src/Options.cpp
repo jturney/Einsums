@@ -18,7 +18,7 @@ EINSUMS_NAMESPACE_BEGIN()
 
 void configure_profiler_from_options() {
 #if defined(EINSUMS_HAVE_PROFILER)
-    profile::SettingsUpdate update;
+    waggle::SettingsUpdate update;
     if (auto const disable = config::try_get(option::ProfileDisable)) {
         update.record = !*disable;
     }
@@ -32,7 +32,7 @@ void configure_profiler_from_options() {
     update.wait_for_viewer       = config::try_get(option::ProfileWaitForViewer);
     update.max_distinct_children = config::try_get(option::ProfileMaxDistinctChildren);
 
-    auto &profiler = profile::Profiler::instance();
+    auto &profiler = waggle::Profiler::instance();
     profiler.configure(update);
     // EINSUMS_BUILD_TYPE is a bare identifier (release, debug), so stringify it.
 #    define EINSUMS_PROFILE_STRINGIFY_(x) #x

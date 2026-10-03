@@ -5,35 +5,29 @@
 
 #pragma once
 
-#include <Einsums/Config.hpp>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <functional>
+#include <limits>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <waggle/Config.hpp>
+#include <waggle/CounterBackend.hpp>
+#include <waggle/Detail/InsertionOrderedMap.hpp>
+#include <waggle/Event.hpp>
+#include <waggle/RingBuffer.hpp>
+#include <waggle/StringTable.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
-#if defined(EINSUMS_HAVE_PROFILER)
-
-#    include <Einsums/Profile/CounterBackend.hpp>
-#    include <Einsums/Profile/Event.hpp>
-#    include <Einsums/Profile/RingBuffer.hpp>
-#    include <Einsums/Profile/StringTable.hpp>
-#    include <Einsums/TypeSupport/InsertionOrderedMap.hpp>
-
-#    include <atomic>
-#    include <chrono>
-#    include <condition_variable>
-#    include <cstdint>
-#    include <functional>
-#    include <limits>
-#    include <map>
-#    include <memory>
-#    include <mutex>
-#    include <shared_mutex>
-#    include <string>
-#    include <thread>
-#    include <unordered_map>
-#    include <unordered_set>
-#    include <vector>
-
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 /// Event ring buffer capacity per thread (64K entries).
 static constexpr size_t kRingBufferCapacity = 65536;
@@ -67,14 +61,14 @@ struct AggNode {
     std::map<std::string, uint64_t> counters_max;
 
     // Structured annotations (insertion-ordered so display matches source order)
-    InsertionOrderedMap<std::string, std::string> annotations;
+    detail::InsertionOrderedMap<std::string, std::string> annotations;
     struct NumericAnnotation {
         double   total{0};
         double   min_val{std::numeric_limits<double>::max()};
         double   max_val{std::numeric_limits<double>::lowest()};
         uint64_t count{0};
     };
-    InsertionOrderedMap<std::string, NumericAnnotation> numeric_annotations;
+    detail::InsertionOrderedMap<std::string, NumericAnnotation> numeric_annotations;
 
     // Memory tracking
     uint64_t mem_alloc_count{0};
@@ -89,7 +83,7 @@ struct AggNode {
     uint64_t             histogram[kHistogramBuckets]{}; // NOLINT(modernize-avoid-c-arrays)
 
     /// Children keyed by interned name id, so aggregation never resolves or hashes a string.
-    InsertionOrderedMap<uint32_t, std::unique_ptr<AggNode>> children;
+    detail::InsertionOrderedMap<uint32_t, std::unique_ptr<AggNode>> children;
 
     /// Set only on a parent's "(other)" node: the ids of the names folded into it once the parent
     /// held Settings::max_distinct_children named children. Its size is the node's "distinct"
@@ -128,12 +122,12 @@ struct AggNode {
 
     /// Fold one exclusive duration into this node's statistics: count, total, mean and variance,
     /// min/max and the log2 histogram. Exported so tests can feed it durations directly.
-    EINSUMS_EXPORT void record_exclusive(ns exclusive);
+    WAGGLE_EXPORT void record_exclusive(ns exclusive);
 };
 
 /// The time spent in @p node and everything below it: its exclusive time plus its descendants'.
 /// Walks with an explicit stack, as recursion overflowed the stack under TSan on deep trees.
-EINSUMS_EXPORT auto inclusive_time(AggNode const &node) -> ns;
+WAGGLE_EXPORT auto inclusive_time(AggNode const &node) -> ns;
 
 // ---------------------- Timeline event for Gantt chart ----------------------
 struct TimelineEvent {
@@ -171,7 +165,7 @@ struct ThreadRegistration {
 };
 
 // ---------------------- Consumer thread ----------------------
-class EINSUMS_EXPORT Consumer {
+class WAGGLE_EXPORT Consumer {
   public:
     Consumer(StringTable &strings);
     ~Consumer();
@@ -238,9 +232,9 @@ class EINSUMS_EXPORT Consumer {
     /// Collect all annotations from the current zone and all ancestor zones for the given thread.
     /// Child annotations override parent annotations with the same key.
     /// Caller must hold shared lock.
-    auto collect_zone_annotations(uint32_t thread_id) const -> InsertionOrderedMap<std::string, std::string> {
-        InsertionOrderedMap<std::string, std::string> merged;
-        auto                                          it = _threads.find(thread_id);
+    auto collect_zone_annotations(uint32_t thread_id) const -> detail::InsertionOrderedMap<std::string, std::string> {
+        detail::InsertionOrderedMap<std::string, std::string> merged;
+        auto                                                  it = _threads.find(thread_id);
         if (it == _threads.end())
             return merged;
 
@@ -321,6 +315,4 @@ class EINSUMS_EXPORT Consumer {
     TimePoint                                 _program_start{std::chrono::steady_clock::now()};
 };
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

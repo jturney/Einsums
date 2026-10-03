@@ -16,8 +16,6 @@
 /// throughput instead of the producer's entry cost, and every case converges on the same number.
 
 #include <Einsums/Performance.hpp>
-#include <Einsums/Profile/Consumer.hpp>
-#include <Einsums/Profile/CounterBackend.hpp>
 #include <Einsums/Profile/Profile.hpp>
 
 #include <fmt/format.h>
@@ -32,6 +30,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <waggle/Consumer.hpp>
+#include <waggle/CounterBackend.hpp>
 
 #if defined(__APPLE__)
 #    include <mach/mach_time.h>
@@ -67,7 +67,7 @@ struct fmt::formatter<Unkeyed> : fmt::formatter<std::string_view> {
 };
 
 using namespace einsums;
-namespace prof = einsums::profile;
+namespace prof = waggle;
 
 namespace {
 

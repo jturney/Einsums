@@ -101,7 +101,7 @@ void Graph::print_timing_report(std::ostream &os) const {
 }
 
 void Graph::rebuild_profile_strings() {
-    _exec_zone_id = profile::intern_string(fmt::format("ComputeGraph::execute({})", _name));
+    _exec_zone_id = waggle::intern_string(fmt::format("ComputeGraph::execute({})", _name));
     _profile_strings.clear();
     _profile_strings.resize(_nodes.size());
 
@@ -109,12 +109,12 @@ void Graph::rebuild_profile_strings() {
         auto const         &node  = _nodes[idx];
         NodeProfileStrings &entry = _profile_strings[idx];
         entry.node_id             = node.id;
-        entry.zone_id             = profile::intern_string(fmt::format("graph:{}/{}", _name, node.label));
+        entry.zone_id             = waggle::intern_string(fmt::format("graph:{}/{}", _name, node.label));
 
         auto text = [&entry](std::string_view key, std::string_view value) {
-            entry.texts.emplace_back(profile::intern_string(key), profile::intern_string(value));
+            entry.texts.emplace_back(waggle::intern_string(key), waggle::intern_string(value));
         };
-        auto number = [&entry](std::string_view key, int64_t value) { entry.numbers.emplace_back(profile::intern_string(key), value); };
+        auto number = [&entry](std::string_view key, int64_t value) { entry.numbers.emplace_back(waggle::intern_string(key), value); };
 
         if (auto const *tdesc = node.op_data.get_if<TransferDescriptor>()) {
             number("transfer_bytes", static_cast<int64_t>(tdesc->size_bytes));
@@ -129,7 +129,7 @@ void Graph::rebuild_profile_strings() {
                 text("b_indices", fmt::format("{}", fmt::join(lists.b, ",")));
             }
         } else if (auto const *sdesc = node.op_data.get_if<ScaleDescriptor>()) {
-            entry.reals.emplace_back(profile::intern_string("scale_factor"), as_real<double>(sdesc->factor));
+            entry.reals.emplace_back(waggle::intern_string("scale_factor"), as_real<double>(sdesc->factor));
         } else if (auto const *cdesc = node.op_data.get_if<CommDescriptor>()) {
             number("comm_bytes", static_cast<int64_t>(cdesc->size_bytes));
             number("comm_tensor", static_cast<int64_t>(cdesc->tensor_id));
@@ -469,7 +469,7 @@ void register_graph(Graph *graph) {
     // the two in the other order here could deadlock.
     static std::once_flag profiler_wired;
     std::call_once(profiler_wired, [] {
-        auto &prof = profile::Profiler::instance();
+        auto &prof = waggle::Profiler::instance();
         prof.register_handler("get_compute_graphs", [](std::string const &) { return registered_graphs_json(); });
         prof.register_session_section("compute_graphs", [] {
             // The bare array of graphs, as session files have always held it.
@@ -513,7 +513,7 @@ std::vector<std::pair<std::string, std::string>> g_cached_graph_jsons;
 /// post-mortem record of graphs that died before it connected.
 bool graph_json_cache_wanted() {
 #if defined(EINSUMS_HAVE_PROFILER)
-    auto &prof = profile::Profiler::instance();
+    auto &prof = waggle::Profiler::instance();
     if (!prof.enabled())
         return false;
     // Read the settings each time rather than latching them: a graph dies

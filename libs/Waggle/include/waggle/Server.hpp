@@ -5,36 +5,30 @@
 
 #pragma once
 
-#include <Einsums/Config.hpp>
+#include <atomic>
+#include <cstdint>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+#include <waggle/Config.hpp>
+#include <waggle/Consumer.hpp>
+#include <waggle/LogQueue.hpp>
+#include <waggle/RequestHandlers.hpp>
+#include <waggle/StringTable.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
+#ifdef __APPLE__
+#    include <dns_sd.h>
+#endif
 
-#if defined(EINSUMS_HAVE_PROFILER)
-
-#    include <Einsums/Profile/Consumer.hpp>
-#    include <Einsums/Profile/LogQueue.hpp>
-#    include <Einsums/Profile/RequestHandlers.hpp>
-#    include <Einsums/Profile/StringTable.hpp>
-
-#    include <atomic>
-#    include <cstdint>
-#    include <deque>
-#    include <mutex>
-#    include <string>
-#    include <string_view>
-#    include <unordered_map>
-#    include <vector>
-
-#    ifdef __APPLE__
-#        include <dns_sd.h>
-#    endif
-
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 /// TCP server that streams profiling data as JSON Lines to connected clients.
 /// Binds to localhost by default, accepts up to 4 simultaneous clients.
 /// On macOS, advertises via Bonjour/mDNS as "_einsums-profile._tcp".
-class EINSUMS_EXPORT Server {
+class WAGGLE_EXPORT Server {
   public:
     /// @param consumer  The aggregated trees and timeline the server streams.
     /// @param strings   The string table the trees' ids resolve through.
@@ -132,11 +126,9 @@ class EINSUMS_EXPORT Server {
     std::mutex              _published_mutex;
     std::deque<std::string> _published;
 
-#    ifdef __APPLE__
+#ifdef __APPLE__
     DNSServiceRef _mdns_ref = nullptr;
-#    endif
+#endif
 };
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

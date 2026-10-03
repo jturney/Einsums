@@ -3,52 +3,47 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Profile/Server.hpp>
+#include <fmt/format.h>
 
-#if defined(EINSUMS_HAVE_PROFILER)
+#include <waggle/Config.hpp>
+#include <waggle/Detail/JsonEscape.hpp>
+#include <waggle/Diagnostics.hpp>
+#include <waggle/Server.hpp>
 
-#    include <Einsums/Config.hpp>
-
-#    include <Einsums/Profile/Diagnostics.hpp>
-#    include <Einsums/TypeSupport/JsonEscape.hpp>
-
-#    include <fmt/format.h>
-
-#    ifndef _WIN32
-#        include <arpa/inet.h>
-#        include <fcntl.h>
-#        include <netinet/in.h>
-#        include <poll.h>
-#        include <sys/socket.h>
-#        include <unistd.h>
-#    else
-#        ifndef NOMINMAX
-#            define NOMINMAX
-#        endif
-#        include <winsock2.h>
-#        include <ws2tcpip.h>
-#        pragma comment(lib, "ws2_32.lib")
+#ifndef _WIN32
+#    include <arpa/inet.h>
+#    include <fcntl.h>
+#    include <netinet/in.h>
+#    include <poll.h>
+#    include <sys/socket.h>
+#    include <unistd.h>
+#else
+#    ifndef NOMINMAX
+#        define NOMINMAX
 #    endif
+#    include <winsock2.h>
+#    include <ws2tcpip.h>
+#    pragma comment(lib, "ws2_32.lib")
+#endif
 
-#    ifdef __APPLE__
-#        include <mach-o/dyld.h>
-#    elif defined(__linux__)
-#        include <linux/limits.h>
-#    endif
+#ifdef __APPLE__
+#    include <mach-o/dyld.h>
+#elif defined(__linux__)
+#    include <linux/limits.h>
+#endif
 
-#    include <chrono>
-#    include <cmath>
-#    include <ctime>
-#    include <filesystem>
-#    include <fstream>
-#    include <limits>
+#include <chrono>
+#include <cmath>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 namespace {
 
-#    ifndef _WIN32
+#ifndef _WIN32
 void set_nonblocking(int fd) {
     int const flags = fcntl(fd, F_GETFL, 0);
     if (flags >= 0)
@@ -58,7 +53,7 @@ void set_nonblocking(int fd) {
 void close_socket(int fd) {
     ::close(fd);
 }
-#    else
+#else
 void set_nonblocking(SOCKET fd) {
     u_long mode = 1;
     ioctlsocket(fd, FIONBIO, &mode);
@@ -67,10 +62,10 @@ void set_nonblocking(SOCKET fd) {
 void close_socket(SOCKET fd) {
     closesocket(fd);
 }
-#    endif
+#endif
 
 // Use the shared json_escape from TypeSupport, aliased to keep call sites unchanged.
-auto const &escape_json_str = ::einsums::json_escape;
+auto const &escape_json_str = detail::json_escape;
 
 /// @p clients as a JSON array of objects.
 std::string clients_json(std::vector<ClientInfo> const &clients) {
@@ -88,7 +83,7 @@ std::string clients_json(std::vector<ClientInfo> const &clients) {
 
 // TODO: Don't we already have this in RuntimeConfiguration?
 auto get_executable_path() -> std::string {
-#    ifdef __APPLE__
+#ifdef __APPLE__
     // NOLINTNEXTLINE(modernize-avoid-c-arrays)
     char     path[1024];
     uint32_t size = sizeof(path);
@@ -101,44 +96,44 @@ auto get_executable_path() -> std::string {
         }
         return {path};
     }
-#    elif defined(__linux__)
+#elif defined(__linux__)
     char    path[PATH_MAX];
     ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
     if (len > 0) {
         path[len] = '\0';
         return std::string(path);
     }
-#    elif defined(_WIN32)
+#elif defined(_WIN32)
     char path[MAX_PATH];
     if (GetModuleFileNameA(nullptr, path, MAX_PATH) > 0) {
         return std::string(path);
     }
-#    endif
+#endif
     return "";
 }
 
 // TODO: Don't we already have this in RuntimeConfiguration?
 auto get_executable_name() -> std::string {
-#    ifdef __APPLE__
+#ifdef __APPLE__
     // NOLINTNEXTLINE(modernize-avoid-c-arrays)
     char     path[1024];
     uint32_t size = sizeof(path);
     if (_NSGetExecutablePath(path, &size) == 0) {
         return std::filesystem::path(path).filename().string();
     }
-#    elif defined(__linux__)
+#elif defined(__linux__)
     char    path[PATH_MAX];
     ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
     if (len > 0) {
         path[len] = '\0';
         return std::filesystem::path(path).filename().string();
     }
-#    elif defined(_WIN32)
+#elif defined(_WIN32)
     char path[MAX_PATH];
     if (GetModuleFileNameA(nullptr, path, MAX_PATH) > 0) {
         return std::filesystem::path(path).filename().string();
     }
-#    endif
+#endif
     return "unknown";
 }
 
@@ -146,11 +141,11 @@ auto get_start_time_iso() -> std::string {
     auto        now = std::chrono::system_clock::now();
     std::time_t tt  = std::chrono::system_clock::to_time_t(now);
     std::tm     tm{};
-#    ifdef _WIN32
+#ifdef _WIN32
     localtime_s(&tm, &tt);
-#    else
+#else
     localtime_r(&tt, &tm);
-#    endif
+#endif
     // NOLINTNEXTLINE(modernize-avoid-c-arrays)
     char buf[64];
     std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
@@ -182,7 +177,7 @@ auto ns_to_ms(ns t) -> double {
 
 Server::Server(Consumer &consumer, StringTable &strings, RequestHandlers const &handlers, std::string const &bind_addr, uint16_t port)
     : _consumer(consumer), _strings(strings), _handlers(handlers) {
-#    ifndef _WIN32
+#ifndef _WIN32
     _listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (_listen_fd < 0) {
         diagnostic(DiagnosticLevel::Warning, "Profile server: failed to create socket");
@@ -231,10 +226,10 @@ Server::Server(Consumer &consumer, StringTable &strings, RequestHandlers const &
     diagnostic(DiagnosticLevel::Info, fmt::format("Profile server listening on {}:{}", bind_addr, bound_port));
 
     register_mdns(bound_port);
-#    else
+#else
     diagnostic(DiagnosticLevel::Warning,
                fmt::format("Profile server: not supported on Windows; {}:{} will not be served", bind_addr, port));
-#    endif
+#endif
 }
 
 auto Server::has_client() const -> bool {
@@ -313,7 +308,7 @@ void Server::tick() {
 }
 
 void Server::accept_clients() {
-#    ifndef _WIN32
+#ifndef _WIN32
     while (static_cast<int>(_client_fds.size()) < kMaxClients) {
         struct sockaddr_in addr{};
         socklen_t          len = sizeof(addr);
@@ -322,10 +317,10 @@ void Server::accept_clients() {
             break; // no pending connections
 
         set_nonblocking(fd);
-#        ifdef __APPLE__
+#    ifdef __APPLE__
         int val = 1;
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &val, sizeof(val));
-#        endif
+#    endif
         _client_fds.push_back(fd);
         _has_client.store(true, std::memory_order_relaxed);
         diagnostic(DiagnosticLevel::Info, fmt::format("Profile server: client connected (fd={})", fd));
@@ -333,7 +328,7 @@ void Server::accept_clients() {
         // Send initial snapshot
         send_snapshot_to(fd);
     }
-#    endif
+#endif
 }
 
 void Server::write_node_json(std::string &out, AggNode const &n) { // NOLINT
@@ -481,11 +476,11 @@ void Server::send_snapshot_to(int fd) {
 
     // Meta line
     msg += R"({"type":"meta","pid":)";
-#    ifndef _WIN32
+#ifndef _WIN32
     msg += std::to_string(getpid());
-#    else
+#else
     msg += std::to_string(GetCurrentProcessId());
-#    endif
+#endif
 
     msg += R"(,"executable":")" + escape_json_str(s_executable_name) + "\"";
     msg += R"(,"executable_path":")" + escape_json_str(s_executable_path) + "\"";
@@ -552,10 +547,10 @@ void Server::send_snapshot_to(int fd) {
         msg += R"(,"message":")" + escape_json_str(entry.message) + "\"}\n";
     }
 
-#    ifndef _WIN32
+#ifndef _WIN32
     // Best-effort send; drop if client can't keep up
     ::send(fd, msg.data(), msg.size(), 0);
-#    endif
+#endif
 }
 
 void Server::write_timeline_json(std::string &out) {
@@ -641,7 +636,7 @@ void Server::send_updates() {
     // Send to all clients, remove disconnected ones
     std::vector<int> alive;
     for (int fd : _client_fds) {
-#    ifndef _WIN32
+#ifndef _WIN32
         ssize_t const sent = ::send(fd, msg.data(), msg.size(), 0);
         if (sent > 0) {
             alive.push_back(fd);
@@ -649,7 +644,7 @@ void Server::send_updates() {
             diagnostic(DiagnosticLevel::Info, fmt::format("Profile server: client disconnected (fd={})", fd));
             close_socket(fd);
         }
-#    endif
+#endif
     }
     _client_fds = std::move(alive);
     _has_client.store(!_client_fds.empty(), std::memory_order_relaxed);
@@ -676,7 +671,7 @@ void Server::publish(std::string_view type, std::string_view json_object) {
 }
 
 void Server::recv_requests() {
-#    ifndef _WIN32
+#ifndef _WIN32
     for (int const fd : _client_fds) {
         // NOLINTNEXTLINE(modernize-avoid-c-arrays)
         char          buf[4096];
@@ -712,11 +707,11 @@ void Server::recv_requests() {
             ++it;
         }
     }
-#    endif
+#endif
 }
 
 void Server::process_request(int fd, std::string const &line) {
-#    ifndef _WIN32
+#ifndef _WIN32
     // Requests are {"type":"request","id":"...","method":"...","params":{...}}, parsed by string
     // extraction (no JSON library).
 
@@ -811,14 +806,14 @@ void Server::process_request(int fd, std::string const &line) {
     }
 
     ::send(fd, response.data(), response.size(), 0);
-#    else
+#else
     (void)fd;
     (void)line;
-#    endif
+#endif
 }
 
 void Server::register_mdns(uint16_t port) {
-#    ifdef __APPLE__
+#ifdef __APPLE__
     // Build TXT record with executable name, PID, and start time
     TXTRecordRef txt;
     TXTRecordCreate(&txt, 0, nullptr);
@@ -841,19 +836,19 @@ void Server::register_mdns(uint16_t port) {
         diagnostic(DiagnosticLevel::Warning, fmt::format("Profile server: mDNS registration failed (error {})", static_cast<int>(err)));
         _mdns_ref = nullptr;
     }
-#    else
+#else
     (void)port;
-#    endif
+#endif
 }
 
 void Server::unregister_mdns() {
-#    ifdef __APPLE__
+#ifdef __APPLE__
     if (_mdns_ref) {
         DNSServiceRefDeallocate(_mdns_ref);
         _mdns_ref = nullptr;
         diagnostic(DiagnosticLevel::Info, "Profile server: unregistered mDNS service");
     }
-#    endif
+#endif
 }
 
 void Server::export_session(std::string const &path, std::string const &label,
@@ -878,11 +873,11 @@ void Server::export_session(std::string const &path, std::string const &label,
     // Meta
     json += "  \"meta\": {\n";
     json += "    \"pid\": ";
-#    ifndef _WIN32
+#ifndef _WIN32
     json += std::to_string(getpid());
-#    else
+#else
     json += std::to_string(GetCurrentProcessId());
-#    endif
+#endif
     json += ",\n";
     json += R"(    "hostname": ")" + escape_json_str(get_hostname()) + "\",\n";
     json += R"(    "executable": ")" + escape_json_str(s_executable_name) + "\",\n";
@@ -989,6 +984,4 @@ void Server::export_session(std::string const &path, std::string const &label,
     }
 }
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

@@ -5,16 +5,11 @@
 
 #pragma once
 
-#include <Einsums/Config.hpp>
+#include <chrono>
+#include <cstdint>
+#include <waggle/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
-#if defined(EINSUMS_HAVE_PROFILER)
-
-#    include <chrono>
-#    include <cstdint>
-
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 using Clock     = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
@@ -84,6 +79,4 @@ struct alignas(64) Event {
 
 static_assert(sizeof(Event) == 64, "an Event is meant to fill one cache line exactly");
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

@@ -14,7 +14,6 @@
 #include <Einsums/Logging.hpp>
 #include <Einsums/Options/Declare.hpp>
 #include <Einsums/Profile.hpp>
-#include <Einsums/Profile/Server.hpp>
 #include <Einsums/Runtime/Detail/InitLogging.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/Options.hpp>
@@ -29,6 +28,7 @@
 #include <spdlog/spdlog.h>
 #include <tuple>
 #include <unordered_map>
+#include <waggle/Server.hpp>
 
 EINSUMS_NAMESPACE_BEGIN()
 

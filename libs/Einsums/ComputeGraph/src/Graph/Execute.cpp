@@ -64,18 +64,18 @@ namespace {
 // pre-interned from _profile_strings; a site supplies the file, function and line, the same every
 // time. Accessors, not function-local statics in execute(): a static there is built, and the
 // profiler with it, even by a replay that records nothing.
-profile::ZoneSite const &graph_exec_site() {
-    static profile::ZoneSite const site{"ComputeGraph::execute", __FILE__, __LINE__, "execute"};
+waggle::ZoneSite const &graph_exec_site() {
+    static waggle::ZoneSite const site{"ComputeGraph::execute", __FILE__, __LINE__, "execute"};
     return site;
 }
 
-profile::ZoneSite const &graph_node_site() {
-    static profile::ZoneSite const site{"ComputeGraph::node", __FILE__, __LINE__, "execute"};
+waggle::ZoneSite const &graph_node_site() {
+    static waggle::ZoneSite const site{"ComputeGraph::node", __FILE__, __LINE__, "execute"};
     return site;
 }
 
-profile::ZoneSite const &graph_executor_site() {
-    static profile::ZoneSite const site{"ComputeGraph::execute(executor)", __FILE__, __LINE__, "execute"};
+waggle::ZoneSite const &graph_executor_site() {
+    static waggle::ZoneSite const site{"ComputeGraph::execute(executor)", __FILE__, __LINE__, "execute"};
     return site;
 }
 
@@ -178,7 +178,7 @@ void Graph::execute() {
 
     // RAII zones (see execute(Executor&)): a node that throws must still pop its
     // profiler zone, or the tree depth grows without bound across failed runs.
-    std::optional<profile::ScopedZone> exec_zone;
+    std::optional<waggle::ScopedZone> exec_zone;
     if (recording) {
         exec_zone.emplace(graph_exec_site(), _exec_zone_id);
     }
@@ -200,7 +200,7 @@ void Graph::execute() {
     for (size_t idx = 0; idx < _nodes.size(); idx++) {
         Node &node = _nodes[idx];
 
-        std::optional<profile::ScopedZone> node_zone;
+        std::optional<waggle::ScopedZone> node_zone;
         if (recording) {
             NodeProfileStrings const &ps =
                 (idx < _profile_strings.size() && _profile_strings[idx].node_id == node.id) ? _profile_strings[idx] : kEmptyEntry;
@@ -212,17 +212,17 @@ void Graph::execute() {
             }
 
             // These two are static strings, interned once per process.
-            profile::annotate("op_kind", op_kind_name(node.kind));
-            profile::annotate("device", node.target == Target::GPU ? "GPU" : "CPU");
+            waggle::annotate("op_kind", op_kind_name(node.kind));
+            waggle::annotate("device", node.target == Target::GPU ? "GPU" : "CPU");
 
             for (auto const &[key, value] : ps.texts) {
-                profile::annotate_interned(key, value);
+                waggle::annotate_interned(key, value);
             }
             for (auto const &[key, value] : ps.numbers) {
-                profile::annotate_interned(key, value);
+                waggle::annotate_interned(key, value);
             }
             for (auto const &[key, value] : ps.reals) {
-                profile::annotate_interned(key, value);
+                waggle::annotate_interned(key, value);
             }
         }
 
@@ -360,14 +360,14 @@ void Graph::execute() {
             try {
                 gpu_dispatched = operands_ready && try_gpu_blas_dispatch(node, _tensors, _device_shadows);
                 if (gpu_dispatched) {
-                    profile::annotate("gpu_dispatch", "gemm");
+                    waggle::annotate("gpu_dispatch", "gemm");
                 }
             } catch (std::exception const &e) {
                 EINSUMS_LOG_WARN("GPU GEMM dispatch failed for node {} ({}): {}", node.id, node.label, e.what());
             }
 
             if (!gpu_dispatched) {
-                profile::annotate("gpu_dispatch", "cpu_fallback");
+                waggle::annotate("gpu_dispatch", "cpu_fallback");
 
                 // The CPU lambda must run on HOST pointers: on a discrete device
                 // the tensors currently point at cudaMalloc'd shadows, and a host
@@ -545,7 +545,7 @@ void Graph::execute(Executor &executor) {
         // recording off pays neither the fmt::format nor executor.name()'s
         // returned std::string - this fired on every replay regardless of
         // profiler state.
-        std::optional<profile::ScopedZone> zone;
+        std::optional<waggle::ScopedZone> zone;
         if (profile::recording()) {
             zone.emplace(graph_executor_site(),
                          [&]() { return fmt::format("ComputeGraph::execute({}, executor={})", _name, executor.name()); });

@@ -34,6 +34,7 @@ einsums_add_module(
     Einsums_Profile
     Einsums_Errors
     Einsums_Logging
+    Einsums_Print
     Einsums_SIMD
     Einsums_TypeSupport
     Einsums_Version

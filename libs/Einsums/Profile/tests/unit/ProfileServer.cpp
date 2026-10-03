@@ -5,12 +5,7 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Profile/Consumer.hpp>
-#include <Einsums/Profile/LogQueue.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/Profile/RequestHandlers.hpp>
-#include <Einsums/Profile/Server.hpp>
-#include <Einsums/Profile/StringTable.hpp>
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -24,6 +19,11 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <waggle/Consumer.hpp>
+#include <waggle/LogQueue.hpp>
+#include <waggle/RequestHandlers.hpp>
+#include <waggle/Server.hpp>
+#include <waggle/StringTable.hpp>
 
 #ifndef _WIN32
 #    include <arpa/inet.h>
@@ -36,7 +36,7 @@
 #    endif
 #endif
 
-using namespace einsums::profile;
+using namespace waggle;
 
 #ifndef _WIN32
 namespace {

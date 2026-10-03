@@ -5,17 +5,12 @@
 
 #pragma once
 
-#include <Einsums/Config.hpp>
+#include <cstdint>
+#include <functional>
+#include <string_view>
+#include <waggle/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
-#if defined(EINSUMS_HAVE_PROFILER)
-
-#    include <cstdint>
-#    include <functional>
-#    include <string_view>
-
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 /// How much a profiler message matters.
 enum class DiagnosticLevel : std::uint8_t {
@@ -34,11 +29,9 @@ using DiagnosticHandler = std::function<void(DiagnosticLevel level, std::string_
  * The default writes warnings and errors to stderr and drops the rest. A host with a logger of its
  * own installs a handler that forwards to it. An empty handler restores the default. Thread-safe.
  */
-EINSUMS_EXPORT void set_diagnostic_handler(DiagnosticHandler handler);
+WAGGLE_EXPORT void set_diagnostic_handler(DiagnosticHandler handler);
 
 /// Report @p message at @p level through the installed handler. Thread-safe.
-EINSUMS_EXPORT void diagnostic(DiagnosticLevel level, std::string_view message);
+WAGGLE_EXPORT void diagnostic(DiagnosticLevel level, std::string_view message);
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

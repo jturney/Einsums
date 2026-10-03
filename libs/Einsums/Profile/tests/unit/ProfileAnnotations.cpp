@@ -16,7 +16,7 @@
 #include <thread>
 #include <vector>
 
-using namespace einsums::profile;
+using namespace waggle;
 
 // Helper: recursively search the AggNode tree for a node with a given name.
 static AggNode const *find_node(AggNode const &root, std::string const &name) {

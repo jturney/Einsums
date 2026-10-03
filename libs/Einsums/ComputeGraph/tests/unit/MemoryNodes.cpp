@@ -85,7 +85,7 @@ TEST_CASE("free_tensor - inserts Free node", "[ComputeGraph][Memory]") {
 #if defined(EINSUMS_HAVE_PROFILER)
 namespace {
 
-einsums::profile::AggNode const *find_zone(einsums::profile::AggNode const &node, std::string const &name) {
+waggle::AggNode const *find_zone(waggle::AggNode const &node, std::string const &name) {
     for (auto const &child : node.children) {
         if (child.second->name == name) {
             return child.second.get();
@@ -104,24 +104,24 @@ einsums::profile::AggNode const *find_zone(einsums::profile::AggNode const &node
 // made the tensor. Both used to report at capture, which counted the tensor twice and logged a free
 // for storage the graph still owned.
 TEST_CASE("Alloc and Free nodes report no memory of their own", "[ComputeGraph][Memory][Profile]") {
-    auto      &profiler = einsums::profile::Profiler::instance();
+    auto      &profiler = waggle::Profiler::instance();
     bool const was      = profiler.enabled();
     profiler.set_enabled(true);
 
     std::string const zone_name = "MemoryNodes: alloc and free nodes";
     {
-        einsums::profile::ScopedZone const zone(zone_name);
-        cg::Graph                          graph("memory_report_test");
-        auto                              &tmp        = graph.create_tensor<double, 2>("tmp", 4, 5);
-        auto const                        *alloc_desc = graph.nodes()[0].op_data.get_if<cg::AllocDescriptor>();
+        waggle::ScopedZone const zone(zone_name);
+        cg::Graph                graph("memory_report_test");
+        auto                    &tmp        = graph.create_tensor<double, 2>("tmp", 4, 5);
+        auto const              *alloc_desc = graph.nodes()[0].op_data.get_if<cg::AllocDescriptor>();
         REQUIRE(alloc_desc != nullptr);
         graph.free_tensor(alloc_desc->tensor_id, "tmp", tmp.size() * sizeof(double));
     }
     profiler.flush();
 
     {
-        auto const                       lock = profiler.consumer()->lock_shared();
-        einsums::profile::AggNode const *node = nullptr;
+        auto const             lock = profiler.consumer()->lock_shared();
+        waggle::AggNode const *node = nullptr;
         for (auto const &thread : profiler.consumer()->thread_data()) {
             node = find_zone(thread.second.root, zone_name);
             if (node != nullptr) {

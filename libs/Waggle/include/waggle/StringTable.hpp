@@ -5,21 +5,16 @@
 
 #pragma once
 
-#include <Einsums/Config.hpp>
+#include <cstdint>
+#include <deque>
+#include <mutex>
+#include <shared_mutex>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <waggle/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
-#if defined(EINSUMS_HAVE_PROFILER)
-
-#    include <cstdint>
-#    include <deque>
-#    include <mutex>
-#    include <shared_mutex>
-#    include <string>
-#    include <string_view>
-#    include <unordered_map>
-
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 /// Thread-safe string interning with ids counting up from 0. Interning a known string takes a
 /// shared lock; only a new string takes the exclusive one.
@@ -77,6 +72,4 @@ class StringTable {
     std::unordered_map<std::string_view, uint32_t> _map;
 };
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

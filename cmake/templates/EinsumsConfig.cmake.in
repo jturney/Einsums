@@ -116,6 +116,18 @@ endif()
 unset(_einsums_stripes_dir)
 einsums_find_package(Stripes 1 REQUIRED)
 
+# Waggle, the profiler: Einsums links it and its public headers include Waggle's. It is installed
+# with Einsums, under the Einsums root; in a build tree its config is in its own binary directory,
+# which the build-tree variant of this file substitutes.
+set(_einsums_waggle_dir "@EINSUMS_BUILD_TREE_WAGGLE_DIR@")
+if(_einsums_waggle_dir)
+  set(Waggle_DIR "${_einsums_waggle_dir}")
+else()
+  set(Waggle_ROOT "${_einsums_root_dir}")
+endif()
+unset(_einsums_waggle_dir)
+einsums_find_package(Waggle 0.1 REQUIRED)
+
 # spdlog is VENDORED, not a system dependency. Einsums builds it from source and
 # folds the static archive into libEinsums (see Einsums_SetupSpdlog), but
 # Einsums/Logging.hpp is a PUBLIC header that includes <spdlog/...>, so a

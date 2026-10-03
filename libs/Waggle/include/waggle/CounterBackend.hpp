@@ -5,17 +5,12 @@
 
 #pragma once
 
-#include <Einsums/Config.hpp>
+#include <array>
+#include <cstdint>
+#include <string>
+#include <waggle/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
-#if defined(EINSUMS_HAVE_PROFILER)
-
-#    include <array>
-#    include <cstdint>
-#    include <string>
-
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 /// Number of hardware counter slots per event.
 static constexpr int kNumCounterSlots = 4;
@@ -57,7 +52,7 @@ class NoopCounterBackend : public CounterBackend {
     [[nodiscard]] auto available() const -> bool override { return false; }
 };
 
-#    ifdef __linux__
+#ifdef __linux__
 
 /// Linux perf_event_open counter backend.
 class PerfCounterBackend : public CounterBackend {
@@ -80,11 +75,9 @@ class PerfCounterBackend : public CounterBackend {
     static auto thread_counters() -> ThreadCounters &;
 };
 
-#    endif // __linux__
+#endif // __linux__
 
 /// Get the global counter backend instance.
-EINSUMS_EXPORT auto get_counter_backend() -> CounterBackend &;
+WAGGLE_EXPORT auto get_counter_backend() -> CounterBackend &;
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

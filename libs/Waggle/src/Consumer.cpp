@@ -3,16 +3,13 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Profile/Consumer.hpp>
-#include <Einsums/Profile/TickClock.hpp>
-
 #include <algorithm>
 #include <string>
+#include <waggle/Clock.hpp>
+#include <waggle/Config.hpp>
+#include <waggle/Consumer.hpp>
 
-#if defined(EINSUMS_HAVE_PROFILER)
-
-EINSUMS_NAMESPACE_BEGIN(profile)
+WAGGLE_NAMESPACE_BEGIN
 
 Consumer::Consumer(StringTable &strings) : _strings(strings), _other_id(strings.intern("(other)")) {
     _running.store(true, std::memory_order_relaxed);
@@ -398,6 +395,4 @@ void Consumer::process_mem(ThreadState &ts, Event const &evt) {
     }
 }
 
-EINSUMS_NAMESPACE_END(profile)
-
-#endif
+WAGGLE_NAMESPACE_END

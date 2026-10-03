@@ -13,9 +13,10 @@
 #include <Einsums/Runtime/RuntimeConfiguration.hpp>
 
 #if defined(EINSUMS_HAVE_PROFILER)
-#    include <Einsums/Profile/Diagnostics.hpp>
 #    include <Einsums/Profile/Profile.hpp>
 #    include <Einsums/Profile/SpdlogSink.hpp>
+
+#    include <waggle/Diagnostics.hpp>
 #endif
 
 #include <fmt/format.h>
@@ -96,20 +97,20 @@ void init_logging(RuntimeConfiguration & /*config*/) {
         profiler_sink->set_level(spdlog::level::trace);
         sinks.push_back(profiler_sink);
 
-        einsums::print::set_output_sink([](std::string const &msg) { profile::Profiler::instance().output(msg); });
+        einsums::print::set_output_sink([](std::string const &msg) { waggle::Profiler::instance().output(msg); });
 
         // The profiler's own messages go to this logger, under its run-time level, rather than to
         // stderr. The logger object, not EINSUMS_LOG_*, which the build's level can compile out.
-        profile::set_diagnostic_handler([](profile::DiagnosticLevel level, std::string_view message) {
+        waggle::set_diagnostic_handler([](waggle::DiagnosticLevel level, std::string_view message) {
             auto const spd_level = [level] {
                 switch (level) {
-                case profile::DiagnosticLevel::Debug:
+                case waggle::DiagnosticLevel::Debug:
                     return spdlog::level::debug;
-                case profile::DiagnosticLevel::Info:
+                case waggle::DiagnosticLevel::Info:
                     return spdlog::level::info;
-                case profile::DiagnosticLevel::Warning:
+                case waggle::DiagnosticLevel::Warning:
                     return spdlog::level::warn;
-                case profile::DiagnosticLevel::Error:
+                case waggle::DiagnosticLevel::Error:
                     break;
                 }
                 return spdlog::level::err;

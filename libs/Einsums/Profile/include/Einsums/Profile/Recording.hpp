@@ -21,7 +21,7 @@ EINSUMS_NAMESPACE_BEGIN(profile)
  */
 inline bool recording() noexcept {
 #if defined(EINSUMS_HAVE_PROFILER)
-    return Profiler::instance().enabled();
+    return waggle::Profiler::instance().enabled();
 #else
     return false;
 #endif

@@ -5,15 +5,14 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Profile/StringTable.hpp>
-
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
 #include <string>
 #include <thread>
+#include <waggle/StringTable.hpp>
 
-using namespace einsums::profile;
+using namespace waggle;
 
 TEST_CASE("StringTable interns each string once", "[profiler][stringtable]") {
     StringTable st;
