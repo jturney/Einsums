@@ -70,6 +70,39 @@ target_include_directories(waggle_internal INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(waggle_internal INTERFACE waggle)
 add_library(Waggle::internal ALIAS waggle_internal)
 
+# ── Python ─────────────────────────────────────────────────────────────────
+# The viewer and the report tools, pure Python. A project that builds Waggle beside its own Python
+# package stages Waggle's next to it, so both import from the build tree, and installs it there too.
+set(WAGGLE_PYTHON_STAGING_DIR
+    ""
+    CACHE PATH "Directory to copy the waggle Python package into at configure time; empty for none"
+)
+set(WAGGLE_PYTHON_INSTALL_DIR
+    ""
+    CACHE PATH "Install destination of the waggle Python package, relative to the prefix; empty for none"
+)
+file(
+  GLOB_RECURSE _waggle_python_files CONFIGURE_DEPENDS
+  RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/python
+  ${CMAKE_CURRENT_SOURCE_DIR}/python/waggle/*.py ${CMAKE_CURRENT_SOURCE_DIR}/python/waggle/*.tcss
+)
+if(WAGGLE_PYTHON_STAGING_DIR)
+  # configure_file follows the source's timestamp, so an edit lands at the next build.
+  foreach(_file IN LISTS _waggle_python_files)
+    configure_file(python/${_file} ${WAGGLE_PYTHON_STAGING_DIR}/${_file} COPYONLY)
+  endforeach()
+endif()
+if(WAGGLE_PYTHON_INSTALL_DIR)
+  install(
+    DIRECTORY python/waggle
+    DESTINATION ${WAGGLE_PYTHON_INSTALL_DIR}
+    FILES_MATCHING
+    PATTERN "*.py"
+    PATTERN "*.tcss"
+    PATTERN "__pycache__" EXCLUDE
+  )
+endif()
+
 # ── Tests ──────────────────────────────────────────────────────────────────
 # On when Waggle is the project being built; a project that adds Waggle decides for itself, and may
 # set a prefix that fits its own test names.

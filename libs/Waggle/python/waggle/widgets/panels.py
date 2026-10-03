@@ -190,7 +190,7 @@ def highlight_asm(text: str) -> str:
 
 
 class LogPanel(Widget):
-    """``EINSUMS_LOG_*`` messages and ``println`` output streamed from the program."""
+    """Log messages and printed output streamed from the program."""
 
     LEVEL_CYCLE = (2, 3, 4, 0, 1)  # INFO, WARN, ERROR, TRACE, DEBUG
 

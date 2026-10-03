@@ -741,7 +741,7 @@ class ProfilerApp(App):
             self.notify(f"Recording saved to {self._recorder.path}")
             self._recorder = None
         else:
-            self._start_recording(self._record_path or "einsums_profile_recording.jsonl")
+            self._start_recording(self._record_path or "waggle_recording.jsonl")
         self._update_status()
 
     def action_replay_speed(self, factor: float) -> None:
@@ -765,7 +765,7 @@ class ProfilerApp(App):
         if session is None or session.snapshot is None:
             self.notify("Nothing to save yet", severity="warning")
             return
-        name = "einsums_session_" + _widget_id(session.label) + ".json"
+        name = "waggle_session_" + _widget_id(session.label) + ".json"
         self.push_screen(
             PromptDialog("Save this session", value=name, ok="Save"),
             lambda path: path and self._save([session], path),
@@ -785,7 +785,7 @@ class ProfilerApp(App):
                 ids, path = result
                 self._save([s for s in sessions if s.session_id in ids], path)
 
-        self.push_screen(SessionsDialog("Sessions to save", sessions, preselect=True, filename="einsums_sessions.json"), save)
+        self.push_screen(SessionsDialog("Sessions to save", sessions, preselect=True, filename="waggle_sessions.json"), save)
 
     def action_compare(self) -> None:
         sessions = self._sessions_with_data()
@@ -805,5 +805,5 @@ class ProfilerApp(App):
         if session is None or session.snapshot is None:
             self.notify("Nothing to export yet", severity="warning")
             return
-        export_snapshot(session.snapshot, "einsums_profile_snapshot.json", "einsums_profile_snapshot.csv")
-        self.notify("Exported einsums_profile_snapshot.json and .csv")
+        export_snapshot(session.snapshot, "waggle_snapshot.json", "waggle_snapshot.csv")
+        self.notify("Exported waggle_snapshot.json and .csv")

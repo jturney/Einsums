@@ -92,7 +92,7 @@ class ThreadTreeView(Widget):
     def on_mount(self) -> None:
         self._col_keys = list(self.query_one(ProfileTable).add_columns(*COLUMNS))
         # A snapshot can arrive before the table is mounted (a program run with
-        # --einsums:profile:wait-for-viewer streams one the instant the viewer attaches);
+        # a wait-for-viewer setting streams one the instant the viewer attaches);
         # it was kept on self, so draw it now.
         self.refresh_rows()
 

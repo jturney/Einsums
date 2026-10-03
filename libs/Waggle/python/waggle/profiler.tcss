@@ -171,23 +171,3 @@ Dialog {
 .dialog Button {
     margin-left: 1;
 }
-
-.graph-panes {
-    height: 1fr;
-}
-
-#graph-tree {
-    width: 1fr;
-    height: 1fr;
-}
-
-#graph-detail {
-    width: 1fr;
-    height: 1fr;
-    padding: 0 1;
-}
-
-#einsums-taskpool {
-    height: auto;
-    max-height: 20;
-}

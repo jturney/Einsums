@@ -1,10 +1,10 @@
 # Copyright (c) The Einsums Developers. All rights reserved.
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
-"""``einsums profiler report`` and ``einsums profiler diff``: saved sessions without the viewer.
+"""``waggle report`` and ``waggle diff``: saved sessions without the viewer.
 
 For scripts and CI: the same hotspot table and session comparison the viewer shows, as
-text, CSV or JSON. Reads every session-file shape the viewer loads (``--einsums:profile:save``
+text, CSV or JSON. Reads every session-file shape the viewer loads (``WAGGLE_SAVE`` or a library's save option,
 and the viewer's own saves, single or multi-session). Needs no Textual.
 """
 
@@ -22,7 +22,7 @@ from .session import Session, read_session_file, session_from_dict
 
 def add_parsers(sub) -> None:
     rep = sub.add_parser("report", help="Hotspots or the call tree of a saved session")
-    rep.add_argument("file", help="session file (--einsums:profile:save, or the viewer's Save)")
+    rep.add_argument("file", help="session file (WAGGLE_SAVE or a library's save option, or the viewer's Save)")
     rep.add_argument("--session", default="-1", help="which session in a multi-session file: index or label (default: the last)")
     rep.add_argument("--thread", help="only threads whose name matches this regex")
     rep.add_argument("--filter", default="", help="only zones whose name matches this regex")

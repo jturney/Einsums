@@ -3,7 +3,7 @@
 
 """The profiler's data, as the server streams it and as session files store it.
 
-The server (``libs/Einsums/Profile/src/Server.cpp``) sends JSON Lines over TCP. Each
+The server (``src/Server.cpp``) sends JSON Lines over TCP. Each
 line is one message with a ``type``: ``meta`` once per connection, then ``snapshot``
 (the aggregated call tree of every thread), ``timeline`` (recent zone spans),
 ``log``, ``output``, ``benchmark_result``, and ``response`` to a ``request``.
@@ -121,7 +121,7 @@ class LogEntry:
     message: str = ""
 
 
-#: The level given to ``output`` messages (``einsums::println``), above every log level.
+#: The level given to ``output`` messages (a program's printed lines), above every log level.
 OUTPUT_LEVEL = 7
 LOG_LEVEL_NAMES = {0: "TRACE", 1: "DEBUG", 2: "INFO", 3: "WARN", 4: "ERROR", 5: "CRITICAL", OUTPUT_LEVEL: "OUTPUT"}
 

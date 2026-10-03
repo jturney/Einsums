@@ -15,8 +15,9 @@
 /// batches, outside the timed region. A batch that fills the ring measures the consumer's
 /// throughput instead of the producer's entry cost, and every case converges on the same number.
 
-#include <Einsums/Performance.hpp>
-#include <Einsums/Profile/Profile.hpp>
+#include <Waggle/Config.hpp>
+
+#include <Waggle/Waggle.hpp>
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -54,7 +55,7 @@
 #    include <sys/resource.h>
 #endif
 
-#include <Einsums/Testing.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 /// An index list printed as fmt::join prints it, through a type the name cache cannot key on.
 struct Unkeyed {
@@ -68,7 +69,6 @@ struct fmt::formatter<Unkeyed> : fmt::formatter<std::string_view> {
     }
 };
 
-using namespace einsums;
 namespace prof = waggle;
 
 namespace {
@@ -117,19 +117,8 @@ Result per_op(Op &&op) {
     return {.min_ns = ns.front(), .median_ns = ns[ns.size() / 2]};
 }
 
-/// Into the benchmark database as `zone-cost <label>`, the median as the value: the figure this
-/// file reads, since the minimum of a few-nanosecond operation is mostly a lucky batch.
-void publish(std::string_view label, char const *metric, Result r, int reps) {
-    std::string_view  trimmed = label.substr(std::min(label.find_first_not_of(' '), label.size()));
-    std::string const name    = fmt::format("zone-cost {}", trimmed);
-    double const      median  = r.median_ns / 1000.0;
-    performance::publish_benchmark_result(name.c_str(), metric,
-                                          performance::TimingStats{median, r.min_ns / 1000.0, median, 0.0, 0.0, reps});
-}
-
 void show(std::string_view label, Result r) {
     fmt::println("[ZoneCost {:46s}] min {:7.1f} ns   median {:7.1f} ns", label, r.min_ns, r.median_ns);
-    publish(label, "t_op", r, kReps);
 }
 
 /// Restores the profiler's recording flag on scope exit.
@@ -364,7 +353,6 @@ TEST_CASE("Bench ZoneCost: the consumer", "[Profile][ZoneCost][benchmark]") {
         }
         std::ranges::sort(ns);
         fmt::println("[ZoneCost consumer: {:38s}] min {:7.1f} ns   median {:7.1f} ns   per event", label, ns.front(), ns[ns.size() / 2]);
-        publish(fmt::format("consumer, {}", label), "t_per_event", Result{.min_ns = ns.front(), .median_ns = ns[ns.size() / 2]}, 30);
     };
     drain("literal zones", 2, [](int) { WAGGLE_ZONE("bench consumer zone"); });
     drain("zones with an int annotation", 3, [](int i) {
@@ -400,10 +388,6 @@ TEST_CASE("Bench ZoneCost: the consumer", "[Profile][ZoneCost][benchmark]") {
     double const c1 = cpu_seconds();
     fmt::println("[ZoneCost consumer: idle process CPU over 2 s              ] {:.2f} ms of CPU per second ({:.3f}% of one core)",
                  1000.0 * (c1 - c0) / 2.0, 100.0 * (c1 - c0) / 2.0);
-    // Microseconds of CPU per wall second, so the database's microsecond unit still reads true.
-    double const idle_us = 1e6 * (c1 - c0) / 2.0;
-    performance::publish_benchmark_result("zone-cost consumer, idle process CPU", "idle_cpu_us_per_s",
-                                          performance::TimingStats{idle_us, idle_us, idle_us, 0.0, 0.0, 1});
 }
 
 namespace {

@@ -1,7 +1,7 @@
 # Copyright (c) The Einsums Developers. All rights reserved.
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 
-"""What Einsums adds to the profiler viewer: TaskPool workers and compute graphs.
+"""What Einsums adds to Waggle's viewer: TaskPool workers and compute graphs.
 
 The data comes from handlers Einsums registers with its program's profiler,
 ``get_taskpool_metrics`` (``TaskPool.cpp``) and ``get_compute_graphs`` (``Graph/Report.cpp``),
@@ -12,17 +12,22 @@ from __future__ import annotations
 
 from typing import Any
 
+from waggle.plugin import PluginAction, PluginPanel, Requirement, ViewerPlugin
+
 from .graphs import parse_graphs, parse_taskpool, taskpool_text
-from .plugin import PluginAction, PluginPanel, Requirement, ViewerPlugin
 
 #: The session extension that holds compute graphs.
 GRAPHS_EXTENSION = "einsums.compute_graphs"
 
 
 def _taskpool_widget(widget_id: str) -> Any:
-    from .widgets.panels import TextPanel
+    from waggle.widgets.panels import TextPanel
 
-    return TextPanel("", id=widget_id, classes="panel")
+    panel = TextPanel("", id=widget_id, classes="panel")
+    # As tall as the workers need, up to a screenful's share.
+    panel.styles.height = "auto"
+    panel.styles.max_height = 20
+    return panel
 
 
 async def _refresh_taskpool(app: Any, widget: Any, session: Any, client: Any) -> None:
@@ -34,7 +39,7 @@ async def _refresh_taskpool(app: Any, widget: Any, session: Any, client: Any) ->
 
 
 async def _show_compute_graphs(app: Any, session: Any, client: Any) -> None:
-    from .screens import GraphScreen
+    from .graph_screen import GraphScreen
 
     payload: object = session.extensions.get(GRAPHS_EXTENSION, [])
     if client is not None:

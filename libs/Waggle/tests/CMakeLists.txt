@@ -60,3 +60,30 @@ if(NOT WIN32)
   add_test(NAME ${WAGGLE_TEST_PREFIX}Duplicates COMMAND waggle_Duplicates_test)
   set_tests_properties(${WAGGLE_TEST_PREFIX}Duplicates PROPERTIES ENVIRONMENT "WAGGLE_REPORT=false" TIMEOUT 300)
 endif()
+
+# The viewer's tests, run from the source tree. They need pytest; the app's need Textual too, and
+# skip themselves without it.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import pytest"
+    RESULT_VARIABLE _waggle_no_pytest
+    OUTPUT_QUIET ERROR_QUIET
+  )
+  if(_waggle_no_pytest EQUAL 0)
+    add_test(NAME ${WAGGLE_TEST_PREFIX}ViewerPython COMMAND ${Python3_EXECUTABLE} -m pytest -q -p no:cacheprovider
+                                                            ${CMAKE_CURRENT_SOURCE_DIR}/python
+    )
+    set_tests_properties(
+      ${WAGGLE_TEST_PREFIX}ViewerPython PROPERTIES ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python" LABELS PYTHON TIMEOUT 600
+    )
+  else()
+    message(STATUS "Waggle: pytest not found; the viewer's tests are not registered")
+  endif()
+endif()
+
+# What one zone costs, whole and in pieces. Not a test: run it by hand, paired against another build,
+# on a quiet machine on mains power.
+add_executable(waggle_ZoneCost_benchmark EXCLUDE_FROM_ALL performance/ZoneCost.cpp)
+target_link_libraries(waggle_ZoneCost_benchmark PRIVATE Waggle::internal Catch2::Catch2WithMain)
+add_custom_target(waggle_benchmarks DEPENDS waggle_ZoneCost_benchmark)

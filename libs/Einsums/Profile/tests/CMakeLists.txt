@@ -12,12 +12,6 @@ if(EINSUMS_WITH_TESTS)
     add_subdirectory(unit)
   endif()
 
-  if(EINSUMS_WITH_TESTS_BENCHMARKS)
-    einsums_add_pseudo_target(Tests.Performance.Modules.Profile)
-    einsums_add_pseudo_dependencies(Tests.Performance.Modules Tests.Performance.Modules.Profile)
-    add_subdirectory(performance)
-  endif()
-
   if(EINSUMS_WITH_TESTS_HEADERS)
     einsums_add_header_tests(
       Modules.Profile

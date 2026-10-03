@@ -35,15 +35,16 @@ def _walk(parser: argparse.ArgumentParser, path: tuple[str, ...], out: dict) -> 
 
 
 def command_tree(prog: str = "einsums") -> dict[tuple[str, ...], tuple[list[str], list[str]]]:
+    from waggle.cli import viewer_parser
+    from waggle.report import add_parsers
+
     from . import build_parser
-    from .profiler import _viewer_parser
-    from .profiler.report import add_parsers
     from ..stages.__main__ import build_parser as stages_parser
 
     tree: dict = {}
     _walk(build_parser(prog), (), tree)
     # The forwarding commands: replace their opaque REMAINDER entry with the real parsers.
-    viewer = _viewer_parser(f"{prog} profiler")
+    viewer = viewer_parser(f"{prog} profiler", "--einsums:profile:server")
     add_parsers(viewer.add_subparsers())
     _walk(viewer, ("profiler",), tree)
     _walk(stages_parser(f"{prog} stages"), ("stages",), tree)

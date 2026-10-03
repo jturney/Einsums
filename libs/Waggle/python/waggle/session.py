@@ -6,7 +6,7 @@
 Two writers produce session files, and both shapes load:
 
 * the viewer's own "Save session", which nests the tree under ``"snapshot"``;
-* ``--einsums:profile:save`` (``Server::export_session``), which puts ``seq``,
+* the server's export (``WAGGLE_SAVE``, ``Server::export_session``), which puts ``seq``,
   ``dropped`` and ``threads`` at the top level beside ``meta``.
 
 Either may be wrapped as ``{"sessions": [...]}``; the server appends to an existing
