@@ -6,6 +6,8 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Profile/Profile.hpp>
+#include <Waggle/Diagnostics.hpp>
+#include <Waggle/Settings.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 #include <map>
@@ -14,8 +16,6 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-#include <waggle/Diagnostics.hpp>
-#include <waggle/Settings.hpp>
 
 using namespace waggle;
 

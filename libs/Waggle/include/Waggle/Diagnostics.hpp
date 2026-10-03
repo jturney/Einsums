@@ -5,10 +5,11 @@
 
 #pragma once
 
+#include <Waggle/Config.hpp>
+
 #include <cstdint>
 #include <functional>
 #include <string_view>
-#include <waggle/Config.hpp>
 
 WAGGLE_NAMESPACE_BEGIN
 

@@ -114,7 +114,7 @@ foreach(_gate WaggleHeaderClosure WaggleHeaderClosureSelfTest)
     COMMAND
       ${CMAKE_COMMAND} "-DOBJECT=$<TARGET_OBJECTS:Profile_${_probe}>" "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
       "-DTARGET=Profile_${_probe}" "-DFORBID=(\\.|including file:) [^\n]*libs[/\\\\]Einsums[/\\\\]"
-      "-DEXPECT=waggle[/\\\\]Waggle\\.hpp" "-DCONFIG=$<CONFIG>" -P ${PROJECT_SOURCE_DIR}/cmake/scripts/check_header_closure.cmake
+      "-DEXPECT=Waggle[/\\\\]Waggle\\.hpp" "-DCONFIG=$<CONFIG>" -P ${PROJECT_SOURCE_DIR}/cmake/scripts/check_header_closure.cmake
   )
   # A build of the shared tree, like the header compile tests, so it takes their lock.
   set_tests_properties(Tests.Unit.Modules.Profile.${_gate} PROPERTIES LABELS "UNIT_ONLY" RESOURCE_LOCK "einsums_build_tree")

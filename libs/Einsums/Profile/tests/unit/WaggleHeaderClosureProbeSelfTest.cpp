@@ -6,4 +6,4 @@
 // Reaches an Einsums header on purpose, so the gate must fail: proof that it reads the listing.
 #include <Einsums/Config.hpp>
 
-#include <waggle/Waggle.hpp>
+#include <Waggle/Waggle.hpp>

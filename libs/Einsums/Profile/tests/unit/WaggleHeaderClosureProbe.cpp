@@ -4,17 +4,18 @@
 //----------------------------------------------------------------------------------------------
 
 // Every public Waggle header, compiled against Waggle alone: none may reach an Einsums header.
-#include <waggle/Clock.hpp>
-#include <waggle/Config.hpp>
-#include <waggle/Consumer.hpp>
-#include <waggle/CounterBackend.hpp>
-#include <waggle/Diagnostics.hpp>
-#include <waggle/Event.hpp>
-#include <waggle/LogQueue.hpp>
-#include <waggle/RequestHandlers.hpp>
-#include <waggle/RingBuffer.hpp>
-#include <waggle/Server.hpp>
-#include <waggle/Settings.hpp>
-#include <waggle/Sites.hpp>
-#include <waggle/StringTable.hpp>
-#include <waggle/Waggle.hpp>
+#include <Waggle/Config.hpp>
+
+#include <Waggle/Clock.hpp>
+#include <Waggle/Consumer.hpp>
+#include <Waggle/CounterBackend.hpp>
+#include <Waggle/Diagnostics.hpp>
+#include <Waggle/Event.hpp>
+#include <Waggle/LogQueue.hpp>
+#include <Waggle/RequestHandlers.hpp>
+#include <Waggle/RingBuffer.hpp>
+#include <Waggle/Server.hpp>
+#include <Waggle/Settings.hpp>
+#include <Waggle/Sites.hpp>
+#include <Waggle/StringTable.hpp>
+#include <Waggle/Waggle.hpp>

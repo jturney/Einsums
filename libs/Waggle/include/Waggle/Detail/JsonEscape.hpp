@@ -5,9 +5,10 @@
 
 #pragma once
 
+#include <Waggle/Config.hpp>
+
 #include <cstdio>
 #include <string>
-#include <waggle/Config.hpp>
 
 WAGGLE_NAMESPACE_BEGIN
 namespace detail {

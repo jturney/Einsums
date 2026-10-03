@@ -17,6 +17,7 @@
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/Options.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
+#include <Waggle/Server.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -28,7 +29,6 @@
 #include <iostream>
 #include <string>
 #include <thread>
-#include <waggle/Server.hpp>
 
 #if defined(EINSUMS_WINDOWS)
 #    include <Windows.h>

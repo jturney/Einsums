@@ -5,12 +5,13 @@
 
 #pragma once
 
+#include <Waggle/Config.hpp>
+
 #include <deque>
 #include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
-#include <waggle/Config.hpp>
 
 WAGGLE_NAMESPACE_BEGIN
 

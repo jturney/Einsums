@@ -3,8 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <waggle/Config.hpp>
-#include <waggle/CounterBackend.hpp>
+#include <Waggle/Config.hpp>
+
+#include <Waggle/CounterBackend.hpp>
 
 #ifdef __linux__
 #    include <cstring>

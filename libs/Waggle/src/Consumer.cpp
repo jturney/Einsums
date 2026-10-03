@@ -3,11 +3,13 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Waggle/Config.hpp>
+
+#include <Waggle/Clock.hpp>
+#include <Waggle/Consumer.hpp>
+
 #include <algorithm>
 #include <string>
-#include <waggle/Clock.hpp>
-#include <waggle/Config.hpp>
-#include <waggle/Consumer.hpp>
 
 WAGGLE_NAMESPACE_BEGIN
 

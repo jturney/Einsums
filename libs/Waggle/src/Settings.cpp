@@ -3,6 +3,10 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Waggle/Config.hpp>
+
+#include <Waggle/Settings.hpp>
+
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -10,8 +14,6 @@
 #include <charconv>
 #include <cstdlib>
 #include <type_traits>
-#include <waggle/Config.hpp>
-#include <waggle/Settings.hpp>
 
 WAGGLE_NAMESPACE_BEGIN
 

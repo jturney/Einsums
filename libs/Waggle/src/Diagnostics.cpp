@@ -3,10 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Waggle/Config.hpp>
+
+#include <Waggle/Diagnostics.hpp>
+
 #include <cstdio>
 #include <mutex>
-#include <waggle/Config.hpp>
-#include <waggle/Diagnostics.hpp>
 
 WAGGLE_NAMESPACE_BEGIN
 

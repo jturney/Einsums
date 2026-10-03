@@ -5,6 +5,13 @@
 
 #pragma once
 
+#include <Waggle/Config.hpp>
+
+#include <Waggle/Consumer.hpp>
+#include <Waggle/LogQueue.hpp>
+#include <Waggle/RequestHandlers.hpp>
+#include <Waggle/StringTable.hpp>
+
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -13,11 +20,6 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-#include <waggle/Config.hpp>
-#include <waggle/Consumer.hpp>
-#include <waggle/LogQueue.hpp>
-#include <waggle/RequestHandlers.hpp>
-#include <waggle/StringTable.hpp>
 
 #ifdef __APPLE__
 #    include <dns_sd.h>

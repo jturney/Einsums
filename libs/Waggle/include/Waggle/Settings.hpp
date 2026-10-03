@@ -5,12 +5,13 @@
 
 #pragma once
 
+#include <Waggle/Config.hpp>
+
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
-#include <waggle/Config.hpp>
 
 WAGGLE_NAMESPACE_BEGIN
 

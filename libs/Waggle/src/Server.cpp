@@ -3,12 +3,13 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <fmt/format.h>
+#include <Waggle/Config.hpp>
 
-#include <waggle/Config.hpp>
-#include <waggle/Detail/JsonEscape.hpp>
-#include <waggle/Diagnostics.hpp>
-#include <waggle/Server.hpp>
+#include <Waggle/Detail/JsonEscape.hpp>
+#include <Waggle/Diagnostics.hpp>
+#include <Waggle/Server.hpp>
+
+#include <fmt/format.h>
 
 #ifndef _WIN32
 #    include <arpa/inet.h>

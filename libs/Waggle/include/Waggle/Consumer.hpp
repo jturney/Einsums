@@ -5,6 +5,15 @@
 
 #pragma once
 
+#include <Waggle/Config.hpp>
+
+#include <Waggle/CounterBackend.hpp>
+#include <Waggle/Detail/InsertionOrderedMap.hpp>
+#include <Waggle/Event.hpp>
+#include <Waggle/RingBuffer.hpp>
+#include <Waggle/Sites.hpp>
+#include <Waggle/StringTable.hpp>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -20,13 +29,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <waggle/Config.hpp>
-#include <waggle/CounterBackend.hpp>
-#include <waggle/Detail/InsertionOrderedMap.hpp>
-#include <waggle/Event.hpp>
-#include <waggle/RingBuffer.hpp>
-#include <waggle/Sites.hpp>
-#include <waggle/StringTable.hpp>
 
 WAGGLE_NAMESPACE_BEGIN
 

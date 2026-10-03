@@ -5,12 +5,13 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Waggle/StringTable.hpp>
+
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
 #include <string>
 #include <thread>
-#include <waggle/StringTable.hpp>
 
 using namespace waggle;
 

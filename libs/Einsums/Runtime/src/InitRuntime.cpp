@@ -20,6 +20,7 @@
 #include <Einsums/Runtime/Runtime.hpp>
 #include <Einsums/SIMD/Options.hpp>
 #include <Einsums/Version.hpp>
+#include <Waggle/Server.hpp>
 
 #include <H5Epublic.h>
 #include <H5version.h>
@@ -28,7 +29,6 @@
 #include <spdlog/spdlog.h>
 #include <tuple>
 #include <unordered_map>
-#include <waggle/Server.hpp>
 
 EINSUMS_NAMESPACE_BEGIN()
 

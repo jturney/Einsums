@@ -15,8 +15,7 @@
 #if defined(EINSUMS_HAVE_PROFILER)
 #    include <Einsums/Profile/Profile.hpp>
 #    include <Einsums/Profile/SpdlogSink.hpp>
-
-#    include <waggle/Diagnostics.hpp>
+#    include <Waggle/Diagnostics.hpp>
 #endif
 
 #include <fmt/format.h>

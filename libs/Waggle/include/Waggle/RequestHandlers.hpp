@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Waggle/Config.hpp>
+
 #include <algorithm>
 #include <functional>
 #include <mutex>
@@ -14,7 +16,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <waggle/Config.hpp>
 
 WAGGLE_NAMESPACE_BEGIN
 

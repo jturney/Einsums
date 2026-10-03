@@ -5,6 +5,21 @@
 
 #pragma once
 
+#include <Waggle/Config.hpp>
+
+#include <Waggle/Clock.hpp>
+#include <Waggle/Consumer.hpp>
+#include <Waggle/CounterBackend.hpp>
+#include <Waggle/Detail/InsertionOrderedMap.hpp>
+#include <Waggle/Diagnostics.hpp>
+#include <Waggle/Event.hpp>
+#include <Waggle/RequestHandlers.hpp>
+#include <Waggle/RingBuffer.hpp>
+#include <Waggle/Server.hpp>
+#include <Waggle/Settings.hpp>
+#include <Waggle/Sites.hpp>
+#include <Waggle/StringTable.hpp>
+
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
@@ -23,19 +38,6 @@
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
-#include <waggle/Clock.hpp>
-#include <waggle/Config.hpp>
-#include <waggle/Consumer.hpp>
-#include <waggle/CounterBackend.hpp>
-#include <waggle/Detail/InsertionOrderedMap.hpp>
-#include <waggle/Diagnostics.hpp>
-#include <waggle/Event.hpp>
-#include <waggle/RequestHandlers.hpp>
-#include <waggle/RingBuffer.hpp>
-#include <waggle/Server.hpp>
-#include <waggle/Settings.hpp>
-#include <waggle/Sites.hpp>
-#include <waggle/StringTable.hpp>
 
 #if defined _WIN32
 #    ifndef WIN32_LEAN_AND_MEAN

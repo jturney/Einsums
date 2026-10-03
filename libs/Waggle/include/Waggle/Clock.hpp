@@ -5,9 +5,10 @@
 
 #pragma once
 
+#include <Waggle/Config.hpp>
+
 #include <chrono>
 #include <cstdint>
-#include <waggle/Config.hpp>
 
 #if (defined(__x86_64__) || defined(_M_X64))
 #    if defined(_MSC_VER) && !defined(__clang__)

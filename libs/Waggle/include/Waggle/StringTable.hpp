@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <Waggle/Config.hpp>
+
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -12,7 +14,6 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <waggle/Config.hpp>
 
 WAGGLE_NAMESPACE_BEGIN
 

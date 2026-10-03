@@ -3,6 +3,12 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Waggle/Config.hpp>
+
+#include <Waggle/Detail/JsonEscape.hpp>
+#include <Waggle/Diagnostics.hpp>
+#include <Waggle/Waggle.hpp>
+
 #include <fmt/color.h>
 #include <fmt/format.h>
 
@@ -14,10 +20,6 @@
 #include <memory>
 #include <mutex>
 #include <thread>
-#include <waggle/Config.hpp>
-#include <waggle/Detail/JsonEscape.hpp>
-#include <waggle/Diagnostics.hpp>
-#include <waggle/Waggle.hpp>
 
 #if defined(_WIN32)
 #    include <io.h>

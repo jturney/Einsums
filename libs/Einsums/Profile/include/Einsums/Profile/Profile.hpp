@@ -6,7 +6,7 @@
 #pragma once
 
 /// @file
-/// Einsums' entry to its profiler, Waggle: include this, not <waggle/Waggle.hpp>, so that Einsums'
+/// Einsums' entry to its profiler, Waggle: include this, not <Waggle/Waggle.hpp>, so that Einsums'
 /// configuration reaches the instrumentation macros. Also the einsums.profile Python surface.
 
 #include <Einsums/Config.hpp>
@@ -24,12 +24,13 @@
 #    define WAGGLE_DETAIL
 #endif
 
+#include <Waggle/Waggle.hpp>
+
 #include <cstdint>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <waggle/Waggle.hpp>
 
 EINSUMS_NAMESPACE_BEGIN(profile)
 
