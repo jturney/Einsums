@@ -338,6 +338,11 @@ if(TARGET SaveLoad_test)
   )
 endif()
 
+# MemoryNodes reads the memory the profiler attributed to a zone from the collector's trees.
+if(TARGET MemoryNodes_test AND EINSUMS_WITH_PROFILER)
+  target_link_libraries(MemoryNodes_test PRIVATE Waggle::internal)
+endif()
+
 # ComputeGraph takes contractions as string specs; the compile-time Indices{...} API cannot be
 # rewritten by passes and is gone from the module. compile_time_indices.allowlist is empty, so this
 # forbids it outright; the script's ratchet (a listed file may only shrink) is what got it there. The self test proves the patterns still catch what they claim

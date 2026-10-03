@@ -3,9 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Waggle/Config.hpp>
+#include "Diagnostics.hpp"
 
-#include <Waggle/Diagnostics.hpp>
+#include <Waggle/Config.hpp>
 
 #include <cstdio>
 #include <mutex>
@@ -33,7 +33,7 @@ void write_to_stderr(DiagnosticLevel level, std::string_view message) {
 
 } // namespace
 
-void set_diagnostic_handler(DiagnosticHandler handler) {
+void install_diagnostic_handler(DiagnosticHandler handler) {
     std::scoped_lock const lock(handler_mutex());
     handler_slot() = std::move(handler);
 }

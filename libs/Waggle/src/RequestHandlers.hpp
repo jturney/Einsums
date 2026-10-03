@@ -7,6 +7,8 @@
 
 #include <Waggle/Config.hpp>
 
+#include <Waggle/Types.hpp>
+
 #include <algorithm>
 #include <functional>
 #include <mutex>
@@ -18,22 +20,6 @@
 #include <vector>
 
 WAGGLE_NAMESPACE_BEGIN
-
-/// Answers a viewer request: receives the request's params as a JSON object, returns JSON.
-using RequestHandler = std::function<std::string(std::string const &params)>;
-
-/// Produces one JSON value for a session file.
-using SessionSection = std::function<std::string()>;
-
-/// A library using the profiler, as viewers and session files name it.
-struct ClientInfo {
-    std::string name;
-    std::string version{};
-    std::string git_commit{};
-    std::string git_branch{};
-    bool        git_dirty{false};
-    std::string build_type{};
-};
 
 /**
  * @brief What libraries add to the profiler's server and session files: themselves, request

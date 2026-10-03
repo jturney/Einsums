@@ -469,9 +469,8 @@ void register_graph(Graph *graph) {
     // the two in the other order here could deadlock.
     static std::once_flag profiler_wired;
     std::call_once(profiler_wired, [] {
-        auto &prof = waggle::Profiler::instance();
-        prof.register_handler("get_compute_graphs", [](std::string const &) { return registered_graphs_json(); });
-        prof.register_session_section("einsums.compute_graphs", [] {
+        waggle::register_handler("get_compute_graphs", [](std::string const &) { return registered_graphs_json(); });
+        waggle::register_session_section("einsums.compute_graphs", [] {
             // The bare array of graphs, as session files have always held it.
             std::string const json  = registered_graphs_json();
             auto const        first = json.find('[');
@@ -513,15 +512,13 @@ std::vector<std::pair<std::string, std::string>> g_cached_graph_jsons;
 /// post-mortem record of graphs that died before it connected.
 bool graph_json_cache_wanted() {
 #if defined(EINSUMS_HAVE_PROFILER)
-    auto &prof = waggle::Profiler::instance();
-    if (!prof.enabled())
+    if (!waggle::enabled())
         return false;
     // Read the settings each time rather than latching them: a graph dies
     // once, so this is not a hot path, and the tests change the setting.
-    if (!prof.settings().save.empty())
+    if (!waggle::settings().save.empty())
         return true;
-    auto const *srv = prof.server();
-    return srv != nullptr && srv->has_client();
+    return waggle::viewer_connected();
 #else
     return false;
 #endif

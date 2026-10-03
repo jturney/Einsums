@@ -17,6 +17,8 @@ foreach(test ${ProfilePerfTests})
     SOURCES ${test}
     NOINSTALL
   )
+  # These test the collector's internals, whose headers only Waggle's own tests see.
+  target_link_libraries(${TestName}_test PRIVATE Waggle::internal)
 
   einsums_add_performance_test("Modules.Profile" ${TestName} SUITE infrastructure)
 endforeach()

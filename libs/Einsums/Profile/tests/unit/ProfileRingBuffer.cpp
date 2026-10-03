@@ -6,13 +6,14 @@
 #include <Einsums/Config.hpp>
 
 #include <Waggle/Clock.hpp>
-#include <Waggle/Event.hpp>
-#include <Waggle/RingBuffer.hpp>
 
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <thread>
 #include <vector>
+
+#include "Event.hpp"
+#include "RingBuffer.hpp"
 
 using namespace waggle;
 

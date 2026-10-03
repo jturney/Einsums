@@ -193,7 +193,7 @@ int einsums_main() {
     }
 
     einsums::println("\nDone. Printing final report:\n");
-    Profiler::instance().print(true);
+    print_report(true);
 
     return 0;
 }

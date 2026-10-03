@@ -32,12 +32,11 @@ void configure_profiler_from_options() {
     update.wait_for_viewer       = config::try_get(option::ProfileWaitForViewer);
     update.max_distinct_children = config::try_get(option::ProfileMaxDistinctChildren);
 
-    auto &profiler = waggle::Profiler::instance();
-    profiler.configure(update);
+    waggle::configure(update);
     // EINSUMS_BUILD_TYPE is a bare identifier (release, debug), so stringify it.
 #    define EINSUMS_PROFILE_STRINGIFY_(x) #x
 #    define EINSUMS_PROFILE_STRINGIFY(x)  EINSUMS_PROFILE_STRINGIFY_(x)
-    profiler.init(
+    waggle::init(
         {.name       = "einsums",
          .version    = fmt::format("{}.{}.{}{}", EINSUMS_VERSION_MAJOR, EINSUMS_VERSION_MINOR, EINSUMS_VERSION_PATCH, EINSUMS_VERSION_TAG),
          .git_commit = std::string(git_commit()),

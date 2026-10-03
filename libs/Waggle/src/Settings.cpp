@@ -3,9 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Waggle/Config.hpp>
+#include "Settings.hpp"
 
-#include <Waggle/Settings.hpp>
+#include <Waggle/Config.hpp>
 
 #include <fmt/format.h>
 
@@ -65,6 +65,54 @@ auto parse_int(std::string const &value) -> std::optional<std::int64_t> {
 }
 
 } // namespace
+
+auto SettingsStore::add_from_text(SettingsUpdate &update, std::string_view key, std::string const &value) -> bool {
+    Settings unused;
+    bool     known = false;
+    bool     good  = false;
+    for_each_setting(update, unused, [&](int, char const *name, auto &wanted, auto const &) {
+        if (known || key != name) {
+            return;
+        }
+        known      = true;
+        using Type = std::remove_cvref_t<decltype(*wanted)>;
+        if constexpr (std::is_same_v<Type, bool>) {
+            if (auto const v = parse_bool(value)) {
+                wanted = *v;
+                good   = true;
+            }
+        } else if constexpr (std::is_same_v<Type, std::int64_t>) {
+            if (auto const v = parse_int(value)) {
+                wanted = *v;
+                good   = true;
+            }
+        } else {
+            wanted = value;
+            good   = true;
+        }
+    });
+    return known && good;
+}
+
+auto SettingsStore::text(std::string_view key) const -> std::optional<std::string> {
+    std::optional<std::string> out;
+    SettingsUpdate             unused;
+    Settings                   copy = _settings;
+    for_each_setting(unused, copy, [&](int, char const *name, auto const &, auto const &current) {
+        if (key != name) {
+            return;
+        }
+        using Type = std::remove_cvref_t<decltype(current)>;
+        if constexpr (std::is_same_v<Type, bool>) {
+            out = current ? "true" : "false";
+        } else if constexpr (std::is_same_v<Type, std::int64_t>) {
+            out = std::to_string(current);
+        } else {
+            out = current;
+        }
+    });
+    return out;
+}
 
 auto SettingsStore::process_environment() -> EnvironmentReader {
     return [](char const *name) -> std::optional<std::string> {

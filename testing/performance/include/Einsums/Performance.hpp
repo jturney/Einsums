@@ -203,27 +203,15 @@ inline void publish_benchmark_result(char const *label, char const *metric, int 
 
     // 2. Send structured result to profiler server
 #if defined(EINSUMS_HAVE_PROFILER)
-    auto &prof = waggle::Profiler::instance();
-    auto *srv  = prof.server();
-    if (srv) {
+    if (waggle::server_running()) {
         // Collect annotations from the full zone stack
         std::string annotations_json = "{";
-        auto       *consumer         = prof.consumer();
-        if (consumer) {
-            // Flush to ensure annotations are aggregated
-            consumer->flush();
-
-            auto lock   = consumer->lock_shared();
-            auto tid    = waggle::Profiler::current_thread_id();
-            auto merged = consumer->collect_zone_annotations(tid);
-
-            bool first = true;
-            for (auto const &[key, val] : merged) {
-                if (!first)
-                    annotations_json += ",";
-                first = false;
-                annotations_json += "\"" + json_escape(key) + "\":\"" + json_escape(val) + "\"";
-            }
+        bool        first            = true;
+        for (auto const &[key, val] : waggle::open_zone_annotations()) {
+            if (!first)
+                annotations_json += ",";
+            first = false;
+            annotations_json += "\"" + json_escape(key) + "\":\"" + json_escape(val) + "\"";
         }
         annotations_json += "}";
 
@@ -238,7 +226,7 @@ inline void publish_benchmark_result(char const *label, char const *metric, int 
         json += ",\"warmup_us\":" + std::to_string(stats.warmup);
         json += ",\"reps\":" + std::to_string(stats.reps);
         json += ",\"annotations\":" + annotations_json + "}";
-        prof.publish("benchmark_result", json);
+        waggle::publish("benchmark_result", json);
     }
 #endif
 }

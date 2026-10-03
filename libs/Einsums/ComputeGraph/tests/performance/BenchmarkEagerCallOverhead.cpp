@@ -113,8 +113,7 @@ EINSUMS_TEST_CASE("Bench EagerCallOverhead: what the profiler adds to one call",
     // share is what is left once the zones are paid for. On and off are interleaved batch by batch in
     // one process, so load and ordering fall on both alike, and the consumer is drained between
     // batches so the ring never fills.
-    auto      &profiler = waggle::Profiler::instance();
-    bool const was      = profiler.enabled();
+    bool const was = waggle::enabled();
 
     auto A = create_random_tensor<double>("A", 4, 4);
     auto B = create_random_tensor<double>("B", 4, 4);
@@ -123,19 +122,19 @@ EINSUMS_TEST_CASE("Bench EagerCallOverhead: what the profiler adds to one call",
 
     auto const census = [&](std::string const &label, auto &&call) {
         constexpr int kCalls = 200;
-        profiler.set_enabled(true);
-        profiler.flush();
-        auto const pushes0 = profiler.total_push_count();
+        waggle::set_enabled(true);
+        waggle::flush();
+        auto const pushes0 = waggle::total_push_count();
         for (int i = 0; i < kCalls; ++i) {
             call();
         }
-        double const zones = static_cast<double>(profiler.total_push_count() - pushes0) / kCalls;
+        double const zones = static_cast<double>(waggle::total_push_count() - pushes0) / kCalls;
 
         std::vector<double> on, off;
         for (int rep = 0; rep < 41; ++rep) {
             for (bool const enabled : {true, false}) {
-                profiler.set_enabled(enabled);
-                profiler.flush();
+                waggle::set_enabled(enabled);
+                waggle::flush();
                 auto const t0 = std::chrono::steady_clock::now();
                 for (int i = 0; i < kCalls; ++i) {
                     call();
@@ -163,7 +162,7 @@ EINSUMS_TEST_CASE("Bench EagerCallOverhead: what the profiler adds to one call",
         cg::einsum("ij <- ijk ; k", &C, A3, v4);
     });
 
-    profiler.set_enabled(was);
+    waggle::set_enabled(was);
 }
 // NOLINTEND(einsums-cg-call-outside-capture)
 #endif

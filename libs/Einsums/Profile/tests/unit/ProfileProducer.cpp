@@ -20,6 +20,8 @@
 #include <thread>
 #include <vector>
 
+#include "Profiler.hpp"
+
 using namespace waggle;
 
 namespace {

@@ -7,13 +7,6 @@
 
 #include <Waggle/Config.hpp>
 
-#include <Waggle/CounterBackend.hpp>
-#include <Waggle/Detail/InsertionOrderedMap.hpp>
-#include <Waggle/Event.hpp>
-#include <Waggle/RingBuffer.hpp>
-#include <Waggle/Sites.hpp>
-#include <Waggle/StringTable.hpp>
-
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -29,6 +22,13 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include "CounterBackend.hpp"
+#include "Detail/InsertionOrderedMap.hpp"
+#include "Event.hpp"
+#include "RingBuffer.hpp"
+#include "Sites.hpp"
+#include "StringTable.hpp"
 
 WAGGLE_NAMESPACE_BEGIN
 

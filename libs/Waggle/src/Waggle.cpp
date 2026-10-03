@@ -5,10 +5,6 @@
 
 #include <Waggle/Config.hpp>
 
-#include <Waggle/Detail/JsonEscape.hpp>
-#include <Waggle/Diagnostics.hpp>
-#include <Waggle/Waggle.hpp>
-
 #include <fmt/color.h>
 #include <fmt/format.h>
 
@@ -20,6 +16,10 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+
+#include "Detail/JsonEscape.hpp"
+#include "Diagnostics.hpp"
+#include "Profiler.hpp"
 
 #if defined(_WIN32)
 #    include <io.h>
@@ -179,16 +179,19 @@ void Profiler::apply(Settings const &s) {
     }
 }
 
-void Profiler::configure(SettingsUpdate const &update) {
+auto Profiler::configure(SettingsUpdate const &update) -> size_t {
     Settings s;
+    size_t   refused = 0;
     {
         std::scoped_lock const lock(_settings_mutex);
         for (auto const &refusal : _settings.configure(update)) {
             diagnostic(DiagnosticLevel::Warning, refusal);
+            ++refused;
         }
         s = _settings.current();
     }
     apply(s);
+    return refused;
 }
 
 void Profiler::override_settings(SettingsUpdate const &update) {

@@ -9,6 +9,8 @@
 #include <string>
 #include <thread>
 
+#include "Profiler.hpp"
+
 using namespace waggle;
 
 TEST_CASE("A site is registered once, by its whole description", "[profiler][sites]") {

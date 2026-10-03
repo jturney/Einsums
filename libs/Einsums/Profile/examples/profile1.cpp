@@ -41,7 +41,7 @@ int einsums_main() {
     }
 
     // Print human-readable report
-    Profiler::instance().print();
+    print_report();
 
     return 0;
 }

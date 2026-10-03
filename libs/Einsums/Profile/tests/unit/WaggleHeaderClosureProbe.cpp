@@ -7,15 +7,6 @@
 #include <Waggle/Config.hpp>
 
 #include <Waggle/Clock.hpp>
-#include <Waggle/Consumer.hpp>
-#include <Waggle/CounterBackend.hpp>
-#include <Waggle/Diagnostics.hpp>
-#include <Waggle/Event.hpp>
-#include <Waggle/LogQueue.hpp>
-#include <Waggle/RequestHandlers.hpp>
-#include <Waggle/RingBuffer.hpp>
-#include <Waggle/Server.hpp>
-#include <Waggle/Settings.hpp>
-#include <Waggle/Sites.hpp>
-#include <Waggle/StringTable.hpp>
+#include <Waggle/Types.hpp>
+#include <Waggle/Waggle.h>
 #include <Waggle/Waggle.hpp>

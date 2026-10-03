@@ -17,7 +17,6 @@
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/Options.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
-#include <Waggle/Server.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -234,13 +233,12 @@ void shutdown_profiler_and_report() noexcept {
     try {
         // Only the server writes session files, so name the option that starts it. An error, since
         // release builds suppress warnings.
-        auto &profiler = waggle::Profiler::instance();
-        if (!profiler.settings().save.empty() && profiler.server() == nullptr) {
+        if (!waggle::settings().save.empty() && !waggle::server_running()) {
             EINSUMS_LOG_ERROR("--einsums:profile:save was given without --einsums:profile:server, so no session "
                               "file was written. The text report is unaffected.");
         }
         // Einsums' release. Whichever library releases last writes the session file and the report.
-        profiler.finalize("einsums");
+        waggle::finalize("einsums");
         // The profiler outlives this runtime's logger and output hooks, so hand its messages back
         // to stderr and stop forwarding println before either goes away.
         waggle::set_diagnostic_handler({});
@@ -422,9 +420,9 @@ int Runtime::run(std::function<EinsumsMainFunctionType> const &func) {
     state(RuntimeState::Running);
 
     // Wait for profiler viewer to connect if requested. Compiled out with the
-    // profiler: there is no Profiler type to ask, and nothing to wait for.
+    // profiler: there is no profiler to ask, and nothing to wait for.
 #if defined(EINSUMS_HAVE_PROFILER)
-    waggle::Profiler::instance().wait_for_viewer();
+    waggle::wait_for_viewer();
 #endif
 
     // Once we start using a thread pool / threading manager we can

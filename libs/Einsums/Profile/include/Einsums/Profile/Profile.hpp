@@ -91,14 +91,14 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void push([[maybe_unused]] std::st
                                                         [[maybe_unused]] std::string const &file = "", [[maybe_unused]] int line = 0,
                                                         [[maybe_unused]] std::string const &func = "") {
 #if defined(EINSUMS_HAVE_PROFILER)
-    waggle::Profiler::instance().push(name, file, line, func);
+    waggle::push(name, file.c_str(), line, func.c_str());
 #endif
 }
 
 /// End the innermost profile region.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void pop() {
 #if defined(EINSUMS_HAVE_PROFILER)
-    waggle::Profiler::instance().pop();
+    waggle::pop();
 #endif
 }
 
@@ -106,16 +106,14 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void pop() {
 /// and ``export_json`` see recent events.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void flush() {
 #if defined(EINSUMS_HAVE_PROFILER)
-    waggle::Profiler::instance().flush();
+    waggle::flush();
 #endif
 }
 
 /// Print the compact (or detailed) report to standard output.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void print_report([[maybe_unused]] bool detailed = false) {
 #if defined(EINSUMS_HAVE_PROFILER)
-    waggle::Profiler::instance().print(detailed);
-    // Flush so pytest's capfd and non-tty stdout see the report before returning.
-    std::cout.flush();
+    waggle::print_report(detailed);
 #endif
 }
 
@@ -124,7 +122,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void print_report([[maybe_unused]]
 APIARY_EXPOSE APIARY_MODULE("profile") inline std::optional<std::string>
 export_json([[maybe_unused]] std::string const &path = "einsums_profile.json") {
 #if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::Profiler::instance().export_json(path);
+    return waggle::export_json(path);
 #else
     return std::nullopt;
 #endif
@@ -133,14 +131,14 @@ export_json([[maybe_unused]] std::string const &path = "einsums_profile.json") {
 /// Set a human-readable name for the calling thread.
 APIARY_EXPOSE APIARY_MODULE("profile") inline void set_thread_name([[maybe_unused]] std::string const &name) {
 #if defined(EINSUMS_HAVE_PROFILER)
-    waggle::Profiler::instance().set_thread_name(name);
+    waggle::set_thread_name(name);
 #endif
 }
 
 /// Return the profiler's thread id for the calling thread.
 APIARY_EXPOSE APIARY_MODULE("profile") inline uint32_t current_thread_id() {
 #if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::Profiler::current_thread_id();
+    return waggle::current_thread_id();
 #else
     return 0;
 #endif
@@ -149,7 +147,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint32_t current_thread_id() {
 /// Average per-call overhead of ``push`` in nanoseconds.
 APIARY_EXPOSE APIARY_MODULE("profile") inline double avg_push_overhead_ns() {
 #if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::Profiler::instance().avg_push_overhead_ns();
+    return waggle::push_overhead_ns();
 #else
     return 0.0;
 #endif
@@ -158,7 +156,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline double avg_push_overhead_ns() {
 /// Average per-call overhead of ``pop`` in nanoseconds.
 APIARY_EXPOSE APIARY_MODULE("profile") inline double avg_pop_overhead_ns() {
 #if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::Profiler::instance().avg_pop_overhead_ns();
+    return waggle::pop_overhead_ns();
 #else
     return 0.0;
 #endif
@@ -167,7 +165,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline double avg_pop_overhead_ns() {
 /// Total number of ``push`` calls observed since process start.
 APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_push_count() {
 #if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::Profiler::instance().total_push_count();
+    return waggle::total_push_count();
 #else
     return 0;
 #endif
@@ -176,7 +174,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_push_count() {
 /// Total number of ``pop`` calls observed since process start.
 APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 #if defined(EINSUMS_HAVE_PROFILER)
-    return waggle::Profiler::instance().total_pop_count();
+    return waggle::total_pop_count();
 #else
     return 0;
 #endif

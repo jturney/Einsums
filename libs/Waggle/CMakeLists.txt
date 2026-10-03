@@ -29,6 +29,7 @@ find_package(Threads REQUIRED)
 # collector, and a static copy linked into each would give each its own.
 add_library(
   waggle SHARED
+  src/Abi.cpp
   src/Consumer.cpp
   src/CounterBackend.cpp
   src/Diagnostics.cpp
@@ -40,7 +41,9 @@ add_library(Waggle::waggle ALIAS waggle)
 
 target_compile_features(waggle PUBLIC cxx_std_20)
 target_include_directories(
-  waggle PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  waggle
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 target_compile_definitions(waggle PRIVATE WAGGLE_EXPORTS)
 target_link_libraries(waggle PUBLIC fmt::fmt PRIVATE Threads::Threads)
@@ -56,6 +59,14 @@ set_target_properties(
 )
 
 include(WaggleInstrument)
+
+# The collector's private headers (rings, events, the consumer, the server), for Waggle's own
+# tests. Never installed or exported: everything else reaches the collector through the C
+# interface, so that nothing about these layouts becomes something a library depends on.
+add_library(waggle_internal INTERFACE)
+target_include_directories(waggle_internal INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(waggle_internal INTERFACE waggle)
+add_library(Waggle::internal ALIAS waggle_internal)
 
 # ── Install ──────────────────────────────────────────────────────────────────
 install(

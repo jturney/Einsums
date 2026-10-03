@@ -6,11 +6,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Profile/Profile.hpp>
-#include <Waggle/Consumer.hpp>
-#include <Waggle/LogQueue.hpp>
-#include <Waggle/RequestHandlers.hpp>
-#include <Waggle/Server.hpp>
-#include <Waggle/StringTable.hpp>
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -24,6 +19,13 @@
 #include <string>
 #include <string_view>
 #include <thread>
+
+#include "Consumer.hpp"
+#include "LogQueue.hpp"
+#include "Profiler.hpp"
+#include "RequestHandlers.hpp"
+#include "Server.hpp"
+#include "StringTable.hpp"
 
 #ifndef _WIN32
 #    include <arpa/inet.h>

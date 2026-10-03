@@ -43,7 +43,7 @@ struct ProfilerSaveKey {
     static void set(std::string value) {
         waggle::SettingsUpdate update;
         update.save = std::move(value);
-        waggle::Profiler::instance().override_settings(update);
+        waggle::override_settings(update);
     }
 };
 #else

@@ -27,7 +27,7 @@ void CaptureContext::begin_capture(Graph &graph) {
     // Read once, so end_capture closes exactly the zone this opened.
     _recording = profile::recording();
     if (_recording) {
-        waggle::Profiler::instance().push(fmt::format("ComputeGraph::capture({})", graph.name()));
+        waggle::push(fmt::format("ComputeGraph::capture({})", graph.name()));
     }
     _graph = &graph;
     _ptr_to_id.clear();
@@ -47,7 +47,7 @@ void CaptureContext::end_capture() {
     _ptr_to_id.clear();
     bool const recording = std::exchange(_recording, false);
     if (recording) {
-        waggle::Profiler::instance().pop();
+        waggle::pop();
     }
 
     g->topological_sort();

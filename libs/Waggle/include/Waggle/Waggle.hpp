@@ -5,435 +5,347 @@
 
 #pragma once
 
+/// @file
+/// Waggle for C++: the instrumentation macros, the call-site caches behind them, and the host
+/// interface, all over the C interface in <Waggle/Waggle.h>. Nothing here depends on how the
+/// collector stores what it records, so a library built against this header runs with any later
+/// collector of the same major version.
+
 #include <Waggle/Config.hpp>
 
-#include <Waggle/Clock.hpp>
-#include <Waggle/Consumer.hpp>
-#include <Waggle/CounterBackend.hpp>
-#include <Waggle/Detail/InsertionOrderedMap.hpp>
-#include <Waggle/Diagnostics.hpp>
-#include <Waggle/Event.hpp>
-#include <Waggle/RequestHandlers.hpp>
-#include <Waggle/RingBuffer.hpp>
-#include <Waggle/Server.hpp>
-#include <Waggle/Settings.hpp>
-#include <Waggle/Sites.hpp>
-#include <Waggle/StringTable.hpp>
+#include <Waggle/Types.hpp>
+#include <Waggle/Waggle.h>
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
-#include <array>
 #include <atomic>
 #include <chrono>
+#include <concepts>
+#include <cstdint>
 #include <cstring>
-#include <iostream>
+#include <exception>
 #include <iterator>
 #include <limits>
-#include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
-
-#if defined _WIN32
-#    ifndef WIN32_LEAN_AND_MEAN
-#        define WIN32_LEAN_AND_MEAN
-#    endif
-#    ifndef NOMINMAX
-#        define NOMINMAX
-#    endif
-#    include <malloc.h>
-#    include <windows.h>
-#else
-#    include <cstring>
-#    include <pthread.h>
-#    include <unistd.h>
-#endif
-
-#ifdef __linux__
-#    ifdef __ANDROID__
-#        include <sys/types.h>
-#    else
-#        include <sys/syscall.h>
-#    endif
-#    include <fcntl.h>
-#elif defined __FreeBSD__
-#    include <sys/thr.h>
-#elif defined __NetBSD__
-#    include <lwp.h>
-#elif defined __DragonFly__
-#    include <sys/lwp.h>
-#elif defined __QNX__
-#    include <process.h>
-#    include <sys/neutrino.h>
-#endif
 
 WAGGLE_NAMESPACE_BEGIN
 
-// ---------------------- Profiler class ----------------------
-struct WAGGLE_EXPORT Profiler {
-    static auto instance() -> Profiler &;
+namespace detail {
 
-    /// Whether zones and annotations are recorded. When off, each entry point costs one relaxed load.
-    [[nodiscard]] bool enabled() const { return _enabled.load(std::memory_order_relaxed); }
-    void               set_enabled(bool on) { _enabled.store(on, std::memory_order_relaxed); }
+/// The id of @p s.
+inline uint32_t intern(std::string_view s) {
+    return waggle_intern(s.data(), s.size());
+}
 
-    // Start a zone, registering its site on every call. WAGGLE_ZONE uses push_interned instead.
-    void push(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
-        if (!enabled()) {
-            return;
+/// Hands a std::function to the C interface: the user pointer owns a copy, released by @ref release.
+template <typename F>
+void release(void *user) {
+    delete static_cast<F *>(user);
+}
+
+/// A handler's answer, or a JSON error when it throws: no exception may cross the C interface.
+inline void answer(waggle_reply *reply, RequestHandler const &handler, std::string const &params) {
+    std::string out;
+    try {
+        out = handler(params);
+    } catch (std::exception const &e) {
+        out = fmt::format(R"({{"error":"{}"}})", e.what());
+    } catch (...) {
+        out = R"({"error":"the handler threw"})";
+    }
+    waggle_reply_set(reply, out.data(), out.size());
+}
+
+/// @p value as a setting's text.
+inline std::string setting_text(bool value) {
+    return value ? "true" : "false";
+}
+inline std::string setting_text(std::int64_t value) {
+    return std::to_string(value);
+}
+inline std::string setting_text(std::string const &value) {
+    return value;
+}
+
+/// The setting named @p key as text, or empty for an unknown name.
+inline std::optional<std::string> setting(char const *key) {
+    std::int64_t const length = waggle_config_get(key, nullptr, 0);
+    if (length < 0) {
+        return std::nullopt;
+    }
+    std::string value(static_cast<size_t>(length) + 1, '\0');
+    waggle_config_get(key, value.data(), value.size());
+    value.resize(static_cast<size_t>(length));
+    return value;
+}
+
+/// Call @p set (waggle_config_set or waggle_config_override) once with every member @p update
+/// holds, so they apply as one change.
+template <typename Set>
+auto apply_settings(SettingsUpdate const &update, Set set) -> int {
+    std::vector<char const *> keys;
+    std::vector<std::string>  texts;
+    auto const                one = [&](char const *key, auto const &member) {
+        if (member) {
+            keys.push_back(key);
+            texts.push_back(setting_text(*member));
         }
-        push_interned(register_site(name, file, line, func), 0);
-    }
-
-    /// Start a zone at site @p site_id (see @ref ZoneSite), named @p name_id, or by its site when
-    /// @p name_id is 0.
-    void push_interned(uint32_t site_id, uint32_t name_id) {
-        if (!enabled()) {
-            return;
-        }
-        write_push(thread_channel(), site_id, name_id);
-    }
-
-    /// The id of the call site at @p file : @p line in @p func, named @p name, of the library
-    /// @p domain names; the same description always gives the same id. Thread-safe.
-    auto register_site(std::string_view name, std::string_view file, int line, std::string_view func, std::string_view domain = {})
-        -> uint32_t {
-        return _sites.add({.name_id = _strings.intern(name),
-                           .file_id = _strings.intern(file),
-                           .func_id = _strings.intern(func),
-                           .line    = line,
-                           .domain  = _domains.add(domain)});
-    }
-
-    /// The id of the library named @p name, registering it if new. Thread-safe.
-    auto register_domain(std::string_view name) -> uint32_t { return _domains.add(name); }
-
-    /// The call sites registered so far.
-    auto sites() const -> SiteTable const & { return _sites; }
-
-    // Stop timer region
-    void pop() {
-        if (!enabled()) {
-            return;
-        }
-        write_pop(thread_channel());
-    }
-
-    // Print the report: exclusive time, percent, name, file:line and function. @p detailed adds
-    // min/max/avg and counters.
-    void print(bool detailed = false, std::ostream &os = std::cout);
-
-    // Write the aggregated profile as JSON.
-    auto export_json(std::string const &path = "einsums_profile.json") -> std::optional<std::string>;
-
-    // Stop the consumer (with a final drain) and the server.
-    void shutdown() {
-        if (_consumer)
-            _consumer->shutdown();
-        if (_server)
-            _server->shutdown(settings().wait_for_viewer);
-    }
-
-    /// Apply @p update. A setting another library already set to a different value keeps that
-    /// value, and the refusal is printed: libraries share this profiler, and none should have its
-    /// choice changed under it. Effects are immediate: recording switches, a server starts.
-    void configure(SettingsUpdate const &update);
-
-    /// Apply @p update whoever set those settings before. For tests and tools that must put a value
-    /// back; libraries use @ref configure.
-    void override_settings(SettingsUpdate const &update);
-
-    /// The settings in force.
-    [[nodiscard]] auto settings() const -> Settings;
-
-    /// Count @p client as using the profiler until its matching @ref finalize. Viewers and session
-    /// files list every client.
-    void init(ClientInfo client);
-
-    /// Release the @ref init of the client named @p client. The last release writes the session
-    /// file and the report the settings ask for, then stops the consumer and the server; recording
-    /// ends there for the whole process.
-    void finalize(std::string const &client);
-
-    /// The libraries using the profiler, in the order they arrived.
-    [[nodiscard]] auto clients() const -> std::vector<ClientInfo> { return _handlers.clients(); }
-
-    /// Hold the calling thread until a viewer connects, if the settings ask for that and a server
-    /// is listening. Returns at once otherwise.
-    void wait_for_viewer();
-
-    // Flush all pending events from ring buffers into the aggregated tree.
-    void flush() {
-        if (_consumer)
-            _consumer->flush();
-    }
-
-    /// What one recorded push and one recorded pop cost, in nanoseconds. Measured once, on first
-    /// request, by running the real path into a scratch ring.
-    auto avg_push_overhead_ns() -> double { return calibrated_overhead().push_ns; }
-    auto avg_pop_overhead_ns() -> double { return calibrated_overhead().pop_ns; }
-
-    /// Zones opened and closed so far, on every thread, whether or not their events were dropped.
-    auto total_push_count() const -> uint64_t;
-    auto total_pop_count() const -> uint64_t;
-
-    // Access string table (for interning annotation keys/values)
-    auto string_table() -> StringTable & { return _strings; }
-
-    // Access consumer (for annotations, shared lock on tree, etc.)
-    auto consumer() -> Consumer * { return _consumer.get(); }
-
-    /// The live-viewing server, or null until @ref start_server runs. Safe from any thread.
-    auto server() -> Server * { return _server_ptr.load(std::memory_order_acquire); }
-
-    /// Start the live-viewing server on @p port unless one already runs. Safe at any time and from
-    /// any thread: zones recorded before it starts are in the first snapshot it sends.
-    void start_server(uint16_t port);
-
-    /// Register @p handler for viewer requests named @p method. Works before any server exists: the
-    /// profiler keeps the table, and a server started later answers from it.
-    void register_handler(std::string method, RequestHandler handler) { _handlers.add(std::move(method), std::move(handler)); }
-
-    /// Remove the handler for @p method, waiting for any call of it in progress. An owner whose
-    /// handler captures it calls this from its destructor.
-    void unregister_handler(std::string const &method) { _handlers.remove(method); }
-
-    /// Embed @p section's JSON under @p key in every session file.
-    void register_session_section(std::string key, SessionSection section) {
-        _handlers.add_session_section(std::move(key), std::move(section));
-    }
-
-    /// Stream a log message to connected viewers' log panel. @p level runs 0 (trace) to 5
-    /// (critical), spdlog's numbering. Returns at once when no server runs, before formatting.
-    void log(int level, std::chrono::system_clock::time_point when, std::string_view file, int line, std::string_view function,
-             std::string_view message);
-
-    /// Stream one line the program printed to connected viewers. Returns at once without a server.
-    void output(std::string_view message);
-
-    /// Send @p json_object (a JSON object) to every connected viewer as a message of type @p type.
-    /// Dropped when no server runs: nothing would ever read it.
-    void publish(std::string_view type, std::string_view json_object) {
-        if (auto *srv = server()) {
-            srv->publish(type, json_object);
-        }
-    }
-
-    // Get the profiler's thread ID for the calling thread (platform-specific, matches Consumer keys).
-    static auto current_thread_id() -> uint32_t { return thread_key(); }
-
-    // Set a human-readable name for the calling thread.
-    void set_thread_name(std::string const &name) { _consumer->set_thread_name(thread_key(), name); }
-
-    // Emit an event to the thread-local ring buffer. Used by annotation API.
-    void emit_event(Event const &evt) {
-        auto &ch = thread_channel();
-        (void)ch.ring.try_push(evt); // a refused push is counted by the ring
-        wake_consumer_if_filling(ch);
-    }
-
-  private:
-    /// Takes the ``WAGGLE_*`` environment, below whatever libraries configure later. No signal
-    /// handlers here: the host program owns those.
-    Profiler();
-
-    /// Make the profiler match @p s: the recording switch, the consumer's child cap, the server.
-    void apply(Settings const &s);
-
-    // Fallback for programs that never call finalize. The consumer must stop
-    // before members are destroyed: its tick calls into _server, which is destroyed first.
-    ~Profiler() {
-        if (_consumer) {
-            _consumer->shutdown();
-        }
-        if (_server) {
-            _server->shutdown();
-        }
-    }
-
-    void write_node_json(std::ostream &ofs, AggNode const &n, int indent);
-    void print_node_recursive(std::ostream &os, AggNode const *n, double thread_total_ms, int depth, bool detailed);
-
-    void print_node_recursive(std::ostream &os, AggNode *n, double thread_total_ms, int depth, bool detailed) {
-        print_node_recursive(os, static_cast<AggNode const *>(n), thread_total_ms, depth, detailed);
-    }
-
-    // ------------------ per-thread channel ------------------
-
-    /// How many events a thread records between looks at how full its ring is.
-    static constexpr uint32_t kFillCheckEvery = 512;
-
-    /**
-     * @brief One thread's ring buffer, nesting depth and zone counts.
-     *
-     * Only the owning thread writes it. The counts are atomic so other threads can read them, and
-     * the owner bumps them with a relaxed load and store, not a read-modify-write.
-     *
-     * Channels live for the whole process, shared with the Consumer, so a thread's unread events
-     * and its counts outlive the thread.
-     */
-    struct ThreadChannel {
-        EventRingBuffer ring;
-        alignas(64) std::atomic<uint64_t> pushes{0};
-        std::atomic<uint64_t> pops{0};
-        /// Zones open on this thread, stamped into every Push and Pop (see @ref Event::depth).
-        uint32_t depth{0};
-        /// Whether a hardware counter backend is active, read once when the thread registers.
-        bool counters{false};
-        /// Whether this thread has woken the consumer since its ring last passed half full.
-        bool woke_consumer{false};
-        /// Events left before @ref wake_consumer_if_filling looks at the ring again.
-        uint32_t until_fill_check{kFillCheckEvery};
     };
-
-    /// The calling thread's channel, registered on first use.
-    ///
-    /// Out of line so there is one per thread: under -fvisibility-inlines-hidden each shared object
-    /// gets its own copy of an inline function's thread_local, which would split a thread's zones
-    /// between the library and, say, the Python bindings.
-    static auto thread_channel() -> ThreadChannel &;
-
-    // Platform-specific thread ID
-    static auto thread_key() -> uint32_t {
-#if defined _WIN32
-        static_assert(sizeof(decltype(GetCurrentThreadId())) <= sizeof(uint32_t), "Thread handle too big to fit in protocol");
-        return uint32_t(GetCurrentThreadId());
-#elif defined __APPLE__
-        uint64_t id;
-        pthread_threadid_np(pthread_self(), &id);
-        return static_cast<uint32_t>(id);
-#elif defined __ANDROID__
-        return (uint32_t)gettid();
-#elif defined __linux__
-        return static_cast<uint32_t>(syscall(SYS_gettid));
-#elif defined __FreeBSD__
-        long id;
-        thr_self(&id);
-        return id;
-#elif defined __NetBSD__
-        return _lwp_self();
-#elif defined __DragonFly__
-        return lwp_gettid();
-#elif defined __OpenBSD__
-        return getthrid();
-#elif defined __QNX__
-        return (uint32_t)gettid();
-#elif defined __EMSCRIPTEN__
-        return 0;
-#else
-#    error "Unsupported platform!"
-#endif
+    one("record", update.record);
+    one("report", update.report);
+    one("report_file", update.report_file);
+    one("report_append", update.report_append);
+    one("report_detailed", update.report_detailed);
+    one("save", update.save);
+    one("server", update.server);
+    one("port", update.port);
+    one("wait_for_viewer", update.wait_for_viewer);
+    one("max_distinct_children", update.max_distinct_children);
+    std::vector<char const *> values;
+    values.reserve(texts.size());
+    for (auto const &text : texts) {
+        values.push_back(text.c_str());
     }
+    return set(keys.data(), values.data(), keys.size());
+}
 
-    StringTable               _strings;
-    SiteTable                 _sites;
-    DomainTable               _domains;
-    std::unique_ptr<Consumer> _consumer;
+} // namespace detail
 
-    /// What libraries registered for the server and session files. Declared before the server,
-    /// which reads it, so it is destroyed after it.
-    RequestHandlers _handlers;
+// ---------------------- Recording ----------------------
 
-    /// Owned by @ref _server; @ref _server_ptr publishes it to other threads once it exists.
-    std::mutex              _server_mutex;
-    std::unique_ptr<Server> _server;
-    std::atomic<Server *>   _server_ptr{nullptr};
+/// Whether zones and annotations are recorded now.
+inline bool enabled() {
+    return waggle_enabled() != 0;
+}
 
-    /// Recording switch, from Settings::record.
-    std::atomic<bool> _enabled{true};
+/// Turn recording on or off for the whole process.
+inline void set_enabled(bool on) {
+    waggle_set_enabled(on ? 1 : 0);
+}
 
-    /// The settings and who set them; under @ref _settings_mutex.
-    mutable std::mutex _settings_mutex;
-    SettingsStore      _settings;
+/// The id of the call site at @p file : @p line in @p func, named @p name; the same description
+/// always gives the same id.
+inline uint32_t register_site(std::string_view name, char const *file, int line, char const *func, uint32_t domain = 0) {
+    return waggle_register_site(name.data(), name.size(), file, line, func, domain);
+}
 
-    /// Serializes @ref init and @ref finalize; the clients themselves are in @ref _handlers.
-    std::mutex _lifecycle_mutex;
-    bool       _finalized{false};
+/// The id of the library named @p name.
+inline uint32_t register_domain(std::string_view name) {
+    return waggle_register_domain(name.data(), name.size());
+}
 
-    /// Every thread's channel, for the life of the process; see @ref ThreadChannel.
-    mutable std::mutex                          _channels_mutex;
-    std::vector<std::shared_ptr<ThreadChannel>> _channels;
+/// Open a zone described at run time; prefer @ref WAGGLE_ZONE, which registers its site once.
+inline void push(std::string_view name, char const *file = "", int line = 0, char const *func = "") {
+    if (enabled()) {
+        waggle_zone_begin(register_site(name, file, line, func), 0);
+    }
+}
 
-    struct Overhead {
-        double push_ns{0.0};
-        double pop_ns{0.0};
+/// Close the calling thread's innermost zone.
+inline void pop() {
+    waggle_zone_end();
+}
+
+/// Name the calling thread in reports and viewers.
+inline void set_thread_name(std::string_view name) {
+    waggle_set_thread_name(name.data(), name.size());
+}
+
+/// The calling thread's id, as reports and viewers show it.
+inline uint32_t current_thread_id() {
+    return waggle_current_thread_id();
+}
+
+// ---------------------- Settings and lifecycle ----------------------
+
+/// Apply @p update. A setting another library already set to a different value keeps that value,
+/// and the refusal is reported as a diagnostic.
+inline void configure(SettingsUpdate const &update) {
+    detail::apply_settings(update, waggle_config_set);
+}
+
+/// Apply @p update whoever set those settings before; for tests and tools that put a value back.
+inline void override_settings(SettingsUpdate const &update) {
+    detail::apply_settings(update, waggle_config_override);
+}
+
+/// The settings in force.
+inline Settings settings() {
+    Settings   s;
+    auto const flag = [](char const *key, bool &into) {
+        if (auto v = detail::setting(key)) {
+            into = *v == "true";
+        }
     };
-    std::once_flag _calibration_once;
-    Overhead       _calibration;
+    auto const number = [](char const *key, std::int64_t &into) {
+        if (auto v = detail::setting(key)) {
+            into = std::stoll(*v);
+        }
+    };
+    auto const text = [](char const *key, std::string &into) {
+        if (auto v = detail::setting(key)) {
+            into = *v;
+        }
+    };
+    flag("record", s.record);
+    flag("report", s.report);
+    text("report_file", s.report_file);
+    flag("report_append", s.report_append);
+    flag("report_detailed", s.report_detailed);
+    text("save", s.save);
+    flag("server", s.server);
+    number("port", s.port);
+    flag("wait_for_viewer", s.wait_for_viewer);
+    number("max_distinct_children", s.max_distinct_children);
+    return s;
+}
 
-    /// Create, register and return the calling thread's channel. The cold half of @ref thread_channel.
-    auto register_thread() -> ThreadChannel &;
+/// Count @p client as using the profiler until its matching @ref finalize.
+inline void init(ClientInfo const &client) {
+    waggle_init(client.name.c_str(), client.version.c_str(), client.git_commit.c_str(), client.git_branch.c_str(), client.git_dirty ? 1 : 0,
+                client.build_type.c_str());
+}
 
-    /// Run the push and pop paths into a scratch channel and time them, once.
-    auto calibrated_overhead() -> Overhead const &;
+/// Release the @ref init of the client named @p client; the last release writes the outputs.
+inline void finalize(std::string const &client) {
+    waggle_finalize(client.c_str());
+}
 
-    /// Record a zone opening on @p ch: one clock read and one event written in place. A full ring
-    /// skips the clock and counter reads.
-    void write_push(ThreadChannel &ch, uint32_t site_id, uint32_t name_id) {
-        // Counted even when the event is dropped: the consumer resynchronizes on it.
-        uint32_t const depth = ++ch.depth;
-        if (Event *evt = ch.ring.try_claim()) {
-            *evt = Event{.ticks = TickClock::now(), .type = EventType::Push, .site_id = site_id, .name_id = name_id, .depth = depth};
-            if (ch.counters) {
-                read_counters(*evt);
+/// Drain every thread's recorded events into the aggregated trees.
+inline void flush() {
+    waggle_flush();
+}
+
+/// Hold the calling thread until a viewer connects, if the settings ask for that.
+inline void wait_for_viewer() {
+    waggle_wait_for_viewer();
+}
+
+// ---------------------- The live server ----------------------
+
+inline void start_server(uint16_t port) {
+    waggle_server_start(port);
+}
+inline bool server_running() {
+    return waggle_server_running() != 0;
+}
+inline uint16_t server_port() {
+    return waggle_server_port();
+}
+inline bool viewer_connected() {
+    return waggle_viewer_connected() != 0;
+}
+
+/// Answer viewer requests named @p method with @p handler, which may be registered before any
+/// server runs. A handler must not register or remove handlers itself.
+inline void register_handler(std::string const &method, RequestHandler handler) {
+    waggle_register_handler(
+        method.c_str(),
+        [](void *user, char const *params, size_t length, waggle_reply *reply) {
+            detail::answer(reply, *static_cast<RequestHandler *>(user), std::string(params, length));
+        },
+        new RequestHandler(std::move(handler)), &detail::release<RequestHandler>);
+}
+
+/// Remove the handler for @p method, waiting for any call of it in progress; an owner whose handler
+/// captures it calls this from its destructor.
+inline void unregister_handler(std::string const &method) {
+    waggle_unregister_handler(method.c_str());
+}
+
+/// Embed @p section's JSON under @p key in every session file.
+inline void register_session_section(std::string const &key, SessionSection section) {
+    waggle_register_session_section(
+        key.c_str(),
+        [](void *user, char const *, size_t, waggle_reply *reply) {
+            auto const &call = *static_cast<SessionSection *>(user);
+            detail::answer(reply, [&call](std::string const &) { return call(); }, {});
+        },
+        new SessionSection(std::move(section)), &detail::release<SessionSection>);
+}
+
+/// Send @p json_object to every connected viewer as a message of type @p type.
+inline void publish(std::string const &type, std::string_view json_object) {
+    waggle_publish(type.c_str(), json_object.data(), json_object.size());
+}
+
+/// Stream a log message to connected viewers; @p level runs 0 (trace) to 5 (critical).
+inline void log(int level, std::chrono::system_clock::time_point when, char const *file, int line, char const *function,
+                std::string_view message) {
+    auto const ns = std::chrono::duration_cast<std::chrono::nanoseconds>(when.time_since_epoch()).count();
+    waggle_log(level, static_cast<int64_t>(ns), file != nullptr ? file : "", line, function != nullptr ? function : "", message.data(),
+               message.size());
+}
+
+/// Stream a line the program printed to connected viewers.
+inline void output(std::string_view message) {
+    waggle_output(message.data(), message.size());
+}
+
+// ---------------------- Diagnostics ----------------------
+
+/// Send the profiler's own messages to @p handler; an empty handler restores stderr.
+inline void set_diagnostic_handler(DiagnosticHandler handler) {
+    if (!handler) {
+        waggle_set_diagnostic_handler(nullptr, nullptr, nullptr);
+        return;
+    }
+    waggle_set_diagnostic_handler(
+        [](void *user, int level, char const *message, size_t length) {
+            try {
+                (*static_cast<DiagnosticHandler *>(user))(static_cast<DiagnosticLevel>(level), std::string_view(message, length));
+            } catch (...) { // NOLINT(bugprone-empty-catch): a diagnostic must never throw across C
             }
-            ch.ring.commit();
-        }
-        wake_consumer_if_filling(ch);
-        ch.pushes.store(ch.pushes.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
-    }
+        },
+        new DiagnosticHandler(std::move(handler)), &detail::release<DiagnosticHandler>);
+}
 
-    /// Record a zone's closing on @p ch.
-    void write_pop(ThreadChannel &ch) {
-        // Nothing open: skip it, so a Pop's depth always names an open zone.
-        if (ch.depth == 0) {
-            return;
-        }
-        uint32_t const depth = ch.depth--;
-        if (Event *evt = ch.ring.try_claim()) {
-            *evt = Event{.ticks = TickClock::now(), .type = EventType::Pop, .depth = depth};
-            if (ch.counters) {
-                read_counters(*evt);
-            }
-            ch.ring.commit();
-        }
-        wake_consumer_if_filling(ch);
-        ch.pops.store(ch.pops.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
-    }
+// ---------------------- Reports ----------------------
 
-    /// Wake the consumer once when @p ch's ring passes half full, so a burst that starts during its
-    /// nap does not overflow. Checked every kFillCheckEvery events, since past half each check reads
-    /// the consumer's tail.
-    void wake_consumer_if_filling(ThreadChannel &ch) {
-        if (--ch.until_fill_check != 0) {
-            return;
-        }
-        ch.until_fill_check = kFillCheckEvery;
-        if (ch.ring.past_half()) {
-            if (!ch.woke_consumer) {
-                ch.woke_consumer = true;
-                _consumer->notify();
-            }
-        } else {
-            ch.woke_consumer = false;
-        }
-    }
+/// Print the text report to standard output.
+inline void print_report(bool detailed = false) {
+    waggle_print_report(detailed ? 1 : 0);
+}
 
-    static void read_counters(Event &evt) {
-        std::array<uint64_t, kNumCounterSlots> values;
-        get_counter_backend().read(values);
-        for (int i = 0; i < kNumCounterSlots; ++i) {
-            evt.counters[i] = values[i];
-        }
-    }
-};
+/// Write the aggregated trees as JSON to @p path; the path on success.
+inline std::optional<std::string> export_json(std::string const &path) {
+    return waggle_export_json(path.c_str()) == 0 ? std::optional<std::string>(path) : std::nullopt;
+}
 
-// ---------------------- Scoped helper ----------------------
+inline uint64_t total_push_count() {
+    return waggle_total_push_count();
+}
+inline uint64_t total_pop_count() {
+    return waggle_total_pop_count();
+}
+inline double push_overhead_ns() {
+    return waggle_push_overhead_ns();
+}
+inline double pop_overhead_ns() {
+    return waggle_pop_overhead_ns();
+}
+
+/// Each string annotation on the calling thread's open zones, outermost first.
+inline std::vector<std::pair<std::string, std::string>> open_zone_annotations() {
+    std::vector<std::pair<std::string, std::string>> out;
+    waggle_open_zone_annotations(
+        [](void *user, char const *key, size_t key_length, char const *value, size_t value_length) {
+            static_cast<std::vector<std::pair<std::string, std::string>> *>(user)->emplace_back(std::string(key, key_length),
+                                                                                                std::string(value, value_length));
+        },
+        &out);
+    return out;
+}
+
+// ---------------------- Call sites and zones ----------------------
 /**
  * @brief One zone call site, registered once.
  *
@@ -443,7 +355,7 @@ struct WAGGLE_EXPORT Profiler {
  */
 struct ZoneSite {
     ZoneSite(std::string_view name, char const *file, int line, char const *func)
-        : site_id{Profiler::instance().register_site(name, file, line, func)} {}
+        : site_id{waggle_register_site(name.data(), name.size(), file, line, func, 0)} {}
 
     uint32_t site_id{0};
 };
@@ -531,7 +443,7 @@ inline uint32_t cached_id(IdCache &cache, std::string_view s) {
     if (auto it = cache.find(s); it != cache.end()) {
         return it->second;
     }
-    uint32_t const id = Profiler::instance().string_table().intern(s);
+    uint32_t const id = detail::intern(s);
     cache.emplace(std::string(s), id);
     return id;
 }
@@ -554,7 +466,7 @@ struct NameSiteCache {
 template <typename FormatName, typename... Args>
 uint32_t zone_name_id(FormatName const &format_name, Args &&...args) {
     // Forwarded because fmt rejects an lvalue join view. Building the key only copies its iterators.
-    auto const intern_formatted = [&] { return Profiler::instance().string_table().intern(format_name(std::forward<Args>(args)...)); };
+    auto const intern_formatted = [&] { return detail::intern(format_name(std::forward<Args>(args)...)); };
     if constexpr ((name_keyable<Args>() && ...)) {
         thread_local NameSiteCache cache;
         KeyWriter                  w{.pos = cache.key, .end = cache.key + kNameKeyCapacity};
@@ -594,7 +506,7 @@ struct AnnotateSite {
     static uint32_t fill(std::atomic<uint32_t> &slot, std::string_view s) {
         uint32_t id = slot.load(std::memory_order_relaxed);
         if (id == kNotInterned) [[unlikely]] {
-            id = Profiler::instance().string_table().intern(s);
+            id = detail::intern(s);
             slot.store(id, std::memory_order_relaxed);
         }
         return id;
@@ -605,18 +517,17 @@ struct AnnotateSite {
 
 struct ScopedZone {
     /// Enter a zone with a fixed name. Takes no lock: the site holds every id.
-    explicit ScopedZone(ZoneSite const &site) { Profiler::instance().push_interned(site.site_id, 0); }
+    explicit ScopedZone(ZoneSite const &site) { waggle_zone_begin(site.site_id, 0); }
 
     /// Enter a zone whose name is built per call; only the name is interned. It arrives as a callable
     /// so nothing is built when recording is off.
     template <typename MakeName>
         requires std::invocable<MakeName>
     ScopedZone(ZoneSite const &site, MakeName &&make_name) {
-        auto &prof = Profiler::instance();
-        if (!prof.enabled()) {
+        if (waggle_enabled() == 0) {
             return;
         }
-        prof.push_interned(site.site_id, prof.string_table().intern(make_name()));
+        waggle_zone_begin(site.site_id, detail::intern(make_name()));
     }
 
     /**
@@ -630,134 +541,73 @@ struct ScopedZone {
     template <typename ApplyArgs, typename FormatName>
         requires std::is_class_v<std::remove_cvref_t<ApplyArgs>> && std::is_class_v<FormatName>
     ScopedZone(ZoneSite const &site, ApplyArgs &&apply_args, FormatName const &format_name) {
-        auto &prof = Profiler::instance();
-        if (!prof.enabled()) {
+        if (waggle_enabled() == 0) {
             return;
         }
         std::forward<ApplyArgs>(apply_args)([&](auto &&...args) {
-            uint32_t const id = site_cache::zone_name_id(format_name, std::forward<decltype(args)>(args)...);
-            prof.push_interned(site.site_id, id);
+            waggle_zone_begin(site.site_id, site_cache::zone_name_id(format_name, std::forward<decltype(args)>(args)...));
         });
     }
 
     /// Enter a zone with a name the caller interned (@ref intern_string), for callers with a stable
     /// set of runtime names, such as graph replay. Takes no lock.
-    ScopedZone(ZoneSite const &site, uint32_t name_id) { Profiler::instance().push_interned(site.site_id, name_id); }
+    ScopedZone(ZoneSite const &site, uint32_t name_id) { waggle_zone_begin(site.site_id, name_id); }
 
-    explicit ScopedZone(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
-        Profiler::instance().push(name, file, line, func);
+    /// Enter a zone at a site described at run time, registered on every entry.
+    explicit ScopedZone(std::string_view name, char const *file = "", int line = 0, char const *func = "") {
+        if (waggle_enabled() != 0) {
+            waggle_zone_begin(waggle_register_site(name.data(), name.size(), file, line, func, 0), 0);
+        }
     }
-    ~ScopedZone() { Profiler::instance().pop(); }
+
+    ~ScopedZone() { waggle_zone_end(); }
+
+    ScopedZone(ScopedZone const &)            = delete;
+    ScopedZone &operator=(ScopedZone const &) = delete;
 };
 
 /// Intern @p s, for callers that cache their own ids. Ids are stable for the life of the process.
 inline uint32_t intern_string(std::string_view s) {
-    return Profiler::instance().string_table().intern(s);
+    return detail::intern(s);
 }
 
 // ---------------------- Annotation API ----------------------
 
 /// Attach a string annotation to the current profiling zone.
 inline void annotate(std::string_view key, std::string_view value) {
-    auto &prof = Profiler::instance();
-    if (!prof.enabled()) {
-        return;
+    if (waggle_enabled() != 0) {
+        waggle_annotate_str(detail::intern(key), detail::intern(value));
     }
-    auto &st = prof.string_table();
-
-    Event evt{};
-    evt.type                  = EventType::Annotate;
-    evt.ticks                 = TickClock::now();
-    evt.annotation.key_id     = st.intern(key);
-    evt.annotation.value_type = AnnotateValueType::String;
-    evt.annotation.string_id  = st.intern(value);
-
-    prof.emit_event(evt);
 }
 
 /// Attach an integer annotation to the current profiling zone.
 inline void annotate(std::string_view key, int64_t value) {
-    auto &prof = Profiler::instance();
-    if (!prof.enabled()) {
-        return;
+    if (waggle_enabled() != 0) {
+        waggle_annotate_i64(detail::intern(key), value);
     }
-    auto &st = prof.string_table();
-
-    Event evt{};
-    evt.type                  = EventType::Annotate;
-    evt.ticks                 = TickClock::now();
-    evt.annotation.key_id     = st.intern(key);
-    evt.annotation.value_type = AnnotateValueType::Int64;
-    evt.annotation.int_val    = value;
-
-    prof.emit_event(evt);
 }
 
 /// Attach a floating-point annotation to the current profiling zone.
 inline void annotate(std::string_view key, double value) {
-    auto &prof = Profiler::instance();
-    if (!prof.enabled()) {
-        return;
+    if (waggle_enabled() != 0) {
+        waggle_annotate_f64(detail::intern(key), value);
     }
-    auto &st = prof.string_table();
-
-    Event evt{};
-    evt.type                  = EventType::Annotate;
-    evt.ticks                 = TickClock::now();
-    evt.annotation.key_id     = st.intern(key);
-    evt.annotation.value_type = AnnotateValueType::Float64;
-    evt.annotation.float_val  = value;
-
-    prof.emit_event(evt);
 }
 
 /// Attach a string annotation with a pre-interned key and value, skipping the per-call interning
 /// (and lock) of @ref annotate.
 inline void annotate_interned(uint32_t key_id, uint32_t value_id) {
-    auto &prof = Profiler::instance();
-    if (!prof.enabled()) {
-        return;
-    }
-    Event evt{};
-    evt.type                  = EventType::Annotate;
-    evt.ticks                 = TickClock::now();
-    evt.annotation.key_id     = key_id;
-    evt.annotation.value_type = AnnotateValueType::String;
-    evt.annotation.string_id  = value_id;
-
-    prof.emit_event(evt);
+    waggle_annotate_str(key_id, value_id);
 }
 
 /// Attach an integer annotation under a pre-interned key.
 inline void annotate_interned(uint32_t key_id, int64_t value) {
-    auto &prof = Profiler::instance();
-    if (!prof.enabled()) {
-        return;
-    }
-    Event evt{};
-    evt.type                  = EventType::Annotate;
-    evt.ticks                 = TickClock::now();
-    evt.annotation.key_id     = key_id;
-    evt.annotation.value_type = AnnotateValueType::Int64;
-    evt.annotation.int_val    = value;
-
-    prof.emit_event(evt);
+    waggle_annotate_i64(key_id, value);
 }
 
 /// Attach a floating-point annotation under a pre-interned key.
 inline void annotate_interned(uint32_t key_id, double value) {
-    auto &prof = Profiler::instance();
-    if (!prof.enabled()) {
-        return;
-    }
-    Event evt{};
-    evt.type                  = EventType::Annotate;
-    evt.ticks                 = TickClock::now();
-    evt.annotation.key_id     = key_id;
-    evt.annotation.value_type = AnnotateValueType::Float64;
-    evt.annotation.float_val  = value;
-
-    prof.emit_event(evt);
+    waggle_annotate_f64(key_id, value);
 }
 
 namespace site_cache {
@@ -770,8 +620,7 @@ namespace site_cache {
  */
 template <std::size_t N, typename GetValue>
 void annotate_at(AnnotateSite &site, char const (&key)[N], GetValue &&get_value) {
-    auto &prof = Profiler::instance();
-    if (!prof.enabled()) {
+    if (waggle_enabled() == 0) {
         return;
     }
     uint32_t const key_id = AnnotateSite::fill(site.key_id, key);
@@ -796,35 +645,21 @@ inline void annotate_dims(std::string_view key, std::span<int64_t const> dims) {
 }
 
 /// Record a memory allocation in the current profiling zone. An empty one records nothing: resizing
-/// an empty tensor reports freeing its old, zero-byte storage.
-/// @p address, when given, is the allocation's, for matching it to its free.
+/// an empty tensor reports freeing its old, zero-byte storage. @p address, when given, is the
+/// allocation's, for matching it to its free.
 inline void mem_alloc(int64_t bytes, void const *address = nullptr) {
-    auto &prof = Profiler::instance();
-    if (bytes == 0 || !prof.enabled()) {
-        return;
+    if (bytes != 0) {
+        waggle_mem_alloc(address, bytes);
     }
-    Event evt{};
-    evt.type        = EventType::MemAlloc;
-    evt.ticks       = TickClock::now();
-    evt.mem.address = reinterpret_cast<uintptr_t>(address);
-    evt.mem.bytes   = bytes;
-    prof.emit_event(evt);
 }
 
 /// Record a memory deallocation in the current profiling zone. An empty one records nothing.
 /// The size is the caller's to give: a buffer freed on another thread than the one that allocated
-/// it can be processed before its allocation, so the consumer cannot look it up.
+/// it can be processed before its allocation, so the collector cannot look it up.
 inline void mem_free(int64_t bytes, void const *address = nullptr) {
-    auto &prof = Profiler::instance();
-    if (bytes == 0 || !prof.enabled()) {
-        return;
+    if (bytes != 0) {
+        waggle_mem_free(address, bytes);
     }
-    Event evt{};
-    evt.type        = EventType::MemFree;
-    evt.ticks       = TickClock::now();
-    evt.mem.address = reinterpret_cast<uintptr_t>(address);
-    evt.mem.bytes   = bytes;
-    prof.emit_event(evt);
 }
 
 WAGGLE_NAMESPACE_END

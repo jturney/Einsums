@@ -7,11 +7,6 @@
 
 #include <Waggle/Config.hpp>
 
-#include <Waggle/Consumer.hpp>
-#include <Waggle/LogQueue.hpp>
-#include <Waggle/RequestHandlers.hpp>
-#include <Waggle/StringTable.hpp>
-
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -20,6 +15,11 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+#include "Consumer.hpp"
+#include "LogQueue.hpp"
+#include "RequestHandlers.hpp"
+#include "StringTable.hpp"
 
 #ifdef __APPLE__
 #    include <dns_sd.h>

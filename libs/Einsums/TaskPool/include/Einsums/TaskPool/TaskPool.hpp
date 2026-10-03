@@ -94,7 +94,7 @@ class EINSUMS_EXPORT TaskPool {
     void submit_detached(std::string name, F &&callable) {
         enqueue([name = std::move(name), task = std::forward<F>(callable)]() mutable {
 #if defined(EINSUMS_HAVE_PROFILER)
-            waggle::Profiler::instance().push(name);
+            waggle::push(name);
 #endif
             try {
                 task();
@@ -102,7 +102,7 @@ class EINSUMS_EXPORT TaskPool {
                 EINSUMS_LOG_ERROR("TaskPool: detached task '{}' threw; the exception is dropped", name);
             }
 #if defined(EINSUMS_HAVE_PROFILER)
-            waggle::Profiler::instance().pop();
+            waggle::pop();
 #endif
         });
     }
@@ -311,7 +311,7 @@ class EINSUMS_EXPORT TaskPool {
     std::function<void()> make_wrapped_task(std::string name, F &&callable, std::shared_ptr<detail::SharedState<R>> state) {
         return [name = std::move(name), task = std::forward<F>(callable), state = std::move(state)]() mutable {
 #if defined(EINSUMS_HAVE_PROFILER)
-            waggle::Profiler::instance().push(fmt::format("task:{}", name));
+            waggle::push(fmt::format("task:{}", name));
 #endif
             try {
                 if constexpr (std::is_void_v<R>) {
@@ -324,7 +324,7 @@ class EINSUMS_EXPORT TaskPool {
                 state->set_exception(std::current_exception());
             }
 #if defined(EINSUMS_HAVE_PROFILER)
-            waggle::Profiler::instance().pop();
+            waggle::pop();
 #endif
         };
     }

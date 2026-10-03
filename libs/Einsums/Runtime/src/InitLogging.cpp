@@ -15,7 +15,6 @@
 #if defined(EINSUMS_HAVE_PROFILER)
 #    include <Einsums/Profile/Profile.hpp>
 #    include <Einsums/Profile/SpdlogSink.hpp>
-#    include <Waggle/Diagnostics.hpp>
 #endif
 
 #include <fmt/format.h>
@@ -96,7 +95,7 @@ void init_logging(RuntimeConfiguration & /*config*/) {
         profiler_sink->set_level(spdlog::level::trace);
         sinks.push_back(profiler_sink);
 
-        einsums::print::set_output_sink([](std::string const &msg) { waggle::Profiler::instance().output(msg); });
+        einsums::print::set_output_sink([](std::string const &msg) { waggle::output(msg); });
 
         // The profiler's own messages go to this logger, under its run-time level, rather than to
         // stderr. The logger object, not EINSUMS_LOG_*, which the build's level can compile out.

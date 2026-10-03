@@ -5,13 +5,17 @@
 
 #pragma once
 
+/// @file
+/// The values Waggle's C++ interface passes: settings, a client's description, a diagnostic's level.
+/// All of it header-only, crossing the C interface field by field.
+
 #include <Waggle/Config.hpp>
 
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
-#include <vector>
+#include <string_view>
 
 WAGGLE_NAMESPACE_BEGIN
 
@@ -43,42 +47,31 @@ struct SettingsUpdate {
     std::optional<std::int64_t> max_distinct_children;
 };
 
-/// Reads an environment variable: its value, or nothing if unset.
-using EnvironmentReader = std::function<std::optional<std::string>(char const *name)>;
-
-/**
- * @brief The process's settings and who set them.
- *
- * Three layers, highest first: values a library set explicitly with @ref configure, then the
- * ``WAGGLE_*`` environment variables, then the defaults in @ref Settings. Libraries share one
- * profiler, so when two set one setting to different values the first keeps it: the second is
- * reported, never applied, and no library's choice changes under it.
- */
-class WAGGLE_EXPORT SettingsStore {
-  public:
-    /// The process environment.
-    static auto process_environment() -> EnvironmentReader;
-
-    /// Take every ``WAGGLE_*`` variable @p getenv knows, below anything set explicitly. A value that
-    /// does not parse is skipped and its message added to the result.
-    auto apply_environment(EnvironmentReader const &getenv) -> std::vector<std::string>;
-
-    /// Set what @p update holds. A setting another call already set explicitly to a different value
-    /// keeps that value; each such refusal is described in the result.
-    auto configure(SettingsUpdate const &update) -> std::vector<std::string>;
-
-    /// Set what @p update holds whoever set it before, and count it as explicit. For tests and tools
-    /// that must restore a value; libraries use @ref configure.
-    void override_settings(SettingsUpdate const &update);
-
-    /// The settings in force.
-    [[nodiscard]] auto current() const -> Settings const & { return _settings; }
-
-  private:
-    Settings _settings;
-
-    /// Which settings @ref configure has set, in @ref SettingsUpdate's member order.
-    bool _explicit[10]{}; // NOLINT(modernize-avoid-c-arrays)
+/// How much a profiler message matters.
+enum class DiagnosticLevel : std::uint8_t {
+    Debug,
+    Info,
+    Warning,
+    Error,
 };
+
+/// Answers a viewer request: receives the request's params as a JSON object, returns JSON.
+using RequestHandler = std::function<std::string(std::string const &params)>;
+
+/// Produces one JSON value for a session file.
+using SessionSection = std::function<std::string()>;
+
+/// A library using the profiler, as viewers and session files name it.
+struct ClientInfo {
+    std::string name;
+    std::string version{};
+    std::string git_commit{};
+    std::string git_branch{};
+    bool        git_dirty{false};
+    std::string build_type{};
+};
+
+/// Receives the profiler's own messages: a server that could not bind, a setting refused.
+using DiagnosticHandler = std::function<void(DiagnosticLevel level, std::string_view message)>;
 
 WAGGLE_NAMESPACE_END

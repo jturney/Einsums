@@ -16,6 +16,8 @@
 #include <thread>
 #include <vector>
 
+#include "Profiler.hpp"
+
 using namespace waggle;
 
 // Helper: recursively search the AggNode tree for a node with a given name.

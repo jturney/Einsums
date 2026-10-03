@@ -17,8 +17,6 @@
 
 #include <Einsums/Performance.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Waggle/Consumer.hpp>
-#include <Waggle/CounterBackend.hpp>
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -32,6 +30,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "Consumer.hpp"
+#include "CounterBackend.hpp"
+#include "Profiler.hpp"
 
 #if defined(__APPLE__)
 #    include <mach/mach_time.h>

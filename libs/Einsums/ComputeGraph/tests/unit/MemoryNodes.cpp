@@ -16,6 +16,10 @@
 
 #include <Einsums/Testing.hpp>
 
+#if defined(EINSUMS_HAVE_PROFILER)
+#    include "Profiler.hpp"
+#endif
+
 using einsums::testing::reference_einsum;
 
 using namespace einsums;

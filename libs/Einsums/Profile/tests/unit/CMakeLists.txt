@@ -78,6 +78,8 @@ foreach(test ${profile_tests})
     SOURCES ${Sources} ${${TestName}_${TestExtension}_FLAGS}
     NOINSTALL
   )
+  # These test the collector's internals, whose headers only Waggle's own tests see.
+  target_link_libraries(${TestName}_test PRIVATE Waggle::internal)
 
   einsums_add_unit_test("Modules.Profile" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS})
 endforeach()
