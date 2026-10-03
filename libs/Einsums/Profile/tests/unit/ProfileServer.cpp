@@ -140,7 +140,8 @@ TEST_CASE("A handler registered before the server starts is answered", "[profile
 
 TEST_CASE("A published message reaches a connected viewer with its type", "[profiler][server]") {
     StringTable     strings;
-    Consumer        consumer(strings);
+    SiteTable       sites;
+    Consumer        consumer(strings, sites);
     RequestHandlers handlers;
     uint16_t const  port = free_port();
     Server          server(consumer, strings, handlers, "127.0.0.1", port);
@@ -167,7 +168,8 @@ TEST_CASE("A published message reaches a connected viewer with its type", "[prof
 
 TEST_CASE("A session file embeds every registered section", "[profiler][server]") {
     StringTable     strings;
-    Consumer        consumer(strings);
+    SiteTable       sites;
+    Consumer        consumer(strings, sites);
     RequestHandlers handlers;
     handlers.add_session_section("test_section", [] { return std::string(R"([1,2,3])"); });
     Server server(consumer, strings, handlers, "127.0.0.1", free_port());
@@ -229,7 +231,8 @@ class LineReader {
 
 TEST_CASE("The meta message lists every client", "[profiler][server]") {
     StringTable     strings;
-    Consumer        consumer(strings);
+    SiteTable       sites;
+    Consumer        consumer(strings, sites);
     RequestHandlers handlers;
     handlers.add_client({.name = "first-lib", .version = "1.2.3", .git_commit = "abc123"});
     handlers.add_client({.name = "second-lib", .version = "0.1"});
@@ -287,7 +290,8 @@ TEST_CASE("Log messages and program output reach a server started later", "[prof
 // the benchmark results of every short performance test.
 TEST_CASE("Server shutdown delivers queued results to a client it has not yet accepted", "[profiler][server]") {
     StringTable     strings;
-    Consumer        consumer(strings);
+    SiteTable       sites;
+    Consumer        consumer(strings, sites);
     RequestHandlers handlers;
     uint16_t const  port = free_port();
     Server          server(consumer, strings, handlers, "127.0.0.1", port);
@@ -315,7 +319,8 @@ TEST_CASE("Server shutdown delivers queued results to a client it has not yet ac
 // does, the POSIX case above (with Winsock socket calls in its helpers) replaces this one.
 TEST_CASE("Server does not listen on Windows", "[profiler][server]") {
     StringTable     strings;
-    Consumer        consumer(strings);
+    SiteTable       sites;
+    Consumer        consumer(strings, sites);
     RequestHandlers handlers;
     Server          server(consumer, strings, handlers, "127.0.0.1", 19216);
     REQUIRE_FALSE(server.is_running());

@@ -25,6 +25,7 @@
 #include <waggle/Detail/InsertionOrderedMap.hpp>
 #include <waggle/Event.hpp>
 #include <waggle/RingBuffer.hpp>
+#include <waggle/Sites.hpp>
 #include <waggle/StringTable.hpp>
 
 WAGGLE_NAMESPACE_BEGIN
@@ -140,10 +141,7 @@ struct TimelineEvent {
 // ---------------------- Per-thread state reconstructed by consumer ----------------------
 struct ThreadState {
     struct StackFrame {
-        uint32_t  name_id;
-        uint32_t  file_id;
-        uint32_t  func_id;
-        int       line;
+        uint32_t  name_id; ///< the zone's name: the event's run-time name, else its site's
         ns        child_time{0};
         TimePoint start;
         uint64_t  counters[kNumCounterSlots]{}; // NOLINT(modernize-avoid-c-arrays)
@@ -167,7 +165,7 @@ struct ThreadRegistration {
 // ---------------------- Consumer thread ----------------------
 class WAGGLE_EXPORT Consumer {
   public:
-    Consumer(StringTable &strings);
+    Consumer(StringTable &strings, SiteTable const &sites);
     ~Consumer();
 
     // Non-copyable
@@ -268,7 +266,8 @@ class WAGGLE_EXPORT Consumer {
     /// Close, unrecorded, the frames deeper than @p depth: their Pops were dropped and will never come.
     void unwind_stale_frames(ThreadState &ts, size_t depth);
 
-    StringTable &_strings;
+    StringTable     &_strings;
+    SiteTable const &_sites;
 
     /// The id of "(other)", the node a parent's names fold into past its distinct-name cap.
     uint32_t _other_id;

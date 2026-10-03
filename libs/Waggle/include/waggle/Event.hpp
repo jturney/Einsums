@@ -54,11 +54,11 @@ struct alignas(64) Event {
     uint64_t  ticks;
     EventType type;
 
-    // For Push/Pop: interned string IDs
+    /// For Push: the zone's call site (see SiteTable), which supplies its file, line, function
+    /// and domain.
+    uint32_t site_id;
+    /// For Push: the zone's name when built at run time, a string-table id; 0 for the site's own.
     uint32_t name_id;
-    uint32_t file_id;
-    uint32_t func_id;
-    int      line;
 
     /// For Push/Pop: the producer's nesting level of the zone opened or closed, 1 for outermost.
     ///
@@ -72,8 +72,11 @@ struct alignas(64) Event {
         uint64_t counters[4]; // NOLINT(modernize-avoid-c-arrays)
         /// For Annotate.
         AnnotationPayload annotation;
-        /// For MemAlloc/MemFree.
-        int64_t mem_bytes;
+        /// For MemAlloc/MemFree: the allocation and its size.
+        struct {
+            uint64_t address;
+            int64_t  bytes;
+        } mem;
     };
 };
 

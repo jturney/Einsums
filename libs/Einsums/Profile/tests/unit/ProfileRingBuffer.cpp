@@ -107,18 +107,16 @@ TEST_CASE("RingBuffer with Event struct", "[profiler][ringbuffer]") {
     Event push_evt{};
     push_evt.type    = EventType::Push;
     push_evt.ticks   = TickClock::now();
+    push_evt.site_id = 7;
     push_evt.name_id = 42;
-    push_evt.file_id = 1;
-    push_evt.func_id = 2;
-    push_evt.line    = 100;
 
     REQUIRE(rb.try_push(push_evt));
 
     Event pop_evt{};
     REQUIRE(rb.try_pop(pop_evt));
     REQUIRE(pop_evt.type == EventType::Push);
+    REQUIRE(pop_evt.site_id == 7);
     REQUIRE(pop_evt.name_id == 42);
-    REQUIRE(pop_evt.line == 100);
 }
 
 TEST_CASE("RingBuffer counts the pushes it refuses", "[profiler][ringbuffer]") {

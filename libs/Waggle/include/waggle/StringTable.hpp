@@ -20,6 +20,9 @@ WAGGLE_NAMESPACE_BEGIN
 /// shared lock; only a new string takes the exclusive one.
 class StringTable {
   public:
+    /// Id 0 is the empty string, which doubles as "no string": a caller can test an id against 0.
+    StringTable() { intern(""); }
+
     /// Intern a string and return its ID. Thread-safe.
     auto intern(std::string_view s) -> uint32_t {
         // Fast path: shared lock read

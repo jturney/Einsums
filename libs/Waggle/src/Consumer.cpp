@@ -11,7 +11,7 @@
 
 WAGGLE_NAMESPACE_BEGIN
 
-Consumer::Consumer(StringTable &strings) : _strings(strings), _other_id(strings.intern("(other)")) {
+Consumer::Consumer(StringTable &strings, SiteTable const &sites) : _strings(strings), _sites(sites), _other_id(strings.intern("(other)")) {
     _running.store(true, std::memory_order_relaxed);
     _thread = std::thread([this] { consumer_loop(); });
 }
@@ -167,11 +167,11 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
         unwind_stale_frames(ts, evt.depth - 1);
     }
 
+    // The site gives the file, line and function; the name is the event's own when it has one.
+    Site const              site    = _sites.get(evt.site_id);
+    uint32_t const          name_id = evt.name_id != 0 ? evt.name_id : site.name_id;
     ThreadState::StackFrame frame{};
-    frame.name_id    = evt.name_id;
-    frame.file_id    = evt.file_id;
-    frame.func_id    = evt.func_id;
-    frame.line       = evt.line;
+    frame.name_id    = name_id;
     frame.child_time = ns{0};
     frame.start      = TickClock::instance().to_time_point(evt.ticks);
     for (int i = 0; i < kNumCounterSlots; ++i)
@@ -179,7 +179,7 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
 
     // One step down from the parent's node, resolved when the parent was pushed.
     AggNode *parent = ts.stack.empty() ? &ts.root : ts.stack.back().node;
-    auto     it     = parent->children.find(evt.name_id);
+    auto     it     = parent->children.find(name_id);
     if (it == parent->children.end()) {
         // Names built at run time could grow the tree without bound. Past the cap a new name joins
         // the parent's "(other)" node, which still times it.
@@ -189,15 +189,15 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
         if (cap > 0 && named >= static_cast<size_t>(cap)) {
             if (other == parent->children.end()) {
                 auto node      = std::make_unique<AggNode>(_strings.get(_other_id));
-                node->file     = _strings.get(evt.file_id);
-                node->line     = evt.line;
-                node->function = _strings.get(evt.func_id);
+                node->file     = _strings.get(site.file_id);
+                node->line     = site.line;
+                node->function = _strings.get(site.func_id);
 
                 parent->children[_other_id] = std::move(node);
                 other                       = parent->children.find(_other_id);
             }
             AggNode &folded = *other->second;
-            if (folded.folded_names.insert(evt.name_id).second) {
+            if (folded.folded_names.insert(name_id).second) {
                 folded.annotations["distinct"] = std::to_string(folded.folded_names.size());
             }
             it = other;
@@ -205,13 +205,13 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
     }
     if (it == parent->children.end()) {
         // The only place ids are resolved to strings: once per distinct call path, not per event.
-        auto node      = std::make_unique<AggNode>(_strings.get(evt.name_id));
-        node->file     = _strings.get(evt.file_id);
-        node->line     = evt.line;
-        node->function = _strings.get(evt.func_id);
+        auto node      = std::make_unique<AggNode>(_strings.get(name_id));
+        node->file     = _strings.get(site.file_id);
+        node->line     = site.line;
+        node->function = _strings.get(site.func_id);
 
-        parent->children[evt.name_id] = std::move(node);
-        it                            = parent->children.find(evt.name_id);
+        parent->children[name_id] = std::move(node);
+        it                        = parent->children.find(name_id);
     }
     frame.node = it->second.get();
 
@@ -384,14 +384,14 @@ void Consumer::process_mem(ThreadState &ts, Event const &evt) {
 
     if (evt.type == EventType::MemAlloc) {
         cur->mem_alloc_count += 1;
-        cur->mem_alloc_bytes += evt.mem_bytes;
-        cur->mem_current_bytes += evt.mem_bytes;
+        cur->mem_alloc_bytes += evt.mem.bytes;
+        cur->mem_current_bytes += evt.mem.bytes;
         if (cur->mem_current_bytes > cur->mem_peak_bytes)
             cur->mem_peak_bytes = cur->mem_current_bytes;
     } else {
         cur->mem_free_count += 1;
-        cur->mem_free_bytes += evt.mem_bytes;
-        cur->mem_current_bytes -= evt.mem_bytes;
+        cur->mem_free_bytes += evt.mem.bytes;
+        cur->mem_current_bytes -= evt.mem.bytes;
     }
 }
 

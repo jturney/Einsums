@@ -15,5 +15,6 @@
 #include <waggle/RingBuffer.hpp>
 #include <waggle/Server.hpp>
 #include <waggle/Settings.hpp>
+#include <waggle/Sites.hpp>
 #include <waggle/StringTable.hpp>
 #include <waggle/Waggle.hpp>

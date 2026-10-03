@@ -34,6 +34,7 @@
 #include <waggle/RingBuffer.hpp>
 #include <waggle/Server.hpp>
 #include <waggle/Settings.hpp>
+#include <waggle/Sites.hpp>
 #include <waggle/StringTable.hpp>
 
 #if defined _WIN32
@@ -79,21 +80,39 @@ struct WAGGLE_EXPORT Profiler {
     [[nodiscard]] bool enabled() const { return _enabled.load(std::memory_order_relaxed); }
     void               set_enabled(bool on) { _enabled.store(on, std::memory_order_relaxed); }
 
-    // Start a zone, interning its strings on every call. WAGGLE_ZONE uses push_interned instead.
+    // Start a zone, registering its site on every call. WAGGLE_ZONE uses push_interned instead.
     void push(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
         if (!enabled()) {
             return;
         }
-        push_interned(_strings.intern(name), _strings.intern(file), _strings.intern(func), line);
+        push_interned(register_site(name, file, line, func), 0);
     }
 
-    /// Start a zone from already-interned ids (see @ref ZoneSite).
-    void push_interned(uint32_t name_id, uint32_t file_id, uint32_t func_id, int line) {
+    /// Start a zone at site @p site_id (see @ref ZoneSite), named @p name_id, or by its site when
+    /// @p name_id is 0.
+    void push_interned(uint32_t site_id, uint32_t name_id) {
         if (!enabled()) {
             return;
         }
-        write_push(thread_channel(), name_id, file_id, func_id, line);
+        write_push(thread_channel(), site_id, name_id);
     }
+
+    /// The id of the call site at @p file : @p line in @p func, named @p name, of the library
+    /// @p domain names; the same description always gives the same id. Thread-safe.
+    auto register_site(std::string_view name, std::string_view file, int line, std::string_view func, std::string_view domain = {})
+        -> uint32_t {
+        return _sites.add({.name_id = _strings.intern(name),
+                           .file_id = _strings.intern(file),
+                           .func_id = _strings.intern(func),
+                           .line    = line,
+                           .domain  = _domains.add(domain)});
+    }
+
+    /// The id of the library named @p name, registering it if new. Thread-safe.
+    auto register_domain(std::string_view name) -> uint32_t { return _domains.add(name); }
+
+    /// The call sites registered so far.
+    auto sites() const -> SiteTable const & { return _sites; }
 
     // Stop timer region
     void pop() {
@@ -310,6 +329,8 @@ struct WAGGLE_EXPORT Profiler {
     }
 
     StringTable               _strings;
+    SiteTable                 _sites;
+    DomainTable               _domains;
     std::unique_ptr<Consumer> _consumer;
 
     /// What libraries registered for the server and session files. Declared before the server,
@@ -351,17 +372,11 @@ struct WAGGLE_EXPORT Profiler {
 
     /// Record a zone opening on @p ch: one clock read and one event written in place. A full ring
     /// skips the clock and counter reads.
-    void write_push(ThreadChannel &ch, uint32_t name_id, uint32_t file_id, uint32_t func_id, int line) {
+    void write_push(ThreadChannel &ch, uint32_t site_id, uint32_t name_id) {
         // Counted even when the event is dropped: the consumer resynchronizes on it.
         uint32_t const depth = ++ch.depth;
         if (Event *evt = ch.ring.try_claim()) {
-            *evt = Event{.ticks   = TickClock::now(),
-                         .type    = EventType::Push,
-                         .name_id = name_id,
-                         .file_id = file_id,
-                         .func_id = func_id,
-                         .line    = line,
-                         .depth   = depth};
+            *evt = Event{.ticks = TickClock::now(), .type = EventType::Push, .site_id = site_id, .name_id = name_id, .depth = depth};
             if (ch.counters) {
                 read_counters(*evt);
             }
@@ -418,24 +433,17 @@ struct WAGGLE_EXPORT Profiler {
 
 // ---------------------- Scoped helper ----------------------
 /**
- * @brief The interned name, file and function of one zone call site.
+ * @brief One zone call site, registered once.
  *
- * @ref WAGGLE_ZONE makes one a function-local static, so these strings are interned once per
- * site rather than on every entry, under the string table's lock. With a literal name, entering a
- * zone takes no lock at all.
+ * @ref WAGGLE_ZONE makes one a function-local static, so the site's strings are interned and the
+ * site registered once rather than on every entry, under the tables' locks. With a literal name,
+ * entering a zone takes no lock at all.
  */
 struct ZoneSite {
-    ZoneSite(std::string_view name, char const *file, int line_, char const *func) : line{line_} {
-        auto &st = Profiler::instance().string_table();
-        name_id  = st.intern(name);
-        file_id  = st.intern(file);
-        func_id  = st.intern(func);
-    }
+    ZoneSite(std::string_view name, char const *file, int line, char const *func)
+        : site_id{Profiler::instance().register_site(name, file, line, func)} {}
 
-    int      line{0};
-    uint32_t name_id{0};
-    uint32_t file_id{0};
-    uint32_t func_id{0};
+    uint32_t site_id{0};
 };
 
 namespace site_cache {
@@ -595,7 +603,7 @@ struct AnnotateSite {
 
 struct ScopedZone {
     /// Enter a zone with a fixed name. Takes no lock: the site holds every id.
-    explicit ScopedZone(ZoneSite const &site) { Profiler::instance().push_interned(site.name_id, site.file_id, site.func_id, site.line); }
+    explicit ScopedZone(ZoneSite const &site) { Profiler::instance().push_interned(site.site_id, 0); }
 
     /// Enter a zone whose name is built per call; only the name is interned. It arrives as a callable
     /// so nothing is built when recording is off.
@@ -606,7 +614,7 @@ struct ScopedZone {
         if (!prof.enabled()) {
             return;
         }
-        prof.push_interned(prof.string_table().intern(make_name()), site.file_id, site.func_id, site.line);
+        prof.push_interned(site.site_id, prof.string_table().intern(make_name()));
     }
 
     /**
@@ -626,15 +634,13 @@ struct ScopedZone {
         }
         std::forward<ApplyArgs>(apply_args)([&](auto &&...args) {
             uint32_t const id = site_cache::zone_name_id(format_name, std::forward<decltype(args)>(args)...);
-            prof.push_interned(id, site.file_id, site.func_id, site.line);
+            prof.push_interned(site.site_id, id);
         });
     }
 
     /// Enter a zone with a name the caller interned (@ref intern_string), for callers with a stable
     /// set of runtime names, such as graph replay. Takes no lock.
-    ScopedZone(ZoneSite const &site, uint32_t name_id) {
-        Profiler::instance().push_interned(name_id, site.file_id, site.func_id, site.line);
-    }
+    ScopedZone(ZoneSite const &site, uint32_t name_id) { Profiler::instance().push_interned(site.site_id, name_id); }
 
     explicit ScopedZone(std::string const &name, std::string const &file = "", int line = 0, std::string const &func = "") {
         Profiler::instance().push(name, file, line, func);
@@ -789,28 +795,33 @@ inline void annotate_dims(std::string_view key, std::span<int64_t const> dims) {
 
 /// Record a memory allocation in the current profiling zone. An empty one records nothing: resizing
 /// an empty tensor reports freeing its old, zero-byte storage.
-inline void mem_alloc(int64_t bytes) {
+/// @p address, when given, is the allocation's, for matching it to its free.
+inline void mem_alloc(int64_t bytes, void const *address = nullptr) {
     auto &prof = Profiler::instance();
     if (bytes == 0 || !prof.enabled()) {
         return;
     }
     Event evt{};
-    evt.type      = EventType::MemAlloc;
-    evt.ticks     = TickClock::now();
-    evt.mem_bytes = bytes;
+    evt.type        = EventType::MemAlloc;
+    evt.ticks       = TickClock::now();
+    evt.mem.address = reinterpret_cast<uintptr_t>(address);
+    evt.mem.bytes   = bytes;
     prof.emit_event(evt);
 }
 
 /// Record a memory deallocation in the current profiling zone. An empty one records nothing.
-inline void mem_free(int64_t bytes) {
+/// The size is the caller's to give: a buffer freed on another thread than the one that allocated
+/// it can be processed before its allocation, so the consumer cannot look it up.
+inline void mem_free(int64_t bytes, void const *address = nullptr) {
     auto &prof = Profiler::instance();
     if (bytes == 0 || !prof.enabled()) {
         return;
     }
     Event evt{};
-    evt.type      = EventType::MemFree;
-    evt.ticks     = TickClock::now();
-    evt.mem_bytes = bytes;
+    evt.type        = EventType::MemFree;
+    evt.ticks       = TickClock::now();
+    evt.mem.address = reinterpret_cast<uintptr_t>(address);
+    evt.mem.bytes   = bytes;
     prof.emit_event(evt);
 }
 

@@ -214,14 +214,12 @@ TEST_CASE("Profiler - a burst that overruns the ring buffer does not deepen the 
     // WILL be dropped, and which ones is up to the drain: the point is that a
     // dropped Push or Pop costs its own zone's timing and changes nothing about
     // the shape of the tree.
-    auto const     name_id        = prof.string_table().intern("ring_burst_zone");
-    auto const     file_id        = prof.string_table().intern("burst.cpp");
-    auto const     func_id        = prof.string_table().intern("burst");
+    auto const     site_id        = prof.register_site("ring_burst_zone", "burst.cpp", 1, "burst");
     uint64_t const dropped_before = prof.consumer()->dropped_count();
 
     constexpr int kPairs = 200'000; // ring buffer holds 65'536 events
     for (int i = 0; i < kPairs; i++) {
-        prof.push_interned(name_id, file_id, func_id, 1);
+        prof.push_interned(site_id, 0);
         prof.pop();
     }
 

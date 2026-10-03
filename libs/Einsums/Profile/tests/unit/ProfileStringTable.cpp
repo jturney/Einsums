@@ -22,25 +22,27 @@ TEST_CASE("StringTable interns each string once", "[profiler][stringtable]") {
 
     REQUIRE(a != b);
     REQUIRE(st.intern("alpha") == a);
-    REQUIRE(st.size() == 2);
+    REQUIRE(st.size() == 3); // the two, and the empty string every table starts with
 
     REQUIRE(st.get(a) == "alpha");
     REQUIRE(st.get(b) == "beta");
 }
 
-TEST_CASE("StringTable ids start at zero and increase by one", "[profiler][stringtable]") {
+TEST_CASE("StringTable ids increase by one after the empty string's 0", "[profiler][stringtable]") {
     StringTable st;
 
-    REQUIRE(st.intern("first") == 0);
-    REQUIRE(st.intern("second") == 1);
-    REQUIRE(st.intern("third") == 2);
+    REQUIRE(st.intern("first") == 1);
+    REQUIRE(st.intern("second") == 2);
+    REQUIRE(st.intern("third") == 3);
 }
 
-TEST_CASE("StringTable interns the empty string like any other", "[profiler][stringtable]") {
+// Id 0 is the empty string, so it can mean "no string": ComputeGraph's replay tests a cached zone
+// name against 0, which used to be whatever string the process happened to intern first.
+TEST_CASE("StringTable gives the empty string id 0", "[profiler][stringtable]") {
     StringTable st;
 
-    uint32_t const id = st.intern("");
-    REQUIRE(st.get(id).empty());
+    REQUIRE(st.intern("") == 0);
+    REQUIRE(st.get(0).empty());
     REQUIRE(st.size() == 1);
 }
 
@@ -63,8 +65,9 @@ TEST_CASE("StringTable interns the empty string like any other", "[profiler][str
 TEST_CASE("StringTable answers an id it never issued", "[profiler][stringtable]") {
     StringTable st;
 
-    SECTION("empty table") {
-        REQUIRE(st.get(0) == StringTable::unknown_string());
+    SECTION("a new table, which holds only the empty string") {
+        REQUIRE(st.get(0).empty());
+        REQUIRE(st.get(1) == StringTable::unknown_string());
         REQUIRE(st.get(12345) == StringTable::unknown_string());
     }
 

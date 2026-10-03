@@ -157,7 +157,7 @@ auto Profiler::thread_channel() -> ThreadChannel & {
     return *channel;
 }
 
-Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings)) {
+Profiler::Profiler() : _consumer(std::make_unique<Consumer>(_strings, _sites)) {
     Settings s;
     {
         std::scoped_lock const lock(_settings_mutex);
@@ -371,7 +371,7 @@ auto Profiler::calibrated_overhead() -> Overhead const & {
         auto const elapsed    = [](auto t0, auto t1) { return std::chrono::duration<double, std::nano>(t1 - t0).count(); };
         auto const t0         = std::chrono::steady_clock::now();
         for (int i = 0; i < kZones; ++i) {
-            write_push(*scratch, 0, 0, 0, 0);
+            write_push(*scratch, 0, 0);
         }
         auto const t1 = std::chrono::steady_clock::now();
         for (int i = 0; i < kZones; ++i) {

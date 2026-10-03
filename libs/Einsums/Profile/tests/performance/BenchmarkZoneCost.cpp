@@ -245,11 +245,11 @@ TEST_CASE("Bench ZoneCost: one zone, whole and in pieces", "[Profile][ZoneCost][
         static prof::EventRingBuffer ring;
         prof::Event                  evt{};
         show("event copy in and out of a ring  [x1 pair]", per_op([&](int i) {
-                 evt.line = i;
+                 evt.name_id = static_cast<uint32_t>(i);
                  (void)ring.try_push(evt);
                  prof::Event out{};
                  (void)ring.try_pop(out);
-                 keep(out.line);
+                 keep(out.name_id);
              }));
     }
     show("string intern of a known literal  [0 on a literal zone]",
@@ -425,7 +425,7 @@ Result ring_with_consumer(int work_ns, std::uint64_t &dropped) {
             };
             while (!done.load(std::memory_order_acquire) || !ring->empty()) {
                 ring->drain([&](prof::Event const &evt) {
-                    keep(evt.line);
+                    keep(evt.name_id);
                     spin();
                 });
             }
@@ -434,7 +434,7 @@ Result ring_with_consumer(int work_ns, std::uint64_t &dropped) {
         prof::Event       evt{};
         auto const        t0 = std::chrono::steady_clock::now();
         for (int i = 0; i < kPushes; ++i) {
-            evt.line = i;
+            evt.name_id = static_cast<uint32_t>(i);
             if (!ring->try_push(evt)) {
                 ++lost;
             }
