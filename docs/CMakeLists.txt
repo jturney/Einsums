@@ -138,6 +138,9 @@ if(TARGET apiary::apiary)
             --source-dir "${PROJECT_SOURCE_DIR}" --build-dir "${CMAKE_BINARY_DIR}"
             --tool $<TARGET_FILE:apiary::apiary> --out-dir "${EINSUMS_CPP_DOCS_DIR}"
             --layout entity --backlink-label-template "modules_{lib}_{module}"
+            # Not API: kernel bodies stamped into each rung's namespace, which refuse to compile
+            # unless their includer names it. Left in, PackedGemm cannot be parsed in one pass.
+            --exclude-header Einsums/PackedGemm/MicroKernelBody.hpp
             --modules ${EINSUMS_CPP_DOCS_MODULE_LIST}
     COMMAND ${CMAKE_COMMAND} -E touch "${_cppdocs_stamp}"
     COMMENT "Generating C++ API reference (per-entity) for: ${EINSUMS_CPP_DOCS_MODULES}"

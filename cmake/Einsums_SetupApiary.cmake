@@ -34,15 +34,15 @@ endif()
 
 fetchcontent_declare(
   Apiary
-  URL https://github.com/Einsums/Apiary/archive/refs/tags/v1.1.0.tar.gz
-  URL_HASH SHA256=23a0a6ff0cfbb760b1a2605bfc686c776ce8934d47b8b807cc0f72a6828181c9
+  URL https://github.com/Einsums/Apiary/archive/refs/tags/v1.2.0.tar.gz
+  URL_HASH SHA256=336e6299cba2da8c42074a3ea3519f3f296f9e66c480714aa6ff3f9f64094c8a
   # Apiary's emitted C++ is tied to the Clang type printer it was built against, and its CMake
   # helper API is what einsums_finalize_pybind() calls into, so the range is bounded on both sides
-  # to stay on 1.x. The floor is 1.1: it is the first release whose source builds against LLVM 23
-  # as well as 22 (this fallback compiles against whatever LLVM the environment provides), and the
-  # one whose C++ reference renders full declarations. An installed 1.0 is passed over, so the
-  # fallback builds 1.1 instead.
-  FIND_PACKAGE_ARGS 1.1...<2 CONFIG
+  # to stay on 1.x. The floor is 1.2: it builds against LLVM 22 and 23 (this fallback compiles
+  # against whatever LLVM the environment provides), parses with the Clang builtin headers of its
+  # own LLVM, and its C++ docs driver takes --exclude-header, which docs/CMakeLists.txt passes. An
+  # installed 1.1 is passed over, so the fallback builds 1.2 instead.
+  FIND_PACKAGE_ARGS 1.2...<2 CONFIG
 )
 
 fetchcontent_makeavailable(Apiary)
