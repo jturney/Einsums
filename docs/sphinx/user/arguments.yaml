@@ -282,6 +282,11 @@
     as each zone opens and closes, so it suits coarse zones. A thread counts if the source was
     asked for when it first recorded.
 
+    ``signposts`` also emits every zone as an ``os_signpost`` interval on macOS, under the subsystem
+    ``waggle`` with a category per library, so Instruments shows Einsums' zones beside its own CPU,
+    GPU, Metal and memory tracks. Record with Instruments' Logging template, or
+    ``xcrun xctrace record --template Logging --launch -- ./program``.
+
     ``openmp`` records each OpenMP parallel region, named after the function it is in, each
     thread's share of the region, and the barrier waits inside, through the runtime's OMPT
     interface. The OpenMP runtime must support OMPT: LLVM's libomp does, and runs GCC-compiled code
