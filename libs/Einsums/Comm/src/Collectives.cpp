@@ -10,6 +10,7 @@
 #include <Einsums/Preprocessor/Unused.hpp>
 #include <Einsums/Profile.hpp>
 
+#include <complex>
 #include <cstring>
 
 #if defined(EINSUMS_HAVE_MPI)
