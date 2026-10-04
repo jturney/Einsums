@@ -26,10 +26,9 @@ void Einsums_BufferAllocator_vars::update_max_size() {
 
     singleton._work_buffer = string_util::memory_string(config::get(option::WorkBufferSize));
 
-    // An eighth of the budget. This divided by omp_get_num_threads(), which is 1 outside a parallel
-    // region, as it always was here; the call also started the OpenMP runtime during option
-    // parsing, before the profiler was told its sources, so an OMPT tool asked for in the options
-    // could never attach.
+    // An eighth of the budget. The disk contractions, its only users, run on one thread, so it is
+    // not divided among threads. No OpenMP call here: one would start the runtime during
+    // option parsing, before the profiler is told its sources, and an OMPT tool could never attach.
     if (singleton._work_buffer == 0) {
         singleton._work_buffer = singleton._max_size / 8;
     }

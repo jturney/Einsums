@@ -53,9 +53,10 @@
 "einsums:work-buffer-size":
   added: "1.0.0"
   body: |
-    The largest buffer size to use for buffered contractions. This should be much smaller than
-    :option:`--einsums:buffer-size`, whose value has to cover roughly three buffers per thread along with
-    everything else the program needs. Setting it to zero lets Einsums decide.
+    The largest piece of a disk-backed tensor that a contraction reads into memory at once. The
+    pieces count against :option:`--einsums:buffer-size`, along with everything else Einsums
+    allocates, so keep it well below that. Zero, the default, means an eighth of
+    :option:`--einsums:buffer-size`.
 
 "einsums:row-major":
   added: "2.0.0"

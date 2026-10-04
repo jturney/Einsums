@@ -38,12 +38,12 @@ inline constinit cl::ConfigOption<std::string> MaxMemory = cl::config_opt_comput
 inline constinit cl::ConfigOption<std::string> BufferSize = cl::config_opt<std::string>(
     "einsums:buffer-size", "Total size of buffers allocated for tensor contractions", "Buffer Allocator", "64MB", "size");
 
-/// The largest single work buffer. Zero lets the allocator decide.
+/// The largest piece of a disk-backed tensor a contraction reads into memory at once. Zero means an
+/// eighth of --einsums:buffer-size.
 inline constinit cl::ConfigOption<std::string> WorkBufferSize = cl::config_opt<std::string>(
     "einsums:work-buffer-size",
-    "The largest buffer size to use for buffered contractions. Should be much smaller than the max buffer size. The maximum should be the "
-    "value of --einsums:buffer-size divided by three times the number of threads. In reality, the program will need more space for other "
-    "buffers, so the size should be much smaller than that. Setting to zero will let the program decide.",
+    "The largest piece of a disk-backed tensor a contraction reads into memory at once; it counts against --einsums:buffer-size. "
+    "Zero means an eighth of --einsums:buffer-size.",
     "Buffer Allocator", "0", "size");
 
 EINSUMS_NAMESPACE_END(option)
