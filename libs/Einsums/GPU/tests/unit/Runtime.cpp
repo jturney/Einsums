@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <csignal>
+#include <limits>
 #if defined(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
 #    include <sys/wait.h>
 #    include <unistd.h>
@@ -1266,3 +1267,112 @@ TEMPLATE_TEST_CASE("gpu backend routines reject extents their integer cannot hol
         device_free(dC);
     }
 }
+
+// The MPS GEMV handles only unit strides, and returned without computing anything for any other,
+// leaving y as it was; a strided call must still give BLAS's answer.
+TEST_CASE("gpu::blas::gemv with strided vectors", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
+    constexpr int M = 7, N = 5, incx = 2, incy = 3;
+    for (char const trans : {'n', 't'}) {
+        int const          xlen = trans == 'n' ? N : M;
+        int const          ylen = trans == 'n' ? M : N;
+        std::vector<float> A(M * N), x(xlen * incx), y(ylen * incy), y_ref;
+        for (int i = 0; i < M * N; i++)
+            A[i] = static_cast<float>(i % 11) * 0.25f - 1.0f;
+        for (size_t i = 0; i < x.size(); i++)
+            x[i] = static_cast<float>(i % 7) * 0.5f - 1.5f;
+        for (size_t i = 0; i < y.size(); i++)
+            y[i] = static_cast<float>(i % 5) - 2.0f;
+        y_ref = y;
+        einsums::blas::vendor::sgemv(trans, M, N, 0.75f, A.data(), M, x.data(), incx, 0.5f, y_ref.data(), incy);
+
+        void *dA = test_malloc(A.size() * sizeof(float));
+        void *dx = test_malloc(x.size() * sizeof(float));
+        void *dy = test_malloc(y.size() * sizeof(float));
+        memcpy_host_to_device(dA, A.data(), A.size() * sizeof(float));
+        memcpy_host_to_device(dx, x.data(), x.size() * sizeof(float));
+        memcpy_host_to_device(dy, y.data(), y.size() * sizeof(float));
+        einsums::gpu::blas::gemv<float>(trans, M, N, 0.75f, static_cast<float const *>(dA), M, static_cast<float const *>(dx), incx, 0.5f,
+                                        static_cast<float *>(dy), incy);
+        memcpy_device_to_host(y.data(), dy, y.size() * sizeof(float));
+
+        INFO("trans " << trans);
+        for (size_t i = 0; i < y.size(); i++) {
+            CHECK(y[i] == Catch::Approx(y_ref[i]).margin(1e-5f)); // the gaps between strided elements too
+        }
+        device_free(dA);
+        device_free(dx);
+        device_free(dy);
+    }
+}
+
+// BLAS reads no output when beta is zero, so whatever the output held, NaN included, is overwritten.
+TEST_CASE("gpu::blas::gemm and gemv with beta zero overwrite a NaN output", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
+    constexpr int      N   = 32;
+    float const        nan = std::numeric_limits<float>::quiet_NaN();
+    std::vector<float> A(N * N), x(N), C(N * N, nan), y(N, nan), C_ref(N * N), y_ref(N);
+    for (int i = 0; i < N * N; i++)
+        A[i] = static_cast<float>(i % 9) * 0.125f;
+    for (int i = 0; i < N; i++)
+        x[i] = static_cast<float>(i % 4) - 1.0f;
+    einsums::blas::vendor::sgemm('n', 'n', N, N, N, 1.0f, A.data(), N, A.data(), N, 0.0f, C_ref.data(), N);
+    einsums::blas::vendor::sgemv('n', N, N, 1.0f, A.data(), N, x.data(), 1, 0.0f, y_ref.data(), 1);
+
+    void *dA = test_malloc(A.size() * sizeof(float));
+    void *dx = test_malloc(x.size() * sizeof(float));
+    void *dC = test_malloc(C.size() * sizeof(float));
+    void *dy = test_malloc(y.size() * sizeof(float));
+    memcpy_host_to_device(dA, A.data(), A.size() * sizeof(float));
+    memcpy_host_to_device(dx, x.data(), x.size() * sizeof(float));
+    memcpy_host_to_device(dC, C.data(), C.size() * sizeof(float));
+    memcpy_host_to_device(dy, y.data(), y.size() * sizeof(float));
+    einsums::gpu::blas::gemm<float>('n', 'n', N, N, N, 1.0f, static_cast<float const *>(dA), N, static_cast<float const *>(dA), N, 0.0f,
+                                    static_cast<float *>(dC), N);
+    einsums::gpu::blas::gemv<float>('n', N, N, 1.0f, static_cast<float const *>(dA), N, static_cast<float const *>(dx), 1, 0.0f,
+                                    static_cast<float *>(dy), 1);
+    memcpy_device_to_host(C.data(), dC, C.size() * sizeof(float));
+    memcpy_device_to_host(y.data(), dy, y.size() * sizeof(float));
+
+    for (int i = 0; i < N * N; i++) {
+        CHECK(C[i] == Catch::Approx(C_ref[i]).margin(1e-4f));
+    }
+    for (int i = 0; i < N; i++) {
+        CHECK(y[i] == Catch::Approx(y_ref[i]).margin(1e-4f));
+    }
+    device_free(dA);
+    device_free(dx);
+    device_free(dC);
+    device_free(dy);
+}
+
+#if defined(EINSUMS_HAVE_MPS)
+// hgemm stages C through a packed FP16 buffer, and copied it in and out as if ldc were m: with a
+// larger ldc it read and wrote the wrong elements, the padding between columns among them.
+TEST_CASE("gpu::blas::hgemm honours ldc", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
+    constexpr int       M = 3, N = 2, K = 4, LDC = 5;
+    float const         pad = -99.0f;
+    std::vector<half_t> A(M * K), B(K * N);
+    std::vector<float>  A32(M * K), B32(K * N), C(LDC * N, pad), C_ref(LDC * N, pad);
+    for (int i = 0; i < M * K; i++) {
+        A32[i] = static_cast<float>(i % 5) * 0.5f;
+        A[i]   = static_cast<half_t>(A32[i]);
+    }
+    for (int i = 0; i < K * N; i++) {
+        B32[i] = static_cast<float>(i % 3) - 1.0f;
+        B[i]   = static_cast<half_t>(B32[i]);
+    }
+    for (int j = 0; j < N; j++) {
+        for (int i = 0; i < M; i++) {
+            C[j * LDC + i] = C_ref[j * LDC + i] = 1.0f;
+        }
+    }
+    einsums::blas::vendor::sgemm('n', 'n', M, N, K, 1.0f, A32.data(), M, B32.data(), K, 0.5f, C_ref.data(), LDC);
+    einsums::gpu::blas::hgemm('n', 'n', M, N, K, 1.0f, A.data(), M, B.data(), K, 0.5f, C.data(), LDC);
+    for (int i = 0; i < LDC * N; i++) {
+        INFO("element " << i);
+        CHECK(C[i] == Catch::Approx(C_ref[i]).margin(1e-2f)); // the padding stays -99
+    }
+}
+#endif

@@ -66,8 +66,11 @@ void sgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float alph
                                 int_extent(n, "n"), int_extent(k, "k"), &alpha, a, int_extent(lda, "lda"), b, int_extent(ldb, "ldb"), &beta,
                                 c, int_extent(ldc, "ldc")));
 #elif defined(EINSUMS_HAVE_MPS)
-    mps::sgemm(transa, transb, int_extent(m, "m"), int_extent(n, "n"), int_extent(k, "k"), alpha, a, int_extent(lda, "lda"), b,
-               int_extent(ldb, "ldb"), beta, c, int_extent(ldc, "ldc"));
+    if (!mps::sgemm(transa, transb, int_extent(m, "m"), int_extent(n, "n"), int_extent(k, "k"), alpha, a, int_extent(lda, "lda"), b,
+                    int_extent(ldb, "ldb"), beta, c, int_extent(ldc, "ldc"))) {
+        ::einsums::blas::vendor::sgemm(transa, transb, vendor_extent(m, "m"), vendor_extent(n, "n"), vendor_extent(k, "k"), alpha, a,
+                                       vendor_extent(lda, "lda"), b, vendor_extent(ldb, "ldb"), beta, c, vendor_extent(ldc, "ldc"));
+    }
 #else
     ::einsums::blas::vendor::sgemm(transa, transb, vendor_extent(m, "m"), vendor_extent(n, "n"), vendor_extent(k, "k"), alpha, a,
                                    vendor_extent(lda, "lda"), b, vendor_extent(ldb, "ldb"), beta, c, vendor_extent(ldc, "ldc"));
@@ -288,8 +291,11 @@ void sgemv(char trans, int64_t m, int64_t n, float alpha, float const *a, int64_
     gpu_blas_catch(hipblasSgemv(get_blas_handle(), to_vendor_op(char_to_op(trans)), int_extent(m, "m"), int_extent(n, "n"), &alpha, a,
                                 int_extent(lda, "lda"), x, int_extent(incx, "incx"), &beta, y, int_extent(incy, "incy")));
 #elif defined(EINSUMS_HAVE_MPS)
-    mps::sgemv(trans, int_extent(m, "m"), int_extent(n, "n"), alpha, a, int_extent(lda, "lda"), x, int_extent(incx, "incx"), beta, y,
-               int_extent(incy, "incy"));
+    if (!mps::sgemv(trans, int_extent(m, "m"), int_extent(n, "n"), alpha, a, int_extent(lda, "lda"), x, int_extent(incx, "incx"), beta, y,
+                    int_extent(incy, "incy"))) {
+        ::einsums::blas::vendor::sgemv(trans, vendor_extent(m, "m"), vendor_extent(n, "n"), alpha, a, vendor_extent(lda, "lda"), x,
+                                       vendor_extent(incx, "incx"), beta, y, vendor_extent(incy, "incy"));
+    }
 #else
     ::einsums::blas::vendor::sgemv(trans, vendor_extent(m, "m"), vendor_extent(n, "n"), alpha, a, vendor_extent(lda, "lda"), x,
                                    vendor_extent(incx, "incx"), beta, y, vendor_extent(incy, "incy"));
@@ -551,21 +557,36 @@ void hgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float alph
         int64_t c_size = m * n;
         auto   *c_fp16 = static_cast<half_t *>(device_malloc_or_throw(static_cast<size_t>(c_size) * sizeof(half_t)));
 
-        // Convert existing C (float) to FP16 for the beta accumulation.
+        // Convert existing C (float, leading dimension ldc) to the packed FP16 buffer for the beta accumulation.
         if (beta != 0.0f) {
-            for (int64_t i = 0; i < c_size; i++) {
-                c_fp16[i] = static_cast<half_t>(c[i]);
+            for (int64_t j = 0; j < n; j++) {
+                for (int64_t i = 0; i < m; i++) {
+                    c_fp16[j * m + i] = static_cast<half_t>(c[j * ldc + i]);
+                }
             }
         } else {
             gpu::device_memset(c_fp16, 0, static_cast<size_t>(c_size) * sizeof(half_t));
         }
 
-        mps::hgemm(transa, transb, int_extent(m, "m"), int_extent(n, "n"), int_extent(k, "k"), alpha, a, int_extent(lda, "lda"), b,
-                   int_extent(ldb, "ldb"), beta, c_fp16, int_extent(m, "m"));
-
-        // Convert FP16 result back to float.
-        for (int64_t i = 0; i < c_size; i++) {
-            c[i] = static_cast<float>(c_fp16[i]);
+        if (mps::hgemm(transa, transb, int_extent(m, "m"), int_extent(n, "n"), int_extent(k, "k"), alpha, a, int_extent(lda, "lda"), b,
+                       int_extent(ldb, "ldb"), beta, c_fp16, int_extent(m, "m"))) {
+            for (int64_t j = 0; j < n; j++) {
+                for (int64_t i = 0; i < m; i++) {
+                    c[j * ldc + i] = static_cast<float>(c_fp16[j * m + i]);
+                }
+            }
+        } else {
+            // MPS could not: the same product in single precision on the CPU, from the FP16 inputs.
+            int64_t const      a_size = lda * ((transa == 'n' || transa == 'N') ? k : m);
+            int64_t const      b_size = ldb * ((transb == 'n' || transb == 'N') ? n : k);
+            std::vector<float> a_f32(static_cast<size_t>(a_size)), b_f32(static_cast<size_t>(b_size));
+            for (int64_t i = 0; i < a_size; i++)
+                a_f32[static_cast<size_t>(i)] = static_cast<float>(a[i]);
+            for (int64_t i = 0; i < b_size; i++)
+                b_f32[static_cast<size_t>(i)] = static_cast<float>(b[i]);
+            ::einsums::blas::vendor::sgemm(transa, transb, vendor_extent(m, "m"), vendor_extent(n, "n"), vendor_extent(k, "k"), alpha,
+                                           a_f32.data(), vendor_extent(lda, "lda"), b_f32.data(), vendor_extent(ldb, "ldb"), beta, c,
+                                           vendor_extent(ldc, "ldc"));
         }
 
         gpu::device_free(c_fp16);
@@ -606,9 +627,13 @@ void bfgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float alp
         for (int64_t i = 0; i < b_size; i++)
             b_f32[i] = static_cast<float>(b[i]);
 
-        // Use MPS Float32 GEMM on the converted data.
-        mps::sgemm(transa, transb, int_extent(m, "m"), int_extent(n, "n"), int_extent(k, "k"), alpha, a_f32, int_extent(lda, "lda"), b_f32,
-                   int_extent(ldb, "ldb"), beta, c, int_extent(ldc, "ldc"));
+        // Use MPS Float32 GEMM on the converted data, or the CPU's if MPS cannot.
+        if (!mps::sgemm(transa, transb, int_extent(m, "m"), int_extent(n, "n"), int_extent(k, "k"), alpha, a_f32, int_extent(lda, "lda"),
+                        b_f32, int_extent(ldb, "ldb"), beta, c, int_extent(ldc, "ldc"))) {
+            ::einsums::blas::vendor::sgemm(transa, transb, vendor_extent(m, "m"), vendor_extent(n, "n"), vendor_extent(k, "k"), alpha,
+                                           a_f32, vendor_extent(lda, "lda"), b_f32, vendor_extent(ldb, "ldb"), beta, c,
+                                           vendor_extent(ldc, "ldc"));
+        }
 
         gpu::device_free(a_f32);
         gpu::device_free(b_f32);

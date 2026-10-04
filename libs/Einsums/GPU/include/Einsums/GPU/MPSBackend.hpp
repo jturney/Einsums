@@ -26,12 +26,16 @@ EINSUMS_EXPORT void   device_synchronize();
 EINSUMS_EXPORT size_t available_device_memory();
 EINSUMS_EXPORT std::string device_name();
 
+// BLAS. Each returns whether MPS computed the result; false, with the output untouched, when it
+// cannot (no device, a stride MPS does not take, a command buffer that failed), and the caller
+// then computes it on the CPU, which reaches the same unified memory.
+
 // BLAS: GEMM
-EINSUMS_EXPORT void sgemm(char transa, char transb, int m, int n, int k, float alpha, float const *a, int lda, float const *b, int ldb,
+EINSUMS_EXPORT bool sgemm(char transa, char transb, int m, int n, int k, float alpha, float const *a, int lda, float const *b, int ldb,
                           float beta, float *c, int ldc);
 
 /// FP16 GEMM: all matrices are __fp16, alpha/beta are float.
-EINSUMS_EXPORT void hgemm(char transa, char transb, int m, int n, int k, float alpha, __fp16 const *a, int lda, __fp16 const *b, int ldb,
+EINSUMS_EXPORT bool hgemm(char transa, char transb, int m, int n, int k, float alpha, __fp16 const *a, int lda, __fp16 const *b, int ldb,
                           float beta, __fp16 *c, int ldc);
 
 // Note: MPSMatrixMultiplication does not support BFloat16 or ComplexFloat32/ComplexFloat16.
@@ -39,7 +43,7 @@ EINSUMS_EXPORT void hgemm(char transa, char transb, int m, int n, int k, float a
 // Complex types fall back to CPU BLAS.
 
 // BLAS: GEMV
-EINSUMS_EXPORT void sgemv(char trans, int m, int n, float alpha, float const *a, int lda, float const *x, int incx, float beta, float *y,
+EINSUMS_EXPORT bool sgemv(char trans, int m, int n, float alpha, float const *a, int lda, float const *x, int incx, float beta, float *y,
                           int incy);
 
 EINSUMS_NAMESPACE_END(gpu::mps)

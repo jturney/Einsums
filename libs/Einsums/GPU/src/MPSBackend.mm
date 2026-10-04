@@ -280,20 +280,20 @@ bool mps_gemm_impl(char transa, char transb, int m, int n, int k,
 
 // --- Type-specific wrappers ---
 
-void sgemm(char transa, char transb, int m, int n, int k,
+bool sgemm(char transa, char transb, int m, int n, int k,
             float alpha, float const *a, int lda,
             float const *b, int ldb,
             float beta, float *c, int ldc) {
-    mps_gemm_impl(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc,
+    return mps_gemm_impl(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc,
                    MPSDataTypeFloat32, sizeof(float));
 }
 
-void hgemm(char transa, char transb, int m, int n, int k,
+bool hgemm(char transa, char transb, int m, int n, int k,
             float alpha, __fp16 const *a, int lda,
             __fp16 const *b, int ldb,
             float beta, __fp16 *c, int ldc) {
     // Float16 GEMM: inputs and outputs are FP16, alpha/beta are float (promoted to double internally).
-    mps_gemm_impl(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc,
+    return mps_gemm_impl(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc,
                    MPSDataTypeFloat16, sizeof(__fp16));
 }
 
@@ -305,18 +305,18 @@ void hgemm(char transa, char transb, int m, int n, int k,
 // GEMV via MPSMatrixVectorMultiplication
 // ===========================================================================
 
-void sgemv(char trans, int m, int n,
+bool sgemv(char trans, int m, int n,
             float alpha, float const *a, int lda,
             float const *x, int incx,
             float beta, float *y, int incy) {
     WAGGLE_ZONE("mps gemv"); // the host's side: wrapping or copying buffers, encoding, waiting
     ensure_initialized();
     if (!g_device || !g_command_queue)
-        return;
+        return false;
 
-    // MPS only supports incx=1 and incy=1. Fall back if strides != 1.
+    // MPSVector holds contiguous elements only: the caller computes other strides.
     if (incx != 1 || incy != 1)
-        return;
+        return false;
 
     // BLAS GEMV: y = alpha * op(A) * x + beta * y
     // A is m×n (column-major), x has length n (or m if transposed), y has length m (or n if transposed).
@@ -338,7 +338,7 @@ void sgemv(char trans, int m, int n,
     id<MTLBuffer> bufY = wrap_or_copy(y, sizeY, false);
 
     if (!bufA || !bufX || !bufY)
-        return;
+        return false;
 
     // MPS uses row-major. Column-major A(m×n) with lda=m is row-major A^T(n×m) with rowBytes=lda*sizeof(float).
     // For GEMV without transpose: MPS sees A^T, so we tell MPS transpose=YES to undo it.
@@ -386,6 +386,7 @@ void sgemv(char trans, int m, int n,
     if (ok && bufY.contents != y) {
         std::memcpy(y, bufY.contents, sizeY);
     }
+    return ok;
 }
 
 // ===========================================================================
