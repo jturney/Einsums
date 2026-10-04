@@ -59,11 +59,13 @@ inline constinit cl::ConfigOption<std::int64_t> ProfileMaxDistinctChildren = cl:
     "einsums:profile:max-distinct-children", "Distinct zone names kept per parent before the rest fold into \"(other)\"; 0 means no limit",
     "Profile", 256, "N");
 
-/// The profiler's optional instruments to turn on, comma-separated. "openmp" records each OpenMP
-/// parallel region, each thread's share of it and the barrier waits inside; the OpenMP runtime
-/// must support OMPT (LLVM's libomp does, GCC's libgomp does not).
+/// The profiler's optional instruments to turn on, comma-separated. "counters" records each zone's
+/// hardware counters (cycles, instructions, ...), at a few hundred nanoseconds a zone. "openmp"
+/// records each OpenMP parallel region, each thread's share of it and the barrier waits inside;
+/// the OpenMP runtime must support OMPT (LLVM's libomp does, GCC's libgomp does not).
 inline constinit cl::ConfigOption<std::string> ProfileSources = cl::config_opt<std::string>(
-    "einsums:profile:sources", "Profiler sources to turn on, comma-separated (openmp: parallel regions, shares and barrier waits)",
+    "einsums:profile:sources",
+    "Profiler sources to turn on, comma-separated (counters: hardware counters per zone; openmp: parallel regions and barrier waits)",
     "Profile", "", "LIST");
 
 EINSUMS_NAMESPACE_END(option)

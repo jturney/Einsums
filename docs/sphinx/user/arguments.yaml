@@ -275,6 +275,13 @@
     The profiler's optional instruments to turn on, comma-separated; each is off unless named here.
     The profile report and the viewer say why one that was asked for records nothing.
 
+    ``counters`` records each zone's hardware counters: cycles, instructions, cache and branch
+    misses through Linux perf (``kernel.perf_event_paranoid`` must be 2 or less, and a virtual
+    machine often has no hardware counters), and cycles and instructions, with the efficiency
+    cores' share, on macOS, where no root is needed. Reading them costs a few hundred nanoseconds
+    as each zone opens and closes, so it suits coarse zones. A thread counts if the source was
+    asked for when it first recorded.
+
     ``openmp`` records each OpenMP parallel region, named after the function it is in, each
     thread's share of the region, and the barrier waits inside, through the runtime's OMPT
     interface. The OpenMP runtime must support OMPT: LLVM's libomp does, and runs GCC-compiled code
