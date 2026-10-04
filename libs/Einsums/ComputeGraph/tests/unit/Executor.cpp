@@ -27,8 +27,10 @@ namespace cg = einsums::compute_graph;
 
 namespace {
 
-// The values here are sums of a few order-one products, good to a few ulps of the element
-// type; a thousand leaves room for summation order without admitting a wrong term.
+// The values here are sums of a few order-one products, good to a few ulps of those products; a
+// thousand leaves room for summation order without admitting a wrong term. The rounding scales with
+// the products, not with the sum, which random terms that cancel can make small: hence a floor at
+// the products' scale as well as a bound relative to the value.
 template <typename T>
 constexpr double value_tol() {
     return 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
@@ -36,7 +38,7 @@ constexpr double value_tol() {
 
 template <typename T>
 void require_close(Tensor<T, 2> const &got, Tensor<T, 2> const &want) {
-    einsums::testing::require_tensors_close(got, want, {.rtol = value_tol<T>(), .atol = 0});
+    einsums::testing::require_tensors_close(got, want, {.rtol = value_tol<T>(), .atol = value_tol<T>()});
 }
 
 } // namespace
