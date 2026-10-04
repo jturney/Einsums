@@ -282,6 +282,12 @@
     as each zone opens and closes, so it suits coarse zones. A thread counts if the source was
     asked for when it first recorded.
 
+    ``energy`` records the energy each zone used, and the share of it on the efficiency cores, on
+    macOS. The figure is the kernel's per-thread estimate from the CPU's power model, which it
+    updates every few milliseconds, so the profiler samples it as it collects events rather than
+    reading it at each zone: a zone pays nothing, a zone of about 100 ms or more gets its own
+    figure, and shorter ones get theirs on average over many calls. Linux has no per-thread energy.
+
     ``signposts`` also emits every zone as an ``os_signpost`` interval on macOS, under the subsystem
     ``waggle`` with a category per library, so Instruments shows Einsums' zones beside its own CPU,
     GPU, Metal and memory tracks. Record with Instruments' Logging template, or
@@ -293,6 +299,15 @@
     too; GCC's own libgomp does not. The runtime looks for a tool once, when it starts, so the
     option must be given before the program's first OpenMP call, as it is on the command line or in
     the environment.
+
+"einsums:profile:trace":
+  added: "2.0.0"
+  body: |
+    Write every zone to a Perfetto trace at this path, to see each call on its thread's timeline at
+    `ui.perfetto.dev <https://ui.perfetto.dev>`_, beside device work, the live-bytes curve and, with
+    the ``energy`` source, each thread's energy. ``{pid}`` in the path becomes the process id, so
+    the ranks of an MPI run each write their own. A zone costs about 32 bytes of trace, written by
+    the profiler's own thread.
 
 "einsums:pass:disable":
   added: "2.0.0"
