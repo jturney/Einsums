@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -60,9 +62,21 @@ def test_completion_covers_forwarded_commands():
     assert "complete -c einsums" in fish(tree)
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def find_bash() -> str | None:
+    """A bash that runs scripts. On Windows, System32's bash.exe launches WSL, which fails where no
+    Linux distribution is installed (as on CI's runners), so Git's bash, also on PATH, is taken."""
+    system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    for directory in os.get_exec_path():
+        found = shutil.which("bash", path=directory)
+        if found is not None and not (sys.platform == "win32" and Path(found).parent.resolve() == system32.resolve()):
+            return found
+    return None
+
+
+@pytest.mark.skipif(find_bash() is None, reason="needs bash")
 def test_bash_completion_completes():
     script = bash(command_tree())
+    shell = find_bash()
 
     # The script goes to bash on stdin, as bytes: a Windows temp path pasted into the command
     # loses its backslashes to bash's quoting, and a text-mode write turns every LF into CRLF,
@@ -73,7 +87,8 @@ def test_bash_completion_completes():
             f"{script}\nCOMP_WORDS=({line}); COMP_CWORD={len(words)}; "
             '_einsums_complete; printf "%s\\n" "${COMPREPLY[@]}"\n'
         )
-        result = subprocess.run(["bash", "-s"], input=probe.encode(), capture_output=True, check=True)
+        result = subprocess.run([shell, "-s"], input=probe.encode(), capture_output=True)
+        assert result.returncode == 0, f"{shell} failed: {result.stderr.decode(errors='replace')}"
         return result.stdout.decode().split()
 
     assert "bench" in complete("b") and "profiler" in complete("p")
