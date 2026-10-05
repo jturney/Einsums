@@ -7,13 +7,17 @@
 /// @brief Unit tests for the LoopInvariantHoisting optimization pass.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <complex>
+#include <cstdint>
+#include <functional>
 #include <limits>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -501,4 +505,146 @@ TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - refuses an accumulating axpby",
 
     CHECK_FALSE(modified);
     CHECK(pass.num_hoisted() == 0);
+}
+
+// A DiskRead has no tensor inputs, so it is invariant by the tensor test, and
+// the gate used to consult no named keys. Hoisted out of a loop whose body
+// writes the same dataset, it read the file once, before the first write.
+// IOPrefetch refuses this case too, but runs after LoopInvariantHoisting in
+// the default pipeline.
+TEST_CASE("LoopInvariantHoisting - keeps a disk read of a dataset the loop writes", "[ComputeGraph][Passes][IO][WriteParam]") {
+    RuntimeTensor<double> A{"A", {3UL, 3UL}};
+    RuntimeTensor<double> Y{"Y", {3UL}};
+    RuntimeTensor<double> X{"X", {3UL}};
+    RuntimeTensor<double> total{"total", {3UL}};
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            A(i, j) = static_cast<double>(1 + (3 * i) + j); // 1..9
+        }
+    }
+    std::vector<double> dataset(3, 0.0); // stands in for mock.h5#/row
+    size_t              iter = 0;
+
+    cg::Graph graph("lih_disk_read");
+    {
+        auto                  &body = graph.add_loop("rows", 3, [&iter](size_t) {
+            ++iter;
+            return iter < 3;
+        });
+        cg::CaptureGuard const capture(body);
+        cg::write_param("r", std::function<std::int64_t()>([&iter] { return static_cast<std::int64_t>(iter); }));
+        auto &slice = cg::view_runtime(A, {cg::ViewAxis::drop("r"), cg::ViewAxis::full()});
+        cg::axpby(1.0, slice, 0.0, &Y);
+        cg::write("save", "mock.h5", "/row", &Y, [&dataset, &Y]() {
+            for (size_t j = 0; j < 3; ++j) {
+                dataset[j] = Y(j);
+            }
+        });
+        cg::read("load", "mock.h5", "/row", &X, [&dataset, &X]() {
+            for (size_t j = 0; j < 3; ++j) {
+                X(j) = dataset[j];
+            }
+        });
+        cg::axpby(1.0, X, 1.0, &total);
+    }
+
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    INFO(pm.explain());
+
+    iter = 0;
+    total.zero();
+    REQUIRE_NOTHROW(graph.execute());
+    CHECK(total(0) + total(1) + total(2) == 45.0); // 1 + 2 + ... + 9
+}
+
+// The same conflict one level down: the dataset is stored by a nested loop, so
+// the outer body sees the store only through the inner loop node's named
+// writes, which have to include its body's.
+TEST_CASE("LoopInvariantHoisting - keeps a disk read of a dataset a nested loop writes", "[ComputeGraph][Passes][IO][Loop][Nested]") {
+    RuntimeTensor<double> A{"A", {3UL, 3UL}};
+    RuntimeTensor<double> Y{"Y", {3UL}};
+    RuntimeTensor<double> X{"X", {3UL}};
+    RuntimeTensor<double> total{"total", {3UL}};
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            A(i, j) = static_cast<double>(1 + (3 * i) + j); // 1..9
+        }
+    }
+    std::vector<double> dataset(3, 0.0); // stands in for mock.h5#/row
+    size_t              iter = 0;
+
+    // Captures do not nest, so each body is captured in turn, in program order.
+    cg::Graph graph("lih_nested_disk_read");
+    auto     &body = graph.add_loop("rows", 3, [&iter](size_t) {
+        ++iter;
+        return iter < 3;
+    });
+    {
+        cg::CaptureGuard const capture(body);
+        cg::write_param("r", std::function<std::int64_t()>([&iter] { return static_cast<std::int64_t>(iter); }));
+        auto &slice = cg::view_runtime(A, {cg::ViewAxis::drop("r"), cg::ViewAxis::full()});
+        cg::axpby(1.0, slice, 0.0, &Y);
+    }
+    auto &inner = body.add_loop("store", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const capture(inner);
+        // Rewrites Y in place, so the store's input moves inside the inner loop and the store
+        // stays there instead of being hoisted into the outer body.
+        cg::scale(1.0, &Y);
+        cg::write("save", "mock.h5", "/row", &Y, [&dataset, &Y]() {
+            for (size_t j = 0; j < 3; ++j) {
+                dataset[j] = Y(j);
+            }
+        });
+    }
+    {
+        cg::CaptureGuard const capture(body);
+        cg::read("load", "mock.h5", "/row", &X, [&dataset, &X]() {
+            for (size_t j = 0; j < 3; ++j) {
+                X(j) = dataset[j];
+            }
+        });
+        cg::axpby(1.0, X, 1.0, &total);
+    }
+
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    INFO(pm.explain());
+
+    iter = 0;
+    total.zero();
+    REQUIRE_NOTHROW(graph.execute());
+    CHECK(total(0) + total(1) + total(2) == 45.0); // 1 + 2 + ... + 9
+}
+
+// The converse: a dataset nothing in the loop stores is invariant, and its read
+// still leaves the loop.
+TEST_CASE("LoopInvariantHoisting - hoists a disk read of a dataset the loop does not write", "[ComputeGraph][Passes][IO]") {
+    RuntimeTensor<double> X{"X", {3UL}};
+    RuntimeTensor<double> total{"total", {3UL}};
+    std::vector<double>   dataset{1.0, 2.0, 3.0}; // stands in for mock.h5#/row
+    int                   loads = 0;
+
+    cg::Graph graph("lih_invariant_disk_read");
+    {
+        auto                  &body = graph.add_loop("loop", 3, [](size_t iter) { return iter < 2; });
+        cg::CaptureGuard const capture(body);
+        cg::read("load", "mock.h5", "/row", &X, [&dataset, &X, &loads]() {
+            ++loads;
+            for (size_t j = 0; j < 3; ++j) {
+                X(j) = dataset[j];
+            }
+        });
+        cg::axpby(1.0, X, 1.0, &total);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
+    CHECK(modified);
+    CHECK(pass.num_hoisted() == 1);
+
+    total.zero();
+    graph.execute();
+    CHECK(loads == 1);
+    CHECK(total(0) + total(1) + total(2) == 18.0); // 3 iterations of 1 + 2 + 3
 }

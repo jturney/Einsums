@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -92,6 +93,24 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
         // this module's signature bug, so there is only ever one.
         auto const escapes = EscapeAnalysis::over(*loop_desc->body);
 
+        // Body nodes by the named resources (parameters, disk datasets) they read and write. A
+        // control-flow node reports its child graphs' keys too, so a nested access counts.
+        std::unordered_map<std::string, std::vector<size_t>> named_readers;
+        std::unordered_map<std::string, std::vector<size_t>> named_writers;
+        for (size_t bi = 0; bi < body_nodes.size(); bi++) {
+            for (auto &key : named_reads(body_nodes[bi])) {
+                named_readers[std::move(key)].push_back(bi);
+            }
+            for (auto &key : named_writes(body_nodes[bi])) {
+                named_writers[std::move(key)].push_back(bi);
+            }
+        }
+        auto const touched_by_other = [](std::unordered_map<std::string, std::vector<size_t>> const &by_key, std::string const &key,
+                                         size_t self) {
+            auto const it = by_key.find(key);
+            return it != by_key.end() && std::ranges::any_of(it->second, [self](size_t other) { return other != self; });
+        };
+
         // Identify invariant nodes: all inputs are NOT written by any body node
         // Iterate in order and propagate (hoisted outputs become invariant)
         std::unordered_set<TensorId> hoisted_outputs;
@@ -117,6 +136,21 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             // iteration, as a blocked residual does.)
             if (bnode.kind == OpKind::WriteParam || has_runtime_view_bounds(bnode)) {
                 note_skip("node's per-iteration effect is a parameter write or a parameter-bound slice, not visible as dataflow",
+                          fmt::format("body node '{}'", bnode.label));
+                continue;
+            }
+
+            // Ordering through a named resource rather than a tensor. A DiskRead of a dataset the
+            // body also stores has no tensor inputs, so the test below calls it invariant, and
+            // hoisted it loads the file once, before the first store. Symmetrically, a write the
+            // rest of the body reads or rewrites must keep its place among them.
+            bool const named_conflict =
+                std::ranges::any_of(named_reads(bnode), [&](std::string const &key) { return touched_by_other(named_writers, key, bi); }) ||
+                std::ranges::any_of(named_writes(bnode), [&](std::string const &key) {
+                    return touched_by_other(named_writers, key, bi) || touched_by_other(named_readers, key, bi);
+                });
+            if (named_conflict) {
+                note_skip("node reads or writes a parameter or disk dataset another body node also touches",
                           fmt::format("body node '{}'", bnode.label));
                 continue;
             }
