@@ -132,21 +132,13 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
 /// recursion step until it lands before the outermost loop, gaining the edge
 /// at each level. The load writes through the captured tensor pointer, which
 /// the body's consumers share.
-/// Whether any node of @p graph, at any depth, writes the named resource @p key.
-// NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
+/// Whether any node of @p graph, at any depth, writes the named resource @p key. A control-flow
+/// node's named writes include its child graphs', so one level covers the subtree.
 bool writes_anywhere(Graph const &graph, std::string const &key) {
-    for (auto const &node : graph.nodes()) {
+    return std::ranges::any_of(graph.nodes(), [&key](Node const &node) {
         auto const writes = named_writes(node);
-        if (std::ranges::find(writes, key) != writes.end()) {
-            return true;
-        }
-        bool nested = false;
-        for_each_child_graph(node, [&](Graph const &sub) { nested = nested || writes_anywhere(sub, key); });
-        if (nested) {
-            return true;
-        }
-    }
-    return false;
+        return std::ranges::find(writes, key) != writes.end();
+    });
 }
 
 bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t &num_prefetched) {

@@ -3,14 +3,18 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -232,6 +236,24 @@ std::string disk_key(Node const &node) {
     return io == nullptr ? std::string{} : fmt::format("disk:{}#{}", io->file_path, io->dataset_name);
 }
 
+/// Add the keys @p keys_of reports for every node in @p node's child graphs, then drop
+/// duplicates. @p keys_of already covers its own argument's children, so one level suffices.
+void append_child_keys(Node const &node, std::vector<std::string> &keys, std::vector<std::string> (*keys_of)(Node const &)) {
+    bool any_child = false;
+    for_each_child_graph(node, [&](Graph const &child) {
+        any_child = true;
+        for (auto const &inner : child.nodes()) {
+            auto inner_keys = keys_of(inner);
+            keys.insert(keys.end(), std::make_move_iterator(inner_keys.begin()), std::make_move_iterator(inner_keys.end()));
+        }
+    });
+    if (any_child) {
+        std::ranges::sort(keys);
+        auto const [first, last] = std::ranges::unique(keys);
+        keys.erase(first, last);
+    }
+}
+
 } // namespace
 
 std::vector<std::string> named_writes(Node const &node) {
@@ -244,6 +266,7 @@ std::vector<std::string> named_writes(Node const &node) {
             keys.push_back(std::move(key));
         }
     }
+    append_child_keys(node, keys, &named_writes);
     return keys;
 }
 
@@ -257,6 +280,7 @@ std::vector<std::string> named_reads(Node const &node) {
             keys.push_back(std::move(key));
         }
     }
+    append_child_keys(node, keys, &named_reads);
     return keys;
 }
 

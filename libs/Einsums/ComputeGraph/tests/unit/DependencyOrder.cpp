@@ -11,10 +11,17 @@
 // - cycle detection
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
+
+#include <algorithm>
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -264,4 +271,68 @@ TEST_CASE("Dependency - replay produces same result", "[ComputeGraph][Dependency
             REQUIRE_THAT(C(ii, jj), Catch::Matchers::WithinRel(C_first(ii, jj), 1e-12));
         }
     }
+}
+
+// A Loop node's named reads and writes used to cover only its own condition,
+// not its body, so a dataset written inside a loop and read after it carried
+// no edge from the loop to the reader, and the scheduling passes moved the
+// read ahead of the loop.
+TEST_CASE("Dependency - a disk read after a loop waits for the loop's disk write", "[ComputeGraph][Dependency][IO][Loop]") {
+    RuntimeTensor<double> A{"A", {3UL, 3UL}};
+    RuntimeTensor<double> Y{"Y", {3UL}};
+    RuntimeTensor<double> X{"X", {3UL}};
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            A(i, j) = static_cast<double>(1 + (3 * i) + j); // 1..9
+        }
+    }
+    std::vector<double> dataset(3, 0.0); // stands in for mock.h5#/row
+    size_t              iter = 0;
+
+    cg::Graph graph("dep_loop_disk");
+    {
+        auto                  &body = graph.add_loop("rows", 3, [&iter](size_t) {
+            ++iter;
+            return iter < 3;
+        });
+        cg::CaptureGuard const capture(body);
+        cg::write_param("r", std::function<std::int64_t()>([&iter] { return static_cast<std::int64_t>(iter); }));
+        auto &slice = cg::view_runtime(A, {cg::ViewAxis::drop("r"), cg::ViewAxis::full()});
+        cg::axpby(1.0, slice, 0.0, &Y);
+        cg::write("save", "mock.h5", "/row", &Y, [&dataset, &Y]() {
+            for (size_t j = 0; j < 3; ++j) {
+                dataset[j] = Y(j);
+            }
+        });
+    }
+    {
+        cg::CaptureGuard const capture(graph);
+        cg::read("load", "mock.h5", "/row", &X, [&dataset, &X]() {
+            for (size_t j = 0; j < 3; ++j) {
+                X(j) = dataset[j];
+            }
+        });
+    }
+
+    // The loop writes the dataset, so its named writes must say so.
+    auto const loop_node = std::ranges::find_if(graph.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::Loop; });
+    REQUIRE(loop_node != graph.nodes().end());
+    auto const writes = cg::named_writes(*loop_node);
+    CHECK(std::ranges::find(writes, std::string{"disk:mock.h5#/row"}) != writes.end());
+
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    INFO(pm.explain());
+    std::string order;
+    for (auto const &node : graph.nodes()) {
+        order += node.label + "; ";
+    }
+    INFO("parent order after the pipeline: " << order);
+
+    iter = 0;
+    REQUIRE_NOTHROW(graph.execute());
+    // The last iteration writes row 2.
+    CHECK(X(0) == 7.0);
+    CHECK(X(1) == 8.0);
+    CHECK(X(2) == 9.0);
 }

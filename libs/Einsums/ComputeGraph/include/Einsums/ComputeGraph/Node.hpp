@@ -1586,10 +1586,16 @@ struct NodeIndexLists {
 /// TensorId-keyed scan let a read of a dataset move ahead of the graph's own write to it and
 /// return the file's previous contents. Anything that orders nodes pairs this with
 /// @ref named_reads exactly as it pairs outputs with inputs.
+///
+/// A control-flow node (loop, conditional, setup) also reports every key written anywhere in
+/// its child graphs, as @ref Graph::effective_io does for tensors. A dataset stored inside a
+/// loop and loaded after it otherwise shares no edge with the loop, and the load can be
+/// scheduled ahead of it.
 [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> named_writes(Node const &node);
 
 /// @brief Every named resource outside the tensor dataflow this node READS, as ordering keys:
-///        @ref param_reads and the dataset a @c DiskRead loads. See @ref named_writes.
+///        @ref param_reads and the dataset a @c DiskRead loads, plus, for a control-flow node,
+///        every key read anywhere in its child graphs. See @ref named_writes.
 [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> named_reads(Node const &node);
 
 /// @brief True when a @c View's slice is resolved from runtime state (a named
