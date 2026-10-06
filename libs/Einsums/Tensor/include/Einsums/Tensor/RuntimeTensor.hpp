@@ -589,7 +589,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      *
      * Negative indices and slice bounds are normalized at the Python
      * layer; this entry point assumes already-normalized non-negative
-     * values.
+     * values. A negative step throws ``std::invalid_argument``: view
+     * strides are unsigned, so an axis cannot be walked backwards.
      */
     RuntimeTensorView<T> at_view(std::vector<einsums::SliceSpec> const &specs) const {
         std::size_t const r = _impl.rank();
@@ -609,6 +610,12 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
                 // Axis collapses, so omit it from view_dims/view_strides.
                 break;
             case einsums::SliceSpec::Kind::Range: {
+                // A view's strides are unsigned, so it cannot walk an axis backwards.
+                // Reject a negative step rather than return an empty view.
+                if (s.step < 0) {
+                    EINSUMS_THROW_EXCEPTION(std::invalid_argument, "at_view: axis {} has step {}; negative slice steps are not supported",
+                                            i, s.step);
+                }
                 offsets[i]              = static_cast<std::size_t>(s.start);
                 std::int64_t const span = s.stop - s.start;
                 std::int64_t const step = s.step != 0 ? s.step : 1;
@@ -2037,6 +2044,12 @@ APIARY_INSTANTIATE_AS("RuntimeTensorViewZ", RuntimeTensorView<std::complex<doubl
                 offsets[i] = static_cast<std::size_t>(s.index);
                 break;
             case einsums::SliceSpec::Kind::Range: {
+                // A view's strides are unsigned, so it cannot walk an axis backwards.
+                // Reject a negative step rather than return an empty view.
+                if (s.step < 0) {
+                    EINSUMS_THROW_EXCEPTION(std::invalid_argument, "at_view: axis {} has step {}; negative slice steps are not supported",
+                                            i, s.step);
+                }
                 offsets[i]              = static_cast<std::size_t>(s.start);
                 std::int64_t const span = s.stop - s.start;
                 std::int64_t const step = s.step != 0 ? s.step : 1;

@@ -455,6 +455,23 @@ def test_negative_int_index_in_capture(dtype):
     assert_close(np.asarray(d), r[-1])
 
 
+@pytest.mark.parametrize("key", [np.s_[::-1, :], np.s_[4:0:-1, :], np.s_[:, ::-2]])
+def test_negative_step_slice_raises(dtype, key):
+    """A view cannot walk an axis backwards, so a negative step is an error, not an empty view."""
+    F = einsums.create_random_tensor("F", [5, 5], dtype=dtype)
+    with pytest.raises(ValueError, match="negative slice steps are not supported"):
+        F[key]
+    V = F[1:, :]
+    with pytest.raises(ValueError, match="negative slice steps are not supported"):
+        V[key]
+
+
+def test_positive_step_slice_matches_numpy(dtype):
+    F = einsums.create_random_tensor("F", [5, 5], dtype=dtype)
+    f = np.asarray(F).copy()
+    assert_close(np.asarray(F[::2, 1:4]), f[::2, 1:4])
+
+
 def test_matmul_on_dropped_view_in_capture(dtype):
     """A dropped (rank-reduced) view feeds gemv inside capture."""
     R = einsums.create_random_tensor("R", [2, 3, 4], dtype=dtype)

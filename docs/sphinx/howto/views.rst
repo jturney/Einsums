@@ -134,7 +134,8 @@ Returning a view of a local tensor from a function gives you a dangling view, ex
 Mismatches here are caught, but the message talks about ranks rather than about the slice that produced them.
 
 **Python slicing follows Python conventions.**
-``F[:nocc, nocc:]`` uses half-open intervals like ``Range``, so the two languages agree, but negative indices and steps behave as Python users expect rather than as ``Range`` does.
+``F[:nocc, nocc:]`` uses half-open intervals like ``Range``, so the two languages agree, but negative indices and positive steps behave as Python users expect rather than as ``Range`` does.
+Negative steps are not supported: a view's strides are unsigned, so ``F[::-1, :]`` raises ``ValueError`` rather than returning a reversed view.
 
 Next
 ====
