@@ -86,8 +86,8 @@ Slicing a tensor produces a zero-copy view rather than a copy:
 .. code-block:: python
 
     A_view = A[0:2, 0:2]           # a RuntimeTensorViewD aliasing A's storage
-    print(type(A))                 # <class 'einsums.RuntimeTensorD'>
-    print(type(A_view))            # <class 'einsums.RuntimeTensorViewD'>
+    print(type(A))                 # <class 'einsums._core.RuntimeTensorD'>
+    print(type(A_view))            # <class 'einsums._core.RuntimeTensorViewD'>
 
 NumPy ergonomics
 ----------------
@@ -125,7 +125,8 @@ replays it:
 
     g = cg.Graph("mp2")
     with cg.capture(g):
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
+        # output first: V[i,a,j,b] = sum_Q B[Q,i,a] B[Q,j,b]
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", V, B, B)
         ...
 
     g.apply(cg.default_pass_manager())

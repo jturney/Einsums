@@ -27,42 +27,40 @@ one means following the established direction of the arrows below.
 
 .. code-block:: text
 
-    ┌──────────────────────────────────────────────────────────────┐
-    │   ComputeGraph     (deferred IR, optimization passes,         │
-    │                     executors, distributed expansion)         │
-    └────────────────────────────┬─────────────────────────────────┘
-                                 │
-    ┌────────────────────────────▼─────────────────────────────────┐
-    │   TensorAlgebra     (einsum dispatcher, contraction backends) │
-    └────────────────────────────┬─────────────────────────────────┘
-                                 │
-            ┌────────────────────┼────────────────────────┐
-            │                    │                        │
-    ┌───────▼─────────┐ ┌────────▼──────────┐ ┌───────────▼───────┐
-    │  LinearAlgebra  │ │   PackedGemm      │ │   (generic loop   │
-    │  (gemm, syev,   │ │  (BLIS-style      │ │    fallback,      │
-    │   invert, ...)  │ │   pack-and-tile)  │ │    inlined)       │
-    └───────┬─────────┘ └────────┬──────────┘ └───────────────────┘
-            │                    │
-    ┌───────▼─────────┐ ┌────────▼──────────┐
-    │      BLAS       │ │                   │
-    │   (Einsums-     │ │   (links vendor   │
-    │   level API)    │ │    BLAS directly) │
-    └───────┬─────────┘ │                   │
-            │           │                   │
-    ┌───────▼─────────┐ │                   │
-    │   BLASBase      │ │                   │
-    │   (types, ABI)  │ │                   │
-    └───────┬─────────┘ │                   │
-            │           │                   │
-    ┌───────▼───────────▼──────────────────▼─────────────────────┐
-    │            BLASVendor                                       │
-    │            (MKL / OpenBLAS / Accelerate)                    │
-    └─────────────────────────────────────────────────────────────┘
+    ┌────────────────────────────────────┐  ┌──────────────────────────┐
+    │  ComputeGraph                      │  │  TensorAlgebra           │
+    │  (string einsum dispatch and its   │  │  (compile-time Indices{} │
+    │   generic loop, deferred IR,       │  │   einsum and its         │
+    │   passes, executors, distributed   │  │   generic loop)          │
+    │   expansion)                       │  │                          │
+    └────────────────┬───────────────────┘  └──────────────┬───────────┘
+                     │                                     │
+                     └──────────────────┬──────────────────┘
+                                        │
+                     ┌──────────────────┴──────────────────┐
+                     │                                     │
+            ┌────────▼────────┐                  ┌─────────▼─────────┐
+            │  LinearAlgebra  │                  │    PackedGemm     │
+            │  (gemm, syev,   │                  │   (BLIS-style     │
+            │   invert, ...)  │                  │   pack-and-tile)  │
+            └────────┬────────┘                  └─────────┬─────────┘
+                     │                                     │
+                     └──────────────────┬──────────────────┘
+                                        │
+                     ┌──────────────────▼──────────────────┐
+                     │   BLAS  (Einsums-level API)         │
+                     └──────────────────┬──────────────────┘
+                     ┌──────────────────▼──────────────────┐
+                     │   BLASVendor  (MKL / OpenBLAS /     │
+                     │                Accelerate)          │
+                     └──────────────────┬──────────────────┘
+                     ┌──────────────────▼──────────────────┐
+                     │   BLASBase  (types, ABI)            │
+                     └─────────────────────────────────────┘
 
 The leaf modules wrap the moving
 parts of the hardware target.
-Everything above them is portable C++23 that targets the Einsums-level
+Everything above them is portable C++20 that targets the Einsums-level
 abstractions, not the vendor primitives directly.
 
 The dispatch flow
@@ -99,7 +97,8 @@ the dispatcher:
      the smaller contraction continues down this list.
    * Vendor BLAS, when the pattern is a plain ``dot``, ``gemv``, ``ger`` or
      ``gemm``, or an elementwise product. It uses the transposition flags
-     BLAS offers, and copies no operand.
+     BLAS offers, and copies no operand, except that an elementwise product
+     permutes an operand whose letters are the target's in another order.
    * :ref:`PackedGemm <modules_Einsums_PackedGemm>` for arbitrary-rank
      contractions that don't fit a stock BLAS call. It either hands the
      whole contraction to a vendor ``gemm`` whose strides happen to fit,
@@ -140,25 +139,39 @@ PackedGemm can also decline, and a decline is memoized like any other
 outcome so later identical calls turn away immediately. The cases:
 
 * the packing topology doesn't fit the contraction pattern at all;
-* an outer-product-shaped contraction below roughly 4096 ``M × N``
-  elements, where the generic loop measures faster;
-* a scatter-layout shape where the caller has a TTGT (Sort+GEMM) fallback
-  and this CPU's kernel does not beat it, which includes every batched
-  scatter shape.
+* a letter summed out of one operand alone, which has no axis in the plan;
+* a plain single-``M``/``N``/``K`` matrix product, which a direct ``gemm``
+  takes instead;
+* an outer-product-shaped contraction below 768 ``M × N`` elements, where
+  the generic loop measures faster;
+* on the compile-time ``Indices{}`` path only, a batch-dot or GEMV-shaped
+  contraction, and a scatter-layout shape where the caller has a TTGT
+  (Sort+GEMM) fallback and this CPU's kernel does not beat it, which
+  includes every batched scatter shape.
 
 Execution
 ---------
 
-Once a plan is accepted, :code:`blis_contraction` runs it by one of four
-routes, named by :code:`packed_gemm::last_contraction_route()`:
+Before planning, a GEMV-shaped contraction whose operand interleaves its
+output and summed axes, so that no matrix view of it exists, takes the
+``stream`` route: one pass over that operand in storage order. Otherwise,
+once a plan is accepted, :code:`blis_contraction` runs it by one of the
+routes below, named by :code:`packed_gemm::last_contraction_route()`:
 
 ``gemm_batch``
     A batched shape whose per-slice strides map onto a stock GEMM. Builds
     the pointer arrays and makes a single :code:`blas::gemm_batch` call.
 
-``flatten_gemm``
-    Multi-``K`` with a non-scatter ``C``. Flattens ``A`` and ``B`` into
-    contiguous ``M × K`` and ``K × N`` buffers and calls vendor ``gemm``.
+``flatten_gemm``, ``flatten_gemm_hptt``, ``flatten_gemm_hptt_chunked``, ``flatten_gemm_gather``
+    Multi-``K`` with a non-scatter ``C``. Makes ``A`` and ``B`` contiguous
+    ``M × K`` and ``K × N`` buffers and calls vendor ``gemm``. The suffix
+    says how: already flat, transposed by HPTT (in chunks under
+    :option:`--einsums:packed-gemm:flatten-budget`), or gathered.
+
+``gemm_k_loop``
+    Multi-``K`` where flattening would transpose an operand whole. Holds
+    every ``K`` dimension but one fixed and runs a loop of strided GEMMs
+    accumulating into ``C``, with no copy.
 
 ``single_k_gemm``
     A single-``K`` slice whose strides already describe a GEMM. Called
@@ -177,7 +190,7 @@ routes, named by :code:`packed_gemm::last_contraction_route()`:
     kernel cannot, such as Accelerate's AMX; the first wins where the
     tile kernel is the better path, such as the SME rung's FMOPA tiles.
 
-The first three routes hand the whole contraction to the vendor. That is
+Every route but ``packed`` and ``stream`` hands the contraction to the vendor. That is
 usually what you want, but not always: a caller holding a node-scoped
 thread width has its vendor calls clamped to one thread, so those routes
 would run the node serially while the packed loops would fork from the
@@ -190,11 +203,11 @@ Micro-kernels and SIMD rungs
 ----------------------------
 
 The micro-kernel bodies are compiled once per instruction-set rung by
-:code:`einsums_add_simd_dispatch_sources()`, each copy in its own
+Stripes' :code:`stripes_add_dispatch_sources()`, each copy in its own
 namespace, and the rung is chosen at run time in
 :code:`MicroKernelDispatch.cpp` by walking the architecture's preference
-order (V4, V3, V2, baseline on x86; SME, native on aarch64) from
-:code:`simd::selected_arch()` and taking the first rung that was built and
+order (v4, v3, v2, baseline on x86; sme, baseline on aarch64) from
+:code:`stripes::selected_arch()` and taking the first rung that was built and
 that the machine supports. The result is
 cached per element type. :code:`micro_kernel_entry<T>()` and
 :code:`micro_kernel_shape<T>()` resolve through the *same* ladder, which is
@@ -220,8 +233,9 @@ complex multiplication.
 Inspecting a decision
 ---------------------
 
-Raising the log level to INFO (``--einsums:log:level 2``) reports the
-declines described above, not the accepted plans. To see what actually ran,
+Raising the log level to INFO (``--einsums:log:level 2``) reports two of the
+declines described above, an invalid packing topology and the deferral to
+Sort+GEMM, and not the accepted plans. To see what actually ran,
 ask for it directly: :code:`compute_graph::dispatch::last_dispatch_route()`
 names the route the last einsum on this thread took.
 
@@ -231,7 +245,7 @@ names the route the last einsum on this thread took.
    std::string const route = cg::dispatch::last_dispatch_route(); // "gemm_direct_runtime"
 
 One level down, :code:`packed_gemm::last_contraction_route()` names which
-of the four routes above PackedGemm took. Both are thread-local and exist
+of the routes above PackedGemm took. Both are thread-local and exist
 for test introspection, not for steering execution; the test suite asserts
 on them so that a silent fall back to the generic loop cannot pass
 unnoticed.
@@ -262,7 +276,7 @@ Two execution modes coexist:
   intermediates, planning memory reuse, folding linear combinations of
   contractions, creating partitions for distributed execution, and scheduling
   communication. Then :code:`g.execute()` walks the optimized DAG with
-  whichever executor you pick: sequential, OMP, dataflow, or TaskPool.
+  whichever executor you pick: sequential, OpenMP, or dataflow (on the TaskPool).
 
 The passes that ship today include common-subexpression elimination,
 dead-node elimination, reordering for register reuse, memory planning,
@@ -286,7 +300,8 @@ flexibility and compile-time information.
   time, scalar type fixed at compile time, owns its data, dense and
   contiguous, and column-major by default. When you write
   ``Tensor<double, 2> A("A", 100, 100)`` the compiler knows the rank
-  and data type, so all the dispatch decisions above resolve statically.
+  and data type; an einsum on it still chooses its route at run time,
+  on a rank-erased view.
 
 * :cpp:class:`einsums::TensorView` is a non-owning window onto another
   tensor with explicit strides. Use it to grab a sub-block, a column,
@@ -300,7 +315,7 @@ flexibility and compile-time information.
 * :cpp:class:`einsums::BlockTensor` is a block-diagonal sparse variant, and
   :cpp:class:`einsums::TiledTensor` is a tiled variant for cache-friendly
   access on operations that walk the matrix in blocks. The Python
-  surface currently supports the dense types.
+  surface supports the dense types and ``TiledRuntimeTensor``.
 
 * :cpp:class:`einsums::DiskTensor` (in
   :ref:`TensorIO <modules_Einsums_TensorIO>`) stores its data in HDF5 format on a mass storage device
@@ -308,15 +323,15 @@ flexibility and compile-time information.
   combined with :code:`tensor_io::Slab` to schedule slab-by-slab reads
   and writes through the ComputeGraph.
 
-Most kernels are written against compile-time-typed ``Tensor``. The
-runtime-typed path is a thin shim that does the type erasure once and
-then routes into the same kernels.
+The einsum engine and the graph executors are written against rank-erased
+views. A compile-time-typed ``Tensor`` is erased once at the call and
+reaches the same kernels as a ``RuntimeTensor``.
 
 Python bindings
 ===============
 
-Einsums' Python surface is generated, not hand-written. A purpose-built
-libclang tool (``einsums-pybind``) walks the annotated C++ headers and
+Einsums' Python surface is generated, not hand-written. Apiary, a
+libclang tool, walks the annotated C++ headers and
 emits pybind11 translation units plus ``.pyi`` stubs. The native
 extension ends up at ``${BUILD}/lib/einsums/_core.cpython-*.so``.
 Pure Python wrappers in ``libs/Einsums/Python/python/einsums/`` add
@@ -364,8 +379,10 @@ GPU layer
 
 The :ref:`GPU <modules_Einsums_GPU>` module is a thin abstraction over the
 device-side primitives, including memory allocation, streams, copies, and device-side
-BLAS. The current state is "infrastructure in place, validation on real
-hardware pending". The production GPU path will land alongside the planned
+BLAS. On Apple Silicon the MPS backend is built by default and runs
+single-precision GEMM and GEMV on the GPU, leaving double and complex types
+to Accelerate; the CUDA and HIP backends are in place with validation on real
+hardware pending. The production GPU path will land alongside the planned
 Ozaki mixed-precision tile-GEMM work. The same
 :ref:`PackedGemm <modules_Einsums_PackedGemm>` plan abstraction is intended
 to drive the GPU backend once the kernel side is implemented.
@@ -388,6 +405,8 @@ A handful of CMake options gate the optional layers:
   Open MPI or MPICH integration.
 * ``EINSUMS_WITH_CUDA`` / ``EINSUMS_WITH_HIP`` enable the GPU
   backends, which are pending validation work.
+* ``EINSUMS_WITH_MPS`` enables the Metal Performance Shaders backend; it is
+  on by default on macOS.
 * ``EINSUMS_WITH_PROFILER`` enables the
   :ref:`Profile <modules_Einsums_Profile>` instrumentation hooks.
 * ``EINSUMS_WITH_SANITIZERS=address,leak,undefined`` /

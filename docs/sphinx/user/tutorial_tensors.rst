@@ -197,12 +197,12 @@ Querying Shape
             n    = A.size        # 60, a property
             name = A.name        # "A", a property
 
-            shape = np.asarray(A).shape   # (3, 4, 5)
+            shape = A.shape      # (3, 4, 5), a property
 
 The two languages differ here in a way worth knowing. C++ spells all of these as calls; Python
-makes ``size`` and ``name`` properties while ``rank()``, ``dim()`` and ``stride()`` stay methods.
-There is no ``dims`` or ``strides`` on the Python side, so reach for ``np.asarray(t).shape`` when
-you want the whole shape at once.
+makes ``size``, ``name`` and ``shape`` properties while ``rank()``, ``dim()`` and ``stride()``
+stay methods. There is no ``dims`` or ``strides`` on the Python side, so reach for ``t.shape``
+when you want the whole shape at once.
 
 ``rank()`` is a call rather than a compile-time constant, which is the one visible cost of the
 rank travelling with the value. In exchange, a function taking a tensor accepts a matrix and a
@@ -242,7 +242,10 @@ Printing
             auto A = create_random_tensor<double>("A", {3, 3});
             println(A);
             // Name: A
-            //   Dims: 3x3
+            //   Type: In Core Tensor
+            //   Data Type: double
+            //   Dims{3 3 }
+            //   Strides{1 3 }
             //   [data...]
 
         You can print to a ``std::FILE *`` or a stream using ``fprintln``. To print to a string,
@@ -307,7 +310,8 @@ Supported Types
 - ``std::complex<float>``, ``std::complex<double>``
 - Integer types for certain operations
 
-``double`` is the common choice for scientific computing, and is what both languages default to.
+``double`` is the common choice for scientific computing, and is what Python's ``dtype`` and the
+C++ ``create_*`` factories default to; the C++ tensor type itself takes it explicitly.
 In Python these are the ``dtype`` strings ``"float32"``, ``"float64"``, ``"complex64"`` and
 ``"complex128"``.
 

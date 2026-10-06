@@ -40,7 +40,7 @@ with iteration count.
         emit_residual(state)          # ordinary einsums calls, recorded
     g.apply(cg.default_pass_manager())
     for _ in range(n_iterations):
-        g.execute()                   # replayed, no re-dispatch
+        g.execute()                   # replayed, no capture or Python dispatch
 
 Two habits keep captures healthy.
 Build every view BEFORE the capture: a view created inside a capture records a
@@ -142,7 +142,7 @@ Respect the threading model
 ===========================
 
 Plan, do not improvise.
-Captured graphs get their thread widths from ``plan_widths``; kernels the
+Captured graphs get their thread widths from ``Graph.plan_threads()``; kernels the
 library threads itself consume the width they are granted, and vendor BLAS
 calls are fenced to a single width because concurrent vendor callers that
 disagree about thread count corrupt results with an OpenMP-built OpenBLAS.

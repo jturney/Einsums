@@ -26,14 +26,13 @@ in effect for your build and the environment variable each option reads.
 How Options Reach
 =================
 
-Every option below resolves through four sources. Each is free to overwrite the one before it:
+Every option below resolves through three sources. Each is free to overwrite the one before it:
 
 .. code-block:: text
 
    1. the default compiled into the option
-   2. a config file
-   3. an environment variable
-   4. the command line
+   2. an environment variable
+   3. the command line
 
 Environment variables
 =====================
@@ -57,6 +56,9 @@ Every flag is declared once, in the positive, and Einsums generates the ``no-`` 
 off by default is turned on by naming it.
 
 ``--help`` lists the positive spelling and names the negation beside it rather than listing both.
+
+From the environment a flag can only be switched on: a false value counts as not specified. To turn
+off a flag that is on by default, set the negation's variable, such as ``EINSUMS_PROFILE_NO_REPORT=1``.
 
 .. versionadded:: 2.0.0
     Flags used to be declared in whichever polarity was not the default, which is why several of the

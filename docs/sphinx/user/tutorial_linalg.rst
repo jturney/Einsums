@@ -161,7 +161,7 @@ Diagonalize a symmetric matrix :math:`\mathbf{AU} = \mathbf{U\Lambda}`, where :m
 
             // There is also a returning form, but it is constrained to a compile-time rank
             // of two, so it takes a statically ranked Tensor:
-            auto S = create_random_definite<double>("S", 5);   // Tensor<double, 2>
+            auto S = create_random_definite<double>("S", 5, 5);   // Tensor<double, 2>
             auto [vectors, values] = syev(S);
 
     .. tab-item:: Python
@@ -174,9 +174,12 @@ Diagonalize a symmetric matrix :math:`\mathbf{AU} = \mathbf{U\Lambda}`, where :m
             A = einsums.create_random_definite("A", 5)
             w = einsums.zeros([5], name="w")
 
-            linalg.syev(A, w)
+            linalg.syev(A, w, compute_eigenvectors=True)
             # A now holds the eigenvectors, w the eigenvalues
             # w is in ascending order
+
+        Pass ``compute_eigenvectors=True`` explicitly: without it the Python binding computes
+        only the eigenvalues.
 
 Note that the input matrix is overwritten with data required to perform the eigendecomposition.
 
@@ -234,7 +237,7 @@ and :math:`\mathbf{B}` will be overwritten with the value of :math:`\mathbf{X}`:
             B(1, 0) = 3.0; B(1, 1) = 4.0;
             B(2, 0) = 5.0; B(2, 1) = 6.0;
 
-            gesv(&A, &B);
+            int info = gesv(&A, &B);   // 0 on success
             // B now contains the solution X
             // A is overwritten with LU factors
 
@@ -323,7 +326,7 @@ Compute the determinant of a matrix. This is done using the LU factorization met
 Norm: ``norm``
 ==============
 
-Compute an induced matrix norm.
+Compute a matrix norm.
 
 .. tab-set::
 
@@ -428,7 +431,7 @@ where :math:`\mathbf{Q}` is a unitary matrix and :math:`\mathbf{R}` is an upper-
 
             A = einsums.create_random_tensor("A", [6, 4])
             Q, R = linalg.qr(A)
-            # Q: 6x4 orthogonal, R: 4x4 upper triangular
+            # Q: 6x6 orthogonal, R: 6x4 upper triangular
 
 .. _tutorial-linalg-graph:
 

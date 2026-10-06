@@ -34,9 +34,11 @@ options into your code.
 If you wish to compile from source, visit
 :ref:`Building from source <building-from-source>`.
 
-If you have Python, you can install Einsums with::
+If you have Python, you can install the last released Einsums with::
 
-    conda install einsums
+    conda install -c conda-forge einsums
+
+That package is the 1.x release. The API these tutorials teach needs a build from source.
 
 How to include Einsums
 ======================
@@ -51,7 +53,7 @@ For example, in your CMakeLists.txt file you can have lines similar to the follo
     find_package(Einsums \ |version| \ CONFIG)
 
     add_executable(sample main.cpp)
-    target_link_libraries(samples Einsums::Einsums)
+    target_link_libraries(sample Einsums::Einsums)
 
 Then in your main.cpp you can have something like
 
@@ -78,16 +80,14 @@ like this
 
 .. code-block:: C++
 
-    auto A = einsums::create_random_tensor(6);
-    auto B = einsums::Tensor{std::move(A), -1, 6};
-    B.dims();  // --> Dims{1, 6 }
+    auto A = einsums::create_random_tensor("A", 6);
+    auto B = einsums::Tensor{std::move(A), "B", -1, 6};
+    B.dims();  // --> {1, 6}
 
 If you are not familiar with this style, it's very easy to understand.
 If you do not see ``-->``, you're looking at the input, the code that
 you would type. Everything that is a comment and has ``-->`` in front of it is potential
-output, or a representation of what you should expect.  The lines with
-``-->`` should not be copied into your code and will cause a compile error
-if types or pasted into your code.
+output, or a representation of what you should expect, rather than text the program prints.
 
 Setting up a program
 ====================
@@ -133,25 +133,18 @@ importing does that for you.
         profiler's session export is written during shutdown, so a program that ends by
         other means may not produce one; see :doc:`tutorial_performance`.
 
-In C++ you can alternatively do this by hand. Wrap your code in OpenMP directives when you do,
-otherwise the threading environment is not set up properly and every call pays to establish it
-again:
+In C++ you can alternatively do this by hand. Do not wrap it in an OpenMP parallel region: inside
+one, the library's own parallel loops and the BLAS it calls run on a single thread.
 
 .. code:: C++
 
     int main(int argc, char **argv) {
-    #pragma omp parallel
-    {
-    #   pragma omp single
-        {
-            einsums::initialize(argc, argv);
+        einsums::initialize(argc, argv);
 
-            // Your code here.
+        // Your code here.
 
-            einsums::finalize();
-        }
-    }
-        return 0; // This needs to be outside. You can't return from within a parallel block.
+        einsums::finalize();
+        return 0;
     }
 
 
@@ -188,7 +181,8 @@ template, which is why this is the type the Python bindings and the
 Specifying your data type
 -------------------------
 
-The element type is the template argument, and there is no default: write it out.
+The element type is the template argument of the type, and it has no default there: write it out.
+The ``create_*`` factory functions and Python's ``dtype`` default to ``double``.
 
 .. tab-set::
 
@@ -291,7 +285,7 @@ There are several basic things we can do with tensors. We can fill tensors with 
             B = einsums.create_random_tensor("B", [10, 10])
 
             # Filling values
-            A = einsums.array(B)   # copy the values from B (plain `A = B` would rebind)
+            A = einsums.array(B, name="A")   # a copy of B (plain `A = B` would rebind)
             A.zero()               # every element becomes 0
             A.set_all(0.3)         # every element becomes 0.3
 
@@ -301,8 +295,9 @@ There are several basic things we can do with tensors. We can fill tensors with 
             A *= 2
             A /= 2
 
-Element-wise arithmetic between two tensors is written as a contraction rather than as an
-operator:
+Element-wise arithmetic between two tensors of the same shape has operators too (``A *= B`` in
+C++, ``A * B`` in Python, where in-place ``*=`` takes only a scalar). The same product can also be
+written as a contraction:
 
 .. tab-set::
 
@@ -322,7 +317,7 @@ operator:
 
             einsums.einsum("ij;ij->ij", A, A, B)   # A = A * B, element by element
 
-That is not a detour. A contraction spec says which indices line up, and once tensors have more
+That form is worth learning early. A contraction spec says which indices line up, and once tensors have more
 than two dimensions that is the question an operator cannot answer. :ref:`tutorial-einsum` is
 where this goes next, and it is the heart of the library.
 
@@ -450,8 +445,8 @@ reinterpreted rather than rearranged.
     einsums::Tensor<double, 3> B{std::move(A), "B", 2, 3, 10};
     // B is 2x3x10; A is no longer usable.
 
-A negative extent is a wildcard, and the constructor works out what it has to be for the sizes to
-match:
+An extent of ``-1`` is a wildcard, at most one per call, and the constructor works out what it has
+to be for the sizes to match:
 
 .. code:: C++
 
@@ -577,7 +572,8 @@ Most procedures provided by LAPACK and BLAS are available to use with tensors. H
             val = linalg.dot(u, v)
 
         ``true_dot``, the conjugating form, has no Python binding; for complex data use
-        ``linalg.dotc``.
+        ``linalg.dotc(result, u, v)``, which writes into a rank-0 ``result`` tensor rather than
+        returning.
 
 A few routines want a statically ranked :cpp:type:`einsums::Tensor` rather than a
 ``RuntimeTensor``, because they are written against a compile-time rank of two. General
@@ -585,6 +581,8 @@ eigendecomposition is one, and its eigenvalues and eigenvectors are complex even
 is real:
 
 .. code:: C++
+
+    using cd = std::complex<double>;
 
     auto          M = create_random_tensor<double>("M", 10, 10);
     Tensor<cd, 1> evals{"evals", 10};
@@ -633,9 +631,8 @@ Here's an example for something like :math:`C_{ijk} = A_{ik}B_{kj}`.
 
             einsums.einsum("ik;kj->ijk", C, A, B)
 
-If we do something that can become a BLAS call, then it will normally become a BLAS call. Currently, index permutations are not
-performed, so calls can only be optimized when the indices exactly match the pattern for a BLAS call. This will change in the future,
-as permuting indices can seriously improve performance.
+If we do something that can become a BLAS call, then it will normally become a BLAS call. Index orders that BLAS cannot take
+go to PackedGemm, which rearranges the data as it packs it, and only a pattern neither can form runs on the generic loop.
 
 .. tab-set::
 
@@ -665,11 +662,13 @@ as permuting indices can seriously improve performance.
             # A single number comes out through dot, which returns in Python.
             val = einsums.linalg.dot(A, B)
 
-The second of those two used to be written with B's indices reversed, which is a different
-quantity and lands on the generic loop, because reaching a BLAS call would need a physical
-permutation that Einsums does not insert on your behalf. If you want it, write the permutation
-and contract the result. :ref:`tutorial-performance` tabulates which shapes take which kernel,
-measured rather than predicted.
+Writing that full contraction with B's indices reversed (``" <- ij ; ji"``) is a different
+quantity, and it lands on the generic loop: a scalar result is not a shape PackedGemm takes, and
+reaching the BLAS dot product would need a physical permutation that Einsums does not insert on
+your behalf. If you want it, write the permutation and contract the result.
+:ref:`tutorial-performance` tabulates which shapes take which kernel, measured rather than
+predicted.
+
 .. _absolute-beginners-graph:
 
 Putting it together, then capturing it

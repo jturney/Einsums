@@ -42,7 +42,9 @@
 "einsums:buffer-size":
   added: "1.0.0"
   body: |
-    The amount of memory Einsums is allowed to use. It takes a string containing a number and units.
+    The ceiling on contraction workspace drawn from Einsums' buffer allocator: buffer tensors and
+    LAPACK work arrays. Ordinary tensors are not counted; see :option:`--einsums:max-memory` for the
+    planning ceiling. It takes a string containing a number and units.
     The units are either bytes or words. See :cpp:func:`einsums::string_util::memory_string` for more information.
 
     Defaults to ``64MB``.
@@ -54,8 +56,8 @@
   added: "1.0.0"
   body: |
     The largest piece of a disk-backed tensor that a contraction reads into memory at once. The
-    pieces count against :option:`--einsums:buffer-size`, along with everything else Einsums
-    allocates, so keep it well below that. Zero, the default, means an eighth of
+    pieces count against :option:`--einsums:buffer-size`, along with the other workspace drawn from
+    the buffer allocator, so keep it well below that. Zero, the default, means an eighth of
     :option:`--einsums:buffer-size`.
 
 "einsums:row-major":
@@ -88,7 +90,8 @@
     * 2: Information messages
     * 3: Warnings.
     * 4: Errors.
-    * 5: Critical errors.
+
+    Values outside 0-4 are rejected.
 
 "einsums:log:destination":
   added: "1.0.0"
@@ -97,7 +100,8 @@
       text: |
         This option's name has been changed.
   body: |
-    Set whether the logger will log to standard output or standard error.
+    Where log records go: ``cerr`` (the default), ``cout``, or any other value, which is taken as
+    the name of a file to log to.
 
 "einsums:log:format":
   added: "1.0.0"
@@ -157,6 +161,9 @@
   added: "2.0.0"
   body: |
     Save the profile session as JSON, which ``einsums profiler --load`` opens. Empty, the default, means do not save one.
+
+    Requires :option:`--einsums:profile:server`, since the session is exported through the server;
+    without it no file is written and the run logs an error saying so.
 
 "einsums:profile:server":
   added: "2.0.0"
@@ -640,7 +647,8 @@
     it does not. Point this at the JSON the ``calibrate_hardware`` tool writes and the measured GEMM
     efficiency curve and bandwidths are used instead.
 
-    A path that will not load is a warning and a fall back to the built-in table, never an error: the
+    A path that will not load is a warning (shown at :option:`--einsums:log:level` 3 or lower) and a
+    fall back to the built-in table, never an error: the
     profile shapes which optimization is chosen, never whether the answer is right.
 
     Read once per cost model, while a pass manager is being populated, so it is settled well before
@@ -726,7 +734,8 @@
     the highest rung the CPU and operating system support. Accepted rungs are ``baseline``, ``v2``, ``v3``,
     ``v4`` and ``sme``, and the aliases ``sse2``, ``sse4.2``, ``avx2``, ``avx512`` and ``sme2``.
 
-    This can only lower the rung. A rung the machine cannot run is replaced, with a warning, by the
+    This can only lower the rung. A rung the machine cannot run is replaced, with a warning shown at
+    :option:`--einsums:log:level` 3 or lower, by the
     next one below it that it can, and a rung of another architecture is ignored. It is how a test
     runs every rung of a dispatch ladder on one machine.
 
@@ -809,8 +818,9 @@
 "einsums:debug:crash-handler":
   added: "2.0.0"
   body: |
-    Install the crash handler that reports a fatal exception and writes a minidump. On by default;
-    turn it off with ``--einsums:debug:no-crash-handler``.
+    On Windows, install the crash handler that reports a fatal exception and writes a minidump. On
+    by default; turn it off with ``--einsums:debug:no-crash-handler``. Elsewhere it has no effect,
+    and crashes are reported by the signal handlers.
 
     Deliberately separate from :option:`--einsums:debug:install-signal-handlers`. On Windows the two
     are different mechanisms, since signals never see a memory fault there, so a Python process can
@@ -819,5 +829,5 @@
 "einsums:debug:crash-dump-dir":
   added: "2.0.0"
   body: |
-    Directory for crash minidumps. Empty, the default, means the working directory.
+    Directory for crash minidumps, on Windows. Empty, the default, means the working directory.
 

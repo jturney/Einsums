@@ -60,7 +60,8 @@ How Dispatch Chooses
 
 Dispatch walks a ladder, stopping at the first rung that fits. Two cases are settled before it:
 a zero-length dimension, which only scales the output, and a letter repeated inside one operand or
-summed out of one operand alone, which goes to a repeat-aware loop.
+summed out of one operand alone, which is read as a strided view or summed out first, after which
+the rest of the contraction continues down the ladder.
 
 1. **A vendor BLAS call**, when the contraction already is one: ``DOT`` for a scalar result over
    identical index packs, ``GER`` for an outer product, ``GEMV`` for matrix times vector, ``GEMM``
@@ -72,8 +73,9 @@ summed out of one operand alone, which goes to a repeat-aware loop.
 
 3. **A generic loop nest**, for everything else. Correct, and the slowest option.
 
-Dispatch never permutes an operand to reach a BLAS call. It uses the transposition flags a BLAS
-call already offers, so :math:`C_{ik} = \sum_j A_{ji} B_{kj}` still reaches one ``GEMM``; any other
+Dispatch never permutes an operand to reach a BLAS call; the one permutation it makes is for an
+elementwise product, whose operand is permuted into the output's order
+(``direct_product_permuted_runtime``). It uses the transposition flags a BLAS call already offers, so :math:`C_{ik} = \sum_j A_{ji} B_{kj}` still reaches one ``GEMM``; any other
 index order goes to PackedGemm, which rearranges the data as it packs it. If you know a
 permutation would pay for a contraction that lands on the generic loop, do it yourself with
 ``cg::permute`` and contract the result.
@@ -96,17 +98,18 @@ It records three things:
 
 **Annotations**
     Key-value pairs attached to the enclosing zone. This is how an einsum records which route it
-    took, what dtype it was, and the ranks of its operands, and it is why the profile can answer
+    took and the ranks of its operands, and it is why the profile can answer
     "which kernel ran" without a second tool.
 
 **Counters**
-    Hardware counters per zone where the platform provides them, reported alongside the timings.
+    Hardware counters per zone where the platform provides them, recorded when
+    :option:`--einsums:profile:sources` names ``counters`` and reported in the detailed report.
 
 What It Costs
 -------------
 
 Instrumentation is on by default, at build time through ``EINSUMS_WITH_PROFILER`` and at run time
-unless you disable it. A zone entry is a few tens of nanoseconds, which disappears next to a
+unless you disable it. A zone costs a few nanoseconds, which disappears next to a
 contraction and does not disappear next to a graph of many tiny nodes.
 
 If you are measuring a workload made of many small operations, turn it off for the measurement:
@@ -136,7 +139,7 @@ A report is written at shutdown, with no code change required:
         return 0;
     }
 
-By default it lands in ``profile.txt`` in the working directory, appended rather than truncated.
+By default it replaces ``profile.txt`` in the working directory.
 The options that shape it:
 
 .. list-table::
@@ -154,7 +157,8 @@ The options that shape it:
     * - :option:`--einsums:profile:append`
       - Append rather than replace. Off by default, so each run leaves one report.
     * - :option:`--einsums:profile:detailed`
-      - Report every zone with its counters, rather than the summary.
+      - Report every zone with its minimum, maximum and average, and its counters when
+        ``--einsums:profile:sources=counters`` recorded them, rather than the summary.
     * - :option:`--einsums:profile:save`
       - Also write the session as JSON, for the viewer to load later. Requires
         ``--einsums:profile:server``, and says so if it is missing.
@@ -173,27 +177,35 @@ name:
 
 .. code-block:: text
 
-    Thread: main (22306818)  (total exclusive:   2.354 ms)
-      total(ms)    count       mean(ms)     name                     file:line              function
-          0.458           1    0.458±0.000  Runtime constructor      Runtime.cpp:274        Runtime
-          0.263           1    0.263±0.000  Calling startup routines Runtime.cpp:410        call_startup_functions
-          0.789           9    0.088±0.050  dgemm                    gemm.cpp:123           dgemm
-          0.531           1    0.531±0.000  demo run                 probe_profiler.cpp:26  main
-          0.002           1    0.002±0.000    iteration 0            probe_profiler.cpp:34  main  iter=0
-          0.027           1    0.027±0.000      build_intermediate   probe_profiler.cpp:18  build_intermediate  stage=intermediate
-          0.239           1    0.239±0.000        cg::einsum: i,j <- i,k ; k,j   StringDispatch.hpp:492  string_einsum  a_rank=2 b_rank=2 c_rank=2 dispatch=gemm_direct_runtime
+    Thread: main (12681229)  (total exclusive:   2.052 ms)
+      total(ms)    count       mean(ms)     name                                file:line               function
+          0.005           1    0.005±0.000  Runtime constructor                 Runtime.cpp:264         Runtime
+          0.293           1    0.293±0.000  Calling startup routines            Runtime.cpp:389         call_startup_functions
+          0.019           1    0.019±0.000  demo run
+          0.007           1    0.007±0.000    iteration 0                                                       iter=0
+          0.483           1    0.483±0.000      build_intermediate              probe_profiler.py:7     build_intermediate  stage=intermediate
+          0.343           1    0.343±0.000        einsum eager                  Operations.hpp:5550     einsum
+          0.853           1    0.853±0.000          cg::einsum: i,j <- i,k ; k,j  StringDispatch.hpp:636  string_einsum  a_rank=2 b_rank=2 c_rank=2 dispatch=gemm_direct_runtime
+          0.013           1    0.013±0.000            dgemm                     gemm.cpp:121            dgemm
+          0.003           1    0.003±0.000    iteration 1                                                       iter=1
+          0.015           1    0.015±0.000      build_intermediate              probe_profiler.py:7     build_intermediate  stage=intermediate
+          0.001           1    0.001±0.000        einsum eager                  Operations.hpp:5550     einsum
+          0.002           1    0.002±0.000          cg::einsum: i,j <- i,k ; k,j  StringDispatch.hpp:636  string_einsum  a_rank=2 b_rank=2 c_rank=2 dispatch=gemm_direct_runtime
+          0.002           1    0.002±0.000            dgemm                     gemm.cpp:121            dgemm
 
 Four things are worth pointing at in that output.
 
-``total(ms)`` is inclusive of nested zones, so a parent's number contains its children. The
-thread header reports total **exclusive** time, which is the figure to compare against wall clock.
+``total(ms)`` and ``mean`` are **exclusive**: a parent's number leaves out its children's time, so
+the zone with the largest figure is where the time actually went. The thread header sums them,
+which is the figure to compare against wall clock.
 
 ``count`` and ``mean±stddev`` are what distinguish "one slow call" from "a million fast ones". A
-large standard deviation on a repeated zone usually means load imbalance or a cold first call.
+large standard deviation on a repeated zone usually means load imbalance or a cold first call; the
+first einsum above costs hundreds of times the second.
 
-``dgemm`` appears at the top level rather than nested under the einsum that called it, because
-the BLAS wrappers are instrumented independently. Nine calls for five iterations is the give-away
-that something ran more often than the loop count suggests.
+``dgemm`` nests under the einsum zone that called it, so its count says how many BLAS calls each
+einsum made. A count higher than the einsum's is the give-away that a contraction ran as several
+calls.
 
 The trailing ``dispatch=gemm_direct_runtime`` is the einsum telling you which kernel it chose.
 That annotation is the most direct answer to "is this contraction accelerated", and it is present
@@ -239,11 +251,11 @@ an early return or a thrown exception cannot leave the tree unbalanced:
     * - ``WAGGLE_ANNOTATE_DIMS(key, dims)``
       - Attach a sequence of extents as ``key.0``, ``key.1``, ...
 
-These are the library's own instrumentation, used at well over seven hundred call sites, and they
+These are the library's own instrumentation, used at about seven hundred call sites, and they
 compile to nothing when ``EINSUMS_WITH_PROFILER`` is off, so an instrumented function needs no
 preprocessor guard of its own.
 
-There is also a lower-level ``Profiler::instance().push(name)`` and ``pop()`` pair. Prefer the
+There is also a lower-level ``waggle::push(name)`` and ``waggle::pop()`` pair. Prefer the
 macros: a manual pair leaks a zone if anything between them throws.
 
 From Python
@@ -374,8 +386,9 @@ Three ways, in the order they are usually easiest.
 and PackedGemm records why it declined under ``packed_gemm_skip`` and which path it took under
 ``packed_gemm_path``. No flags, no code change.
 
-**The log.** PackedGemm explains its declines at INFO level, which
-:option:`--einsums:log:level` controls. A contraction that lands on the generic loop is not
+**The log.** PackedGemm explains two of its declines, an invalid packing topology and a deferral
+to Sort+GEMM, at INFO level, which :option:`--einsums:log:level` controls; every decline is in the
+``packed_gemm_skip`` annotation. A contraction that lands on the generic loop is not
 logged; the annotation above and the route below are where it shows.
 
 **Programmatically.** A thread-local naming the last route:
@@ -453,7 +466,7 @@ the library performs happens on the captured form:
     graph.optimize();
 
     for (int iter = 0; iter < 1000; iter++) {
-        graph.execute();       // no re-dispatch, no re-analysis
+        graph.execute();       // no capture or parsing; packed plans are memoized
     }
 
 One rule to get right before measuring anything: a graph-owned tensor you read after
@@ -516,9 +529,9 @@ captured program declares. Slicing a program that already fits costs kernel effi
 nobody was short of, so this fires when a caller asks for it. Zero is the spelling for the
 captured schedule.
 
-On the full-axis DF-MP2 capture at water in cc-pVDZ, a cap of 4096 bytes takes the largest
-intermediate inside the loop from 72200 bytes to 2888 and turns six captured nodes into a
-``Scale`` and a ``Loop``. ``optimizer_tour.py`` in the ComputeGraph examples prints the decision
+On the full-axis DF-MP2 capture at water in cc-pVDZ, a cap of 4096 bytes slices ``i`` and ``j``,
+takes the six intermediates it streams from 72200 bytes to 2888 each, and moves them into a
+``Loop`` over the 25 pairs. ``optimizer_tour.py`` in the ComputeGraph examples prints the decision
 and the buffers the tiled graph allocates.
 
 7. Give a search pass room, or take its allowance away

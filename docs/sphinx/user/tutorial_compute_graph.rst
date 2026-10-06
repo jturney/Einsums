@@ -92,11 +92,13 @@ All common tensor operations have graph-aware wrappers in the ``cg::`` namespace
 
 - Tensor algebra: ``einsum``, ``permute``, ``transpose``, ``element_transform``
 - BLAS: ``gemm``, ``gemv``, ``ger``, ``dot``, ``scale``, ``axpy``, ``axpby``, ``direct_product``
-- LAPACK: ``syev``, ``svd``, ``qr``, ``gesv``, ``invert``, ``det``, ``pow``
+- LAPACK: ``syev``, ``gesv``, ``invert``
 
-Some returning-form operations such as ``dot``, ``det``, ``norm``, and ``svd``
-cannot be captured because they return new objects. Use them outside capture or use
-alternative in-place forms.
+The returning forms of ``dot``, ``norm``, ``trace``, ``syev``, ``svd``, ``qr``,
+``pow`` and ``det`` throw ``std::logic_error`` during capture, because they return
+new objects. ``dot``, ``norm`` and ``syev`` have capturable pointer forms
+(``cg::dot(&result, A, B)``, ``cg::syev(&A, &W)``); ``svd``, ``qr``, ``pow`` and
+``det`` have none and must run outside capture.
 
 Optimization Passes
 ===================
@@ -111,16 +113,39 @@ The graph can be optimized before execution:
     graph.execute();
 
 The default pipeline runs the passes below, in this order. The GPU and MPI
-passes join it only when the corresponding backend (or its mock) is built in:
+passes join it only when the corresponding backend (or its mock) is built in,
+between ``StreamContractionFusion`` and ``InplaceOptimization``. When a
+structural pass has changed the graph, the analysis passes run once more at the
+end so their annotations describe the final node set:
 
 ``ProvenancePropagation``
     Carry a tag declared on a tensor down to the handles the passes below read,
     including a loop or setup body's own handle for the same buffer.
 ``TiledExpansion``
     Lower tiled operations into per-tile dense nodes so every pass below can read them.
+    Whether a tiled contraction is densified and whether a tiled elementwise op is
+    fused into one node are left to the cost model (``Densify::Auto`` and
+    ``FuseTiles::Auto``).
+``SpacePropagation``
+    Infer the index spaces of intermediates from their producers' operands.
+``CrossSpaceValidation``
+    Flag a contraction letter that binds slots of two different index spaces.
 ``DeltaElimination``
     Rewrite a contraction against a tagged Kronecker delta as a rename, and a
     contraction over two spaces declared disjoint as a scaling.
+``AntisymmetryDetection``
+    Establish, by reading the bound inputs, which of a permutation operator's
+    symmetries they actually have.
+``AntisymmetrizerLinearity``
+    Pull a sum of antisymmetrized quantities inside one antisymmetrizer.
+``AntisymmetryInference``
+    Tag the output of a permutation operator with the antisymmetry it always has.
+``AntisymmetrizerFolding``
+    Collapse a permutation operator contracted against an antisymmetric operand
+    into a scalar multiple.
+``AntisymmetrizerExpansion``
+    Lower a remaining permutation operator into a contraction plus one permuted
+    accumulation per term.
 ``ConstantFolding``
     Pre-compute constant subexpressions.
 ``ScaleAbsorption``
@@ -164,10 +189,6 @@ passes join it only when the corresponding backend (or its mock) is built in:
     Insert allocation nodes for deferred tensors.
 ``SymmetryPropagation``
     Tag intermediates whose symmetry is provable from their inputs.
-``SpacePropagation``
-    Infer the index spaces of intermediates from their producers' operands.
-``CrossSpaceValidation``
-    Flag a contraction letter that binds slots of two different index spaces.
 ``ScalingAnalysis``
     Report every contraction's cost polynomial and the rate-limiting term.
 ``StreamContractionFusion``
@@ -280,7 +301,7 @@ For iterative algorithms with convergence checks:
         [&](size_t iter) { return std::abs(energy - energy_old) > 1e-8; },
         [&]() {
             cg::einsum("ij <- ik ; kj", &F, H, D);
-            cg::syev(F, &eigvecs, &eigvals);
+            cg::syev(&F, &eigvals);   // F now holds the eigenvectors
             // ... update density, energy ...
         }
     );
@@ -438,11 +459,20 @@ The ComputeGraph can automatically offload operations to the GPU. The user
 writes standard CPU code; the optimization passes handle placement, data
 transfers, and dispatch.
 
+.. note::
+
+   GPU offload is a work in progress. The GPU passes run only on GPU-enabled
+   (or mock) builds, and the transfer and execution backend they target is not
+   yet complete.
+
 Requirements
 ------------
 
-- Use ``float`` tensors (MPS only supports float32 GEMM; double stays on CPU)
-- Tensors must be large enough to overcome GPU overhead (default: >64 KB)
+- On MPS, use ``float`` tensors (MPS only supports float32 GEMM; double stays on
+  CPU). CUDA and HIP also take double.
+- The operation must be expensive enough to beat transfer and launch overhead
+  under ``GPUPlacement``'s cost model. A node with no flop estimate falls back to
+  a size threshold (default 64 KB of memory traffic).
 - Use ``PassManager::create_default()`` to include GPU passes
 
 .. code-block:: cpp
@@ -462,7 +492,7 @@ Requirements
     auto pm = cg::PassManager::create_default();
     graph.apply(pm);
 
-    // Execute --- large float GEMMs run on GPU automatically
+    // Execute --- nodes GPUPlacement chose run on the GPU
     graph.execute();
 
 The default pass manager includes these GPU-related passes:
@@ -525,22 +555,23 @@ offloading. You can tune the parameters:
     placement.gpu_launch_overhead_us = 10.0;   // Kernel launch latency
 
     cg::PassManager pm;
-    pm.add(std::move(placement));
+    pm.add(std::make_shared<cg::passes::GPUPlacement>(std::move(placement)));
     // ... add other passes ...
 
 Interaction with ConstantFolding
 --------------------------------
 
-The ``ConstantFolding`` pass detects tensors that are only ever read and pre-computes their results on CPU at
-optimization time. This can prevent GPU placement because the Einsum node gets
-replaced with a precomputed constant before ``GPUPlacement`` runs.
+The ``ConstantFolding`` pass pre-computes, on CPU at optimization time, any node
+whose inputs are all graph-owned intermediates (``create_tensor()``) that no node
+in the graph writes. Such a node is replaced with a no-op before
+``GPUPlacement`` runs, so it never reaches the GPU.
 
-This is correct behavior for one-shot computations. In iterative algorithms
-where tensor data changes between ``graph.execute()`` calls, ConstantFolding
-does not apply because the tensors are mutable.
+User-owned tensors are never treated as constant, since they may change between
+``graph.execute()`` calls, so a graph fed from user tensors, like the example
+above, folds nothing.
 
-If you want to force GPU execution for benchmarking or demonstration, build
-a custom ``PassManager`` that skips ``ConstantFolding``:
+If you want to force GPU execution of a folded node for benchmarking or
+demonstration, build a custom ``PassManager`` that skips ``ConstantFolding``:
 
 .. code-block:: cpp
 
@@ -554,10 +585,6 @@ a custom ``PassManager`` that skips ``ConstantFolding``:
     pm.add<cg::passes::TransferElimination>();
     pm.add<cg::passes::GPUDiagnostics>();
     graph.apply(pm);
-
-In real iterative code, this is not an issue
-because the input tensors change between iterations and ConstantFolding cannot
-fold them.
 
 Unified Memory (Apple Silicon)
 ------------------------------
@@ -584,7 +611,7 @@ After applying GPU passes, ``print_dot()`` colors nodes by execution target:
     graph.print_dot(std::cout);  // Pipe to: dot -Tpng > graph.png
 
 The JSON output (``graph.to_json()``) includes ``"target": "GPU"`` and
-``"stream_id"`` fields for each node, and ``"residency"`` for each tensor.
+``"stream_id"`` fields for each node.
 
 Custom Operations and Disk I/O
 ==============================
@@ -688,9 +715,9 @@ How it works
 1. ``IOPrefetch`` pass moves the ``DiskRead`` to the beginning of the schedule
 2. ``DataflowExecutor`` calls ``async_start`` immediately
 3. While I/O runs in the background, the executor runs independent compute (A*B)
-4. When ``build_fock`` is ready to run, the executor calls ``async_finish``
-   which blocks until the read completes
-5. ``build_fock`` runs with the loaded data
+4. Right after ``async_start``, the executor queues ``async_finish`` as a task of
+   its own, which blocks until the read completes
+5. ``build_fock`` runs with the loaded data once that task has finished
 
 ``SequentialExecutor`` and ``OpenMPExecutor`` call the ``sync_fn`` fallback so that
 no overlap occurs. Use ``DataflowExecutor`` for async I/O overlap.
@@ -725,7 +752,7 @@ The saved JSON includes:
 
 - Aggregated profiling data (call tree, exclusive/inclusive times, annotations)
 - ComputeGraph node structure (kind, target, stream, inputs/outputs, timing)
-- Tensor metadata (name, dimensions, dtype, residency)
+- Tensor metadata (name, dimensions, dtype)
 - Graph edges (data flow between operations)
 
 Runtime Lifecycle
@@ -734,10 +761,12 @@ Runtime Lifecycle
 The Einsums runtime automatically calls ``finalize()`` when ``einsums::start()``
 returns. The shutdown sequence is:
 
-1. Profiler session save, if ``--einsums:profile:save`` is set.
-2. Runtime destructor, which runs the pre-shutdown and shutdown functions.
-3. Profiler shutdown, which drains all events and writes the text report if enabled.
-4. Module cleanup, where each module's finalize function runs.
+1. The pre-shutdown functions.
+2. The shutdown functions, which include each module's cleanup and any
+   user-registered shutdown hooks.
+3. Profiler finalize, which writes the ``--einsums:profile:save`` session file,
+   if one was asked for, and the text report if enabled.
+4. Teardown of the runtime's global state.
 
 No explicit ``finalize()`` call is needed. The ``Runtime`` destructor handles
 everything when the ``unique_ptr<Runtime>`` goes out of scope. Calling
@@ -748,8 +777,8 @@ Workspace and Deferred Allocation
 
 For distributed-ready code, use ``declare_tensor()`` instead of ``create_*_tensor()``.
 Tensors are declared with their shape but no data is allocated until the
-``MaterializationPass`` runs during ``apply(pm)``. This enables the
-``DistributionPlanningPass`` to decide tensor placement before allocation:
+``Materialization`` pass runs during ``apply(pm)``. This enables the
+``DistributionPlanning`` pass to decide tensor placement before allocation:
 
 .. code-block:: cpp
 
@@ -795,7 +824,7 @@ the ComputeGraph passes handle distribution and communication:
     scf.apply(pm);
     // DistributionPlanning: eri (100GB) → block-distributed across ranks
     //                       F, C (small) → replicated
-    // MaterializationPass: each rank allocates its local eri slice + full F, C
+    // Materialization: each rank allocates its local eri slice + full F, C
     // CommunicationInsertion: allreduce after eri contraction
 
     scf.execute();
@@ -819,8 +848,11 @@ for common CPUs and GPUs, auto-detected at runtime:
     auto profile = CostModel::detect_default();
     // → "Apple M4 Pro" on your machine
 
-    // Or provide calibrated data:
-    auto profile = CostModel::load_json("calibrated.json");
+    // Or provide calibrated data (returns expected<CostModel, GraphError>):
+    auto calibrated = CostModel::load_json("calibrated.json");
+    if (calibrated) {
+        profile = *calibrated;
+    }
 
 Run the calibration tool for precise measurements:
 

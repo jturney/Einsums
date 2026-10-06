@@ -75,7 +75,7 @@ The governing equation is this.
 
     \tau_{ij}^{ab} = t_{ij}^{ab} + 2t_{i}^{a}t_{j}^{b}
 
-    \left<pq \middle|\middle| rs \right> = \left<pq\middle|\middle|rs\right> - \left<pq\middle|\middle|sr\right>
+    \left<pq \middle|\middle| rs \right> = \left<pq\middle|rs\right> - \left<pq\middle|sr\right>
 
 
 This becomes the following code.
@@ -201,13 +201,14 @@ As of right now, Einsums is capable of the following:
   sequences of tensor operations. They include several dozen optimization passes, parallel
   execution, control flow, and profiler integration with an interactive node viewer.
   :doc:`optimizer` documents the pipeline and how to drive it.
-* A built-in profiler that streams to a real-time TCP server, with a terminal viewer
-  showing the call tree, flame graphs, thread timelines, and hotspots.
-* Limited interaction with Python.
-    * A form of the ``einsum`` call works in Python. NumPy arrays cross the boundary through
-      ``einsums.asarray``, which copies them into a tensor; the operations themselves take
-      Einsums tensors rather than raw NumPy arrays.
-* GPU acceleration for all of the above using HIP. Uses hipBLAS and hipSolver for the GPU linear algebra operations.
+* Profiling through the Waggle profiler, which Einsums builds alongside itself: it streams to a
+  real-time TCP server, with a terminal viewer showing the call tree, flame graphs, thread
+  timelines, and hotspots.
+* Python bindings for runtime-rank tensors, strided views and tiled tensors, ``einsum``, linear
+  algebra, and the ComputeGraph. NumPy arrays cross the boundary through ``einsums.asarray``,
+  which copies them into a tensor; the operations themselves take Einsums tensors rather than
+  raw NumPy arrays.
+* GPU acceleration through CUDA, HIP, or Apple's Metal Performance Shaders.
 * Simple arithmetic between tensors. The tensors all need to have the same dimensions, though, and this does not yet work on GPU.
 * Tensors representing functions of their indices.
 
@@ -217,7 +218,7 @@ The following is not supported, but may be supported in the future.
   which rearranges the data as it packs it, and only a pattern PackedGemm cannot decompose runs on the generic loop.
 * Most simple arithmetic does not work on :cpp:class:`einsums::BlockTensor`, :cpp:class:`einsums::TiledTensor`,
   :cpp:class:`einsums::tensor_base::FunctionTensor`, or any tensor for the GPU.
-* The Python module only supports contiguous tensors. It does not support block-sparse tensors, function tensors, or others.
+* The Python module does not expose block tensors, function tensors, or disk tensors.
 * The Python module interacts with Einsums in a completely different way than C++. Be careful of pitfalls when working with
   interoperable code.
 * Multi-node acceleration using MPI is in development through the :ref:`Comm <modules_Einsums_Comm>` module.

@@ -290,7 +290,7 @@ What the library ships
     it is the cheapest thing to build out of two of them. The record is
     **measured**: the norm of the dropped singular values. At water in cc-pVDZ a
     threshold of ``1e-1`` keeps 39 of 84 auxiliary functions at a recorded bound
-    of ``1.06e-1``, against an MP2 energy error of ``5.8e-4``. That is a bound on
+    of ``1.06e-1``, against a relative MP2 energy error of ``5.8e-4``. That is a bound on
     the tensor, so it is loose against an energy, and loose in the safe
     direction; ``test_naf_python.py`` sweeps four thresholds and asserts it.
 
@@ -359,8 +359,9 @@ can read**: an ``outer_sum`` over the tagged energy vectors followed by the
 registered ``recip`` element operation. Everything the tag claims is checked
 against those nodes, and the chain is then dissolved along with the tensor, so
 the four-index denominator is never allocated. An anonymous Python callable in
-place of ``recip`` says only that something is applied to every element, and the
-pass declines it with that reason.
+place of ``recip`` says only that something is applied to every element, so the
+pass cannot verify that writer and declines, naming it as not the ``recip``
+element transform.
 
 .. code-block:: python
 
@@ -398,8 +399,9 @@ Composition is per unit and is not addition in general. Two absolute bounds add,
 by the triangle inequality. Two relative ones compose as ``e1 + e2 + e1*e2``,
 because the second rewrite's error is relative to the already perturbed result,
 and dropping the product term makes a composed budget quietly optimistic, which
-is the one direction an accuracy contract must never fail in. Bounds in
-different units do not combine at all and are reported as two numbers.
+is the one direction an accuracy contract must never fail in. The absolute
+bounds, element-wise and energy-like, add into one number; absolute and relative
+bounds do not combine at all and are reported as two numbers.
 
 Two passes that compose on one water program are the basis truncation and the
 quadrature, in that order. They act on different quantities, and the one link
@@ -521,14 +523,16 @@ pipeline for that reason.
 
 On the full-axis DF-MP2 capture at water in cc-pVDZ, under a cap of 4096 bytes,
 it chooses the two occupied axes, 25 slices at depth one, and the largest
-intermediate the loop holds falls from 72200 bytes to 2888. Six captured nodes
-become two, a ``Scale`` and a ``Loop``, and the energy agrees with the untiled
-replay, with a numpy pair loop that never forms a four-index tensor, and with
-the fixture's own reference. ``test_axis_tiling_python.py`` asserts every one of
-those, and ``optimizer_tour.py`` prints them.
+intermediate the loop holds falls from 72200 bytes to 2888. With the denominator
+supplied from outside the capture, six captured nodes become two, a ``Scale``
+and a ``Loop``, and the energy agrees with the untiled replay, with a numpy pair
+loop that never forms a four-index tensor, and with the fixture's own reference.
+``test_axis_tiling_python.py`` asserts every one of those. ``optimizer_tour.py``
+prints the axes, the slice count, the footprint and the energy for its own
+capture, which builds the denominator inside it.
 
-The occupied axes are not chosen because they are the smaller ones. At this
-molecule they are the larger. The exchange permutation of the MP2 energy
+The occupied axes are not chosen because they are the smaller ones, though at
+this molecule they are. The exchange permutation of the MP2 energy
 exchanges the two virtual indices, so a slice of the permuted tensor would need
 a slice of its source at a pair the body is not at, and the virtual pair is
 rejected structurally, at every extent, on every molecule. The size argument
@@ -559,8 +563,8 @@ that loads it?
 
     cg.analysis_pass_manager()     # read-only; safe on a graph in any state
     cg.structural_pass_manager()   # machine-independent rewrites; what a file keeps
-    cg.resource_pass_manager()     # tiling, placement, distribution; never saved
-    cg.tuning_pass_manager()       # batching, memory planning, threads, streams
+    cg.resource_pass_manager()     # tiled-op lowering, placement, distribution; never saved
+    cg.tuning_pass_manager()       # batching, reordering, memory planning, streams
     cg.default_pass_manager()      # the ones safe by default, in the default order
 
 They are views of the default pipeline rather than a re-planned one, built in
@@ -621,8 +625,8 @@ the same program under the same name.
 It does not pay for re-running a script, which is a new process with an empty
 cache; that case is what saving the optimized graph is for. A search cut off by
 its allowance is never stored, so a plan that comes back out is one an unbounded
-search would have found. :option:`--einsums:graph:factorization-cache` switches
-it off, which is the first thing to do when bisecting a wrong number, since two
+search would have found. The cache is on by default, and
+``--einsums:graph:no-factorization-cache`` switches it off, which is the first thing to do when bisecting a wrong number, since two
 supposedly identical graphs getting one plan is the cheapest explanation to rule
 out.
 

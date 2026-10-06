@@ -54,8 +54,9 @@ The two operands are separated by a semicolon, not by the comma NumPy uses. An i
 both operands and not in the result is summed over. One appearing in the result is kept.
 
 ``"ij <- ik ; kj"`` is the same spec written the other way round, if that reads closer to the
-mathematics you are transcribing. In C++ the spec is checked while your code compiles, so a
-malformed one is a compile error rather than a surprise at run time.
+mathematics you are transcribing. In C++ the spec's structure is checked while your code compiles,
+so a missing arrow or semicolon is a compile error; a letter that does not fit the operands' ranks
+is reported when the call runs.
 
 Matrix Multiplication
 =====================
@@ -95,8 +96,8 @@ destination exists before the operation is recorded.
 Dot Product
 ===========
 
-A spec cannot produce a scalar: the string form needs an output of rank one or higher. For a
-single number, use the dot product, which writes through a pointer:
+A spec with an empty output, ``"i;i->"``, writes a scalar into a rank-0 tensor and runs as one
+``DOT``. For a plain number, use the dot product, which in C++ writes through a pointer:
 
 .. tab-set::
 
@@ -179,8 +180,8 @@ A generalized transpose is ``permute`` rather than an einsum:
 
 Einsums will not permute operands to force a contraction onto a faster kernel. It uses the
 transposition flags a BLAS call already offers, so ``"ki;jk->ij"`` still reaches one ``GEMM``,
-but a pattern needing a physical rearrangement runs on the generic loop instead. If you know a
-permutation would pay, write it and contract the result.
+but any other index order goes to the packed contraction backend, which rearranges the data as it
+packs it. If you know a permutation would pay, write it and contract the result.
 
 Scaling with Prefactors
 =======================
@@ -246,7 +247,7 @@ same call either way.
 
 An index repeated **within one operand** is a diagonal rather than a contraction. Einsums reads
 the diagonal as a strided view of the operand, without copying it, so ``"iik;kj->ij"`` still runs
-as a matrix multiplication.
+on the packed contraction backend rather than the generic loop.
 
 .. _tutorial-einsum-graph:
 
@@ -280,7 +281,7 @@ and the recording is what the optimizer works on:
             graph.optimize();
 
             for (int iter = 0; iter < 100; ++iter) {
-                graph.execute();      // no re-dispatch, no re-analysis
+                graph.execute();      // no capture or parsing; packed plans are memoized
             }
 
     .. tab-item:: Python
@@ -302,7 +303,7 @@ and the recording is what the optimizer works on:
             graph.optimize()
 
             for _ in range(100):
-                graph.execute()       # no re-dispatch, no re-analysis
+                graph.execute()       # no capture or parsing; packed plans are memoized
 
 Two things to notice. The function is the same one in both languages, so nothing about how you
 write a contraction changes; capture is a property of where the call happens, not of which call
@@ -317,9 +318,10 @@ contraction gains nothing from being recorded.
 Dispatch and Performance
 ========================
 
-Einsums selects, in order: a vendor BLAS call when the contraction already is one, a permutation
-followed by BLAS when the shape is right and the index order is not, the packed contraction
-backend for higher-rank patterns with a valid decomposition, and a generic loop for the rest.
+Einsums selects, in order: a vendor BLAS call when the contraction already is one (using the
+transpose flags BLAS offers), an elementwise product with an operand permuted into the output's
+order, the packed contraction backend for patterns with a valid decomposition, and a generic loop
+for the rest.
 
 You do not choose. You can find out what was chosen: every ``einsum`` zone in a profile carries a
 ``dispatch`` annotation naming its route, which :doc:`tutorial_performance` covers along with the
