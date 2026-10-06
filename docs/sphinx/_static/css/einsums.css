@@ -1,18 +1,416 @@
-/* Main page overview cards */
+/* Einsums documentation styles.
+ *
+ * The values here are the Einsums design system's tokens (colors, syntax,
+ * type, surfaces), the same ones the talk decks are drawn in, mapped onto
+ * pydata-sphinx-theme's variables. The theme switcher sets data-theme on
+ * <html> to "light" or "dark"; each block below defines one theme, and the
+ * light one also serves before the switcher's script has run.
+ *
+ * Prose is IBM Plex Sans and code is JetBrains Mono. Math stays in MathJax's
+ * own TeX faces, since MathJax cannot render in another font.
+ */
+
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap");
+
+/* ------------------------------------------------------------------ tokens */
+
+:root,
+html[data-theme="light"] {
+  --ein-bg-canvas: #ffffff;
+  --ein-bg-surface: #fbfcfe;
+  --ein-bg-raised: #f2f4f8;
+  --ein-bg-code: #f7f9fc;
+  --ein-bg-inline-code: #eef1f7;
+  --ein-bg-hover: rgba(8, 43, 123, 0.045);
+  --ein-bg-selected: rgba(23, 117, 147, 0.10);
+
+  --ein-border-subtle: #e4e8f0;
+  --ein-border-default: #ccd3e0;
+  --ein-border-strong: #a8b2c4;
+
+  --ein-text-primary: #11151f;
+  --ein-text-secondary: #33405a;
+  --ein-text-muted: #5d6880;
+  --ein-text-accent: #135f79;
+  --ein-text-code: #16202e;
+
+  --ein-accent: #177593;
+  --ein-accent-hover: #135f79;
+  --ein-accent-quiet: rgba(23, 117, 147, 0.10);
+  --ein-link: #135f79;
+  --ein-link-hover: #142e77;
+
+  --ein-status-note: #135f79;
+  --ein-status-note-bg: rgba(23, 117, 147, 0.07);
+  --ein-status-tip: #1e7c4c;
+  --ein-status-tip-bg: rgba(47, 158, 99, 0.08);
+  --ein-status-perf: #b05516;
+  --ein-status-perf-bg: rgba(247, 141, 49, 0.10);
+  --ein-status-warning: #8a5a06;
+  --ein-status-warning-bg: rgba(244, 197, 106, 0.16);
+  --ein-status-danger: #d8312d;
+  --ein-status-danger-bg: rgba(238, 70, 49, 0.07);
+
+  --ein-syn-fg: #16202e;
+  --ein-syn-comment: #6b7688;
+  --ein-syn-keyword: #b4441a;
+  --ein-syn-keyword-control: #a03d15;
+  --ein-syn-type: #135f79;
+  --ein-syn-namespace: #55617a;
+  --ein-syn-function: #1d4ea8;
+  --ein-syn-string: #1e7c4c;
+  --ein-syn-number: #8a5a06;
+  --ein-syn-operator: #33405a;
+  --ein-syn-punctuation: #5d6880;
+  --ein-syn-member: #2b3652;
+  --ein-syn-preproc: #6b4bb8;
+  --ein-syn-attribute: #b05516;
+  --ein-syn-error: #d8312d;
+  --ein-syn-diff-add: #1e7c4c;
+  --ein-syn-diff-add-bg: rgba(47, 158, 99, 0.10);
+  --ein-syn-diff-del: #d8312d;
+  --ein-syn-diff-del-bg: rgba(238, 70, 49, 0.08);
+  --ein-syn-prompt: #8b95ab;
+  --ein-syn-output: #33405a;
+  --ein-syn-selection: rgba(23, 117, 147, 0.14);
+  --ein-syn-line-highlight: rgba(23, 117, 147, 0.07);
+
+  --ein-icon-filter: none;
+  --ein-icon-blend: multiply;
+}
+
+html[data-theme="dark"] {
+  --ein-bg-canvas: #0a0d14;
+  --ein-bg-surface: #0e121b;
+  --ein-bg-raised: #131824;
+  --ein-bg-code: #06080d;
+  --ein-bg-inline-code: #141b28;
+  --ein-bg-hover: rgba(255, 255, 255, 0.045);
+  --ein-bg-selected: rgba(53, 176, 205, 0.12);
+
+  --ein-border-subtle: #1b2130;
+  --ein-border-default: #262e40;
+  --ein-border-strong: #3a445c;
+
+  --ein-text-primary: #dde2ec;
+  --ein-text-secondary: #b9c1d1;
+  --ein-text-muted: #8b95ab;
+  --ein-text-accent: #35b0cd;
+  --ein-text-code: #d7dded;
+
+  --ein-accent: #1a8fb0;
+  --ein-accent-hover: #35b0cd;
+  --ein-accent-quiet: rgba(26, 143, 176, 0.14);
+  --ein-link: #7fd3e4;
+  --ein-link-hover: #b9e7f1;
+
+  --ein-status-note: #35b0cd;
+  --ein-status-note-bg: rgba(26, 143, 176, 0.10);
+  --ein-status-tip: #4bb87c;
+  --ein-status-tip-bg: rgba(47, 158, 99, 0.12);
+  --ein-status-perf: #f78d31;
+  --ein-status-perf-bg: rgba(247, 141, 49, 0.10);
+  --ein-status-warning: #f4c56a;
+  --ein-status-warning-bg: rgba(244, 197, 106, 0.10);
+  --ein-status-danger: #ee4631;
+  --ein-status-danger-bg: rgba(238, 70, 49, 0.10);
+
+  --ein-syn-fg: #d7dded;
+  --ein-syn-comment: #6f7b91;
+  --ein-syn-keyword: #f0803c;
+  --ein-syn-keyword-control: #f4995c;
+  --ein-syn-type: #4fc1d9;
+  --ein-syn-namespace: #9aa7bd;
+  --ein-syn-function: #7fa6ea;
+  --ein-syn-string: #86c98f;
+  --ein-syn-number: #f4c56a;
+  --ein-syn-operator: #cfd6e4;
+  --ein-syn-punctuation: #8b95ab;
+  --ein-syn-member: #bcc6d8;
+  --ein-syn-preproc: #b4a3e8;
+  --ein-syn-attribute: #f78d31;
+  --ein-syn-error: #ee4631;
+  --ein-syn-diff-add: #4bb87c;
+  --ein-syn-diff-add-bg: rgba(75, 184, 124, 0.12);
+  --ein-syn-diff-del: #ee4631;
+  --ein-syn-diff-del-bg: rgba(238, 70, 49, 0.12);
+  --ein-syn-prompt: #5d6880;
+  --ein-syn-output: #b9c1d1;
+  --ein-syn-selection: rgba(53, 176, 205, 0.18);
+  --ein-syn-line-highlight: rgba(53, 176, 205, 0.08);
+
+  /* The section icons are drawn dark; on the dark canvas they are inverted
+     to a light glyph (see the overview cards below). */
+  --ein-icon-filter: grayscale(1) invert(1) brightness(0.8);
+  --ein-icon-blend: screen;
+}
+
+/* ---------------------------------------------- the theme's variables */
+
+:root,
+html[data-theme="light"],
+html[data-theme="dark"] {
+  --pst-font-family-base: "IBM Plex Sans", var(--pst-font-family-base-system);
+  --pst-font-family-heading: "IBM Plex Sans", var(--pst-font-family-base-system);
+  --pst-font-family-monospace: "JetBrains Mono", var(--pst-font-family-monospace-system);
+  --pst-font-weight-heading: 600;
+
+  --pst-color-primary: var(--ein-accent);
+  --pst-color-primary-bg: var(--ein-accent-quiet);
+  --pst-color-secondary: var(--ein-accent-hover);
+  --pst-color-secondary-bg: var(--ein-accent-quiet);
+  --pst-color-accent: var(--ein-accent);
+  --pst-color-accent-bg: var(--ein-accent-quiet);
+
+  --pst-color-background: var(--ein-bg-canvas);
+  --pst-color-on-background: var(--ein-bg-surface);
+  --pst-color-surface: var(--ein-bg-raised);
+  --pst-color-on-surface: var(--ein-text-primary);
+  --pst-color-border: var(--ein-border-default);
+  --pst-color-border-muted: var(--ein-border-subtle);
+  --pst-color-shadow: transparent;
+
+  --pst-color-text-base: var(--ein-text-primary);
+  --pst-color-text-muted: var(--ein-text-muted);
+  --pst-color-heading: var(--ein-text-primary);
+  --pst-heading-color: var(--ein-text-primary);
+
+  --pst-color-link: var(--ein-link);
+  --pst-color-link-hover: var(--ein-link-hover);
+  --pst-color-inline-code: var(--ein-text-code);
+  --pst-color-inline-code-links: var(--ein-link);
+  --pst-color-target: var(--ein-bg-selected);
+  --pst-color-blockquote-notch: var(--ein-border-strong);
+  --pst-color-table-row-hover-bg: var(--ein-bg-hover);
+
+  --pst-color-info: var(--ein-status-note);
+  --pst-color-info-bg: var(--ein-status-note-bg);
+  --pst-color-success: var(--ein-status-tip);
+  --pst-color-success-bg: var(--ein-status-tip-bg);
+  --pst-color-attention: var(--ein-status-perf);
+  --pst-color-attention-bg: var(--ein-status-perf-bg);
+  --pst-color-warning: var(--ein-status-warning);
+  --pst-color-warning-bg: var(--ein-status-warning-bg);
+  --pst-color-danger: var(--ein-status-danger);
+  --pst-color-danger-bg: var(--ein-status-danger-bg);
+}
+
+/* ------------------------------------------------------------------ type */
+
+body {
+  -webkit-font-smoothing: antialiased;
+  text-wrap: pretty;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  letter-spacing: -0.01em;
+}
+
+code, kbd, samp, pre {
+  font-feature-settings: "liga" 0, "calt" 1;
+}
+
+::selection {
+  background: var(--ein-syn-selection);
+}
+
+/* Captions and small headings set like the decks' eyebrow labels: mono,
+   upper case, tracked. */
+nav.bd-links p.caption,
+.bd-toc .onthispage,
+.bd-sidebar-secondary .onthispage {
+  font-family: var(--pst-font-family-monospace);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ein-text-muted);
+}
+
+/* Header links must never wrap mid-label ("User / Guide" stacking doubles
+   the header height). */
+.bd-header .navbar-nav .nav-link {
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ code */
+
+/* Code blocks: a flat sunken fill and a 1px rule, near-square. */
+div.highlight,
+.highlight pre {
+  background: var(--ein-bg-code);
+}
+
+.bd-content div.highlight {
+  border: 1px solid var(--ein-border-subtle);
+  border-radius: 3px;
+  box-shadow: none;
+}
+
+.bd-content div.highlight pre {
+  border: none;
+  border-radius: 3px;
+  box-shadow: none;
+  color: var(--ein-syn-fg);
+  line-height: 1.6;
+}
+
+/* Inline code: a quiet chip in the code foreground, not the theme's pink. */
+.bd-content :not(pre) > code {
+  background: var(--ein-bg-inline-code);
+  border: 1px solid var(--ein-border-subtle);
+  border-radius: 2px;
+  color: var(--ein-text-code);
+  padding: 0.1em 0.34em;
+}
+
+.bd-content a code {
+  color: var(--ein-link);
+}
+
+/* In navigation, code is a name to click, not a value to read: plain mono. */
+html[data-theme] .bd-sidebar-primary code,
+html[data-theme] .bd-sidebar-secondary code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: inherit;
+}
+
+/* --------------------------------------------------------- admonitions */
+
+/* Flat fill, a 3px status bar on the left, a 1px rule elsewhere, no shadow,
+   square corners, and no separate band behind the title. Each type only
+   chooses the bar and the fill. The data-theme prefix outranks the theme's
+   own div.admonition.<type> rules. */
+html[data-theme] .bd-content div.admonition {
+  --ein-adm: var(--pst-color-info);
+  --ein-adm-bg: var(--pst-color-info-bg);
+  background: var(--ein-adm-bg);
+  border: 1px solid var(--ein-border-subtle);
+  border-left: 3px solid var(--ein-adm);
+  border-radius: 0;
+  box-shadow: none !important;
+}
+
+html[data-theme] .bd-content div.admonition > .admonition-title {
+  background: transparent;
+  font-family: var(--pst-font-family-monospace);
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+html[data-theme] .bd-content div.admonition > .admonition-title::before {
+  background: transparent;
+}
+
+html[data-theme] .bd-content div.admonition.tip,
+html[data-theme] .bd-content div.admonition.hint {
+  --ein-adm: var(--pst-color-success);
+  --ein-adm-bg: var(--pst-color-success-bg);
+}
+
+html[data-theme] .bd-content div.admonition.important {
+  --ein-adm: var(--pst-color-attention);
+  --ein-adm-bg: var(--pst-color-attention-bg);
+}
+
+html[data-theme] .bd-content div.admonition.warning,
+html[data-theme] .bd-content div.admonition.caution,
+html[data-theme] .bd-content div.admonition.attention {
+  --ein-adm: var(--pst-color-warning);
+  --ein-adm-bg: var(--pst-color-warning-bg);
+}
+
+html[data-theme] .bd-content div.admonition.danger,
+html[data-theme] .bd-content div.admonition.error {
+  --ein-adm: var(--pst-color-danger);
+  --ein-adm-bg: var(--pst-color-danger-bg);
+}
+
+html[data-theme] .bd-content div.admonition.seealso {
+  --ein-adm: var(--ein-border-strong);
+  --ein-adm-bg: var(--ein-bg-surface);
+}
+
+html[data-theme] .bd-content div.admonition.seealso > .admonition-title::after {
+  color: var(--ein-text-muted);
+}
+
+/* ------------------------------------------------------------- tables */
+
+.bd-content table.table {
+  border-color: var(--ein-border-default);
+}
+
+.bd-content table.table thead th {
+  background: var(--ein-bg-raised);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------- sphinx-design tabs */
+
+/* Flat tabs over a rule, the active one marked by an accent underline; the
+   code block below is the only frame. */
+.bd-content .sd-tab-set > label {
+  background-color: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--ein-text-muted);
+  font-family: var(--pst-font-family-monospace);
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin-inline-end: 0;
+  padding: 0 0.9em;
+  transform: none;
+}
+
+html[data-theme] .bd-content .sd-tab-set > label {
+  background-color: transparent;
+}
+
+.bd-content .sd-tab-set > input:checked + label {
+  background-color: transparent;
+  border-style: none none solid;
+  border-width: 0 0 2px;
+  border-color: var(--ein-accent);
+  border-radius: 0;
+  color: var(--ein-text-accent);
+  transform: none;
+}
+
+.bd-content .sd-tab-set > input:not(:checked, :focus-visible) + label:hover {
+  border-color: var(--ein-border-strong);
+  color: var(--ein-text-primary);
+  text-decoration-line: none;
+}
+
+.bd-content .sd-tab-set .sd-tab-content {
+  background-color: transparent;
+  border: none;
+  border-top: 1px solid var(--ein-border-default);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0.75rem 0 0;
+}
+
+/* ----------------------------------------------- main page overview cards */
 
 .sd-card {
-  background: #fff;
+  background: var(--ein-bg-surface);
+  border: 1px solid var(--ein-border-default);
   border-radius: 0;
+  box-shadow: none !important;
   padding: 30px 10px 20px 10px;
   margin: 10px 0px;
+  transition: border-color 90ms cubic-bezier(0.2, 0, 0.2, 1);
 }
 
-.sd-card .sd-card-header {
-  text-align: center;
-}
-
-.sd-card .sd-card-header .sd-card-text {
-  margin: 0px;
+.sd-card:hover {
+  border-color: var(--ein-accent);
 }
 
 .sd-card .sd-card-img-top {
@@ -22,50 +420,116 @@
   margin-right: auto;
 }
 
-.sd-card .sd-card-header {
+.sd-card .sd-card-header,
+.sd-card .sd-card-footer {
   border: none;
-  background-color: white;
-  color: var(--pst-color-primary);
+  background-color: transparent;
+}
+
+.sd-card .sd-card-header {
+  text-align: center;
+  color: var(--ein-text-accent);
   font-size: var(--pst-font-size-h5);
-  font-weight: bold;
+  font-weight: 600;
   padding: 2.5rem 0rem 0.5rem 0rem;
 }
 
-.sd-card .sd-card-footer {
-  border: none;
-  background-color: white;
+.sd-card .sd-card-header .sd-card-text {
+  margin: 0px;
 }
 
 .sd-card .sd-card-footer .sd-card-text {
   max-width: 220px;
   margin-left: auto;
   margin-right: auto;
+  color: var(--ein-text-secondary);
 }
 
-nav.bd-links p.caption {
-  text-transform: uppercase;
+/* Two of the section icons are raster images on an opaque white ground. A
+   blend mode drops the ground into the card: multiply on light, and on dark
+   an inversion (white ground to black) and screen. The selector outranks the
+   theme's own dark-mode image dimming. */
+html[data-theme] .bd-content .sd-card img.sd-card-img-top.icon {
+  filter: var(--ein-icon-filter);
+  mix-blend-mode: var(--ein-icon-blend);
 }
 
-/* Header links must never wrap mid-label ("User / Guide" stacking doubles
-   the header height). */
-.bd-header .navbar-nav .nav-link {
-  white-space: nowrap;
-}
+/* ------------------------------------------------------------ syntax */
 
-/* Dark theme tweaking */
-html[data-theme=dark] img[src*='.svg'].icon {
-  filter: invert(0.82) brightness(0.8) contrast(1.2);
-}
+/* The design system's syntax tokens on Pygments' classes. Each selector
+   carries data-theme so it outranks the theme's own Pygments rules, which
+   load earlier at the same specificity. */
+html[data-theme] .highlight { color: var(--ein-syn-fg); }
+html[data-theme] .highlight .hll { background-color: var(--ein-syn-line-highlight); }
 
-/* Main index page overview cards */
-html[data-theme=dark] .sd-card {
-  background-color: var(--pst-color-background);
-}
+html[data-theme] .highlight .c,
+html[data-theme] .highlight .ch,
+html[data-theme] .highlight .cm,
+html[data-theme] .highlight .c1,
+html[data-theme] .highlight .cs,
+html[data-theme] .highlight .sd { color: var(--ein-syn-comment); font-style: normal; }
 
-html[data-theme=dark] .sd-shadow-sm {
-  box-shadow: 0 .1rem 1rem rgba(250, 250, 250, .6) !important
-}
+html[data-theme] .highlight .cp { color: var(--ein-syn-preproc); font-weight: normal; }
+html[data-theme] .highlight .cpf { color: var(--ein-syn-string); font-style: normal; }
 
-html[data-theme=dark] .sd-card .sd-card-footer {
-  background-color: var(--pst-color-background);
-}
+html[data-theme] .highlight .k,
+html[data-theme] .highlight .kd,
+html[data-theme] .highlight .kn,
+html[data-theme] .highlight .kp,
+html[data-theme] .highlight .ow { color: var(--ein-syn-keyword); font-weight: normal; }
+html[data-theme] .highlight .kr { color: var(--ein-syn-keyword-control); font-weight: normal; }
+html[data-theme] .highlight .kc { color: var(--ein-syn-number); font-weight: normal; }
+html[data-theme] .highlight .kt,
+html[data-theme] .highlight .nc,
+html[data-theme] .highlight .ne { color: var(--ein-syn-type); font-weight: normal; }
+
+html[data-theme] .highlight .nn { color: var(--ein-syn-namespace); font-weight: normal; }
+html[data-theme] .highlight .nf,
+html[data-theme] .highlight .fm,
+html[data-theme] .highlight .nb,
+html[data-theme] .highlight .bp { color: var(--ein-syn-function); }
+html[data-theme] .highlight .na,
+html[data-theme] .highlight .nd { color: var(--ein-syn-attribute); }
+html[data-theme] .highlight .n,
+html[data-theme] .highlight .nv,
+html[data-theme] .highlight .vc,
+html[data-theme] .highlight .vg,
+html[data-theme] .highlight .vi,
+html[data-theme] .highlight .vm { color: var(--ein-syn-fg); }
+html[data-theme] .highlight .py,
+html[data-theme] .highlight .nl { color: var(--ein-syn-member); }
+html[data-theme] .highlight .no { color: var(--ein-syn-number); }
+html[data-theme] .highlight .nt { color: var(--ein-syn-keyword); }
+
+html[data-theme] .highlight .s,
+html[data-theme] .highlight .s1,
+html[data-theme] .highlight .s2,
+html[data-theme] .highlight .sa,
+html[data-theme] .highlight .sb,
+html[data-theme] .highlight .sc,
+html[data-theme] .highlight .dl,
+html[data-theme] .highlight .sh,
+html[data-theme] .highlight .sr,
+html[data-theme] .highlight .ss,
+html[data-theme] .highlight .sx { color: var(--ein-syn-string); }
+html[data-theme] .highlight .se,
+html[data-theme] .highlight .si { color: var(--ein-syn-number); }
+
+html[data-theme] .highlight .m,
+html[data-theme] .highlight .mb,
+html[data-theme] .highlight .mf,
+html[data-theme] .highlight .mh,
+html[data-theme] .highlight .mi,
+html[data-theme] .highlight .il,
+html[data-theme] .highlight .mo { color: var(--ein-syn-number); }
+
+html[data-theme] .highlight .o { color: var(--ein-syn-operator); font-weight: normal; }
+html[data-theme] .highlight .p { color: var(--ein-syn-punctuation); }
+
+html[data-theme] .highlight .gp { color: var(--ein-syn-prompt); font-weight: normal; }
+html[data-theme] .highlight .go { color: var(--ein-syn-output); }
+html[data-theme] .highlight .gi { color: var(--ein-syn-diff-add); background: var(--ein-syn-diff-add-bg); }
+html[data-theme] .highlight .gd { color: var(--ein-syn-diff-del); background: var(--ein-syn-diff-del-bg); }
+html[data-theme] .highlight .gh,
+html[data-theme] .highlight .gu { color: var(--ein-text-accent); font-weight: 600; }
+html[data-theme] .highlight .err { color: var(--ein-syn-error); border: none; }
