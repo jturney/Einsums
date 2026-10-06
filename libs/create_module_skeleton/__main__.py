@@ -17,9 +17,6 @@ LIBS_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 
 def build_new(libs_dir, library, module, args):
-    if args.python_name is None:
-        args.python_name = library
-
     # A module exposes Python bindings through the PYBIND keyword on
     # einsums_add_module, not by becoming a separate Python extension library,
     # so the library symbol is always the real library name.
@@ -68,16 +65,8 @@ def main():
         action="store_true",
     )
     parser.add_argument(
-        "--python-name", help="The name of the top-level Python module."
-    )
-    parser.add_argument(
         "--reindex",
         help="Reindex the libraries. The libraries may be specified afterwards. This is incompatible with other options.",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--rebuild",
-        help="Adds new files that were added to the template but do not exist in the output structure. It also re-indexes.",
         action="store_true",
     )
     parser.add_argument(
@@ -87,6 +76,12 @@ def main():
     )
 
     known_args, unknown_args = parser.parse_known_intermixed_args()
+
+    # Anything left that looks like an option is a typo or a removed flag, not
+    # a library or module name.
+    unknown_options = [arg for arg in unknown_args if arg.startswith("-")]
+    if unknown_options:
+        parser.error(f"unrecognized arguments: {' '.join(unknown_options)}")
 
     if len(sys.argv) == 1:
         parser.print_help()

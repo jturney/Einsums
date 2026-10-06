@@ -40,12 +40,12 @@ foreach(test ${{{module_name}Tests}})
 
   if(Extension STREQUAL ".py")
     # test_<snake>_python.py -> <Camel>Python, registered as
-    # Tests.Unit.Modules.{lib_name}.{module_name}.<Camel>Python.
+    # Tests.Unit.Modules.{module_name}.<Camel>Python.
     string(REGEX REPLACE "^test_" "" _stem "${{TestName}}")
     string(REGEX REPLACE "_python$" "" _stem "${{_stem}}")
     _einsums_snake_to_camel(_camel "${{_stem}}")
     einsums_add_python_unit_test(
-      "Modules.{lib_name}.{module_name}" "${{_camel}}Python"
+      "Modules.{module_name}" "${{_camel}}Python"
       SCRIPT ${{test}}
     )
     continue()
@@ -73,6 +73,6 @@ foreach(test ${{{module_name}Tests}})
   )
 
   einsums_add_unit_test(
-    "Modules.{lib_name}.{module_name}" ${{TestName}} ${{${{TestName}}_${{TestExtension}}_PARAMETERS}}
+    "Modules.{module_name}" ${{TestName}} ${{${{TestName}}_${{TestExtension}}_PARAMETERS}}
   )
 endforeach()

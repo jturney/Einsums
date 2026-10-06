@@ -35,17 +35,14 @@ C++ module under its real library.
 
 ``--gpu``: If included, the new package will be set up as a GPU-enabled module.
 
-``--python-name PYTHON_NAME``: If included, the name of the library as seen by Python. This
-may be different from the name of the library. For instance, the ``Python`` module is given
-the Python name of ``_core``.
-
 ``--reindex``: Updates each library's module list and the module pages listed in
 ``libs/overview.rst`` to match the modules that are currently present. The module list keeps
 the order it already has, drops modules that are gone, and appends new ones. If no libraries
 are given, it will reindex all libraries in the ``libs`` directory.
 
-``--rebuild``: Adds new files to the given module that may not have existed when the module was
-originally created.
+Running the tool on an existing module adds any template files the module is missing,
+without overwriting files that exist, and reindexes the library, so it is also how an older
+module picks up files added to the template since it was created.
 
 ``--libs-dir DIR``: The directory that holds the library folders. Defaults to the ``libs``
 directory that contains the script, so you normally do not need to set it.
@@ -96,8 +93,6 @@ It shouldn't need to be modified. If your module does not have global variables,
 along with ``MODULE/include/LIBRARY/MODULE/ModuleVars.hpp``, and references to it can be removed from ``MODULE/CMakeLists.txt``.
 
 ``MODULE/tests/performance/CMakeLists.txt``: The CMake file for adding performance tests.
-
-``MODULE/tests/regressions/CMakeLists.txt``: The CMake file for adding regression tests.
 
 ``MODULE/tests/unit/CMakeLists.txt``: The CMake file for adding unit tests. Add your test file names to the
 line that says ``set(MODULETests)``. C++ tests use a ``.cpp`` source, for example ``set(TensorTests dot.cpp)``
