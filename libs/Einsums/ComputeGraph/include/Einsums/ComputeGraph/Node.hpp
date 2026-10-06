@@ -1413,6 +1413,31 @@ class EINSUMS_EXPORT OpData {
 };
 
 /**
+ * @brief What a node does that its tensor lists do not show.
+ *
+ * Hoisting, merging and dead-node elimination reason from a node's inputs and outputs. A
+ * library operation declares every tensor it touches, so the defaults describe it. A
+ * closure supplied by the caller can do anything: read a variable captured by reference,
+ * read a loop parameter through the graph's @ref ParamTable, print, or write a file.
+ * @c cg::custom therefore records @ref opaque_effects unless the caller declares the
+ * operation pure.
+ */
+struct NodeEffects {
+    /// The outputs are a function of the inputs and the descriptor alone, so running the
+    /// node once in place of many, or once for two identical nodes, gives the same result.
+    bool deterministic{true};
+    /// The node acts outside its declared outputs, so it may not be removed when nothing
+    /// reads them.
+    bool external_effects{false};
+
+    friend bool operator==(NodeEffects const &, NodeEffects const &) = default;
+};
+
+/// @brief Nothing is known about the node beyond its tensor lists: neither hoisted, merged
+///        nor removed.
+inline constexpr NodeEffects opaque_effects{.deterministic = false, .external_effects = true};
+
+/**
  * @brief A single operation node in the computation graph.
  *
  * Each node represents one captured operation (einsum, scale, gemm, etc.).
@@ -1533,6 +1558,10 @@ struct Node {
     /// Stream assignment for async execution (set by StreamAssignment pass).
     /// 0 = default/compute stream, 1 = transfer stream.
     int stream_id{0};
+
+    /// What the node does beyond its tensor lists. Library operations keep the default;
+    /// @c cg::custom records @ref opaque_effects unless declared pure.
+    NodeEffects effects;
 };
 
 /// @brief The letter lists of a node that carries any: an einsum's (live) or a permute's.
@@ -1591,6 +1620,7 @@ struct NodeIndexLists {
 /// its child graphs, as @ref Graph::effective_io does for tensors. A dataset stored inside a
 /// loop and loaded after it otherwise shares no edge with the loop, and the load can be
 /// scheduled ahead of it.
+
 [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> named_writes(Node const &node);
 
 /// @brief Every named resource outside the tensor dataflow this node READS, as ordering keys:

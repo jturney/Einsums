@@ -96,10 +96,12 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * @param[in] outputs TensorIds of tensors written by this operation.
      * @param[in] executor Type-erased callable that performs the operation.
      * @param[in] op_data Optional operation-specific metadata (EinsumDescriptor, etc.).
+     * @param[in] effects What the operation does beyond its tensor lists. The default describes a
+     *            library operation; @c cg::custom passes @ref opaque_effects for a caller's closure.
      * @throws std::logic_error If called outside of a capture context.
      */
     void record(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs, std::function<void()> executor,
-                OpData op_data = {});
+                OpData op_data = {}, NodeEffects effects = {});
 
     /**
      * @brief Record a node whose executor @ref build_executor derives from its descriptor.

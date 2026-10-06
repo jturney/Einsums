@@ -265,6 +265,17 @@ dependency tracking:
        std::make_tuple(std::ref(F)),
        [&]() { build_fock_matrix(D, ERI, F); });
 
+The graph cannot see inside the closure, so a custom node is never hoisted out
+of a loop and never removed because nothing reads its outputs. When the closure
+reads only the tensors it lists and does nothing but write the tensors it
+lists, pass ``cg::pure`` first (or ``pure=True`` from Python) and the optimizer
+treats it like a built-in operation:
+
+.. code-block:: cpp
+
+   cg::custom(cg::pure, "fock_build", std::tie(D, ERI), std::tie(F),
+       [&]() { build_fock_matrix(D, ERI, F); });
+
 Disk I/O Operations
 ===================
 

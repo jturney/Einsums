@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <tuple>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -507,6 +508,36 @@ TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - refuses an accumulating axpby",
     CHECK(pass.num_hoisted() == 0);
 }
 
+// A custom node with no tensors passed every tensor check vacuously: no
+// inputs read as "all inputs invariant" and no outputs passed the
+// single-writer test, so an effect-only node (a log line, a counter, a
+// progress report) left the loop and ran once.
+TEST_CASE("LoopInvariantHoisting - keeps an effect-only custom node in the loop", "[ComputeGraph][Passes][Custom]") {
+    RuntimeTensor<double> one{"one", {3UL}};
+    RuntimeTensor<double> acc{"acc", {3UL}};
+    for (size_t i = 0; i < 3; ++i) {
+        one(i) = 1.0;
+    }
+    acc.zero();
+    int reports = 0;
+
+    cg::Graph graph("lih_custom_effect");
+    {
+        auto                  &body = graph.add_loop("loop", 3, [](size_t iter) { return iter < 2; });
+        cg::CaptureGuard const guard(body);
+        cg::axpy(1.0, one, &acc);
+        cg::custom("report", [&reports]() { ++reports; });
+    }
+
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    INFO(pm.explain());
+
+    graph.execute();
+    CHECK(acc(0) == 3.0);
+    CHECK(reports == 3);
+}
+
 // A DiskRead has no tensor inputs, so it is invariant by the tensor test, and
 // the gate used to consult no named keys. Hoisted out of a loop whose body
 // writes the same dataset, it read the file once, before the first write.
@@ -647,4 +678,38 @@ TEST_CASE("LoopInvariantHoisting - hoists a disk read of a dataset the loop does
     graph.execute();
     CHECK(loads == 1);
     CHECK(total(0) + total(1) + total(2) == 18.0); // 3 iterations of 1 + 2 + 3
+}
+
+// Declared pure, a custom producer whose inputs the loop does not write is
+// invariant like any library operation, and leaves the loop.
+TEST_CASE("LoopInvariantHoisting - hoists a custom node declared pure", "[ComputeGraph][Passes][Custom]") {
+    RuntimeTensor<double> A{"A", {3UL}};
+    RuntimeTensor<double> L{"L", {3UL}};
+    RuntimeTensor<double> acc{"acc", {3UL}};
+    for (size_t i = 0; i < 3; ++i) {
+        A(i) = static_cast<double>(i + 1);
+    }
+    acc.zero();
+    int builds = 0;
+
+    cg::Graph graph("lih_custom_pure");
+    {
+        auto                  &body = graph.add_loop("loop", 3, [](size_t iter) { return iter < 2; });
+        cg::CaptureGuard const guard(body);
+        cg::custom(cg::pure, "build_L", std::tie(A), std::tie(L), [&A, &L, &builds]() {
+            ++builds;
+            for (size_t i = 0; i < 3; ++i) {
+                L(i) = 2.0 * A(i);
+            }
+        });
+        cg::axpy(1.0, L, &acc);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
+    CHECK(modified);
+    CHECK(pass.num_hoisted() == 1);
+
+    graph.execute();
+    CHECK(builds == 1);
+    CHECK(acc(0) + acc(1) + acc(2) == 36.0); // 3 iterations of 2 + 4 + 6
 }

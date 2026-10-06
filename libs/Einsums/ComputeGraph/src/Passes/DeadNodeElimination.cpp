@@ -149,6 +149,12 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
                     continue;
                 }
 
+                // Nor one that acts outside its outputs: a custom closure not declared pure may
+                // write a file or a log whatever becomes of the tensors it lists.
+                if (node.effects.external_effects) {
+                    continue;
+                }
+
                 // Check if all outputs are dead (intermediate + not consumed here + not
                 // used by a child body + not referenced from outside this graph).
                 // Resolve each output through view aliases to its owning buffer: a

@@ -60,7 +60,7 @@ void CaptureContext::end_capture() {
 }
 
 void CaptureContext::record(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs,
-                            std::function<void()> executor, OpData op_data) {
+                            std::function<void()> executor, OpData op_data, NodeEffects effects) {
     if (_graph == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext::record called outside of capture");
     }
@@ -72,6 +72,7 @@ void CaptureContext::record(OpKind kind, std::string label, std::vector<TensorId
     node.inputs  = std::move(inputs);
     node.outputs = std::move(outputs);
     node.op_data = std::move(op_data);
+    node.effects = effects;
     // A capture site lists the operands it reads; whether the destination is read too is the
     // prefactor's to say.
     sync_destination_input(node);

@@ -5971,12 +5971,65 @@ void parallel_reduce(std::string name, size_t begin, size_t end, Acc *result, In
 // ===========================================================================
 
 /**
+ * @brief Tag that declares a @ref custom operation pure.
+ *
+ * The graph cannot see inside a custom closure. It may read state the graph does not
+ * track (a variable captured by reference, a loop parameter, a file) or act outside the
+ * tensors it writes (print, store, signal), so a custom node is recorded with
+ * @ref opaque_effects: it is never hoisted out of a loop, and never removed because
+ * nothing reads its outputs. Passing
+ * @c cg::pure first declares that the closure reads only the tensors it lists and does
+ * nothing but write the tensors it lists, which gives those optimizations back.
+ *
+ * @code
+ * cg::custom(cg::pure, "build_fock", std::tie(ERI, D), std::tie(F), [&]() { build_fock_matrix(ERI, D, F); });
+ * @endcode
+ */
+struct PureTag {
+    explicit PureTag() = default;
+};
+
+/// @brief The @ref PureTag value: @c cg::custom(cg::pure, ...) records a pure custom node.
+inline constexpr PureTag pure{};
+
+namespace detail {
+
+template <typename F, CoreBasicTensorConcept... Outputs>
+void record_custom_outputs(NodeEffects effects, std::string label, F &&executor, Outputs *...outputs) {
+    auto &ctx = CaptureContext::current();
+
+    std::vector<TensorId> output_ids;
+    (output_ids.push_back(ctx.get_or_register(*outputs)), ...);
+
+    ctx.record(OpKind::Custom, std::move(label), {}, std::move(output_ids), std::forward<F>(executor), {}, effects);
+}
+
+template <typename F, typename... Inputs, CoreBasicTensorConcept... Outputs>
+void record_custom_io(NodeEffects effects, std::string label, std::tuple<Inputs &...> inputs, std::tuple<Outputs &...> outputs,
+                      F &&executor) {
+    auto &ctx = CaptureContext::current();
+
+    std::vector<TensorId> input_ids;
+    std::apply([&](auto const &...ts) { (input_ids.push_back(ctx.get_or_register(ts)), ...); }, inputs);
+
+    std::vector<TensorId> output_ids;
+    std::apply([&](auto &...ts) { (output_ids.push_back(ctx.get_or_register(ts)), ...); }, outputs);
+
+    ctx.record(OpKind::Custom, std::move(label), std::move(input_ids), std::move(output_ids), std::forward<F>(executor), {}, effects);
+}
+
+} // namespace detail
+
+/**
  * @brief Record a custom (user-defined) operation that writes the given tensors.
  *
  * Use this for operations that have no built-in graph wrapper, such as
  * computing integrals or applying a transformation the library does not model.
  * The node declares no inputs, so use the tuple form below whenever the
  * operation reads a tensor the graph also produces.
+ *
+ * The node is recorded with @ref opaque_effects; see @ref PureTag for what that
+ * prevents and how to declare the operation pure instead.
  *
  * @param label     Human-readable name for profiling and debugging.
  * @param executor  Lambda that performs the computation.
@@ -5995,12 +6048,18 @@ void parallel_reduce(std::string name, size_t begin, size_t end, Acc *result, In
  */
 template <typename F, CoreBasicTensorConcept... Outputs>
 void custom(std::string label, F &&executor, Outputs *...outputs) {
-    auto &ctx = CaptureContext::current();
+    detail::record_custom_outputs(opaque_effects, std::move(label), std::forward<F>(executor), outputs...);
+}
 
-    std::vector<TensorId> output_ids;
-    (output_ids.push_back(ctx.get_or_register(*outputs)), ...);
-
-    ctx.record(OpKind::Custom, std::move(label), {}, std::move(output_ids), std::forward<F>(executor));
+/**
+ * @brief Record a pure custom operation that writes the given tensors.
+ *
+ * As the untagged form, but declared pure (see @ref PureTag): the node may be hoisted out of
+ * a loop, and is removed when nothing reads the tensors it writes.
+ */
+template <typename F, CoreBasicTensorConcept... Outputs>
+void custom(PureTag /*pure*/, std::string label, F &&executor, Outputs *...outputs) {
+    detail::record_custom_outputs(NodeEffects{}, std::move(label), std::forward<F>(executor), outputs...);
 }
 
 /**
@@ -6011,6 +6070,9 @@ void custom(std::string label, F &&executor, Outputs *...outputs) {
  * work; either way the node only reads them. Pass ``std::tuple<>{}`` for
  * an operation that writes no tensor.
  *
+ * The node is recorded with @ref opaque_effects; see @ref PureTag for what that
+ * prevents and how to declare the operation pure instead.
+ *
  * @code
  * cg::custom("build_fock", std::tie(ERI, D), std::tie(F), [&]() { build_fock_matrix(ERI, D, F); });
  * @endcode
@@ -6018,15 +6080,18 @@ void custom(std::string label, F &&executor, Outputs *...outputs) {
 template <typename F, typename... Inputs, CoreBasicTensorConcept... Outputs>
     requires(CoreBasicTensorConcept<std::remove_const_t<Inputs>> && ...)
 void custom(std::string label, std::tuple<Inputs &...> inputs, std::tuple<Outputs &...> outputs, F &&executor) {
-    auto &ctx = CaptureContext::current();
+    detail::record_custom_io(opaque_effects, std::move(label), inputs, outputs, std::forward<F>(executor));
+}
 
-    std::vector<TensorId> input_ids;
-    std::apply([&](auto const &...ts) { (input_ids.push_back(ctx.get_or_register(ts)), ...); }, inputs);
-
-    std::vector<TensorId> output_ids;
-    std::apply([&](auto &...ts) { (output_ids.push_back(ctx.get_or_register(ts)), ...); }, outputs);
-
-    ctx.record(OpKind::Custom, std::move(label), std::move(input_ids), std::move(output_ids), std::forward<F>(executor));
+/**
+ * @brief Record a pure custom operation with typed input and output tensors.
+ *
+ * As the untagged form, but declared pure (see @ref PureTag).
+ */
+template <typename F, typename... Inputs, CoreBasicTensorConcept... Outputs>
+    requires(CoreBasicTensorConcept<std::remove_const_t<Inputs>> && ...)
+void custom(PureTag /*pure*/, std::string label, std::tuple<Inputs &...> inputs, std::tuple<Outputs &...> outputs, F &&executor) {
+    detail::record_custom_io(NodeEffects{}, std::move(label), inputs, outputs, std::forward<F>(executor));
 }
 
 /**
@@ -6038,17 +6103,24 @@ void custom(std::string label, std::tuple<Inputs &...> inputs, std::tuple<Output
  * read-modify-write patterns where the optimizer should see the
  * dependency.
  *
+ * A node with no tensors acts only through its effects, so it is recorded with
+ * @ref opaque_effects unless @p pure is true (see @ref PureTag).
+ *
+ * @param label     Human-readable name for profiling and debugging.
+ * @param executor  Callable that performs the operation.
+ * @param pure      True to declare the operation pure.
+ *
  * @code
  * cg::custom("debug_print", []() { fmt::print("hello\n"); });
  * @endcode
  */
-APIARY_EXPOSE APIARY_MODULE("graph") inline void custom(std::string label, std::function<void()> executor) {
+APIARY_EXPOSE APIARY_MODULE("graph") inline void custom(std::string label, std::function<void()> executor, bool pure = false) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         executor();
         return;
     }
-    ctx.record(OpKind::Custom, std::move(label), {}, {}, std::move(executor));
+    ctx.record(OpKind::Custom, std::move(label), {}, {}, std::move(executor), {}, pure ? NodeEffects{} : opaque_effects);
 }
 
 /**
@@ -6058,6 +6130,14 @@ APIARY_EXPOSE APIARY_MODULE("graph") inline void custom(std::string label, std::
  * @p target is registered as both an input and an output, so the
  * optimizer treats this node as a read-modify-write barrier on that
  * tensor. Outside a capture context the executor runs immediately.
+ *
+ * The node is recorded with @ref opaque_effects unless @p pure is true
+ * (see @ref PureTag).
+ *
+ * @param label     Human-readable name for profiling and debugging.
+ * @param executor  Callable that performs the operation.
+ * @param target    Tensor the operation reads and rewrites.
+ * @param pure      True to declare the operation pure.
  *
  * @code
  * // Body of a graph-driven loop: read slab, transform, write slab.
@@ -6075,14 +6155,14 @@ APIARY_INSTANTIATE_AS("custom", einsums::GeneralRuntimeTensor<double, std::alloc
 APIARY_INSTANTIATE_AS("custom", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("custom", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 // clang-format on
-void custom(std::string label, std::function<void()> executor, TensorType *target) {
+void custom(std::string label, std::function<void()> executor, TensorType *target, bool pure = false) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         executor();
         return;
     }
     auto id = ctx.get_or_register(*target);
-    ctx.record(OpKind::Custom, std::move(label), {id}, {id}, std::move(executor));
+    ctx.record(OpKind::Custom, std::move(label), {id}, {id}, std::move(executor), {}, pure ? NodeEffects{} : opaque_effects);
 }
 
 /**

@@ -144,8 +144,10 @@ bool InputSlicing::run(Graph &graph) {
 
         // EndSlice AFTER the node
         Node end_node;
-        end_node.kind    = OpKind::Custom;
-        end_node.label   = "end_slice";
+        end_node.kind  = OpKind::Custom;
+        end_node.label = "end_slice";
+        // Ends the local views begin_slice opened, state the node's (empty) tensor lists do not show.
+        end_node.effects = opaque_effects;
         end_node.execute = [tokens, &tensor_map]() {
             for (auto const &[tid, token] : *tokens) {
                 auto it = tensor_map.find(tid);
@@ -159,8 +161,10 @@ bool InputSlicing::run(Graph &graph) {
         // BeginSlice BEFORE the node
         auto slices_copy = ins.slices;
         Node begin_node;
-        begin_node.kind    = OpKind::Custom;
-        begin_node.label   = "begin_slice";
+        begin_node.kind  = OpKind::Custom;
+        begin_node.label = "begin_slice";
+        // Opens local views of its tensors, state the node's (empty) tensor lists do not show.
+        begin_node.effects = opaque_effects;
         begin_node.execute = [slices_copy, tokens, &tensor_map]() {
             tokens->clear();
             for (auto const &s : slices_copy) {

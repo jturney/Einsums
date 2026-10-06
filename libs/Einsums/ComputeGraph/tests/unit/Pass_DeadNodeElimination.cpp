@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -405,4 +406,62 @@ TEST_CASE("DeadNodeElimination - keeps the Materialize a surviving batched GEMM 
         INFO("element " << i);
         CHECK(std::abs(R.data()[i] - R_ref.data()[i]) < 1e-12);
     }
+}
+
+// A custom node whose declared outputs were all unread intermediates was
+// deleted, whatever else its closure did. Here the scratch it fills exists only
+// to be written out, which the pass cannot see, so the checkpoint never
+// happened.
+TEST_CASE("DeadNodeElimination - keeps a custom node with an effect beyond its outputs", "[ComputeGraph][Passes][Custom]") {
+    std::vector<double> checkpoint; // stands in for a file the node appends to
+
+    cg::Graph graph("dne_custom_effect");
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &scratch = graph.create_runtime_tensor<double>("scratch", {4UL});
+        cg::custom(
+            "fill_and_checkpoint",
+            [&scratch, &checkpoint]() {
+                for (size_t i = 0; i < 4; ++i) {
+                    scratch(i) = static_cast<double>(i);
+                    checkpoint.push_back(scratch(i));
+                }
+            },
+            &scratch);
+    }
+
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    INFO(pm.explain());
+
+    graph.execute();
+    CHECK(checkpoint == std::vector<double>{0.0, 1.0, 2.0, 3.0});
+}
+
+// Declared pure, a custom node whose outputs nothing reads is dead like any
+// library operation.
+TEST_CASE("DeadNodeElimination - removes a dead custom node declared pure", "[ComputeGraph][Passes][Custom]") {
+    int fills = 0;
+
+    cg::Graph graph("dne_custom_pure");
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &scratch = graph.create_runtime_tensor<double>("scratch", {4UL});
+        cg::custom(
+            cg::pure, "fill",
+            [&scratch, &fills]() {
+                ++fills;
+                for (size_t i = 0; i < 4; ++i) {
+                    scratch(i) = static_cast<double>(i);
+                }
+            },
+            &scratch);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DeadNodeElimination>();
+    CHECK(modified);
+    CHECK(pass.num_eliminated() == 1);
+
+    graph.execute();
+    CHECK(fills == 0);
 }

@@ -140,6 +140,15 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
                 continue;
             }
 
+            // A node whose effects its tensor lists do not show: a caller's closure may read
+            // state the loop changes (a captured counter, a parameter through the ParamTable) or
+            // act once per iteration by design (a log line). Run once, either is wrong.
+            if (!bnode.effects.deterministic || bnode.effects.external_effects) {
+                note_skip("node reads state or has effects its tensor lists do not show (a custom closure not declared pure)",
+                          fmt::format("body node '{}'", bnode.label));
+                continue;
+            }
+
             // Ordering through a named resource rather than a tensor. A DiskRead of a dataset the
             // body also stores has no tensor inputs, so the test below calls it invariant, and
             // hoisted it loads the file once, before the first store. Symmetrically, a write the

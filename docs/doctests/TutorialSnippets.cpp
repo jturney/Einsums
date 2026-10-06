@@ -593,6 +593,26 @@ TEST_CASE("tutorial - compute graph: a custom node feeding a pairwise contractio
     CHECK(F_mo(1, 3) == Catch::Approx(ref(1, 3)));
 }
 
+TEST_CASE("tutorial - compute graph: a custom node declared pure", "[Docs][Tutorials]") {
+    size_t const nmo = 5;
+
+    auto D = create_random_tensor<double>("D", nmo, nmo);
+    auto F = create_zero_tensor<double>("F", nmo, nmo);
+
+    cg::Graph graph("pure_fock");
+    {
+        cg::CaptureGuard guard(graph);
+
+        // Stands in for the page's build_fock_matrix(ERI, D, F).
+        cg::custom(cg::pure, "build_fock", std::tie(D), std::tie(F), [&]() { la::gemm<false, false>(1.0, D, D, 0.0, &F); });
+    }
+    graph.execute();
+
+    auto ref = create_zero_tensor<double>("ref", nmo, nmo);
+    la::gemm<false, false>(1.0, D, D, 0.0, &ref);
+    CHECK(F(1, 3) == Catch::Approx(ref(1, 3)));
+}
+
 TEST_CASE("tutorial - compute graph: workspace tensors are declared, then materialized", "[Docs][Tutorials]") {
     size_t const nao = 4;
 

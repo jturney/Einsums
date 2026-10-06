@@ -60,6 +60,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   single-writer status can't be proven, the hoist is refused (removing the per-iteration write would change which write wins).
  * - A producer whose output is read by an *earlier* body node is loop-carried through it and is not hoisted; reads by *later*
  *   body nodes are fine.
+ * - A node whose effects its tensor lists do not show (@ref NodeEffects; a @c cg::custom closure not declared pure) is not
+ *   hoisted: it may read state the loop changes, or be meant to run once per iteration.
  * - A node that reads a parameter or disk dataset another body node writes, or writes one another body node reads or writes,
  *   is not hoisted: the order between them travels through that resource, not through a tensor.
  * - **No cost model**: hoisting a cheap producer of a huge tensor extends that tensor's live range across the whole loop, which

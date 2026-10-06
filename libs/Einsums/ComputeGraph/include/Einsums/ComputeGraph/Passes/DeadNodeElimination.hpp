@@ -58,6 +58,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   read that storage after `execute()`.
  * - Control-flow nodes (Conditional, Loop) and memory nodes (Alloc, Free) are never eliminated, nor is a side-effect-only node
  *   that has no outputs (e.g. an in-place `scale`).
+ * - A node with external effects (@ref NodeEffects; a @c cg::custom closure not declared pure) is kept whatever becomes
+ *   of its outputs.
  * - Liveness is a **reachability** analysis: it removes a producer whose result nothing reads, but does not prune a live-but-
  *   redundant computation, nor perform partial-output DCE (a node is kept whole if any one output is live).
  * - Cross-graph liveness is threaded manually: `recurse_into_subgraphs() == false` and `run()` descends the sub-graph tree

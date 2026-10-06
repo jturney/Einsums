@@ -366,6 +366,9 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
         check.id    = body.reserve_node_id();
         check.kind  = OpKind::Custom;
         check.label = fmt::format("verify {} detected symmetry fact(s) still hold", leaves.size());
+        // Writes nothing and exists for what it does when a fact no longer holds, so it must never
+        // be treated as dead; what it reads it lists, so it stays deterministic.
+        check.effects = NodeEffects{.deterministic = true, .external_effects = true};
         // The body's own ids for the leaves, minted through the pointer index: the check lives in
         // the body, so an id from the parent's table would name nothing there, and the setup's
         // reads, which the parent derives from its body, would name nothing either.

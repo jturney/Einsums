@@ -194,3 +194,39 @@ def test_lih_executes_correctly_after_hoist(dtype):
     # cond returns True for it=0, True for it=1, False for it=2 →
     # body runs 3 times → accum = 3 alpha C.
     assert_close(accum, 3 * alpha * expected_C)
+
+
+def test_lih_keeps_effect_only_custom_in_loop():
+    # A custom node with no tensors acts only through its effects, so by
+    # default it stays in the loop and runs every iteration.
+    reports = []
+
+    g = cg.Graph("lih_custom_effect")
+    body = g.add_loop("loop", 3, lambda it: it < 2)
+    with cg.capture(body):
+        cg.custom("report", lambda: reports.append(1))
+
+    pass_inst = cg.LoopInvariantHoisting()
+    _run(pass_inst, g)
+    assert pass_inst.num_hoisted == 0
+
+    g.execute()
+    assert len(reports) == 3
+
+
+def test_lih_hoists_custom_declared_pure():
+    # pure=True declares that the closure depends on nothing the loop changes,
+    # so the pass may run it once, before the loop.
+    runs = []
+
+    g = cg.Graph("lih_custom_pure")
+    body = g.add_loop("loop", 3, lambda it: it < 2)
+    with cg.capture(body):
+        cg.custom("setup", lambda: runs.append(1), pure=True)
+
+    pass_inst = cg.LoopInvariantHoisting()
+    assert _run(pass_inst, g)
+    assert pass_inst.num_hoisted == 1
+
+    g.execute()
+    assert len(runs) == 1
