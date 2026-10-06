@@ -174,12 +174,11 @@ Diagonalize a symmetric matrix :math:`\mathbf{AU} = \mathbf{U\Lambda}`, where :m
             A = einsums.create_random_definite("A", 5)
             w = einsums.zeros([5], name="w")
 
-            linalg.syev(A, w, compute_eigenvectors=True)
+            linalg.syev(A, w)
             # A now holds the eigenvectors, w the eigenvalues
             # w is in ascending order
 
-        Pass ``compute_eigenvectors=True`` explicitly: without it the Python binding computes
-        only the eigenvalues.
+        Pass ``compute_eigenvectors=False`` to compute only the eigenvalues.
 
 Note that the input matrix is overwritten with data required to perform the eigendecomposition.
 
