@@ -14,8 +14,8 @@ Each page here answers a task rather than explaining a feature.
 The :doc:`User Guide </user/index>` teaches the concepts in order and is the better place to start if Einsums is new to you.
 Come here when you know roughly what you want and need the specific way to do it.
 
-Every code block on these pages was compiled and run against the version of the library the documentation was built from.
-Where a page states what something returns, prints, or throws, that is measured output rather than expectation.
+The code on the contractions, views, graphs, and porting-from-NumPy pages is exercised by the documentation snippet tests in ``docs/doctests/``, so what those pages say something returns, prints, or throws is measured output rather than expectation.
+The other pages are checked against the source but are not run as tests.
 
 Find your task
 ==============

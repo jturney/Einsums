@@ -102,8 +102,8 @@ For complex tensors the prefactors may themselves be complex, and they survive c
 Get a single number out
 =======================
 
-A spec with an empty output is not the way to reach a scalar: the string form requires an output of rank one or higher.
-Use the dot product, which writes through a pointer.
+A spec with an empty output, such as ``"i;i->"`` into a rank-0 tensor, contracts to a scalar through a dot product (route ``dot_runtime``).
+When you want a plain number rather than a tensor, use the dot product, which writes through a pointer.
 
 .. tab-set::
 
@@ -130,7 +130,7 @@ Repeated indices, traces, and transposes
 
 A letter repeated within one operand means diagonal access.
 ``"ii;i->i"`` reads the diagonal of a matrix and multiplies it elementwise by a vector.
-The diagonal is read as a strided view of the operand, without a copy, and the rest of the contraction takes the same routes as any other, so ``"iik;kj->ij"`` runs as a matrix multiplication.
+The diagonal is read as a strided view of the operand, without a copy, and the rest of the contraction takes the same routes as any other, so ``"iik;kj->ij"`` runs as a packed matrix multiplication (route ``diagonal:packed_gemm``).
 
 A letter that appears in only one input and not in the output is summed over, which is how you write a trace.
 That input is summed over the letter first, and the smaller contraction left over takes the same routes, so ``"ikm;j->ij"`` is one pass over the first operand and a rank-1 update.
@@ -154,9 +154,9 @@ A generalized transpose is ``cg::permute`` rather than an einsum:
 
             einsums.permute("ij->ji", T, A)
 
-Einsums does not transpose operands to force a contraction into a BLAS call.
-It will use the transposition flags a BLAS call already offers, so ``"ji;kj->ik"`` still reaches a single GEMM, but a pattern that would need a physical permutation runs on the generic algorithm instead.
-If you know a permutation would pay for itself, do it explicitly with ``permute`` and contract the result.
+Einsums does not make permuted copies of operands to force a contraction into a BLAS call.
+It will use the transposition flags a BLAS call already offers, so ``"ji;kj->ik"`` still reaches a single GEMM, and a pattern that would need a physical permutation, such as ``"ikj;kl->ijl"``, goes to the packed-GEMM backend, which folds the permutation into its packing step.
+Only a few shapes, such as a lone summed operand, fall back to the generic loop.
 
 Conjugate a complex operand
 ===========================

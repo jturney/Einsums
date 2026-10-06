@@ -36,7 +36,7 @@ Everything in this table was checked against NumPy on the version of the library
     * - ``A + B``, ``A * B``
       - ``A + B``, ``A * B``
     * - ``A.T``
-      - ``einsums.permute("ij->ji", T, A)``
+      - ``A.T`` (a zero-copy view), or ``einsums.permute("ij->ji", T, A)`` into a dense ``T``
     * - ``np.sum(A * B)``
       - ``einsums.linalg.dot(A, B)``
     * - ``np.zeros((m, n))``
@@ -48,7 +48,7 @@ Everything in this table was checked against NumPy on the version of the library
     * - ``A[:n, n:]``
       - ``A[:n, n:]``
 
-Shapes are passed as a list rather than a tuple, and the dtype argument is a string such as ``"float64"``.
+Shapes may be a list or a tuple, and the dtype argument is a string such as ``"float64"``.
 
 The four real differences
 =========================
@@ -125,8 +125,7 @@ It is worth giving a meaningful one; it is how you find the operation again in `
 
 **No implicit transposition.**
 NumPy will happily rearrange whatever you ask for.
-Einsums picks a contraction route at compile time and will not insert a physical permutation to reach a BLAS call, so a spec that does not map onto one runs on the generic algorithm.
-If a permutation would pay, write it with ``permute`` and contract the result.
+Einsums will not make a permuted copy of an operand to reach a BLAS call; a spec that does not map onto one goes to the packed-GEMM backend, which folds the permutation into its packing step, and only a few shapes fall back to the generic loop.
 :ref:`howto-contractions` shows how to confirm which route a contraction actually took.
 
 Where the win is

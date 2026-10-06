@@ -34,8 +34,10 @@ other system-level dependencies to build it on your system.
 
   If you are using Conda, you can skip the steps in this section - with the
   exception of installing the Apple Developer Tools for macOS. All other
-  dependencies will be installed automatically. Generate an environment file
-  with the merge script and create the environment from it:
+  dependencies will be installed automatically, except Stripes and Waggle, which
+  the first CMake configure downloads (so it needs network access). Generate an
+  environment file with the merge script and create the environment from it. The
+  script itself needs ``ruamel.yaml`` (``pip install ruamel.yaml``):
 
   .. code:: bash
 
@@ -80,21 +82,25 @@ other system-level dependencies to build it on your system.
 
     * Ninja for building. Since cpptrace 1.0, Unix Makefiles are no longer supported.
 
-    The following are also required, but will be downloaded if not given:
+    * HDF5 for disk operations.
 
-    * fmtlib >= 11
+    * ZLIB headers
+
+    The following are also required, but will be downloaded if not found:
+
+    * fmtlib 12.x
 
     * Catch2 >= 3
 
     * gabime/spdlog >= 1
 
-    * HDF5 for disk operations.
+    * mimalloc
 
-    * ZLIB headers
+    * `Stripes <https://github.com/Einsums/Stripes>`__, the SIMD library
 
-    Recommended
+    * `Waggle <https://github.com/Einsums/Waggle>`__, the profiler
 
-    * MIMalloc for faster memory allocation.
+    * `Apiary <https://github.com/Einsums/Apiary>`__, the binding and documentation code generator
 
     Optional:
 
@@ -134,7 +140,8 @@ other system-level dependencies to build it on your system.
   .. tab-item:: Windows
     :sync: windows
 
-    Windows is not supported at this time.
+    Windows builds with conda-forge's ``clang-cl`` and Ninja, and CI covers it
+    (``.github/workflows/windows-build-and-test.yml``).
 
 Building Einsums from source
 ----------------------------
@@ -157,10 +164,8 @@ optional dependency installed, except for HIP, perform the operations in the pre
 
 To build Einsums in an activated development environment, run::
 
-    mkdir build
-    cd build
-    cmake ..
-    make
+    cmake -S . -B build -GNinja
+    cmake --build build
 
 This will build Einsums inside the ``build`` directory. You can then run tests
 (``ctest`` and ``pytest``), or take other development steps like build the html documentation

@@ -10,7 +10,7 @@ Documenting the Code
 ====================
 
 Einsums does not use Doxygen or Breathe. The C++ API reference is produced
-by an in-tree libclang tool, which parses the public headers,
+by `Apiary <https://github.com/Einsums/Apiary>`__, a standalone libclang tool, which parses the public headers,
 reads the documentation comments, and emits reStructuredText in Sphinx's C++ domain. The
 same comments become the docstrings of the Python
 bindings. You therefore write one doc comment per declaration and it feeds
@@ -256,13 +256,13 @@ Gotchas
 
   .. code-block:: rst
 
-     :cpp:class:`Tensor`\ s          (renders "Tensors", links "Tensor")
+     :cpp:type:`Tensor`\ s           (renders "Tensors", links "Tensor")
      ``vector``\ s                   (renders "vectors")
 
 * Type aliases are not classes. ``Tensor`` and ``RuntimeTensor`` are
   ``using`` aliases, so reference them with ``:cpp:type:``, not ``:cpp:class:``.
 * You cannot reference a template instantiation. Link the bare template
-  name (``:cpp:class:`einsums::Tensor```, never ``Tensor<double, 2>``).
+  name (``:cpp:type:`einsums::Tensor```, never ``Tensor<double, 2>``).
 * Headings/decorations must be at least as long as their title text, or the
   page emits an "underline too short" warning.
 
@@ -275,10 +275,8 @@ Building and checking the docs
    cmake -S . -B build -DEINSUMS_WITH_DOCUMENTATION=ON
    cmake --build build --target docs-html
 
-   # nitpicky check: every dangling reference becomes a warning
-   sphinx-build -b html -n build/docs/sphinx build/docs/html
-
-The ``-n`` (nitpicky) flag turns every unresolved cross-reference into a
-warning. Keep the build warning-free: a new warning almost always means a
-reference is mis-qualified, uses the wrong role, or points at an undocumented
-symbol.
+The ``docs-html`` target runs Sphinx with ``-n -W --keep-going`` and writes the
+site to ``build/share/Einsums/docs/html``. The ``-n`` (nitpicky) flag turns every
+unresolved cross-reference into a warning, and ``-W`` makes any warning fail the
+build. A new warning almost always means a reference is mis-qualified, uses the
+wrong role, or points at an undocumented symbol.

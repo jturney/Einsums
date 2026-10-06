@@ -27,15 +27,10 @@ C++ Style
 
 To make code formatting easier, we have provided two files, ``.clang-tidy`` and ``.clang-format``.
 These files can be used with the ``clang-tidy`` package to format C++ code, as well as to hint at
-possible errors in your code. One thing that may come up when using these is a strange warning about
-certain C++20 features. If you are getting this error, you may need to add a new file called ``.clangd``
-which contains the following.
-
-.. code::
-    
-    CompileFlags:
-    #C++20
-    Add: [-std=c++20]
+possible errors in your code. The repository also ships a ``.clangd`` that points clangd at
+the compilation database in ``build/``, so clangd sees the real C++20 flags. If clangd warns about
+C++20 features, configure ``build/`` with ``-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`` rather than
+replacing that file.
 
 Coding Conventions
 ^^^^^^^^^^^^^^^^^^
@@ -96,7 +91,8 @@ Order of Things
 * ``cv`` keywords should never come before the pointer or reference type they modify. As an example,
   
   * :code:`std::string const &name`, not :code:`const std::string &name`.
-  * However, :code:`const size_t size` is allowed, but :code:`size_t const size` is preferred.
+  * The same goes for values: write :code:`size_t const size`. ``.clang-format`` sets
+    ``QualifierAlignment: Right``, so the formatter rewrites :code:`const size_t size` to that form.
   * :code:`constexpr` goes before the type, so :code:`constexpr size_t rank` is preferred.
 
 * When writing a class, the preferred order of blocks is public, then protected, then private.
@@ -136,8 +132,9 @@ with these constructions is accepted, their use will need to be justified.
 * :code:`do { } while(false);` blocks outside of macros. They are fine within macros,
   since their use is considered idiomatic to C/C++ for making a macro require a
   semicolon after the closing parenthesis. 
-* Inline assembly will be outright banned. One of the goals of Einsums is portability. This goes against
-  this goal.
+* Inline assembly. One of the goals of Einsums is portability, and this goes against that goal. The
+  few existing uses (a ``cpuid`` probe in ``ComputeGraph/src/CostModel.cpp`` and a ``yield`` hint in
+  ``PackedGemm/PackedGemm.hpp``) are guarded to the architectures they target.
 * Anything considered to be undefined behavior. Different compilers and systems may have different
   behavior, so it is best to not use this. Some examples of undefined behavior includes the following.
 
@@ -220,7 +217,7 @@ The following hooks are configured in ``.pre-commit-config.yaml``:
 C++ formatting
 ^^^^^^^^^^^^^^
 
-:Hook: ``clang-format`` (`v16.0.6 <https://github.com/pre-commit/mirrors-clang-format>`_)
+:Hook: ``clang-format`` (`v22.1.8 <https://github.com/pre-commit/mirrors-clang-format>`_)
 :Files checked: ``.cpp``, ``.hpp``
 :Config: Uses the project's ``.clang-format`` style.
 :Purpose: Ensures consistent formatting of C++ source and header files.
@@ -240,7 +237,29 @@ License header checks
 :License template: ``devtools/LicenseHeader.txt``
 :Purpose: Verifies that all relevant files begin with a consistent license header.
 
-All hooks automatically exclude build directories such as ``build/`` and ``cmake-build-*``.
+CMake audit
+^^^^^^^^^^^
+
+:Hook: ``cmake-audit`` (local, ``tools/cmake-audit/cmake_audit.py``)
+:Files checked: ``CMakeLists.txt``, ``*.cmake``
+:Purpose: Flags undefined-variable typos in CMake files.
+
+Repository-wide checks
+^^^^^^^^^^^^^^^^^^^^^^
+
+These local hooks scan every tracked file on every run, whatever was staged:
+
+:``einsums-namespace-macros``: ``devtools/check_namespace_macros.py`` - einsums namespaces must be opened with ``EINSUMS_NAMESPACE_BEGIN``.
+:``einsums-version-tags``: ``devtools/check_version_tags.py`` - version tags must not name an unreleased version.
+:``einsums-have-macros``: ``devtools/check_have_macros.py`` - every tested ``EINSUMS_HAVE_*`` macro must be defined somewhere.
+
+GitHub Actions
+^^^^^^^^^^^^^^
+
+:Hook: ``actionlint`` (`v1.7.12 <https://github.com/rhysd/actionlint>`_)
+:Purpose: Lints the workflows under ``.github/workflows/``, and runs shellcheck over their ``run:`` scripts when shellcheck is on ``PATH``.
+
+The file-based hooks (formatting, license, and CMake audit) exclude build directories such as ``build/`` and ``cmake-build-*``.
 
 Updating Hooks
 --------------

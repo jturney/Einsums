@@ -37,10 +37,12 @@ CMake natively supports four build types: ``Debug``, ``Release``, ``MinSizeRel``
 
 4. ``MinSizeRel``: same as Release but optimizing for size rather than speed.
 
-Einsums provides additional build types: ``ASAN``, ``MSAN``, and ``UBSAN``. These are not used very often and currently are not
-guaranteed to work.
+Sanitizers are not build types. Enable them with ``-DEINSUMS_WITH_SANITIZERS=<list>``, a
+comma-separated list of ``address``, ``leak``, ``memory``, ``thread``, and ``undefined`` that is
+passed to ``-fsanitize=``, for example ``-DEINSUMS_WITH_SANITIZERS=address,undefined``. It works
+with any ``CMAKE_BUILD_TYPE``.
 
-5. ``ASAN``: Address Sanitizer (aka ASan) is a memory error detector for C/C++. It finds:
+1. ``address``: Address Sanitizer (aka ASan) is a memory error detector for C/C++. It finds:
 
     * Use after free (dangling pointer dereference)
 
@@ -58,7 +60,7 @@ guaranteed to work.
 
     * Memory leaks
 
-6. ``MSAN``: Memory Sanitizer (aka MSan) is a detector of uninitialized memory reads in C/C++ programs.
+2. ``memory``: Memory Sanitizer (aka MSan) is a detector of uninitialized memory reads in C/C++ programs.
    Uninitialized values occur when stack- or heap-allocated memory is read before it is written.
    MSan detects cases where such values affect program execution.
    MSan is bit-exact: it can track uninitialized bits in a bitfield.
@@ -70,7 +72,7 @@ guaranteed to work.
    MSan implements a subset of functionality found in Valgrind (Memcheck tool). It is significantly faster
    than Memcheck.
 
-7. ``UBSAN``: Undefined Behavior Sanitizer (UBSan) is a fast undefined behavior detector. UBSan modifies
+3. ``undefined``: Undefined Behavior Sanitizer (UBSan) is a fast undefined behavior detector. UBSan modifies
    the program at compile-time to catch various kinds of undefined behavior during program execution, for
    example:
 

@@ -27,14 +27,20 @@ The following libraries are required to build Einsums:
 
 The following libraries are also required, but will be fetched if they can not be found:
 
-* fmtlib >= 12
+* fmtlib 12.x
 * Catch2 >= 3
 * gabime/spdlog >= 1
+* mimalloc
+* [Stripes](https://github.com/Einsums/Stripes), the SIMD library
+* [Waggle](https://github.com/Einsums/Waggle), the profiler
+* [Apiary](https://github.com/Einsums/Apiary), the binding and documentation code generator
+
+Stripes and Waggle are not in the conda environment, so the first configure of a fresh build directory downloads them and needs network access.
 
 Optional requirements:
 
 * A Fast Fourier Transform library, either FFTW3 or DFT from MKL.
-* Python, for the `einsums` Python package (`-DEINSUMS_BUILD_PYTHON=ON`; the binding generator comes from conda-forge, and pybind11 is fetched as needed).
+* Python, for the `einsums` Python package (`-DEINSUMS_BUILD_PYTHON=ON`; pybind11 >= 2.11 must be installed, and the conda environment provides it).
 * CUDA or HIP for GPU support (work in progress).
 * MPI (Open MPI or MPICH) for distributed execution (work in progress).
 * cpptrace for backtraces.
@@ -60,6 +66,7 @@ conda activate einsums-dev
 ```
 
 `conda.yml` is generated (and git-ignored), so it does not exist in a fresh clone.
+`merge_yml.py` needs `ruamel.yaml` in the Python that runs it (`pip install ruamel.yaml`).
 `merge_yml.py` takes optional `compiler` (`gcc`/`clang`/`intel`) and `blas` (`openblas`/`mkl`/`accelerate`) arguments, plus `--docs` to add the documentation-build packages; run it with `--help` for details.
 
 Activate the environment before the first CMake configure of a fresh build directory.
@@ -82,7 +89,7 @@ Common configure options (append to the `cmake -S . -B build ...` line):
 
 * `-DEINSUMS_BUILD_PYTHON=ON` - build the `einsums` Python package (codegen tool, bindings, and Python tests) in one switch.
 * `-DEINSUMS_WITH_TESTS=OFF` - skip the test suite for a faster library-only build.
-* `-DEINSUMS_WITH_DOCUMENTATION=ON` - generate the HTML API reference.
+* `-DEINSUMS_WITH_DOCUMENTATION=ON` - add the HTML documentation targets; build them with `cmake --build build --target docs`.
 
 To build a single target instead of the whole tree:
 

@@ -45,7 +45,7 @@ C++23 features through the CXX23 compatibility module, which supplies C++20 fall
 * A deferred-execution :ref:`ComputeGraph <modules_Einsums_ComputeGraph>`
   with multi-pass optimization for whole-algorithm rewrites.
 * :ref:`Python bindings <modules_Einsums_Python>` auto-generated from the
-  C++ headers by an in-tree libclang tool, so the Python surface tracks the
+  C++ headers by Apiary, a standalone libclang tool, so the Python surface tracks the
   C++ surface without hand-written glue.
 
 As a short example, the following :code:`einsum` call routes to a single

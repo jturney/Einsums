@@ -152,11 +152,13 @@ Operations that return a value throw during capture, because a recorded operatio
 
 .. code-block:: text
 
-    RuntimeError: reject_if_capturing: ... is not capturable
+    std::logic_error: cg::dot(A, B) returning scalar cannot be used during graph capture. Use cg::einsum(" <- i ; i", &result, A, B) instead.
 
+In Python this surfaces as a ``RuntimeError``.
 Use the form that writes through a pointer instead.
 ``dot(A, B)`` returns; ``dot(&result, A, B)`` records.
-The same holds for the decompositions: prefer ``syev_eig`` and ``svd`` in their output-argument spellings inside a capture.
+The same holds for the decompositions: ``syev_eig(A)`` returns, while ``syev(&A, &W)`` overwrites ``A`` with the eigenvectors and ``W`` with the eigenvalues and records.
+``svd`` and ``svd_dd`` have only returning forms, so they cannot be used inside a capture.
 
 Find out what the optimizer did
 ===============================

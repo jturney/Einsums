@@ -80,11 +80,15 @@ distinct values and each gets its own buffer.
 What this affects in Einsums today
 ==================================
 
-Nothing that the public API currently reaches, which is why this has not
-surfaced before:
+Most of the public API is out of reach, which is why this has not surfaced
+before, but one Python path is not:
 
-* The Python bindings hold the GIL across the numeric entry points, so
-  concurrent calls from Python threads serialize and never overlap inside BLAS.
+* The Python bindings hold the GIL across the eager numeric entry points, so
+  concurrent eager calls from Python threads serialize and never overlap inside BLAS.
+* ``Graph.execute``, ``Graph.run_setup``, and ``Pipeline.execute`` are annotated
+  ``APIARY_RELEASE_GIL``. Python threads that execute graphs concurrently can
+  therefore overlap inside BLAS, which is the caller-created-thread pattern
+  above. On the ``openmp_`` build, execute graphs from one Python thread at a time.
 * ``OpenMPExecutor`` uses OpenMP parallel regions, which are safe.
 * The ``GEMMBatching`` pass lowers to ``blas::gemm_batch``, whose parallel loop
   is OpenMP, also safe.
@@ -95,10 +99,11 @@ surfaced before:
   than proven safe, and prefer the OpenMP executor for BLAS-heavy graphs if you
   are on the ``openmp_`` build.
 
-It becomes reachable the moment any of these happens:
+It becomes reachable more broadly the moment any of these happens:
 
-* an ``APIARY_RELEASE_GIL`` annotation is added to a numeric binding and a
-  caller drives it from a Python thread pool,
+* a graph is executed from a Python thread pool (see above), or an
+  ``APIARY_RELEASE_GIL`` annotation is added to an eager numeric binding and a
+  caller drives it from one,
 * C++ code calls Einsums from ``std::thread`` workers rather than an OpenMP
   region, or
 * the module starts declaring free-threaded support, see below.
