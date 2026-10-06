@@ -8,8 +8,9 @@
 Print
 =====
 
-This module contains overloads for :code:`fmt::println` that work with Tensors, as well as a few special symbols for
-other tasks.
+This module contains :code:`einsums::println` and :code:`einsums::fprintln`, thin wrappers around fmt that print a
+formatted line, as well as a few special symbols for other tasks. The overloads that print tensors live with the tensor
+types, in the TensorImpl and Tensor modules.
 
 See the :ref:`API reference <modules_Einsums_Print_api>` of this module for more
 details.

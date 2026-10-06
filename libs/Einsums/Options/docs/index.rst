@@ -53,8 +53,10 @@ An option is declared in the module whose code reads it, in that module's ``Opti
 
    EINSUMS_NAMESPACE_END(option)
 
-The long name is the only spelling written down. The config key, the environment variable, the ``--help``
-entry, and a flag's ``no-`` twin are all derived from it, which is what keeps them from drifting apart.
+The long name is the only spelling written down. The registry key (``profile-filename``, the form
+``config::get_dynamic`` takes), the environment variable, the ``--help`` entry, and a flag's ``no-`` twin
+are all derived from it, which is what keeps them from drifting apart. A config file is the exception: it
+names an option by its long name (``einsums:profile:filename``), not by the derived key.
 
 - ``config_flag(name, help, category, default)`` declares a boolean. Registration also generates the
   ``no-`` spelling, so a flag that defaults to on needs no hand-written negation.
@@ -94,8 +96,9 @@ Reading an option
 compile error, the type comes from the descriptor, and an option read before it is registered yields the
 declared default rather than a zero.
 
-- ``config::try_get(opt)`` returns ``std::optional<T>``, empty when nothing but the default has supplied a
-  value. Use it to tell *unset* from *set to the default*.
+- ``config::try_get(opt)`` returns ``std::optional<T>``, empty when no parse source (command line or
+  environment) supplied a value. Use it to tell *unset* from *set to the default*. A value written with
+  ``config::set`` does not count: ``try_get`` stays empty afterwards even though ``get`` returns it.
 - ``config::set(opt, value)`` writes one, which is mostly what tests want.
 
 ``Get.hpp`` is deliberately light: no parser, no help machinery, no ``fmt``. Including it from a header on
@@ -105,8 +108,8 @@ Dynamic keys
 ~~~~~~~~~~~~
 
 ``config::get_dynamic<T>(key, default)`` and ``config::set_dynamic`` take a runtime string. They exist for
-keys that are genuinely constructed at run time, such as the per-pass flags the optimizer builds from a
-pass name. Anything whose name is known at compile time should be a descriptor instead; the dynamic path
+keys that are genuinely constructed at run time; nothing in the library uses them today (the optimizer
+reads ``--einsums:pass:disable`` through its descriptor). Anything whose name is known at compile time should be a descriptor instead; the dynamic path
 gives back the silent-typo behavior the descriptors were introduced to remove.
 
 Enumerating the options
@@ -233,7 +236,7 @@ Types of Options
 
 - ``Flag`` - boolean option. Presence sets true (configurable via ``ImplicitValue``).
 - ``Opt<T>`` - single value option. ``T`` can be any integral or floating point type, ``std::string``, or a type of your own (see `Custom value types`_).
-- ``List<T>`` - repeated or comma-separated values. As a positional, it *gathers remaining tokens*.
+- ``List<T>`` - repeated or comma-separated values. As a positional, a ``List<std::string>`` *gathers remaining tokens*; other element types take one token.
 - ``OptEnum<Enum>`` - map string choices to an enum.
 - ``Alias`` - forwards to a target option, optionally supplying a preset value.
 
@@ -255,7 +258,7 @@ Bindings & Callbacks
 .. code-block:: cpp
 
    Opt<int> Batch{
-     "batch", {}, Default(32), "Batch size", Tuning,
+     "batch", {}, "Batch size", Default(32), Tuning,
      Setter<int>{[](int v, Source from){
        fmt::print("batch={} (source: {})\n", v, to_string(from));
      }}
@@ -502,7 +505,8 @@ to be consumed as the next value.
 Positional List Gathering
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A positional ``List<T>`` stays "active" and gathers subsequent bare tokens. For example:
+A positional ``List<std::string>`` stays "active" and gathers subsequent bare tokens. A positional
+list of any other element type takes a single token. For example:
 
 .. code-block:: cpp
 
@@ -540,7 +544,9 @@ Help Layout
 ~~~~~~~~~~~
 
 ``--help`` prints usage, categories, normal-visibility options, and positional arguments.
-Each line reports the option's default and its environment variable, and long help text wraps
+Each line reports the option's environment variable and, where there is one to show, its default: a
+flag shows its default only when it is true, an ``Opt`` declared without a default shows none, and a
+generated ``no-`` twin is noted as ``[negate: --no-...]``. Long help text wraps
 to the terminal width with a hanging indent. ``COLUMNS`` overrides the detected width, which is
 what a test should pin to get stable output.
 
@@ -575,7 +581,7 @@ Integers with Range and Implicit
 
    OptionCategory Perf{"Performance"};
    Opt<int> Threads{
-     "threads", {'t'}, Default(4), "Number of threads",
+     "threads", {'t'}, "Number of threads", Default(4),
      Perf, RangeBetween(1, 256), ValueName("N")
    }; // --threads=8 => 8
 
@@ -586,7 +592,7 @@ Strings & Paths
 
    OptionCategory IO{"I/O"};
    Opt<std::string> Output{
-     "output", {'o'}, Default(std::string{"a.out"}), "Output file",
+     "output", {'o'}, "Output file", Default(std::string{"a.out"}),
      IO, ValueName("PATH")
    };
 
@@ -637,13 +643,13 @@ Binding and Callbacks
    // Bind to external storage
    int threads_bound = 0;
    Opt<int> Threads{
-     "threads", {'t'}, Default(4), "Threads",
+     "threads", {'t'}, "Threads", Default(4),
      Tuning, Location<int>(threads_bound)
    };
 
    // Callback on assignment, from any source
    Opt<int> Batch{
-     "batch", {}, Default(32), "Batch size",
+     "batch", {}, "Batch size", Default(32),
      Tuning, Setter<int>{[](int v, Source from){
        fmt::print("Reconfiguring batch={} (source: {})\n", v, to_string(from));
      }}
@@ -657,11 +663,13 @@ of a convention callers have to keep:
 
 - **Descriptors are immutable** once declared, so finding an option needs no synchronization at all.
 - **Each option's value lives in its own slot**, atomic for ``bool``, ``std::int64_t``, and ``double``,
-  and an atomic pointer to an immutable snapshot for ``std::string``. ``config::get`` is a slot load:
-  no lock, no hash, no map. ``config::set`` and ``set_dynamic`` are safe against concurrent readers.
-- **No operation locks more than one thing**, so there is no acquisition order to respect and no
-  lock-order inversion to find. The only mutex left guards the overflow map that dynamic writes use for
-  keys no descriptor claims.
+  and an atomic pointer to an immutable snapshot for ``std::string``. Once a descriptor has found its
+  slot, ``config::get`` is a slot load: no lock, no hash, no map. The first read through each descriptor
+  copy, and every read before the option is registered, takes the registry mutex for one map lookup.
+  ``config::set`` and ``set_dynamic`` are safe against concurrent readers.
+- **Locks are few and ordered.** The registry mutex guards registration and the dynamic keys; each entry
+  also has a snapshot mutex for string values and an observer mutex for its callbacks. Registration takes
+  an entry's snapshot and observer locks while holding the registry mutex, never the other way round.
 - **Callbacks run outside the lock.** A ``Setter`` fires after the value is stored, with nothing held.
 
 Two things remain the caller's responsibility:
@@ -671,7 +679,8 @@ Two things remain the caller's responsibility:
   of several settings should snapshot them into a struct, which is also what a hot path wants.
 
 Registration and parsing are still a single-threaded startup activity, and now say so: the registry is
-frozen once parsing finishes and rejects a late registration rather than racing. Values may be written
+frozen once parsing finishes, and a late registration trips an ``assert`` (a debug-build check; a
+release build does not catch it). Values may be written
 after the freeze, which is what makes ``config::set`` usable from a test.
 
 For the parser layer specifically:

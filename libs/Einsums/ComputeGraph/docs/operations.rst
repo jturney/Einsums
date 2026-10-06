@@ -23,8 +23,10 @@ einsum
    // With default prefactors (c_pf=0, ab_pf=1): C = A * B
    cg::einsum("ik;kj->ij", &C, A, B);
 
-   // With conjugation
-   cg::einsum<true, false>("ik;kj->ij", &C, A, B);
+   // With conjugation: a conj(...) wrapper in the spec, or the conj_a / conj_b
+   // arguments after the operands (a no-op on a real operand).
+   cg::einsum("ij <- conj(ik) ; kj", &C, A, B);
+   cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B, /*conj_a=*/true, /*conj_b=*/false);
 
 Records an ``OpKind::Einsum`` node with ``EinsumDescriptor`` metadata containing
 the contraction pattern, prefactors, and conjugation flags.
@@ -114,16 +116,22 @@ dot
    // Eager (outside capture): returns the scalar inner product.
    auto result = cg::dot(A, B);   // the scalar-return form throws during capture
 
-   // Recorded (inside capture): writes into a pre-allocated [1] tensor at
-   // execute time — the graph-resident form (also accepts cg::view operands).
-   cg::dot(&result_tensor, A, B);
+   // Recorded (inside capture): writes the scalar through a pointer at
+   // execute time (also accepts cg::view operands).
+   double result = 0.0;
+   cg::dot(&result, A, B);
 
 norm
 ----
 
 .. code-block:: cpp
 
-   auto n = cg::norm(linear_algebra::Norm::Frobenius, A);
+   // Eager (outside capture): returns the norm. Throws during capture.
+   auto n = cg::norm(linear_algebra::Norm::FROBENIUS, A);
+
+   // Recorded (inside capture): writes the norm through a pointer.
+   double r = 0.0;
+   cg::norm(&r, linear_algebra::Norm::FROBENIUS, A);
 
 trace
 -----
@@ -136,11 +144,11 @@ trace
    // Recorded (inside capture): writes the result into a pre-allocated scalar
    // at execute time. Required form for graph-resident traces — like cg::dot
    // / cg::norm, the eager scalar-return form throws during capture.
-   double t = 0.0;
-   cg::trace(&t, A);          // A must be square
-   cg::trace(&t, slice);      // also works on cg::view results
+   double tr = 0.0;
+   cg::trace(&tr, A);         // A must be square
+   cg::trace(&tr, slice);     // also works on cg::view results
 
-Records a label-only ``OpKind::Trace`` node. The executor body is just a
+Records an ``OpKind::Trace`` node with an empty ``TraceDescriptor``. The executor body is just a
 diagonal-sum loop, with no special pass treatment.
 
 sum / max
@@ -150,11 +158,12 @@ sum / max
 
    // Reduce every element to a scalar, written into result->data()[0].
    // Like dot/trace: recorded into the graph when capturing, eager otherwise.
-   cg::sum(&result, A);   // result[0] = Σ A_i   (any dtype)
-   cg::max(&result, A);   // result[0] = max A_i (real dtypes only)
+   cg::sum_python(&result, A);   // result[0] = Σ A_i   (any dtype)
+   cg::max_python(&result, A);   // result[0] = max A_i (real dtypes only)
 
 ``result`` is a pre-allocated rank-1 ``[1]`` tensor, a graph-native scalar
-handle, as for the scalar-writing ``cg::dot`` and ``cg::trace``. Both are
+handle, as for Python's ``linalg.dot`` (C++ ``cg::dot`` and ``cg::trace`` write
+through a scalar pointer instead). Both are
 stride-correct, so they reduce slice and transpose views, not just contiguous
 storage. They back the Python ``A.sum()`` / ``A.mean()`` / ``A.max()``
 methods. ``max`` is real-only, since complex has no natural ordering, so use
@@ -178,9 +187,13 @@ symm_gemm
 LinearAlgebra - LAPACK Level
 =============================
 
-These operations always execute eagerly during capture, because they produce
-output tensors that subsequent operations need. They are still recorded as nodes
-for replay.
+The output-argument forms (``syev(&A, &W)``, ``heev``, ``gesv``, ``invert``)
+are recorded during capture and run at execute time; ``gesv`` returns 0 while
+capturing, since the solve has not happened yet. The returning forms
+(``syev(A)``, ``svd``, ``svd_dd``, ``truncated_svd``, ``qr``, ``pow``, ``det``)
+are eager only and throw ``std::logic_error`` during capture. ``svd``,
+``svd_dd``, ``truncated_svd``, ``qr``, ``pow``, and ``det`` have no recorded
+form yet, so call them outside the capture.
 
 syev
 ----
@@ -190,7 +203,7 @@ syev
    // In-place form: A → eigenvectors, W → eigenvalues
    cg::syev(&A, &W);
 
-   // Returning form: returns (eigenvectors, eigenvalues)
+   // Returning form: returns (eigenvectors, eigenvalues). Eager only.
    auto [evecs, evals] = cg::syev(A);
 
 heev

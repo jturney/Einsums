@@ -13,27 +13,25 @@ CXX23
 The ``CXX23`` module is a small collection of C++23 polyfills for compilers
 or standard library versions where a feature isn't yet available.
 
-Einsums targets the C++23 baseline, but some toolchains lag on individual
-library features. Examples include older libstdc++, Apple libc++ on certain
-SDK levels, and Intel oneAPI. ``CXX23`` provides drop-in replacements behind
-feature-test-macro guards so the rest of the codebase can use the C++23
-spelling unconditionally.
+Einsums builds as C++20 by default (``EINSUMS_WITH_CXX_STANDARD``), and
+even a C++23 build can meet a standard library that lacks a feature. Examples
+include older libstdc++, Apple libc++ on certain SDK levels, and Intel oneAPI.
+``CXX23`` provides drop-in replacements behind feature-test-macro guards so
+the rest of the codebase can use the C++23 spelling unconditionally.
 
 What's polyfilled
 =================
 
 The headers in this module follow a uniform pattern: include the standard
 header if the feature-test macro indicates the feature is present;
-otherwise expose a compatible implementation in the ``einsums::cxx23``
-namespace.
+otherwise expose a compatible implementation in the ``einsums`` namespace.
 
 Currently provided:
 
-- ``Einsums/CXX23/Expected.hpp`` provides the ``std::expected<T, E>``
-  polyfill, guarded on ``__cpp_lib_expected``. Include it as the very
-  first standard header so the macro is set consistently across
-  translation units. If some TUs see the polyfill and others do not, the
-  mismatch causes ODR violations at link time.
+- ``Einsums/CXX23/Expected.hpp`` provides ``einsums::expected<T, E>`` and
+  ``einsums::unexpected<E>``, guarded on ``__cpp_lib_expected``. The header
+  includes ``<version>`` itself, so every translation unit makes the same
+  choice whatever it included first.
 
 Usage
 =====
@@ -42,18 +40,19 @@ Usage
 
     #include <Einsums/CXX23/Expected.hpp>
 
-    using einsums::cxx23::expected;
-    using einsums::cxx23::unexpected;
+    using einsums::expected;
+    using einsums::unexpected;
 
     expected<int, std::string> parse(std::string_view s) {
         if (s.empty()) {
-            return unexpected("empty input");
+            return unexpected(std::string("empty input"));
         }
         return std::stoi(std::string{s});
     }
 
-When toolchain support catches up, the polyfill becomes a no-op
-``using std::expected;`` alias and existing call sites need no change.
+When Einsums is built as C++23 against a library that has
+``std::expected``, ``einsums::expected`` becomes an alias for it and existing
+call sites need no change.
 
 See the :ref:`API reference <modules_Einsums_CXX23_api>` of this module for
 the polyfill surface.

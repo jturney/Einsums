@@ -39,8 +39,8 @@ GEMMBatching wants one ``lda`` and MemoryPlanning's arena wants one buffer,
 neither of which a tile container has. Left alone, a blocked residual spends its
 whole arithmetic saving on dispatch overhead.
 
-:ref:`TiledExpansion <computegraph_tiled_expansion>` is the answer. It runs first
-in the default pipeline and lowers the opaque node into ordinary dense nodes, at
+:ref:`TiledExpansion <computegraph_tiled_expansion>` is the answer. It runs ahead
+of every rewriting pass in the default pipeline and lowers the opaque node into ordinary dense nodes, at
 which point every existing pass applies unchanged.
 
 Building one
@@ -202,7 +202,9 @@ cheap. Registering the handle as deferred is what puts the tensor under the same
 lifecycle machinery as dense scratch:
 
 - ``Materialization`` hoists the Materialize/Initialize pair to the loop's parent
-  rather than re-running it per iteration.
+  rather than re-running it per iteration. Those parent nodes count as writes,
+  so scratch used inside a loop body is shared across graphs and TiledExpansion
+  leaves its nodes opaque (see `Limits`_).
 - ``FreeInsertion`` can release the tile storage after the last consumer.
   ``release()`` keeps the sparsity pattern, so a later replay re-materializes
   into the same structure.
@@ -220,8 +222,10 @@ previous iteration are zeroed rather than kept.
 TiledExpansion
 ==============
 
-``TiledExpansion`` runs **first** in the default pipeline. It is a lowering step,
-so every pass below it should see the per-tile form rather than the opaque node.
+``TiledExpansion`` runs ahead of every rewriting pass in the default pipeline;
+only the annotation-only ``ProvenancePropagation`` precedes it. It is a lowering
+step, so every pass below it should see the per-tile form rather than the opaque
+node.
 
 It replaces the tiled node with one ordinary dense einsum per contributing tile
 combination, built through ``Graph::make_einsum_node``. Because the result is
@@ -230,8 +234,10 @@ are same-shape so GEMMBatching batches them, CSE deduplicates repeated tile work
 MemoryPlanning packs the per-tile buffers (each tile *is* a dense
 ``RuntimeTensor``, so it has ``materialize_into``), and Reorder schedules them.
 
-Tiled ``scale`` and ``axpy`` lower the same way, into one dense ``OpKind::Scale``
-or ``OpKind::Axpby`` per stored tile.
+Tiled ``scale``, ``axpy``, ``direct_division`` and ``permute`` lower the same
+way, into one dense ``OpKind::Scale``, ``OpKind::Axpby``,
+``OpKind::DirectDivision`` or permute node per tile. A tiled ``dot`` lowers to a
+single reduction node over the per-tile ids.
 
 Emission order
 --------------
@@ -426,6 +432,10 @@ Limits
   decidable, or the partitions are misaligned, or the budget is exceeded, or the
   candidate shares a tiled tensor with a node that cannot expand. The surviving
   opaque node is correct, merely unoptimized.
+- A tiled tensor that one graph of the tree (a loop body, a branch or a setup
+  body) writes and another touches is never expanded in any graph; every node
+  that uses it stays the opaque tiled op. That includes graph-owned tiled
+  scratch whose Materialize/Initialize sit in the parent of the body using it.
 - Creating the predicted output tiles is a side effect of ``apply()`` on user
   data, earlier than the execute-time infer-and-create it replaces.
 

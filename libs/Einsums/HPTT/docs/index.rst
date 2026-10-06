@@ -28,8 +28,10 @@ Supported Types
 ---------------
 
 - ``float`` and ``double`` use full SIMD-accelerated micro-kernels.
-- ``std::complex<float>`` and ``std::complex<double>`` are supported with
-  scalar micro-kernels. SIMD complex support is future work.
+- ``std::complex<float>`` and ``std::complex<double>`` also use SIMD
+  micro-kernels, built on Stripes' complex vectors.
+- Half and bfloat16 kernels are built when the target has FP16 or BF16
+  vector arithmetic.
 
 How It Works
 ------------
@@ -46,8 +48,8 @@ How It Works
     #include <Einsums/HPTT/HPTT.hpp>
 
     // Transpose a 3D tensor: C[j,k,i] = alpha * A[i,j,k] + beta * C[j,k,i]
-    int perm[] = {1, 2, 0};          // Permutation: dimension 0 -> position 2, etc.
-    int size[] = {10, 20, 30};        // Dimensions of A
+    int    perm[] = {1, 2, 0};       // Permutation: dimension 0 -> position 2, etc.
+    size_t size[] = {10, 20, 30};    // Dimensions of A
     float alpha = 1.0f, beta = 0.0f;
 
     auto plan = einsums::hptt::create_plan(perm, 3, alpha, A, size, nullptr,
@@ -69,12 +71,13 @@ to use Stripes (``stripes::``), Einsums' SIMD library. This provides three benef
 
 The micro-kernels use:
 
-- ``simd::loadu`` / ``simd::storeu`` for data movement
-- ``simd::broadcast`` for alpha/beta scaling
-- ``simd::fmadd`` for fused multiply-add
-- ``simd::transpose_inplace`` for in-register 4x4/8x8/16x16 transposes
-- ``simd::stream_store`` for non-temporal writes (cache-bypass for large transposes)
-- ``simd::prefetch`` for prefetching next blocks
+- ``stripes::loadu`` / ``stripes::storeu`` for data movement
+- ``stripes::broadcast`` for alpha/beta scaling
+- ``stripes::fmadd`` for fused multiply-add
+- ``stripes::transpose_inplace`` for in-register 4x4/8x8/16x16 transposes
+  (``stripes::complex_transpose_inplace`` for complex types)
+- ``stripes::stream_store`` for non-temporal writes (cache-bypass for large transposes)
+- ``stripes::prefetch`` for prefetching next blocks
 
 See the :ref:`API reference <modules_Einsums_HPTT_api>` of this module for more
 details.

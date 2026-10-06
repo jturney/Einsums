@@ -9,11 +9,12 @@ Hardware
 ========
 
 The ``Hardware`` module detects the machine facts that the rest of Einsums
-tunes against, and it detects them exactly once. Cache sizes, the native SIMD
-width, and the measured cost of an OpenMP parallel region all live behind a
-single cached :cpp:func:`~einsums::hardware::cpu_info` call, so every module
-that blocks, chunks, or decides whether to fork a thread team is reading the
-same numbers.
+tunes against, in one place. Cache sizes and the native SIMD width live behind
+a single cached :cpp:func:`~einsums::hardware::cpu_info` call, and the cost of
+an OpenMP parallel region behind
+:cpp:func:`~einsums::hardware::omp_region_cost_ns`, so every module that
+blocks, chunks, or decides whether to fork a thread team is reading the same
+numbers.
 
 Why a module for this
 =====================
@@ -41,14 +42,15 @@ CpuInfo
     auto const &hw = einsums::hardware::cpu_info();
 
     hw.simd_width_f64;      // 2 (SSE2/NEON), 4 (AVX/AVX2), 8 (AVX-512): the rung the
-                            // process dispatches to (simd::selected_arch()), so it
+                            // process dispatches to (stripes::selected_arch()), so it
                             // follows the CPU and the --einsums:simd:arch override
     hw.simd_width_f32;      // twice simd_width_f64
     hw.compiled_simd_width_f64; // what the library's own flags were vectorized at
     hw.cache.l1;            // bytes
     hw.cache.l2;            // bytes
     hw.cache.l3;            // bytes
-    hw.omp_region_cost_ns;  // measured fork/join cost, 0 without OpenMP
+    hw.omp_region_cost_ns;  // fork/join cost at first call, 0 without OpenMP;
+                            // omp_region_cost_ns() follows the live team size
 
 Detection runs on first use and the result is cached for the process lifetime.
 Every field is populated with a conservative default (32 KB / 256 KB / 8 MB,
@@ -58,8 +60,8 @@ check for a zero.
 Cache detection is per platform: ``sysctlbyname`` on macOS, the
 ``/sys/devices/system/cpu/cpu0/cache/index*`` hierarchy on Linux (walked by
 ``level`` and ``type`` rather than by index number, and skipping instruction
-caches). On Apple Silicon the L2 probe deliberately prefers
-``hw.perflevel0.l2cachesize``, the performance cluster, and falls back to
+caches). On Apple Silicon the L2 probe takes the larger of
+``hw.perflevel0.l2cachesize``, the performance cluster, and
 ``hw.l2cachesize``; an L3 reported as zero falls back to 8 MB.
 
 The SIMD width comes from the rung the process dispatches to, which CPUID, the
@@ -71,10 +73,20 @@ macros. For the runtime feature ladder and its psABI rungs, see
 The cost of a parallel region
 =============================
 
-:cpp:func:`~einsums::hardware::omp_region_cost_ns` is *measured*, not assumed:
-an empty ``#pragma omp parallel`` at the default thread count, timed after the
-team is warmed so it captures steady-state fork/join rather than one-off thread
-creation, best of several trials.
+:cpp:func:`~einsums::hardware::omp_region_cost_ns` is resolved, not assumed.
+A value pinned with :option:`--einsums:hardware:omp-region-cost-ns` wins.
+Otherwise the entry for the current team size is read from a calibration file
+(:option:`--einsums:hardware:calibration`, or by default a host-keyed
+``hardware-calibration-v1-<host>.txt`` in the cache directory, written by the
+``calibrate_hardware`` tool). Failing that, it is measured in process: an empty
+``#pragma omp parallel`` at ``omp_get_max_threads()``, timed after the team is
+warmed so it captures steady-state fork/join rather than one-off thread
+creation, best of five trials. An in-process measurement drifts by tens of
+percent between runs; :cpp:func:`~einsums::hardware::region_cost_is_calibrated`
+reports which source was used.
+
+The result is memoized per team size rather than frozen at first use, because
+the team size can change during a process.
 
 It is not a small number. On a ten-thread machine an empty region costs around
 20 microseconds, and it grows with the thread count. A loop needs real work in
@@ -157,9 +169,9 @@ hardware would give another.
 - :option:`--einsums:hardware:omp-min-parallel-flops` pins
   :cpp:func:`~einsums::hardware::omp_min_parallel_flops`.
 
-The cache sizes and the region cost are detected once and kept, so those
-options take effect only when they are parsed first: on the command line or in
-the environment, before the first contraction.
+The cache sizes are detected once and kept, and the region cost is memoized
+per team size, so those options take effect only when they are parsed first:
+on the command line or in the environment, before the first contraction.
 
 Who reads this
 ==============
@@ -181,7 +193,8 @@ API Reference
 - :cpp:struct:`~einsums::hardware::CpuInfo` - the detected facts: SIMD width, cache sizes, OpenMP region cost.
 - :cpp:struct:`~einsums::hardware::CacheSizes` - L1/L2/L3 data-cache sizes in bytes.
 - :cpp:func:`~einsums::hardware::cpu_info` - the cached singleton; detection happens on first call.
-- :cpp:func:`~einsums::hardware::omp_region_cost_ns` - measured cost of entering and leaving a parallel region.
+- :cpp:func:`~einsums::hardware::omp_region_cost_ns` - cost of entering and leaving a parallel region at the current team size (pinned, calibrated, or measured).
+- :cpp:func:`~einsums::hardware::region_cost_is_calibrated` - whether that cost came from a pin or calibration rather than an in-process measurement.
 - :cpp:func:`~einsums::hardware::omp_min_parallel_elements` - elementwise parallelization break-even.
 - :cpp:func:`~einsums::hardware::omp_min_parallel_flops` - contraction parallelization break-even.
 

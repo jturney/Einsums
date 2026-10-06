@@ -15,7 +15,9 @@ one-by-one.
 .. note::
 
    Einsums's current ``blas::gemm_batch`` is an OpenMP-parallel loop
-   over per-matrix ``dgemm`` calls (``libs/Einsums/BLASVendor/src/gemm_batch.cpp``).
+   over per-matrix vendor GEMM calls, or over an inline small-GEMM kernel
+   when every dimension is below a cutoff that rises with the thread count
+   (``libs/Einsums/BLASVendor/src/gemm_batch.cpp``).
    It is not a vendor-native batched GEMM such as MKL's
    ``cblas_dgemm_batch`` or OpenBLAS's batched path. If Einsums ever
    gains a vendor-native override, this pass benefits automatically
@@ -68,8 +70,9 @@ agree on:
      - All members must share one of: ``float``, ``double``,
        ``std::complex<float>``, ``std::complex<double>``.
    * - ``alpha``, ``beta`` (bit-equal)
-     - Compared at the bit level, not numerically. 1.0 and 0.9999...
-       never batch together even though they look "close".
+     - Compared at the bit level, real and imaginary parts both, not
+       numerically. 1.0 and 0.9999... never batch together even though
+       they look "close".
    * - ``lda``, ``ldb``, ``ldc``
      - ``blas::gemm_batch`` takes one leading-dim triple for the whole
        batch. Members with mismatched strides (e.g. a view vs an
@@ -79,6 +82,20 @@ Any mismatch in the key splits the group. A workload can produce
 multiple batches if, say, half the einsums are ``float`` and half are
 ``double``, in which case the pass emits one ``BatchedGemm`` per compatible
 group.
+
+A compatible group is still left alone when:
+
+- **Each GEMM is too large to gain.** With the cost model the default
+  pipeline supplies, a group whose single GEMM is estimated above
+  ``max_gemm_us`` (default 100 us) stays as independent nodes, which a
+  parallel executor spreads across workers. These count toward
+  ``num_gate_skipped()``.
+- **Another node interferes.** A node between the first and last member
+  that reads or writes one of the group's operands, or any control-flow
+  node there, rejects the group.
+
+Conjugated einsums, einsums carrying a permutation operator, and nodes
+with a feature the pass does not understand are never candidates.
 
 What the graph looks like
 =========================
@@ -141,16 +158,18 @@ A runnable example lives at
    graph.apply(pm);         // GEMMBatching collapses the 32 nodes into 1
    graph.execute();
 
-On a typical development box, with 32 GEMMs of shape 16×16×16 in double
-precision, the demo reports roughly a 2 to 3 times speedup from the batched
-dispatch. Bigger wins show up as the matrices shrink, where overhead dominates
-more, and as the batch size grows.
+The demo times 32 GEMMs of shape 16×16×16 in double precision both ways and
+prints the ratio. The result depends on the machine and its BLAS: on a 10-core
+Apple Silicon box the batched node has measured slower than the 32 separate
+nodes (about 0.4x to 0.7x), so run it on your own hardware before relying on
+the batch for speed.
 
 When batching does not help, or actively hurts
 ================================================
 
 - **Large matrices**, say 256×256×256 or larger. BLAS dispatch overhead is a
-  small fraction of the compute cost, so batching will not help much.
+  small fraction of the compute cost, so batching will not help much; in the
+  default pipeline the profitability gate leaves such groups unbatched.
 - **Very small batches** of 2 to 3 members. The setup cost of packing
   pointer arrays can outweigh the saved dispatch.
 - **GPU paths.** The pass currently lives before GPU placement. GPU
@@ -192,14 +211,13 @@ Or apply ``GEMMBatching`` explicitly and inspect what it did:
 Implementation notes
 ====================
 
-- Leading dimensions are read at execute time via the extractors stored
-  in the ``GemmHint``. Each extractor captures the original tensor's
-  C++ type (``AType``, ``BType``, ``CType``) so it can call
-  ``tensor.impl().get_lda()``. This keeps the pass tensor-type-agnostic
-  while still getting correct leading dims under any Einsums tensor
-  layout.
-- Complex alpha/beta are promoted from the real-valued user input with
-  zero imaginary part (matches the rest of the capture path).
+- ``GemmHint`` is plain data: each operand records its tensor id and its
+  capture-time leading dimension. The pass groups on those recorded
+  leading dimensions, since nothing has executed yet. The batched executor
+  resolves every member through the graph's slots on each call and
+  re-derives ``lda``/``ldb``/``ldc`` from the live tensors, so ``rebind``
+  and ``redirect_slot`` are honored.
+- Complex alpha/beta are carried in full, imaginary part included.
 - The pass only batches entries it can prove are safe. When any safety
   check (uniform strides, matching keys, no data dependencies) fails,
   the group is left unchanged and execution falls back to the usual

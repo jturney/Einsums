@@ -14,8 +14,8 @@ Einsums' SIMD code is `Stripes <https://github.com/Einsums/Stripes>`_, a
 separate library that began as this module: portable vectors (``Vec<T>``,
 masks, gathers, shuffles, reductions, ``exp``, ``erf``) from SSE2 through
 AVX-512 and NEON, and the runtime dispatch that compiles a kernel once per
-instruction-set rung and runs the best copy the machine supports. Its
-documentation is in its repository. Einsums fetches a pinned commit of it
+instruction-set rung (up to the SME rung on aarch64) and runs the best copy
+the machine supports. Its documentation is in its repository. Einsums fetches a pinned commit of it
 (``cmake/Einsums_SetupStripes.cmake``), or uses an installed Stripes 1.x, and
 HPTT and PackedGemm build their per-rung kernels with its
 ``stripes_add_dispatch_sources()``.

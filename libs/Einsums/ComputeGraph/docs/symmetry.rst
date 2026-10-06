@@ -17,12 +17,12 @@ information is consumed in three places:
 
 2. **ComputeGraph propagation**: the ``SymmetryPropagation`` pass walks
    a captured graph and tags intermediates whose symmetry can be proven
-   from their inputs. Downstream ``graph.execute()`` calls then pick up
-   the BLAS dispatch above automatically.
+   from their inputs. Graph execution does not use the ``symm`` dispatch
+   yet: captured Gemm and Einsum nodes run on the general kernels.
 
-3. **Symmetry-exploiting algorithms**: analytic passes such as memory
-   planning, CSE, and inplace detection can read the descriptor to make
-   better decisions in the future. Today they are mostly informational.
+3. **Symmetry-exploiting passes**: ``AntisymmetryInference``,
+   ``AntisymmetrizerFolding``, and ``LayoutAssignment`` read the descriptor
+   to make their decisions.
 
 .. contents::
    :local:
@@ -75,8 +75,8 @@ For uncommon patterns, build a descriptor directly from generators:
    desc.add(SymmetryOp::group_swap({0,1}, {2,3}, /*sign=*/+1));
 
 The descriptor stores the generators of the invariance group, not the
-full group. ERIs' 8-fold symmetry fits in three generators, and the 48-element
-group is recomputed on demand when needed.
+full group. The 8-element ERI group fits in three generators, and consumers
+apply the generators directly; nothing builds the full group.
 
 .. note::
 
@@ -149,9 +149,11 @@ the symmetric product, plus the cache-friendly layout ``symm`` uses. The
 dispatch happens at the user-facing ``gemm()`` entry, so callers do not need
 to know which kernel fires.
 
-Coverage today: ``symm``, ``hemm``, ``syrk``, ``syev``, ``potrf`` and friends
-exist on CUDA and HIP, falling back to general ``gemm`` on MPS. Packed storage
-(``spsv``, ``spev``) is deferred; dense storage with a flag is used throughout.
+Coverage today: the ``symm`` / ``hemm`` dispatch is CPU vendor BLAS only. The
+GPU backends have no ``symm``, ``hemm``, ``syrk``, or ``potrf``; their solver
+set is ``syev``, ``heev``, ``gesv``, ``getrf``, ``getri``, and ``gesvd``. Packed
+storage (``spsv``, ``spev``) is deferred; dense storage with a flag is used
+throughout.
 
 ComputeGraph Propagation
 ========================
@@ -159,8 +161,9 @@ ComputeGraph Propagation
 If you capture a graph that computes, say, ``C = Aᵀ·A`` as an
 intermediate and then uses ``C`` in subsequent operations, the
 ``SymmetryPropagation`` pass recognizes that ``C`` must be symmetric and
-tags it for you. The downstream ``gemm(C, …)`` then takes the ``symm``
-fast path automatically.
+tags it for you. The tag is visible to the passes that read descriptors; the
+graph's own Gemm and Einsum nodes still run the general kernels, so today the
+``symm`` fast path is reached only through the eager ``gemm()`` entry points.
 
 .. code-block:: cpp
 
@@ -170,7 +173,7 @@ fast path automatically.
    {
        cg::CaptureGuard g(graph);
        cg::einsum("ki;kj->ij", &C, A, A);   // AᵀA — propagation tags C symmetric
-       cg::einsum("ij;jk->ik", &D, C, B);    // D = C·B — hits symm dispatch
+       cg::einsum("ij;jk->ik", &D, C, B);    // D = C·B, general kernel
    }
    graph.apply(cg::PassManager::create_default());
    graph.execute();
@@ -219,23 +222,10 @@ but require either custom kernels or per-access canonicalization.
 Python API
 ==========
 
-The same descriptor API is exposed through pybind11 on
-``RuntimeTensor``:
-
-.. code-block:: python
-
-   import core
-   A = core.RuntimeTensorD("A", [N, N])
-   A.set_symmetry(core.SymmetryDescriptor.symmetric_pair(0, 1))
-   assert A.has_symmetry()
-   desc = A.symmetry()      # or None
-   A.clear_symmetry()
-
-Factories: ``symmetric_pair``, ``antisymmetric_pair``, ``hermitian_pair``,
-``anti_hermitian_pair``, ``eri_8fold``, ``eri_4fold``, ``ccsd_t2``.
-``symmetrize()`` and ``check_symmetry()`` are C++-only today (they're
-rank-templated); a Python wrapper is a straightforward follow-up when
-needed.
+The descriptor API is C++-only today: ``RuntimeTensor`` in Python has no
+``set_symmetry`` / ``has_symmetry`` / ``symmetry`` / ``clear_symmetry``, and
+``SymmetryDescriptor`` is not bound. From Python the pass itself is available
+as ``einsums.graph.SymmetryPropagation``, which reports ``num_inferred``.
 
 Design Notes
 ============

@@ -34,7 +34,7 @@ Building without the profiler
 -----------------------------
 
 Configuring with ``-DEINSUMS_WITH_PROFILER=OFF`` takes Einsums' own zones out of the library.
-Instrumented code does not have to change: ``WAGGLE_ZONE`` and its siblings expand to nothing in Einsums' translation units, and ``einsums.profile`` stays callable and records nothing, so a script that profiles still runs.
+Instrumented code does not have to change: ``WAGGLE_ZONE`` and its siblings expand to nothing in every translation unit that includes Einsums' headers, your own included, and ``einsums.profile`` stays callable and records nothing, so a script that profiles still runs.
 Ask ``einsums.profile.available()`` which kind of build you are on; the readers all report empty rather than fail.
 
 Waggle itself is still built and linked, since other libraries in the process may use it.

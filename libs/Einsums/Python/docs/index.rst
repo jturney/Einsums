@@ -100,7 +100,7 @@ A typical session:
 .. code-block:: python
 
     import einsums
-    import einsums.linalg as la
+    from einsums import linalg as la
     import einsums.graph as cg
 
     A = einsums.create_random_tensor("A", [16, 16])
@@ -120,7 +120,8 @@ The graph module carries the full capture surface, plus a few things that only
 exist on the Python side.
 
 ``cg.capture(graph)``
-    Context manager wrapping ``CaptureGuard``. It also maintains a Python-side
+    Context manager that calls ``CaptureContext.begin_capture`` on entry and
+    ``end_capture`` on exit (``CaptureGuard`` itself is not bound). It also maintains a Python-side
     stack so the NumPy-ergonomics operators know where to allocate the
     intermediates for expressions like ``A + B`` and ``A @ B``: inside capture
     they come from ``graph.create_zero_tensor`` rather than the process-owned
@@ -146,13 +147,21 @@ exist on the Python side.
     form: one graph node, reading every amplitude and step tensor and writing
     every amplitude, so the hazard scan orders it inside a loop body.
 
-These optimization passes are bound as Python classes: ``ConstantFolding``,
-``ScaleAbsorption``, ``CSE``, ``DeadNodeElimination``, ``ElementWiseFusion``,
-``SymmetrizedAccumulation``, ``LinearCombinationContractionFolding``,
-``LoopInvariantHoisting``, ``ScratchPrivatization``, ``StreamContractionFusion``,
-``DistributiveFactoring``, ``Reorder``, ``SymmetryPropagation``,
-``InplaceOptimization`` and ``MemoryPlanning``. Each is constructible standalone
-and each exposes its counters as **properties**:
+These optimization passes are bound as Python classes:
+``ProvenancePropagation``, ``SpacePropagation``, ``CrossSpaceValidation``,
+``DeltaElimination``, ``AntisymmetryDetection``, ``AntisymmetrizerLinearity``,
+``AntisymmetryInference``, ``AntisymmetrizerFolding``, ``AntisymmetrizerExpansion``,
+``ConstantFolding``, ``ScaleAbsorption``, ``PermuteFusion``, ``CSE``,
+``DeadNodeElimination``, ``SymmetrizedAccumulation``, ``ElementWiseFusion``,
+``LinearCombinationContractionFolding``, ``DistributiveFactoring``,
+``LoopInvariantHoisting``, ``ScratchPrivatization``, ``MultiTermFactorization``,
+``LayoutAssignment``, ``ContractionPlanning``, ``Reorder``, ``Materialization``,
+``SymmetryPropagation``, ``ScalingAnalysis``, ``StreamContractionFusion``,
+``InplaceOptimization``, ``MemoryPlanning``, and the opt-in ``AxisTiling``,
+``BasisTruncation`` and ``LaplaceTransform``. ``FactorizationPass``,
+``RegionRewrite`` and ``RegionIdentity`` are bound as bases for writing passes.
+Each concrete pass is constructible standalone and exposes its counters as
+**properties**:
 
 .. code-block:: python
 
@@ -238,8 +247,8 @@ call and they are turned into ``--einsums:*`` flags and handed to
     einsums.rc.log_level = einsums.rc.LogLevel.INFO
     einsums.rc.pass_disable = "GEMMBatching,ContractionPlanning"
 
-    import einsums                 # initialize() fires here
-    einsums.einsum(...)
+    import einsums
+    einsums.einsum(...)            # the first compute call initializes the runtime
 
 Once the runtime is up the fields are read-only as far as Einsums is concerned.
 Changing them post-init has no effect.
@@ -270,9 +279,10 @@ script accepts the same options a C++ program does::
 
     python my_script.py --einsums:pass:disable=GEMMBatching --einsums:log:level=2
 
-The ``debug_no_*`` fields additionally read environment variables, which is what
-test harnesses want so they can disable signal handlers and the debugger prompt
-without touching the script::
+The C++ runtime reads an environment variable for every option, so a test
+harness can disable signal handlers and the debugger prompt without touching the
+script. These two set the generated ``no-`` spellings of the
+``debug_install_signal_handlers`` and ``debug_attach_debugger`` fields::
 
     EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1
     EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1

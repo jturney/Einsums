@@ -125,7 +125,9 @@ it is correctness-enabling rather than an optimization: a graph that uses
 Declaration Variants
 ====================
 
-All three scoping levels support the same compile-time-rank API:
+``declare_tensor`` and ``declare_zero_tensor`` exist at all three scoping levels.
+``declare_random_tensor`` exists only on ``Workspace`` and ``Pipeline``, and
+``declare_tensor_filled`` only on ``Graph``:
 
 .. code-block:: cpp
 
@@ -135,8 +137,8 @@ All three scoping levels support the same compile-time-rank API:
    // Initialize to zero after allocation
    auto &B = scope.declare_zero_tensor<double, 2>("B", rows, cols);
 
-   // Initialize with random values after allocation
-   auto &C = scope.declare_random_tensor<double, 2>("C", rows, cols);
+   // Initialize with random values after allocation (Workspace and Pipeline only)
+   auto &C = ws.declare_random_tensor<double, 2>("C", rows, cols);
 
    // Initialize with a user-provided fill function (distribution-aware)
    auto &D = graph.declare_tensor_filled<double, 2>("D", Dim<2>{rows, cols},
@@ -237,8 +239,8 @@ overlap then share the same bytes instead of each holding their own allocation:
 
    graph.optimize();
    std::cout << graph.explain();
-   //   - MemoryPlanning: peak 184.20 MB of 512.75 MB total
-   //       arena: 184.20 MB hosting 31 intermediate(s) (512.75 MB of buffers)
+   //   - [tuning] MemoryPlanning: peak 184.20 MB of 512.75 MB total
+   //   - [tuning]     arena: 184.20 MB hosting 31 intermediate(s) (512.75 MB of buffers)
 
 A tensor is arena-placed only if it is a materialized graph-owned intermediate,
 not viewed or aliased, with ``materialize_into_fn`` and ``release_fn`` and a

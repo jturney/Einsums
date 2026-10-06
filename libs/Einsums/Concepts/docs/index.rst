@@ -55,6 +55,7 @@ Represents a general tensor that is compatible with Einsums calls. It must defin
     tensor.name(); // Returns a std::string
     tensor.dim(int);
     tensor.dims();
+    typename TensorType::ValueType; // The stored type.
 
 It can be tested with :cpp:concept:`TensorConcept`.
 
@@ -79,6 +80,10 @@ Represents a tensor whose rank is known at compile time.
 
     // For some TensorType, the following must be valid.
     TensorType::Rank;
+    // And it must not be the runtime-rank sentinel.
+    TensorType::Rank != dynamic_rank;
+
+Runtime-rank tensors such as ``RuntimeTensor`` define ``Rank`` as ``dynamic_rank``, so they do not satisfy this concept.
 
 It can be tested with :cpp:concept:`RankTensorConcept`.
 
@@ -128,6 +133,8 @@ Represents a tensor that holds its data in a way that is useable by BLAS or LAPA
     tensor.data(); // Gives a pointer to the data.
     tensor.stride(int); // Gets the stride along an axis, in elements.
     tensor.strides(); // Gets the list of strides.
+
+Tiled tensors (anything derived from ``tensor_base::TiledTensorNoExtra``) are never basic, even though they expose ``data()``.
 
 CollectedTensor
 ^^^^^^^^^^^^^^^

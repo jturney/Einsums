@@ -148,14 +148,17 @@ When to disable SUMMA
 Process Grid Shape
 -------------------
 
-The ``ProcessGrid`` auto-computes a near-square grid. For specific shapes:
+The graph passes (``DistributionPlanning`` and ``SUMMAExpansion``) always use
+``comm::ProcessGrid::default_grid()``, a near-square grid (P x 1 for prime P).
+It has no setter, so the grid shape the graph distributes over cannot be changed.
+An explicit grid is only for collectives you write by hand:
 
 .. code-block:: cpp
 
-   // Force a specific grid shape
+   // Your own hand-written collectives only; the graph passes ignore this grid
    comm::ProcessGrid grid(4, 2, comm::Communicator::world());  // 4 rows × 2 cols
 
-For most workloads, the auto-computed near-square grid is optimal. Override when:
+A different grid shape could help when:
 
 - Your problem has very asymmetric dimensions (e.g., M >> N)
 - You want to control which dimension gets more parallelism
@@ -245,11 +248,11 @@ Enable detailed profiling to find bottlenecks:
    # Detailed text report (the report is on by default; --einsums:profile:no-report suppresses it)
    ./my_program --einsums:profile:detailed
 
-   # JSON export (for visualization)
-   ./my_program --einsums:profile:save profile.json
+   # JSON export (for visualization; only the profile server writes the file)
+   ./my_program --einsums:profile:server --einsums:profile:save=profile.json
 
-   # TCP server (for live monitoring)
-   ./my_program --einsums:profile:port 19216
+   # Profile server (for live monitoring; --einsums:profile:port defaults to 19216)
+   ./my_program --einsums:profile:server --einsums:profile:port=19216
 
 What to look for
 ----------------

@@ -21,8 +21,9 @@ The module is the foundation for distributed tensor support in the
 - A 2D process grid with row and column sub-communicators.
 - Per-dimension distribution descriptors that partition tensor axes
   across ranks with balanced blocking.
-- Blocking and non-blocking collectives (allreduce, broadcast, scatter,
-  allgather) usable directly or via ComputeGraph passes.
+- Blocking collectives (allreduce, broadcast, scatter, allgather) and
+  non-blocking ones (iallreduce, ibroadcast, iallgather) on ``std::span``
+  buffers, usable directly or via ComputeGraph passes.
 
 ProcessGrid
 ===========
@@ -76,7 +77,11 @@ and ``Col`` splits it along the column dimension.
 Collectives
 ===========
 
-Both blocking and non-blocking versions are available:
+Both blocking and non-blocking versions are available. They operate on
+``std::span`` buffers and report failure through ``expected``: the blocking
+calls return ``expected<void, CommError>`` and the non-blocking ones return
+``expected<Request, CommError>``, whose ``Request::wait()`` completes the
+operation.
 
 .. code-block:: cpp
 
@@ -84,14 +89,16 @@ Both blocking and non-blocking versions are available:
 
     using namespace einsums::comm;
 
-    // Blocking allreduce on a Tensor
-    Tensor<double, 2> A = create_random_tensor("A", 100, 100);
-    allreduce(A, ReduceOp::Sum);
+    Tensor<double, 2> A   = create_random_tensor("A", 100, 100);
+    std::span<double> buf(A.data(), A.size());
+
+    // Blocking in-place allreduce
+    auto done = allreduce_inplace(buf, ReduceOp::Sum);
 
     // Non-blocking allreduce + wait, useful for overlap with compute
-    auto handle = iallreduce(A, ReduceOp::Sum);
+    auto req = iallreduce_inplace(buf, ReduceOp::Sum);
     // ... do other work ...
-    wait(handle);
+    req->wait();
 
 ComputeGraph integration
 ========================
@@ -115,7 +122,7 @@ operate on this layer:
 Build configuration
 ===================
 
-The MPI backend is opt-in. Build with::
+The MPI backend is opt-in and still a work in progress. Build with::
 
     cmake -S . -B build -DEINSUMS_WITH_MPI=ON
 

@@ -78,10 +78,10 @@ that runs when all its predecessors complete via continuation chaining:
 How it works
 ^^^^^^^^^^^^
 
-1. Each node gets a ``TaskHandle<void>`` representing its completion
-2. Nodes with no predecessors are submitted immediately
-3. Nodes with predecessors use ``when_all()`` + ``dataflow()`` to wait
-   for all predecessors before executing
+1. Each node has an atomic count of its unfinished predecessors
+2. Nodes with no predecessors are submitted to the pool in one batch
+3. When a node finishes, it decrements each successor's count and submits
+   every successor whose count reaches zero
 4. The work-stealing pool naturally load-balances across workers
 
 When to use
@@ -142,7 +142,8 @@ To set up async I/O:
        cg::einsum("ikjl;kl->ij", &F, ERI, D);
    }
 
-   // IOPrefetch moves the read to position 0, maximizing overlap window
+   // IOPrefetch moves the read to the earliest legal slot (after any earlier
+   // reader or writer of its destination), maximizing the overlap window
    auto pm = cg::PassManager::create_default();
    graph.apply(pm);
 

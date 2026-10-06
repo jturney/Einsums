@@ -23,22 +23,30 @@ Contents
 
 The headers in this module:
 
-- ``Descriptors.hpp``: tensor-shape descriptors used by graph nodes
-  (dimensions, strides, layout flags).
-- ``EinsumSpec.hpp``: a structured representation of an einsum
-  expression (indices, sizes, batch axes) consumed by the dispatcher and
-  the optimization passes.
-- ``Enums.hpp``: kind tags for graph nodes, distribution axes, executors,
-  and related categorical types.
-- ``GraphData.hpp``: the raw fields each graph node carries (operands,
-  metadata, pass-attached annotations).
-- ``Ids.hpp``: opaque identifier types (``TensorId``, ``NodeId``,
-  ``GraphId``) used throughout the graph layer.
+- ``Descriptors.hpp``: the inert operation descriptors a node can carry,
+  such as ``BatchedGemmDescriptor``, ``GroupedBatchedGemmDescriptor``,
+  ``AllocDescriptor``, ``TransferDescriptor``, ``DiskIODescriptor`` and
+  ``CommDescriptor``. Descriptors that need a type from further up (einsum,
+  permute, loop, view, and so on) live in ``Einsums/ComputeGraph/Node.hpp``.
+- ``Enums.hpp``: ``OpKind`` for graph nodes, and ``Target``, ``AllocState``,
+  ``TensorOwnership``, ``InitKind`` and ``Residency``.
+- ``EnumNames.hpp``: one name table per enum, used both to print and to
+  parse the spellings.
+- ``GraphData.hpp``: the serialized form of a graph snapshot (tensors,
+  nodes, edges) used for profiling and visualization.
+- ``Ids.hpp``: the identifier types ``NodeId`` and ``TensorId``.
+- ``Spaces.hpp``: index-space annotations (``IndexSpace``, ``SpaceId``,
+  ``GrowthClass``) and the ``SpaceRegistry`` that holds them.
+
+The parsed einsum specification is not part of this module; it is
+``Einsums/ComputeGraph/EinsumSpec.hpp``.
 
 Design rule
 ===========
 
-This module has no runtime dependencies beyond the C++ standard library.
+This module is header-only and depends only on ``Einsums_Config`` and the
+C++ standard library, plus ``Einsums/Python/Annotations.hpp`` (the
+header-only apiary markers for its Python bindings).
 That keeps the type declarations cheap to include from any other module
 and avoids circular dependencies in the build graph. Implementation logic
 that operates on these types lives in the

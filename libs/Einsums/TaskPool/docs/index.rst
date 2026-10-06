@@ -40,7 +40,7 @@ Getting Started
     auto handle = pool.submit("compute", []() { return 42; });
     int result = handle.get();  // 42
 
-The TaskPool is a singleton that creates worker threads at first access.
+The TaskPool is a singleton that starts its worker threads on the first enqueue.
 Thread count defaults to ``std::hardware_concurrency()`` or
 ``OMP_NUM_THREADS``.
 
@@ -264,9 +264,9 @@ continuations, giving maximum overlap between independent nodes:
     cg::DataflowExecutor df;
     graph.execute(df);  // Independent nodes run concurrently
 
-This replaces the wavefront-based ``OpenMPExecutor`` with a true dataflow
-model: each node is submitted when its predecessors complete, with no
-barrier between levels.
+Unlike the wavefront-based ``OpenMPExecutor``, which remains available
+alongside ``SequentialExecutor``, this is a true dataflow model: each node
+is submitted when its predecessors complete, with no barrier between levels.
 
 TaskPool inside graph nodes
 ---------------------------
@@ -300,7 +300,8 @@ TaskPool integrates with the Einsums profiler:
 - Metrics are accessible through the ``"get_taskpool_metrics"`` server handler.
 
 The Gantt panel of ``einsums profiler`` (key ``G``) shows task execution across workers.
-Task regions appear nested under the submitting thread's profiler tree.
+A task's ``task:<name>`` region is recorded on the worker thread that runs it,
+not under the submitting thread; ``parallel_for`` chunks get no region of their own.
 
 Accessing metrics:
 
@@ -323,15 +324,17 @@ The TaskPool and OpenMP coexist in the same program:
 - Use OpenMP for BLAS-internal vectorization (handled by the vendor)
 - Use ComputeGraph for operation-level sequencing
 
-TaskPool workers do not call ``omp_set_num_threads()``, which avoids
-globally affecting OpenMP parallelism. Tasks submitted to the pool may
-call BLAS routines that use OpenMP internally; the vendor BLAS manages
-its own thread count.
+Each TaskPool worker sets its own OpenMP thread count to one
+(``omp_set_num_threads(1)``, a per-thread setting) and asks the vendor BLAS
+for one thread on that thread as well. The pool already parallelizes across
+tasks, and parallel regions opened concurrently from several non-main
+threads can deadlock libomp. OpenMP code on other threads is unaffected.
 
 External submissions (from non-worker threads) go through a shared
 mutex-protected queue rather than directly into worker deques. This
 ensures thread safety since the work-stealing deques are single-producer
-(owner thread only). Workers check the external queue on every iteration.
+(owner thread only). A worker checks the external queue when its own deque
+is empty, and takes a share of it rather than one task.
 
 Future: MPI Distribution
 ========================

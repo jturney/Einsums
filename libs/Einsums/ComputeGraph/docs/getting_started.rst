@@ -44,12 +44,15 @@ Basic Workflow
    auto A = create_random_tensor<double>("A", 10, 5);
    auto B = create_random_tensor<double>("B", 5, 8);
 
-   // 2. Create a graph and an owned output tensor. This records an Alloc node.
-   //    For a tensor that only carries a value between nodes, prefer
-   //    graph.scratch<double, 2>("tmp", ...): it defers allocation and the
-   //    memory passes can then free, merge, or arena-place it.
+   // 2. Create a graph and declare the result. A declared tensor is part of the
+   //    graph's interface, so the optimizer keeps the node that writes it.
+   //    Allocation is deferred until the graph is optimized.
+   //    Do not use create_tensor or create_zero_tensor for a result you read
+   //    after execute(): those are scratch, and DeadNodeElimination removes
+   //    a node whose output nothing in the graph reads. For a tensor that only
+   //    carries a value between nodes, use graph.scratch<double, 2>("tmp", ...).
    cg::Graph graph("my_graph");
-   auto &C = graph.create_zero_tensor<double, 2>("C", 10, 8);
+   auto &C = graph.declare_zero_tensor<double, 2>("C", 10, 8);
 
    // 3. Capture operations inside a guard.
    {
@@ -57,7 +60,9 @@ Basic Workflow
        cg::einsum("ik;kj->ij", &C, A, B);
    }
 
-   // 4. Optimize the graph. This step is optional.
+   // 4. Optimize the graph. The default pipeline materializes the declared
+   //    tensor, so this step is required here: execute() on an unmaterialized
+   //    declared tensor throws and names it.
    auto pm = cg::PassManager::create_default();
    graph.apply(pm);
 
@@ -88,11 +93,13 @@ over the eager path.
 When the ``CaptureGuard`` is destroyed, the graph is topologically sorted so
 that execution honors the recorded dependencies.
 
-Return-value operations are the one exception. Calls such as ``syev(A)``,
-``svd(A)``, and ``qr(A)`` return new tensors, and later captured operations
-need those tensors to exist while the graph is still being built. These calls
-therefore run eagerly even during capture. They are still recorded as nodes, so
-a replay re-runs them.
+Operations that return a new tensor or a scalar, such as ``syev(A)``,
+``svd(A)``, ``qr(A)``, ``det(A)``, and ``dot(A, B)``, cannot be recorded: a
+recorded node has no value to return until the graph runs. During capture they
+throw ``std::logic_error``. Use the output-argument forms instead, such as
+``syev(&A, &W)`` or ``dot(&result, A, B)``, which are recorded and run at
+execute time. ``svd``, ``qr``, ``pow``, and ``det`` have no output-argument
+form yet, so call them outside the capture.
 
 Graph Inspection
 ================
@@ -162,8 +169,8 @@ Profiled Execution
 
    graph.execute();
 
-Execution wraps each node in a profiler region. The annotations on that region
-include the following.
+While the profiler is recording, execution wraps each node in a profiler
+region. The annotations on that region include the following.
 
 - ``op_kind`` names the operation, for example Einsum, Scale, or Gemm.
 - ``c_indices``, ``a_indices``, and ``b_indices`` give the contraction pattern

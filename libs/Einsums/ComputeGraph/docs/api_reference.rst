@@ -170,6 +170,7 @@ Lowering and cleanup
 --------------------
 
 - :cpp:class:`einsums::compute_graph::passes::TiledExpansion`
+- :cpp:class:`einsums::compute_graph::passes::DeltaElimination`
 - :cpp:class:`einsums::compute_graph::passes::ConstantFolding`
 - :cpp:class:`einsums::compute_graph::passes::ScaleAbsorption`
 - :cpp:class:`einsums::compute_graph::passes::PermuteFusion`
@@ -180,16 +181,31 @@ Lowering and cleanup
 Algebraic rewrites
 ------------------
 
+- :cpp:class:`einsums::compute_graph::passes::AntisymmetrizerLinearity`
+- :cpp:class:`einsums::compute_graph::passes::AntisymmetrizerFolding`
+- :cpp:class:`einsums::compute_graph::passes::AntisymmetrizerExpansion`
 - :cpp:class:`einsums::compute_graph::passes::SymmetrizedAccumulation`
 - :cpp:class:`einsums::compute_graph::passes::LinearCombinationContractionFolding`
 - :cpp:class:`einsums::compute_graph::passes::StreamContractionFusion`
-- :cpp:class:`einsums::compute_graph::passes::DistributiveFactoring` - opt-in.
+- :cpp:class:`einsums::compute_graph::passes::DistributiveFactoring`
+- :cpp:class:`einsums::compute_graph::passes::MultiTermFactorization` - off unless ``einsums:graph:structural-search`` is set.
+
+Analysis and diagnostics
+------------------------
+
+- :cpp:class:`einsums::compute_graph::passes::ProvenancePropagation`
+- :cpp:class:`einsums::compute_graph::passes::SpacePropagation`
+- :cpp:class:`einsums::compute_graph::passes::CrossSpaceValidation`
+- :cpp:class:`einsums::compute_graph::passes::AntisymmetryDetection`
+- :cpp:class:`einsums::compute_graph::passes::AntisymmetryInference`
+- :cpp:class:`einsums::compute_graph::passes::ScalingAnalysis`
 
 Scheduling and planning
 -----------------------
 
 - :cpp:class:`einsums::compute_graph::passes::LoopInvariantHoisting`
 - :cpp:class:`einsums::compute_graph::passes::ScratchPrivatization`
+- :cpp:class:`einsums::compute_graph::passes::LayoutAssignment`
 - :cpp:class:`einsums::compute_graph::passes::ContractionPlanning`
 - :cpp:class:`einsums::compute_graph::passes::GEMMBatching`
 - :cpp:class:`einsums::compute_graph::passes::Reorder`

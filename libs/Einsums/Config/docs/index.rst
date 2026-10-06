@@ -19,7 +19,10 @@ Public Symbols
 Most symbols in this module are private. However, there are some that may be useful to the user.
 See the :ref:`API reference <modules_Einsums_Config_api>` for full details.
 
-- :c:macro:`EINSUMS_COMPUTE_CODE` is defined only when Einsums is built with GPU capabilities.
+- :c:macro:`EINSUMS_COMPUTE_CODE` is defined in a translation unit compiled by nvcc, clang-CUDA or
+  hipcc, whatever Einsums was built with. To ask whether Einsums has a GPU backend, test
+  ``EINSUMS_HAVE_GPU_SUPPORT`` (CUDA or HIP), ``EINSUMS_HAVE_CUDA``, ``EINSUMS_HAVE_HIP`` or
+  ``EINSUMS_HAVE_MPS``.
 - :c:macro:`EINSUMS_OMP_PARALLEL_FOR` marks a loop as parallelizable.
 - :c:macro:`EINSUMS_OMP_PARALLEL_FOR_IF` and
   :c:macro:`EINSUMS_OMP_PARALLEL_FOR_SIMD_IF` do the same only when a condition

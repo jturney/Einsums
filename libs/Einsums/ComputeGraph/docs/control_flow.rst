@@ -80,9 +80,10 @@ and ``add_loop`` accept one wherever they accept a callable.
 
 The arms are a literal, a comparison over two ``BoundExpr`` operands, a
 comparison against the loop iteration index, a gate-flag load, and a callback.
-Only the callback arm holds a closure, and it is the only one that stops a node
-from being reconstructed from its descriptor alone; ``Graph::serializability_report()``
-names such a node individually.
+A callback arm, a comparison whose operand is a callback ``BoundExpr``, or a
+flag test on a ``GateFlags`` array not named through ``Graph::name_gate_flags``
+stops a node from being reconstructed from its descriptor alone;
+``Graph::serializability_report()`` names such a node individually.
 A conditional or a loop whose predicate names a parameter is ordered against
 whatever writes that parameter, the same way a view with parametric bounds is.
 

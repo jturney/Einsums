@@ -74,41 +74,64 @@ PackedGemm for every contraction that did not match a pure BLAS shape.
 plan was valid and the contraction was executed, and ``false`` when the caller
 should fall back.
 
-A plan is invalid, and the call declines, when:
+Before planning, the call declines when:
+
+- The element types of ``A``, ``B`` and ``C`` disagree (``mixed_dtype``), or are
+  not one of ``float``, ``double``, ``std::complex<float>``,
+  ``std::complex<double>`` (``unknown_scalar_type``).
+- A letter is summed out of one operand alone (``lone_summed_index``).
+- The shape is one a direct vendor GEMM handles (``defer_to_direct_gemm``).
+
+A plan is invalid, and the call declines with ``invalid_topology``, when:
 
 - The output is a scalar (``c_indices`` is empty).
-- ``a_indices`` or ``b_indices`` repeat a letter, which is a diagonal/Hadamard
-  access rather than a contraction.
-- The element types of ``A`` and ``B`` disagree, or are not one of ``float``,
-  ``double``, ``std::complex<float>``, ``std::complex<double>``.
+- ``a_indices``, ``b_indices`` or ``c_indices`` repeat a letter, which is a
+  diagonal access rather than a contraction.
+- An index appears only in ``C`` (a broadcast with no operand to read it from).
 
-There is also a *policy* decline. ``allow_scatter=false`` tells
-``try_packed_gemm`` to give up on contractions that remain multi-M/N after
-coalescing, instead of taking the per-tile scatter path. Callers pass ``false``
-when they have a faster fallback (the compile-time einsum dispatch falls back to
-Sort+GEMM) and ``true`` when their only alternative is a generic loop (the
-ComputeGraph runtime string dispatch). A micro-kernel rung whose scatter path
+A valid plan for an outer product with fewer than 768 output elements also
+declines (``defer_small_outer_to_generic``), since the generic loop is faster
+below that size.
+
+There are also *policy* declines, which apply only when ``allow_scatter=false``.
+Callers pass ``false`` when they have a faster fallback (the compile-time einsum
+dispatch falls back to Sort+GEMM) and ``true`` when their only alternative is a
+generic loop (the ComputeGraph runtime string dispatch). With ``false``, and only
+when a Sort+GEMM fallback exists, the call declines any scatter-shaped output
+(``scatter_defer_to_ttgt``), including single-M/N ones, and also batch-dot and
+GEMV-shaped contractions (``defer_to_generic_batch_dot``,
+``defer_to_generic_gemv_shaped``). A micro-kernel rung whose scatter path
 actually beats Sort+GEMM, which the SME rung does by a measured 2.3x, advertises
-that in its :cpp:struct:`~einsums::packed_gemm::MicroKernelShape` so callers
-take the scatter path anyway.
+that in its :cpp:struct:`~einsums::packed_gemm::MicroKernelShape` (``fast_scatter``)
+so callers take the scatter path anyway; ``fast_scatter`` is ignored when the
+contraction is batched.
 
-Declines are logged at INFO, so ``--einsums:log:level 2`` shows why a given
-contraction was not accelerated. Every attempt also emits a
-``packed_gemm_skip`` profiler annotation naming the reason.
+Every decline emits a ``packed_gemm_skip`` profiler annotation naming the reason,
+and an accepted call emits ``packed_gemm_path`` instead. Only two declines are
+also logged at INFO (``scatter_defer_to_ttgt`` and ``invalid_topology``); the
+topology checks behind ``invalid_topology`` log their detail at TRACE.
 
 Execution routes
 ================
 
+A GEMV-shaped contraction can take the ``stream`` route before any plan is
+built: one streaming pass at a core's memory bandwidth, used when the axes are
+not laid out as a matrix a vendor GEMV can take, or when the vendor GEMV would
+not thread.
+
 Within a valid plan, ``blis_contraction`` picks the cheapest route the shape
-allows, from fastest to most general:
+allows, from fastest to most general. ``last_contraction_route()`` names the one
+taken.
 
 **gemm_batch fast path**
     Single-M, single-N, single-K with stride-compatible batch slices. The
     pointer arrays are precomputed and one ``blas::gemm_batch`` call covers
     every batch at once.
 
-**Multi-K flatten + GEMM**
-    Single-M, single-N with several link dims. ``A`` and ``B`` are flattened
+**Multi-K flatten + GEMM** (``flatten_gemm``, ``flatten_gemm_hptt``, ``flatten_gemm_hptt_chunked``, ``flatten_gemm_gather``)
+    Single-M, single-N with several link dims. The suffix says how the operands
+    were made flat: already flat, transposed by HPTT (whole or in chunks), or
+    gathered. ``A`` and ``B`` are flattened
     into contiguous ``M*K`` and ``K*N`` buffers, then one BLAS ``gemm`` runs on
     them. The flatten uses :ref:`HPTT <modules_Einsums_HPTT>`, so it is
     cache-blocked and vectorized; a scalar gather loop is the fallback where
@@ -116,15 +139,26 @@ allows, from fastest to most general:
     already in a usable layout the path is fully **zero-copy**: one ``gemm``,
     no packing at all.
 
-**BLIS-style tiled packing**
+**K loop of GEMMs** (``gemm_k_loop``)
+    A multi-K shape whose operands are GEMM-ready along one link index runs as
+    a loop of GEMMs over the remaining link indices, accumulating into ``C``
+    with no buffer.
+
+**Single-K GEMM** (``single_k_gemm``)
+    Single-M, single-N, single-K: one strided vendor GEMM, no packing.
+
+The flatten, K-loop and single-K routes are skipped when packing is preferred:
+a node-scoped thread width or a ``KernelRoute::Packed`` pin.
+
+**BLIS-style tiled packing** (``packed``)
     The general route. ``A`` is packed ``MC x KC`` and ``B`` is packed
     ``KC x NC`` into contiguous panels, and the resolved micro-kernel or a
     vendor ``gemm`` runs per tile, accumulating into ``C``.
 
-**Scatter**
-    Multi-M/N outputs, and single-M/N layouts where neither output dim is
+    Scatter is not a separate route but a write-back mode of ``packed``, used
+    for multi-M/N outputs and single-M/N layouts where neither output dim is
     unit-stride (batched ``C`` with a stride-1 batch index, strided views, the
-    synthetic unit dims above). Results are written back element by element.
+    synthetic unit dims above). Its engines are tile, block_gemm, 3m and 1m.
 
 Leading dimensions are clamped up to the BLAS minimum on every route. For a
 transposed or size-1 output axis the natural stride can collapse below the row
@@ -162,8 +196,9 @@ doubles.
     A micro-kernel rung may override ``KC``. The SME rung raises it, because
     its ZA tile accumulators hold the C block across the whole K loop, so a
     deeper K block means C is read-modify-written and the tiles extracted once
-    rather than once per cache-sized K slice. ``MC`` shrinks to compensate so
-    the packed A panel stays L2-sized.
+    rather than once per cache-sized K slice. ``MC`` shrinks to compensate,
+    since the packed A panel is capped at a fixed 4 MiB
+    (``MC <= 4 MiB / (KC * sizeof(T))``).
 
 The micro-kernel ladder
 =======================
@@ -177,10 +212,11 @@ tile loops; element types without a per-rung build fall back to an
 ambient-flags header instantiation.
 
 The rung owns the packing geometry, not just the arithmetic, which is why
-``MicroKernelShape`` is queried alongside the kernel. NEON and AVX rungs use
-``cpu_config()``'s vector blocking (``MR = 2*VL``, ``NR = 6``); the SME rung
-uses ZA-tile blocking (``MR = NR = 2 *`` streaming vector length in doubles,
-16x16 on an Apple M4). Panels must be packed in the geometry of the kernel that
+``MicroKernelShape`` is queried alongside the kernel. The vector rungs (NEON,
+AVX) use their own vector tile, ``MR = 2 x`` the rung's native lanes and
+``NR = 6``, not ``cpu_config()``'s ``MR``; the SME rung uses ZA-tile blocking,
+``MR = 2 x`` and ``NR = 4 x`` the streaming vector length in doubles (16x32 on
+an Apple M4). Panels must be packed in the geometry of the kernel that
 will read them.
 
 Complex arithmetic
@@ -255,8 +291,8 @@ The resolved configuration is logged at INFO on first use:
 
 .. code-block:: text
 
-    [info] cpu_config: VL=2, MR=4, NR=6, L1=128K, L2=16384K, L3=8192K,
-           omp_region=19.84us, min_parallel_flops=238080
+    [info] cpu_config: rung=sme, VL=2 doubles (compiled width 2), MR=4, NR=6, L1=64K,
+           L2=16384K, L3=8192K shared by 1 cores, omp_region=24.62us, min_parallel_flops=295432
 
 Future direction: GPU
 =====================

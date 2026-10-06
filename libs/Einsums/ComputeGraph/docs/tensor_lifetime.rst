@@ -44,6 +44,14 @@ making the allocation visible to the MemoryPlanning optimization pass:
    }
    graph.execute();   // Works correctly
 
+.. note::
+
+   A tensor from ``create_tensor`` or ``create_zero_tensor`` is scratch:
+   if nothing in the graph reads it, ``DeadNodeElimination`` removes the
+   node that writes it. For a result you read after ``execute()``, use
+   ``graph.declare_tensor`` (or ``declare_zero_tensor``) instead. For an
+   intermediate, prefer ``graph.scratch()``, which also defers allocation.
+
 The API:
 
 .. code-block:: cpp
@@ -130,7 +138,7 @@ When to Use What
 ========================================= ==========================================
 Scenario                                  Recommendation
 ========================================= ==========================================
-Intermediate only used within graph       ``graph.create_tensor()``
+Intermediate only used within graph       ``graph.scratch()``
 Intermediate shared across pipeline       Declare in outer scope
 stages
 Input/output tensors (user's data)        Declare in outer scope

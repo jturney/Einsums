@@ -8,10 +8,9 @@ Optimization Passes
 ===================
 
 The ComputeGraph provides a catalog of built-in optimization passes. The default
-pipeline (``PassManager::create_default()``) adds 27 passes that always run, plus
+pipeline (``PassManager::create_default()``) adds 35 passes that always run, plus
 five GPU passes and five distributed passes that are included only when a GPU or
-MPI backend, or its mock, is available. One further pass,
-``DistributiveFactoring``, is workload-specific and must be added by hand.
+MPI backend, or its mock, is available.
 
 Most passes transform the graph. A few only measure it, and one,
 ``MemoryPlanning``, does both depending on how it is constructed.
@@ -74,7 +73,8 @@ machine that loads it?
 
 ``analysis``
     Writes annotations onto tensors and nodes and never rewrites the node set.
-    ``SymmetryPropagation`` and ``SpacePropagation``.
+    ``ProvenancePropagation``, ``SpacePropagation``, ``AntisymmetryDetection``,
+    ``AntisymmetryInference`` and ``SymmetryPropagation``.
 ``structural-algebraic``
     Machine-independent rewrites of the mathematics.
     This is the only phase whose output is persisted, so a pass here may consult
@@ -116,9 +116,10 @@ The four are views of ``create_default()``, not a re-planned pipeline, and the
 default sequence is unchanged by their existence.
 It is hand-ordered rather than derived from the phases, because the order
 carries constraints the phase rule does not express: ``TiledExpansion`` runs
-first so that every algebraic pass below it sees dense nodes rather than one
-opaque ``Custom`` node, which is a deliberate and documented deviation from
-"algebraic before resource".
+second, right after ``ProvenancePropagation`` (which only writes annotations), so
+that every algebraic pass below it sees dense nodes rather than one opaque
+``Custom`` node, which is a deliberate and documented deviation from "algebraic
+before resource".
 
 Two mechanisms keep the labels honest.
 ``Graph::structure_version()`` counts changes to the node set, distinct from
@@ -140,6 +141,11 @@ Runtime Controls
    # Log node count and wall-clock time around every pass.
    ./my_program --einsums:pass:verbose
 
+   # Check the graph's structural invariants after every pass and fail naming
+   # the pass that broke them, or that changed a node carrying a feature it
+   # did not declare (see understood_features() below).
+   ./my_program --einsums:pass:verify
+
    # Run every pass in analysis-only mode: each reports what it found,
    # then the graph is restored. No modification persists.
    ./my_program --einsums:pass:analyze
@@ -149,7 +155,7 @@ Runtime Controls
    ./my_program --einsums:graph:dump-regions --einsums:pass:verbosity 2
 
 In code, ``PassManager::set_verbosity(level)`` does the same as
-``--einsums:pass:verbose`` and propagates the level to every pass already added
+``--einsums:pass:verbosity LEVEL`` and propagates the level to every pass already added
 and every pass added afterwards. Level 1 reports totals, level 2 narrates each
 modification, level 3 adds per-candidate detail.
 
@@ -188,19 +194,32 @@ Writing Custom Passes
        // or a conditional branch. The manager then drives the recursion.
        bool recurse_into_subgraphs() const override { return true; }
 
+       // The node features this rewrite models. In run(), skip any node for
+       // which understands(graph, node) is false and leave it exactly as found.
+       // A pass that does not override this is left unchecked.
+       std::optional<cg::NodeFeatures> understood_features() const override {
+           return cg::NodeFeatures::all().without(cg::NodeFeature::Views);
+       }
+
        // Clear per-apply counters. The manager calls this once per apply(),
        // NOT once per run(): with recursion enabled, run() is called once per
        // subgraph, and resetting there would report only the last one.
        void reset_stats() override { _num_rewrites = 0; }
    };
 
-Two things bite when writing a rewrite:
+Three things bite when writing a rewrite:
 
 - **Rebuild the executor, do not just edit ``Node::inputs``.** Captured
   executors resolve operands through ``TensorSlot`` pointers baked in at capture
   time, so editing the declared I/O changes the schedule but not the
   computation. Einsum nodes are rebuilt through ``Graph::make_einsum_node``.
 - **Counters are per-apply, not per-run.** See ``reset_stats()`` above.
+- **Declare what you understand.** A node can carry features a rewrite was not
+  written for: permutation operators, views, conjugation, complex prefactors,
+  mixed precision, tiled operands and more. A pass that declares
+  ``understood_features()`` and checks ``understands()`` leaves those nodes
+  alone, and ``--einsums:pass:verify`` fails the run, naming the pass, if it
+  changed one anyway.
 
 Graph-Transforming Passes
 =========================
@@ -208,14 +227,24 @@ Graph-Transforming Passes
 TiledExpansion
 --------------
 
-Lowers tiled operations into per-tile **dense** nodes, and runs first in the
-default pipeline for exactly that reason: a tiled contraction captures as one
+Lowers tiled operations into per-tile **dense** nodes, and runs ahead of every
+rewrite in the default pipeline (second, after ProvenancePropagation, which only
+writes annotations) for exactly that reason: a tiled contraction captures as one
 opaque ``OpKind::Custom`` node that no other pass can read, so expanding it is
 what puts the tiles in front of CSE, ContractionPlanning, GEMMBatching,
 InplaceOptimization and MemoryPlanning.
 
 See :doc:`tiled` for the full story: sparsity handling, the densification
 trade, elementwise fusion, and the node budget.
+
+The default pipeline constructs it as ``TiledExpansion(4096, -1.0,
+Densify::Auto, FuseTiles::Auto, cost_model)``: it declines when the projected
+node count exceeds 4096, screens no tiles by norm, and lets the shared
+``CostModel`` decide per operation. ``Densify::Auto`` compares the estimated
+time of densifying a small-tile contraction against lowering it per tile and
+picks the cheaper; ``FuseTiles::Auto`` collapses a tiled elementwise op into one
+node when its tiles cost more to dispatch than the memory traffic they do. Both
+enums also take ``Never`` and ``Always``; ``Always`` is meant for tests.
 
 Reports ``num_expanded()``, ``num_tile_nodes()``, ``num_declined()``,
 ``num_screened()``, ``num_densified()``, ``num_fused()`` and
@@ -290,15 +319,19 @@ Reports ``num_folded()``.
 ScaleAbsorption
 ---------------
 
-Absorbs ``Scale(α, C)`` into any subsequent operation that writes to ``C``
-with a zero beta/c_prefactor:
+Removes an in-place ``Scale(α, C)`` in one of two ways:
 
-- **Einsum**: ``c_prefactor=0`` becomes ``c_prefactor=α``
-- **Gemm**:  ``beta=0`` becomes ``beta=α``
-- **Permute**: ``beta=0`` becomes ``beta=α``
+- **Dead scale**: the next node writing ``C`` overwrites it without reading it
+  (an Einsum with ``c_prefactor == 0``, or a BatchedGemm or Permute with
+  ``beta == 0``) and nothing reads ``C`` in between, so the scale is deleted and
+  the writer is left unchanged.
+- **Live fold**: every node that reads the scaled ``C`` before its next
+  overwrite takes the factor instead. A reader that uses ``C`` as an operand has
+  ``α`` folded into its ``ab_prefactor`` / ``alpha``; one that accumulates into
+  ``C`` has its nonzero ``c_prefactor`` / ``beta`` multiplied by ``α``. The fold
+  is all-or-nothing: if any reader cannot take the factor, the Scale stays.
 
-The scale node is removed from the graph and its effect folded into the
-following operation's prefactor. Reports ``num_absorbed()``.
+Reports ``num_absorbed()``.
 
 PermuteFusion
 -------------
@@ -434,9 +467,12 @@ Reports ``num_relaid_out()``, ``num_copies_removed()`` and
 CSE: Common Subexpression Elimination
 -------------------------------------
 
-**Pattern**: Two nodes with identical ``OpKind``, ``inputs``, and ``OpData``.
+**Pattern**: Two nodes with identical ``OpKind`` and ``inputs`` whose ``OpData``
+agrees on index patterns, conjugation and destination prefactor. The source
+prefactors may differ by an exact power of two, as CCSD's tau and tau-tilde do.
 
-**Result**: Second node removed; its outputs redirected to first node's outputs.
+**Result**: Second node removed; its readers redirected to the first node's
+outputs, with any power-of-two ratio multiplied into each reader's own prefactor.
 
 DeadNodeElimination
 -------------------
@@ -448,6 +484,74 @@ because the original producer may then become dead.
 Control flow, memory, and side-effect nodes are never eliminated.
 
 Reports ``num_eliminated()``.
+
+The antisymmetrizer cluster
+---------------------------
+
+Four passes run ahead of ``AntisymmetrizerExpansion``, in this order, and each
+declines after one walk of a graph that names no permutation operator. Their
+target is a contraction against an antisymmetrized operand, the shape of the
+naive (T) correction, which they reduce to a scalar multiple. See
+:doc:`string_einsum` for the operator syntax.
+
+AntisymmetryDetection
+^^^^^^^^^^^^^^^^^^^^^
+
+An analysis pass that establishes, by reading the data, which of an operator's
+symmetries a bound input has: antisymmetry within each of the operator's groups,
+and invariance under each permutation it sums over. What holds is recorded on
+``TensorHandle::symmetry_hint``, graph metadata; the backing tensor is never
+written. Only tensors with **no** writer in the graph are probed, because a
+graph-owned scratch tensor holds zeros at optimize time and a zero tensor
+satisfies every symmetry. A probe stops at the first violation, so a failing
+candidate costs almost nothing.
+
+Reports ``num_probed()``, ``num_found()`` and ``num_tensors()``.
+
+AntisymmetrizerLinearity
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+An operator is linear, so ``a P(B) + s c P(A)`` is ``P(a B + s c A)``. The pass
+matches a graph-owned tensor written by an operator with a zero destination
+prefactor and then accumulated into by an ``Axpby`` from a second tensor that is
+itself written once by an operator with the same groups, and rewrites the first
+operator to antisymmetrize the sum. The point is less the node it saves than that
+the sum's producer becomes an operator again, which is what the fold below
+matches on. The second operator is left for ``DeadNodeElimination``.
+
+Reports ``num_candidates()`` and ``num_merged()``.
+
+AntisymmetryInference
+^^^^^^^^^^^^^^^^^^^^^
+
+An analysis pass that tags the output of an operator with the antisymmetry it
+has unconditionally. That is only the case when every group is a singleton, so
+the expansion is the full signed sum over its letters; a coset form such as
+``P(i/jk)`` is declined, because it carries antisymmetry only when its operand
+already has it. The destination prefactor must be zero, the tensor must have
+exactly one writer and no reference from a child sub-graph, and only graph-owned
+intermediates are tagged.
+
+Reports ``num_candidates()`` and ``num_tagged()``.
+
+AntisymmetrizerFolding
+^^^^^^^^^^^^^^^^^^^^^^
+
+When ``W`` is antisymmetric under every permutation ``P[G]`` sums over,
+``sum_x W(x) P[G](V)(x)`` equals ``N sum_x W(x) V(x)``, with ``N`` the operator's
+term count. The pass matches a ``Dot`` whose operand ``B`` is written by exactly
+one operator node with a zero destination prefactor, and whose other operand
+carries a symmetry hint stating antisymmetry on every permuted axis. It repoints
+the ``Dot`` at the operator's source and scales the result by ``N`` times the
+operator's own prefactor, replacing ``N-1`` permuted accumulations with one
+multiply.
+
+The premise comes from the data bound when the pass ran, so the rewrite emits a
+``Setup`` guard that re-checks it once per bind and throws naming the tensor. An
+in-place overwrite of a checked input is not a bind and is not re-checked;
+``Graph::invalidate_setup()`` puts the guard back to work.
+
+Reports ``num_candidates()`` and ``num_folded()``.
 
 AntisymmetrizerExpansion
 ------------------------
@@ -520,12 +624,15 @@ Reports ``num_candidates()``, ``num_matched()`` and ``num_rewritten()``.
 ElementWiseFusion
 -----------------
 
-Fuses consecutive element-wise operations on the same tensor. Currently handles
-consecutive ``Scale`` operations:
+Fuses directly consecutive element-wise operations on the same tensor:
 
-**Pattern**: ``Scale(2.0, A)`` followed by ``Scale(3.0, A)``
+- **Scale into Scale**: ``Scale(2.0, A)`` followed by ``Scale(3.0, A)`` becomes
+  ``Scale(6.0, A)``, one multiply over ``A``.
+- **axpby chains**: ``Y = a1·X + b1·Y`` followed by ``Y = a2·X + b2·Y`` on the
+  same pair becomes ``Y = (a2 + b2·a1)·X + (b2·b1)·Y``, one sweep over ``Y``.
 
-**Result**: Merged into ``Scale(6.0, A)``, executing both lambdas sequentially.
+Both fusions write the composed scalars into the node's live parameters, so a
+node assembled without them is left alone.
 
 Reports ``num_fused()``.
 
@@ -676,7 +783,14 @@ member's leading dimensions and rejects the group if any other member
 disagrees.
 
 **Element types:** float, double, std::complex<float>, std::complex<double>.
-Complex alpha and beta are assumed real, which matches the capture path.
+Complex alpha and beta are compared and carried in full, imaginary part included.
+
+**Declined:** conjugated einsums, einsums carrying a permutation operator, nodes
+with a feature the pass does not understand, and groups with an interfering node
+between members. With the cost model the default pipeline supplies, a group whose
+single GEMM is estimated above ``max_gemm_us`` (default 100 us) is also left as
+independent nodes, since each is then large enough to run better as its own
+parallel node.
 
 Must stay **before** DistributionPlanning, which reads ``EinsumDescriptor`` on
 every node: BatchedGemm nodes are not inspected by the distribution or GPU
@@ -771,8 +885,10 @@ Operands that disagree about a letter are declined and counted in
 ``skip_reasons()`` rather than raised, since diagnosing a cross-space conflict
 belongs to a validation pass.
 
-Runs beside ``SymmetryPropagation``, after Materialization and before the backend
-passes. The two are independent analyses and neither reads the other's output.
+Runs third in the default pipeline, right after ``TiledExpansion`` and before any
+rewrite, so the algebraic passes and ``CrossSpaceValidation`` see a fully
+annotated program. Like every analysis pass, it is re-run once at the end of a
+pipeline whose node set changed after it ran.
 
 Reports ``num_inferred()``.
 
@@ -958,8 +1074,10 @@ read into a strided comb, measured about 5x slower than contiguous slabs.
 **Relationship to LCCF.** Both serve the 2J-K algebra. LCCF materializes a
 linear combination :math:`L` and contracts once, measured 2.7x over unfused for
 the Fock idiom, but it still makes roughly four passes over :math:`S`-sized data.
-This pass replaces those with a single pass, and when both are registered it
-runs first, consuming the pattern LCCF would otherwise fold.
+This pass replaces those with a single pass, so when both are registered it
+should run first and consume the pattern itself. The default pipeline does not
+order them that way: LCCF runs much earlier and folds the pattern before this
+pass sees it.
 
 **Limitations:** two-input, non-conjugated einsums with no repeated index in any
 of C/A/B; all three operands runtime tensors of one dtype; real dtypes require
@@ -1056,14 +1174,17 @@ arena-placed. Device statistics are reporting-only; no device arena is applied.
 Reports ``total_memory()``, ``peak_memory()``, ``num_planned()``,
 ``planned_arena_bytes()`` and ``planned_tensor_bytes()``.
 
-Opt-In Passes
-=============
+Factoring Passes
+================
 
 DistributiveFactoring
 ---------------------
 
-A workload-dependent rewrite that is **not** in the default pipeline. Add it by
-hand when the pattern it matches is in your graph.
+In the default pipeline, after ``LinearCombinationContractionFolding`` and before
+``LoopInvariantHoisting``, so a sum of loop-invariant operands is hoisted and
+built once. It gates itself on the shared ``CostModel``: a group whose axpy chain
+would cost more than the contractions it saves, the bandwidth-bound case, is
+declined. ``DistributiveFactoring(Factor::Always)`` skips that decision.
 
 Detects groups of einsums accumulating into the same output tensor with a
 shared operand and rewrites them using the distributive property:
@@ -1071,7 +1192,10 @@ shared operand and rewrites them using the distributive property:
 **Pattern**: ``R += A*B1; R += A*B2``
 
 **Result**: ``T = B1 + B2; R += A*T``, which saves one matrix multiply per
-additional term.
+additional term. Groups that sum the same operands share one ``T``, so a quantity
+several terms consume, such as CCSD's tau, is built once.
+
+To run it on its own:
 
 .. code-block:: cpp
 
@@ -1180,32 +1304,36 @@ mock is present:
 
     1. ProvenancePropagation     : carry tensor tags across the graph
     2. TiledExpansion            : lower tiled ops into per-tile dense nodes
-    3. DeltaElimination          : substitute away contractions with a delta
-    4. AntisymmetrizerExpansion  : lower a spec's P(...) into explicit terms
-    5. ConstantFolding           : fold constant subexpressions
-    6. ScaleAbsorption           : absorb scale into the next operation
-    7. PermuteFusion             : fold pure axis reorders into einsum indices
-    8. CSE                       : common subexpression elimination
-    9. DeadNodeElimination       : remove unused intermediates
-   10. SymmetrizedAccumulation   : fold r += s*(t + P(t)) sites
-   11. ElementWiseFusion         : fuse consecutive element-wise ops
-   12. LinearCombinationContractionFolding : fold transpose-paired contractions
-   13. DistributiveFactoring     : factor a shared operand out of a sum
-   14. LoopInvariantHoisting     : move invariants out of loops
-   15. ScratchPrivatization      : rename reused scratch onto clones
-   16. MultiTermFactorization    : contraction orders and shared intermediates (off by default)
-   17. LayoutAssignment          : store intermediates so contractions read flat
-   17. ContractionPlanning       : multi-objective contraction ordering
-   18. GEMMBatching              : collapse groups into blas::gemm_batch
-   19. Reorder                   : memory-aware topological sort
-   20. IOPrefetch                : move DiskReads early for async overlap
-   21. DistributionPlanning      : decide replicate vs distribute
-   22. Materialization           : insert allocation nodes for deferred tensors
-   23. SymmetryPropagation       : tag intermediates whose symmetry is provable
-   24. SpacePropagation          : infer index spaces on intermediates
-   25. CrossSpaceValidation      : flag letters binding two different spaces
-   26. ScalingAnalysis           : report cost polynomials and the limiting term
-   27. StreamContractionFusion   : one pass over a streamed tensor, not N
+    3. SpacePropagation          : infer index spaces on intermediates
+    4. CrossSpaceValidation      : flag letters binding two different spaces
+    5. DeltaElimination          : substitute away contractions with a delta
+    6. AntisymmetryDetection     : check, from the data, which P(...) groups hold
+    7. AntisymmetrizerLinearity  : pull a sum of P(...) terms inside one P(...)
+    8. AntisymmetryInference     : tag a P(...) output with the antisymmetry it has
+    9. AntisymmetrizerFolding    : collapse P(...) contracted with an antisymmetric operand
+   10. AntisymmetrizerExpansion  : lower a spec's P(...) into explicit terms
+   11. ConstantFolding           : fold constant subexpressions
+   12. ScaleAbsorption           : remove dead scales, fold live ones
+   13. PermuteFusion             : fold pure axis reorders into einsum indices
+   14. CSE                       : common subexpression elimination
+   15. DeadNodeElimination       : remove unused intermediates
+   16. SymmetrizedAccumulation   : fold r += s*(t + P(t)) sites
+   17. ElementWiseFusion         : fuse consecutive element-wise ops
+   18. LinearCombinationContractionFolding : fold transpose-paired contractions
+   19. DistributiveFactoring     : factor a shared operand out of a sum
+   20. LoopInvariantHoisting     : move invariants out of loops
+   21. ScratchPrivatization      : rename reused scratch onto clones
+   22. MultiTermFactorization    : contraction orders and shared intermediates (off by default)
+   23. LayoutAssignment          : store intermediates so contractions read flat
+   24. ContractionPlanning       : multi-objective contraction ordering
+   25. GEMMBatching              : collapse groups into blas::gemm_batch
+   26. Reorder                   : memory-aware topological sort
+   27. IOPrefetch                : move DiskReads early for async overlap
+   28. DistributionPlanning      : decide replicate vs distribute
+   29. Materialization           : insert allocation nodes for deferred tensors
+   30. SymmetryPropagation       : tag intermediates whose symmetry is provable
+   31. ScalingAnalysis           : report cost polynomials and the limiting term
+   32. StreamContractionFusion   : one pass over a streamed tensor, not N
        GPUPlacement             : decide CPU vs GPU per node       (GPU only)
        TransferInsertion        : insert H2D/D2H transfer nodes    (GPU only)
        TransferElimination      : remove redundant transfers       (GPU only)
@@ -1216,9 +1344,9 @@ mock is present:
        CommunicationInsertion   : insert allreduce/broadcast       (MPI only)
        CommunicationElimination : remove redundant communication   (MPI only)
        CommunicationScheduling  : overlap communication w/ compute (MPI only)
-   28. InplaceOptimization       : merge outputs into dying inputs
-   29. FreeInsertion             : insert Free nodes at last-consumer
-   30. MemoryPlanning            : liveness analysis + the host arena
+   33. InplaceOptimization       : merge outputs into dying inputs
+   34. FreeInsertion             : insert Free nodes at last-consumer
+   35. MemoryPlanning            : liveness analysis + the host arena
 
 Reading the results
 -------------------
@@ -1232,13 +1360,17 @@ Reading the results
 
 .. code-block:: text
 
-     - PermuteFusion: folded 14 permute(s) into contractions
-     - ScratchPrivatization: 3 scratch tensor(s) split onto 12 clone(s), 47 node(s) rebuilt
-     - ContractionPlanning: restructured 2 of 6 GEMM chain(s), 2 intermediate(s)
-         chain of 3: est. 812.4us -> 233.1us (3.49x)
-     - GEMMBatching: 4 batch(es) absorbing 96 GEMM(s); 1 group(s) left parallel by the profitability gate
-     - MemoryPlanning: peak 184.20 MB of 512.75 MB total
-         arena: 184.20 MB hosting 31 intermediate(s) (512.75 MB of buffers)
+   optimize(O2) on 'ccsd': 412 -> 268 node(s)
+     - [structural-algebraic] PermuteFusion: folded 14 permute(s) into contractions
+     - [structural-resource] ScratchPrivatization: 3 scratch tensor(s) split onto 12 clone(s), 47 node(s) rebuilt
+     - [structural-algebraic] ContractionPlanning: restructured 2 of 6 GEMM chain(s), 2 intermediate(s)
+     - [structural-algebraic]     chain of 3: est. 812.4us -> 233.1us (3.49x)
+     - [tuning] GEMMBatching: 4 batch(es) absorbing 96 GEMM(s); 1 group(s) left parallel by the profitability gate
+     - [tuning] MemoryPlanning: peak 184.20 MB of 512.75 MB total
+     - [tuning]     arena: 184.20 MB hosting 31 intermediate(s) (512.75 MB of buffers)
+
+Every line names the pass's phase, which says whether a saved graph keeps that
+decision or re-derives it.
 
 For an individual pass's own getters, apply it directly:
 

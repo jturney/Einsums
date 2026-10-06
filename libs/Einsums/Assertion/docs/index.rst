@@ -28,8 +28,8 @@ make sure that it is correct.
 
 .. code:: C++
 
-    Tensor<1, double> vec = create_random_tensor("vector", 10);
-    double out = dot(vec, vec);
+    auto   vec = create_random_tensor("vector", 10);
+    double out = linear_algebra::dot(vec, vec);
 
     // The dot product of a vector with itself can not be negative.
     // If it is, we are in an invalid state, so we should probably exit.

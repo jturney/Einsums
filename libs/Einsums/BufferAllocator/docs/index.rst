@@ -23,9 +23,9 @@ To modify the allocator's maximum size, write a memory string to the ``einsums::
 with ``einsums::config::set`` or on the command line. A memory string is a number, possibly a decimal, followed by an optional prefix and unit.
 The understood prefixes are `k`, `M`, `G`, and `T`, all case insensitive. The units can either be `B`, `W`, or `o`,
 also case insensitive. The `B` and `o` units represent bytes, with the `o` provided for people who use the 
-octet convention. The `W` unit represents words and are the size of `size_t` on the user's system. On 64-bit
-systems, one word is generally eight bytes. The command-line spelling is `--einsums:buffer-size`. The total amount of memory
-is shared among all processes, not on a per-process basis.
+octet convention. The `W` unit currently divides the byte count by the size of `size_t` rather than multiplying,
+so on a 64-bit system `6kW` is 768 bytes, not 6 kilowords; use `B` to be safe. The command-line spelling is
+`--einsums:buffer-size`. The limit applies per process and is shared by all threads in it.
 
 The :cpp:class:`BufferAllocator` is a normal allocator. As such, it can be used in C++ containers and can be interacted
 with in the same way as other C++ allocators. Users must be careful when resizing allocations, though, as in order to

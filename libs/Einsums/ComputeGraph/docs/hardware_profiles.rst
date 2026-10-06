@@ -16,7 +16,8 @@ tool, and the :option:`--einsums:hardware:profile` override.
 Profile Structure
 ==================
 
-A ``CostModel`` holds two ``DeviceProfile`` entries (CPU and GPU):
+A ``CostModel`` holds two ``DeviceProfile`` entries (CPU and GPU). An abridged
+view (the full struct is in ``CostModel.hpp``):
 
 .. code-block:: cpp
 
@@ -48,7 +49,8 @@ Auto-Detection
 a built-in database of 25+ device profiles:
 
 **CPU profiles**: Apple M1/M2/M3/M4 (Pro/Max), Intel Skylake/Ice Lake/Sapphire
-Rapids, AMD EPYC Rome/Milan/Genoa, Generic x86-64, Generic ARM
+Rapids, AMD EPYC Rome/Milan/Genoa; an unmatched CPU falls back to a single
+Generic CPU profile
 
 **GPU profiles**: NVIDIA V100/A100/H100/RTX 3090/RTX 4090, AMD MI250X/MI300X,
 Apple MPS
@@ -56,10 +58,12 @@ Apple MPS
 Detection uses:
 
 - macOS: ``sysctlbyname("machdep.cpu.brand_string")``
-- x86 Linux: CPUID brand string
+- other x86-64: CPUID brand string
+- aarch64 Linux: implementer and part codes from ``/proc/cpuinfo``
 - GPU: ``gpu::device_name()`` (cudaGetDeviceProperties / MTLDevice.name)
 
 The best match is selected by longest-substring-wins on the brand string.
+Cache sizes are detected at runtime and fill in any profile that carries none.
 
 Cost Estimation
 ================
@@ -89,13 +93,18 @@ The ``calibrate_hardware`` tool measures real performance on the current machine
 
    ./calibrate_hardware --output my_hardware.json
 
-It sweeps DGEMM across matrix sizes (16 to 2048), measures memory bandwidth,
-and BLAS kernel overhead. Output is a JSON file loadable by:
+It sweeps DGEMM over a log-spaced range of sizes (default 16 to 2048, set by
+``--min-size``/``--max-size``) and measures copy and per-cache-level bandwidth,
+permute throughput, BLAS call overhead, and per-kernel thread-efficiency curves
+(skipped with ``--no-thread-sweep``). It also records the OpenMP region cost,
+separately from the profile. Output is a JSON file loadable by:
 
 .. code-block:: cpp
 
-   auto profile = CostModel::load_json("my_hardware.json");
-   pm.add<cg::passes::ContractionPlanning>(profile);
+   auto profile = CostModel::load_json("my_hardware.json");  // expected<CostModel, GraphError>
+   if (profile) {
+       pm.add<cg::passes::ContractionPlanning>(*profile);
+   }
 
 Handing the same file to :option:`--einsums:hardware:profile` puts it behind
 ``CostModel::detect_default()`` instead, so every cost-model pass in a default
@@ -121,6 +130,8 @@ profile across every cost-model pass:
    // Internally:
    auto cost_model = CostModel::detect_default();
    pm.add<passes::TiledExpansion>(4096, -1.0, Densify::Auto, FuseTiles::Auto, cost_model);
+   pm.add<passes::DistributiveFactoring>(cost_model);
+   pm.add<passes::LayoutAssignment>(cost_model);
    pm.add<passes::ContractionPlanning>(cost_model);
    pm.add<passes::GEMMBatching>(cost_model);
    pm.add<passes::StreamContractionFusion>(cost_model);

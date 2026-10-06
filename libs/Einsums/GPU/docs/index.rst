@@ -16,7 +16,7 @@ linear algebra. It supports four backends:
 - CUDA: NVIDIA GPUs via cuBLAS/cuSOLVER.
 - HIP: AMD GPUs via hipBLAS/hipSOLVER.
 - MPS: Apple Silicon GPUs via Metal Performance Shaders, auto-detected on macOS.
-- Mock: CPU fallback when no GPU is available.
+- Mock: CPU implementation used when Einsums is built without a GPU backend.
 
 The user writes backend-agnostic code, and the build system selects the
 appropriate backend at configure time.
@@ -52,7 +52,9 @@ The MPS backend supports the following operations.
 Apple Silicon shares physical memory between CPU and GPU. The ComputeGraph
 inserts explicit H2D/D2H transfer nodes for correctness on all backends, but on
 MPS the actual copies are skipped at execution time. The GPU reads tensor data
-directly from host memory through zero-copy MTLBuffer wrappers. Final D2H nodes
+directly from host memory through zero-copy MTLBuffer wrappers when the
+pointer is page-aligned; an unaligned pointer is copied into a new shared
+buffer instead. Final D2H nodes
 ensure user-visible results are available after ``execute()`` on discrete GPUs
 without relying on implicit flushes.
 
@@ -66,10 +68,13 @@ by the ComputeGraph pipeline.
 Mock Backend
 ------------
 
-When no GPU is available, all ``gpu::`` functions fall back to CPU
-implementations (``std::malloc``, ``std::memcpy``, ``blas::vendor::*``).
-This allows code using the GPU API to compile and run correctly on any
-platform, making it useful for testing and development.
+When Einsums is configured without CUDA, HIP, or MPS, the ``gpu::``
+functions are built on CPU implementations (``std::malloc``,
+``std::memcpy``, ``blas::vendor::*``). This is a configure-time choice, not
+a runtime fallback. It lets code using the GPU API compile and run on any
+platform, making it useful for testing and development. The exceptions are
+the reduced-precision GEMMs: ``hgemm`` and ``bfgemm`` currently do nothing
+on the mock backend and leave ``C`` unchanged.
 
 Runtime API
 ===========
@@ -78,8 +83,13 @@ Runtime API
 
     #include <Einsums/GPU/Runtime.hpp>
 
-    // Allocate device memory (MTLBuffer on MPS, cudaMalloc on CUDA)
-    void *ptr = einsums::gpu::device_malloc(1024);
+    // Allocate device memory (MTLBuffer on MPS, cudaMalloc on CUDA).
+    // Returns expected<void *, GpuError>.
+    auto alloc = einsums::gpu::device_malloc(1024);
+    if (!alloc) {
+        // handle alloc.error()
+    }
+    void *ptr = *alloc;
 
     // Copy host -> device
     einsums::gpu::memcpy_host_to_device(ptr, host_data, 1024);
@@ -108,19 +118,27 @@ BLAS API
     einsums::gpu::blas::gemv<float>('n', M, N,
         1.0f, A, M, x, 1, 0.0f, y, 1);
 
-    // Float16 GEMM (MPS native, CUDA via tensor cores)
+    // Float16 GEMM (MPS only)
     einsums::gpu::blas::hgemm('n', 'n', M, N, K,
         1.0f, A_fp16, M, B_fp16, K, 0.0f, C_fp32, M);
 
-    // BFloat16 GEMM (BF16 inputs, FP32 output)
+    // BFloat16 GEMM (BF16 inputs, FP32 output; MPS only, through FP32)
     einsums::gpu::blas::bfgemm('n', 'n', M, N, K,
         1.0f, A_bf16, M, B_bf16, K, 0.0f, C_fp32, M);
+
+The reduced-precision GEMMs are implemented only on MPS. On CUDA and HIP,
+``hgemm`` throws a not-implemented error, while ``bfgemm`` returns without
+doing anything. On the mock backend both return without doing anything.
+Where they do nothing, ``C`` is left unchanged and no error is raised.
+Check ``has_fp16_gemm`` before calling them.
 
 BLAS Level 1 (Element-wise)
 ----------------------------
 
-These operations execute on device memory, avoiding unnecessary D2H/H2D
-transfers when data is already on the GPU from a previous operation:
+On CUDA and HIP these operations execute on device memory, avoiding
+unnecessary D2H/H2D transfers when data is already on the GPU from a
+previous operation. On MPS and the mock backend they run on the CPU through
+the vendor BLAS, since the memory is already host-visible:
 
 .. code-block:: cpp
 
@@ -174,7 +192,7 @@ Platform Detection
         // No H2D/D2H copies needed
     }
     if constexpr (einsums::gpu::has_fp16_gemm) {
-        // FP16 GEMM available (CUDA tensor cores or MPS)
+        // FP16 GEMM available (MPS only)
     }
 
 ComputeGraph Integration

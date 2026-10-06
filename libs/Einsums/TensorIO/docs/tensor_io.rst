@@ -16,8 +16,13 @@ Features
 
 - **Binary format**: 64-byte header, 160-byte entries, 64-byte aligned data.
 - **Fast**: raw ``pwrite``/``pread`` with no metadata overhead, near memory-bandwidth throughput.
+- **Column-major on disk**: data is always stored column-major, whatever the tensor's layout in memory.
+  Contiguous column-major tensors are transferred directly; row-major tensors (``--einsums:row-major``)
+  and other strided layouts are reordered through a 1 MiB staging buffer on the way through.
 - **All datatypes**: float32, float64, complex64, complex128, int32, int64, uint32, uint64.
-- **Ranks 1-8**: vectors through 8-index tensors.
+- **Ranks 0-8**: scalars through 8-index tensors.
+- **Type-checked**: reads and slice writes never convert element types. A dtype or rank mismatch
+  throws ``std::invalid_argument``, and a slab past the stored extents throws ``std::out_of_range``.
 - **Slice reads**: read a hyperslab without loading the full tensor.
 - **Multi-tensor files**: store many tensors in one file.
 - **Distributed I/O**: MPI-coordinated writes to a single file using ``MPI_Exscan``.

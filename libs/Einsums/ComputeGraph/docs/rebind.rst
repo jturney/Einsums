@@ -83,7 +83,7 @@ instead of direct tensor references. A TensorSlot is a stable indirection
 that points to the current tensor:
 
 1. During capture: ``cg::einsum()`` creates a ``TensorSlot`` for each tensor
-2. The executor lambda dereferences the slot: ``*static_cast<T*>(slot->ptr)``
+2. The executor reads the slot through its operand accessor (``slot->impl_of(slot->ptr)``)
 3. On ``rebind()``: the slot's ``ptr`` is updated to point to the new tensor
 4. Next ``execute()``: the lambda sees the new tensor through the slot
 

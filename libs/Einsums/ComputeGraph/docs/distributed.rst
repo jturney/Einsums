@@ -14,7 +14,10 @@ Distributed Computing
 
 Einsums supports transparent distributed computing across MPI ranks. The user
 writes ``einsum(C, A, B)`` unchanged; the ComputeGraph passes handle tensor
-distribution, communication, and local computation automatically.
+distribution, communication, and local computation automatically. By default
+``DistributionPlanning`` replicates any deferred tensor of 64 MiB or less, so
+small problems stay replicated unless you lower that threshold (see
+`Complete Example`_).
 
 Comm Module
 ===========
@@ -94,8 +97,8 @@ For batch indices, those present in all three tensors, the pass assigns them to
 the grid axis with fewer dimensions so far, a load-balancing heuristic.
 
 **Balanced blocking**: Elements are distributed evenly. For N=41 across P=4
-ranks the split is {11, 11, 10, 9} rather than {11, 11, 11, 8}, so the maximum
-imbalance is 1.
+ranks the split is {11, 10, 10, 10} rather than {11, 11, 11, 8}: the first
+N mod P ranks take one extra element, so the maximum imbalance is 1.
 
 Distribution Patterns
 ======================
@@ -133,6 +136,10 @@ The SUMMA loop iterates Pc panels, broadcasting A along rows and B along columns
        A_panel = broadcast(A_local if my_col==p, row_comm)
        B_panel = broadcast(B_local if my_row==p, col_comm)
        C_local += A_panel * B_panel
+
+SUMMA expansion applies only to rank-2 einsums with real (``float32`` or
+``float64``) operands on a square grid; ``SUMMAExpansion`` skips complex and
+higher-rank contractions.
 
 Higher-Rank Tensors
 --------------------
@@ -356,15 +363,16 @@ TaskPool (integrates with einsums task infrastructure)
        });
 
 The OpenMP version is simpler. The TaskPool version gives more control (task
-naming for profiling, priority, and potential dataflow dependencies between tasks).
+naming for profiling, and potential dataflow dependencies between tasks).
 
 Communication Passes
 =====================
 
 ``CommunicationInsertion``
    Inserts allreduce after any compute node with distributed inputs and
-   replicated outputs. Evaluates all compute nodes (einsum, scale, axpy,
-   permute), not just einsums.
+   replicated outputs. Evaluates all top-level compute nodes (einsum, scale,
+   axpy, permute), not just einsums. It does not look inside Loop or
+   Conditional bodies, so a distributed reduction there gets no allreduce.
 
 ``CommunicationElimination``
    Removes redundant allreduces (e.g., back-to-back allreduce on same tensor).
@@ -388,7 +396,7 @@ Graph-aware versions that write to pre-allocated scalars:
    {
        cg::CaptureGuard guard(graph);
        cg::dot(&result, A, B);    // Records into graph
-       cg::norm(&nrm, linear_algebra::Norm::Frobenius, A);
+       cg::norm(&nrm, linear_algebra::Norm::FROBENIUS, A);
    }
    // CommunicationInsertion adds allreduce for scalar results
    // from distributed inputs
@@ -407,7 +415,7 @@ See ``examples/DistributedGEMM.cpp`` for a complete working example.
 
    namespace cg = einsums::compute_graph;
 
-   // Deferred output — passes handle distribution automatically
+   // Deferred output - the passes below decide its distribution
    cg::Graph graph("distributed_gemm");
    auto &C = graph.declare_zero_tensor<double, 2>("C", M, N);
 
@@ -416,7 +424,15 @@ See ``examples/DistributedGEMM.cpp`` for a complete working example.
        cg::einsum("ik;kj->ij", &C, A, B);
    }
 
-   auto pm = cg::PassManager::create_default();
+   // The default DistributionPlanning(threshold = 64 MiB, enable_summa = true)
+   // replicates small tensors and, on a square grid, distributes link indices
+   // for SUMMA. The example lowers the threshold and keeps outer-product.
+   cg::PassManager pm;
+   pm.add<cg::passes::DistributionPlanning>(/*threshold=*/1, /*enable_summa=*/false);
+   pm.add<cg::passes::Materialization>();
+   pm.add<cg::passes::InputSlicing>();
+   pm.add<cg::passes::CommunicationInsertion>();
+   pm.add<cg::passes::CommunicationScheduling>();
    graph.apply(pm);
    // DistributionPlanning: C → [Row, Col] on 2×2 grid
    // Materialization: C_local = (M/2, N/2)

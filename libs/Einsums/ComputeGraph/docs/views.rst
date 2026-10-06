@@ -178,7 +178,9 @@ Implicit conversions let callers write whichever they prefer:
    cg::ViewAxis::range(0, 5)              // Const, Const
    cg::ViewAxis::range(0, "n_occ")        // Const, Param
    cg::ViewAxis::range("first", "last")   // Param, Param
-   cg::ViewAxis::range(0, [&]{ return computed_hi; })  // Const, Callback
+   // Const, Callback. A lambda needs an explicit std::function: converting it
+   // to BoundExpr would take two user-defined conversions.
+   cg::ViewAxis::range(0, cg::BoundExpr(std::function<std::int64_t()>([&] { return computed_hi; })))
 
 **Optimization passes treat parameter values as opaque.** A pass may inspect
 ``BoundExpr::is_const()``, a structural property known at graph build, and use
