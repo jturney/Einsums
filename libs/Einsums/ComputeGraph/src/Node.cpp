@@ -266,6 +266,9 @@ std::vector<std::string> named_writes(Node const &node) {
             keys.push_back(std::move(key));
         }
     }
+    if (node.effects.external_effects) {
+        keys.emplace_back(any_named_key);
+    }
     append_child_keys(node, keys, &named_writes);
     return keys;
 }
@@ -279,6 +282,9 @@ std::vector<std::string> named_reads(Node const &node) {
         if (auto key = disk_key(node); !key.empty()) {
             keys.push_back(std::move(key));
         }
+    }
+    if (!node.effects.deterministic) {
+        keys.emplace_back(any_named_key);
     }
     append_child_keys(node, keys, &named_reads);
     return keys;

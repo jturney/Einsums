@@ -86,8 +86,7 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
         // read moved ahead of the graph's own write returns the file's previous contents.
         for (auto const &key : named_reads(nodes[pos])) {
             for (size_t idx = 0; idx < pos; idx++) {
-                auto const writes = named_writes(nodes[idx]);
-                if (std::ranges::find(writes, key) != writes.end()) {
+                if (named_keys_contain(named_writes(nodes[idx]), key)) {
                     earliest = std::max(earliest, idx + 1);
                 }
             }
@@ -135,10 +134,7 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
 /// Whether any node of @p graph, at any depth, writes the named resource @p key. A control-flow
 /// node's named writes include its child graphs', so one level covers the subtree.
 bool writes_anywhere(Graph const &graph, std::string const &key) {
-    return std::ranges::any_of(graph.nodes(), [&key](Node const &node) {
-        auto const writes = named_writes(node);
-        return std::ranges::find(writes, key) != writes.end();
-    });
+    return std::ranges::any_of(graph.nodes(), [&key](Node const &node) { return named_keys_contain(named_writes(node), key); });
 }
 
 bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t &num_prefetched) {

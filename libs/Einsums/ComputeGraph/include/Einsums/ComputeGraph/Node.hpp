@@ -1427,14 +1427,16 @@ struct NodeEffects {
     /// node once in place of many, or once for two identical nodes, gives the same result.
     bool deterministic{true};
     /// The node acts outside its declared outputs, so it may not be removed when nothing
-    /// reads them.
+    /// reads them. Such a node writes @ref any_named_key, and one that is not deterministic
+    /// reads it (see @ref named_writes).
     bool external_effects{false};
 
     friend bool operator==(NodeEffects const &, NodeEffects const &) = default;
 };
 
 /// @brief Nothing is known about the node beyond its tensor lists: neither hoisted, merged
-///        nor removed.
+///        nor removed, and ordered against every access to a named resource (it reads and
+///        writes @ref any_named_key).
 inline constexpr NodeEffects opaque_effects{.deterministic = false, .external_effects = true};
 
 /**
@@ -1620,8 +1622,26 @@ struct NodeIndexLists {
 /// its child graphs, as @ref Graph::effective_io does for tensors. A dataset stored inside a
 /// loop and loaded after it otherwise shares no edge with the loop, and the load can be
 /// scheduled ahead of it.
-
+///
+/// A node with @ref NodeEffects::external_effects writes @ref any_named_key, and one that is not
+/// @ref NodeEffects::deterministic reads it: a closure the graph cannot see into may print, write
+/// a file another node reads, or read a parameter a @c WriteParam sets, and shares no tensor with
+/// any of them.
 [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> named_writes(Node const &node);
+
+/// @brief The named key that stands for every named resource: an access to it conflicts with an
+///        access to any key. Compare keys with @ref named_keys_overlap, not with ``==``.
+inline constexpr std::string_view any_named_key = "*";
+
+/// @brief True when accesses to @p a and @p b may touch the same named resource.
+[[nodiscard]] constexpr bool named_keys_overlap(std::string_view a, std::string_view b) noexcept {
+    return a == b || a == any_named_key || b == any_named_key;
+}
+
+/// @brief True when any key in @p keys may touch the same named resource as @p key.
+[[nodiscard]] inline bool named_keys_contain(std::vector<std::string> const &keys, std::string_view key) noexcept {
+    return std::ranges::any_of(keys, [key](std::string const &k) { return named_keys_overlap(k, key); });
+}
 
 /// @brief Every named resource outside the tensor dataflow this node READS, as ordering keys:
 ///        @ref param_reads and the dataset a @c DiskRead loads, plus, for a control-flow node,

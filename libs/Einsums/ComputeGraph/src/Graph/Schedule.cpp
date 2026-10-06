@@ -58,6 +58,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include "../NamedHazards.hpp"
 #include "AliasGeometry.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -379,8 +380,7 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     // table happened to hold. Keyed by name, which also covers a disk dataset a
     // read and a write share without sharing a tensor; see named_writes /
     // named_reads in Node.hpp.
-    std::unordered_map<std::string, std::vector<size_t>> param_writers;
-    std::unordered_map<std::string, std::vector<size_t>> param_readers;
+    detail::NamedHazards named;
 
     size_t const n = _nodes.size();
     for (size_t i = 0; i < n; i++) {
@@ -424,29 +424,7 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
             wl.push_back({.pos = i, .box = box});
         }
 
-        for (auto const &pname : named_reads(_nodes[i])) {
-            for (size_t const w : param_writers[pname]) {
-                if (w != i) {
-                    emit(w, i); // RAW: parameter write -> slice that resolves it
-                }
-            }
-            param_readers[pname].push_back(i);
-        }
-        for (auto const &pname : named_writes(_nodes[i])) {
-            for (size_t const w : param_writers[pname]) {
-                if (w != i) {
-                    emit(w, i); // WAW: the later write must win
-                }
-            }
-            for (size_t const r : param_readers[pname]) {
-                if (r != i) {
-                    emit(r, i); // WAR: readers of the old value must go first
-                }
-            }
-            param_readers[pname].clear();
-            param_writers[pname].clear();
-            param_writers[pname].push_back(i);
-        }
+        named.visit(i, named_reads(_nodes[i]), named_writes(_nodes[i]), emit);
     }
 }
 
@@ -545,12 +523,9 @@ std::vector<std::string> Graph::unjustified_hazard_edges() {
                 }
             }
             if (!justified) {
-                for (auto const &name : params[from]) {
-                    if (params[to].contains(name)) {
-                        justified = true;
-                        break;
-                    }
-                }
+                justified = std::ranges::any_of(params[from], [&](std::string const &name) {
+                    return std::ranges::any_of(params[to], [&](std::string const &other) { return named_keys_overlap(name, other); });
+                });
             }
             if (!justified) {
                 out.push_back(fmt::format("{} ({}) -> {} ({})", from, _nodes[from].label, to, _nodes[to].label));

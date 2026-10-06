@@ -5976,8 +5976,9 @@ void parallel_reduce(std::string name, size_t begin, size_t end, Acc *result, In
  * The graph cannot see inside a custom closure. It may read state the graph does not
  * track (a variable captured by reference, a loop parameter, a file) or act outside the
  * tensors it writes (print, store, signal), so a custom node is recorded with
- * @ref opaque_effects: it is never hoisted out of a loop, and never removed because
- * nothing reads its outputs. Passing
+ * @ref opaque_effects: it is never hoisted out of a loop, never removed because nothing
+ * reads its outputs, and keeps its place relative to other custom nodes, parameter
+ * writes, and disk reads and writes. Passing
  * @c cg::pure first declares that the closure reads only the tensors it lists and does
  * nothing but write the tensors it lists, which gives those optimizations back.
  *

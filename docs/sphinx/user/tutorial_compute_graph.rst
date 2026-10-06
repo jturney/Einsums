@@ -629,10 +629,11 @@ on CPU and insert appropriate transfers around GPU-placed operations.
 The graph cannot see inside a ``cg::custom`` closure, so it assumes the
 closure may read state the graph does not track, such as a counter captured by
 reference, or act outside the tensors it lists, such as printing or writing a
-file. Such a node is never hoisted out of a loop and never removed because
-nothing reads its outputs. When the closure reads only the tensors it lists and
-does nothing but write the tensors it lists, say so with ``cg::pure``, and the
-optimizer treats it like a built-in operation:
+file. Such a node is never hoisted out of a loop, never removed because nothing
+reads its outputs, and keeps its place relative to other custom nodes,
+parameter writes, and disk reads and writes. When the closure reads only the
+tensors it lists and does nothing but write the tensors it lists, say so with
+``cg::pure``, and the optimizer treats it like a built-in operation:
 
 .. code-block:: cpp
 

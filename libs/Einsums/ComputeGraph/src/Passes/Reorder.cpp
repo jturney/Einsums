@@ -14,6 +14,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "../NamedHazards.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 bool Reorder::run(Graph &graph) {
@@ -52,8 +54,7 @@ bool Reorder::run(Graph &graph) {
     // value, or throws outright on the first iteration when the parameter has
     // never been set. The same keys order a disk read after the graph's own
     // write of that dataset. See named_writes / named_reads in Node.hpp.
-    std::unordered_map<std::string, size_t>              last_param_writer;
-    std::unordered_map<std::string, std::vector<size_t>> param_readers_since_write;
+    detail::NamedHazards named;
 
     for (size_t i = 0; i < n; i++) {
         // Use effective I/O so Loop/Conditional nodes (whose own input/output
@@ -89,29 +90,8 @@ bool Reorder::run(Graph &graph) {
             }
             last_writer[tid] = i;
         }
-        for (auto const &pname : named_reads(nodes[i])) {
-            auto it = last_param_writer.find(pname);
-            if (it != last_param_writer.end() && it->second != i) {
-                adj_set[it->second].insert(i); // RAW: parameter write -> slice
-            }
-            param_readers_since_write[pname].push_back(i);
-        }
-        for (auto const &pname : named_writes(nodes[i])) {
-            auto it = last_param_writer.find(pname);
-            if (it != last_param_writer.end() && it->second != i) {
-                adj_set[it->second].insert(i); // WAW
-            }
-            auto rit = param_readers_since_write.find(pname);
-            if (rit != param_readers_since_write.end()) {
-                for (size_t const r : rit->second) {
-                    if (r != i) {
-                        adj_set[r].insert(i); // WAR
-                    }
-                }
-                rit->second.clear();
-            }
-            last_param_writer[pname] = i;
-        }
+        named.visit(i, named_reads(nodes[i]), named_writes(nodes[i]),
+                    [&adj_set](size_t producer, size_t consumer) { adj_set[producer].insert(consumer); });
     }
 
     // Convert to vector adjacency and compute in-degree

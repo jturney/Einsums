@@ -336,3 +336,91 @@ TEST_CASE("Dependency - a disk read after a loop waits for the loop's disk write
     CHECK(X(1) == 8.0);
     CHECK(X(2) == 9.0);
 }
+
+// Two custom nodes that touch no tensor, each acting only on the world outside
+// the graph (here a log), shared no tensor and no named key, so the hazard scan
+// drew no edge between them and the parallel executors were free to run them
+// in either order or at once.
+TEST_CASE("Dependency - effect-only custom nodes keep program order", "[ComputeGraph][Dependency][Custom]") {
+    std::vector<int> log;
+
+    cg::Graph graph("dep_custom_effects");
+    {
+        cg::CaptureGuard const capture(graph);
+        cg::custom("first", [&log]() { log.push_back(1); });
+        cg::custom("second", [&log]() { log.push_back(2); });
+    }
+
+    graph.topological_sort();
+    auto const &deps = graph.dependencies();
+    REQUIRE(deps.predecessors.size() == 2);
+    CHECK(std::ranges::find(deps.predecessors[1], size_t{0}) != deps.predecessors[1].end());
+    CHECK(deps.levels.size() == 2);
+
+    graph.execute();
+    CHECK(log == std::vector<int>{1, 2});
+}
+
+namespace {
+
+/// Whether the hazard scan gives node @p to an edge from node @p from.
+bool has_edge(cg::Graph &graph, size_t from, size_t to) {
+    graph.topological_sort();
+    auto const &preds = graph.dependencies().predecessors[to];
+    return std::ranges::find(preds, from) != preds.end();
+}
+
+} // namespace
+
+// A closure the graph cannot see into may read the file a DiskWrite stores or
+// write the one a DiskRead loads, and shares no tensor with either, so an
+// opaque custom node is ordered against every named resource.
+TEST_CASE("Dependency - an opaque custom node is ordered against disk accesses", "[ComputeGraph][Dependency][Custom][IO]") {
+    RuntimeTensor<double> Y{"Y", {3UL}};
+    RuntimeTensor<double> X{"X", {3UL}};
+    Y.zero();
+
+    cg::Graph graph("dep_custom_disk");
+    {
+        cg::CaptureGuard const capture(graph);
+        cg::write("save", "mock.h5", "/row", &Y, []() {});
+        cg::custom("inspect_file", []() {});
+        cg::read("load", "mock.h5", "/other", &X, []() {});
+    }
+
+    CHECK(has_edge(graph, 0, 1)); // the closure may read what was stored
+    CHECK(has_edge(graph, 1, 2)); // and may write what is loaded
+}
+
+// Declared pure, the same closure touches only what it lists, and the disk
+// accesses around it stay free of it.
+TEST_CASE("Dependency - a custom node declared pure gains no named edges", "[ComputeGraph][Dependency][Custom][IO]") {
+    RuntimeTensor<double> Y{"Y", {3UL}};
+    RuntimeTensor<double> X{"X", {3UL}};
+    Y.zero();
+
+    cg::Graph graph("dep_custom_pure_disk");
+    {
+        cg::CaptureGuard const capture(graph);
+        cg::write("save", "mock.h5", "/row", &Y, []() {});
+        cg::custom(cg::pure, "compute", []() {});
+        cg::read("load", "mock.h5", "/other", &X, []() {});
+    }
+
+    CHECK_FALSE(has_edge(graph, 0, 1));
+    CHECK_FALSE(has_edge(graph, 1, 2));
+}
+
+// The wildcard an opaque node carries must not leak into unrelated keys: two
+// parameter writes of different names share nothing and stay independent.
+TEST_CASE("Dependency - writes of different parameters stay independent", "[ComputeGraph][Dependency][WriteParam]") {
+    cg::Graph graph("dep_two_params");
+    {
+        cg::CaptureGuard const capture(graph);
+        cg::write_param("a", std::function<std::int64_t()>([] { return std::int64_t{1}; }));
+        cg::write_param("b", std::function<std::int64_t()>([] { return std::int64_t{2}; }));
+    }
+
+    CHECK_FALSE(has_edge(graph, 0, 1));
+    CHECK(graph.dependencies().levels.size() == 1);
+}

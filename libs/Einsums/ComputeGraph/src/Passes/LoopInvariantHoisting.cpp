@@ -107,8 +107,10 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
         }
         auto const touched_by_other = [](std::unordered_map<std::string, std::vector<size_t>> const &by_key, std::string const &key,
                                          size_t self) {
-            auto const it = by_key.find(key);
-            return it != by_key.end() && std::ranges::any_of(it->second, [self](size_t other) { return other != self; });
+            return std::ranges::any_of(by_key, [&key, self](auto const &entry) {
+                return named_keys_overlap(entry.first, key) &&
+                       std::ranges::any_of(entry.second, [self](size_t other) { return other != self; });
+            });
         };
 
         // Identify invariant nodes: all inputs are NOT written by any body node

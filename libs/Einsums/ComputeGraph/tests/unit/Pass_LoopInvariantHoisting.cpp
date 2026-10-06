@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -536,6 +537,57 @@ TEST_CASE("LoopInvariantHoisting - keeps an effect-only custom node in the loop"
     graph.execute();
     CHECK(acc(0) == 3.0);
     CHECK(reports == 3);
+}
+
+// A custom node can read a loop parameter through the graph's ParamTable, and
+// nothing declares the read, so the hoisting gate saw a node whose only input
+// is loop-invariant. Hoisted, it ran before the first write_param and found
+// the parameter unset.
+TEST_CASE("LoopInvariantHoisting - keeps a custom node that reads a loop parameter", "[ComputeGraph][Passes][Custom][WriteParam]") {
+    RuntimeTensor<double> A{"A", {3UL, 3UL}};
+    RuntimeTensor<double> row{"row", {3UL}};
+    RuntimeTensor<double> total{"total", {3UL}};
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            A(i, j) = static_cast<double>(1 + (3 * i) + j); // 1..9
+        }
+    }
+    size_t iter = 0;
+
+    cg::Graph graph("lih_custom_param");
+    {
+        auto                  &body = graph.add_loop("rows", 3, [&iter](size_t) {
+            ++iter;
+            return iter < 3;
+        });
+        cg::CaptureGuard const capture(body);
+        cg::write_param("r", std::function<std::int64_t()>([&iter] { return static_cast<std::int64_t>(iter); }));
+        cg::custom("pick_row", std::tie(A), std::tie(row), [&A, &row, params = body.params_ptr()]() {
+            auto const r = static_cast<size_t>(params->get("r"));
+            for (size_t j = 0; j < 3; ++j) {
+                row(j) = A(r, j);
+            }
+        });
+        cg::axpby(1.0, row, 1.0, &total);
+    }
+
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    INFO(pm.explain());
+    std::string order;
+    for (auto const &node : graph.nodes()) {
+        if (auto const *loop = node.op_data.get_if<cg::LoopDescriptor>(); loop != nullptr && loop->body) {
+            for (auto const &inner : loop->body->nodes()) {
+                order += inner.label + "; ";
+            }
+        }
+    }
+    INFO("loop body order after the pipeline: " << order);
+
+    iter = 0;
+    total.zero();
+    REQUIRE_NOTHROW(graph.execute());
+    CHECK(total(0) + total(1) + total(2) == 45.0); // 1 + 2 + ... + 9
 }
 
 // A DiskRead has no tensor inputs, so it is invariant by the tensor test, and
