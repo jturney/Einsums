@@ -23,7 +23,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.BLASBase
       HEADERS ${BLASBaseHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_BLASBase
+      DEPENDENCIES Einsums_BLASBase
     )
   endif()
 endif()

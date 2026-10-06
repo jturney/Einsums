@@ -23,7 +23,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.HPTT
       HEADERS ${HPTTHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_HPTT
+      DEPENDENCIES Einsums_HPTT
     )
   endif()
 endif()

@@ -23,7 +23,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Errors
       HEADERS ${ErrorsHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_Errors
+      DEPENDENCIES Einsums_Errors
     )
   endif()
 endif()

@@ -23,7 +23,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Assertion
       HEADERS ${AssertionHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_Assertion
+      DEPENDENCIES Einsums_Assertion
     )
   endif()
 endif()

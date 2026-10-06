@@ -23,7 +23,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Tensor
       HEADERS ${TensorHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_Tensor
+      DEPENDENCIES Einsums_Tensor
     )
   endif()
 endif()

@@ -25,7 +25,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.TensorUtilities
       HEADERS ${TensorUtilitiesHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_TensorUtilities
+      DEPENDENCIES Einsums_TensorUtilities
     )
   endif()
 endif()

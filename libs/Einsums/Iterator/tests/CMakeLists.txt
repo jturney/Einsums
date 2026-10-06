@@ -23,7 +23,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Iterator
       HEADERS ${IteratorHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_Iterator
+      DEPENDENCIES Einsums_Iterator
     )
   endif()
 endif()

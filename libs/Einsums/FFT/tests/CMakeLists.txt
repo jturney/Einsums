@@ -23,7 +23,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.FFT
       HEADERS ${FFTHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_FFT
+      DEPENDENCIES Einsums_FFT
     )
   endif()
 endif()

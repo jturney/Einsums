@@ -25,7 +25,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Decomposition
       HEADERS ${DecompositionHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_Decomposition
+      DEPENDENCIES Einsums_Decomposition
     )
   endif()
 endif()

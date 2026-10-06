@@ -25,7 +25,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Preprocessor
       HEADERS ${PreprocessorHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_Preprocessor
+      DEPENDENCIES Einsums_Preprocessor
     )
   endif()
 endif()

@@ -23,7 +23,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.BLAS
       HEADERS ${BLASHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_BLAS
+      DEPENDENCIES Einsums_BLAS
     )
   endif()
 endif()

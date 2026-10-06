@@ -23,7 +23,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Print
       HEADERS ${PrintHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_Print
+      DEPENDENCIES Einsums_Print
     )
   endif()
 endif()

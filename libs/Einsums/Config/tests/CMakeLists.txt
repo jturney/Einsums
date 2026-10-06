@@ -23,7 +23,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Config
       HEADERS ${ConfigHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES einsums_Config
+      DEPENDENCIES Einsums_Config
     )
   endif()
 endif()
