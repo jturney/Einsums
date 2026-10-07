@@ -16,10 +16,13 @@
 #include <Einsums/ComputeGraph/Moldability.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -56,6 +59,16 @@ struct AddIntoDescriptor {
 /// ``y := 1`` on the calling thread.
 struct SerialFillDescriptor {
     static constexpr std::string_view descriptor_name = "hooks_test.SerialFill";
+};
+
+/// ``y := x x``, x repeated twice, so y is twice as long as x.
+struct TwiceDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.Twice";
+};
+
+/// ``y := x``, whose hook claims y has five elements whatever x has.
+struct MisreportDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.Misreport";
 };
 
 /// A codec's write and read for a descriptor with no fields.
@@ -151,6 +164,40 @@ void register_hook_descriptors() {
                                                                      .reads = false, .overwrites_all = true, .operand_count = 0};
                                                              },
                                                          .threading = [](SerialFillDescriptor const &) { return cg::Threading::Serial; }});
+
+        cg::register_descriptor<TwiceDescriptor>(
+            write_nothing<TwiceDescriptor>, read_nothing<TwiceDescriptor>,
+            [](TwiceDescriptor const &, cg::Graph &graph, packed_gemm::ScalarType, std::size_t, std::span<cg::TensorId const> inputs,
+               std::span<cg::TensorId const> outputs) -> std::function<void()> {
+                cg::OperandAccessor const x = cg::resolve_operand(graph, inputs[0], "hooks_test.Twice", "x");
+                cg::OperandAccessor const y = cg::resolve_operand(graph, outputs[0], "hooks_test.Twice", "y");
+                return [x, y]() {
+                    auto const *src = x.impl<double>();
+                    auto       *dst = y.impl<double>();
+                    for (std::size_t i = 0; i < dst->size(); ++i) {
+                        dst->data()[i] = src->data()[i % src->size()];
+                    }
+                };
+            },
+            cg::DescriptorHooksFor<TwiceDescriptor>{.output_extents = [](TwiceDescriptor const &, cg::Node const &,
+                                                                         cg::ExtentQuery const &query) -> std::optional<cg::ExtentList> {
+                if (query.input_extents.empty() || query.input_extents[0].size() != 1) {
+                    return std::nullopt;
+                }
+                return cg::ExtentList{{2 * query.input_extents[0][0]}};
+            }});
+
+        cg::register_descriptor<MisreportDescriptor>(
+            write_nothing<MisreportDescriptor>, read_nothing<MisreportDescriptor>,
+            [](MisreportDescriptor const &, cg::Graph &graph, packed_gemm::ScalarType, std::size_t, std::span<cg::TensorId const> inputs,
+               std::span<cg::TensorId const> outputs) -> std::function<void()> {
+                cg::OperandAccessor const x = cg::resolve_operand(graph, inputs[0], "hooks_test.Misreport", "x");
+                cg::OperandAccessor const y = cg::resolve_operand(graph, outputs[0], "hooks_test.Misreport", "y");
+                return [x, y]() { std::copy_n(x.impl<double>()->data(), y.impl<double>()->size(), y.impl<double>()->data()); };
+            },
+            cg::DescriptorHooksFor<MisreportDescriptor>{
+                .output_extents = [](MisreportDescriptor const &, cg::Node const &,
+                                     cg::ExtentQuery const &) -> std::optional<cg::ExtentList> { return cg::ExtentList{{5}}; }});
         return true;
     }();
     (void)registered;
@@ -316,4 +363,54 @@ TEST_CASE("Descriptor hooks - declared threading and overwrite reach the passes'
 
     // Without a threading hook a registered node keeps the Custom default.
     CHECK(cg::kernel_moldability(graph.nodes()[1]));
+}
+
+// output_extents: a graph-owned output follows its producer's own account of its size when a
+// bind changes the inputs. Without the hook it kept its captured extents, and the consumer read
+// elements the producer never wrote.
+TEST_CASE("Descriptor hooks - declared output extents follow a bind", "[ComputeGraph][DescriptorHooks][Bind]") {
+    register_hook_descriptors();
+    auto   x      = create_random_tensor<double>("x", 3);
+    double result = 0.0;
+
+    cg::Graph graph("hooks_twice");
+    auto     &twice = graph.scratch<double, 1>("twice", 6);
+    {
+        cg::CaptureGuard const capture(graph);
+        auto                  &ctx = cg::CaptureContext::current();
+        record("twice", TwiceDescriptor{}, {ctx.get_slot(x).first}, {ctx.get_slot(twice).first});
+        cg::dot(&result, twice, twice);
+    }
+    graph.apply<cg::passes::Materialization>();
+    graph.annotate_dims(x, {"n"});
+    graph.execute();
+    CHECK(twice.dim(0) == 6);
+
+    auto small = create_random_tensor<double>("x_small", 2);
+    REQUIRE_NOTHROW(graph.bind("x", small));
+    CHECK(twice.dim(0) == 4);
+
+    graph.execute();
+    double const expected = 2.0 * ((small(0) * small(0)) + (small(1) * small(1)));
+    CHECK_THAT(result, Catch::Matchers::WithinRel(expected, 1e-14));
+}
+
+// An output whose declared extents differ from the hook's account is reported by verify.
+TEST_CASE("Descriptor hooks - verify reports output extents the hook disagrees with", "[ComputeGraph][DescriptorHooks]") {
+    register_hook_descriptors();
+    RuntimeTensor<double> x{"x", {3UL}};
+    RuntimeTensor<double> y{"y", {3UL}};
+    x.zero();
+    y.zero();
+
+    cg::Graph graph("hooks_misreport");
+    {
+        cg::CaptureGuard const capture(graph);
+        auto                  &ctx = cg::CaptureContext::current();
+        record("misreport", MisreportDescriptor{}, {ctx.get_slot(x).first}, {ctx.get_slot(y).first});
+    }
+
+    auto const problems = graph.verify();
+    REQUIRE(problems.size() == 1);
+    CHECK(problems[0].find("output_extents hook gives [5]") != std::string::npos);
 }

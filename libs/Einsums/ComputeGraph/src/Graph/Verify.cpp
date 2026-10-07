@@ -10,6 +10,7 @@
 /// up later, far from the pass, as a lookup that found the wrong node or a contraction that read
 /// the wrong axes. Keeping them in one walk is what lets the test suite run it after every pass.
 
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -171,6 +172,11 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
         // exactly when the node reads it.
         if (auto const violation = destination_rule_violation(graph, node)) {
             note(node, *violation);
+        }
+
+        // A registered descriptor's own account of its output extents (DescriptorHooks.hpp).
+        if (auto const mismatch = hooked_extent_mismatch(graph, node)) {
+            note(node, *mismatch);
         }
 
         for_each_child_graph(

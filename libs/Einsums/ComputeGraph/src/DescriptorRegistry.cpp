@@ -4,8 +4,12 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
+#include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
+
+#include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <map>
 #include <mutex>
@@ -64,6 +68,40 @@ NodeEffects effects_of(Node const &node) {
         return hooks->effects(node.op_data);
     }
     return node.effects;
+}
+
+std::optional<ExtentList> hooked_output_extents(Graph const &graph, Node const &node) {
+    DescriptorHooks const *hooks = descriptor_hooks(node);
+    if (hooks == nullptr || !hooks->output_extents) {
+        return std::nullopt;
+    }
+    ExtentQuery query;
+    query.input_extents.reserve(node.inputs.size());
+    for (TensorId const tid : node.inputs) {
+        TensorHandle const *handle = graph.find_tensor(tid);
+        query.input_extents.push_back(handle != nullptr ? handle->dims : std::vector<std::size_t>{});
+    }
+    query.params = graph.params_ptr().get();
+    return hooks->output_extents(node.op_data, node, query);
+}
+
+std::optional<std::string> hooked_extent_mismatch(Graph const &graph, Node const &node) {
+    auto const derived = hooked_output_extents(graph, node);
+    if (!derived) {
+        return std::nullopt;
+    }
+    if (derived->size() != node.outputs.size()) {
+        return fmt::format("node '{}' ({}) writes {} output(s), but its output_extents hook gives {}", node.label, node.op_data.name(),
+                           node.outputs.size(), derived->size());
+    }
+    for (std::size_t i = 0; i < derived->size(); ++i) {
+        TensorHandle const *handle = graph.find_tensor(node.outputs[i]);
+        if (handle != nullptr && !handle->dims.empty() && handle->dims != (*derived)[i]) {
+            return fmt::format("node '{}' ({}) writes '{}' at [{}], but its output_extents hook gives [{}]", node.label,
+                               node.op_data.name(), handle->name, fmt::join(handle->dims, ", "), fmt::join((*derived)[i], ", "));
+        }
+    }
+    return std::nullopt;
 }
 
 DescriptorCodec const *find_descriptor_codec(std::string_view name) noexcept {

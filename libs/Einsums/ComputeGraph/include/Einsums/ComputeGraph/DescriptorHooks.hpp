@@ -35,6 +35,9 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
+class Graph;
+class ParamTable;
+
 /**
  * @brief The parameters and named resources a node touches outside its tensor lists.
  *
@@ -80,6 +83,21 @@ enum class Threading : std::uint8_t {
     OwnPool,
 };
 
+/// @brief The extents of a node's outputs, one list per output in the node's output order.
+using ExtentList = std::vector<std::vector<std::size_t>>;
+
+/**
+ * @brief What an @c output_extents hook is given.
+ *
+ * @ref input_extents holds the current extents of every input, in the node's input order (an
+ * input whose extents are not known yet has an empty list). @ref params is the graph's
+ * @ref ParamTable, for a node whose output size is a parameter's value; it may be null.
+ */
+struct ExtentQuery {
+    ExtentList        input_extents;
+    ParamTable const *params{nullptr};
+};
+
 /**
  * @brief The optional answers a registered descriptor gives about its node.
  *
@@ -101,6 +119,12 @@ struct DescriptorHooks {
 
     /// How the executor uses threads. Without it the node is @ref Threading::Moldable.
     std::function<Threading(OpData const &descriptor)> threading;
+
+    /// The extents the node's outputs take for the inputs in @p query, one list per output, or
+    /// empty when the descriptor cannot say. A rebind re-derives a graph-owned output from it, and
+    /// validation reports an output whose declared extents differ. Without it a rebind leaves the
+    /// outputs as they were captured.
+    std::function<std::optional<ExtentList>(OpData const &descriptor, Node const &node, ExtentQuery const &query)> output_extents;
 };
 
 /**
@@ -115,5 +139,14 @@ struct DescriptorHooks {
 /// @brief What @p node does beyond its tensors: its registered @c effects hook's answer, or
 ///        @ref Node::effects.
 [[nodiscard]] EINSUMS_EXPORT NodeEffects effects_of(Node const &node);
+
+/// @brief The extents @p node's registered @c output_extents hook gives for its inputs' current
+///        extents in @p graph, or empty when it has no such hook or the hook cannot say.
+[[nodiscard]] EINSUMS_EXPORT std::optional<ExtentList> hooked_output_extents(Graph const &graph, Node const &node);
+
+/// @brief Why @p node's outputs in @p graph disagree with its registered @c output_extents hook:
+///        a different number of outputs, or an output whose known extents differ. Empty when they
+///        agree, or when there is no hook or it cannot say.
+[[nodiscard]] EINSUMS_EXPORT std::optional<std::string> hooked_extent_mismatch(Graph const &graph, Node const &node);
 
 EINSUMS_NAMESPACE_END(compute_graph)

@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/InterfaceManifest.hpp>
@@ -608,6 +609,16 @@ void Graph::rederive_owned_extents() {
     topological_sort();
 
     for (auto const &node : _nodes) {
+        // A registered descriptor says what its outputs come to, one or many. An answer of the
+        // wrong length is reported by validate_node_extents, which names the node.
+        if (auto derived = hooked_output_extents(*this, node)) {
+            if (derived->size() == node.outputs.size()) {
+                for (std::size_t i = 0; i < derived->size(); ++i) {
+                    resize_derived_extent(node.outputs[i], (*derived)[i], node.label);
+                }
+            }
+            continue;
+        }
         if (node.outputs.size() != 1) {
             continue;
         }
@@ -663,6 +674,9 @@ void Graph::rederive_owned_extents() {
 
 void Graph::validate_node_extents() const {
     for (auto const &node : _nodes) {
+        if (auto const problem = hooked_extent_mismatch(*this, node)) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': after binding, {}", _name, *problem);
+        }
         if (is_extent_preserving(node.kind)) {
             std::vector<std::size_t> const *reference = nullptr;
             std::string                     reference_name;
