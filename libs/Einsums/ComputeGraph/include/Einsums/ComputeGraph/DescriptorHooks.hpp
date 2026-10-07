@@ -22,6 +22,7 @@
 /// code, not data, so a saved graph never contains them; a loader reaches them by having the
 /// codec registered, as it reaches the codec's @c build.
 
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -99,6 +100,38 @@ struct ExtentQuery {
 };
 
 /**
+ * @brief What a node costs to run, in the terms the planners price every node in.
+ *
+ * The planner turns this into a serial time: @ref serial_us when given, otherwise @ref flops
+ * priced as a GEMM of that many flops and @ref bytes as memory traffic, whichever takes longer.
+ * Widening divides the time by @ref speedup when given, otherwise by the curve of @ref family.
+ * A measured run of the node always takes precedence over the estimate.
+ */
+struct CostEstimate {
+    /// Floating-point operations, independent of the device.
+    double flops{0.0};
+    /// Bytes moved, independent of the device. Zero leaves it to the planner, which counts the
+    /// node's tensors.
+    std::size_t bytes{0};
+    /// The speedup curve the node scales along. Empty picks a GEMM curve when @ref flops is
+    /// given and the element-wise curve otherwise.
+    std::optional<KernelFamily> family;
+    /// Serial time on the queried device, when the descriptor knows its rate there.
+    std::optional<double> serial_us;
+    /// Speedup at a width, overriding @ref family's curve for an engine none of them fits. Called
+    /// with widths of 2 and above; returns how many times faster than serial.
+    std::function<double(unsigned width)> speedup;
+};
+
+/// @brief What a @c cost hook is asked about: the node, its graph, and the device it is priced on.
+struct CostQuery {
+    Graph const         &graph;
+    Node const          &node;
+    DeviceProfile const &profile;
+    Target               target{Target::CPU};
+};
+
+/**
  * @brief The optional answers a registered descriptor gives about its node.
  *
  * Every member may be empty. Members are only ever appended, since a @ref DescriptorCodec is
@@ -125,6 +158,10 @@ struct DescriptorHooks {
     /// validation reports an output whose declared extents differ. Without it a rebind leaves the
     /// outputs as they were captured.
     std::function<std::optional<ExtentList>(OpData const &descriptor, Node const &node, ExtentQuery const &query)> output_extents;
+
+    /// What the node costs; see @ref CostEstimate. Without it, or when it returns empty, the node
+    /// is priced as the memory traffic of its tensors, as any Custom node is.
+    std::function<std::optional<CostEstimate>(OpData const &descriptor, CostQuery const &query)> cost;
 };
 
 /**

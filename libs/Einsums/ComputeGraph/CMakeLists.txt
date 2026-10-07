@@ -222,6 +222,7 @@ set(ComputeGraphSources
     Passes/SymmetrizedAccumulation.cpp
     Passes/TiledExpansion.cpp
     Passes/SymmetryPropagation.cpp
+    Passes/NodeCost.cpp
     Passes/ThreadPlanning.cpp
     Passes/TransferElimination.cpp
     Passes/TransferInsertion.cpp

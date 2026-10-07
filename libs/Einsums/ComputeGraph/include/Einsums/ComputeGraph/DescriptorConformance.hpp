@@ -72,6 +72,14 @@ struct ConformanceSample {
 
     /// The parameters the node's executor may read, set on each graph before capture.
     std::map<std::string, std::int64_t> params;
+
+    /// The width a moldable node is run at to compare against width 1; 0 means the machine's
+    /// thread count.
+    unsigned width{0};
+
+    /// The relative difference allowed between the two, for a kernel whose reduction order
+    /// changes with the thread count. Zero demands the same bytes.
+    double width_tolerance{0.0};
 };
 
 /**
@@ -86,7 +94,9 @@ struct ConformanceSample {
  *   reference over a poisoned destination, and its input list keeps the destination rule;
  * - its accesses: a node run with only the parameters it declares computes the reference, and
  *   declares none the sample does not set;
- * - its output extents: the hook's answer matches the outputs.
+ * - its output extents: the hook's answer matches the outputs;
+ * - its threading: a moldable node run at @ref ConformanceSample::width under the
+ *   DataflowExecutor computes the reference, within @ref ConformanceSample::width_tolerance.
  *
  * @return One line per problem found, each naming the sample; empty when every claim held.
  *         A codec not registered under @p name is one problem.

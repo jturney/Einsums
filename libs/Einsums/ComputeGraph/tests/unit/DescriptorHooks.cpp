@@ -16,15 +16,18 @@
 #include <Einsums/ComputeGraph/DescriptorConformance.hpp>
 #include <Einsums/ComputeGraph/Moldability.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
+#include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
+#include <omp.h>
 #include <optional>
 #include <span>
 #include <string>
@@ -98,6 +101,26 @@ struct DeclaredParamDescriptor {
 struct ForgetfulDescriptor {
     static constexpr std::string_view descriptor_name = "hooks_test.Forgetful";
     double                            scale{1.0};
+};
+
+/// A node whose cost hook answers from its fields; the executor does nothing.
+struct CostedDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.Costed";
+    double                            serial_us{-1.0}; ///< Negative: not given
+    double                            flops{0.0};
+    std::size_t                       bytes{0};
+    bool                              linear_speedup{false}; ///< Give a speedup curve of exactly the width
+};
+
+/// How many times a CostedDescriptor's speedup curve has been asked.
+int &speedup_calls() {
+    static int calls = 0;
+    return calls;
+}
+
+/// ``y := x + t``, t the OpenMP thread count it runs with, while it claims to be moldable.
+struct WidthDependentDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.WidthDependent";
 };
 
 /// An executor over one input x and one output y, both rank 1 doubles.
@@ -281,6 +304,32 @@ void register_hook_descriptors() {
             },
             cg::DescriptorHooksFor<DeclaredParamDescriptor>{
                 .accesses = [](DeclaredParamDescriptor const &, cg::Node const &) { return cg::NamedAccesses{.param_reads = {"k"}}; }});
+
+        cg::register_descriptor<CostedDescriptor>(
+            [](CostedDescriptor const &) { return cg::json::Value{cg::json::Object{}}; },
+            [](cg::json::Object const &) { return CostedDescriptor{}; },
+            [](CostedDescriptor const &, cg::Graph &, packed_gemm::ScalarType, std::size_t, std::span<cg::TensorId const>,
+               std::span<cg::TensorId const>) -> std::function<void()> { return [] {}; },
+            cg::DescriptorHooksFor<CostedDescriptor>{.cost = [](CostedDescriptor const &desc, cg::CostQuery const &) {
+                cg::CostEstimate estimate{.flops = desc.flops, .bytes = desc.bytes};
+                if (desc.serial_us >= 0.0) {
+                    estimate.serial_us = desc.serial_us;
+                }
+                if (desc.linear_speedup) {
+                    estimate.speedup = [](unsigned width) {
+                        ++speedup_calls();
+                        return static_cast<double>(width);
+                    };
+                }
+                return std::optional<cg::CostEstimate>{estimate};
+            }});
+
+        cg::register_descriptor<WidthDependentDescriptor>(
+            write_nothing<WidthDependentDescriptor>, read_nothing<WidthDependentDescriptor>,
+            [](WidthDependentDescriptor const &, cg::Graph &graph, packed_gemm::ScalarType, std::size_t,
+               std::span<cg::TensorId const> inputs, std::span<cg::TensorId const> outputs) -> std::function<void()> {
+                return unary(graph, inputs, outputs, [](double x, double) { return x + static_cast<double>(omp_get_max_threads()); });
+            });
 
         cg::register_descriptor<ForgetfulDescriptor>(
             [](ForgetfulDescriptor const &) { return cg::json::Value{cg::json::Object{}}; },
@@ -562,4 +611,72 @@ TEST_CASE("Descriptor conformance - each false claim is reported", "[ComputeGrap
     reported(sample_of("hidden_param", HiddenParamDescriptor{}, {{"k", 4}}), "fails with only the parameters it declares");
     reported(sample_of("forgetful", ForgetfulDescriptor{.scale = 2.0}), "rebuilt from its saved form, computes something else");
     reported(sample_of("misreport", MisreportDescriptor{}), "output_extents hook gives [5]");
+}
+
+// ── Cost ──────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// The serial time ThreadPlanning models for a graph holding one CostedDescriptor node, which is
+/// the makespan before widening: one node, never run, so nothing measured can stand in for it.
+double modelled_serial_us(CostedDescriptor const &desc, cg::CostModel const &model) {
+    RuntimeTensor<double> x{"x", {4UL}};
+    RuntimeTensor<double> y{"y", {4UL}};
+    x.zero();
+    y.zero();
+    cg::Graph graph("hooks_costed");
+    {
+        cg::CaptureGuard const capture(graph);
+        auto                  &ctx = cg::CaptureContext::current();
+        record("costed", desc, {ctx.get_slot(x).first}, {ctx.get_slot(y).first});
+    }
+    cg::passes::ThreadPlanning planner(model, 4);
+    planner.run(graph);
+    return planner.makespan_before_us();
+}
+
+} // namespace
+
+// cost: the planner prices a registered node from its hook instead of as the bytes it moves.
+TEST_CASE("Descriptor hooks - a declared cost prices the node for the planner", "[ComputeGraph][DescriptorHooks][Cost]") {
+    register_hook_descriptors();
+    cg::CostModel const model = cg::CostModel::detect_default();
+
+    // A serial time the descriptor knows is taken as given.
+    CHECK(modelled_serial_us(CostedDescriptor{.serial_us = 1234.5}, model) == 1234.5);
+
+    // Flops are priced as the square GEMM of that many flops: 2e9 flops is a 1000-cube.
+    double const gemm_us = model.cpu.estimate_gemm_time_us(1000, 1000, 1000, 1);
+    CHECK_THAT(modelled_serial_us(CostedDescriptor{.flops = 2.0e9, .bytes = 64}, model), Catch::Matchers::WithinRel(gemm_us, 1e-12));
+
+    // Bytes alone are priced as traffic, as the planner prices any node without a hook.
+    double const memory_us = model.cpu.estimate_memory_time_us(std::size_t{1} << 26, 1);
+    CHECK_THAT(modelled_serial_us(CostedDescriptor{.bytes = std::size_t{1} << 26}, model), Catch::Matchers::WithinRel(memory_us, 1e-12));
+
+    // A speedup curve of its own is what the widening search consults.
+    speedup_calls() = 0;
+    (void)modelled_serial_us(CostedDescriptor{.serial_us = 1.0e6, .linear_speedup = true}, model);
+    CHECK(speedup_calls() > 0);
+}
+
+// threading: a node that claims to be moldable but computes with the thread count it is given is
+// caught by the conformance kit's width check.
+TEST_CASE("Descriptor conformance - a moldable claim is held to the result at another width",
+          "[ComputeGraph][DescriptorHooks][Conformance]") {
+    register_hook_descriptors();
+    if (omp_get_max_threads() < 3) {
+        SKIP("needs a default OpenMP thread count above 2, so width 2 differs from it");
+    }
+    auto sample         = sample_of("width_dependent", WidthDependentDescriptor{});
+    sample.width        = 2;
+    auto const problems = check_one(sample);
+    INFO(fmt::format("{}", fmt::join(problems, "\n")));
+    CHECK(std::ranges::any_of(problems,
+                              [](std::string const &problem) { return problem.find("is moldable, but at width 2") != std::string::npos; }));
+
+    // Within a tolerance wide enough to cover the difference, the same claim passes.
+    sample.width_tolerance = 1.0;
+    auto const tolerated   = check_one(sample);
+    INFO(fmt::format("{}", fmt::join(tolerated, "\n")));
+    CHECK(std::ranges::none_of(tolerated, [](std::string const &problem) { return problem.find("is moldable") != std::string::npos; }));
 }

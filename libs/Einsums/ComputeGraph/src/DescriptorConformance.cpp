@@ -10,8 +10,10 @@
 #include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
+#include <Einsums/ComputeGraph/Executor.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/ComputeGraph/Moldability.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
@@ -19,11 +21,13 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <exception>
 #include <map>
 #include <memory>
+#include <omp.h>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -74,6 +78,25 @@ void write_bytes(Graph &graph, std::vector<TensorId> const &ids, std::vector<Byt
         auto const storage = storage_of(graph, ids[i]);
         std::copy(values[i].begin(), values[i].end(), storage.begin());
     }
+}
+
+/// The largest elementwise difference between @p id's elements and @p reference, relative to
+/// the larger magnitude of the two (absolute below 1).
+double relative_difference(Graph &graph, TensorId id, Bytes const &reference) {
+    auto const storage = storage_of(graph, id);
+    return detail::dispatch_scalar_type(graph.tensor(id).dtype, [&]<typename T>(T /*tag*/) {
+        std::size_t const count = storage.size() / sizeof(T);
+        double            worst = 0.0;
+        for (std::size_t i = 0; i < count; ++i) {
+            T got{};
+            T want{};
+            std::memcpy(&got, storage.data() + (i * sizeof(T)), sizeof(T));
+            std::memcpy(&want, reference.data() + (i * sizeof(T)), sizeof(T));
+            double const scale = std::max({1.0, static_cast<double>(std::abs(got)), static_cast<double>(std::abs(want))});
+            worst              = std::max(worst, static_cast<double>(std::abs(got - want)) / scale);
+        }
+        return worst;
+    });
 }
 
 /// All bits set: a NaN in every floating-point type, so a read of it shows in the result.
@@ -127,6 +150,7 @@ class SampleCheck {
         attempt("check its effects", [this] { effects(); });
         attempt("check its accesses", [this] { accesses(); });
         attempt("check its saved form", [this] { saved_form(); });
+        attempt("check its threading", [this] { threading(); });
     }
 
   private:
@@ -221,6 +245,33 @@ class SampleCheck {
         }
         if (bytes_of(*fresh.graph, fresh.operands.outputs) != _reference) {
             report("computes something else with only the parameters it declares, so it reads one it does not declare");
+        }
+    }
+
+    void threading() {
+        if (!kernel_moldability(_built.the_node())) {
+            return;
+        }
+        unsigned const width = _sample.width != 0 ? _sample.width : static_cast<unsigned>(std::max(1, omp_get_max_threads()));
+        if (width < 2) {
+            return;
+        }
+        Built fresh = rebuild(_sample.descriptor, _sample.params);
+        write_bytes(*fresh.graph, fresh.operands.outputs, _prior);
+        fresh.graph->nodes()[fresh.node].thread_width = static_cast<std::uint16_t>(width);
+        DataflowExecutor executor;
+        fresh.graph->execute(executor);
+
+        double worst = 0.0;
+        for (std::size_t i = 0; i < fresh.operands.outputs.size(); ++i) {
+            worst = std::max(worst, relative_difference(*fresh.graph, fresh.operands.outputs[i], _reference[i]));
+        }
+        bool const differs =
+            _sample.width_tolerance == 0.0 ? bytes_of(*fresh.graph, fresh.operands.outputs) != _reference : worst > _sample.width_tolerance;
+        if (differs) {
+            report(fmt::format("is moldable, but at width {} it computes something else than at width 1 (largest relative "
+                               "difference {:.3g}, allowed {:.3g})",
+                               width, worst, _sample.width_tolerance));
         }
     }
 

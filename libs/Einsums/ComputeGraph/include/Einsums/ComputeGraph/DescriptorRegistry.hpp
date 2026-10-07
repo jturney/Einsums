@@ -96,6 +96,8 @@ struct DescriptorHooksFor {
     std::function<Threading(D const &descriptor)>                        threading;   ///< See @ref DescriptorHooks::threading.
     /// See @ref DescriptorHooks::output_extents.
     std::function<std::optional<ExtentList>(D const &descriptor, Node const &node, ExtentQuery const &query)> output_extents;
+    /// See @ref DescriptorHooks::cost.
+    std::function<std::optional<CostEstimate>(D const &descriptor, CostQuery const &query)> cost;
 };
 
 /**
@@ -133,6 +135,11 @@ void register_descriptor(Write write, Read read, Build build, DescriptorHooksFor
         codec.hooks.output_extents = [fn = std::move(hooks.output_extents)](OpData const &descriptor, Node const &node,
                                                                             ExtentQuery const &query) {
             return fn(descriptor.get<D>(), node, query);
+        };
+    }
+    if (hooks.cost) {
+        codec.hooks.cost = [fn = std::move(hooks.cost)](OpData const &descriptor, CostQuery const &query) {
+            return fn(descriptor.get<D>(), query);
         };
     }
     register_descriptor(std::move(codec));
