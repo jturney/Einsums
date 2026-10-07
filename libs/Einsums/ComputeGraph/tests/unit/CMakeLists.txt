@@ -41,6 +41,7 @@ set(ComputeGraphTests
     ControlFlow.cpp
     DeltaElimination.cpp
     DirectApplyRecursion.cpp
+    DefaultPassRegistry.cpp
     DependencyOrder.cpp
     DescriptorHooks.cpp
     DiisAccelerator.cpp

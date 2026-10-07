@@ -60,12 +60,16 @@
 #include <Einsums/Profile.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <limits>
 #include <map>
 #include <set>
+#include <shared_mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -667,6 +671,128 @@ bool PassManager::run(Graph &graph) {
     return any_modified;
 }
 
+// ── Passes registered from outside the library ─────────────────────────────
+
+namespace {
+
+struct RegisteredPass {
+    DefaultPassRegistration                         info;
+    std::function<std::shared_ptr<OptimizerPass>()> factory;
+};
+
+struct DefaultPassRegistry {
+    std::shared_mutex           mutex;
+    std::vector<RegisteredPass> entries;
+};
+
+DefaultPassRegistry &default_pass_registry() {
+    static DefaultPassRegistry registry;
+    return registry;
+}
+
+/// The library's default passes that only a build with their backend constructs. An anchor on one
+/// is valid everywhere and simply finds nothing to stand beside on a build without it.
+constexpr std::array<std::string_view, 10> backend_gated_passes{
+    "GPUPlacement", "TransferInsertion", "TransferElimination",    "GPUDiagnostics",           "StreamAssignment",
+    "InputSlicing", "SUMMAExpansion",    "CommunicationInsertion", "CommunicationElimination", "CommunicationScheduling",
+};
+
+} // namespace
+
+/// Lets register_default_pass read the library's own list, which PassManager keeps private.
+class DefaultPassRegistryAccess {
+  public:
+    static std::vector<std::shared_ptr<OptimizerPass>> builtin() { return PassManager::build_builtin_default_passes(); }
+};
+
+namespace {
+
+/// Put a fresh pass from every registration beside its anchor in @p list, skipping a registration
+/// whose anchor @p list does not hold.
+void splice_registered_passes(std::vector<std::shared_ptr<OptimizerPass>> &list) {
+    std::vector<RegisteredPass> entries;
+    {
+        auto                               &registry = default_pass_registry();
+        std::shared_lock<std::shared_mutex> lock(registry.mutex);
+        entries = registry.entries;
+    }
+    // Passes already placed after each anchor, so a later registration lands after them and the
+    // list keeps registration order on every side of every anchor.
+    std::unordered_map<std::string, std::size_t> placed_after;
+    for (auto const &entry : entries) {
+        auto const anchor = std::ranges::find_if(list, [&entry](auto const &pass) { return pass->name() == entry.info.anchor; });
+        if (anchor == list.end()) {
+            continue;
+        }
+        auto pass = entry.factory();
+        if (!pass) {
+            EINSUMS_LOG_WARN("Default pipeline: the factory for '{}' (registered by {}) returned no pass; it is skipped", entry.info.name,
+                             entry.info.owner);
+            continue;
+        }
+        auto const        position = static_cast<std::size_t>(anchor - list.begin());
+        std::size_t const at       = entry.info.where == PassAnchor::Before ? position : position + 1 + placed_after[entry.info.anchor]++;
+        list.insert(list.begin() + static_cast<std::ptrdiff_t>(at), std::move(pass));
+    }
+}
+
+} // namespace
+
+void register_default_pass(std::string_view anchor, PassAnchor where, std::function<std::shared_ptr<OptimizerPass>()> factory,
+                           std::string_view owner) {
+    if (!factory) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "register_default_pass: no factory was given for the pass beside '{}'", anchor);
+    }
+    if (owner.empty()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "register_default_pass: the pass beside '{}' needs an owner to name in diagnostics",
+                                anchor);
+    }
+    auto const probe = factory();
+    if (!probe) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "register_default_pass: {}'s factory for the pass beside '{}' returned null", owner,
+                                anchor);
+    }
+    std::string const name = probe->name();
+
+    std::vector<std::string> builtin;
+    for (auto const &pass : DefaultPassRegistryAccess::builtin()) {
+        builtin.push_back(pass->name());
+    }
+    builtin.insert(builtin.end(), backend_gated_passes.begin(), backend_gated_passes.end());
+
+    auto                               &registry = default_pass_registry();
+    std::unique_lock<std::shared_mutex> lock(registry.mutex);
+    auto const                          registered = [&registry](std::string_view candidate) {
+        return std::ranges::any_of(registry.entries, [candidate](RegisteredPass const &entry) { return entry.info.name == candidate; });
+    };
+    if (std::ranges::find(builtin, name) != builtin.end() || registered(name)) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "register_default_pass: {} registers a pass named '{}', which a default pass already is; pass names are "
+                                "what anchors and disable() find a pass by, so they must be unique",
+                                owner, name);
+    }
+    if (std::ranges::find(builtin, anchor) == builtin.end() && !registered(anchor)) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "register_default_pass: {} anchors '{}' on '{}', which is no default pass of any build and no registered "
+                                "pass, so it would never run",
+                                owner, name, anchor);
+    }
+    registry.entries.push_back(RegisteredPass{
+        .info    = DefaultPassRegistration{.name = name, .anchor = std::string(anchor), .where = where, .owner = std::string(owner)},
+        .factory = std::move(factory)});
+}
+
+std::vector<DefaultPassRegistration> registered_default_passes() {
+    auto                                &registry = default_pass_registry();
+    std::shared_lock<std::shared_mutex>  lock(registry.mutex);
+    std::vector<DefaultPassRegistration> out;
+    out.reserve(registry.entries.size());
+    for (auto const &entry : registry.entries) {
+        out.push_back(entry.info);
+    }
+    return out;
+}
+
 PassManager PassManager::create_default() {
     PassManager pm;
     pm.populate_default();
@@ -758,22 +884,29 @@ PassManager PassManager::create_for(OptLevel level) {
     switch (level) {
     case OptLevel::O0:
         break;
-    case OptLevel::O1:
+    case OptLevel::O1: {
         // Cleanup cluster only: reduce node count, no restructuring, no
         // memory planning. Matches the head of populate_default().
-        pm.add<passes::ConstantFolding>();
-        pm.add<passes::ScaleAbsorption>();
-        pm.add<passes::PermuteFusion>();
-        pm.add<passes::CSE>();
-        pm.add<passes::DeadNodeElimination>();
-        pm.add<passes::ElementWiseFusion>();
-        // Materialization is correctness-enabling, not an optimization: a
-        // graph that uses declare_tensor() cannot execute without it, and
-        // the execute-time "still deferred" diagnostic tells users that
-        // graph.optimize() fixes the problem, at every level above O0.
-        // After DNE so dead deferred tensors are not allocated.
-        pm.add<passes::Materialization>();
+        std::vector<std::shared_ptr<OptimizerPass>> list{
+            std::make_shared<passes::ConstantFolding>(),
+            std::make_shared<passes::ScaleAbsorption>(),
+            std::make_shared<passes::PermuteFusion>(),
+            std::make_shared<passes::CSE>(),
+            std::make_shared<passes::DeadNodeElimination>(),
+            std::make_shared<passes::ElementWiseFusion>(),
+            // Materialization is correctness-enabling, not an optimization: a
+            // graph that uses declare_tensor() cannot execute without it, and
+            // the execute-time "still deferred" diagnostic tells users that
+            // graph.optimize() fixes the problem, at every level above O0.
+            // After DNE so dead deferred tensors are not allocated.
+            std::make_shared<passes::Materialization>(),
+        };
+        splice_registered_passes(list);
+        for (auto &pass : list) {
+            pm.add(std::move(pass));
+        }
         break;
+    }
     case OptLevel::O2:
         pm.populate_default();
         break;
@@ -872,6 +1005,12 @@ void PassManager::populate_default() {
 }
 
 std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() {
+    auto list = build_builtin_default_passes();
+    splice_registered_passes(list);
+    return list;
+}
+
+std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_builtin_default_passes() {
     std::vector<std::shared_ptr<OptimizerPass>> list;
 
     // Detect hardware once and share the cost_model across cost-model passes.

@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -948,6 +949,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * 44. FreeInsertion (tuning): free intermediates after last consumer
      * 45. MemoryPlanning (tuning): tensor liveness, peak memory, and arena planning
      *
+     * Passes registered with @ref register_default_pass run beside their anchors.
+     *
      * @return A fully-populated PassManager.
      */
     static PassManager create_default();
@@ -1088,6 +1091,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     static std::vector<std::shared_ptr<OptimizerPass>> build_default_passes();
 
+    /// The library's own default pipeline, before any registered pass is spliced in.
+    static std::vector<std::shared_ptr<OptimizerPass>> build_builtin_default_passes();
+
+    /// register_default_pass validates an anchor against the library's own list.
+    friend class DefaultPassRegistryAccess;
+
     /// Build the default pass list and keep only the phases in @p keep,
     /// preserving their relative order in the default sequence.
     static PassManager filtered_default(std::initializer_list<PassPhase> keep);
@@ -1119,5 +1128,51 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     std::int64_t _budget_ms{0};
     bool         _budget_explicit{false};
 };
+
+/// @brief Which side of its anchor a registered default pass runs on.
+enum class PassAnchor : std::uint8_t {
+    Before, ///< Immediately before the anchor, after any pass registered before it earlier.
+    After,  ///< Immediately after the anchor, after any pass registered after it earlier.
+};
+
+/// @brief A pass registered into the default pipelines from outside the library.
+struct DefaultPassRegistration {
+    std::string name;   ///< The pass's @c name().
+    std::string anchor; ///< The pass it runs beside.
+    PassAnchor  where{PassAnchor::After};
+    std::string owner; ///< The library that registered it, for diagnostics.
+};
+
+/**
+ * @brief Run a pass from outside the library in every default pipeline that holds its anchor.
+ *
+ * Every list built from the default pipeline gets a fresh pass from @p factory beside the pass
+ * named @p anchor: @ref PassManager::create_default, the phase-filtered managers (a registered
+ * pass goes wherever its own phase puts it), @ref PassManager::create_for at O1 and O2, and so
+ * Pipeline, the bisect driver and @c Graph::optimize. A list that does not hold the anchor, as the
+ * GPU and distributed blocks are missing from a build without those backends and most passes are
+ * missing from O1, does not get the pass. Passes registered on one anchor and side keep the order
+ * they were registered in, and a registered pass may itself be an anchor.
+ *
+ * A registered pass runs under the same checks as the library's own: destination sync, the
+ * structural checks, and verification after each pass when enabled.
+ *
+ * Call it explicitly, before building any pass manager, typically from the outside library's own
+ * registration function, rather than from a static initializer whose order nothing fixes.
+ * Registration is thread-safe and permanent for the process.
+ *
+ * @param anchor The name of a pass in the default pipeline, the library's or a registered one.
+ * @param where Which side of @p anchor the pass runs on.
+ * @param factory Makes a new pass each time a list is built; called once here to learn its name.
+ * @param owner Names the registering library in diagnostics.
+ * @throws std::invalid_argument When @p factory is empty or returns null, when @p owner is empty,
+ *         when @p anchor names no default pass of any build, or when the pass's name is already
+ *         taken by one of the library's default passes or a registered one.
+ */
+EINSUMS_EXPORT void register_default_pass(std::string_view anchor, PassAnchor where,
+                                          std::function<std::shared_ptr<OptimizerPass>()> factory, std::string_view owner);
+
+/// @brief Every pass registered with @ref register_default_pass, in registration order.
+[[nodiscard]] EINSUMS_EXPORT std::vector<DefaultPassRegistration> registered_default_passes();
 
 EINSUMS_NAMESPACE_END(compute_graph)
