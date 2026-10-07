@@ -11,6 +11,8 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -1826,4 +1828,40 @@ TEST_CASE("DeviceShadowMap - move-assignment and growth free what they replace",
     CHECK(target.size() == 1);
     CHECK(target.get(cg::TensorId{3}) == kept);
     CHECK_FALSE(target.has(cg::TensorId{1}));
+}
+
+// A cost model loaded from a file that names no PCIe bandwidth, which is every profile of a
+// unified-memory machine, read that bandwidth as zero, so the transfer term of every GPU time was
+// a division by zero: infinite, and no node with a flop count was ever placed.
+TEST_CASE("GPUPlacement - a loaded profile without a PCIe bandwidth still places a GEMM", "[ComputeGraph][GPU][CostModel]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
+    auto const path = std::filesystem::temp_directory_path() / "einsums_gpu_placement_no_pcie.json";
+    {
+        std::ofstream file(path);
+        file << R"({"cpu": {"name": "test cpu", "device_type": "cpu", "peak_gflops_fp64": 50, "peak_gflops_fp32": 100,
+                            "mem_bandwidth_gbps": 100},
+                    "gpu": {"name": "test gpu", "device_type": "gpu", "peak_gflops_fp64": 5000, "peak_gflops_fp32": 10000}})";
+    }
+    auto const loaded = cg::CostModel::load_json(path.string());
+    std::filesystem::remove(path);
+    REQUIRE(loaded.has_value());
+    REQUIRE(loaded->has_gpu());
+    CHECK(loaded->gpu.pcie_bandwidth_gbps == 0.0);
+
+    auto      A = create_random_tensor<float>("A", 512, 512);
+    auto      B = create_random_tensor<float>("B", 512, 512);
+    auto      C = create_zero_tensor<float>("C", 512, 512);
+    cg::Graph graph("gpu-placement-no-pcie");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+    }
+    // The flop count ContractionPlanning writes on the GEMMs it plans, which is what puts a node on
+    // the cost-model path rather than the byte threshold.
+    graph.nodes()[0].estimated_flops = std::size_t{2} * 512 * 512 * 512;
+
+    cg::passes::GPUPlacement pass(*loaded);
+    pass.run(graph);
+    CHECK(pass.num_placed() == 1);
+    CHECK(graph.nodes()[0].target == cg::Target::GPU);
 }

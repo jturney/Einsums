@@ -32,7 +32,7 @@ GPUPlacement::GPUPlacement(CostModel const &cost_model, size_t min_bytes) : _min
     cpu_throughput_gflops = cost_model.cpu.peak_gflops_fp64;
     if (cost_model.has_gpu()) {
         gpu_throughput_gflops  = cost_model.gpu.peak_gflops_fp64;
-        pcie_bandwidth_gbs     = cost_model.gpu.pcie_bandwidth_gbps;
+        pcie_bandwidth_gbs     = cost_model.transfer_bandwidth_gbps();
         gpu_launch_overhead_us = cost_model.gpu.gpu_launch_latency_us;
     }
 }

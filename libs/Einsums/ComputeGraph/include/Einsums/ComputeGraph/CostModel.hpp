@@ -636,12 +636,21 @@ struct EINSUMS_EXPORT CostModel {
         return device(target).parallel_efficiency(family, bytes, width);
     }
 
+    /**
+     * @brief Host-device transfer bandwidth in GB/s: the GPU's PCIe bandwidth, or the CPU's
+     *        memory bandwidth where the profile names none.
+     *
+     * A unified-memory device has no PCIe link, and its profile, measured or loaded, leaves the
+     * field at zero; the host and device then share the memory bus. Every transfer estimate reads
+     * the bandwidth here, so none of them divides by that zero.
+     */
+    [[nodiscard]] double transfer_bandwidth_gbps() const {
+        return gpu.pcie_bandwidth_gbps > 0.0 ? gpu.pcie_bandwidth_gbps : cpu.mem_bandwidth_gbps;
+    }
+
     /// Estimate host-device transfer time (via PCIe or unified memory bus).
     [[nodiscard]] double estimate_transfer_time_us(size_t bytes) const {
-        double bw = gpu.pcie_bandwidth_gbps;
-        if (bw <= 0)
-            bw = cpu.mem_bandwidth_gbps; // Unified memory fallback
-        return static_cast<double>(bytes) / (bw * 1e3);
+        return static_cast<double>(bytes) / (transfer_bandwidth_gbps() * 1e3);
     }
 
     /// Estimate total GEMM time (roofline) on a specific target.
