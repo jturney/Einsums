@@ -15,6 +15,7 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/DescriptorConformance.hpp>
 #include <Einsums/ComputeGraph/Moldability.hpp>
+#include <Einsums/ComputeGraph/Passes/CSE.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
@@ -123,6 +124,30 @@ struct WidthDependentDescriptor {
     static constexpr std::string_view descriptor_name = "hooks_test.WidthDependent";
 };
 
+/// ``y := factor * x``, overwriting y, with equal comparing the factors.
+struct ScaledDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.Scaled";
+    double                            factor{1.0};
+};
+
+/// As ScaledDescriptor, but its effects are opaque.
+struct ScaledOpaqueDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.ScaledOpaque";
+    double                            factor{1.0};
+};
+
+/// As ScaledDescriptor, but it says nothing about its destination.
+struct ScaledNoDestinationDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.ScaledNoDestination";
+    double                            factor{1.0};
+};
+
+/// As ScaledDescriptor, but its equal calls every pair the same.
+struct ScaledLyingEqualDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.ScaledLyingEqual";
+    double                            factor{1.0};
+};
+
 /// An executor over one input x and one output y, both rank 1 doubles.
 template <typename Body>
 std::function<void()> unary(cg::Graph &graph, std::span<cg::TensorId const> inputs, std::span<cg::TensorId const> outputs, Body body) {
@@ -135,6 +160,31 @@ std::function<void()> unary(cg::Graph &graph, std::span<cg::TensorId const> inpu
             dst->data()[i] = body(src->data()[i], dst->data()[i]);
         }
     };
+}
+
+/// Register a ScaledDescriptor-shaped codec for @p D: saves its factor, scales x into y.
+template <typename D>
+void register_scaled(cg::DescriptorHooksFor<D> hooks) {
+    cg::register_descriptor<D>(
+        [](D const &desc) {
+            cg::json::Object fields;
+            fields.set("factor", cg::json::Value{desc.factor});
+            return cg::json::Value{std::move(fields)};
+        },
+        [](cg::json::Object const &fields) {
+            cg::json::Value const *factor = fields.take("factor");
+            return D{.factor = factor != nullptr ? factor->as_double() : 1.0};
+        },
+        [](D const &desc, cg::Graph &graph, packed_gemm::ScalarType, std::size_t, std::span<cg::TensorId const> inputs,
+           std::span<cg::TensorId const> outputs) -> std::function<void()> {
+            return unary(graph, inputs, outputs, [factor = desc.factor](double x, double) { return factor * x; });
+        },
+        std::move(hooks));
+}
+
+/// The destination of a ScaledDescriptor-shaped node: it writes all of y and reads only x.
+cg::DestinationUse overwrites_y(cg::Node const & /*node*/) {
+    return cg::DestinationUse{.reads = false, .overwrites_all = true, .operand_count = 1};
 }
 
 /// A codec's write and read for a descriptor with no fields.
@@ -330,6 +380,19 @@ void register_hook_descriptors() {
                std::span<cg::TensorId const> inputs, std::span<cg::TensorId const> outputs) -> std::function<void()> {
                 return unary(graph, inputs, outputs, [](double x, double) { return x + static_cast<double>(omp_get_max_threads()); });
             });
+
+        register_scaled<ScaledDescriptor>(
+            {.destination = [](ScaledDescriptor const &, cg::Node const &node) { return overwrites_y(node); },
+             .equal       = [](ScaledDescriptor const &a, ScaledDescriptor const &b) { return a.factor == b.factor; }});
+        register_scaled<ScaledOpaqueDescriptor>(
+            {.effects     = [](ScaledOpaqueDescriptor const &) { return cg::opaque_effects; },
+             .destination = [](ScaledOpaqueDescriptor const &, cg::Node const &node) { return overwrites_y(node); },
+             .equal       = [](ScaledOpaqueDescriptor const &a, ScaledOpaqueDescriptor const &b) { return a.factor == b.factor; }});
+        register_scaled<ScaledNoDestinationDescriptor>(
+            {.equal = [](ScaledNoDestinationDescriptor const &a, ScaledNoDestinationDescriptor const &b) { return a.factor == b.factor; }});
+        register_scaled<ScaledLyingEqualDescriptor>(
+            {.destination = [](ScaledLyingEqualDescriptor const &, cg::Node const &node) { return overwrites_y(node); },
+             .equal       = [](ScaledLyingEqualDescriptor const &, ScaledLyingEqualDescriptor const &) { return true; }});
 
         cg::register_descriptor<ForgetfulDescriptor>(
             [](ForgetfulDescriptor const &) { return cg::json::Value{cg::json::Object{}}; },
@@ -679,4 +742,76 @@ TEST_CASE("Descriptor conformance - a moldable claim is held to the result at an
     auto const tolerated   = check_one(sample);
     INFO(fmt::format("{}", fmt::join(tolerated, "\n")));
     CHECK(std::ranges::none_of(tolerated, [](std::string const &problem) { return problem.find("is moldable") != std::string::npos; }));
+}
+
+// ── Merging ───────────────────────────────────────────────────────────────
+
+namespace {
+
+/// Two nodes of @p first's and @p second's descriptors over the same x, each read by its own
+/// consumer, run through CSE; returns how many of the two survive, after checking both consumers
+/// still read what their own node computes.
+template <typename D>
+std::size_t survivors_of_cse(D first, D second) {
+    RuntimeTensor<double> x{"x", {3UL}};
+    RuntimeTensor<double> out1{"out1", {3UL}};
+    RuntimeTensor<double> out2{"out2", {3UL}};
+    for (std::size_t i = 0; i < 3; ++i) {
+        x(i) = static_cast<double>(i + 1);
+    }
+    out1.zero();
+    out2.zero();
+
+    cg::Graph graph("hooks_cse");
+    {
+        cg::CaptureGuard const capture(graph);
+        auto                  &t1  = graph.create_runtime_tensor<double>("t1", {3UL});
+        auto                  &t2  = graph.create_runtime_tensor<double>("t2", {3UL});
+        auto                  &ctx = cg::CaptureContext::current();
+        record("first", first, {ctx.get_slot(x).first}, {ctx.get_slot(t1).first});
+        record("second", second, {ctx.get_slot(x).first}, {ctx.get_slot(t2).first});
+        cg::axpby(1.0, t1, 0.0, &out1);
+        cg::axpby(1.0, t2, 0.0, &out2);
+    }
+    (void)graph.apply<cg::passes::CSE>();
+    graph.execute();
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK(out1(i) == first.factor * x(i));
+        CHECK(out2(i) == second.factor * x(i));
+    }
+    return static_cast<std::size_t>(
+        std::ranges::count_if(graph.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::Custom; }));
+}
+
+} // namespace
+
+// equal: two registered nodes the hook calls the same computation over the same inputs merge, and
+// only when the node is pure and overwrites what it writes.
+TEST_CASE("Descriptor hooks - a declared equality lets CSE merge two nodes", "[ComputeGraph][DescriptorHooks][CSE]") {
+    register_hook_descriptors();
+    CHECK(survivors_of_cse(ScaledDescriptor{.factor = 2.0}, ScaledDescriptor{.factor = 2.0}) == 1);
+    CHECK(survivors_of_cse(ScaledDescriptor{.factor = 2.0}, ScaledDescriptor{.factor = 3.0}) == 2);
+
+    // Not when its effects are opaque, nor when it says nothing about its destination.
+    CHECK(survivors_of_cse(ScaledOpaqueDescriptor{.factor = 2.0}, ScaledOpaqueDescriptor{.factor = 2.0}) == 2);
+    CHECK(survivors_of_cse(ScaledNoDestinationDescriptor{.factor = 2.0}, ScaledNoDestinationDescriptor{.factor = 2.0}) == 2);
+}
+
+// The conformance kit holds equal to the samples: a truthful one is clean, and one that calls
+// different computations the same is caught.
+TEST_CASE("Descriptor conformance - an equality claim is held to the results", "[ComputeGraph][DescriptorHooks][Conformance]") {
+    register_hook_descriptors();
+    std::vector<cg::ConformanceSample> truthful{sample_of("two", ScaledDescriptor{.factor = 2.0}),
+                                                sample_of("two_again", ScaledDescriptor{.factor = 2.0}),
+                                                sample_of("three", ScaledDescriptor{.factor = 3.0})};
+    auto const                         clean = cg::check_descriptor("hooks_test.Scaled", truthful);
+    INFO(fmt::format("{}", fmt::join(clean, "\n")));
+    CHECK(clean.empty());
+
+    std::vector<cg::ConformanceSample> lying{sample_of("two", ScaledLyingEqualDescriptor{.factor = 2.0}),
+                                             sample_of("three", ScaledLyingEqualDescriptor{.factor = 3.0})};
+    auto const                         problems = cg::check_descriptor("hooks_test.ScaledLyingEqual", lying);
+    INFO(fmt::format("{}", fmt::join(problems, "\n")));
+    CHECK(std::ranges::any_of(
+        problems, [](std::string const &problem) { return problem.find("the second computes something else") != std::string::npos; }));
 }

@@ -98,6 +98,7 @@ struct DescriptorHooksFor {
     std::function<std::optional<ExtentList>(D const &descriptor, Node const &node, ExtentQuery const &query)> output_extents;
     /// See @ref DescriptorHooks::cost.
     std::function<std::optional<CostEstimate>(D const &descriptor, CostQuery const &query)> cost;
+    std::function<bool(D const &a, D const &b)>                                             equal; ///< See @ref DescriptorHooks::equal.
 };
 
 /**
@@ -141,6 +142,9 @@ void register_descriptor(Write write, Read read, Build build, DescriptorHooksFor
         codec.hooks.cost = [fn = std::move(hooks.cost)](OpData const &descriptor, CostQuery const &query) {
             return fn(descriptor.get<D>(), query);
         };
+    }
+    if (hooks.equal) {
+        codec.hooks.equal = [fn = std::move(hooks.equal)](OpData const &a, OpData const &b) { return fn(a.get<D>(), b.get<D>()); };
     }
     register_descriptor(std::move(codec));
 }

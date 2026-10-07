@@ -98,6 +98,10 @@ struct ConformanceSample {
  * - its threading: a moldable node run at @ref ConformanceSample::width under the
  *   DataflowExecutor computes the reference, within @ref ConformanceSample::width_tolerance.
  *
+ * Across the samples, an @c equal hook must call each descriptor equal to itself, give the same
+ * answer both ways round, and call two descriptors equal only when the second, run on the first
+ * sample's inputs, computes the first's reference.
+ *
  * @return One line per problem found, each naming the sample; empty when every claim held.
  *         A codec not registered under @p name is one problem.
  */

@@ -162,6 +162,13 @@ struct DescriptorHooks {
     /// What the node costs; see @ref CostEstimate. Without it, or when it returns empty, the node
     /// is priced as the memory traffic of its tensors, as any Custom node is.
     std::function<std::optional<CostEstimate>(OpData const &descriptor, CostQuery const &query)> cost;
+
+    /// Whether two of this descriptor compute the same result from the same inputs. CSE merges two
+    /// such nodes reading the same inputs when this says so, the node is deterministic without
+    /// external effects (@ref effects), and its @ref destination says it overwrites all of its
+    /// destination without reading it, since the survivor's output stands in for the duplicate's.
+    /// Without it two nodes of the descriptor are never merged.
+    std::function<bool(OpData const &a, OpData const &b)> equal;
 };
 
 /**

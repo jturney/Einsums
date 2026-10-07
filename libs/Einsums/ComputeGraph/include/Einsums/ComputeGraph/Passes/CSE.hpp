@@ -72,6 +72,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - Only **pure-overwrite** producers are eligible: einsum with `c_prefactor == 0`, axpby / permute / batched-gemm with
  *   `beta == 0`. Accumulating ops (nonzero destination prefactor) and scale/axpy/element-transform (whose scalar coefficients
  *   are not carried in `op_data`, so equality can't be decided) are never merged.
+ * - A node of a descriptor registered outside the library is merged only when its codec's `equal` hook calls the two the
+ *   same, its `destination` hook says it overwrites all of what it writes, and it is deterministic without external effects;
+ *   and only exactly, never proportionally (DescriptorHooks.hpp).
  * - The duplicate's outputs must be graph-owned intermediates that are **not** views (`is_intermediate && aliases == 0`); a
  *   user-visible output is left in place because the user reads that tensor directly, not through an executor slot. A node
  *   that writes a view is never a candidate at all.

@@ -141,10 +141,14 @@ class SampleCheck {
     SampleCheck(DescriptorCodec const &codec, ConformanceSample const &sample, std::vector<std::string> &problems)
         : _codec(codec), _sample(sample), _problems(problems) {}
 
+    /// What the node computed on the sample's own descriptor, when it could be run.
+    [[nodiscard]] std::optional<std::vector<Bytes>> const &result() const { return _result; }
+
     void run_all() {
         if (!attempt("capture and run it", [this] { reference(); })) {
             return;
         }
+        _result = _reference;
         attempt("check its output extents", [this] { extents(); });
         attempt("check its destination", [this] { destination(); });
         attempt("check its effects", [this] { effects(); });
@@ -162,6 +166,8 @@ class SampleCheck {
     std::vector<Bytes> _inputs;
     std::vector<Bytes> _prior;
     std::vector<Bytes> _reference;
+
+    std::optional<std::vector<Bytes>> _result;
 
     void report(std::string const &what) { _problems.push_back(fmt::format("sample '{}': {}", _sample.name, what)); }
 
@@ -306,6 +312,43 @@ class SampleCheck {
     }
 };
 
+/// Hold the codec's @c equal to the samples: it must call each descriptor equal to itself, answer
+/// the same both ways round, and call two descriptors equal only when the second computes what the
+/// first does on the first's inputs.
+void check_equal(DescriptorCodec const &codec, std::span<ConformanceSample const> samples,
+                 std::vector<std::optional<std::vector<Bytes>>> const &results, std::vector<std::string> &problems) {
+    auto const &equal = codec.hooks.equal;
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        ConformanceSample const &first = samples[i];
+        try {
+            if (!equal(first.descriptor, first.descriptor)) {
+                problems.push_back(fmt::format("sample '{}': equal says its descriptor differs from itself", first.name));
+            }
+            for (std::size_t j = i + 1; j < samples.size(); ++j) {
+                ConformanceSample const &second = samples[j];
+                bool const               forth  = equal(first.descriptor, second.descriptor);
+                if (forth != equal(second.descriptor, first.descriptor)) {
+                    problems.push_back(
+                        fmt::format("samples '{}' and '{}': equal gives a different answer each way round", first.name, second.name));
+                    continue;
+                }
+                if (!forth || !results[i]) {
+                    continue;
+                }
+                Built swapped = build(first, second.descriptor, first.params);
+                swapped.graph->execute();
+                if (bytes_of(*swapped.graph, swapped.operands.outputs) != *results[i]) {
+                    problems.push_back(fmt::format("samples '{}' and '{}': equal calls their descriptors the same computation, but on "
+                                                   "'{}''s inputs the second computes something else",
+                                                   first.name, second.name, first.name));
+                }
+            }
+        } catch (std::exception const &e) {
+            problems.push_back(fmt::format("sample '{}': threw while checking equal: {}", first.name, e.what()));
+        }
+    }
+}
+
 } // namespace
 
 std::vector<std::string> check_descriptor(std::string_view name, std::span<ConformanceSample const> samples) {
@@ -315,16 +358,26 @@ std::vector<std::string> check_descriptor(std::string_view name, std::span<Confo
         problems.push_back(fmt::format("no codec is registered as '{}'", name));
         return problems;
     }
-    for (ConformanceSample const &sample : samples) {
+    std::vector<std::optional<std::vector<Bytes>>> results(samples.size());
+    bool                                           usable = true;
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        ConformanceSample const &sample = samples[i];
         if (sample.descriptor.name() != name) {
             problems.push_back(fmt::format("sample '{}': carries a '{}', not a '{}'", sample.name, sample.descriptor.name(), name));
+            usable = false;
             continue;
         }
         if (!sample.operands) {
             problems.push_back(fmt::format("sample '{}': has no operands function", sample.name));
+            usable = false;
             continue;
         }
-        SampleCheck(*codec, sample, problems).run_all();
+        SampleCheck check(*codec, sample, problems);
+        check.run_all();
+        results[i] = check.result();
+    }
+    if (usable && codec->hooks.equal) {
+        check_equal(*codec, samples, results, problems);
     }
     return problems;
 }

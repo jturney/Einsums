@@ -3,6 +3,8 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
+#include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -157,6 +159,14 @@ std::optional<double> op_data_ratio(OpData const &a, OpData const &b) {
         // In place, so never a pure-overwrite producer and never reached; the
         // exact comparison is kept so the variant is covered explicitly.
         return sa->factor == b.get<ScaleDescriptor>().factor ? std::optional<double>{1.0} : std::nullopt;
+    }
+    // A descriptor registered outside the library says itself whether two of it are the same
+    // computation. Only exactly the same: a proportional merge needs the readers' fold sites to
+    // understand the scale, and those are the library's own descriptors.
+    if (a.name().find('.') != std::string_view::npos) {
+        if (DescriptorCodec const *codec = find_descriptor_codec(a.name()); codec != nullptr && codec->hooks.equal) {
+            return codec->hooks.equal(a, b) ? std::optional<double>{1.0} : std::nullopt;
+        }
     }
     return std::nullopt;
 }
@@ -354,6 +364,11 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
         // Only pure-overwrite producers may be a CSE survivor/candidate. (Since
         // a matched pair must have equal op_data, checking one covers the other.)
         if (!pure_overwrite(nodes[j]))
+            continue;
+
+        // Nor one whose effects its tensors do not show: a node that reads hidden state is not the
+        // same computation as its twin, and one that acts outside its outputs must run every time.
+        if (NodeEffects const effects = effects_of(nodes[j]); !effects.deterministic || effects.external_effects)
             continue;
 
         // Neither a survivor nor a candidate: a merge either removes the node or keys every later
