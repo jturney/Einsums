@@ -22,11 +22,13 @@
 #include <Einsums/ComputeGraph/Passes/ConstantFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
+#include <Einsums/ComputeGraph/PredExpr.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -163,4 +165,89 @@ TEST_CASE("Parametric loop survives the default pipeline", "[ComputeGraph][Pass]
     loop.graph.apply(pm);
     REQUIRE(loop.run() == Catch::Approx(45.0));
     REQUIRE(loop.run() == Catch::Approx(45.0));
+}
+
+namespace {
+
+/// A 3x3 matrix holding 1..9 by rows.
+RuntimeTensor<double> one_to_nine() {
+    RuntimeTensor<double> A{"A", {3UL, 3UL}};
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            A(i, j) = static_cast<double>(1 + (3 * i) + j);
+        }
+    }
+    return A;
+}
+
+} // namespace
+
+// A loop body is a scope of its graph, not a separate one: a parameter written
+// before the loop is the one the body's slices resolve against. A captured body
+// used to hold a table of its own and threw "parameter 'r' is not set", while
+// the same graph saved and loaded shared the root's and ran.
+TEST_CASE("Parametric loop - the body reads a parameter written before the loop", "[ComputeGraph][View][WriteParam]") {
+    auto                  A = one_to_nine();
+    RuntimeTensor<double> total{"total", {3UL}};
+    total.zero();
+
+    cg::Graph graph("param_before_loop");
+    {
+        cg::CaptureGuard const capture(graph);
+        cg::write_param("r", cg::BoundExpr(1));
+    }
+    auto &body = graph.add_loop("rows", 3, [](size_t iter) { return iter < 2; });
+    {
+        cg::CaptureGuard const capture(body);
+        auto                  &slice = cg::view_runtime(A, {cg::ViewAxis::drop("r"), cg::ViewAxis::full()});
+        cg::axpby(1.0, slice, 1.0, &total);
+    }
+
+    REQUIRE_NOTHROW(graph.execute());
+    CHECK(total(0) + total(1) + total(2) == 45.0); // 3 iterations of 4 + 5 + 6
+}
+
+// The loop's condition and its body read one table: a condition on a parameter
+// the body writes sees each write. The condition used to read the parent's
+// table while the body wrote its own, so the parameter was never set there.
+TEST_CASE("Parametric loop - the condition reads a parameter the body writes", "[ComputeGraph][WriteParam]") {
+    RuntimeTensor<double> one{"one", {1UL}};
+    RuntimeTensor<double> count{"count", {1UL}};
+    one(0) = 1.0;
+    count.zero();
+    std::int64_t runs = 0;
+
+    cg::Graph graph("param_condition");
+    auto     &body = graph.add_loop("until_k", 10, cg::PredExpr::compare("k", cg::CmpOp::Lt, 3));
+    {
+        cg::CaptureGuard const capture(body);
+        cg::write_param("k", std::function<std::int64_t()>([&runs] { return ++runs; }));
+        cg::axpy(1.0, one, &count);
+    }
+
+    REQUIRE_NOTHROW(graph.execute());
+    CHECK(count(0) == 3.0);
+}
+
+// A conditional's branches are scopes of the same graph too; they held tables
+// of their own as loop bodies did.
+TEST_CASE("Parametric loop - a branch reads a parameter written before the conditional", "[ComputeGraph][View][WriteParam]") {
+    auto                  A = one_to_nine();
+    RuntimeTensor<double> row{"row", {3UL}};
+    row.zero();
+
+    cg::Graph graph("param_branch");
+    {
+        cg::CaptureGuard const capture(graph);
+        cg::write_param("r", cg::BoundExpr(2));
+    }
+    auto [then_branch, else_branch] = graph.add_conditional("always", cg::PredExpr::always(true));
+    {
+        cg::CaptureGuard const capture(then_branch);
+        auto                  &slice = cg::view_runtime(A, {cg::ViewAxis::drop("r"), cg::ViewAxis::full()});
+        cg::axpby(1.0, slice, 0.0, &row);
+    }
+
+    REQUIRE_NOTHROW(graph.execute());
+    CHECK(row(0) + row(1) + row(2) == 24.0); // 7 + 8 + 9
 }

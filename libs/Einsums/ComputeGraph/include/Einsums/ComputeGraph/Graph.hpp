@@ -1870,7 +1870,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// down to each stage Graph at construction. Standalone graphs get
     /// a default empty table; callers can replace it via
     /// ``set_params_ptr`` if they want to share with another scope.
-    void                                             set_params_ptr(std::shared_ptr<ParamTable> params) { _params = std::move(params); }
+    ///
+    /// A loop body, a conditional branch and a setup body are scopes of the
+    /// graph that holds them, not separate ones: each is created holding this
+    /// graph's table, and ``set_params_ptr`` hands the new table to every graph
+    /// this one contains. A node already captured keeps the table it captured,
+    /// so set the table before capturing into the graph.
+    void                                             set_params_ptr(std::shared_ptr<ParamTable> params);
     [[nodiscard]] std::shared_ptr<ParamTable> const &params_ptr() const { return _params; }
     [[nodiscard]] int                                stage_index() const { return _stage_index; }
     [[nodiscard]] std::string const                 &pipeline_name() const { return _pipeline_name; }

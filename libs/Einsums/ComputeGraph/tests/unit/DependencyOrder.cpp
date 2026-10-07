@@ -424,3 +424,29 @@ TEST_CASE("Dependency - writes of different parameters stay independent", "[Comp
     CHECK_FALSE(has_edge(graph, 0, 1));
     CHECK(graph.dependencies().levels.size() == 1);
 }
+
+// The parameter half of a loop's named writes: a parameter written in the body
+// is read by a slice after the loop, so the slice must follow the loop. This
+// was unreachable while a captured body held a ParamTable of its own.
+TEST_CASE("Dependency - a slice after a loop waits for the loop's parameter write", "[ComputeGraph][Dependency][WriteParam][Loop]") {
+    RuntimeTensor<double> A{"A", {3UL, 3UL}};
+    A.zero();
+    size_t iter = 0;
+
+    cg::Graph graph("dep_loop_param");
+    auto     &body = graph.add_loop("rows", 3, [&iter](size_t) {
+        ++iter;
+        return iter < 3;
+    });
+    {
+        cg::CaptureGuard const capture(body);
+        cg::write_param("r", std::function<std::int64_t()>([&iter] { return static_cast<std::int64_t>(iter); }));
+    }
+    {
+        cg::CaptureGuard const capture(graph);
+        (void)cg::view_runtime(A, {cg::ViewAxis::drop("r"), cg::ViewAxis::full()});
+    }
+
+    REQUIRE(graph.nodes().size() == 2);
+    CHECK(has_edge(graph, 0, 1));
+}

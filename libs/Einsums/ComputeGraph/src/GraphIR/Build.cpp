@@ -331,8 +331,12 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
                 throw BuildFailure(fmt::format("conditional node '{}' has no then-branch", spec.label));
             }
             conditional->then_branch = build_fragment(root, *spec.then_branch, loaded, gates, registry);
-            conditional->else_branch = spec.else_branch != nullptr ? build_fragment(root, *spec.else_branch, loaded, gates, registry)
-                                                                   : std::make_shared<Graph>("else");
+            if (spec.else_branch != nullptr) {
+                conditional->else_branch = build_fragment(root, *spec.else_branch, loaded, gates, registry);
+            } else {
+                conditional->else_branch = std::make_shared<Graph>("else");
+                conditional->else_branch->set_params_ptr(root.params_ptr());
+            }
         }
         if (auto *loop = node.op_data.get_if<LoopDescriptor>()) {
             if (spec.body == nullptr) {

@@ -62,6 +62,10 @@ std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, std::func
 std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, PredExpr predicate) {
     auto then_graph = std::make_shared<Graph>(label + "/then");
     auto else_graph = std::make_shared<Graph>(label + "/else");
+    // Branches are scopes of this graph: a parameter written before the conditional is the one
+    // they resolve against.
+    then_graph->set_params_ptr(_params);
+    else_graph->set_params_ptr(_params);
 
     ConditionalDescriptor desc;
     desc.predicate   = std::move(predicate);
@@ -91,6 +95,14 @@ std::tuple<Graph &, Graph &> Graph::add_conditional_flag(std::string label, Gate
     return add_conditional(std::move(label), PredExpr::flag(flags, index));
 }
 
+// NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
+void Graph::set_params_ptr(std::shared_ptr<ParamTable> params) {
+    _params = std::move(params);
+    for (auto &node : _nodes) {
+        for_each_child_graph(node, [this](Graph &child) { child.set_params_ptr(_params); });
+    }
+}
+
 Graph &Graph::add_loop(std::string label, size_t max_iterations, std::function<bool(size_t)> condition) {
     // An absent condition has always meant "run to max_iterations", and a
     // default PredExpr is an unconditional true, which says exactly that.
@@ -103,6 +115,10 @@ Graph &Graph::add_loop(std::string label, size_t max_iterations, PredExpr condit
 
 Graph &Graph::add_loop_at(std::string label, size_t max_iterations, PredExpr condition, std::size_t position) {
     auto body_graph = std::make_shared<Graph>(label + "/body");
+    // One table with the parent, as for a setup body below. The loop's condition is evaluated
+    // against this graph's table, so a body holding its own would write parameters the condition
+    // never sees, and could not read one written before the loop.
+    body_graph->set_params_ptr(_params);
 
     LoopDescriptor desc;
     desc.body           = body_graph;
