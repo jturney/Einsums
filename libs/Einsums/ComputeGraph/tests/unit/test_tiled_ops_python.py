@@ -661,10 +661,11 @@ def test_tiled_operands_are_never_gpu_placed(dtype):
     tensor per tile -- so the H2D/D2H nodes placement inserts have nothing to
     move, and TransferInsertion would emit a copy from a null pointer.
 
-    This was a live bug, not a hypothetical: `dot` is in is_gpu_capable_op, and
-    TensorHandle::total_bytes reports the honest GLOBAL size regardless of tile
-    sparsity, so a tiled dot over min_bytes (65536) was a valid candidate and did
-    get placed. It went unnoticed because gpu::has_unified_memory makes the
+    This was a live bug, not a hypothetical: while every `dot` was a placement
+    candidate, TensorHandle::total_bytes reported the honest GLOBAL size
+    regardless of tile sparsity, so a tiled dot over min_bytes (65536) did get
+    placed. GPUPlacement no longer places `dot` at all, so the dot below is now
+    kept on the CPU by the dispatchable-kind gate as well as by the tiled guard. It went unnoticed because gpu::has_unified_memory makes the
     transfers no-ops on Apple Silicon and on the mock backend; a discrete
     CUDA/HIP build would memcpy from nullptr.
 

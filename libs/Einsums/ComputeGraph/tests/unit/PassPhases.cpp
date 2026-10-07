@@ -20,7 +20,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <map>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -484,6 +486,58 @@ TEST_CASE("pass phases - names round-trip", "[ComputeGraph][Phases]") {
 // ══════════════════════════════════════════════════════════════════════════════
 // The named managers
 // ══════════════════════════════════════════════════════════════════════════════
+
+// The default pipeline's order is written out in create_default's doc comment, and that list
+// drifted until it missed a dozen passes. Each numbered entry must name the pass at that position
+// and the phase it declares; an entry may be missing from this build only inside the GPU or
+// distributed block, which the backends gate.
+TEST_CASE("pass phases - create_default's documented order is the pipeline's", "[ComputeGraph][Phases]") {
+    std::ifstream header(EINSUMS_OPTIMIZER_HEADER);
+    REQUIRE(header.good());
+
+    struct Entry {
+        std::string name;
+        std::string phase;
+        bool        gated;
+    };
+    std::vector<Entry> documented;
+    std::regex const   entry_line(R"(^\s*\*\s+\d+\. (\w+) \(([a-z-]+)\):)");
+    bool               in_list = false;
+    bool               gated   = false;
+    std::string        line;
+    while (std::getline(header, line)) {
+        if (line.find("static PassManager create_default();") != std::string::npos) {
+            break;
+        }
+        if (line.find("GPU block (") != std::string::npos || line.find("Distributed block (") != std::string::npos) {
+            gated = true;
+        } else if (line.find("Tail (always registered)") != std::string::npos) {
+            gated = false;
+        }
+        if (std::smatch match; std::regex_search(line, match, entry_line)) {
+            in_list = true;
+            documented.push_back({.name = match[1], .phase = match[2], .gated = gated});
+        } else if (in_list && line.find("@return") != std::string::npos) {
+            break;
+        }
+    }
+    REQUIRE_FALSE(documented.empty());
+
+    auto const  pm  = cg::PassManager::create_default();
+    auto const &run = pm.passes();
+    size_t      at  = 0;
+    for (auto const &entry : documented) {
+        INFO("documented entry '" << entry.name << "'");
+        if (at < run.size() && run[at]->name() == entry.name) {
+            CHECK(std::string{cg::pass_phase_name(run[at]->phase())} == entry.phase);
+            ++at;
+        } else {
+            CHECK(entry.gated); // absent from this build, which only a backend gate may do
+        }
+    }
+    INFO("first undocumented pass: " << (at < run.size() ? run[at]->name() : std::string{"none"}));
+    CHECK(at == run.size());
+}
 
 TEST_CASE("named managers - the four partition the default pipeline exactly", "[ComputeGraph][Phases]") {
     auto const def        = names_of(cg::PassManager::create_default());

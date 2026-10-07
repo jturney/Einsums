@@ -375,9 +375,9 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                                    std::string label) {
         Node nd;
         nd.id = graph.reserve_node_id();
-        // Custom, not Dot: OpKind::Dot is in is_gpu_capable_op and GPUPlacement
-        // would target this node, but it is an N-pair reduction whose CPU
-        // executor cannot run with its operands swapped to device shadows.
+        // Custom, not Dot: a Dot node is one pair (the executor builder,
+        // AxisTiling and AntisymmetrizerFolding all read it as two inputs and
+        // one output), and this is an N-pair reduction over per-tile ids.
         nd.kind  = OpKind::Custom;
         nd.label = std::move(label);
         nd.inputs.reserve(as_.size() * 2);

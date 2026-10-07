@@ -878,14 +878,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /**
      * @brief Create a PassManager with all built-in passes in recommended order.
      *
-     * Ordering rationale: lowering first (TiledExpansion, so every pass below
-     * sees dense nodes), then graph-transforming cleanups (fold/absorb/fuse/
-     * eliminate), then planning and fusion, then scheduling (Reorder/
-     * IOPrefetch), then deferred materialization, then backend placement (GPU,
-     * distributed), then memory management. The GPU and distributed blocks are
-     * compile-time-gated by backend availability; the numbering below assumes
-     * both are present. populate_default() in Optimizer.cpp carries the
-     * per-pass ordering rationale.
+     * Ordering rationale: provenance first (DeltaElimination reads the tags it carries), then
+     * lowering (TiledExpansion, so every pass below sees dense nodes), then index-space analysis,
+     * then the algebraic rewrites (delta elimination, the antisymmetrizer passes, folding,
+     * absorption, fusion, elimination, hoisting, factorization), then planning, then scheduling
+     * (Reorder/IOPrefetch), then deferred materialization and the read-only analyses of the
+     * planned graph, then backend placement (GPU, distributed), then memory management. The GPU
+     * and distributed blocks are compile-time-gated by backend availability; the numbering below
+     * assumes both are present. build_default_passes() in Optimizer.cpp carries the per-pass
+     * ordering rationale, and a test in PassPhases.cpp holds this list to it.
      *
      * Each entry names its @ref PassPhase. The sequence is *not* sorted by
      * phase, and one entry is a recorded deviation from the phase rule: see
@@ -894,49 +895,58 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @ref structural_pass_manager and friends filter on, and what a saved
      * graph consults to decide which output it may keep.
      *
-     *  1. TiledExpansion (structural-resource): lower tiled ops into per-tile dense nodes
-     *  2. ConstantFolding (structural-algebraic): evaluate constant-input nodes at compile time
-     *  3. ScaleAbsorption (structural-algebraic): drop a Scale(α) made dead by the next op overwriting it
-     *  4. PermuteFusion (structural-algebraic): absorb leading permutes into the GEMM trans flags
-     *  5. CSE (structural-algebraic): common subexpression elimination
-     *  6. DeadNodeElimination (structural-algebraic): drop nodes whose outputs are unused
-     *  7. SymmetrizedAccumulation (structural-algebraic): fold the r2 += s*(tmp + P(tmp)) idiom
-     *  8. ElementWiseFusion (structural-algebraic): merge adjacent element-wise ops
-     *  9. LinearCombinationContractionFolding (structural-algebraic): fold transpose-paired contractions
-     * 10. DistributiveFactoring (structural-algebraic): factor a shared operand out of sibling contractions
-     * 11. LoopInvariantHoisting (structural-algebraic): move invariant ops out of Loop bodies
-     * 12. ScratchPrivatization (structural-resource): clone reused scratch to break false WAR/WAW chains
-     * 13. ContractionPlanning (structural-algebraic): cost-model chain reassociation
-     * 14. GEMMBatching (tuning): collapse compatible GEMMs into one BatchedGemm
-     * 15. Reorder (tuning): memory-aware topological sort
-     * 16. IOPrefetch (tuning): overlap DiskRead with compute
-     * 17. DistributionPlanning (structural-resource): classify indices for distributed dispatch
-     * 18. Materialization (tuning): resize deferred tensors to local partitions
-     * 19. SymmetryPropagation (analysis): infer symmetry on graph intermediates and
+     *  1. ProvenancePropagation (analysis): carry provenance tags across identity-preserving ops
+     *  2. TiledExpansion (structural-resource): lower tiled ops into per-tile dense nodes
+     *  3. SpacePropagation (analysis): infer per-slot index spaces on graph intermediates
+     *  4. CrossSpaceValidation (diagnostic): flag letters binding slots of different index spaces
+     *  5. DeltaElimination (structural-algebraic): replace a contraction with a Kronecker delta by a rename
+     *  6. AntisymmetryDetection (analysis): read which permutation symmetries a bound input has
+     *  7. AntisymmetrizerLinearity (structural-algebraic): pull a sum of antisymmetrized terms inside one operator
+     *  8. AntisymmetryInference (analysis): tag a permutation operator's output with its antisymmetry
+     *  9. AntisymmetrizerFolding (structural-algebraic): collapse an operator on an antisymmetric operand to a scalar
+     * 10. AntisymmetrizerExpansion (structural-algebraic): lower remaining operators into explicit terms
+     * 11. ConstantFolding (structural-algebraic): evaluate constant-input nodes at compile time
+     * 12. ScaleAbsorption (structural-algebraic): drop a Scale(α) made dead by the next op overwriting it
+     * 13. PermuteFusion (structural-algebraic): absorb leading permutes into the GEMM trans flags
+     * 14. CSE (structural-algebraic): common subexpression elimination
+     * 15. DeadNodeElimination (structural-algebraic): drop nodes whose outputs are unused
+     * 16. SymmetrizedAccumulation (structural-algebraic): fold the r2 += s*(tmp + P(tmp)) idiom
+     * 17. ElementWiseFusion (structural-algebraic): merge adjacent element-wise ops
+     * 18. LinearCombinationContractionFolding (structural-algebraic): fold transpose-paired contractions
+     * 19. DistributiveFactoring (structural-algebraic): factor a shared operand out of sibling contractions
+     * 20. LoopInvariantHoisting (structural-algebraic): move invariant ops out of Loop bodies
+     * 21. ScratchPrivatization (structural-resource): clone reused scratch to break false WAR/WAW chains
+     * 22. MultiTermFactorization (structural-algebraic): parenthesize a region's contractions and share terms
+     * 23. LayoutAssignment (structural-algebraic): choose storage orders so contractions read operands flat
+     * 24. ContractionPlanning (structural-algebraic): cost-model chain reassociation
+     * 25. GEMMBatching (tuning): collapse compatible GEMMs into one BatchedGemm
+     * 26. Reorder (tuning): memory-aware topological sort
+     * 27. IOPrefetch (tuning): overlap DiskRead with compute
+     * 28. DistributionPlanning (structural-resource): classify indices for distributed dispatch
+     * 29. Materialization (tuning): resize deferred tensors to local partitions
+     * 30. SymmetryPropagation (analysis): infer symmetry on graph intermediates and
      *                                 push to backing tensors for rank-2 BLAS dispatch
-     * 20. SpacePropagation (analysis): infer per-slot index spaces on graph intermediates
-     * 21. CrossSpaceValidation (diagnostic): flag letters binding slots of different index spaces
-     * 22. ScalingAnalysis (diagnostic): report every contraction's cost polynomial and what limits it
-     * 23. StreamContractionFusion (tuning): loop-fuse sibling contractions over one big tensor
+     * 31. ScalingAnalysis (diagnostic): report every contraction's cost polynomial and what limits it
+     * 32. StreamContractionFusion (tuning): loop-fuse sibling contractions over one big tensor
      *
      * GPU block (when a GPU backend or mock is available):
-     * 24. GPUPlacement (structural-resource): cost-model based node-to-GPU assignment
-     * 25. TransferInsertion (structural-resource): insert HostToDevice / DeviceToHost nodes
-     * 26. TransferElimination (structural-resource): drop redundant transfers
-     * 27. GPUDiagnostics (diagnostic): log placement decisions
-     * 28. StreamAssignment (tuning): assign CUDA/HIP streams for overlap
+     * 33. GPUPlacement (structural-resource): cost-model based node-to-GPU assignment
+     * 34. TransferInsertion (structural-resource): insert HostToDevice / DeviceToHost nodes
+     * 35. TransferElimination (structural-resource): drop redundant transfers
+     * 36. GPUDiagnostics (diagnostic): log placement decisions
+     * 37. StreamAssignment (tuning): assign CUDA/HIP streams for overlap
      *
      * Distributed block (when MPI or its mock is available):
-     * 29. InputSlicing (structural-resource): create per-rank views of distributed inputs
-     * 30. SUMMAExpansion (structural-resource): expand einsums to SUMMA loops on square grids
-     * 31. CommunicationInsertion (structural-resource): insert allreduces for replicated outputs
-     * 32. CommunicationElimination (structural-resource): drop redundant communications
-     * 33. CommunicationScheduling (structural-resource): split allreduce into async iallreduce + wait
+     * 38. InputSlicing (structural-resource): create per-rank views of distributed inputs
+     * 39. SUMMAExpansion (structural-resource): expand einsums to SUMMA loops on square grids
+     * 40. CommunicationInsertion (structural-resource): insert allreduces for replicated outputs
+     * 41. CommunicationElimination (structural-resource): drop redundant communications
+     * 42. CommunicationScheduling (structural-resource): split allreduce into async iallreduce + wait
      *
      * Tail (always registered):
-     * 34. InplaceOptimization (tuning): merge elementwise outputs into dying inputs
-     * 35. FreeInsertion (tuning): free intermediates after last consumer
-     * 36. MemoryPlanning (tuning): tensor liveness, peak memory, and arena planning
+     * 43. InplaceOptimization (tuning): merge elementwise outputs into dying inputs
+     * 44. FreeInsertion (tuning): free intermediates after last consumer
+     * 45. MemoryPlanning (tuning): tensor liveness, peak memory, and arena planning
      *
      * @return A fully-populated PassManager.
      */

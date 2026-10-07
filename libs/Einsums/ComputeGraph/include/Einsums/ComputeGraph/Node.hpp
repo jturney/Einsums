@@ -1508,12 +1508,12 @@ struct Node {
     std::function<void()> execute;
 
     /**
-     * @brief CPU fallback executor for GPU nodes.
+     * @brief The CPU executor of a node GPUPlacement placed.
      *
-     * When a GPU node's execute() throws, the runtime can fall back to this
-     * lambda which performs the same operation on the CPU. Set automatically
-     * by GPUPlacement when it promotes a node: the original execute is saved
-     * as cpu_fallback before the executor is replaced with a GPU version.
+     * GPUPlacement copies @ref execute here when it sets the target to GPU and
+     * leaves @ref execute as it was, so the two are the same callable. The
+     * serial replay runs @ref execute when its GPU dispatch declines; nothing
+     * reads this field to execute.
      *
      * Empty for CPU nodes and transfer nodes.
      */

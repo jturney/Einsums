@@ -175,12 +175,13 @@ bool node_dtypes_supported(Node const &node, Graph const &graph) {
 /// nodes that placement inserts have nothing to move. Placing such a node makes
 /// TransferInsertion emit a copy from a null pointer.
 ///
-/// This is NOT hypothetical: a float32 tiled ``dot`` over ``min_bytes`` is
-/// otherwise a valid candidate, since ``dot`` is in @ref is_gpu_capable_op and
+/// This was not hypothetical: while every ``dot`` was a placement candidate, a
+/// float32 tiled ``dot`` over ``min_bytes`` was placed, because
 /// ``TensorHandle::total_bytes`` reports the honest GLOBAL size regardless of tile
-/// sparsity. It goes unnoticed on Apple Silicon only because
+/// sparsity. It went unnoticed on Apple Silicon only because
 /// ``gpu::has_unified_memory`` makes the transfers no-ops there; on a discrete
-/// CUDA or HIP build the same graph memcpys from nullptr.
+/// CUDA or HIP build the same graph memcpys from nullptr. @ref node_is_dispatchable
+/// no longer admits ``dot``, and the guard stays for every kind it does admit.
 bool node_touches_tiled(Node const &node, Graph const &graph) {
     for (auto tid : node.inputs) {
         if (graph.tensor(tid).is_tiled)

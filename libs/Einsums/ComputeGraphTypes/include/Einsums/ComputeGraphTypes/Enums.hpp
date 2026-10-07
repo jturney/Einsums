@@ -133,8 +133,11 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
 /**
  * @brief Where a node should execute.
  *
- * Set by the GPUPlacement pass. Defaults to CPU; nodes promoted to GPU
- * will have their executors replaced with GPU-dispatching versions.
+ * Set by the GPUPlacement pass. Defaults to CPU. A node's executor is not
+ * replaced when it is placed: the graph's built-in serial replay
+ * (``Graph::execute()`` with no executor installed) dispatches a GPU node
+ * to the device's BLAS and runs its own executor when that declines. An
+ * installed executor runs every node on the CPU, whatever its target.
  */
 enum class Target : uint8_t {
     CPU, ///< Execute on the host (default)

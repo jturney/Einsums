@@ -338,6 +338,16 @@ if(TARGET SaveLoad_test)
   )
 endif()
 
+# PassManager::create_default's doc comment lists the default pipeline in order; the test holds that
+# list to the code, so it reads the header from the source tree.
+if(TARGET PassPhases_test)
+  target_compile_definitions(
+    PassPhases_test
+    PRIVATE
+      EINSUMS_OPTIMIZER_HEADER="${PROJECT_SOURCE_DIR}/libs/Einsums/ComputeGraph/include/Einsums/ComputeGraph/Optimizer.hpp"
+  )
+endif()
+
 # ComputeGraph takes contractions as string specs; the compile-time Indices{...} API cannot be
 # rewritten by passes and is gone from the module. compile_time_indices.allowlist is empty, so this
 # forbids it outright; the script's ratchet (a listed file may only shrink) is what got it there. The self test proves the patterns still catch what they claim

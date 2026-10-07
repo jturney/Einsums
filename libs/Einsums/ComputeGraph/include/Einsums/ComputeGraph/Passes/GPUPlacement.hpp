@@ -20,8 +20,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *       builds, and the transfer/execution backend it targets is not yet complete.
  *
  * Walks the whole graph tree (including loop bodies and conditional branches, so a hot
- * GEMM inside an SCF loop is a candidate) and marks profitable BLAS/LAPACK ops and
- * einsums with `Target::GPU`, saving each node's CPU executor as its `cpu_fallback`.
+ * GEMM inside an SCF loop is a candidate) and marks profitable einsums (those that lower
+ * to a GEMM or GEMV), scales and axpbys with `Target::GPU`, copying each node's executor
+ * to its `cpu_fallback`.
  * It does NOT insert host/device copies — @ref TransferInsertion does that afterward.
  *
  * Two placement strategies decide profitability per node:
