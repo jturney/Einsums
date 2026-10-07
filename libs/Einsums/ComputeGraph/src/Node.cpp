@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -195,9 +197,28 @@ std::optional<ParamSourceType> param_source_type_from_name(std::string_view name
     return std::nullopt;
 }
 
+namespace {
+
+/// What a registered descriptor's @c accesses hook says @p node touches, or nothing.
+std::optional<NamedAccesses> hooked_accesses(Node const &node) {
+    if (DescriptorHooks const *hooks = descriptor_hooks(node); hooks != nullptr && hooks->accesses) {
+        return hooks->accesses(node.op_data, node);
+    }
+    return std::nullopt;
+}
+
+void append(std::vector<std::string> &to, std::vector<std::string> const &from) {
+    to.insert(to.end(), from.begin(), from.end());
+}
+
+} // namespace
+
 std::vector<std::string> param_writes(Node const &node) {
     if (auto const *wd = node.op_data.get_if<WriteParamDescriptor>()) {
         return {wd->name};
+    }
+    if (auto accesses = hooked_accesses(node)) {
+        return std::move(accesses->param_writes);
     }
     return {};
 }
@@ -225,6 +246,8 @@ std::vector<std::string> param_reads(Node const &node) {
         if (wd->source_expr.has_value()) {
             add(*wd->source_expr);
         }
+    } else if (auto accesses = hooked_accesses(node)) {
+        append(names, accesses->param_reads);
     }
     return names;
 }
@@ -266,8 +289,11 @@ std::vector<std::string> named_writes(Node const &node) {
             keys.push_back(std::move(key));
         }
     }
-    if (node.effects.external_effects) {
+    if (effects_of(node).external_effects) {
         keys.emplace_back(any_named_key);
+    }
+    if (auto accesses = hooked_accesses(node)) {
+        append(keys, accesses->named_writes);
     }
     append_child_keys(node, keys, &named_writes);
     return keys;
@@ -283,8 +309,11 @@ std::vector<std::string> named_reads(Node const &node) {
             keys.push_back(std::move(key));
         }
     }
-    if (!node.effects.deterministic) {
+    if (!effects_of(node).deterministic) {
         keys.emplace_back(any_named_key);
+    }
+    if (auto accesses = hooked_accesses(node)) {
+        append(keys, accesses->named_reads);
     }
     append_child_keys(node, keys, &named_reads);
     return keys;

@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
@@ -15,6 +16,9 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 bool reads_destination(Node const &node) {
+    if (DescriptorHooks const *hooks = descriptor_hooks(node); hooks != nullptr && hooks->destination) {
+        return hooks->destination(node.op_data, node).reads;
+    }
     switch (node.kind) {
     case OpKind::Scale:
     case OpKind::ElementTransform:
@@ -62,6 +66,9 @@ bool reads_destination(Node const &node) {
 std::optional<std::size_t> destination_operand_count(Node const &node) {
     if (node.outputs.size() != 1) {
         return std::nullopt;
+    }
+    if (DescriptorHooks const *hooks = descriptor_hooks(node); hooks != nullptr && hooks->destination) {
+        return hooks->destination(node.op_data, node).operand_count;
     }
     switch (node.kind) {
     case OpKind::Scale:

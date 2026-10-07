@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/BLAS/ThreadControl.hpp>
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
@@ -72,10 +73,17 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * vendor, which is why their wrappers carry no fence, and they have consumed
  * their caller's width since before widths were planned.
  *
+ * A registered descriptor's @c threading hook answers for its node: only
+ * @ref Threading::Moldable may be widened (DescriptorHooks.hpp).
+ *
  * Intended for a width-planning pass, which is the only caller that has to
  * choose; the executor honors whatever width it finds without asking.
  */
 [[nodiscard]] inline bool kernel_moldability(Node const &node) {
+    // A registered descriptor that says how its executor uses threads is taken at its word.
+    if (DescriptorHooks const *hooks = descriptor_hooks(node); hooks != nullptr && hooks->threading) {
+        return hooks->threading(node.op_data) == Threading::Moldable;
+    }
     switch (node.kind) {
     // Contractions and batched GEMMs: einsums-threaded, see above. The
     // grouped sandwich and the grouped gather-rotate are the same shape as the

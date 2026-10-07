@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -145,7 +146,7 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             // A node whose effects its tensor lists do not show: a caller's closure may read
             // state the loop changes (a captured counter, a parameter through the ParamTable) or
             // act once per iteration by design (a log line). Run once, either is wrong.
-            if (!bnode.effects.deterministic || bnode.effects.external_effects) {
+            if (NodeEffects const effects = effects_of(bnode); !effects.deterministic || effects.external_effects) {
                 note_skip("node reads state or has effects its tensor lists do not show (a custom closure not declared pure)",
                           fmt::format("body node '{}'", bnode.label));
                 continue;

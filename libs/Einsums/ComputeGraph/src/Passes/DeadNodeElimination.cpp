@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/DeadNodeElimination.hpp>
@@ -151,7 +152,7 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
 
                 // Nor one that acts outside its outputs: a custom closure not declared pure may
                 // write a file or a log whatever becomes of the tensors it lists.
-                if (node.effects.external_effects) {
+                if (effects_of(node).external_effects) {
                     continue;
                 }
 

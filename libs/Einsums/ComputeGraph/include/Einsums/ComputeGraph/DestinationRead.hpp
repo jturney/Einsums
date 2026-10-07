@@ -40,7 +40,8 @@ class Graph;
  * since nothing says otherwise. Every other kind with a destination prefactor reads its
  * destination exactly when the LIVE prefactor is nonzero, so a pass that rewrites the prefactor is
  * answered by its rewrite. A node without a destination prefactor (a dot, a trace, a grouped node)
- * returns false.
+ * returns false. A registered descriptor's @c destination hook answers for its node
+ * (DescriptorHooks.hpp).
  */
 [[nodiscard]] EINSUMS_EXPORT bool reads_destination(Node const &node);
 
@@ -48,7 +49,9 @@ class Graph;
  * @brief How many operands @p node lists before its destination, when the destination rule covers it.
  *
  * Empty for a node the rule does not cover: no destination prefactor, more than one output (a
- * grouped or batched node keeps one prefactor per member), or a descriptor-less Custom node.
+ * grouped or batched node keeps one prefactor per member), or a descriptor-less Custom node. A
+ * registered descriptor with one output is covered when its @c destination hook gives an operand
+ * count.
  */
 [[nodiscard]] EINSUMS_EXPORT std::optional<std::size_t> destination_operand_count(Node const &node);
 

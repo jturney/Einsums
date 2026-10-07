@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
@@ -169,9 +170,14 @@ inline void hash_range(std::size_t &h, Range const &range) {
  * A prefactor-bearing op (Einsum/Permute/BatchedGemm) whose destination
  * prefactor is zero writes C fresh, making any prior write to that tensor dead.
  * Shared by ScaleAbsorption (drop a scale the next op overwrites) and CSE
- * (only a pure-overwrite result is a safe common-subexpression survivor).
+ * (only a pure-overwrite result is a safe common-subexpression survivor). A
+ * registered descriptor's @c destination hook answers for its node.
  */
 [[nodiscard]] inline bool pure_overwrite(Node const &nd) {
+    if (DescriptorHooks const *hooks = descriptor_hooks(nd); hooks != nullptr && hooks->destination) {
+        DestinationUse const use = hooks->destination(nd.op_data, nd);
+        return use.overwrites_all && !use.reads;
+    }
     // Axpby: Y = alpha*X + beta*Y overwrites Y exactly when beta == 0.
     if (auto const *beta = axpby_beta(nd)) {
         return is_zero(*beta);

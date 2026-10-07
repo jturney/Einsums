@@ -1590,7 +1590,8 @@ struct NodeIndexLists {
 /// dependency scan cannot see it, and in the callback form the node carries no
 /// tensor operands at all - which reads to an unguarded pass as "no inputs,
 /// therefore unconditionally movable". Schedulers pair this with
-/// @ref param_reads to order parameter writes against their consumers.
+/// @ref param_reads to order parameter writes against their consumers. A registered descriptor
+/// adds the writes its @c accesses hook reports (DescriptorHooks.hpp).
 [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> param_writes(Node const &node);
 
 /// @brief Names of @ref ParamTable entries this node READS - the analogue of
@@ -1607,6 +1608,8 @@ struct NodeIndexLists {
 /// at all", which is what hoisting and folding need. A @ref PredExpr::FlagTest
 /// names nothing either, by construction: its array rides outside the dataflow
 /// exactly as @ref LuPivots does.
+///
+/// A registered descriptor adds the reads its @c accesses hook reports (DescriptorHooks.hpp).
 [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> param_reads(Node const &node);
 
 /// @brief Every named resource outside the tensor dataflow this node WRITES, as ordering keys.
@@ -1626,7 +1629,8 @@ struct NodeIndexLists {
 /// A node with @ref NodeEffects::external_effects writes @ref any_named_key, and one that is not
 /// @ref NodeEffects::deterministic reads it: a closure the graph cannot see into may print, write
 /// a file another node reads, or read a parameter a @c WriteParam sets, and shares no tensor with
-/// any of them.
+/// any of them. The effects are @ref effects_of's answer, so a registered descriptor's @c effects
+/// hook decides them, and its @c accesses hook adds named writes of its own.
 [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> named_writes(Node const &node);
 
 /// @brief The named key that stands for every named resource: an access to it conflicts with an
@@ -1645,7 +1649,8 @@ inline constexpr std::string_view any_named_key = "*";
 
 /// @brief Every named resource outside the tensor dataflow this node READS, as ordering keys:
 ///        @ref param_reads and the dataset a @c DiskRead loads, plus, for a control-flow node,
-///        every key read anywhere in its child graphs. See @ref named_writes.
+///        every key read anywhere in its child graphs, plus the named reads a registered
+///        descriptor's @c accesses hook reports. See @ref named_writes.
 [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> named_reads(Node const &node);
 
 /// @brief True when a @c View's slice is resolved from runtime state (a named

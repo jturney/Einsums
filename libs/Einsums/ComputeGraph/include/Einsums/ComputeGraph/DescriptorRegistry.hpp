@@ -13,8 +13,10 @@
 /// build its executor again after a pass rewrites it. Registering a @ref DescriptorCodec under the
 /// descriptor's name supplies all three, and from then on a Custom node carrying that descriptor
 /// is reconstructible - @ref reconstruction_blocker accepts it, @ref build_executor builds it, and
-/// the graph IR saves and loads it.
+/// the graph IR saves and loads it. Its optional @ref DescriptorHooks answer the questions the
+/// passes ask of a node (DescriptorHooks.hpp).
 
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
@@ -60,6 +62,9 @@ struct DescriptorCodec {
     std::function<std::function<void()>(OpData const &descriptor, Graph &graph, packed_gemm::ScalarType dtype, std::size_t rank,
                                         std::span<TensorId const> inputs, std::span<TensorId const> outputs)>
         build;
+
+    /// Optional answers to the passes' questions about the node; see @ref DescriptorHooks.
+    DescriptorHooks hooks;
 };
 
 /**
@@ -78,22 +83,63 @@ EINSUMS_EXPORT void register_descriptor(DescriptorCodec codec);
 [[nodiscard]] EINSUMS_EXPORT DescriptorCodec const *find_descriptor_codec(std::string_view name) noexcept;
 
 /**
- * @brief Register a codec for @p D from functions over @p D itself.
+ * @brief @ref DescriptorHooks over @p D itself rather than over an @ref OpData.
  *
- * @p write takes a ``D const &`` and returns a @c json::Value; @p read takes a
- * ``json::Object const &`` and returns a @p D; @p build takes a ``D const &`` followed by the
- * arguments of @ref DescriptorCodec::build.
+ * Each member takes a ``D const &`` where the @ref DescriptorHooks member takes the
+ * @ref OpData holding it, and may be left empty as there.
+ */
+template <NodeDescriptor D>
+struct DescriptorHooksFor {
+    std::function<NamedAccesses(D const &descriptor, Node const &node)>  accesses;    ///< See @ref DescriptorHooks::accesses.
+    std::function<NodeEffects(D const &descriptor)>                      effects;     ///< See @ref DescriptorHooks::effects.
+    std::function<DestinationUse(D const &descriptor, Node const &node)> destination; ///< See @ref DescriptorHooks::destination.
+    std::function<Threading(D const &descriptor)>                        threading;   ///< See @ref DescriptorHooks::threading.
+};
+
+/**
+ * @brief Register a codec for @p D from functions over @p D itself, with hooks.
+ *
+ * As the three-function form, plus @p hooks, whose empty members stay empty.
  */
 template <NodeDescriptor D, typename Write, typename Read, typename Build>
-void register_descriptor(Write write, Read read, Build build) {
-    register_descriptor(DescriptorCodec{
+void register_descriptor(Write write, Read read, Build build, DescriptorHooksFor<D> hooks) {
+    DescriptorCodec codec{
         .name  = std::string(D::descriptor_name),
         .write = [write = std::move(write)](OpData const &descriptor) -> json::Value { return write(descriptor.get<D>()); },
         .read  = [read = std::move(read)](json::Object const &fields) -> OpData { return OpData{read(fields)}; },
         .build = [build = std::move(build)](
                      OpData const &descriptor, Graph &graph, packed_gemm::ScalarType dtype, std::size_t rank,
                      std::span<TensorId const> inputs,
-                     std::span<TensorId const> outputs) { return build(descriptor.get<D>(), graph, dtype, rank, inputs, outputs); }});
+                     std::span<TensorId const> outputs) { return build(descriptor.get<D>(), graph, dtype, rank, inputs, outputs); }};
+    if (hooks.accesses) {
+        codec.hooks.accesses = [fn = std::move(hooks.accesses)](OpData const &descriptor, Node const &node) {
+            return fn(descriptor.get<D>(), node);
+        };
+    }
+    if (hooks.effects) {
+        codec.hooks.effects = [fn = std::move(hooks.effects)](OpData const &descriptor) { return fn(descriptor.get<D>()); };
+    }
+    if (hooks.destination) {
+        codec.hooks.destination = [fn = std::move(hooks.destination)](OpData const &descriptor, Node const &node) {
+            return fn(descriptor.get<D>(), node);
+        };
+    }
+    if (hooks.threading) {
+        codec.hooks.threading = [fn = std::move(hooks.threading)](OpData const &descriptor) { return fn(descriptor.get<D>()); };
+    }
+    register_descriptor(std::move(codec));
+}
+
+/**
+ * @brief Register a codec for @p D from functions over @p D itself.
+ *
+ * @p write takes a ``D const &`` and returns a @c json::Value; @p read takes a
+ * ``json::Object const &`` and returns a @p D; @p build takes a ``D const &`` followed by the
+ * arguments of @ref DescriptorCodec::build. The codec has no hooks.
+ */
+template <NodeDescriptor D, typename Write, typename Read, typename Build>
+void register_descriptor(Write write, Read read, Build build) {
+    register_descriptor<D>(std::move(write), std::move(read), std::move(build), DescriptorHooksFor<D>{});
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)

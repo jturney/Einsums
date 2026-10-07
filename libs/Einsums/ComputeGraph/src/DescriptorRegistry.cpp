@@ -45,6 +45,27 @@ void register_descriptor(DescriptorCodec codec) {
     }
 }
 
+DescriptorHooks const *descriptor_hooks(Node const &node) noexcept {
+    if (node.kind != OpKind::Custom) {
+        return nullptr;
+    }
+    // Every registered name is qualified and no library descriptor's is, so an unqualified name
+    // is answered without taking the lock.
+    std::string_view const name = node.op_data.name();
+    if (name.find('.') == std::string_view::npos) {
+        return nullptr;
+    }
+    DescriptorCodec const *codec = find_descriptor_codec(name);
+    return codec != nullptr ? &codec->hooks : nullptr;
+}
+
+NodeEffects effects_of(Node const &node) {
+    if (DescriptorHooks const *hooks = descriptor_hooks(node); hooks != nullptr && hooks->effects) {
+        return hooks->effects(node.op_data);
+    }
+    return node.effects;
+}
+
 DescriptorCodec const *find_descriptor_codec(std::string_view name) noexcept {
     auto                               &reg = registry();
     std::shared_lock<std::shared_mutex> lock(reg.mutex);

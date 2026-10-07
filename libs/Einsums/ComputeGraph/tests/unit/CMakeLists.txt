@@ -42,6 +42,7 @@ set(ComputeGraphTests
     DeltaElimination.cpp
     DirectApplyRecursion.cpp
     DependencyOrder.cpp
+    DescriptorHooks.cpp
     DiisAccelerator.cpp
     DistributedIntegration.cpp
     DistributiveFactoring.cpp
