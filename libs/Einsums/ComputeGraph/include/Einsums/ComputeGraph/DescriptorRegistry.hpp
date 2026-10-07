@@ -103,6 +103,10 @@ struct DescriptorHooksFor {
     std::function<std::optional<std::vector<TileCoord>>(D const &descriptor, Node const &node, TileQuery const &query)> tiles;
     /// See @ref DescriptorHooks::tile.
     std::function<std::optional<OpData>(D const &descriptor, TileCoord const &coord)> tile;
+    /// See @ref DescriptorHooks::axes.
+    std::function<std::optional<std::vector<std::vector<std::string>>>(D const &descriptor, Node const &node)> axes;
+    /// See @ref DescriptorHooks::slice.
+    std::function<std::optional<OpData>(D const &descriptor, SliceRequest const &request)> slice;
 };
 
 /**
@@ -155,6 +159,16 @@ void register_descriptor(Write write, Read read, Build build, DescriptorHooksFor
     if (hooks.tile) {
         codec.hooks.tile = [fn = std::move(hooks.tile)](OpData const &descriptor, TileCoord const &coord) {
             return fn(descriptor.get<D>(), coord);
+        };
+    }
+    if (hooks.axes) {
+        codec.hooks.axes = [fn = std::move(hooks.axes)](OpData const &descriptor, Node const &node) {
+            return fn(descriptor.get<D>(), node);
+        };
+    }
+    if (hooks.slice) {
+        codec.hooks.slice = [fn = std::move(hooks.slice)](OpData const &descriptor, SliceRequest const &request) {
+            return fn(descriptor.get<D>(), request);
         };
     }
     if (hooks.equal) {

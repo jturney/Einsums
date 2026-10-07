@@ -101,6 +101,9 @@ struct ConformanceSample {
  * - its tiles: for a tiled output, every tile the node writes nonzero is one its @c tiles hook
  *   names, and the @c tile hook's node for each named tile computes that tile of the reference.
  *
+ * - its slices: for a dense output, the @c slice hook's node at every index of every axis the
+ *   node generates (one its @c axes hook gives no input) computes that slice of the reference.
+ *
  * A tiled output is compared tile by tile, an absent tile counting as zero.
  *
  * Across the samples, an @c equal hook must call each descriptor equal to itself, give the same

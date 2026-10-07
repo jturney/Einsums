@@ -15,6 +15,7 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/DescriptorConformance.hpp>
 #include <Einsums/ComputeGraph/Moldability.hpp>
+#include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
@@ -186,6 +187,26 @@ std::vector<cg::TileCoord> diagonal(std::vector<std::vector<int>> const &sizes) 
     return out;
 }
 
+/// Writes ``X[i, a] = (i + 1) (a + 2)`` from nothing. A sliced one names, per output axis, the
+/// parameter holding that axis's index, and writes the rest; @c lie makes its slices one off.
+struct GridDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.Grid";
+    std::vector<std::string>          index_params{"", ""};
+    int                               lie{0};
+};
+
+/// As GridDescriptor, with opaque effects, so AxisTiling leaves it out of a loop.
+struct GridOpaqueDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.GridOpaque";
+    std::vector<std::string>          index_params{"", ""};
+    int                               lie{0};
+};
+
+/// The value a Grid node writes at (i, a).
+double grid_value(std::size_t i, std::size_t a) {
+    return static_cast<double>(i + 1) * static_cast<double>(a + 2);
+}
+
 /// An executor over one input x and one output y, both rank 1 doubles.
 template <typename Body>
 std::function<void()> unary(cg::Graph &graph, std::span<cg::TensorId const> inputs, std::span<cg::TensorId const> outputs, Body body) {
@@ -257,6 +278,88 @@ void register_block_fill(cg::DescriptorHooksFor<D> hooks) {
             };
         },
         std::move(hooks));
+}
+
+/// Register a Grid-shaped codec for @p D, with @p effects.
+template <typename D>
+void register_grid(cg::NodeEffects effects) {
+    cg::register_descriptor<D>(
+        [](D const &desc) {
+            cg::json::Array params;
+            for (auto const &name : desc.index_params) {
+                params.emplace_back(cg::json::Value{name});
+            }
+            cg::json::Object fields;
+            fields.set("index_params", cg::json::Value{std::move(params)});
+            fields.set("lie", cg::json::Value{static_cast<double>(desc.lie)});
+            return cg::json::Value{std::move(fields)};
+        },
+        [](cg::json::Object const &fields) {
+            D desc;
+            if (auto const *params = fields.take("index_params"); params != nullptr && params->is_array()) {
+                desc.index_params.clear();
+                for (auto const &name : params->as_array()) {
+                    desc.index_params.push_back(name.as_string());
+                }
+            }
+            if (auto const *lie = fields.take("lie"); lie != nullptr) {
+                desc.lie = static_cast<int>(lie->as_double());
+            }
+            return desc;
+        },
+        [](D const &desc, cg::Graph &graph, packed_gemm::ScalarType, std::size_t, std::span<cg::TensorId const>,
+           std::span<cg::TensorId const> outputs) -> std::function<void()> {
+            cg::OperandAccessor const out = cg::resolve_operand(graph, outputs[0], "hooks_test.Grid", "X");
+            return [out, desc, params = graph.params_ptr()]() {
+                auto                    *x = out.impl<double>();
+                std::vector<std::size_t> kept;
+                std::size_t              fixed[2]{0, 0};
+                for (std::size_t axis = 0; axis < 2; ++axis) {
+                    if (desc.index_params[axis].empty()) {
+                        kept.push_back(axis);
+                    } else {
+                        fixed[axis] = static_cast<std::size_t>(params->get(desc.index_params[axis]) + desc.lie);
+                    }
+                }
+                std::size_t const n0 = !kept.empty() ? x->dim(0) : 1;
+                std::size_t const n1 = kept.size() > 1 ? x->dim(1) : 1;
+                for (std::size_t p0 = 0; p0 < n0; ++p0) {
+                    for (std::size_t p1 = 0; p1 < n1; ++p1) {
+                        std::size_t coord[2]{fixed[0], fixed[1]};
+                        if (!kept.empty()) {
+                            coord[kept[0]] = p0;
+                        }
+                        if (kept.size() > 1) {
+                            coord[kept[1]] = p1;
+                        }
+                        std::size_t const offset = (p0 * (!kept.empty() ? x->stride(0) : 0)) + (p1 * (kept.size() > 1 ? x->stride(1) : 0));
+                        x->data()[offset]        = grid_value(coord[0], coord[1]);
+                    }
+                }
+            };
+        },
+        cg::DescriptorHooksFor<D>{
+            .accesses =
+                [](D const &desc, cg::Node const &) {
+                    cg::NamedAccesses accesses;
+                    for (auto const &name : desc.index_params) {
+                        if (!name.empty()) {
+                            accesses.param_reads.push_back(name);
+                        }
+                    }
+                    return accesses;
+                },
+            .effects     = [effects](D const &) { return effects; },
+            .destination = [](D const &,
+                              cg::Node const &) { return cg::DestinationUse{.reads = false, .overwrites_all = true, .operand_count = 0}; },
+            .axes        = [](D const &, cg::Node const &) { return std::optional<std::vector<std::vector<std::string>>>{{{"i", "a"}}}; },
+            .slice       = [](D const &desc, cg::SliceRequest const &request) -> std::optional<cg::OpData> {
+                D sliced = desc;
+                for (std::size_t axis = 0; axis < 2; ++axis) {
+                    sliced.index_params[axis] = request.dropped[0][axis].value_or("");
+                }
+                return cg::OpData{sliced};
+            }});
 }
 
 /// A codec's write and read for a descriptor with no fields.
@@ -513,6 +616,9 @@ void register_hook_descriptors() {
             cg::DescriptorHooksFor<BlockFillTileDescriptor>{.destination = [](BlockFillTileDescriptor const &, cg::Node const &) {
                 return cg::DestinationUse{.reads = false, .overwrites_all = true, .operand_count = 1};
             }});
+
+        register_grid<GridDescriptor>(cg::NodeEffects{});
+        register_grid<GridOpaqueDescriptor>(cg::opaque_effects);
 
         cg::register_descriptor<ForgetfulDescriptor>(
             [](ForgetfulDescriptor const &) { return cg::json::Value{cg::json::Object{}}; },
@@ -1085,4 +1191,94 @@ TEST_CASE("Descriptor conformance - a tiling claim is held to the whole node", "
     INFO(fmt::format("{}", fmt::join(wrong, "\n")));
     CHECK(std::ranges::any_of(
         wrong, [](std::string const &p) { return p.find("computes something else than the whole node's tile") != std::string::npos; }));
+}
+
+// ── Slices ────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// ``E = sum X X`` with X written by a Grid-shaped producer of @p desc, through AxisTiling under a
+/// cap smaller than X; returns the pass, with E in @p energy after a run.
+template <typename D>
+std::shared_ptr<cg::passes::AxisTiling> tile_grid_energy(D desc, double &energy) {
+    constexpr std::size_t nocc = 4;
+    constexpr std::size_t nvir = 6;
+    RuntimeTensor<double> E{"E", std::vector<std::size_t>{1}};
+    E.zero();
+    cg::Graph graph("hooks_grid_energy");
+    auto     &X = graph.scratch_runtime<double>("X", std::vector<std::size_t>{nocc, nvir});
+    {
+        cg::CaptureGuard const capture(graph);
+        auto                  &ctx = cg::CaptureContext::current();
+        record("grid", desc, {}, {ctx.get_slot(X).first});
+        cg::dot_python(&E, X, X);
+    }
+    auto tiling = std::make_shared<cg::passes::AxisTiling>();
+    tiling->set_memory_cap(static_cast<std::int64_t>(nvir * sizeof(double)));
+    cg::apply_single_pass(*tiling, graph);
+    // The default pipeline after the tiling, as a caller would run it: it materializes the body's
+    // slices, and its hoisting and reordering must keep the sliced producer after the parameter
+    // write it declares it reads.
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    graph.execute();
+    energy = E(0);
+    // A replay restarts the sweep rather than continuing it.
+    E.zero();
+    graph.execute();
+    CHECK(E(0) == energy);
+    return tiling;
+}
+
+} // namespace
+
+// axes and slice: AxisTiling takes a registered producer into its loop, writing one slice at a time,
+// and the reduction it feeds comes out the same.
+TEST_CASE("Descriptor hooks - a declared slicing lets AxisTiling stream a producer", "[ComputeGraph][DescriptorHooks][AxisTiling]") {
+    register_hook_descriptors();
+    double want = 0.0;
+    for (std::size_t i = 0; i < 4; ++i) {
+        for (std::size_t a = 0; a < 6; ++a) {
+            want += grid_value(i, a) * grid_value(i, a);
+        }
+    }
+
+    double     energy = 0.0;
+    auto const tiling = tile_grid_energy(GridDescriptor{}, energy);
+    CHECK(tiling->num_tiled() == 1);
+    CHECK(tiling->largest_after() < tiling->largest_before());
+    CHECK_THAT(energy, Catch::Matchers::WithinRel(want, 1e-12));
+
+    // A producer whose effects are opaque is not the same computation at every slice.
+    double     opaque_energy = 0.0;
+    auto const opaque        = tile_grid_energy(GridOpaqueDescriptor{}, opaque_energy);
+    CHECK(opaque->num_tiled() == 0);
+    CHECK_THAT(opaque_energy, Catch::Matchers::WithinRel(want, 1e-12));
+}
+
+// The conformance kit holds slice to the whole node: a truthful one is clean, one that writes the
+// next slice is caught.
+TEST_CASE("Descriptor conformance - a slicing claim is held to the whole node",
+          "[ComputeGraph][DescriptorHooks][Conformance][AxisTiling]") {
+    register_hook_descriptors();
+    auto check = [](GridDescriptor desc) {
+        cg::ConformanceSample const sample{.name       = "grid",
+                                           .descriptor = cg::OpData{desc},
+                                           .dtype      = packed_gemm::ScalarType::Float64,
+                                           .rank       = 2,
+                                           .operands   = [](cg::Graph &graph) {
+                                               auto &X   = graph.create_runtime_tensor<double>("X", {4UL, 6UL}, false);
+                                               auto &ctx = cg::CaptureContext::current();
+                                               return cg::ConformanceOperands{.inputs = {}, .outputs = {ctx.get_slot(X).first}};
+                                           }};
+        return cg::check_descriptor("hooks_test.Grid", std::span<cg::ConformanceSample const>{&sample, 1});
+    };
+    auto const clean = check(GridDescriptor{});
+    INFO(fmt::format("{}", fmt::join(clean, "\n")));
+    CHECK(clean.empty());
+
+    auto const wrong = check(GridDescriptor{.lie = 1});
+    INFO(fmt::format("{}", fmt::join(wrong, "\n")));
+    CHECK(std::ranges::any_of(wrong,
+                              [](std::string const &p) { return p.find("computes something else than that slice") != std::string::npos; }));
 }

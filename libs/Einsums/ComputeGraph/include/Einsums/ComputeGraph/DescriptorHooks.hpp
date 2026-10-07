@@ -147,6 +147,18 @@ struct TileQuery {
 };
 
 /**
+ * @brief Which axes of a node's operands one slice drops, and where the index of each is.
+ *
+ * Indexed [operand][axis], the output first and then each input in the node's order. An entry
+ * names the @ref ParamTable entry holding the dropped axis's index on this iteration; an empty
+ * entry is an axis the slice keeps whole. A sliced node reads that parameter, so its descriptor's
+ * @c accesses hook must declare it.
+ */
+struct SliceRequest {
+    std::vector<std::vector<std::optional<std::string>>> dropped;
+};
+
+/**
  * @brief The optional answers a registered descriptor gives about its node.
  *
  * Every member may be empty. Members are only ever appended, since a @ref DescriptorCodec is
@@ -196,6 +208,17 @@ struct DescriptorHooks {
     /// inputs; empty when the descriptor cannot. It may be a different registered descriptor, so
     /// the whole-tensor executor and the one-tile executor can be separate codecs.
     std::function<std::optional<OpData>(OpData const &descriptor, TileCoord const &coord)> tile;
+
+    /// One list of index letters per operand, the output first and then each input in the node's
+    /// order, one letter per axis; empty when the descriptor cannot say. A letter two operands
+    /// share is one index. A letter an input has and the output lacks is summed inside the node,
+    /// so it is never sliced; a letter only the output has is an axis the node generates. With
+    /// @ref slice, it lets AxisTiling take the node into a loop over slices of its free axes.
+    std::function<std::optional<std::vector<std::vector<std::string>>>(OpData const &descriptor, Node const &node)> axes;
+
+    /// The descriptor of the node at one slice, reading the inputs' slices and writing the output's
+    /// as tensors without the dropped axes; empty when it cannot be sliced so.
+    std::function<std::optional<OpData>(OpData const &descriptor, SliceRequest const &request)> slice;
 };
 
 /**

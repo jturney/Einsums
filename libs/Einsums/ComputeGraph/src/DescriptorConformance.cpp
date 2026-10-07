@@ -212,6 +212,7 @@ class SampleCheck {
         attempt("check its saved form", [this] { saved_form(); });
         attempt("check its threading", [this] { threading(); });
         attempt("check its tiles", [this] { tiles(); });
+        attempt("check its slices", [this] { slices(); });
     }
 
   private:
@@ -401,6 +402,111 @@ class SampleCheck {
             if (!same) {
                 report(fmt::format("its tile hook's node for tile ({}) computes something else than the whole node's tile",
                                    fmt::join(coord, ",")));
+            }
+        }
+    }
+
+    /// Every slice of every axis the node generates, run through its slice hook, against the same
+    /// slice of the whole node's output.
+    void slices() {
+        Node const            &node  = _built.the_node();
+        DescriptorHooks const *hooks = descriptor_hooks(node);
+        if (hooks == nullptr || !hooks->axes || !hooks->slice || node.outputs.size() != 1) {
+            return;
+        }
+        TensorId const      out    = node.outputs[0];
+        TensorHandle const &handle = _built.graph->tensor(out);
+        if (handle.is_tiled) {
+            return;
+        }
+        auto const letters = hooks->axes(node.op_data, node);
+        if (!letters || letters->empty() || letters->front().size() != handle.dims.size()) {
+            report("its axes hook does not give one letter per axis of its output");
+            return;
+        }
+        auto const generated = [&](std::size_t axis) {
+            auto const &letter = letters->front()[axis];
+            for (std::size_t s = 1; s < letters->size(); ++s) {
+                if (std::ranges::find((*letters)[s], letter) != (*letters)[s].end()) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        Bytes const      &whole = _reference[0].begin()->second;
+        std::size_t const width = handle.element_size;
+
+        for (std::size_t axis = 0; axis < handle.dims.size(); ++axis) {
+            if (!generated(axis)) {
+                continue;
+            }
+            for (std::size_t index = 0; index < handle.dims[axis]; ++index) {
+                SliceRequest request;
+                request.dropped.assign(letters->size(), {});
+                for (std::size_t s = 0; s < letters->size(); ++s) {
+                    request.dropped[s].assign((*letters)[s].size(), std::nullopt);
+                }
+                request.dropped[0][axis] = std::string{"check_descriptor:slice"};
+                auto descriptor          = hooks->slice(_sample.descriptor, request);
+                if (!descriptor) {
+                    report(fmt::format("its slice hook cannot slice output axis {}, which no input names", axis));
+                    break;
+                }
+
+                std::vector<std::size_t> dims;
+                for (std::size_t a = 0; a < handle.dims.size(); ++a) {
+                    if (a != axis) {
+                        dims.push_back(handle.dims[a]);
+                    }
+                }
+                Graph graph(fmt::format("check_descriptor:{}:slice", _sample.name));
+                for (auto const &[name, value] : _sample.params) {
+                    graph.params_ptr()->set(name, value);
+                }
+                graph.params_ptr()->set("check_descriptor:slice", static_cast<std::int64_t>(index));
+                TensorId slice_id{};
+                {
+                    CaptureGuard const        guard(graph);
+                    ConformanceOperands const operands = _sample.operands(graph);
+                    detail::dispatch_scalar_type(handle.dtype, [&]<typename T>(T /*tag*/) {
+                        auto &slice = graph.create_runtime_tensor<T>("slice", dims, false);
+                        slice_id    = CaptureContext::current().get_slot(slice).first;
+                    });
+                    std::vector<TensorId> const outputs{slice_id};
+                    CaptureContext::current().record_built(OpKind::Custom, fmt::format("{}:slice", _sample.name), _sample.dtype,
+                                                           dims.size(), std::move(*descriptor), std::span<TensorId const>{operands.inputs},
+                                                           std::span<TensorId const>{outputs}, operands.inputs, outputs);
+                }
+                graph.execute();
+                Bytes const got = bytes_of(graph, slice_id).begin()->second;
+
+                // The same slice of the whole output, walked in the slice's own (column-major) order.
+                Bytes                    want;
+                std::vector<std::size_t> coord(handle.dims.size(), 0);
+                coord[axis]             = index;
+                std::size_t const count = got.size() / width;
+                for (std::size_t n = 0; n < count; ++n) {
+                    std::size_t rest = n;
+                    for (std::size_t a = 0; a < handle.dims.size(); ++a) {
+                        if (a == axis) {
+                            continue;
+                        }
+                        coord[a] = rest % handle.dims[a];
+                        rest /= handle.dims[a];
+                    }
+                    std::size_t offset = 0;
+                    for (std::size_t a = 0; a < handle.dims.size(); ++a) {
+                        offset += coord[a] * handle.strides[a];
+                    }
+                    want.insert(want.end(), whole.begin() + static_cast<std::ptrdiff_t>(offset * width),
+                                whole.begin() + static_cast<std::ptrdiff_t>((offset + 1) * width));
+                }
+                if (got != want) {
+                    report(fmt::format("its slice hook's node for index {} of output axis {} computes something else than that slice "
+                                       "of the whole node",
+                                       index, axis));
+                    break;
+                }
             }
         }
     }

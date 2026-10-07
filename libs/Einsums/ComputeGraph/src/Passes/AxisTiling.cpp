@@ -4,11 +4,15 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
+#include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
+#include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -72,6 +76,23 @@ bool tileable_kind(OpKind kind) {
     }
 }
 
+/// Whether @p node is one a registered descriptor lets this pass slice: both hooks, and a node
+/// that is the same computation at every slice because it reads nothing it does not list and does
+/// nothing beyond what it writes.
+bool registered_sliceable(Node const &node) {
+    DescriptorHooks const *hooks = descriptor_hooks(node);
+    if (hooks == nullptr || !hooks->axes || !hooks->slice) {
+        return false;
+    }
+    NodeEffects const effects = effects_of(node);
+    return effects.deterministic && !effects.external_effects;
+}
+
+/// The index letters a registered node names its operands with, the output first.
+std::optional<std::vector<std::vector<std::string>>> registered_letters(Node const &node) {
+    return descriptor_hooks(node)->axes(node.op_data, node);
+}
+
 /// One operand of a node, in the order the kind names its operands.
 ///
 /// Slot 0 is always the destination. A destination the node also READS appears once, as slot
@@ -117,7 +138,16 @@ std::optional<std::vector<SlotRef>> slots_of(Graph const &graph, Node const &nod
         wanted = {node.outputs[0]};
         break;
     default:
-        return std::nullopt;
+        if (!registered_sliceable(node) || node.outputs.size() != 1) {
+            return std::nullopt;
+        }
+        // The destination, then the operands it reads; a destination re-listed because the node
+        // reads it is the first slot already.
+        wanted = {node.outputs[0]};
+        for (TensorId const tid : operand_inputs(node)) {
+            wanted.push_back(tid);
+        }
+        break;
     }
 
     std::vector<SlotRef> slots;
@@ -137,6 +167,9 @@ std::optional<std::vector<SlotRef>> slots_of(Graph const &graph, Node const &nod
 /// Read from the LIVE index state where the node carries one, because a pass that rewrote the
 /// letters wrote them there and the descriptor's own copy is the at-capture snapshot.
 std::optional<std::vector<std::vector<std::string>>> letters_of(Node const &node) {
+    if (registered_sliceable(node)) {
+        return registered_letters(node);
+    }
     auto const lists = node_index_lists(node);
     if (!lists) {
         return std::nullopt;
@@ -163,6 +196,21 @@ std::vector<std::string> operator_letters_of(Node const &node) {
 
 /// The link (summed) letters of a contraction, empty for every other kind.
 std::vector<std::string> link_letters_of(Node const &node) {
+    // A registered node sums the letters an input names and its output does not.
+    if (registered_sliceable(node)) {
+        std::vector<std::string> summed;
+        if (auto const letters = registered_letters(node); letters && !letters->empty()) {
+            auto const &output = letters->front();
+            for (std::size_t s = 1; s < letters->size(); ++s) {
+                for (auto const &letter : (*letters)[s]) {
+                    if (std::ranges::find(output, letter) == output.end() && std::ranges::find(summed, letter) == summed.end()) {
+                        summed.push_back(letter);
+                    }
+                }
+            }
+        }
+        return summed;
+    }
     if (node.kind != OpKind::Einsum) {
         return {};
     }
@@ -206,7 +254,23 @@ struct NodePlan {
     OpKind                kind{OpKind::Custom};
     OpData                op_data;
     std::vector<SlotPlan> slots;
+    std::string           label;
 };
+
+/// The slice request for a registered node of @p op, naming the parameter of each sliced axis
+/// through @p name_of.
+template <typename NameOf>
+SliceRequest slice_request(NodePlan const &op, NameOf &&name_of) {
+    SliceRequest request;
+    for (auto const &slot : op.slots) {
+        std::vector<std::optional<std::string>> axes;
+        for (int const label : slot.labels) {
+            axes.push_back(label == kFree ? std::nullopt : std::optional<std::string>{name_of(label)});
+        }
+        request.dropped.push_back(std::move(axes));
+    }
+    return request;
+}
 
 /// The description of one tiled region, produced by the analysis and consumed by the rewrite.
 struct Plan {
@@ -513,7 +577,7 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
                 labels.push_back(labels_for(out.store, i, s, slots[s]));
             }
 
-            if (node.kind == OpKind::Einsum || node.kind == OpKind::Permute) {
+            if (node.kind == OpKind::Einsum || node.kind == OpKind::Permute || registered_sliceable(node)) {
                 char const *const conflict =
                     node.kind == OpKind::Permute
                         ? "a permutation exchanges two of the candidate's sliced axes, so the body would need a slice of a tensor it "
@@ -708,6 +772,9 @@ bool node_accumulates(Node const &node) {
     }
     case OpKind::Dot:
         return false; // it writes element zero; the LOOP is what accumulates it
+    case OpKind::Custom:
+        // A registered node overwrites only when its destination hook says so.
+        return !pure_overwrite(node);
     default:
         return true;
     }
@@ -987,8 +1054,17 @@ bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &
         NodePlan op;
         op.kind    = nodes[i].kind;
         op.op_data = nodes[i].op_data;
+        op.label   = nodes[i].label;
         for (std::size_t slot = 0; slot < _slots[i - _first].size(); ++slot) {
             op.slots.push_back(SlotPlan{.tid = _slots[i - _first][slot].tid, .labels = labels_of(i, slot)});
+        }
+        // A registered node is re-emitted through its slice hook, so one that cannot be sliced
+        // on these axes declines the candidate here rather than at emission.
+        if (registered_sliceable(nodes[i]) && !descriptor_hooks(nodes[i])->slice(op.op_data, slice_request(op, [](int label) {
+                                                                                     return fmt::format("axtile:{}:0", label);
+                                                                                 }))) {
+            reason = "a registered node's slice hook cannot slice it on the candidate's axes";
+            return false;
         }
         plan.ops.push_back(std::move(op));
         plan.replaced.push_back(i);
@@ -1398,6 +1474,25 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
             }
             break;
         }
+        case OpKind::Custom: {
+            // A registered node, re-emitted per member through its slice hook: its descriptor at
+            // this member's slice, over the members' views, read and written as any other kind's.
+            DescriptorHooks const &hooks = find_descriptor_codec(op.op_data.name())->hooks;
+            for (std::size_t member = 0; member < depth; ++member) {
+                auto  sliced = hooks.slice(op.op_data,
+                                           slice_request(op, [&](int label) { return index_of[member][static_cast<std::size_t>(label)]; }));
+                auto &ctx    = CaptureContext::current();
+                std::vector<TensorId> inputs;
+                for (std::size_t s = 1; s < operand.size(); ++s) {
+                    inputs.push_back(ctx.get_slot(*operand[s][member]).first);
+                }
+                std::vector<TensorId> const outputs{ctx.get_slot(*operand[0][member]).first};
+                ctx.record_built(OpKind::Custom, chunked ? fmt::format("{}#{}", op.label, member) : op.label, plan.dtype,
+                                 operand[0][member]->rank(), std::move(*sliced), std::span<TensorId const>{inputs},
+                                 std::span<TensorId const>{outputs}, inputs, outputs);
+            }
+            break;
+        }
         default:
             break;
         }
@@ -1516,7 +1611,7 @@ bool AxisTiling::run(Graph &graph) {
     std::size_t best_last  = 0;
     std::size_t run_first  = 0;
     for (std::size_t i = 0; i <= nodes.size(); ++i) {
-        bool ok = i < nodes.size() && tileable_kind(nodes[i].kind);
+        bool ok = i < nodes.size() && (tileable_kind(nodes[i].kind) || registered_sliceable(nodes[i]));
         // A node carrying a feature this pass does not understand is a barrier: the run never
         // takes it into the loop body.
         if (ok && !understands(graph, nodes[i])) {
