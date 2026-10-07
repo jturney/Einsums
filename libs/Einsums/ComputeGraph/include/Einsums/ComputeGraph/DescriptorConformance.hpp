@@ -98,6 +98,11 @@ struct ConformanceSample {
  * - its threading: a moldable node run at @ref ConformanceSample::width under the
  *   DataflowExecutor computes the reference, within @ref ConformanceSample::width_tolerance.
  *
+ * - its tiles: for a tiled output, every tile the node writes nonzero is one its @c tiles hook
+ *   names, and the @c tile hook's node for each named tile computes that tile of the reference.
+ *
+ * A tiled output is compared tile by tile, an absent tile counting as zero.
+ *
  * Across the samples, an @c equal hook must call each descriptor equal to itself, give the same
  * answer both ways round, and call two descriptors equal only when the second, run on the first
  * sample's inputs, computes the first's reference.

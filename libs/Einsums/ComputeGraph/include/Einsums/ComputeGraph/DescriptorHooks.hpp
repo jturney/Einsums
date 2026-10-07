@@ -131,6 +131,21 @@ struct CostQuery {
     Target               target{Target::CPU};
 };
 
+/// @brief A tile's position in a tiled tensor's grid, one coordinate per axis.
+using TileCoord = std::vector<int>;
+
+/**
+ * @brief What a @c tiles hook is asked about: the tile grid of the node's tiled output and the
+ *        graph's parameters.
+ *
+ * @ref tile_sizes holds, axis by axis, the extent of every tile along that axis, as
+ * @c TiledRuntimeTensor::tile_sizes does; @ref params may be null.
+ */
+struct TileQuery {
+    std::vector<std::vector<int>> const *tile_sizes{nullptr};
+    ParamTable const                    *params{nullptr};
+};
+
 /**
  * @brief The optional answers a registered descriptor gives about its node.
  *
@@ -169,6 +184,18 @@ struct DescriptorHooks {
     /// destination without reading it, since the survivor's output stands in for the duplicate's.
     /// Without it two nodes of the descriptor are never merged.
     std::function<bool(OpData const &a, OpData const &b)> equal;
+
+    /// The tiles of its tiled output the node writes, every other tile being zero; empty when the
+    /// descriptor cannot say. With @ref tile, it lets TiledExpansion replace the node with one node
+    /// per tile it writes, so the tiles flow into the per-tile contractions that read them. Only a
+    /// node that writes one tiled tensor, reads only dense ones, and overwrites what it writes
+    /// (@ref destination) is expanded.
+    std::function<std::optional<std::vector<TileCoord>>(OpData const &descriptor, Node const &node, TileQuery const &query)> tiles;
+
+    /// The descriptor of a node that writes tile @p coord alone, as a dense tensor, from the same
+    /// inputs; empty when the descriptor cannot. It may be a different registered descriptor, so
+    /// the whole-tensor executor and the one-tile executor can be separate codecs.
+    std::function<std::optional<OpData>(OpData const &descriptor, TileCoord const &coord)> tile;
 };
 
 /**

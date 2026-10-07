@@ -99,6 +99,10 @@ struct DescriptorHooksFor {
     /// See @ref DescriptorHooks::cost.
     std::function<std::optional<CostEstimate>(D const &descriptor, CostQuery const &query)> cost;
     std::function<bool(D const &a, D const &b)>                                             equal; ///< See @ref DescriptorHooks::equal.
+    /// See @ref DescriptorHooks::tiles.
+    std::function<std::optional<std::vector<TileCoord>>(D const &descriptor, Node const &node, TileQuery const &query)> tiles;
+    /// See @ref DescriptorHooks::tile.
+    std::function<std::optional<OpData>(D const &descriptor, TileCoord const &coord)> tile;
 };
 
 /**
@@ -141,6 +145,16 @@ void register_descriptor(Write write, Read read, Build build, DescriptorHooksFor
     if (hooks.cost) {
         codec.hooks.cost = [fn = std::move(hooks.cost)](OpData const &descriptor, CostQuery const &query) {
             return fn(descriptor.get<D>(), query);
+        };
+    }
+    if (hooks.tiles) {
+        codec.hooks.tiles = [fn = std::move(hooks.tiles)](OpData const &descriptor, Node const &node, TileQuery const &query) {
+            return fn(descriptor.get<D>(), node, query);
+        };
+    }
+    if (hooks.tile) {
+        codec.hooks.tile = [fn = std::move(hooks.tile)](OpData const &descriptor, TileCoord const &coord) {
+            return fn(descriptor.get<D>(), coord);
         };
     }
     if (hooks.equal) {

@@ -18,8 +18,10 @@
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
+#include <Einsums/ComputeGraph/Passes/TiledExpansion.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
 #include <algorithm>
@@ -148,6 +150,42 @@ struct ScaledLyingEqualDescriptor {
     double                            factor{1.0};
 };
 
+/// Writes the diagonal tiles of a 2-D tiled output, each filled with ``v(0) * (1 + 10 I + J)``,
+/// and zeroes any other tile it finds stored. @c lie makes its hooks misreport: 1 names only the
+/// first diagonal tile, 2 describes tiles that compute one more than the whole node does.
+struct BlockFillDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.BlockFill";
+    int                               lie{0};
+};
+
+/// As BlockFillDescriptor, but it says nothing about its destination, so it is not expanded.
+struct BlockFillUnsaidDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.BlockFillUnsaid";
+    int                               lie{0};
+};
+
+/// Writes tile (I, J) of a BlockFill node alone, as a dense tensor.
+struct BlockFillTileDescriptor {
+    static constexpr std::string_view descriptor_name = "hooks_test.BlockFillTile";
+    int                               row{0};
+    int                               col{0};
+    double                            offset{0.0};
+};
+
+/// The value BlockFill writes everywhere in tile (row, col).
+double block_value(double v, int row, int col) {
+    return v * (1.0 + (10.0 * row) + col);
+}
+
+/// The diagonal tiles of a grid of @p sizes.
+std::vector<cg::TileCoord> diagonal(std::vector<std::vector<int>> const &sizes) {
+    std::vector<cg::TileCoord> out;
+    for (int i = 0; i < static_cast<int>(std::min(sizes[0].size(), sizes[1].size())); ++i) {
+        out.push_back({i, i});
+    }
+    return out;
+}
+
 /// An executor over one input x and one output y, both rank 1 doubles.
 template <typename Body>
 std::function<void()> unary(cg::Graph &graph, std::span<cg::TensorId const> inputs, std::span<cg::TensorId const> outputs, Body body) {
@@ -185,6 +223,40 @@ void register_scaled(cg::DescriptorHooksFor<D> hooks) {
 /// The destination of a ScaledDescriptor-shaped node: it writes all of y and reads only x.
 cg::DestinationUse overwrites_y(cg::Node const & /*node*/) {
     return cg::DestinationUse{.reads = false, .overwrites_all = true, .operand_count = 1};
+}
+
+/// Register a BlockFill-shaped codec for @p D with @p hooks.
+template <typename D>
+void register_block_fill(cg::DescriptorHooksFor<D> hooks) {
+    cg::register_descriptor<D>(
+        [](D const &desc) {
+            cg::json::Object fields;
+            fields.set("lie", cg::json::Value{static_cast<double>(desc.lie)});
+            return cg::json::Value{std::move(fields)};
+        },
+        [](cg::json::Object const &fields) {
+            cg::json::Value const *lie = fields.take("lie");
+            return D{.lie = lie != nullptr ? static_cast<int>(lie->as_double()) : 0};
+        },
+        [](D const &, cg::Graph &graph, packed_gemm::ScalarType, std::size_t, std::span<cg::TensorId const> inputs,
+           std::span<cg::TensorId const> outputs) -> std::function<void()> {
+            cg::OperandAccessor const v      = cg::resolve_operand(graph, inputs[0], "hooks_test.BlockFill", "v");
+            cg::TensorId const        out_id = outputs[0];
+            return [v, out_id, &graph]() {
+                double const value = v.impl<double>()->data()[0];
+                auto        *out   = static_cast<TiledRuntimeTensor<double> *>(graph.live_tensor_ptr(out_id));
+                auto const   wrote = diagonal(out->tile_sizes());
+                for (auto &[coord, tile] : out->tiles()) {
+                    std::fill_n(tile.data(), tile.size(), 0.0);
+                }
+                for (auto const &coord : wrote) {
+                    auto &tile = out->tile(coord);
+                    tile.materialize();
+                    std::fill_n(tile.data(), tile.size(), block_value(value, coord[0], coord[1]));
+                }
+            };
+        },
+        std::move(hooks));
 }
 
 /// A codec's write and read for a descriptor with no fields.
@@ -393,6 +465,54 @@ void register_hook_descriptors() {
         register_scaled<ScaledLyingEqualDescriptor>(
             {.destination = [](ScaledLyingEqualDescriptor const &, cg::Node const &node) { return overwrites_y(node); },
              .equal       = [](ScaledLyingEqualDescriptor const &, ScaledLyingEqualDescriptor const &) { return true; }});
+
+        auto block_tiles = [](auto const &desc, cg::Node const &, cg::TileQuery const &query) {
+            auto all = diagonal(*query.tile_sizes);
+            if (desc.lie == 1) {
+                all.resize(1);
+            }
+            return std::optional<std::vector<cg::TileCoord>>{all};
+        };
+        auto block_tile = [](auto const &desc, cg::TileCoord const &coord) {
+            return std::optional<cg::OpData>{
+                cg::OpData{BlockFillTileDescriptor{.row = coord[0], .col = coord[1], .offset = desc.lie == 2 ? 1.0 : 0.0}}};
+        };
+        register_block_fill<BlockFillDescriptor>(
+            {.destination = [](BlockFillDescriptor const &,
+                               cg::Node const &) { return cg::DestinationUse{.reads = false, .overwrites_all = true, .operand_count = 1}; },
+             .tiles       = block_tiles,
+             .tile        = block_tile});
+        register_block_fill<BlockFillUnsaidDescriptor>({.tiles = block_tiles, .tile = block_tile});
+
+        cg::register_descriptor<BlockFillTileDescriptor>(
+            [](BlockFillTileDescriptor const &desc) {
+                cg::json::Object fields;
+                fields.set("row", cg::json::Value{static_cast<double>(desc.row)});
+                fields.set("col", cg::json::Value{static_cast<double>(desc.col)});
+                fields.set("offset", cg::json::Value{desc.offset});
+                return cg::json::Value{std::move(fields)};
+            },
+            [](cg::json::Object const &fields) {
+                auto number = [&fields](char const *key) {
+                    cg::json::Value const *value = fields.take(key);
+                    return value != nullptr ? value->as_double() : 0.0;
+                };
+                return BlockFillTileDescriptor{
+                    .row = static_cast<int>(number("row")), .col = static_cast<int>(number("col")), .offset = number("offset")};
+            },
+            [](BlockFillTileDescriptor const &desc, cg::Graph &graph, packed_gemm::ScalarType, std::size_t,
+               std::span<cg::TensorId const> inputs, std::span<cg::TensorId const> outputs) -> std::function<void()> {
+                cg::OperandAccessor const v   = cg::resolve_operand(graph, inputs[0], "hooks_test.BlockFillTile", "v");
+                cg::OperandAccessor const out = cg::resolve_operand(graph, outputs[0], "hooks_test.BlockFillTile", "tile");
+                return [v, out, desc]() {
+                    double const value = block_value(v.impl<double>()->data()[0], desc.row, desc.col) + desc.offset;
+                    auto        *tile  = out.impl<double>();
+                    std::fill_n(tile->data(), tile->size(), value);
+                };
+            },
+            cg::DescriptorHooksFor<BlockFillTileDescriptor>{.destination = [](BlockFillTileDescriptor const &, cg::Node const &) {
+                return cg::DestinationUse{.reads = false, .overwrites_all = true, .operand_count = 1};
+            }});
 
         cg::register_descriptor<ForgetfulDescriptor>(
             [](ForgetfulDescriptor const &) { return cg::json::Value{cg::json::Object{}}; },
@@ -814,4 +934,155 @@ TEST_CASE("Descriptor conformance - an equality claim is held to the results", "
     INFO(fmt::format("{}", fmt::join(problems, "\n")));
     CHECK(std::ranges::any_of(
         problems, [](std::string const &problem) { return problem.find("the second computes something else") != std::string::npos; }));
+}
+
+// ── Tiles ─────────────────────────────────────────────────────────────────
+
+namespace {
+
+using Grid = std::vector<std::vector<int>>;
+
+/// Every element of a 2-D tiled tensor of extents @p rows x @p cols, absent tiles reading zero.
+std::vector<double> gather(TiledRuntimeTensor<double> const &tensor, std::size_t rows, std::size_t cols) {
+    std::vector<double> out(rows * cols, 0.0);
+    auto const         &offsets = tensor.tile_offsets();
+    auto const         &sizes   = tensor.tile_sizes();
+    for (int ti = 0; ti < static_cast<int>(sizes[0].size()); ++ti) {
+        for (int tj = 0; tj < static_cast<int>(sizes[1].size()); ++tj) {
+            if (!tensor.has_tile({ti, tj})) {
+                continue;
+            }
+            auto const &tile = tensor.tile({ti, tj});
+            for (int r = 0; r < sizes[0][ti]; ++r) {
+                for (int c = 0; c < sizes[1][tj]; ++c) {
+                    out[(static_cast<std::size_t>(offsets[0][ti] + r) * cols) + static_cast<std::size_t>(offsets[1][tj] + c)] =
+                        tile(std::vector<std::size_t>{static_cast<std::size_t>(r), static_cast<std::size_t>(c)});
+                }
+            }
+        }
+    }
+    return out;
+}
+
+/// A BlockFill-shaped producer of @p desc writing C, and ``D = C B`` reading it; returns the
+/// graph after @p expand (when set) has run, executed, with D's elements.
+template <typename D>
+struct ProducerChain {
+    Grid const                 c_grid{{2, 3}, {3, 2}};
+    Grid const                 b_grid{{3, 2}, {2, 2}};
+    RuntimeTensor<double>      v{"v", {1UL}};
+    TiledRuntimeTensor<double> C{"C", c_grid};
+    TiledRuntimeTensor<double> B{"B", b_grid};
+    TiledRuntimeTensor<double> Dt{"D", Grid{{2, 3}, {2, 2}}};
+    cg::Graph                  graph{"hooks_producer_chain"};
+
+    explicit ProducerChain(D desc) {
+        v(0) = 2.0;
+        for (int i = 0; i < 2; ++i) {
+            for (int j = 0; j < 2; ++j) {
+                auto &tile = B.tile({i, j});
+                tile.materialize();
+                for (std::size_t e = 0; e < tile.size(); ++e) {
+                    tile.data()[e] = 0.5 + static_cast<double>((7 * i) + (3 * j) + static_cast<int>(e));
+                }
+            }
+        }
+        cg::CaptureGuard const capture(graph);
+        auto                  &ctx = cg::CaptureContext::current();
+        record("fill", desc, {ctx.get_slot(v).first}, {ctx.get_slot(C).first});
+        cg::einsum("ij <- ik ; kj", &Dt, C, B);
+    }
+
+    std::size_t count(cg::OpKind kind) const {
+        return static_cast<std::size_t>(std::ranges::count_if(graph.nodes(), [kind](cg::Node const &node) { return node.kind == kind; }));
+    }
+};
+
+} // namespace
+
+// tiles and tile: a registered producer writing a tiled tensor becomes one node per tile it writes,
+// and the tiled contraction reading it expands too instead of being stranded.
+TEST_CASE("Descriptor hooks - a declared tiling expands the producer and frees its readers", "[ComputeGraph][DescriptorHooks][Tiled]") {
+    register_hook_descriptors();
+
+    ProducerChain reference(BlockFillDescriptor{});
+    reference.graph.execute();
+    auto const want = gather(reference.Dt, 5, 4);
+
+    ProducerChain chain(BlockFillDescriptor{});
+    REQUIRE(chain.count(cg::OpKind::Einsum) == 0);
+    cg::PassManager pm;
+    pm.add(std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, cg::passes::Densify::Never, cg::passes::FuseTiles::Never));
+    chain.graph.apply(pm);
+    INFO(pm.explain());
+
+    // One producer node per diagonal tile, and the contraction expanded over the two tiles of C
+    // that exist: C(0,0) and C(1,1), each against the two tiles of B's row.
+    auto const tile_nodes = std::ranges::count_if(
+        chain.graph.nodes(), [](cg::Node const &node) { return node.op_data.name() == BlockFillTileDescriptor::descriptor_name; });
+    CHECK(tile_nodes == 2);
+    CHECK(std::ranges::none_of(chain.graph.nodes(), [](cg::Node const &node) { return node.label == "fill"; }));
+    CHECK(chain.count(cg::OpKind::Einsum) == 4);
+
+    chain.graph.execute();
+    auto const got = gather(chain.Dt, 5, 4);
+    for (std::size_t i = 0; i < want.size(); ++i) {
+        INFO("element " << i);
+        CHECK_THAT(got[i], Catch::Matchers::WithinRel(want[i], 1e-14));
+    }
+}
+
+// A producer that does not say it overwrites its output is left whole, and strands its readers as
+// any node TiledExpansion cannot expand does.
+TEST_CASE("Descriptor hooks - a producer that does not overwrite its tiles is not expanded", "[ComputeGraph][DescriptorHooks][Tiled]") {
+    register_hook_descriptors();
+    ProducerChain   chain(BlockFillUnsaidDescriptor{});
+    cg::PassManager pm;
+    pm.add(std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, cg::passes::Densify::Never, cg::passes::FuseTiles::Never));
+    chain.graph.apply(pm);
+    CHECK(chain.count(cg::OpKind::Einsum) == 0);
+    CHECK(std::ranges::any_of(chain.graph.nodes(), [](cg::Node const &node) { return node.label == "fill"; }));
+}
+
+namespace {
+
+/// A conformance sample of a BlockFill node writing a 2 x 2 grid of tiles.
+cg::ConformanceSample block_fill_sample(std::string name, BlockFillDescriptor desc) {
+    return cg::ConformanceSample{.name       = std::move(name),
+                                 .descriptor = cg::OpData{desc},
+                                 .dtype      = packed_gemm::ScalarType::Float64,
+                                 .rank       = 2,
+                                 .operands   = [](cg::Graph &graph) {
+                                     auto &v   = graph.create_runtime_tensor<double>("v", {1UL}, false);
+                                     v(0)      = 2.0;
+                                     auto *C   = graph.own(std::make_unique<TiledRuntimeTensor<double>>("C", Grid{{2, 3}, {3, 2}}));
+                                     auto &ctx = cg::CaptureContext::current();
+                                     return cg::ConformanceOperands{.inputs = {ctx.get_slot(v).first}, .outputs = {ctx.get_slot(*C).first}};
+                                 }};
+}
+
+} // namespace
+
+// The conformance kit holds tiles and tile to the whole node: a truthful producer is clean, and
+// one whose tiles hook misses a tile, or whose tile hook computes another value, is caught.
+TEST_CASE("Descriptor conformance - a tiling claim is held to the whole node", "[ComputeGraph][DescriptorHooks][Conformance][Tiled]") {
+    register_hook_descriptors();
+    auto check = [](BlockFillDescriptor desc) {
+        auto const sample = block_fill_sample("block_fill", desc);
+        return cg::check_descriptor("hooks_test.BlockFill", std::span<cg::ConformanceSample const>{&sample, 1});
+    };
+
+    auto const clean = check(BlockFillDescriptor{});
+    INFO(fmt::format("{}", fmt::join(clean, "\n")));
+    CHECK(clean.empty());
+
+    auto const missed = check(BlockFillDescriptor{.lie = 1});
+    INFO(fmt::format("{}", fmt::join(missed, "\n")));
+    CHECK(std::ranges::any_of(
+        missed, [](std::string const &p) { return p.find("writes tile (1,1) nonzero, but its tiles hook") != std::string::npos; }));
+
+    auto const wrong = check(BlockFillDescriptor{.lie = 2});
+    INFO(fmt::format("{}", fmt::join(wrong, "\n")));
+    CHECK(std::ranges::any_of(
+        wrong, [](std::string const &p) { return p.find("computes something else than the whole node's tile") != std::string::npos; }));
 }

@@ -3,11 +3,13 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/TiledExpansion.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -538,7 +540,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
     // planned. Deciding first and creating second keeps a rejected candidate from
     // leaving new tiles behind, which would change how the runtime applies c_pf.
     struct Plan {
-        enum class Kind : std::uint8_t { Einsum, Scale, Axpy, Divide, Permute, Dot };
+        enum class Kind : std::uint8_t { Einsum, Scale, Axpy, Divide, Permute, Dot, Producer };
 
         size_t                  index{0};
         Kind                    kind{Kind::Scale};
@@ -573,6 +575,9 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
         // whether the reduction conjugates its first operand.
         TensorId result_id{0};
         bool     conj{false};
+        // Producer: one descriptor per tile in `coords`, and the dense tensors every tile node reads.
+        std::vector<OpData>   tile_descriptors;
+        std::vector<TensorId> dense_inputs;
     };
     std::vector<Plan> plans;
 
@@ -614,6 +619,95 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 report(2, fmt::format("declining '{}': {}", src.label, why));
                 EINSUMS_LOG_DEBUG("TiledExpansion: declining node {} - {}", src.id, why);
             };
+
+            // ── A producer registered outside the library ────────────────────────
+            // Its codec says which tiles it writes and how to write one alone, so it becomes one
+            // node per tile. Without this its tiled output is stranded, and every consumer with it.
+            if (DescriptorHooks const *hooks = descriptor_hooks(src); hooks != nullptr && hooks->tiles && hooks->tile) {
+                if (src.outputs.size() != 1) {
+                    decline("a registered producer writing more than one tensor is not expanded");
+                    continue;
+                }
+                TensorId const c_id = src.outputs[0];
+                auto const    &c_h  = graph.tensor(c_id);
+                if (!c_h.is_tiled) {
+                    continue; // a dense output has nothing to expand
+                }
+                if (std::ranges::any_of(src.inputs, [&graph](TensorId tid) { return graph.tensor(tid).is_tiled; })) {
+                    decline("a registered producer that reads a tiled tensor is not expanded");
+                    continue;
+                }
+                if (!pure_overwrite(src)) {
+                    decline("a registered producer is expanded only when its destination hook says it overwrites what it writes");
+                    continue;
+                }
+                TiledView cv;
+                if (!bind_tiled(c_h, c_id, cv)) {
+                    decline("the output has no backing tiled object");
+                    continue;
+                }
+                auto const written = hooks->tiles(src.op_data, src, TileQuery{.tile_sizes = cv.sizes, .params = graph.params_ptr().get()});
+                if (!written) {
+                    decline("its tiles hook cannot say which tiles it writes");
+                    continue;
+                }
+                bool in_grid = true;
+                for (auto const &co : *written) {
+                    in_grid = in_grid && co.size() == cv.rank;
+                    for (std::size_t ax = 0; in_grid && ax < co.size(); ++ax) {
+                        in_grid = co[ax] >= 0 && static_cast<std::size_t>(co[ax]) < (*cv.sizes)[ax].size();
+                    }
+                }
+                if (!in_grid) {
+                    decline("its tiles hook names a tile outside the output's grid");
+                    continue;
+                }
+                if (written->size() > _max_nodes) {
+                    decline(fmt::format("projected {} tiles exceeds the {}-node budget", written->size(), _max_nodes));
+                    continue;
+                }
+                // The producer creates the tiles it writes, as the whole-tensor executor does.
+                auto &pc = tiles_of(c_id, cv);
+                pc.insert(written->begin(), written->end());
+                if (!planning) {
+                    continue;
+                }
+
+                Plan p;
+                p.index     = ni;
+                p.kind      = Plan::Kind::Producer;
+                p.touched   = {c_id};
+                p.dtype     = c_h.dtype;
+                p.elem_size = c_h.element_size;
+                p.dst       = cv;
+                p.coords    = *written;
+                p.tile_descriptors.reserve(written->size());
+                bool described = true;
+                for (auto const &co : *written) {
+                    auto descriptor = hooks->tile(src.op_data, co);
+                    if (!descriptor) {
+                        described = false;
+                        break;
+                    }
+                    p.tile_descriptors.push_back(std::move(*descriptor));
+                }
+                if (!described) {
+                    decline("its tile hook cannot describe one of the tiles it writes");
+                    continue;
+                }
+                // Overwriting the whole tensor leaves every tile it does not write zero, including one
+                // an earlier execution or another node left stored.
+                std::set<std::vector<int>> const written_set(written->begin(), written->end());
+                for (auto const &co : pc) {
+                    if (!written_set.contains(co)) {
+                        p.leftover.push_back(co);
+                    }
+                }
+                p.leftover_pf  = PrefactorScalar{0.0};
+                p.dense_inputs = src.inputs;
+                plans.push_back(std::move(p));
+                continue;
+            }
 
             // ── Elementwise: tiled scale and tiled axpy ──────────────────────────
             if (auto const *edesc = src.op_data.get_if<TiledElementwiseDescriptor>()) {
@@ -1713,6 +1807,15 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                                              fmt::format("tile_dot(x{})", pl.a_coords.size())));
             break;
         }
+        case Plan::Kind::Producer:
+            emitted.reserve(pl.coords.size() + pl.leftover.size());
+            for (std::size_t i = 0; i < pl.coords.size(); ++i) {
+                emitted.push_back(graph.make_node(OpKind::Custom, pl.dtype, pl.tile_descriptors[i], pl.dense_inputs,
+                                                  {pl.dst.tile_id(pl.coords[i])},
+                                                  fmt::format("{}({})", nodes[pl.index].label, fmt::join(pl.coords[i], ","))));
+            }
+            append_scales(pl.dst, pl.leftover, pl.leftover_pf, pl.dtype, pl.elem_size, emitted);
+            break;
         case Plan::Kind::Divide:
             emitted.reserve(pl.coords.size() + pl.leftover.size());
             if (should_fuse(pl.dst, pl.coords, pl.elem_size, /*streams=*/is_zero(pl.beta) ? 3 : 4)) {

@@ -16,6 +16,7 @@
 #include <Einsums/ComputeGraph/Moldability.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -30,6 +31,7 @@
 #include <omp.h>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <span>
 #include <string>
 #include <utility>
@@ -41,6 +43,11 @@ namespace {
 
 using Bytes = std::vector<std::byte>;
 
+/// What a tensor holds, as bytes keyed by tile: a dense tensor is the one entry under the empty
+/// coordinate, and a tiled tensor is its stored tiles that are not all zero, since an absent tile
+/// and a zero one are the same value.
+using Snapshot = std::map<std::vector<int>, Bytes>;
+
 /// A one-node graph built from a sample, and where its node and tensors are.
 struct Built {
     std::unique_ptr<Graph> graph;
@@ -50,22 +57,42 @@ struct Built {
     [[nodiscard]] Node const &the_node() const { return graph->nodes()[node]; }
 };
 
-/// The contiguous elements behind @p id, as bytes.
-std::span<std::byte> storage_of(Graph &graph, TensorId id) {
-    OperandAccessor const accessor = resolve_operand(graph, id, "check_descriptor", "operand");
-    return detail::dispatch_scalar_type(graph.tensor(id).dtype, [&]<typename T>(T /*tag*/) {
-        auto *impl = accessor.impl<T>();
-        return std::as_writable_bytes(std::span<T>{impl->data(), impl->size()});
+/// Call @p visit with every stored block of @p id and its coordinate: the whole buffer of a dense
+/// tensor, under the empty coordinate, or each tile of a tiled one.
+template <typename Visit>
+void for_each_block(Graph &graph, TensorId id, Visit &&visit) {
+    TensorHandle const &handle = graph.tensor(id);
+    detail::dispatch_scalar_type(handle.dtype, [&]<typename T>(T /*tag*/) {
+        if (handle.is_tiled) {
+            auto *tiled = static_cast<TiledRuntimeTensor<T> *>(graph.live_tensor_ptr(id));
+            for (auto &[coord, tile] : tiled->tiles()) {
+                visit(coord, std::as_writable_bytes(std::span<T>{tile.data(), tile.size()}));
+            }
+            return;
+        }
+        OperandAccessor const accessor = resolve_operand(graph, id, "check_descriptor", "operand");
+        auto                 *impl     = accessor.impl<T>();
+        visit(std::vector<int>{}, std::as_writable_bytes(std::span<T>{impl->data(), impl->size()}));
     });
 }
 
-Bytes bytes_of(Graph &graph, TensorId id) {
-    auto const storage = storage_of(graph, id);
-    return {storage.begin(), storage.end()};
+bool all_zero(std::span<std::byte const> bytes) {
+    return std::ranges::all_of(bytes, [](std::byte b) { return b == std::byte{0}; });
 }
 
-std::vector<Bytes> bytes_of(Graph &graph, std::vector<TensorId> const &ids) {
-    std::vector<Bytes> all;
+Snapshot bytes_of(Graph &graph, TensorId id) {
+    bool const tiled = graph.tensor(id).is_tiled;
+    Snapshot   out;
+    for_each_block(graph, id, [&](std::vector<int> const &coord, std::span<std::byte> bytes) {
+        if (!tiled || !all_zero(bytes)) {
+            out.emplace(coord, Bytes(bytes.begin(), bytes.end()));
+        }
+    });
+    return out;
+}
+
+std::vector<Snapshot> bytes_of(Graph &graph, std::vector<TensorId> const &ids) {
+    std::vector<Snapshot> all;
     all.reserve(ids.size());
     for (TensorId const id : ids) {
         all.push_back(bytes_of(graph, id));
@@ -73,27 +100,56 @@ std::vector<Bytes> bytes_of(Graph &graph, std::vector<TensorId> const &ids) {
     return all;
 }
 
-void write_bytes(Graph &graph, std::vector<TensorId> const &ids, std::vector<Bytes> const &values) {
+/// Make @p ids hold @p values again: every stored block takes its snapshot or zero, and a tile the
+/// snapshot holds that is not stored is created first.
+void write_bytes(Graph &graph, std::vector<TensorId> const &ids, std::vector<Snapshot> const &values) {
     for (std::size_t i = 0; i < ids.size(); ++i) {
-        auto const storage = storage_of(graph, ids[i]);
-        std::copy(values[i].begin(), values[i].end(), storage.begin());
+        TensorHandle const &handle = graph.tensor(ids[i]);
+        if (handle.is_tiled) {
+            detail::dispatch_scalar_type(handle.dtype, [&]<typename T>(T /*tag*/) {
+                auto *tiled = static_cast<TiledRuntimeTensor<T> *>(graph.live_tensor_ptr(ids[i]));
+                for (auto const &[coord, bytes] : values[i]) {
+                    (void)tiled->tile(coord); // infer-and-create
+                }
+            });
+        }
+        for_each_block(graph, ids[i], [&](std::vector<int> const &coord, std::span<std::byte> bytes) {
+            if (auto const it = values[i].find(coord); it != values[i].end()) {
+                std::copy(it->second.begin(), it->second.end(), bytes.begin());
+            } else {
+                std::ranges::fill(bytes, std::byte{0});
+            }
+        });
     }
 }
 
-/// The largest elementwise difference between @p id's elements and @p reference, relative to
-/// the larger magnitude of the two (absolute below 1).
-double relative_difference(Graph &graph, TensorId id, Bytes const &reference) {
-    auto const storage = storage_of(graph, id);
+/// The largest elementwise difference between @p id's blocks and @p reference, relative to the
+/// larger magnitude of the two (absolute below 1); a block one side lacks counts as zero.
+double relative_difference(Graph &graph, TensorId id, Snapshot const &reference) {
+    Snapshot const got = bytes_of(graph, id);
     return detail::dispatch_scalar_type(graph.tensor(id).dtype, [&]<typename T>(T /*tag*/) {
-        std::size_t const count = storage.size() / sizeof(T);
-        double            worst = 0.0;
-        for (std::size_t i = 0; i < count; ++i) {
-            T got{};
-            T want{};
-            std::memcpy(&got, storage.data() + (i * sizeof(T)), sizeof(T));
-            std::memcpy(&want, reference.data() + (i * sizeof(T)), sizeof(T));
-            double const scale = std::max({1.0, static_cast<double>(std::abs(got)), static_cast<double>(std::abs(want))});
-            worst              = std::max(worst, static_cast<double>(std::abs(got - want)) / scale);
+        double worst   = 0.0;
+        auto   compare = [&](Bytes const &lhs, Bytes const *rhs) {
+            std::size_t const count = lhs.size() / sizeof(T);
+            for (std::size_t i = 0; i < count; ++i) {
+                T a{};
+                T b{};
+                std::memcpy(&a, lhs.data() + (i * sizeof(T)), sizeof(T));
+                if (rhs != nullptr) {
+                    std::memcpy(&b, rhs->data() + (i * sizeof(T)), sizeof(T));
+                }
+                double const scale = std::max({1.0, static_cast<double>(std::abs(a)), static_cast<double>(std::abs(b))});
+                worst              = std::max(worst, static_cast<double>(std::abs(a - b)) / scale);
+            }
+        };
+        for (auto const &[coord, bytes] : got) {
+            auto const it = reference.find(coord);
+            compare(bytes, it != reference.end() ? &it->second : nullptr);
+        }
+        for (auto const &[coord, bytes] : reference) {
+            if (!got.contains(coord)) {
+                compare(bytes, nullptr);
+            }
         }
         return worst;
     });
@@ -102,8 +158,8 @@ double relative_difference(Graph &graph, TensorId id, Bytes const &reference) {
 /// All bits set: a NaN in every floating-point type, so a read of it shows in the result.
 void poison(Graph &graph, std::vector<TensorId> const &ids) {
     for (TensorId const id : ids) {
-        auto const storage = storage_of(graph, id);
-        std::ranges::fill(storage, std::byte{0xff});
+        for_each_block(graph, id,
+                       [](std::vector<int> const & /*coord*/, std::span<std::byte> bytes) { std::ranges::fill(bytes, std::byte{0xff}); });
     }
 }
 
@@ -129,7 +185,7 @@ Built build(ConformanceSample const &sample, OpData descriptor, std::map<std::st
 }
 
 /// Run @p built with its outputs set to @p prior first, and return what they hold afterwards.
-std::vector<Bytes> run(Built &built, std::vector<Bytes> const &prior) {
+std::vector<Snapshot> run(Built &built, std::vector<Snapshot> const &prior) {
     write_bytes(*built.graph, built.operands.outputs, prior);
     built.graph->execute();
     return bytes_of(*built.graph, built.operands.outputs);
@@ -142,7 +198,7 @@ class SampleCheck {
         : _codec(codec), _sample(sample), _problems(problems) {}
 
     /// What the node computed on the sample's own descriptor, when it could be run.
-    [[nodiscard]] std::optional<std::vector<Bytes>> const &result() const { return _result; }
+    [[nodiscard]] std::optional<std::vector<Snapshot>> const &result() const { return _result; }
 
     void run_all() {
         if (!attempt("capture and run it", [this] { reference(); })) {
@@ -155,6 +211,7 @@ class SampleCheck {
         attempt("check its accesses", [this] { accesses(); });
         attempt("check its saved form", [this] { saved_form(); });
         attempt("check its threading", [this] { threading(); });
+        attempt("check its tiles", [this] { tiles(); });
     }
 
   private:
@@ -162,12 +219,12 @@ class SampleCheck {
     ConformanceSample const  &_sample;
     std::vector<std::string> &_problems;
 
-    Built              _built;
-    std::vector<Bytes> _inputs;
-    std::vector<Bytes> _prior;
-    std::vector<Bytes> _reference;
+    Built                 _built;
+    std::vector<Snapshot> _inputs;
+    std::vector<Snapshot> _prior;
+    std::vector<Snapshot> _reference;
 
-    std::optional<std::vector<Bytes>> _result;
+    std::optional<std::vector<Snapshot>> _result;
 
     void report(std::string const &what) { _problems.push_back(fmt::format("sample '{}': {}", _sample.name, what)); }
 
@@ -281,6 +338,73 @@ class SampleCheck {
         }
     }
 
+    void tiles() {
+        Node const            &node  = _built.the_node();
+        DescriptorHooks const *hooks = descriptor_hooks(node);
+        if (hooks == nullptr || !hooks->tiles || !hooks->tile || node.outputs.size() != 1) {
+            return;
+        }
+        TensorId const      out    = node.outputs[0];
+        TensorHandle const &handle = _built.graph->tensor(out);
+        if (!handle.is_tiled) {
+            return;
+        }
+        std::vector<std::vector<int>> sizes;
+        detail::dispatch_scalar_type(handle.dtype, [&]<typename T>(T /*tag*/) {
+            sizes = static_cast<TiledRuntimeTensor<T> *>(_built.graph->live_tensor_ptr(out))->tile_sizes();
+        });
+        auto const written = hooks->tiles(node.op_data, node, TileQuery{.tile_sizes = &sizes, .params = _built.graph->params_ptr().get()});
+        if (!written) {
+            report("its tiles hook cannot say which tiles it writes");
+            return;
+        }
+        std::set<std::vector<int>> const named(written->begin(), written->end());
+        for (auto const &[coord, bytes] : _reference[0]) {
+            if (!named.contains(coord)) {
+                report(fmt::format("writes tile ({}) nonzero, but its tiles hook does not name it", fmt::join(coord, ",")));
+            }
+        }
+
+        for (auto const &coord : *written) {
+            auto descriptor = hooks->tile(_sample.descriptor, coord);
+            if (!descriptor) {
+                report(fmt::format("its tile hook cannot describe tile ({}), which its tiles hook names", fmt::join(coord, ",")));
+                continue;
+            }
+            std::vector<std::size_t> dims;
+            for (std::size_t ax = 0; ax < coord.size(); ++ax) {
+                dims.push_back(static_cast<std::size_t>(sizes[ax][static_cast<std::size_t>(coord[ax])]));
+            }
+
+            Graph graph(fmt::format("check_descriptor:{}:tile", _sample.name));
+            for (auto const &[name, value] : _sample.params) {
+                graph.params_ptr()->set(name, value);
+            }
+            TensorId tile_id{};
+            {
+                CaptureGuard const        guard(graph);
+                ConformanceOperands const operands = _sample.operands(graph);
+                detail::dispatch_scalar_type(handle.dtype, [&]<typename T>(T /*tag*/) {
+                    auto &tile = graph.create_runtime_tensor<T>("tile", dims, false);
+                    tile_id    = CaptureContext::current().get_slot(tile).first;
+                });
+                std::vector<TensorId> const outputs{tile_id};
+                CaptureContext::current().record_built(OpKind::Custom, fmt::format("{}:tile", _sample.name), _sample.dtype, coord.size(),
+                                                       std::move(*descriptor), std::span<TensorId const>{operands.inputs},
+                                                       std::span<TensorId const>{outputs}, operands.inputs, outputs);
+            }
+            graph.execute();
+            Snapshot const got   = bytes_of(graph, tile_id);
+            Bytes const   &bytes = got.begin()->second;
+            auto const     whole = _reference[0].find(coord);
+            bool const     same  = whole != _reference[0].end() ? bytes == whole->second : all_zero(bytes);
+            if (!same) {
+                report(fmt::format("its tile hook's node for tile ({}) computes something else than the whole node's tile",
+                                   fmt::join(coord, ",")));
+            }
+        }
+    }
+
     void saved_form() {
         std::string const saved  = json::emit(_codec.write(_sample.descriptor));
         auto              parsed = json::parse(saved);
@@ -316,7 +440,7 @@ class SampleCheck {
 /// the same both ways round, and call two descriptors equal only when the second computes what the
 /// first does on the first's inputs.
 void check_equal(DescriptorCodec const &codec, std::span<ConformanceSample const> samples,
-                 std::vector<std::optional<std::vector<Bytes>>> const &results, std::vector<std::string> &problems) {
+                 std::vector<std::optional<std::vector<Snapshot>>> const &results, std::vector<std::string> &problems) {
     auto const &equal = codec.hooks.equal;
     for (std::size_t i = 0; i < samples.size(); ++i) {
         ConformanceSample const &first = samples[i];
@@ -358,8 +482,8 @@ std::vector<std::string> check_descriptor(std::string_view name, std::span<Confo
         problems.push_back(fmt::format("no codec is registered as '{}'", name));
         return problems;
     }
-    std::vector<std::optional<std::vector<Bytes>>> results(samples.size());
-    bool                                           usable = true;
+    std::vector<std::optional<std::vector<Snapshot>>> results(samples.size());
+    bool                                              usable = true;
     for (std::size_t i = 0; i < samples.size(); ++i) {
         ConformanceSample const &sample = samples[i];
         if (sample.descriptor.name() != name) {
