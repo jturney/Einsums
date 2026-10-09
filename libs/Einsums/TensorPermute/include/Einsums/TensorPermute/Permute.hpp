@@ -113,7 +113,9 @@ std::shared_ptr<hptt::Transpose<T>> build_permute_plan(T beta, std::span<int con
     std::vector<size_t> const strideC = effective_strides(C_view);
 
     // The outer sizes are what each axis's stride says the allocation spans, measured from the
-    // fastest axis: the last in row-major, the first in column-major.
+    // fastest axis: the last in row-major, the first in column-major. HPTT places axis i at the
+    // inner stride times the outer sizes of the axes faster than it, so an axis's outer size is
+    // the ratio of the next slower axis's stride to its own; the inner stride is already in both.
     size_t const innerStrideA = row_major ? strideA[rank - 1] : strideA[0];
     size_t const innerStrideC = row_major ? strideC[rank - 1] : strideC[0];
     for (std::size_t i = 0; i < rank; ++i) {
@@ -123,15 +125,15 @@ std::shared_ptr<hptt::Transpose<T>> build_permute_plan(T beta, std::span<int con
         outerSizeA[0] = A.dim(0);
         outerSizeC[0] = C_view.dim(0);
         for (std::size_t i0 = 1; i0 < rank; i0++) {
-            outerSizeA[i0] = strideA[i0 - 1] / (strideA[i0] * innerStrideA);
-            outerSizeC[i0] = strideC[i0 - 1] / (strideC[i0] * innerStrideC);
+            outerSizeA[i0] = strideA[i0 - 1] / strideA[i0];
+            outerSizeC[i0] = strideC[i0 - 1] / strideC[i0];
         }
     } else {
         outerSizeA[rank - 1] = A.dim(-1);
         outerSizeC[rank - 1] = C_view.dim(-1);
         for (std::size_t i0 = 0; i0 + 1 < rank; i0++) {
-            outerSizeA[i0] = strideA[i0 + 1] / (strideA[i0] * innerStrideA);
-            outerSizeC[i0] = strideC[i0 + 1] / (strideC[i0] * innerStrideC);
+            outerSizeA[i0] = strideA[i0 + 1] / strideA[i0];
+            outerSizeC[i0] = strideC[i0 + 1] / strideC[i0];
         }
     }
 

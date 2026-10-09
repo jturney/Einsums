@@ -745,10 +745,13 @@ void transpose_int_scalar(floatType const *A, size_t sizeStride1A, size_t innerS
         ptrdiff_t       i               = plan->start;
         ptrdiff_t const scalarRemainder = plan->end - plan->start;
         if (scalarRemainder > 0) {
-            if (lda == 1)
+            // Which loop this is comes from the plan, not from a unit lda or ldb: with a non-unit
+            // inner stride the stride-1 index's lda (ldb) is that stride, and taking it for an outer
+            // loop ran the remainder at the full block width past the end of B.
+            if (plan->indexA)
                 macro_kernel_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], lda_macro, scalarRemainder, innerStrideA,
                                                                   &B[i * ldb], ldb_macro, sizeStride1B, innerStrideB, alpha, beta);
-            else if (ldb == 1)
+            else if (plan->indexB)
                 macro_kernel_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], lda_macro, sizeStride1A, innerStrideA,
                                                                   &B[i * ldb], ldb_macro, scalarRemainder, innerStrideB, alpha, beta);
             else

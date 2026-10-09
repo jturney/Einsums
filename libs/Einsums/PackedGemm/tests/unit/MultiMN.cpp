@@ -306,13 +306,11 @@ TEST_CASE("Multi-M + Multi-K + Multi-N: C[i,j,l,n] = A[i,j,k,m] * B[k,m,l,n]", "
 // transpose such a block run by run when the runs average a vector's worth of
 // elements, and gather it element by element when they are shorter. The cases
 // cover runs inside one K block with a ragged panel of rows, a K block boundary
-// falling inside a run, and runs too short for the run-wise path. Double only: on
-// a rung without SME PackedGemm declines float here, and the Sort+GEMM it falls
-// back to hits the TensorPermute non-unit inner stride bug (see that module's
-// "a fastest axis with a non-unit stride"); PackTranspose covers the float
-// transpose itself.
-TEST_CASE("Multi-K in contiguous runs: C[i,j] = A[k,i,l] * B[k,j,l]", "[PackedGemm][MultiMN]") {
-    using T = double;
+// falling inside a run, and runs too short for the run-wise path. On a rung
+// without SME, PackedGemm declines float here and Sort+GEMM writes the result
+// into the slice through a permute with a non-unit inner stride.
+TEMPLATE_TEST_CASE("Multi-K in contiguous runs: C[i,j] = A[k,i,l] * B[k,j,l]", "[PackedGemm][MultiMN]", float, double) {
+    using T = TestType;
     for (auto [nk, ni, nj, nl] :
          {std::tuple{size_t{20}, size_t{17}, size_t{19}, size_t{5}}, std::tuple{size_t{1000}, size_t{17}, size_t{9}, size_t{5}},
           std::tuple{size_t{3}, size_t{17}, size_t{19}, size_t{7}}}) {

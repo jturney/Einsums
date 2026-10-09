@@ -3,7 +3,14 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(HPTTTests LargeTranspose HalfPrecisionTranspose ParameterValidation PlanFile StreamingPaths)
+set(HPTTTests
+    LargeTranspose
+    HalfPrecisionTranspose
+    InnerStride
+    ParameterValidation
+    PlanFile
+    StreamingPaths
+)
 
 foreach(test ${HPTTTests})
   set(sources ${test}.cpp)

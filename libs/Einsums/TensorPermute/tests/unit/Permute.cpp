@@ -169,17 +169,16 @@ TEMPLATE_TEST_CASE("TensorPermute - padded operands", "[TensorPermute]", float, 
     }
 }
 
-// KNOWN BUG: a fastest axis whose stride is not 1, on either side. HPTT takes that stride as the
-// inner stride and places axis i at the inner stride times the outer sizes of the faster axes, so an
-// axis's outer size is the ratio of neighbouring strides. build_permute_plan divides that ratio by
-// the inner stride a second time: a slice C(1, :, :) of a 3 x 17 x 19 tensor comes out as outer size
-// 5 for an axis of extent 17 and is rejected ("HPTT: outerSizeB invalid"), and Sort+GEMM, which
-// writes its result through this permute, throws on an einsum into such a slice (float on a rung
-// without SME, where PackedGemm declines it). Correcting the ratio is not enough: HPTT's float path
-// then leaves elements of a column-major C with inner stride 2 or 3 unwritten and writes past it.
-// Drop [!shouldfail] when both are fixed.
-TEMPLATE_TEST_CASE("TensorPermute - a fastest axis with a non-unit stride", "[TensorPermute][!shouldfail]", float, double,
-                   std::complex<float>, std::complex<double>) {
+// A fastest axis whose stride is not 1, on either side. HPTT takes that stride as the inner stride
+// and places axis i at the inner stride times the outer sizes of the faster axes, so an axis's
+// outer size is the ratio of neighbouring strides. The plan once divided that ratio by the inner
+// stride a second time: a slice C(1, :, :) of a 3 x 17 x 19 tensor came out as outer size 5 for an
+// axis of extent 17 and was rejected ("HPTT: outerSizeB invalid"), and Sort+GEMM, which writes its
+// result through this permute, threw on an einsum into such a slice (float on a rung without SME,
+// where PackedGemm declines it). HPTT's own half, a scalar remainder that wrote past such a C, is
+// pinned in HPTT's InnerStride test.
+TEMPLATE_TEST_CASE("TensorPermute - a fastest axis with a non-unit stride", "[TensorPermute]", float, double, std::complex<float>,
+                   std::complex<double>) {
     for (bool const row_major : {false, true}) {
         for (auto [a_inner, c_inner] :
              {std::pair{size_t{1}, size_t{3}}, std::pair{size_t{2}, size_t{1}}, std::pair{size_t{3}, size_t{2}}}) {
