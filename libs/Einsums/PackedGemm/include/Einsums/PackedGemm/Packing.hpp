@@ -20,6 +20,7 @@
 #include <memory>
 #include <numeric>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(packed_gemm)
@@ -812,6 +813,62 @@ inline void copy_panel_row(T *__restrict d, T const *__restrict s, int64_t MR) {
 /// the stack); the widest tile kernel, AVX-512 float, is 32 rows.
 inline constexpr int64_t kMaxPanelRows = 64;
 
+/// Shortest average K run for which a block made of several runs is packed run
+/// by run through the transpose. Each run costs a row-pointer table and a call;
+/// below a vector's worth of elements that outweighs the copies it replaces.
+inline constexpr int64_t kMinTransposeRun = 8;
+
+/// @brief Split a K block's element offsets into maximal unit-stride runs.
+///
+/// A run is a stretch of K over which the operand is contiguous: k_offsets[k + 1]
+/// == k_offsets[k] + 1. Written as (first k_local, length) pairs. A K that
+/// fuses several indices (Q,f with Q contiguous) is one run per Q segment.
+inline void split_k_runs(std::vector<int64_t> const &k_offsets, int64_t kc_len, std::vector<std::pair<int64_t, int64_t>> &runs) {
+    runs.clear();
+    int64_t start = 0;
+    for (int64_t k = 1; k <= kc_len; ++k) {
+        if (k == kc_len || k_offsets[static_cast<size_t>(k)] != k_offsets[static_cast<size_t>(k - 1)] + 1) {
+            runs.emplace_back(start, k - start);
+            start = k;
+        }
+    }
+}
+
+/// @brief Pack panels of @p R rows whose rows are K-contiguous within each run.
+///
+/// Writes panel[r + k * R] = data[row_offsets[p * R + r] + k_offsets[k]], a panel
+/// of R x kc_len per p, so it serves pack_A's column-major panels and pack_B's
+/// row-major ones alike. Every run is a transpose of the panel's rows over that
+/// stretch of K, done by the rung's kernel (see PackTransposeFn); complex types,
+/// which have none, and a panel taller than the row table take the scalar copy.
+template <typename T>
+void pack_panels_by_k_runs(T *packed, T const *data, int64_t const *row_offsets, int64_t rows_total, int64_t R, int64_t kc_len,
+                           int64_t const *k_offsets, std::vector<std::pair<int64_t, int64_t>> const &runs) {
+    PackTransposeFn<T> const transpose  = R <= kMaxPanelRows ? pack_transpose_entry<T>() : nullptr;
+    int64_t const            num_panels = (rows_total + R - 1) / R;
+    for (int64_t p = 0; p < num_panels; ++p) {
+        int64_t const panel_len = std::min(R, rows_total - p * R);
+        T            *panel     = packed + p * R * kc_len;
+        for (auto const &[s, len] : runs) {
+            if (transpose != nullptr) {
+                T const *rows[kMaxPanelRows];
+                for (int64_t i = 0; i < panel_len; ++i) {
+                    rows[i] = data + row_offsets[p * R + i] + k_offsets[s];
+                }
+                transpose(panel + s * R, rows, panel_len, len, R);
+                continue;
+            }
+            for (int64_t i = 0; i < panel_len; ++i) {
+                T const *src = data + row_offsets[p * R + i] + k_offsets[s];
+                T       *dst = panel + i + s * R;
+                for (int64_t k = 0; k < len; ++k) {
+                    dst[k * R] = src[k];
+                }
+            }
+        }
+    }
+}
+
 template <typename T>
 // NOLINTNEXTLINE(readability-identifier-naming)
 void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, int64_t mc_len, int64_t kc_start, int64_t kc_len, int MR,
@@ -924,36 +981,14 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
     //    addresses. blis_contraction sizes the block so that walk covers a whole
     //    line per i0.
     if (!m_fast_unit && !conj) {
-        bool k_contig = kc_len > 0;
-        for (int64_t k_local = 1; k_contig && k_local < kc_len; ++k_local) {
-            k_contig = k_offsets[static_cast<size_t>(k_local)] == k_offsets[static_cast<size_t>(k_local - 1)] + 1;
-        }
-        if (k_contig) {
-            int64_t const k0 = k_offsets[0];
+        static thread_local std::vector<std::pair<int64_t, int64_t>> k_runs_slot;
+        auto                                                        &k_runs = bind_thread_local(k_runs_slot);
+        split_k_runs(k_offsets, kc_len, k_runs);
+        if (k_runs.size() == 1) {
             // Every panel row is one K-contiguous run of A, so the panel is a
             // transpose of MR runs: the rung's kernel does it a register tile
-            // at a time (see PackTransposeFn). Complex types, and a panel taller
-            // than the row table, keep the scalar copy.
-            PackTransposeFn<T> const transpose = MR <= kMaxPanelRows ? pack_transpose_entry<T>() : nullptr;
-            for (int64_t p = 0; p < num_panels; ++p) {
-                int64_t const panel_len = (p < full_panels) ? MR : tail;
-                T            *panel     = Ap + p * MR * kc_len;
-                if (transpose != nullptr) {
-                    T const *rows[kMaxPanelRows];
-                    for (int64_t i = 0; i < panel_len; ++i) {
-                        rows[i] = A_data + m_offsets[static_cast<size_t>(p * MR + i)] + k0;
-                    }
-                    transpose(panel, rows, panel_len, kc_len, MR);
-                    continue;
-                }
-                for (int64_t i = 0; i < panel_len; ++i) {
-                    T const *src = A_data + m_offsets[static_cast<size_t>(p * MR + i)] + k0;
-                    T       *dst = panel + i;
-                    for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
-                        dst[k_local * MR] = src[k_local];
-                    }
-                }
-            }
+            // at a time (see PackTransposeFn).
+            pack_panels_by_k_runs(Ap, A_data, m_offsets.data(), mc_len, int64_t{MR}, kc_len, k_offsets.data(), k_runs);
             return;
         }
         if (m_dims.size() >= 2 && m_dims[m_dims.size() - 2].tensor_stride == 1 && m_fast_size > 1) {
@@ -1011,6 +1046,14 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
                     }
                 }
             }
+            return;
+        }
+        // K fuses several indices of which the fastest is contiguous in A (the
+        // ladder's Q,f): each Q segment is a run, and the panel is a transpose
+        // run by run. Without this the block falls to the gather below, one
+        // element at a time down A's M stride.
+        if (!k_runs.empty() && kc_len >= kMinTransposeRun * static_cast<int64_t>(k_runs.size())) {
+            pack_panels_by_k_runs(Ap, A_data, m_offsets.data(), mc_len, int64_t{MR}, kc_len, k_offsets.data(), k_runs);
             return;
         }
     }
@@ -1220,33 +1263,12 @@ void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, i
 
     // --- Gather along B's own contiguous direction (mirror of pack_A) ---
     if (!n_fast_unit && !conj) {
-        bool k_contig = kc_len > 0;
-        for (int64_t k_local = 1; k_contig && k_local < kc_len; ++k_local) {
-            k_contig = k_offsets[static_cast<size_t>(k_local)] == k_offsets[static_cast<size_t>(k_local - 1)] + 1;
-        }
-        if (k_contig) {
-            int64_t const k0 = k_offsets[0];
+        static thread_local std::vector<std::pair<int64_t, int64_t>> k_runs_slot;
+        auto                                                        &k_runs = bind_thread_local(k_runs_slot);
+        split_k_runs(k_offsets, kc_len, k_runs);
+        if (k_runs.size() == 1) {
             // As pack_A's K-contiguous case: a transpose of NR runs.
-            PackTransposeFn<T> const transpose = NR <= kMaxPanelRows ? pack_transpose_entry<T>() : nullptr;
-            for (int64_t p = 0; p < num_panels; ++p) {
-                int64_t const panel_len = (p < full_panels) ? static_cast<int64_t>(NR) : tail;
-                T            *panel     = Bp + p * kc_len * NR;
-                if (transpose != nullptr) {
-                    T const *cols[kMaxPanelRows];
-                    for (int64_t j = 0; j < panel_len; ++j) {
-                        cols[j] = B_data + k0 + n_offsets[static_cast<size_t>(p * NR + j)];
-                    }
-                    transpose(panel, cols, panel_len, kc_len, NR);
-                    continue;
-                }
-                for (int64_t j = 0; j < panel_len; ++j) {
-                    T const *src = B_data + k0 + n_offsets[static_cast<size_t>(p * NR + j)];
-                    T       *dst = panel + j;
-                    for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
-                        dst[k_local * NR] = src[k_local];
-                    }
-                }
-            }
+            pack_panels_by_k_runs(Bp, B_data, n_offsets.data(), nc_len, int64_t{NR}, kc_len, k_offsets.data(), k_runs);
             return;
         }
         if (n_dims.size() >= 2 && n_dims[n_dims.size() - 2].tensor_stride == 1 && n_fast_size > 1) {
@@ -1277,6 +1299,11 @@ void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, i
                     }
                 }
             }
+            return;
+        }
+        // As pack_A: K made of contiguous runs is transposed run by run.
+        if (!k_runs.empty() && kc_len >= kMinTransposeRun * static_cast<int64_t>(k_runs.size())) {
+            pack_panels_by_k_runs(Bp, B_data, n_offsets.data(), nc_len, int64_t{NR}, kc_len, k_offsets.data(), k_runs);
             return;
         }
     }

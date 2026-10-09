@@ -11,7 +11,9 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <cmath>
 #include <limits>
+#include <tuple>
 
 #include <Einsums/Testing.hpp>
 
@@ -293,6 +295,52 @@ TEST_CASE("Multi-M + Multi-K + Multi-N: C[i,j,l,n] = A[i,j,k,m] * B[k,m,l,n]", "
                                  Catch::Matchers::WithinRel(C_ref(ii, jj, ll, nn), kRelTol) ||
                                      Catch::Matchers::WithinAbs(C_ref(ii, jj, ll, nn), reassociation_tol(C_mag(ii, jj, ll, nn))));
                 }
+            }
+        }
+    }
+}
+
+// Multi-K where only the faster K index is contiguous in the operands, as in the
+// per-pair DF ladder's second step (a,b <- Q,a,f ; Q,b,f): each operand's rows
+// are K-contiguous in runs of k's extent, one run per value of l. The packers
+// transpose such a block run by run when the runs average a vector's worth of
+// elements, and gather it element by element when they are shorter. The cases
+// cover runs inside one K block with a ragged panel of rows, a K block boundary
+// falling inside a run, and runs too short for the run-wise path. Double only: on
+// a rung without SME PackedGemm declines float here, and the Sort+GEMM it falls
+// back to hits the TensorPermute non-unit inner stride bug (see that module's
+// "a fastest axis with a non-unit stride"); PackTranspose covers the float
+// transpose itself.
+TEST_CASE("Multi-K in contiguous runs: C[i,j] = A[k,i,l] * B[k,j,l]", "[PackedGemm][MultiMN]") {
+    using T = double;
+    for (auto [nk, ni, nj, nl] :
+         {std::tuple{size_t{20}, size_t{17}, size_t{19}, size_t{5}}, std::tuple{size_t{1000}, size_t{17}, size_t{9}, size_t{5}},
+          std::tuple{size_t{3}, size_t{17}, size_t{19}, size_t{7}}}) {
+        CAPTURE(nk, ni, nj, nl);
+        auto A = create_random_tensor<T>("A", nk, ni, nl);
+        auto B = create_random_tensor<T>("B", nk, nj, nl);
+        // C is a slice with no unit stride, as the ladder's r2[i,j] is. A
+        // contiguous C takes the flatten + GEMM route instead, which never packs.
+        auto C_parent = create_zero_tensor<T>("C", 3, ni, nj);
+        auto C        = C_parent(1, All, All);
+
+        tensor_algebra::einsum(Indices{i, j}, &C, Indices{k, i, l}, A, Indices{k, j, l}, B);
+
+        // The tolerance follows the K-sum's own error bound, which grows with the
+        // number of terms; the terms' magnitude sets its scale.
+        double const eps = static_cast<double>(std::numeric_limits<T>::epsilon());
+        for (size_t ii = 0; ii < ni; ii++) {
+            for (size_t jj = 0; jj < nj; jj++) {
+                double sum = 0.0, mag = 0.0;
+                for (size_t ll = 0; ll < nl; ll++) {
+                    for (size_t kk = 0; kk < nk; kk++) {
+                        double const term = static_cast<double>(A(kk, ii, ll)) * static_cast<double>(B(kk, jj, ll));
+                        sum += term;
+                        mag += std::abs(term);
+                    }
+                }
+                double const tol = 4.0 * static_cast<double>(nk * nl) * eps * mag;
+                REQUIRE_THAT(static_cast<double>(C(ii, jj)), Catch::Matchers::WithinAbs(sum, tol));
             }
         }
     }
