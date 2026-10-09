@@ -106,6 +106,29 @@ TEMPLATE_TEST_CASE("MicroKernel - row-major and strided C", "[PackedGemm][MicroK
     }
 }
 
+// Tails cut at the half-tile and vector boundaries, in both C layouts. The SME
+// kernel moves C through its ZA tiles one contiguous slice at a time and masks
+// the slices with predicates, so a tail of one half's rows (or less), one row
+// past it, and a column count one either side of a tile edge each take a
+// different combination of slice guards and predicates.
+TEMPLATE_TEST_CASE("MicroKernel - tails at the half-tile edges", "[PackedGemm][MicroKernel]", float, double) {
+    using T             = TestType;
+    auto const    shape = micro_kernel_shape<T>();
+    int64_t const half  = shape.mr / 2;
+    for (int64_t kc : {int64_t{2}, int64_t{93}}) {
+        for (int64_t mr_eff : {int64_t{1}, half - 1, half, half + 1, int64_t{shape.mr}}) {
+            for (int64_t nr_eff : {int64_t{1}, half - 1, half, half + 1, int64_t{shape.nr} - 1}) {
+                if (mr_eff < 1 || nr_eff < 1) {
+                    continue;
+                }
+                check_tile<T>(kc, mr_eff, nr_eff, 1, shape.mr + 1, T{1});
+                check_tile<T>(kc, mr_eff, nr_eff, shape.nr + 3, 1, T{-0.75});
+                check_tile<T>(kc, mr_eff, nr_eff, 2, 2 * shape.mr + 1, T{0.5});
+            }
+        }
+    }
+}
+
 // The tile the packers cut and the blocking the loops use are both derived from
 // the resolved kernel's shape, and that shape is stated in the SELECTED rung's
 // vectors: two of them along M by six columns. This pins the derivation to the

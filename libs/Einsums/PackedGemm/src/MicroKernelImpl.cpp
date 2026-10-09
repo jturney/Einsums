@@ -14,8 +14,9 @@
 // +sme2+sme-f64f64) additionally carries an SME outer-product kernel for
 // double: each K step issues FMOPA rank-1 updates into ZA64 tile
 // accumulators, which is the BLIS micro-kernel expressed in the matrix
-// unit's native operation. The rung also widens the double block shape to
-// MR = 2*VL, NR = 4*VL (16x32 on Apple M4's 512-bit SVL).
+// unit's native operation, and moves C through ZA in streaming mode rather
+// than adding a copied-out tile in normal mode. The rung also widens the double
+// block shape to MR = 2*VL, NR = 4*VL (16x32 on Apple M4's 512-bit SVL).
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
@@ -51,36 +52,70 @@ namespace STRIPES_ARCH_NS {
 // kernel via the shape query below.)
 inline constexpr int64_t kSmeMaxVl = 8;
 
-/// @brief Accumulate one (2*VL) x (4*VL) double block via SME FMOPA outer
-///        products into a contiguous row-major buffer.
+// How C reaches the accumulators decides the tile's speed. The ZA tiles hold
+// them and normal-mode code cannot read ZA, so a tile that is copied out and
+// added into C by a normal-mode loop pays for that loop on every tile: on M4 it
+// cost three times the arithmetic of a 93-deep double tile, and a quarter of a
+// 2048-deep one. Where C has a unit stride along either axis the whole tile
+// therefore runs in streaming mode: ZA is loaded from C one contiguous slice at
+// a time, the outer products accumulate alpha * A B onto it with alpha folded
+// into the A vectors, and ZA is stored back the same way. Predicates cut the
+// slices to the ragged tail. Only a C with no unit stride goes through a buffer
+// and a normal-mode update.
+
+/// @brief Add a column-major tile buffer (leading dimension @p ld) into a C
+///        with no unit stride, walking C along its smaller stride.
+template <typename T>
+void add_tile_to_strided_c(T alpha, T const *buf, int64_t ld, int64_t mr_eff, int64_t nr_eff, T *C, int64_t rs_c, int64_t cs_c) {
+    if (rs_c <= cs_c) {
+        for (int64_t j = 0; j < nr_eff; ++j) {
+            for (int64_t i = 0; i < mr_eff; ++i) {
+                C[i * rs_c + j * cs_c] += alpha * buf[i + j * ld];
+            }
+        }
+    } else {
+        for (int64_t i = 0; i < mr_eff; ++i) {
+            for (int64_t j = 0; j < nr_eff; ++j) {
+                C[i * rs_c + j * cs_c] += alpha * buf[i + j * ld];
+            }
+        }
+    }
+}
+
+// ---- double: MR = 2*VL, NR = 4*VL, eight ZA64 tiles ------------------------
+//
+// Tile (ti, tj) holds C rows [ti*VL, (ti+1)*VL) x cols [tj*VL, (tj+1)*VL) and is
+// ZA tile 4*ti + tj. Column j of the block is therefore vertical slice j % VL of
+// tiles j / VL and 4 + j / VL, and row i is horizontal slice i % VL of tiles
+// 4*(i / VL) + 0..3.
+
+/// @brief The K loop: two A vector loads, four B vector loads and eight FMOPA
+///        rank-1 updates per step, one per ZA64 tile.
 ///
-/// Ap is a column-major MR*kc panel and Bp a row-major kc*NR panel
-/// (MR = 2*VL, NR = 4*VL), zero-padded by the packers, so each K step is two
-/// A vector loads, four B vector loads, and eight FMOPA rank-1 updates -
-/// one per ZA64 tile, giving eight independent accumulator chains, which is
-/// what it takes to cover the FMOPA latency (a 2x2-tile variant measures
-/// ~187 GFLOPS on M4, this 2x4 arrangement ~234 GFLOPS, near the unit's
-/// FP64 ceiling):
+/// Eight independent accumulator chains cover the FMOPA latency; this reaches
+/// about 500 GFLOP/s on one M4 core, the unit's FP64 ceiling:
 ///
 ///   ZA0..ZA3 += a0 (x) b0..b3      ZA4..ZA7 += a1 (x) b0..b3
 ///
-/// Only the accumulation and ZA extraction run in streaming mode; the
-/// caller applies the masked, alpha-scaled update into strided C in normal
-/// mode where the compiler can use NEON.
-__arm_new("za") __arm_locally_streaming static void sme_dgemm_accumulate(int64_t kc, double const *Ap, double const *Bp, double *buf) {
-    int64_t const  vl = static_cast<int64_t>(svcntd()); // streaming VL inside the function
+/// @p Scale multiplies each A vector by @p va first.
+template <bool Scale>
+__attribute__((always_inline)) inline void sme_dgemm_kloop(int64_t kc, svfloat64_t va, double const *Ap,
+                                                           double const *Bp) __arm_streaming __arm_inout("za") {
+    int64_t const  vl = static_cast<int64_t>(svcntd());
     int64_t const  mr = 2 * vl;
     int64_t const  nr = 4 * vl;
     svbool_t const pg = svptrue_b64();
-
-    svzero_za();
 
     for (int64_t k = 0; k < kc; ++k) {
         double const *a = Ap + k * mr;
         double const *b = Bp + k * nr;
 
-        svfloat64_t const a0 = svld1_f64(pg, a);
-        svfloat64_t const a1 = svld1_f64(pg, a + vl);
+        svfloat64_t a0 = svld1_f64(pg, a);
+        svfloat64_t a1 = svld1_f64(pg, a + vl);
+        if constexpr (Scale) {
+            a0 = svmul_f64_x(pg, a0, va);
+            a1 = svmul_f64_x(pg, a1, va);
+        }
         svfloat64_t const b0 = svld1_f64(pg, b);
         svfloat64_t const b1 = svld1_f64(pg, b + vl);
         svfloat64_t const b2 = svld1_f64(pg, b + 2 * vl);
@@ -95,40 +130,153 @@ __arm_new("za") __arm_locally_streaming static void sme_dgemm_accumulate(int64_t
         svmopa_za64_f64_m(6, pg, pg, a1, b2);
         svmopa_za64_f64_m(7, pg, pg, a1, b3);
     }
+}
 
-    // Extract the eight ZA64 tiles into the row-major buffer. Tile (i, j)
-    // holds C rows [i*VL, (i+1)*VL) x cols [j*VL, (j+1)*VL).
-    for (uint32_t r = 0; r < static_cast<uint32_t>(vl); ++r) {
-        svst1_hor_za64(0, r, pg, buf + r * nr);
-        svst1_hor_za64(1, r, pg, buf + r * nr + vl);
-        svst1_hor_za64(2, r, pg, buf + r * nr + 2 * vl);
-        svst1_hor_za64(3, r, pg, buf + r * nr + 3 * vl);
-        svst1_hor_za64(4, r, pg, buf + (vl + r) * nr);
-        svst1_hor_za64(5, r, pg, buf + (vl + r) * nr + vl);
-        svst1_hor_za64(6, r, pg, buf + (vl + r) * nr + 2 * vl);
-        svst1_hor_za64(7, r, pg, buf + (vl + r) * nr + 3 * vl);
+__attribute__((always_inline)) inline void sme_dgemm_kloop_alpha(int64_t kc, double alpha, double const *Ap,
+                                                                 double const *Bp) __arm_streaming __arm_inout("za") {
+    if (alpha == 1.0) {
+        sme_dgemm_kloop<false>(kc, svdup_f64(1.0), Ap, Bp);
+    } else {
+        sme_dgemm_kloop<true>(kc, svdup_f64(alpha), Ap, Bp);
     }
 }
 
-/// @brief One (2*VL32) x (2*VL32) float block via SME FMOPA outer products.
-///
-/// ZA32 has four tiles (16x16 f32 each at SVL 512), arranged here as a 2x2
-/// grid: MR = NR = 2*VL32 (32x32 on M4). Same panel layouts, streaming
-/// discipline, and buffer-extraction structure as the double kernel; f32
-/// FMOPA is 4x denser per instruction than f64.
-__arm_new("za") __arm_locally_streaming static void sme_sgemm_accumulate(int64_t kc, float const *Ap, float const *Bp, float *buf) {
-    int64_t const  vl = static_cast<int64_t>(svcntw()); // streaming VL in f32 lanes
-    int64_t const  mr = 2 * vl;
-    svbool_t const pg = svptrue_b32();
+// One column of C (ld = column stride) through vertical slice c of tiles tj and 4 + tj.
+#    define EINSUMS_SME_D_COL(op, tj)                                                                                                      \
+        if ((tj) * vl + c < nr_eff) {                                                                                                      \
+            double *col = C + ((tj) * vl + c) * ldc;                                                                                       \
+            op((tj), slice, top, col);                                                                                                     \
+            if (two_halves) {                                                                                                              \
+                op(4 + (tj), slice, bot, col + vl);                                                                                        \
+            }                                                                                                                              \
+        }
+
+// One row of C (ld = row stride) through horizontal slice r of tiles 4*ti + 0..3.
+#    define EINSUMS_SME_D_ROW(op, ti, tj)                                                                                                  \
+        if ((tj) * vl < nr_eff) {                                                                                                          \
+            op(4 * (ti) + (tj), slice, cols##tj, row + (tj) * vl);                                                                         \
+        }
+
+/// @brief The double tile, C contiguous down its columns (rs_c == 1).
+__arm_new("za") __arm_locally_streaming static void sme_dgemm_tile_cols(int64_t kc, double alpha, double const *Ap, double const *Bp,
+                                                                        int64_t mr_eff, int64_t nr_eff, double *C, int64_t ldc) {
+    int64_t const  vl         = static_cast<int64_t>(svcntd());
+    svbool_t const top        = svwhilelt_b64_s64(0, mr_eff);
+    svbool_t const bot        = svwhilelt_b64_s64(vl, mr_eff);
+    bool const     two_halves = mr_eff > vl;
 
     svzero_za();
+    for (int64_t c = 0; c < vl; ++c) {
+        uint32_t const slice = static_cast<uint32_t>(c);
+        EINSUMS_SME_D_COL(svld1_ver_za64, 0)
+        EINSUMS_SME_D_COL(svld1_ver_za64, 1)
+        EINSUMS_SME_D_COL(svld1_ver_za64, 2)
+        EINSUMS_SME_D_COL(svld1_ver_za64, 3)
+    }
+    sme_dgemm_kloop_alpha(kc, alpha, Ap, Bp);
+    for (int64_t c = 0; c < vl; ++c) {
+        uint32_t const slice = static_cast<uint32_t>(c);
+        EINSUMS_SME_D_COL(svst1_ver_za64, 0)
+        EINSUMS_SME_D_COL(svst1_ver_za64, 1)
+        EINSUMS_SME_D_COL(svst1_ver_za64, 2)
+        EINSUMS_SME_D_COL(svst1_ver_za64, 3)
+    }
+}
+
+/// @brief The double tile, C contiguous along its rows (cs_c == 1).
+__arm_new("za") __arm_locally_streaming static void sme_dgemm_tile_rows(int64_t kc, double alpha, double const *Ap, double const *Bp,
+                                                                        int64_t mr_eff, int64_t nr_eff, double *C, int64_t ldc) {
+    int64_t const  vl    = static_cast<int64_t>(svcntd());
+    svbool_t const cols0 = svwhilelt_b64_s64(0, nr_eff);
+    svbool_t const cols1 = svwhilelt_b64_s64(vl, nr_eff);
+    svbool_t const cols2 = svwhilelt_b64_s64(2 * vl, nr_eff);
+    svbool_t const cols3 = svwhilelt_b64_s64(3 * vl, nr_eff);
+
+    svzero_za();
+    for (int64_t r = 0; r < vl; ++r) {
+        uint32_t const slice = static_cast<uint32_t>(r);
+        if (r < mr_eff) {
+            double *row = C + r * ldc;
+            EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 0)
+            EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 1)
+            EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 2)
+            EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 3)
+        }
+        if (vl + r < mr_eff) {
+            double *row = C + (vl + r) * ldc;
+            EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 0)
+            EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 1)
+            EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 2)
+            EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 3)
+        }
+    }
+    sme_dgemm_kloop_alpha(kc, alpha, Ap, Bp);
+    for (int64_t r = 0; r < vl; ++r) {
+        uint32_t const slice = static_cast<uint32_t>(r);
+        if (r < mr_eff) {
+            double *row = C + r * ldc;
+            EINSUMS_SME_D_ROW(svst1_hor_za64, 0, 0)
+            EINSUMS_SME_D_ROW(svst1_hor_za64, 0, 1)
+            EINSUMS_SME_D_ROW(svst1_hor_za64, 0, 2)
+            EINSUMS_SME_D_ROW(svst1_hor_za64, 0, 3)
+        }
+        if (vl + r < mr_eff) {
+            double *row = C + (vl + r) * ldc;
+            EINSUMS_SME_D_ROW(svst1_hor_za64, 1, 0)
+            EINSUMS_SME_D_ROW(svst1_hor_za64, 1, 1)
+            EINSUMS_SME_D_ROW(svst1_hor_za64, 1, 2)
+            EINSUMS_SME_D_ROW(svst1_hor_za64, 1, 3)
+        }
+    }
+}
+
+/// @brief The double tile into a column-major buffer (ld = MR), for a C with no unit stride.
+__arm_new("za") __arm_locally_streaming static void sme_dgemm_tile_buffer(int64_t kc, double const *Ap, double const *Bp, double *buf) {
+    int64_t const  vl = static_cast<int64_t>(svcntd());
+    int64_t const  mr = 2 * vl;
+    svbool_t const pg = svptrue_b64();
+
+    svzero_za();
+    sme_dgemm_kloop<false>(kc, svdup_f64(1.0), Ap, Bp);
+    for (int64_t c = 0; c < vl; ++c) {
+        uint32_t const slice = static_cast<uint32_t>(c);
+        svst1_ver_za64(0, slice, pg, buf + (0 * vl + c) * mr);
+        svst1_ver_za64(1, slice, pg, buf + (1 * vl + c) * mr);
+        svst1_ver_za64(2, slice, pg, buf + (2 * vl + c) * mr);
+        svst1_ver_za64(3, slice, pg, buf + (3 * vl + c) * mr);
+        svst1_ver_za64(4, slice, pg, buf + (0 * vl + c) * mr + vl);
+        svst1_ver_za64(5, slice, pg, buf + (1 * vl + c) * mr + vl);
+        svst1_ver_za64(6, slice, pg, buf + (2 * vl + c) * mr + vl);
+        svst1_ver_za64(7, slice, pg, buf + (3 * vl + c) * mr + vl);
+    }
+}
+
+#    undef EINSUMS_SME_D_COL
+#    undef EINSUMS_SME_D_ROW
+
+// ---- float: MR = NR = 2*VL32, four ZA32 tiles -----------------------------
+//
+// Tile (ti, tj) is ZA tile 2*ti + tj; f32 FMOPA is four times as dense per
+// instruction as f64. Same slice arithmetic as the double tile with a 2 x 2
+// grid.
+
+template <bool Scale>
+__attribute__((always_inline)) inline void sme_sgemm_kloop(int64_t kc, svfloat32_t va, float const *Ap,
+                                                           float const *Bp) __arm_streaming __arm_inout("za") {
+    int64_t const  vl = static_cast<int64_t>(svcntw());
+    int64_t const  mr = 2 * vl;
+    svbool_t const pg = svptrue_b32();
 
     for (int64_t k = 0; k < kc; ++k) {
         float const *a = Ap + k * mr;
         float const *b = Bp + k * mr;
 
-        svfloat32_t const a0 = svld1_f32(pg, a);
-        svfloat32_t const a1 = svld1_f32(pg, a + vl);
+        svfloat32_t a0 = svld1_f32(pg, a);
+        svfloat32_t a1 = svld1_f32(pg, a + vl);
+        if constexpr (Scale) {
+            a0 = svmul_f32_x(pg, a0, va);
+            a1 = svmul_f32_x(pg, a1, va);
+        }
         svfloat32_t const b0 = svld1_f32(pg, b);
         svfloat32_t const b1 = svld1_f32(pg, b + vl);
 
@@ -137,14 +285,109 @@ __arm_new("za") __arm_locally_streaming static void sme_sgemm_accumulate(int64_t
         svmopa_za32_f32_m(2, pg, pg, a1, b0);
         svmopa_za32_f32_m(3, pg, pg, a1, b1);
     }
+}
 
-    for (uint32_t r = 0; r < static_cast<uint32_t>(vl); ++r) {
-        svst1_hor_za32(0, r, pg, buf + r * mr);
-        svst1_hor_za32(1, r, pg, buf + r * mr + vl);
-        svst1_hor_za32(2, r, pg, buf + (vl + r) * mr);
-        svst1_hor_za32(3, r, pg, buf + (vl + r) * mr + vl);
+__attribute__((always_inline)) inline void sme_sgemm_kloop_alpha(int64_t kc, float alpha, float const *Ap,
+                                                                 float const *Bp) __arm_streaming __arm_inout("za") {
+    if (alpha == 1.0F) {
+        sme_sgemm_kloop<false>(kc, svdup_f32(1.0F), Ap, Bp);
+    } else {
+        sme_sgemm_kloop<true>(kc, svdup_f32(alpha), Ap, Bp);
     }
 }
+
+#    define EINSUMS_SME_S_COL(op, tj)                                                                                                      \
+        if ((tj) * vl + c < nr_eff) {                                                                                                      \
+            float *col = C + ((tj) * vl + c) * ldc;                                                                                        \
+            op((tj), slice, top, col);                                                                                                     \
+            if (two_halves) {                                                                                                              \
+                op(2 + (tj), slice, bot, col + vl);                                                                                        \
+            }                                                                                                                              \
+        }
+
+#    define EINSUMS_SME_S_ROW(op, ti, tj)                                                                                                  \
+        if ((tj) * vl < nr_eff) {                                                                                                          \
+            op(2 * (ti) + (tj), slice, cols##tj, row + (tj) * vl);                                                                         \
+        }
+
+/// @brief The float tile, C contiguous down its columns (rs_c == 1).
+__arm_new("za") __arm_locally_streaming static void sme_sgemm_tile_cols(int64_t kc, float alpha, float const *Ap, float const *Bp,
+                                                                        int64_t mr_eff, int64_t nr_eff, float *C, int64_t ldc) {
+    int64_t const  vl         = static_cast<int64_t>(svcntw());
+    svbool_t const top        = svwhilelt_b32_s64(0, mr_eff);
+    svbool_t const bot        = svwhilelt_b32_s64(vl, mr_eff);
+    bool const     two_halves = mr_eff > vl;
+
+    svzero_za();
+    for (int64_t c = 0; c < vl; ++c) {
+        uint32_t const slice = static_cast<uint32_t>(c);
+        EINSUMS_SME_S_COL(svld1_ver_za32, 0)
+        EINSUMS_SME_S_COL(svld1_ver_za32, 1)
+    }
+    sme_sgemm_kloop_alpha(kc, alpha, Ap, Bp);
+    for (int64_t c = 0; c < vl; ++c) {
+        uint32_t const slice = static_cast<uint32_t>(c);
+        EINSUMS_SME_S_COL(svst1_ver_za32, 0)
+        EINSUMS_SME_S_COL(svst1_ver_za32, 1)
+    }
+}
+
+/// @brief The float tile, C contiguous along its rows (cs_c == 1).
+__arm_new("za") __arm_locally_streaming static void sme_sgemm_tile_rows(int64_t kc, float alpha, float const *Ap, float const *Bp,
+                                                                        int64_t mr_eff, int64_t nr_eff, float *C, int64_t ldc) {
+    int64_t const  vl    = static_cast<int64_t>(svcntw());
+    svbool_t const cols0 = svwhilelt_b32_s64(0, nr_eff);
+    svbool_t const cols1 = svwhilelt_b32_s64(vl, nr_eff);
+
+    svzero_za();
+    for (int64_t r = 0; r < vl; ++r) {
+        uint32_t const slice = static_cast<uint32_t>(r);
+        if (r < mr_eff) {
+            float *row = C + r * ldc;
+            EINSUMS_SME_S_ROW(svld1_hor_za32, 0, 0)
+            EINSUMS_SME_S_ROW(svld1_hor_za32, 0, 1)
+        }
+        if (vl + r < mr_eff) {
+            float *row = C + (vl + r) * ldc;
+            EINSUMS_SME_S_ROW(svld1_hor_za32, 1, 0)
+            EINSUMS_SME_S_ROW(svld1_hor_za32, 1, 1)
+        }
+    }
+    sme_sgemm_kloop_alpha(kc, alpha, Ap, Bp);
+    for (int64_t r = 0; r < vl; ++r) {
+        uint32_t const slice = static_cast<uint32_t>(r);
+        if (r < mr_eff) {
+            float *row = C + r * ldc;
+            EINSUMS_SME_S_ROW(svst1_hor_za32, 0, 0)
+            EINSUMS_SME_S_ROW(svst1_hor_za32, 0, 1)
+        }
+        if (vl + r < mr_eff) {
+            float *row = C + (vl + r) * ldc;
+            EINSUMS_SME_S_ROW(svst1_hor_za32, 1, 0)
+            EINSUMS_SME_S_ROW(svst1_hor_za32, 1, 1)
+        }
+    }
+}
+
+/// @brief The float tile into a column-major buffer (ld = MR), for a C with no unit stride.
+__arm_new("za") __arm_locally_streaming static void sme_sgemm_tile_buffer(int64_t kc, float const *Ap, float const *Bp, float *buf) {
+    int64_t const  vl = static_cast<int64_t>(svcntw());
+    int64_t const  mr = 2 * vl;
+    svbool_t const pg = svptrue_b32();
+
+    svzero_za();
+    sme_sgemm_kloop<false>(kc, svdup_f32(1.0F), Ap, Bp);
+    for (int64_t c = 0; c < vl; ++c) {
+        uint32_t const slice = static_cast<uint32_t>(c);
+        svst1_ver_za32(0, slice, pg, buf + (0 * vl + c) * mr);
+        svst1_ver_za32(1, slice, pg, buf + (1 * vl + c) * mr);
+        svst1_ver_za32(2, slice, pg, buf + (0 * vl + c) * mr + vl);
+        svst1_ver_za32(3, slice, pg, buf + (1 * vl + c) * mr + vl);
+    }
+}
+
+#    undef EINSUMS_SME_S_COL
+#    undef EINSUMS_SME_S_ROW
 
 #endif // EINSUMS_PACKED_GEMM_HAVE_SME_KERNEL
 
@@ -155,15 +398,14 @@ void micro_kernel_tile(int mr_block, int nr_block, int64_t kc, T alpha, T const 
     if constexpr (std::is_same_v<T, double>) {
         int64_t const vl = static_cast<int64_t>(svcntsd()); // streaming VL, queryable from normal mode
         if (vl <= kSmeMaxVl && mr_block == 2 * vl && nr_block == 4 * vl) {
-            double        buf[(2 * kSmeMaxVl) * (4 * kSmeMaxVl)];
-            int64_t const nr = 4 * vl;
-            sme_dgemm_accumulate(kc, Ap, Bp, buf);
-            // Normal (non-streaming) mode: masked, alpha-scaled accumulation
-            // into strided C, NEON-vectorizable by the compiler.
-            for (int64_t i = 0; i < mr_eff; ++i) {
-                for (int64_t j = 0; j < nr_eff; ++j) {
-                    C[i * rs_c + j * cs_c] += alpha * buf[i * nr + j];
-                }
+            if (rs_c == 1) {
+                sme_dgemm_tile_cols(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, cs_c);
+            } else if (cs_c == 1) {
+                sme_dgemm_tile_rows(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c);
+            } else {
+                double buf[(2 * kSmeMaxVl) * (4 * kSmeMaxVl)];
+                sme_dgemm_tile_buffer(kc, Ap, Bp, buf);
+                add_tile_to_strided_c(alpha, buf, 2 * vl, mr_eff, nr_eff, C, rs_c, cs_c);
             }
             return;
         }
@@ -171,13 +413,14 @@ void micro_kernel_tile(int mr_block, int nr_block, int64_t kc, T alpha, T const 
     if constexpr (std::is_same_v<T, float>) {
         int64_t const vl = static_cast<int64_t>(svcntsw()); // f32 streaming VL, queryable from normal mode
         if (vl <= 2 * kSmeMaxVl && mr_block == 2 * vl && nr_block == 2 * vl) {
-            float         buf[(4 * kSmeMaxVl) * (4 * kSmeMaxVl)];
-            int64_t const nr = 2 * vl;
-            sme_sgemm_accumulate(kc, Ap, Bp, buf);
-            for (int64_t i = 0; i < mr_eff; ++i) {
-                for (int64_t j = 0; j < nr_eff; ++j) {
-                    C[i * rs_c + j * cs_c] += alpha * buf[i * nr + j];
-                }
+            if (rs_c == 1) {
+                sme_sgemm_tile_cols(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, cs_c);
+            } else if (cs_c == 1) {
+                sme_sgemm_tile_rows(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c);
+            } else {
+                float buf[(4 * kSmeMaxVl) * (4 * kSmeMaxVl)];
+                sme_sgemm_tile_buffer(kc, Ap, Bp, buf);
+                add_tile_to_strided_c(alpha, buf, 2 * vl, mr_eff, nr_eff, C, rs_c, cs_c);
             }
             return;
         }
