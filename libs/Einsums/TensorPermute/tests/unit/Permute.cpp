@@ -14,6 +14,7 @@
 #include <complex>
 #include <cstddef>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -50,7 +51,9 @@ void check_close(T got, T want) {
 }
 
 /// Storage for one operand plus a TensorImpl over it. @p pad adds unused elements to the leading
-/// dimension, so the operand is a strided view into its buffer rather than contiguous.
+/// dimension, so the operand is a strided view into its buffer rather than contiguous. @p inner
+/// spaces the elements of the fastest axis that far apart, as a slice C(1, :, :) of a tensor whose
+/// first axis has extent @p inner is laid out: no axis then has a unit stride.
 template <typename T, size_t Rank>
 struct Operand {
     std::vector<T>           storage;
@@ -58,8 +61,8 @@ struct Operand {
     std::array<size_t, Rank> strides;
     TensorImpl<T>            impl;
 
-    Operand(std::array<size_t, Rank> d, bool row_major, size_t pad = 0) : dims(d), strides{}, impl() {
-        size_t running = 1;
+    Operand(std::array<size_t, Rank> d, bool row_major, size_t pad = 0, size_t inner = 1) : dims(d), strides{}, impl() {
+        size_t running = inner;
         if (row_major) {
             for (size_t k = Rank; k-- > 0;) {
                 strides[k] = running;
@@ -163,6 +166,32 @@ TEMPLATE_TEST_CASE("TensorPermute - padded operands", "[TensorPermute]", float, 
     }
     SECTION("row-major") {
         check_cyclic<TestType>(true, true, 1, 5);
+    }
+}
+
+// KNOWN BUG: a fastest axis whose stride is not 1, on either side. HPTT takes that stride as the
+// inner stride and places axis i at the inner stride times the outer sizes of the faster axes, so an
+// axis's outer size is the ratio of neighbouring strides. build_permute_plan divides that ratio by
+// the inner stride a second time: a slice C(1, :, :) of a 3 x 17 x 19 tensor comes out as outer size
+// 5 for an axis of extent 17 and is rejected ("HPTT: outerSizeB invalid"), and Sort+GEMM, which
+// writes its result through this permute, throws on an einsum into such a slice (float on a rung
+// without SME, where PackedGemm declines it). Correcting the ratio is not enough: HPTT's float path
+// then leaves elements of a column-major C with inner stride 2 or 3 unwritten and writes past it.
+// Drop [!shouldfail] when both are fixed.
+TEMPLATE_TEST_CASE("TensorPermute - a fastest axis with a non-unit stride", "[TensorPermute][!shouldfail]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    for (bool const row_major : {false, true}) {
+        for (auto [a_inner, c_inner] :
+             {std::pair{size_t{1}, size_t{3}}, std::pair{size_t{2}, size_t{1}}, std::pair{size_t{3}, size_t{2}}}) {
+            CAPTURE(row_major, a_inner, c_inner);
+            Operand<TestType, 3> A({2, 3, 4}, row_major, 0, a_inner);
+            Operand<TestType, 3> C({4, 2, 3}, row_major, 1, c_inner);
+            A.for_each([&](auto const &idx, size_t n) { A.at(idx) = value_for<TestType>(n); });
+
+            tp::permute("kij <- ijk", TestType{0}, &C.impl, TestType{1}, A.impl);
+
+            A.for_each([&](auto const &idx, size_t) { CHECK(C.at({idx[2], idx[0], idx[1]}) == A.at(idx)); });
+        }
     }
 }
 
