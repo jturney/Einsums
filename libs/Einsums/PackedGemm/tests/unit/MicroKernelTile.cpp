@@ -79,7 +79,7 @@ void check_tile(int64_t kc, int64_t mr_eff, int64_t nr_eff, int64_t rs_c, int64_
 TEMPLATE_TEST_CASE("MicroKernel - full tile into column-major C", "[PackedGemm][MicroKernel]", float, double) {
     using T          = TestType;
     auto const shape = micro_kernel_shape<T>();
-    for (int64_t kc : {int64_t{1}, int64_t{7}, int64_t{64}, int64_t{513}}) {
+    for (int64_t const kc : {int64_t{1}, int64_t{7}, int64_t{64}, int64_t{513}}) {
         check_tile<T>(kc, shape.mr, shape.nr, 1, shape.mr + 3, T{1});
         check_tile<T>(kc, shape.mr, shape.nr, 1, shape.mr, T{-0.5});
     }
@@ -88,7 +88,7 @@ TEMPLATE_TEST_CASE("MicroKernel - full tile into column-major C", "[PackedGemm][
 TEMPLATE_TEST_CASE("MicroKernel - ragged tails write only their own elements", "[PackedGemm][MicroKernel]", float, double) {
     using T          = TestType;
     auto const shape = micro_kernel_shape<T>();
-    for (int64_t kc : {int64_t{3}, int64_t{40}}) {
+    for (int64_t const kc : {int64_t{3}, int64_t{40}}) {
         check_tile<T>(kc, 1, 1, 1, shape.mr + 3, T{1});
         check_tile<T>(kc, shape.mr - 1, shape.nr, 1, shape.mr + 1, T{2});
         check_tile<T>(kc, shape.mr, shape.nr - 1, 1, shape.mr + 5, T{1});
@@ -99,7 +99,7 @@ TEMPLATE_TEST_CASE("MicroKernel - ragged tails write only their own elements", "
 TEMPLATE_TEST_CASE("MicroKernel - row-major and strided C", "[PackedGemm][MicroKernel]", float, double) {
     using T          = TestType;
     auto const shape = micro_kernel_shape<T>();
-    for (int64_t kc : {int64_t{5}, int64_t{96}}) {
+    for (int64_t const kc : {int64_t{5}, int64_t{96}}) {
         check_tile<T>(kc, shape.mr, shape.nr, shape.nr + 2, 1, T{1});
         check_tile<T>(kc, shape.mr - 2, shape.nr - 1, shape.nr + 1, 1, T{-1});
         check_tile<T>(kc, shape.mr, shape.nr, 3, 3 * shape.mr + 1, T{1.5});
@@ -110,15 +110,18 @@ TEMPLATE_TEST_CASE("MicroKernel - row-major and strided C", "[PackedGemm][MicroK
 // kernel moves C through its ZA tiles one contiguous slice at a time and masks
 // the slices with predicates, so a tail of one half's rows (or less), one row
 // past it, and a column count one either side of a tile edge each take a
-// different combination of slice guards and predicates.
+// different combination of slice guards and predicates. The edges are half the
+// row tile, which is one vector, in both directions; a count outside the tile is
+// dropped, since the tile's contract is 1 <= mr_eff <= MR and 1 <= nr_eff <= NR
+// (x86 tiles are 2 vectors by 6 columns, so their column edges are fewer).
 TEMPLATE_TEST_CASE("MicroKernel - tails at the half-tile edges", "[PackedGemm][MicroKernel]", float, double) {
     using T             = TestType;
     auto const    shape = micro_kernel_shape<T>();
     int64_t const half  = shape.mr / 2;
-    for (int64_t kc : {int64_t{2}, int64_t{93}}) {
-        for (int64_t mr_eff : {int64_t{1}, half - 1, half, half + 1, int64_t{shape.mr}}) {
-            for (int64_t nr_eff : {int64_t{1}, half - 1, half, half + 1, int64_t{shape.nr} - 1}) {
-                if (mr_eff < 1 || nr_eff < 1) {
+    for (int64_t const kc : {int64_t{2}, int64_t{93}}) {
+        for (int64_t const mr_eff : {int64_t{1}, half - 1, half, half + 1, int64_t{shape.mr}}) {
+            for (int64_t const nr_eff : {int64_t{1}, half - 1, half, half + 1, int64_t{shape.nr} - 1, int64_t{shape.nr}}) {
+                if (mr_eff < 1 || nr_eff < 1 || mr_eff > shape.mr || nr_eff > shape.nr) {
                     continue;
                 }
                 check_tile<T>(kc, mr_eff, nr_eff, 1, shape.mr + 1, T{1});
@@ -172,13 +175,13 @@ TEMPLATE_TEST_CASE("MicroKernel - tile and blocking follow the selected rung", "
 // sweeps is paid in demand misses on lines a row apart, so KC grows toward K
 // and the panel is allowed out of L2 to buy that back.
 TEMPLATE_TEST_CASE("MicroKernel - blocking follows the contraction shape", "[PackedGemm][MicroKernel]", float, double) {
-    using T             = TestType;
-    auto const    shape = micro_kernel_shape<T>();
-    int64_t const elem  = static_cast<int64_t>(sizeof(T));
-    auto const   &hw    = hardware::cpu_info();
-    auto const    base  = compute_blocking(elem, shape.mr, shape.nr);
+    using T           = TestType;
+    auto const  shape = micro_kernel_shape<T>();
+    auto const  elem  = static_cast<int64_t>(sizeof(T));
+    auto const &hw    = hardware::cpu_info();
+    auto const  base  = compute_blocking(elem, shape.mr, shape.nr);
 
-    auto blocking_for = [&](int64_t M, int64_t N, int64_t K) { return compute_blocking(elem, shape.mr, shape.nr, M, N, K); };
+    auto const blocking_for = [&](int64_t M, int64_t N, int64_t K) { return compute_blocking(elem, shape.mr, shape.nr, M, N, K); };
 
     // An extent of zero means there is no contraction to specialise for.
     for (auto [M, N, K] : {std::tuple{int64_t{0}, int64_t{8}, int64_t{8}}, std::tuple{int64_t{8}, int64_t{0}, int64_t{8}},
