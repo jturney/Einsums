@@ -8,8 +8,8 @@
 // The kernel is the one place the packed engine does arithmetic, and its
 // contract has edges the contraction tests reach only by accident: a ragged
 // tail (mr_eff or nr_eff below the register block), a C whose row stride is
-// not 1, an alpha other than 1, and accumulation onto whatever C already
-// holds. Every rung's kernel is registered here through the SIMD rung tests,
+// not 1, an alpha other than 1, accumulation onto whatever C already
+// holds, and the overwrite mode that must not read C at all. Every rung's kernel is registered here through the SIMD rung tests,
 // so a tile that is right at one width and wrong at another shows up by rung.
 
 #include <Einsums/Hardware/CpuInfo.hpp>
@@ -41,7 +41,7 @@ std::vector<T> random_panel(size_t n, std::mt19937 &rng) {
 }
 
 template <typename T>
-void check_tile(int64_t kc, int64_t mr_eff, int64_t nr_eff, int64_t rs_c, int64_t cs_c, T alpha) {
+void check_tile_mode(int64_t kc, int64_t mr_eff, int64_t nr_eff, int64_t rs_c, int64_t cs_c, T alpha, bool overwrite) {
     auto const   kernel = micro_kernel_entry<T>();
     auto const   shape  = micro_kernel_shape<T>();
     int const    MR     = shape.mr;
@@ -52,9 +52,17 @@ void check_tile(int64_t kc, int64_t mr_eff, int64_t nr_eff, int64_t rs_c, int64_
     // C is a strided window with slack on both sides so an out-of-tile write shows.
     size_t const c_len = static_cast<size_t>((MR + 1) * rs_c + (NR + 1) * cs_c) + 8;
     auto         C     = random_panel<T>(c_len, rng);
-    auto         want  = C;
+    // Overwriting must not read C: a NaN it read would survive into the result.
+    if (overwrite) {
+        for (int64_t j = 0; j < nr_eff; ++j) {
+            for (int64_t i = 0; i < mr_eff; ++i) {
+                C[static_cast<size_t>(i * rs_c + j * cs_c)] = std::numeric_limits<T>::quiet_NaN();
+            }
+        }
+    }
+    auto want = C;
 
-    kernel(MR, NR, kc, alpha, Ap.data(), Bp.data(), mr_eff, nr_eff, C.data(), rs_c, cs_c);
+    kernel(MR, NR, kc, alpha, Ap.data(), Bp.data(), mr_eff, nr_eff, C.data(), rs_c, cs_c, overwrite);
 
     for (int64_t j = 0; j < nr_eff; ++j) {
         for (int64_t i = 0; i < mr_eff; ++i) {
@@ -62,7 +70,8 @@ void check_tile(int64_t kc, int64_t mr_eff, int64_t nr_eff, int64_t rs_c, int64_
             for (int64_t k = 0; k < kc; ++k) {
                 sum += Ap[static_cast<size_t>(i + k * MR)] * Bp[static_cast<size_t>(k * NR + j)];
             }
-            want[static_cast<size_t>(i * rs_c + j * cs_c)] += alpha * sum;
+            T &w = want[static_cast<size_t>(i * rs_c + j * cs_c)];
+            w    = overwrite ? alpha * sum : w + alpha * sum;
         }
     }
 
@@ -72,6 +81,13 @@ void check_tile(int64_t kc, int64_t mr_eff, int64_t nr_eff, int64_t rs_c, int64_
     for (size_t idx = 0; idx < c_len; ++idx) {
         REQUIRE_THAT(static_cast<double>(C[idx]), Catch::Matchers::WithinAbs(static_cast<double>(want[idx]), tol));
     }
+}
+
+/// Every tile is checked in both modes: adding onto C, and overwriting it.
+template <typename T>
+void check_tile(int64_t kc, int64_t mr_eff, int64_t nr_eff, int64_t rs_c, int64_t cs_c, T alpha) {
+    check_tile_mode<T>(kc, mr_eff, nr_eff, rs_c, cs_c, alpha, false);
+    check_tile_mode<T>(kc, mr_eff, nr_eff, rs_c, cs_c, alpha, true);
 }
 
 } // namespace

@@ -61,17 +61,19 @@ struct MicroKernelShape {
 /// @brief Signature of a resolved micro-kernel tile function.
 ///
 /// Arguments: (mr_block, nr_block, kc, alpha, Ap_panel, Bp_panel, mr_eff,
-/// nr_eff, C, rs_c, cs_c) — see MicroKernelBody.hpp for semantics.
+/// nr_eff, C, rs_c, cs_c, overwrite) — see MicroKernelBody.hpp for semantics.
+/// The tile adds alpha * A B onto C, or with overwrite stores it without
+/// reading C, which is how a beta of zero reaches C with no clearing pass.
 template <typename T>
-using MicroKernelFn = void (*)(int, int, int64_t, T, T const *, T const *, int64_t, int64_t, T *, int64_t, int64_t);
+using MicroKernelFn = void (*)(int, int, int64_t, T, T const *, T const *, int64_t, int64_t, T *, int64_t, int64_t, bool);
 
 namespace detail {
 
 /// Ambient-flags fallback used for element types without a per-rung build.
 template <typename T>
 void micro_kernel_ambient(int mr_block, int nr_block, int64_t kc, T alpha, T const *Ap, T const *Bp, int64_t mr_eff, int64_t nr_eff, T *C,
-                          int64_t rs_c, int64_t cs_c) {
-    arch_ambient::micro_kernel_run<T>(mr_block, nr_block, kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c);
+                          int64_t rs_c, int64_t cs_c, bool overwrite) {
+    arch_ambient::micro_kernel_run<T>(mr_block, nr_block, kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c, overwrite);
 }
 
 } // namespace detail

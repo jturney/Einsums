@@ -34,7 +34,17 @@
 EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 namespace EINSUMS_PACKED_GEMM_KERNEL_NS {
 
-/// @brief Compute one MR*NR tile: C[i*rs_c + j*cs_c] += alpha * Sum_k Ap[i + k*MR] * Bp[k*NR + j].
+/// @brief Write one element of a finished tile: overwrite C, or add onto it.
+///
+/// Overwriting never reads C, so whatever C held before (NaN included) is gone, as BLAS promises
+/// for beta == 0.
+template <typename T>
+inline void update_c(T &c, T v, bool overwrite) {
+    c = overwrite ? v : c + v;
+}
+
+/// @brief Compute one MR*NR tile: C[i*rs_c + j*cs_c] += alpha * Sum_k Ap[i + k*MR] * Bp[k*NR + j],
+///        or, with @p overwrite, C[i*rs_c + j*cs_c] = alpha * Sum_k ... without reading C.
 ///
 /// Ap is a column-major MR*kc panel, Bp a row-major kc*NR panel — the layouts
 /// produced by pack_A / pack_B. Both panels are zero-padded to full MR/NR by
@@ -44,7 +54,7 @@ namespace EINSUMS_PACKED_GEMM_KERNEL_NS {
 /// Compile-time extents and unrolled loops keep the accumulators in registers.
 template <typename T, int MR, int NR>
 void micro_kernel(int64_t kc, T alpha, T const *__restrict Ap, T const *__restrict Bp, int64_t mr_eff, int64_t nr_eff, T *C, int64_t rs_c,
-                  int64_t cs_c) {
+                  int64_t cs_c, bool overwrite) {
     T acc[MR][NR] = {};
 
     for (int64_t k = 0; k < kc; ++k) {
@@ -65,13 +75,13 @@ void micro_kernel(int64_t kc, T alpha, T const *__restrict Ap, T const *__restri
         for (int j = 0; j < NR; ++j) {
 #pragma unroll
             for (int i = 0; i < MR; ++i) {
-                C[i * rs_c + j * cs_c] += alpha * acc[i][j];
+                update_c(C[i * rs_c + j * cs_c], alpha * acc[i][j], overwrite);
             }
         }
     } else {
         for (int64_t j = 0; j < nr_eff; ++j) {
             for (int64_t i = 0; i < mr_eff; ++i) {
-                C[i * rs_c + j * cs_c] += alpha * acc[i][j];
+                update_c(C[i * rs_c + j * cs_c], alpha * acc[i][j], overwrite);
             }
         }
     }
@@ -98,7 +108,7 @@ inline constexpr int vector_kernel_nr = 6;
 
 /// @brief One (2 * lanes) x 6 tile through this rung's vector registers.
 ///
-/// Same contract as @ref micro_kernel: Ap is a column-major MR*kc panel, Bp a
+/// Same contract as @ref micro_kernel, @p overwrite included: Ap is a column-major MR*kc panel, Bp a
 /// row-major kc*NR panel, both zero-padded by the packers, and only the C
 /// update is masked to mr_eff x nr_eff. A full tile into a unit-row-stride
 /// C (rs_c == 1, the column-major case every scatter temp and every
@@ -107,7 +117,7 @@ inline constexpr int vector_kernel_nr = 6;
 /// branches on the C layout.
 template <typename T>
 void micro_kernel_vector(int64_t kc, T alpha, T const *__restrict Ap, T const *__restrict Bp, int64_t mr_eff, int64_t nr_eff, T *C,
-                         int64_t rs_c, int64_t cs_c) {
+                         int64_t rs_c, int64_t cs_c, bool overwrite) {
     namespace simd   = ::stripes;
     constexpr int L  = simd::native_lanes<T>;
     constexpr int MR = vector_kernel_mr<T>;
@@ -135,6 +145,15 @@ void micro_kernel_vector(int64_t kc, T alpha, T const *__restrict Ap, T const *_
 
     simd::Vec<T> const va = simd::broadcast(alpha);
     if (rs_c == 1 && mr_eff == MR && nr_eff == NR) {
+        if (overwrite) {
+            EINSUMS_PACKED_GEMM_UNROLL(6)
+            for (int j = 0; j < NR; ++j) {
+                T *c = C + j * cs_c;
+                simd::storeu(c, simd::mul(va, acc0[j]));
+                simd::storeu(c + L, simd::mul(va, acc1[j]));
+            }
+            return;
+        }
         EINSUMS_PACKED_GEMM_UNROLL(6)
         for (int j = 0; j < NR; ++j) {
             T *c = C + j * cs_c;
@@ -152,7 +171,7 @@ void micro_kernel_vector(int64_t kc, T alpha, T const *__restrict Ap, T const *_
     }
     for (int64_t j = 0; j < nr_eff; ++j) {
         for (int64_t i = 0; i < mr_eff; ++i) {
-            C[i * rs_c + j * cs_c] += alpha * tile[j * MR + i];
+            update_c(C[i * rs_c + j * cs_c], alpha * tile[j * MR + i], overwrite);
         }
     }
 }
@@ -160,14 +179,14 @@ void micro_kernel_vector(int64_t kc, T alpha, T const *__restrict Ap, T const *_
 /// @brief Variable-block fallback for (MR, NR) shapes without a static instantiation.
 template <typename T>
 void micro_kernel_generic(int64_t kc, T alpha, T const *Ap, T const *Bp, int mr_block, int nr_block, int64_t mr_eff, int64_t nr_eff, T *C,
-                          int64_t rs_c, int64_t cs_c) {
+                          int64_t rs_c, int64_t cs_c, bool overwrite) {
     for (int64_t j = 0; j < nr_eff; ++j) {
         for (int64_t i = 0; i < mr_eff; ++i) {
             T sum{};
             for (int64_t k = 0; k < kc; ++k) {
                 sum += Ap[i + k * mr_block] * Bp[k * nr_block + j];
             }
-            C[i * rs_c + j * cs_c] += alpha * sum;
+            update_c(C[i * rs_c + j * cs_c], alpha * sum, overwrite);
         }
     }
 }
@@ -180,29 +199,29 @@ void micro_kernel_generic(int64_t kc, T alpha, T const *Ap, T const *Bp, int mr_
 /// falls back to the generic kernel.
 template <typename T>
 void micro_kernel_run(int mr_block, int nr_block, int64_t kc, T alpha, T const *Ap, T const *Bp, int64_t mr_eff, int64_t nr_eff, T *C,
-                      int64_t rs_c, int64_t cs_c) {
+                      int64_t rs_c, int64_t cs_c, bool overwrite) {
     if constexpr (has_vector_kernel<T>) {
         if (mr_block == vector_kernel_mr<T> && nr_block == vector_kernel_nr) {
-            micro_kernel_vector<T>(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c);
+            micro_kernel_vector<T>(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c, overwrite);
             return;
         }
     }
     if (nr_block == 6) {
         switch (mr_block) {
         case 4:
-            micro_kernel<T, 4, 6>(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c);
+            micro_kernel<T, 4, 6>(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c, overwrite);
             return;
         case 8:
-            micro_kernel<T, 8, 6>(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c);
+            micro_kernel<T, 8, 6>(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c, overwrite);
             return;
         case 16:
-            micro_kernel<T, 16, 6>(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c);
+            micro_kernel<T, 16, 6>(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c, overwrite);
             return;
         default:
             break;
         }
     }
-    micro_kernel_generic<T>(kc, alpha, Ap, Bp, mr_block, nr_block, mr_eff, nr_eff, C, rs_c, cs_c);
+    micro_kernel_generic<T>(kc, alpha, Ap, Bp, mr_block, nr_block, mr_eff, nr_eff, C, rs_c, cs_c, overwrite);
 }
 
 } // namespace EINSUMS_PACKED_GEMM_KERNEL_NS

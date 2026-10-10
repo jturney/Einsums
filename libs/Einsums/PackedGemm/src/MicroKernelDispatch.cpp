@@ -25,7 +25,7 @@ EINSUMS_NAMESPACE_BEGIN(packed_gemm)
     namespace ns {                                                                                                                         \
     template <typename T>                                                                                                                  \
     void micro_kernel_tile(int mr_block, int nr_block, int64_t kc, T alpha, T const *Ap, T const *Bp, int64_t mr_eff, int64_t nr_eff,      \
-                           T *C, int64_t rs_c, int64_t cs_c);                                                                              \
+                           T *C, int64_t rs_c, int64_t cs_c, bool overwrite);                                                              \
     template <typename T>                                                                                                                  \
     MicroKernelShape micro_kernel_block();                                                                                                 \
     template <typename T>                                                                                                                  \

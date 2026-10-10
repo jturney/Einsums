@@ -1847,7 +1847,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
                                     pack_A_1m_panels<RealT>(tls_Ap1.data(), A_data, plan, mh, mh_len, kh, kh_len, MR, conj_a);
 
-                                    std::fill(tls_Cb1.begin(), tls_Cb1.begin() + static_cast<size_t>(mh_len) * nc_len, RealT{0});
+                                    // No clearing: the tiles cover the mh_len x nc_len block exactly,
+                                    // and each one overwrites its part.
                                     int64_t const num_jr = (nc_len + NR - 1) / NR;
                                     int64_t const num_ir = (mh_len + MR - 1) / MR;
                                     for (int64_t jr = 0; jr < num_jr; ++jr) {
@@ -1856,7 +1857,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                             int64_t const mr_eff = std::min<int64_t>(MR, mh_len - ir * MR);
                                             micro_real(MR, NR, kh_len, RealT{1}, tls_Ap1.data() + ir * MR * kh_len,
                                                        tls_Bp1.data() + jr * NR * kh_len, mr_eff, nr_eff,
-                                                       tls_Cb1.data() + (jr * NR) * mh_len + ir * MR, 1, mh_len);
+                                                       tls_Cb1.data() + (jr * NR) * mh_len + ir * MR, 1, mh_len, true);
                                         }
                                     }
 
@@ -2131,12 +2132,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);
                             }
 
-                            // Beta prescale, once per (mc, nc) block on the first kc tile. The
-                            // scatter branch stores on the first K block when beta == 0 (see
-                            // overwrite_c) and needs none. The direct-C branches still do, because
-                            // the kernel only accumulates, but for beta == 0 they clear C rather
-                            // than scale it.
-                            bool const store_c = overwrite_c && kc == 0 && needs_c_scatter;
+                            // Beta prescale, once per (mc, nc) block on the first kc tile. When
+                            // beta == 0 every branch stores on the first K block instead (see
+                            // overwrite_c) and needs none: the scatter branches through their
+                            // write-back, the direct-C branch through the kernel's overwrite mode,
+                            // which never reads C.
+                            bool const store_c = overwrite_c && kc == 0;
                             if (kc == 0 && beta != ValueType{1} && !store_c) {
                                 WAGGLE_ZONE_DETAIL("C beta prescale");
                                 if (needs_c_scatter) {
@@ -2209,7 +2210,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 for (int64_t nb = 0; nb < nc_len; nb += nb_len) {
                                     int64_t const nb_cur  = std::min(nb_len, nc_len - nb);
                                     int64_t const jr_base = nb / NR;
-                                    tls_Ct.assign(static_cast<size_t>(mc_len) * static_cast<size_t>(nb_cur), ValueType{0});
+                                    // No clearing: the tiles cover the block exactly, and each one
+                                    // overwrites its part.
+                                    tls_Ct.resize(static_cast<size_t>(mc_len) * static_cast<size_t>(nb_cur));
                                     ValueType *Cb = tls_Ct.data();
 
                                     // Which packed block the tile loops keep resident. The standard
@@ -2230,7 +2233,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                                 int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nb_cur - jr * NR);
                                                 micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
                                                            Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
-                                                           Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
+                                                           Cb + ir * MR + jr * NR * mc_len, 1, mc_len, true);
                                             }
                                         }
                                     } else {
@@ -2240,7 +2243,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                                 int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
                                                 micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
                                                            Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
-                                                           Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
+                                                           Cb + ir * MR + jr * NR * mc_len, 1, mc_len, true);
                                             }
                                         }
                                     }
@@ -2374,8 +2377,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     for (int64_t ir = 0; ir < num_ir; ++ir) {
                                         int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
 
-                                        // Use a contiguous MR*NR temp buffer for the GEMM output.
-                                        std::fill(tls_Ct.begin(), tls_Ct.end(), ValueType{0});
+                                        // A contiguous MR*NR temp buffer for the GEMM output, which the
+                                        // kernel overwrites whole.
                                         ValueType *Ct = tls_Ct.data();
 
                                         ValueType *Ap_panel = Ap + ir * MR * kc_len;
@@ -2384,7 +2387,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                         // The whole MR x NR tile into Ct even at an edge, avoiding the
                                         // kernel's slow partial path; the scatter reads only the valid part.
                                         micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, MR, NR,
-                                                   Ct, 1, MR);
+                                                   Ct, 1, MR, true);
 
                                         // Scatter Ct back to C through the offset tables, innermost
                                         // along whichever of C's index groups is packed closer. Ct
@@ -2462,7 +2465,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 }
                             } else {
                                 WAGGLE_ZONE_DETAIL("micro-kernel loop, direct C");
-                                // Single-M, single-N: the kernel accumulates directly into C.
+                                // Single-M, single-N: the kernel accumulates directly into C, or on
+                                // the first K block of a beta == 0 product overwrites it.
                                 for (int64_t jr = 0; jr < num_jr; ++jr) {
                                     int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nc_len - jr * NR);
 
@@ -2477,7 +2481,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                         // (rs, cs) pair covers both col-major (1, C_n_stride) and
                                         // row-major (C_m_stride, 1) layouts without a branch.
                                         micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, mr_actual,
-                                                   nr_actual, C_tile, C_m_stride, C_n_stride);
+                                                   nr_actual, C_tile, C_m_stride, C_n_stride, store_c);
                                     }
                                 }
                             }

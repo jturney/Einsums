@@ -219,6 +219,13 @@ AVX) use their own vector tile, ``MR = 2 x`` the rung's native lanes and
 an Apple M4). Panels must be packed in the geometry of the kernel that
 will read them.
 
+A tile either adds :math:`\alpha A B` onto ``C`` or overwrites ``C`` with it
+without reading ``C``. A zero :math:`\beta` uses the second form on the first K
+block and the first form after it, so ``C`` is never cleared in a separate
+pass and a NaN it held does not survive, as BLAS specifies for
+:math:`\beta = 0`. The scratch buffers a scattered ``C`` is written back from
+are always filled by overwriting tiles, so they need no clearing either.
+
 Complex arithmetic
 ------------------
 

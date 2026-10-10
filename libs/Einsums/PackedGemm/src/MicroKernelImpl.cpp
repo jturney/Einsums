@@ -62,22 +62,27 @@ inline constexpr int64_t kSmeMaxVl = 8;
 // a time, the outer products accumulate alpha * A B onto it with alpha folded
 // into the A vectors, and ZA is stored back the same way. Predicates cut the
 // slices to the ragged tail. Only a C with no unit stride goes through a buffer
-// and a normal-mode update.
+// and a normal-mode update. A tile that overwrites C (the first K block of a
+// beta == 0 product) skips the load: ZA starts from zero and C is never read.
 
 /// @brief Add a column-major tile buffer (leading dimension @p ld) into a C
-///        with no unit stride, walking C along its smaller stride.
+///        with no unit stride, walking C along its smaller stride, or store it
+///        there with @p overwrite.
 template <typename T>
-void add_tile_to_strided_c(T alpha, T const *buf, int64_t ld, int64_t mr_eff, int64_t nr_eff, T *C, int64_t rs_c, int64_t cs_c) {
+void add_tile_to_strided_c(T alpha, T const *buf, int64_t ld, int64_t mr_eff, int64_t nr_eff, T *C, int64_t rs_c, int64_t cs_c,
+                           bool overwrite) {
     if (rs_c <= cs_c) {
         for (int64_t j = 0; j < nr_eff; ++j) {
             for (int64_t i = 0; i < mr_eff; ++i) {
-                C[i * rs_c + j * cs_c] += alpha * buf[i + j * ld];
+                T &c = C[i * rs_c + j * cs_c];
+                c    = overwrite ? alpha * buf[i + j * ld] : c + alpha * buf[i + j * ld];
             }
         }
     } else {
         for (int64_t i = 0; i < mr_eff; ++i) {
             for (int64_t j = 0; j < nr_eff; ++j) {
-                C[i * rs_c + j * cs_c] += alpha * buf[i + j * ld];
+                T &c = C[i * rs_c + j * cs_c];
+                c    = overwrite ? alpha * buf[i + j * ld] : c + alpha * buf[i + j * ld];
             }
         }
     }
@@ -160,19 +165,22 @@ __attribute__((always_inline)) inline void sme_dgemm_kloop_alpha(int64_t kc, dou
 
 /// @brief The double tile, C contiguous down its columns (rs_c == 1).
 __arm_new("za") __arm_locally_streaming static void sme_dgemm_tile_cols(int64_t kc, double alpha, double const *Ap, double const *Bp,
-                                                                        int64_t mr_eff, int64_t nr_eff, double *C, int64_t ldc) {
+                                                                        int64_t mr_eff, int64_t nr_eff, double *C, int64_t ldc,
+                                                                        bool overwrite) {
     int64_t const  vl         = static_cast<int64_t>(svcntd());
     svbool_t const top        = svwhilelt_b64_s64(0, mr_eff);
     svbool_t const bot        = svwhilelt_b64_s64(vl, mr_eff);
     bool const     two_halves = mr_eff > vl;
 
     svzero_za();
-    for (int64_t c = 0; c < vl; ++c) {
-        uint32_t const slice = static_cast<uint32_t>(c);
-        EINSUMS_SME_D_COL(svld1_ver_za64, 0)
-        EINSUMS_SME_D_COL(svld1_ver_za64, 1)
-        EINSUMS_SME_D_COL(svld1_ver_za64, 2)
-        EINSUMS_SME_D_COL(svld1_ver_za64, 3)
+    if (!overwrite) {
+        for (int64_t c = 0; c < vl; ++c) {
+            uint32_t const slice = static_cast<uint32_t>(c);
+            EINSUMS_SME_D_COL(svld1_ver_za64, 0)
+            EINSUMS_SME_D_COL(svld1_ver_za64, 1)
+            EINSUMS_SME_D_COL(svld1_ver_za64, 2)
+            EINSUMS_SME_D_COL(svld1_ver_za64, 3)
+        }
     }
     sme_dgemm_kloop_alpha(kc, alpha, Ap, Bp);
     for (int64_t c = 0; c < vl; ++c) {
@@ -186,7 +194,8 @@ __arm_new("za") __arm_locally_streaming static void sme_dgemm_tile_cols(int64_t 
 
 /// @brief The double tile, C contiguous along its rows (cs_c == 1).
 __arm_new("za") __arm_locally_streaming static void sme_dgemm_tile_rows(int64_t kc, double alpha, double const *Ap, double const *Bp,
-                                                                        int64_t mr_eff, int64_t nr_eff, double *C, int64_t ldc) {
+                                                                        int64_t mr_eff, int64_t nr_eff, double *C, int64_t ldc,
+                                                                        bool overwrite) {
     int64_t const  vl    = static_cast<int64_t>(svcntd());
     svbool_t const cols0 = svwhilelt_b64_s64(0, nr_eff);
     svbool_t const cols1 = svwhilelt_b64_s64(vl, nr_eff);
@@ -194,21 +203,23 @@ __arm_new("za") __arm_locally_streaming static void sme_dgemm_tile_rows(int64_t 
     svbool_t const cols3 = svwhilelt_b64_s64(3 * vl, nr_eff);
 
     svzero_za();
-    for (int64_t r = 0; r < vl; ++r) {
-        uint32_t const slice = static_cast<uint32_t>(r);
-        if (r < mr_eff) {
-            double *row = C + r * ldc;
-            EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 0)
-            EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 1)
-            EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 2)
-            EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 3)
-        }
-        if (vl + r < mr_eff) {
-            double *row = C + (vl + r) * ldc;
-            EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 0)
-            EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 1)
-            EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 2)
-            EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 3)
+    if (!overwrite) {
+        for (int64_t r = 0; r < vl; ++r) {
+            uint32_t const slice = static_cast<uint32_t>(r);
+            if (r < mr_eff) {
+                double *row = C + r * ldc;
+                EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 0)
+                EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 1)
+                EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 2)
+                EINSUMS_SME_D_ROW(svld1_hor_za64, 0, 3)
+            }
+            if (vl + r < mr_eff) {
+                double *row = C + (vl + r) * ldc;
+                EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 0)
+                EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 1)
+                EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 2)
+                EINSUMS_SME_D_ROW(svld1_hor_za64, 1, 3)
+            }
         }
     }
     sme_dgemm_kloop_alpha(kc, alpha, Ap, Bp);
@@ -313,17 +324,20 @@ __attribute__((always_inline)) inline void sme_sgemm_kloop_alpha(int64_t kc, flo
 
 /// @brief The float tile, C contiguous down its columns (rs_c == 1).
 __arm_new("za") __arm_locally_streaming static void sme_sgemm_tile_cols(int64_t kc, float alpha, float const *Ap, float const *Bp,
-                                                                        int64_t mr_eff, int64_t nr_eff, float *C, int64_t ldc) {
+                                                                        int64_t mr_eff, int64_t nr_eff, float *C, int64_t ldc,
+                                                                        bool overwrite) {
     int64_t const  vl         = static_cast<int64_t>(svcntw());
     svbool_t const top        = svwhilelt_b32_s64(0, mr_eff);
     svbool_t const bot        = svwhilelt_b32_s64(vl, mr_eff);
     bool const     two_halves = mr_eff > vl;
 
     svzero_za();
-    for (int64_t c = 0; c < vl; ++c) {
-        uint32_t const slice = static_cast<uint32_t>(c);
-        EINSUMS_SME_S_COL(svld1_ver_za32, 0)
-        EINSUMS_SME_S_COL(svld1_ver_za32, 1)
+    if (!overwrite) {
+        for (int64_t c = 0; c < vl; ++c) {
+            uint32_t const slice = static_cast<uint32_t>(c);
+            EINSUMS_SME_S_COL(svld1_ver_za32, 0)
+            EINSUMS_SME_S_COL(svld1_ver_za32, 1)
+        }
     }
     sme_sgemm_kloop_alpha(kc, alpha, Ap, Bp);
     for (int64_t c = 0; c < vl; ++c) {
@@ -335,23 +349,26 @@ __arm_new("za") __arm_locally_streaming static void sme_sgemm_tile_cols(int64_t 
 
 /// @brief The float tile, C contiguous along its rows (cs_c == 1).
 __arm_new("za") __arm_locally_streaming static void sme_sgemm_tile_rows(int64_t kc, float alpha, float const *Ap, float const *Bp,
-                                                                        int64_t mr_eff, int64_t nr_eff, float *C, int64_t ldc) {
+                                                                        int64_t mr_eff, int64_t nr_eff, float *C, int64_t ldc,
+                                                                        bool overwrite) {
     int64_t const  vl    = static_cast<int64_t>(svcntw());
     svbool_t const cols0 = svwhilelt_b32_s64(0, nr_eff);
     svbool_t const cols1 = svwhilelt_b32_s64(vl, nr_eff);
 
     svzero_za();
-    for (int64_t r = 0; r < vl; ++r) {
-        uint32_t const slice = static_cast<uint32_t>(r);
-        if (r < mr_eff) {
-            float *row = C + r * ldc;
-            EINSUMS_SME_S_ROW(svld1_hor_za32, 0, 0)
-            EINSUMS_SME_S_ROW(svld1_hor_za32, 0, 1)
-        }
-        if (vl + r < mr_eff) {
-            float *row = C + (vl + r) * ldc;
-            EINSUMS_SME_S_ROW(svld1_hor_za32, 1, 0)
-            EINSUMS_SME_S_ROW(svld1_hor_za32, 1, 1)
+    if (!overwrite) {
+        for (int64_t r = 0; r < vl; ++r) {
+            uint32_t const slice = static_cast<uint32_t>(r);
+            if (r < mr_eff) {
+                float *row = C + r * ldc;
+                EINSUMS_SME_S_ROW(svld1_hor_za32, 0, 0)
+                EINSUMS_SME_S_ROW(svld1_hor_za32, 0, 1)
+            }
+            if (vl + r < mr_eff) {
+                float *row = C + (vl + r) * ldc;
+                EINSUMS_SME_S_ROW(svld1_hor_za32, 1, 0)
+                EINSUMS_SME_S_ROW(svld1_hor_za32, 1, 1)
+            }
         }
     }
     sme_sgemm_kloop_alpha(kc, alpha, Ap, Bp);
@@ -444,19 +461,19 @@ __arm_new("za") __arm_locally_streaming static void sme_pack_transpose_s(float *
 
 template <typename T>
 void micro_kernel_tile(int mr_block, int nr_block, int64_t kc, T alpha, T const *Ap, T const *Bp, int64_t mr_eff, int64_t nr_eff, T *C,
-                       int64_t rs_c, int64_t cs_c) {
+                       int64_t rs_c, int64_t cs_c, bool overwrite) {
 #if defined(EINSUMS_PACKED_GEMM_HAVE_SME_KERNEL)
     if constexpr (std::is_same_v<T, double>) {
         int64_t const vl = static_cast<int64_t>(svcntsd()); // streaming VL, queryable from normal mode
         if (vl <= kSmeMaxVl && mr_block == 2 * vl && nr_block == 4 * vl) {
             if (rs_c == 1) {
-                sme_dgemm_tile_cols(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, cs_c);
+                sme_dgemm_tile_cols(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, cs_c, overwrite);
             } else if (cs_c == 1) {
-                sme_dgemm_tile_rows(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c);
+                sme_dgemm_tile_rows(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, overwrite);
             } else {
                 double buf[(2 * kSmeMaxVl) * (4 * kSmeMaxVl)];
                 sme_dgemm_tile_buffer(kc, Ap, Bp, buf);
-                add_tile_to_strided_c(alpha, buf, 2 * vl, mr_eff, nr_eff, C, rs_c, cs_c);
+                add_tile_to_strided_c(alpha, buf, 2 * vl, mr_eff, nr_eff, C, rs_c, cs_c, overwrite);
             }
             return;
         }
@@ -465,19 +482,19 @@ void micro_kernel_tile(int mr_block, int nr_block, int64_t kc, T alpha, T const 
         int64_t const vl = static_cast<int64_t>(svcntsw()); // f32 streaming VL, queryable from normal mode
         if (vl <= 2 * kSmeMaxVl && mr_block == 2 * vl && nr_block == 2 * vl) {
             if (rs_c == 1) {
-                sme_sgemm_tile_cols(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, cs_c);
+                sme_sgemm_tile_cols(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, cs_c, overwrite);
             } else if (cs_c == 1) {
-                sme_sgemm_tile_rows(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c);
+                sme_sgemm_tile_rows(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, overwrite);
             } else {
                 float buf[(4 * kSmeMaxVl) * (4 * kSmeMaxVl)];
                 sme_sgemm_tile_buffer(kc, Ap, Bp, buf);
-                add_tile_to_strided_c(alpha, buf, 2 * vl, mr_eff, nr_eff, C, rs_c, cs_c);
+                add_tile_to_strided_c(alpha, buf, 2 * vl, mr_eff, nr_eff, C, rs_c, cs_c, overwrite);
             }
             return;
         }
     }
 #endif
-    micro_kernel_run<T>(mr_block, nr_block, kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c);
+    micro_kernel_run<T>(mr_block, nr_block, kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c, overwrite);
 }
 
 /// @brief The register-block shape this rung's micro_kernel_tile wants.
@@ -698,15 +715,16 @@ template void pack_transpose_rows<double>(double *, double const *const *, int64
 
 #undef EINSUMS_PACK_UNROLL
 
-template void micro_kernel_tile<float>(int, int, int64_t, float, float const *, float const *, int64_t, int64_t, float *, int64_t, int64_t);
+template void micro_kernel_tile<float>(int, int, int64_t, float, float const *, float const *, int64_t, int64_t, float *, int64_t, int64_t,
+                                       bool);
 template void micro_kernel_tile<double>(int, int, int64_t, double, double const *, double const *, int64_t, int64_t, double *, int64_t,
-                                        int64_t);
+                                        int64_t, bool);
 template void micro_kernel_tile<std::complex<float>>(int, int, int64_t, std::complex<float>, std::complex<float> const *,
-                                                     std::complex<float> const *, int64_t, int64_t, std::complex<float> *, int64_t,
-                                                     int64_t);
+                                                     std::complex<float> const *, int64_t, int64_t, std::complex<float> *, int64_t, int64_t,
+                                                     bool);
 template void micro_kernel_tile<std::complex<double>>(int, int, int64_t, std::complex<double>, std::complex<double> const *,
                                                       std::complex<double> const *, int64_t, int64_t, std::complex<double> *, int64_t,
-                                                      int64_t);
+                                                      int64_t, bool);
 
 template MicroKernelShape micro_kernel_block<float>();
 template MicroKernelShape micro_kernel_block<double>();
