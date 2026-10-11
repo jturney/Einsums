@@ -310,6 +310,9 @@ struct PackedBlocking {
     int64_t mc{0};
     int64_t nc{0};
     int64_t kc{0};
+    /// True when C was built in a scratch block and scattered into place, false when the tile
+    /// kernel wrote C directly.
+    bool c_scattered{false};
 };
 
 /// The blocks of the most recent "packed" contraction on this thread. Written only when the route
@@ -784,7 +787,11 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
     bool const    multi_m    = (plan.c_m_dims.size() > 1);
     bool const    multi_n    = (plan.c_n_dims.size() > 1);
     int64_t const C_m_stride = plan.c_m_dims[0].tensor_stride;
-    int64_t const C_n_stride = plan.c_n_dims[0].tensor_stride;
+    // The vendor GEMM paths read the operands through m_dims[0] and n_dims[0], so they also need A
+    // and B single in M and N. coalesce_plan merges each tensor's dims separately, so a C that
+    // fused its M or N dims can still see A or B with several.
+    bool const    operands_single_mn = plan.m_dims.size() == 1 && plan.n_dims.size() == 1;
+    int64_t const C_n_stride         = plan.c_n_dims[0].tensor_stride;
 
     // For multi-M/N, col_major detection uses the first C_m dim stride; the flat-to-offset
     // conversion handles the rest.
@@ -814,7 +821,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
     // -------------------------------------------------------------------------
     //
     // `!plan.swap_ab` guards this path's direct reads of A and B (a swap never reaches here today).
-    if (plan.batch_total > 1 && plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic && !plan.swap_ab) {
+    if (plan.batch_total > 1 && plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && operands_single_mn && !plan.synthetic &&
+        !plan.swap_ab) {
         // NOLINTNEXTLINE(readability-identifier-naming)
         using blas_int = einsums::blas::int_t;
 
@@ -929,7 +937,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // directly, so only stride-1 column- or row-major outputs; a scattered C goes to the packed
         // paths below. Every exit is a vendor GEMM, which a fenced width runs on one thread, so
         // under prefer_packed the packed loops take the contraction instead.
-        if (plan.k_dims_in_a.size() > 1 && !scatter_c && !plan.synthetic && !prefer_packed) {
+        if (plan.k_dims_in_a.size() > 1 && !scatter_c && operands_single_mn && !plan.synthetic && !prefer_packed) {
             // Multi-K fast path: only for single-M, single-N (can map to flat BLAS GEMM).
             WAGGLE_ZONE("flatten + GEMM");
             last_contraction_route() = "flatten_gemm";
@@ -1364,7 +1372,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // lda/ldb/ldc without packing. Skipped under prefer_packed, since this is the whole
         // contraction in one vendor call.
         // -------------------------------------------------------------------------
-        if (plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic && !prefer_packed) {
+        if (plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && operands_single_mn && !plan.synthetic && !prefer_packed) {
             // Single-K fast path: only for single-M, single-N (direct BLAS GEMM dispatch).
             // NOLINTNEXTLINE(readability-identifier-naming)
             using blas_int = einsums::blas::int_t;
@@ -1687,7 +1695,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         auto const    ap_buf_elems  = static_cast<size_t>(mc_panels_max * MR * KC_blk);
         auto const    bp_buf_elems  = static_cast<size_t>(nc_panels_max * NR * KC_blk);
 
-        last_packed_blocking() = PackedBlocking{MC_blk, NC_blk, KC_blk};
+        last_packed_blocking() = PackedBlocking{.mc = MC_blk, .nc = NC_blk, .kc = KC_blk, .c_scattered = needs_c_scatter};
 
         // Dump the plan and blocking on request, out of line to keep formatting off the hot path.
         if (config::get(option::PackedGemmDumpPlan)) {

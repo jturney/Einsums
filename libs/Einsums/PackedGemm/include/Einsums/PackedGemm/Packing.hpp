@@ -83,6 +83,12 @@ struct BatchDimSpec {
 ///   c_m_dims    : m_dims as seen in C (same logical index, C position/stride)
 ///   c_n_dims    : n_dims as seen in C
 ///
+/// Each group's vectors start parallel, entry d naming the same logical index in
+/// both tensors. coalesce_plan() merges the M and N groups' vectors separately,
+/// so afterwards they still enumerate one flat coordinate in the same order but
+/// may differ in length: C(Q,a,f,j) fuses (f, j) into one dim while B(j,e,f)
+/// keeps two. The K group is merged jointly and stays parallel.
+///
 /// `valid` is true only when all validity conditions are met.
 struct PackingPlan {
     bool                 valid{false};
@@ -391,8 +397,10 @@ inline constexpr int64_t kFlushRunBytes = 2 * 64;
 /// abcde-ecbfa-fd +88/+59, abcd-dbea-ec +83/+24, abcd-deca-be +26/+9. Every
 /// row that keeps the C order is inside +/-2%.
 ///
-/// @p m_dims and @p c_m_dims must be in final (coalesced) order, and are
-/// parallel, so index n-2 names the same logical index in both.
+/// @p m_dims and @p c_m_dims must be in final (coalesced) order. They enumerate
+/// the same flat coordinate but may be coalesced to different lengths, so the
+/// fastest coordinate is the same one only when both last entries have the
+/// same extent.
 struct AOrderFlush {
     bool    valid{false};
     int64_t xa{0}; ///< Extent of the fastest flat M coordinate (unit stride in A)
@@ -401,40 +409,49 @@ struct AOrderFlush {
 
 inline AOrderFlush a_order_flush(std::vector<DimSpec> const &m_dims, std::vector<DimSpec> const &c_m_dims) {
     AOrderFlush  r;
-    size_t const n = m_dims.size();
-    if (n < 2 || c_m_dims.size() != n) {
+    size_t const nc = c_m_dims.size();
+    if (m_dims.empty() || nc < 2 || c_m_dims.back().size != m_dims.back().size) {
         return r;
     }
     if (m_dims.back().tensor_stride != 1 || m_dims.back().size <= 1) {
         return r;
     }
-    if (c_m_dims[n - 2].tensor_stride != 1 || c_m_dims[n - 2].size <= 1) {
+    if (c_m_dims[nc - 2].tensor_stride != 1 || c_m_dims[nc - 2].size <= 1) {
         return r;
     }
     r.valid = true;
     r.xa    = m_dims.back().size;
-    r.xc    = c_m_dims[n - 2].size;
+    r.xc    = c_m_dims[nc - 2].size;
     return r;
 }
 
-/// @brief Coalesce adjacent dims within each group when they tile contiguously
-///        in every tensor that sees them.
+/// @brief Coalesce adjacent dims within each group when they tile contiguously.
 ///
 /// Each group is a pair of parallel DimSpec vectors describing the same logical
 /// indices in two tensors (M: A and C; N: B and C; K: A and B). The group is
-/// first reordered by descending primary-tensor stride (the same permutation is
-/// applied to the mirror so flat-index enumeration stays consistent), then
-/// neighbouring dims are merged whenever slow.stride == fast.stride * fast.size
-/// holds in BOTH tensors. This converts e.g. col-major
+/// first reordered by descending stride in one of the two tensors (the same
+/// permutation is applied to the other so flat-index enumeration stays
+/// consistent), then neighbouring dims are merged whenever
+/// slow.stride == fast.stride * fast.size. This converts e.g. col-major
 /// C(a,b,i,j) = A(a,b,e,f) * B(e,f,i,j) from a multi-M/N/K plan (scatter path)
 /// into a single-M/N/K plan that maps to one strided BLAS GEMM with no copies.
+///
+/// The M and N groups merge each tensor's vector on its own. The packers gather
+/// whatever their own vector describes and the C side walks only C's, so a pair
+/// that is contiguous in C but split in the operand still gives C a single dim,
+/// and C is written directly instead of through a scratch block. The K group's
+/// vectors are both read in lockstep by the flatten path, so it merges a pair
+/// only when it is contiguous in both.
 ///
 /// Must be called after fill_strides() (and after sort_k_dims_for_packing(),
 /// which it may re-permute). Sets plan.coalesced when any merge happened.
 inline void coalesce_plan(PackingPlan &plan, int64_t elem_size = 8) {
     // @p sort_by_mirror picks which of the two vectors' strides orders the flat
     // coordinate. See the cost comparison below for why that is a real choice.
-    auto coalesce_group = [&plan](std::vector<DimSpec> &prim, std::vector<DimSpec> &mirr, bool sort_by_mirror) {
+    // @p keep_key_whole skips the hoist below, for a C order that exists to let C's group merge
+    // into one dim (see direct_c below): moving any dim out of that order would split it again.
+    auto coalesce_group = [&plan](std::vector<DimSpec> &prim, std::vector<DimSpec> &mirr, bool sort_by_mirror, bool per_tensor,
+                                  bool keep_key_whole) {
         size_t const n = prim.size();
         if (n <= 1) {
             return;
@@ -457,7 +474,7 @@ inline void coalesce_plan(PackingPlan &plan, int64_t elem_size = 8) {
         // is what lets C order the M coordinate (48-element runs for the
         // scatter) without pack_A paying a cache line and a page for each of
         // the 107 million elements it gathers.
-        if (n >= 2) {
+        if (n >= 2 && !keep_key_whole) {
             for (size_t d = 0; d + 1 < n; ++d) {
                 size_t const idx = perm[d];
                 if (other[idx].tensor_stride == 1 && other[idx].size > 1) {
@@ -474,20 +491,26 @@ inline void coalesce_plan(PackingPlan &plan, int64_t elem_size = 8) {
             ms[d] = mirr[perm[d]];
         }
 
+        auto const tiles = [](DimSpec const &slow, DimSpec const &fast) { return slow.tensor_stride == fast.tensor_stride * fast.size; };
+        auto const merge = [&plan](DimSpec &slow, DimSpec const &fast) {
+            slow.size *= fast.size;
+            slow.tensor_stride = fast.tensor_stride;
+            plan.coalesced     = true;
+        };
+
         std::vector<DimSpec> pout{ps[0]}, mout{ms[0]};
         for (size_t d = 1; d < n; ++d) {
-            DimSpec   &pl     = pout.back();
-            DimSpec   &ml     = mout.back();
-            bool const contig = pl.tensor_stride == ps[d].tensor_stride * ps[d].size && //
-                                ml.tensor_stride == ms[d].tensor_stride * ms[d].size;
-            if (contig) {
-                pl.size *= ps[d].size;
-                pl.tensor_stride = ps[d].tensor_stride;
-                ml.size *= ms[d].size;
-                ml.tensor_stride = ms[d].tensor_stride;
-                plan.coalesced   = true;
+            bool const p_tiles = tiles(pout.back(), ps[d]);
+            bool const m_tiles = tiles(mout.back(), ms[d]);
+            bool const both    = p_tiles && m_tiles;
+            if (both || (per_tensor && p_tiles)) {
+                merge(pout.back(), ps[d]);
             } else {
                 pout.push_back(ps[d]);
+            }
+            if (both || (per_tensor && m_tiles)) {
+                merge(mout.back(), ms[d]);
+            } else {
                 mout.push_back(ms[d]);
             }
         }
@@ -547,8 +570,31 @@ inline void coalesce_plan(PackingPlan &plan, int64_t elem_size = 8) {
     bool const a_unit_is_k = has_unit_stride(plan.k_dims_in_a);
     bool const b_unit_is_k = has_unit_stride(plan.k_dims_in_b);
 
-    auto order_by_c = [&](std::vector<DimSpec> const &pack_dims, std::vector<DimSpec> const &c_dims, double pack_trips,
-                          bool pack_unit_is_k) {
+    // Can C be written in place? The tile kernel writes C directly when each of C's M and N groups
+    // is one dim and one of them has unit stride; anything else goes through a scratch block and a
+    // scatter, an extra pass over C. Each C group merges into one dim exactly when its dims, ordered
+    // by C's strides, tile end to end, so ordering a group by C is what makes the direct write
+    // possible. The per-group prices below do not see that: they price the N group's C walk at its
+    // own stride, while the direct write's C traffic runs along the unit-stride group. The ladder
+    // block C(Q,a,f,j) <- A(Q,a,e) ; B(j,e,f) priced its N group that way, took B's order, and
+    // scattered a 29 MB C for a 26 thousand element saving in pack_B.
+    auto const merges_in_c_order = [](std::vector<DimSpec> const &dims) {
+        std::vector<DimSpec> sorted = dims;
+        std::stable_sort(sorted.begin(), sorted.end(),
+                         [](DimSpec const &x, DimSpec const &y) { return x.tensor_stride > y.tensor_stride; });
+        for (size_t d = 1; d < sorted.size(); ++d) {
+            if (sorted[d - 1].tensor_stride != sorted[d].tensor_stride * sorted[d].size) {
+                return false;
+            }
+        }
+        return true;
+    };
+    bool const c_m_unit = has_unit_stride(plan.c_m_dims);
+    bool const c_n_unit = has_unit_stride(plan.c_n_dims);
+    bool const direct_c = merges_in_c_order(plan.c_m_dims) && merges_in_c_order(plan.c_n_dims) && (c_m_unit || c_n_unit);
+
+    auto order_by_c = [&](std::vector<DimSpec> const &pack_dims, std::vector<DimSpec> const &c_dims, double pack_trips, bool pack_unit_is_k,
+                          bool c_unit_elsewhere) {
         if (pack_dims.size() <= 1) {
             return false; // nothing to order
         }
@@ -660,7 +706,10 @@ inline void coalesce_plan(PackingPlan &plan, int64_t elem_size = 8) {
 
         size_t const by_c    = smallest(c_dims);
         size_t const by_pack = smallest(pack_dims);
-        double const cost_c  = c_trips * cost(c_dims[by_c].tensor_stride) + pack_trips * pack_loser_cost(pack_dims, by_c, pack_unit_is_k);
+        // Ordered by C, a group that lets C be written in place costs C a unit-stride walk along the
+        // other group, whatever this group's own C stride.
+        double const c_walk  = c_unit_elsewhere ? cost(1) : cost(c_dims[by_c].tensor_stride);
+        double const cost_c  = c_trips * c_walk + pack_trips * pack_loser_cost(pack_dims, by_c, pack_unit_is_k);
         double const c_loser = a_order_affordable(pack_dims, c_dims, by_pack) ? kScatterTransposeCost : c_loser_cost(c_dims, by_pack);
         double const cost_p  = c_trips * c_loser + pack_trips * cost(pack_dims[by_pack].tensor_stride);
         if (cost_c != cost_p) {
@@ -669,11 +718,13 @@ inline void coalesce_plan(PackingPlan &plan, int64_t elem_size = 8) {
         return c_dims[by_c].tensor_stride < c_dims[by_pack].tensor_stride;
     };
 
-    coalesce_group(plan.m_dims, plan.c_m_dims,
-                   order_by_c(plan.m_dims, plan.c_m_dims, static_cast<double>(m_total) * static_cast<double>(k_total), a_unit_is_k));
-    coalesce_group(plan.n_dims, plan.c_n_dims,
-                   order_by_c(plan.n_dims, plan.c_n_dims, static_cast<double>(n_total) * static_cast<double>(k_total), b_unit_is_k));
-    coalesce_group(plan.k_dims_in_a, plan.k_dims_in_b, /*sort_by_mirror=*/false);
+    bool const m_by_c = order_by_c(plan.m_dims, plan.c_m_dims, static_cast<double>(m_total) * static_cast<double>(k_total), a_unit_is_k,
+                                   direct_c && !c_m_unit);
+    bool const n_by_c = order_by_c(plan.n_dims, plan.c_n_dims, static_cast<double>(n_total) * static_cast<double>(k_total), b_unit_is_k,
+                                   direct_c && !c_n_unit);
+    coalesce_group(plan.m_dims, plan.c_m_dims, m_by_c, /*per_tensor=*/true, /*keep_key_whole=*/direct_c && m_by_c);
+    coalesce_group(plan.n_dims, plan.c_n_dims, n_by_c, /*per_tensor=*/true, /*keep_key_whole=*/direct_c && n_by_c);
+    coalesce_group(plan.k_dims_in_a, plan.k_dims_in_b, /*sort_by_mirror=*/false, /*per_tensor=*/false, /*keep_key_whole=*/false);
 }
 
 // ---------------------------------------------------------------------------

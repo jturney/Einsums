@@ -6,6 +6,7 @@
 set(PackedGemmTests
     BatchedMultiK.cpp
     BetaZero.cpp
+    CoalescePerTensor.cpp
     Complex1m.cpp
     EngineOptions.cpp
     FlattenLayouts.cpp

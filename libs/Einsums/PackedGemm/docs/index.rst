@@ -60,10 +60,17 @@ Two structural details make the machinery uniform:
   the empty group so the whole GEMM path applies unchanged. The plan flags this
   so the direct-BLAS fast paths, where a zero stride would produce an invalid
   leading dimension, know to stand down.
-- **Dim coalescing.** Adjacent dims within a group that tile contiguously in
-  every tensor that sees them are merged into one. This is what turns many
-  multi-M/N contractions, which would otherwise need the slow scatter path,
-  into plain single-M/N GEMMs.
+- **Dim coalescing.** Adjacent dims within a group that tile contiguously are
+  merged into one. This is what turns many multi-M/N contractions, which would
+  otherwise need the slow scatter path, into plain single-M/N GEMMs. The M and
+  N groups merge each tensor on its own: the packers gather whatever their
+  operand's dims describe, so C(Q,a,f,j) fuses f and j even when the operand
+  B(j,e,f) cannot, and the tile kernel writes C in place. A C group merges
+  only when it is ordered by C's strides, so when both of C's groups can merge
+  and one has unit stride, the ordering cost model prices C's walk in the C
+  order at that unit stride and keeps the order whole. The vendor GEMM
+  shortcuts need A and B single too, and stand down otherwise. The K group,
+  read in lockstep by the flatten path, merges only where both operands tile.
 
 When PackedGemm fires
 =====================
