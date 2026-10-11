@@ -315,6 +315,28 @@ def test_the_tiled_loop_replays_the_untiled_energy(water):
     assert energy == pytest.approx(water["reference"], abs=1e-9)
 
 
+def test_blocks_of_pairs_with_a_remainder_replay_the_energy(water):
+    """Two occupied axes in blocks, at a cap of four pairs.
+
+    Each factor of the integral carries one occupied index, so a block of pairs reads each once
+    per block of the other, and two by two is the block the cap admits that reads them least.
+    Water has five occupied orbitals, so blocks of two leave a remainder on each axis, and the
+    rewrite is four loops: full by full, full by remainder, remainder by full, and the last pair.
+    """
+    nvir = water["nvir"]
+    energy, graph, tiling, _held = _replayed(water, 4 * nvir * nvir * 8)
+
+    assert tiling.emission == "range"
+    assert tiling.axis_letters == ["i", "j"]
+    assert tiling.block_extents == [2, 2]
+    assert tiling.loops == 4
+    assert tiling.iterations == 4 + 2 + 2 + 1
+    assert [n["kind"] for n in json.loads(graph.to_json())["nodes"]].count("Loop") == 4
+    assert_materialization_invariants(graph, "blocks of pairs")
+    assert energy == pytest.approx(_pair_driven_energy(water), rel=1e-12, abs=1e-13)
+    assert energy == pytest.approx(water["reference"], abs=1e-9)
+
+
 def test_the_rewritten_program_is_one_loop_and_the_zeroing_of_its_accumulation(water):
     """The node set, so the assertion is about what was emitted rather than that it ran.
 

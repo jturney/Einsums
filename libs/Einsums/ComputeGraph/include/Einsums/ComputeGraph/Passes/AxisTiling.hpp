@@ -50,6 +50,24 @@
  * node's member count is fixed at capture; the depth therefore walks the divisors of the slice
  * count downwards rather than taking the cap's quotient verbatim.
  *
+ * @par Blocks instead of points
+ * A chunk of points runs the body once per slice, so an operand that does not vary along a
+ * sliced axis is read again at every slice of it. The ladder of a density-fitted coupled-cluster
+ * residual reads the same integral block at every occupied pair, and density-fitted MP2 reads
+ * the factor of one occupied index once per value of the other. Where a contraction of the
+ * region has such an operand, the axis it does not carry is cut into RANGES instead: the body
+ * keeps the letter at the block's extent, so one contraction covers the whole block and the
+ * shared operand is read once per block. An axis no such operand rewards stays a point, and a
+ * region with no reusable operand at all keeps the grouped chunk above.
+ *
+ * The block extents are chosen by the same objective as the axes, fewest bytes streamed under
+ * the cap, evaluated per axis. On density-fitted MP2 that is a near-square block of occupied
+ * pairs, because each factor is reused across the other index's block; where one operand is
+ * reused along every sliced axis alike, only the block's area matters and the fewest axes are
+ * cut. A block need not divide its axis: the remainder runs through a second body declared at
+ * the remainder's extent, so a program over two ranged axes emits up to four loops, one per
+ * combination of full and remainder blocks.
+ *
  * @par Which intermediates
  * Every intermediate carrying a sliced axis is re-declared at slice extents inside the body. An
  * input carrying one is read as a VIEW of the caller's buffer and never as a copy, so a rebind
@@ -180,12 +198,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE APIARY_GETTER("slice_count") [[nodiscard]] std::size_t slice_count() const noexcept { return _slice_count; }
 
     /// @brief How many slices one iteration of the emitted loop handles.
-    /// @return The chunk depth, zero when the pass declined.
+    /// @return The chunk depth, the product of the block extents for a range emission, zero when
+    ///         the pass declined.
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("depth") [[nodiscard]] std::size_t depth() const noexcept { return _depth; }
 
-    /// @brief How many iterations the emitted loop runs.
-    /// @return @ref slice_count divided by @ref depth, zero when the pass declined.
+    /// @brief How many iterations the emitted loops run.
+    /// @return The iterations summed over every emitted loop, which is @ref slice_count divided
+    ///         by @ref depth when the chunks divide the slices, zero when the pass declined.
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("iterations") [[nodiscard]] std::size_t iterations() const noexcept { return _iterations; }
 
@@ -209,12 +229,35 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("whole") [[nodiscard]] std::vector<std::string> whole() const { return _whole; }
 
+    /// @brief How the last decision emits a chunk.
+    /// @return ``"range"`` when some sliced axis is cut into blocks the body keeps as an axis,
+    ///         ``"grouped"`` when every sliced axis is a point and a chunk is one grouped node per
+    ///         family, and an empty string when the pass declined.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("emission") [[nodiscard]] std::string emission() const { return _emission; }
+
+    /// @brief The block extent of each sliced axis.
+    /// @return One entry per sliced axis, in the same order as @ref axis_names: the extent of a
+    ///         full block of a ranged axis, and one for an axis taken a point at a time. Empty when
+    ///         the pass declined or the emission is grouped.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("block_extents") [[nodiscard]] std::vector<std::int64_t> block_extents() const { return _block_extents; }
+
+    /// @brief How many loops the rewrite emitted.
+    /// @return One for a grouped emission or a range emission whose blocks divide their axes, up to
+    ///         four for two ranged axes with remainders, zero when the pass declined.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("loops") [[nodiscard]] std::size_t loops() const noexcept { return _loops; }
+
     /// @brief The tensor the reduction accumulates into across iterations, if there is one.
     /// @return Its name, or an empty string when the region has no such reduction.
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("accumulator") [[nodiscard]] std::string accumulator() const { return _accumulator; }
 
   private:
+    /// The chunking of the last decision in words, for the report and @ref explain.
+    [[nodiscard]] std::string describe_chunks() const;
+
     std::int64_t _memory_cap{0};
     bool         _cap_explicit{false};
 
@@ -230,6 +273,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::vector<std::string>  _streamed;
     std::vector<std::string>  _whole;
     std::string               _accumulator;
+    std::string               _emission;
+    std::vector<std::int64_t> _block_extents;
+    std::size_t               _loops{0};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

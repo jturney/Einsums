@@ -22,10 +22,14 @@
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -139,6 +143,68 @@ void capture_with_occupied_exchange(cg::Graph &graph, Problem &problem) {
     cg::dot_python(&problem.energy, combination, amplitude);
 }
 
+/// The buffers of a program whose contraction is batched over the occupied pair: every operand
+/// carries both occupied indices, so no operand is shared between pairs and a block of pairs
+/// reads nothing less often than a grouped chunk does.
+struct BatchedProblem {
+    RuntimeTensor<double> left{filled("X", {nvir, nvir, nocc, nocc}, 3U)};
+    RuntimeTensor<double> right{filled("Y", {nvir, nvir, nocc, nocc}, 5U)};
+    RuntimeTensor<double> denominator{filled("D", {nvir, nvir, nocc, nocc}, 19U)};
+    RuntimeTensor<double> energy{"E", std::vector<std::size_t>{1}};
+};
+
+/// E = sum (2 K - K^T) K D over every pair, with K[a,b,i,j] = sum_c X[a,c,i,j] Y[c,b,i,j].
+///
+/// The occupied indices are the LAST two, so a pair of every operand is a column-major matrix
+/// a vendor GEMM can read and the grouped chunk takes the batched-GEMM family. The exchange
+/// permutes a with b, which keeps the virtual axes out of the decision.
+void capture_pair_batched(cg::Graph &graph, BatchedProblem &problem) {
+    std::vector<std::size_t> const shape{nvir, nvir, nocc, nocc};
+    auto                          &integral    = graph.scratch_runtime<double>("K", shape);
+    auto                          &amplitude   = graph.scratch_runtime<double>("T", shape);
+    auto                          &again       = graph.scratch_runtime<double>("K_again", shape);
+    auto                          &exchange    = graph.scratch_runtime<double>("K_exchange", shape);
+    auto                          &combination = graph.scratch_runtime<double>("Kbar", shape);
+
+    cg::CaptureGuard const guard(graph);
+    cg::einsum("a,b,i,j <- a,c,i,j ; c,b,i,j", &integral, problem.left, problem.right);
+    cg::direct_product(1.0, integral, problem.denominator, 0.0, &amplitude);
+    cg::einsum("a,b,i,j <- a,c,i,j ; c,b,i,j", &again, problem.left, problem.right);
+    cg::permute("a,b,i,j <- b,a,i,j", &exchange, again);
+    cg::axpby(2.0, again, 0.0, &combination);
+    cg::axpby(-1.0, exchange, 1.0, &combination);
+    cg::dot_python(&problem.energy, combination, amplitude);
+}
+
+/// An energy computed by plain loops, with the sum of its terms' magnitudes, which bounds what a
+/// reordering of the sum can move it by.
+template <typename T>
+struct Expected {
+    T      value{0};
+    double magnitude{0.0};
+};
+
+/// The batched program's energy by plain loops over the reference contraction.
+Expected<double> batched_reference(BatchedProblem &problem) {
+    RuntimeTensor<double> integral("Kref", std::vector<std::size_t>{nvir, nvir, nocc, nocc});
+    integral.zero();
+    testing::reference_einsum("a,b,i,j <- a,c,i,j ; c,b,i,j", &integral, problem.left, problem.right);
+    Expected<double> out;
+    for (std::size_t a = 0; a < nvir; ++a) {
+        for (std::size_t b = 0; b < nvir; ++b) {
+            for (std::size_t i = 0; i < nocc; ++i) {
+                for (std::size_t j = 0; j < nocc; ++j) {
+                    double const k    = integral(a, b, i, j);
+                    double const term = ((2.0 * k) - integral(b, a, i, j)) * k * problem.denominator(a, b, i, j);
+                    out.value += term;
+                    out.magnitude += std::abs(term);
+                }
+            }
+        }
+    }
+    return out;
+}
+
 /// Run the pass alone at @p cap bytes and hand back what it decided.
 std::shared_ptr<cg::passes::AxisTiling> decide(cg::Graph &graph, std::int64_t cap) {
     auto tiling = std::make_shared<cg::passes::AxisTiling>();
@@ -217,17 +283,22 @@ TEST_CASE("AxisTiling is off when the cap is zero", "[ComputeGraph][Pass][AxisTi
     CHECK(declined_because(*tiling, "memory cap is zero"));
 }
 
-TEST_CASE("AxisTiling takes the chunk the cap allows", "[ComputeGraph][Pass][AxisTiling]") {
+TEST_CASE("AxisTiling takes the block the cap allows", "[ComputeGraph][Pass][AxisTiling]") {
     Problem   problem;
     cg::Graph graph("mp2 full axis");
     capture(graph, problem);
 
-    // Three pairs would fit, but a chunk has to divide the slice count so every chunk is full;
-    // sixteen slices in chunks of three is not a schedule, so the depth walks down to two.
+    // Three pairs would fit. Each factor of the integral lacks the other occupied index, so the
+    // pairs are cut into blocks rather than grouped. A block of three on four occupied indices
+    // takes as many blocks as a block of two, so it is two; and one ranged axis reads fewer bytes
+    // than a block over both that the cap would allow (none would: two by two is four pairs).
     auto const tiling = decide(graph, 3 * static_cast<std::int64_t>(pair_bytes));
     CHECK(tiling->axis_letters() == std::vector<std::string>{"i", "j"});
+    CHECK(tiling->emission() == "range");
+    CHECK(tiling->block_extents() == std::vector<std::int64_t>{1, 2});
     CHECK(tiling->depth() == 2);
     CHECK(tiling->iterations() == (nocc * nocc) / 2);
+    CHECK(tiling->loops() == 1);
     CHECK(tiling->largest_after() == 2 * pair_bytes);
 }
 
@@ -236,16 +307,20 @@ TEST_CASE("AxisTiling prefers the axes that stream the fewest bytes", "[ComputeG
     cg::Graph graph("mp2 no exchange");
     capture_without_exchange(graph, problem);
 
-    // At this cap the occupied pair fits (v^2 doubles) and so does the virtual pair (o^2), so
-    // both are candidates and the decision is not the cap's. The occupied pair wins because
-    // each of its slices reads a Q-by-v slab of the integral o^2 times, where the virtual pair
-    // reads a Q-by-o slab v^2 times, and o is the smaller of the two.
-    REQUIRE(nvir * nvir * sizeof(double) < 400);
-    REQUIRE(nocc * nocc * sizeof(double) < 400);
+    // Without the exchange every pair of axes is a candidate. At this cap an occupied pair
+    // fits (v^2 doubles) but two do not, so the occupied pair can only be taken a point at a
+    // time, and each factor of the integral is read once per value of the other occupied index:
+    // 2 o^2 Q v elements. Slicing i and b instead leaves a slice of o v that fits twice, so b can
+    // be cut in blocks of two, and the factor carrying b is re-read once per i while the one
+    // carrying i is re-read once per BLOCK of b: o^2 Q v + o (v / 2) Q v, which is less.
+    REQUIRE(2 * pair_bytes > 400);
+    REQUIRE(2 * nocc * nvir * sizeof(double) <= 400);
     auto const tiling = decide(graph, 400);
 
-    CHECK(tiling->axis_letters() == std::vector<std::string>{"i", "j"});
-    CHECK(tiling->largest_after() == pair_bytes);
+    CHECK(tiling->axis_letters() == std::vector<std::string>{"i", "b"});
+    CHECK(tiling->emission() == "range");
+    CHECK(tiling->block_extents() == std::vector<std::int64_t>{1, 2});
+    CHECK(tiling->largest_after() == 2 * nocc * nvir * sizeof(double));
 }
 
 TEST_CASE("AxisTiling reads the cap the caller states over the option", "[ComputeGraph][Pass][AxisTiling]") {
@@ -517,14 +592,19 @@ double tiled_energy(Problem &problem, std::int64_t cap, std::shared_ptr<cg::pass
 } // namespace
 
 TEST_CASE("AxisTiling emits a chunk as one grouped node per family", "[ComputeGraph][Pass][AxisTiling]") {
-    Problem   problem;
-    cg::Graph graph("mp2 chunked");
-    capture(graph, problem);
+    BatchedProblem problem;
+    cg::Graph      graph("pair batched chunked");
+    capture_pair_batched(graph, problem);
 
-    // Three pairs would fit; the chunk has to divide the sixteen slices, so the depth is two.
+    // Every operand of the contraction carries both occupied indices, so no block would read any
+    // of them less often, and the pairs are grouped. Three pairs would fit; the chunk has to divide
+    // the sixteen slices, so the depth is two.
     auto const tiling = decide(graph, 3 * static_cast<std::int64_t>(pair_bytes));
     REQUIRE(tiling->depth() == 2);
     REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->emission() == "grouped");
+    CHECK(tiling->block_extents().empty());
+    CHECK(tiling->loops() == 1);
 
     auto const kinds = body_kinds(graph);
     // Two contractions, one permutation, two accumulations, one reduction and the accumulation
@@ -544,7 +624,26 @@ TEST_CASE("AxisTiling emits a chunk as one grouped node per family", "[ComputeGr
     CHECK(body_dims(*loop_body(graph), "K#1") == std::vector<std::size_t>{nvir, nvir});
 }
 
-TEST_CASE("AxisTiling gets the same energy from a chunk of pairs as from one", "[ComputeGraph][Pass][AxisTiling]") {
+TEST_CASE("AxisTiling gets the same energy from a grouped chunk as from untiled", "[ComputeGraph][Pass][AxisTiling]") {
+    BatchedProblem problem;
+    auto const     reference = batched_reference(problem);
+
+    cg::Graph graph("pair batched chunked");
+    capture_pair_batched(graph, problem);
+    auto const tiling = decide(graph, 3 * static_cast<std::int64_t>(pair_bytes));
+    REQUIRE(tiling->emission() == "grouped");
+    REQUIRE(tiling->depth() == 2);
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    problem.energy.data()[0] = 0.0;
+    graph.execute();
+
+    double const tiled = problem.energy.data()[0];
+    INFO("grouped " << tiled << ", reference " << reference.value);
+    CHECK(std::abs(tiled - reference.value) <= 1e-12 * reference.magnitude);
+}
+
+TEST_CASE("AxisTiling gets the same energy from a block of pairs as from one", "[ComputeGraph][Pass][AxisTiling]") {
     Problem      problem;
     double const reference = untiled_energy(problem);
 
@@ -555,10 +654,331 @@ TEST_CASE("AxisTiling gets the same energy from a chunk of pairs as from one", "
 
     REQUIRE(per_pair->depth() == 1);
     REQUIRE(per_chunk->depth() == 2);
+    REQUIRE(per_chunk->emission() == "range");
     CHECK(per_chunk->largest_after() == 2 * per_pair->largest_after());
 
     double const bound = cg::tier_bound(cg::PassTier::ReAssociating, 1e-16) * std::abs(reference) + 1e-14;
     INFO("per pair " << one << ", per chunk " << many << ", untiled " << reference);
     CHECK(std::abs(many - one) <= bound);
     CHECK(std::abs(many - reference) <= bound);
+}
+
+// ── Range blocks ────────────────────────────────────────────────────────────
+
+namespace {
+
+/// A reproducible filling of any element type; a complex element gets an imaginary part too.
+template <typename T>
+RuntimeTensor<T> filled_as(std::string name, std::vector<std::size_t> dims, unsigned seed) {
+    RuntimeTensor<T> out(std::move(name), std::move(dims));
+    auto             next = [&seed] {
+        seed = (seed * 1103515245U) + 12345U;
+        return (static_cast<double>((seed >> 8U) % 2048U) / 1024.0) - 1.0;
+    };
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        if constexpr (IsComplexV<T>) {
+            auto const re = static_cast<RemoveComplexT<T>>(next());
+            out.data()[i] = T{re, static_cast<RemoveComplexT<T>>(next())};
+        } else {
+            out.data()[i] = static_cast<T>(next());
+        }
+    }
+    return out;
+}
+
+/// How far a re-associated sum may move from the reference, relative to the sum of its terms'
+/// magnitudes.
+template <typename T>
+double sum_tolerance() {
+    return 256.0 * static_cast<double>(std::numeric_limits<RemoveComplexT<T>>::epsilon());
+}
+
+/// The density-fitted MP2 program of the cases above, at any element type and extents.
+template <typename T>
+struct Mp2 {
+    std::size_t      o;
+    std::size_t      v;
+    std::size_t      naux;
+    RuntimeTensor<T> fitted;
+    RuntimeTensor<T> denominator;
+    RuntimeTensor<T> energy{"E", std::vector<std::size_t>{1}};
+
+    Mp2(std::size_t occupied, std::size_t virtuals, std::size_t auxiliary)
+        : o(occupied), v(virtuals), naux(auxiliary), fitted(filled_as<T>("B", {auxiliary, occupied, virtuals}, 7U)),
+          denominator(filled_as<T>("D", {occupied, virtuals, occupied, virtuals}, 19U)) {}
+
+    /// Bytes @p n occupied pairs of a four-index intermediate hold.
+    [[nodiscard]] std::int64_t pairs(std::size_t n) const { return static_cast<std::int64_t>(n * v * v * sizeof(T)); }
+};
+
+template <typename T>
+void capture_mp2(cg::Graph &graph, Mp2<T> &p) {
+    std::vector<std::size_t> const shape{p.o, p.v, p.o, p.v};
+    auto                          &integral    = graph.scratch_runtime<T>("K", shape);
+    auto                          &amplitude   = graph.scratch_runtime<T>("T", shape);
+    auto                          &again       = graph.scratch_runtime<T>("K_again", shape);
+    auto                          &exchange    = graph.scratch_runtime<T>("K_exchange", shape);
+    auto                          &combination = graph.scratch_runtime<T>("Kbar", shape);
+
+    cg::CaptureGuard const guard(graph);
+    cg::einsum("Q,i,a ; Q,j,b -> i,a,j,b", &integral, p.fitted, p.fitted);
+    cg::direct_product(T{1}, integral, p.denominator, T{0}, &amplitude);
+    cg::einsum("Q,i,a ; Q,j,b -> i,a,j,b", &again, p.fitted, p.fitted);
+    cg::permute("i,a,j,b <- i,b,j,a", &exchange, again);
+    cg::axpby(T{2}, again, T{0}, &combination);
+    cg::axpby(T{-1}, exchange, T{1}, &combination);
+    cg::dot_python(&p.energy, combination, amplitude);
+}
+
+/// The MP2 energy by plain loops over the reference contraction.
+template <typename T>
+Expected<T> mp2_reference(Mp2<T> &p) {
+    RuntimeTensor<T> integral("Kref", std::vector<std::size_t>{p.o, p.v, p.o, p.v});
+    integral.zero();
+    testing::reference_einsum("i,a,j,b <- Q,i,a ; Q,j,b", &integral, p.fitted, p.fitted);
+    Expected<T> out;
+    for (std::size_t i = 0; i < p.o; ++i) {
+        for (std::size_t a = 0; a < p.v; ++a) {
+            for (std::size_t j = 0; j < p.o; ++j) {
+                for (std::size_t b = 0; b < p.v; ++b) {
+                    T const k    = integral(i, a, j, b);
+                    T const term = ((T{2} * k) - integral(i, b, j, a)) * k * p.denominator(i, a, j, b);
+                    out.value += term;
+                    out.magnitude += static_cast<double>(std::abs(term));
+                }
+            }
+        }
+    }
+    return out;
+}
+
+/// Optimize a tiled graph as a caller would, replay it, and hand back the energy.
+template <typename T>
+T replay_mp2(cg::Graph &graph, Mp2<T> &p) {
+    p.energy.data()[0] = T{0};
+    graph.execute();
+    return p.energy.data()[0];
+}
+
+/// Every loop body the rewrite emitted, in the parent's order.
+std::vector<cg::Graph const *> loop_bodies(cg::Graph const &graph) {
+    std::vector<cg::Graph const *> out;
+    for (auto const &node : graph.nodes()) {
+        if (auto const *loop = node.op_data.get_if<cg::LoopDescriptor>(); loop != nullptr && loop->body) {
+            out.push_back(loop->body.get());
+        }
+    }
+    return out;
+}
+
+/// How many nodes of each kind one body holds.
+std::map<cg::OpKind, std::size_t> kinds_of(cg::Graph const &body) {
+    std::map<cg::OpKind, std::size_t> out;
+    for (auto const &node : body.nodes()) {
+        ++out[node.kind];
+    }
+    return out;
+}
+
+/// Whether a body holds any grouped node.
+bool holds_grouped(cg::Graph const &body) {
+    auto const kinds = kinds_of(body);
+    for (auto const kind : {cg::OpKind::GroupedBatchedGemm, cg::OpKind::GroupedPermute, cg::OpKind::GroupedAxpby, cg::OpKind::GroupedDot,
+                            cg::OpKind::GroupedDirectProduct}) {
+        if (kinds.contains(kind)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+TEMPLATE_TEST_CASE("AxisTiling cuts both occupied axes of DF-MP2 into square blocks", "[ComputeGraph][Pass][AxisTiling]", float, double,
+                   std::complex<double>) {
+    using T = TestType;
+    Mp2<T>    p(4, 6, 7);
+    cg::Graph graph("mp2 blocks");
+    capture_mp2(graph, p);
+
+    // Four pairs fit. Each factor of the integral carries one occupied index and is re-read once
+    // per block of the other, so two by two re-reads each twice, where one by four re-reads one of
+    // them four times: the square streams fewer bytes.
+    auto const tiling = decide(graph, p.pairs(4));
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->axis_letters() == std::vector<std::string>{"i", "j"});
+    CHECK(tiling->emission() == "range");
+    CHECK(tiling->block_extents() == std::vector<std::int64_t>{2, 2});
+    CHECK(tiling->depth() == 4);
+    CHECK(tiling->loops() == 1);
+    CHECK(tiling->iterations() == 4);
+    CHECK(tiling->largest_after() == static_cast<std::size_t>(p.pairs(4)));
+
+    // One node per captured statement, none grouped, and the block keeps its axes.
+    auto const bodies = loop_bodies(graph);
+    REQUIRE(bodies.size() == 1);
+    auto const kinds = kinds_of(*bodies[0]);
+    CHECK(kinds.at(cg::OpKind::Einsum) == 2);
+    CHECK(kinds.at(cg::OpKind::Permute) == 1);
+    CHECK(kinds.at(cg::OpKind::DirectProduct) == 1);
+    CHECK(kinds.at(cg::OpKind::Dot) == 1);
+    // Two combinations plus the accumulation into the energy.
+    CHECK(kinds.at(cg::OpKind::Axpby) == 3);
+    CHECK_FALSE(holds_grouped(*bodies[0]));
+    CHECK(body_dims(*bodies[0], "K#0") == std::vector<std::size_t>{2, p.v, 2, p.v});
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    auto const expected = mp2_reference(p);
+    T const    energy   = replay_mp2(graph, p);
+    INFO("tiled " << energy << ", reference " << expected.value);
+    CHECK(std::abs(energy - expected.value) <= sum_tolerance<T>() * expected.magnitude);
+
+    // Replays restart the sweep of block starts and ends rather than continuing it.
+    CHECK(replay_mp2(graph, p) == energy);
+}
+
+TEMPLATE_TEST_CASE("AxisTiling runs each remainder block through a loop of its own", "[ComputeGraph][Pass][AxisTiling]", float, double,
+                   std::complex<double>) {
+    using T = TestType;
+    Mp2<T>    p(5, 6, 7);
+    cg::Graph graph("mp2 ragged blocks");
+    capture_mp2(graph, p);
+
+    // Five occupied indices in blocks of two leave a remainder of one on each axis, so the
+    // iteration space is four loops: two by two, two by one, one by two and one by one.
+    auto const tiling = decide(graph, p.pairs(4));
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->emission() == "range");
+    CHECK(tiling->block_extents() == std::vector<std::int64_t>{2, 2});
+    CHECK(tiling->loops() == 4);
+    CHECK(tiling->iterations() == 4 + 2 + 2 + 1);
+
+    auto const bodies = loop_bodies(graph);
+    REQUIRE(bodies.size() == 4);
+    std::vector<std::vector<std::size_t>> const shapes{{2, p.v, 2, p.v}, {2, p.v, 1, p.v}, {1, p.v, 2, p.v}, {1, p.v, 1, p.v}};
+    for (std::size_t l = 0; l < bodies.size(); ++l) {
+        INFO("loop " << l);
+        CHECK(body_dims(*bodies[l], "K#0") == shapes[l]);
+        CHECK_FALSE(holds_grouped(*bodies[l]));
+    }
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    auto const expected = mp2_reference(p);
+    T const    energy   = replay_mp2(graph, p);
+    INFO("tiled " << energy << ", reference " << expected.value);
+    CHECK(std::abs(energy - expected.value) <= sum_tolerance<T>() * expected.magnitude);
+    CHECK(replay_mp2(graph, p) == energy);
+}
+
+TEMPLATE_TEST_CASE("AxisTiling blocks the particle ladder so the shared integrals are read once per block",
+                   "[ComputeGraph][Pass][AxisTiling]", float, double, std::complex<double>) {
+    // The density-fitted particle ladder of a CCSD residual, written over every index:
+    //   H[Q,a,f,i,j]  = sum_e Bvv[Q,a,e] Tau[i,j,e,f]
+    //   r2[i,j,a,b]  += sum_Qf H[Q,a,f,i,j] Bvv[Q,b,f]
+    // The integrals carry no occupied index, so any blocking of the pairs reads them once per
+    // block, and the five-index intermediate is what the cap forbids holding whole.
+    using T                    = TestType;
+    constexpr std::size_t o    = 4;
+    constexpr std::size_t v    = 5;
+    constexpr std::size_t naux = 6;
+    auto                  bvv  = filled_as<T>("Bvv", {naux, v, v}, 11U);
+    auto                  tau  = filled_as<T>("Tau", {o, o, v, v}, 13U);
+    auto                  r2   = filled_as<T>("r2", {o, o, v, v}, 17U);
+
+    RuntimeTensor<T> expected = r2;
+    {
+        RuntimeTensor<T> half("Href", std::vector<std::size_t>{naux, v, v, o, o});
+        half.zero();
+        testing::reference_einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", &half, bvv, tau);
+        testing::reference_einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", T{1}, &expected, T{1}, half, bvv);
+    }
+
+    cg::Graph graph("ladder");
+    {
+        auto                  &half = graph.scratch_runtime<T>("H", std::vector<std::size_t>{naux, v, v, o, o});
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", &half, bvv, tau);
+        cg::einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", T{1}, &r2, T{1}, half, bvv);
+    }
+    // Two pairs of the intermediate fit and one occupied row of it (four pairs) does not, so no
+    // candidate can keep an occupied axis whole and every one of them is cut into blocks.
+    auto const tiling = decide(graph, static_cast<std::int64_t>(2 * naux * v * v * sizeof(T)));
+    INFO("sliced " << fmt::format("{}", fmt::join(tiling->axis_letters(), ",")) << " in blocks of "
+                   << fmt::format("{}", fmt::join(tiling->block_extents(), ",")));
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->emission() == "range");
+
+    // Each loop holds the two contractions once, over the whole block.
+    for (auto const *body : loop_bodies(graph)) {
+        auto const kinds = kinds_of(*body);
+        CHECK(kinds.at(cg::OpKind::Einsum) == 2);
+        CHECK_FALSE(holds_grouped(*body));
+    }
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    graph.execute();
+
+    // The block's contractions take a matrix-product route, not the generic loop.
+    std::string const route{cg::dispatch::last_dispatch_route()};
+    INFO("last route " << route);
+    CHECK(route.rfind("generic", 0) != 0);
+
+    double scale = 0.0;
+    for (std::size_t n = 0; n < expected.size(); ++n) {
+        scale = std::max(scale, static_cast<double>(std::abs(expected.data()[n])));
+    }
+    for (std::size_t n = 0; n < expected.size(); ++n) {
+        INFO("element " << n);
+        CHECK(std::abs(r2.data()[n] - expected.data()[n]) <= sum_tolerance<T>() * static_cast<double>(naux * v) * scale);
+    }
+}
+
+TEST_CASE("AxisTiling keeps an operand it slices on every axis by cutting one of them into blocks", "[ComputeGraph][Pass][AxisTiling]") {
+    // K[i,a] = X[i] w[a], E = sum K D. Every candidate slices every axis of some operand: i
+    // takes all of X, a all of w, and both all of K. A point leaves such an operand nothing, so
+    // the pass used to decline this program outright; a block keeps the axis.
+    constexpr std::size_t ni = 8;
+    constexpr std::size_t na = 4;
+    auto                  x  = filled_as<double>("X", {ni}, 3U);
+    auto                  w  = filled_as<double>("w", {na}, 5U);
+    auto                  d  = filled_as<double>("D", {ni, na}, 7U);
+    RuntimeTensor<double> energy("E", std::vector<std::size_t>{1});
+
+    double want = 0.0;
+    for (std::size_t i = 0; i < ni; ++i) {
+        for (std::size_t a = 0; a < na; ++a) {
+            want += x(i) * w(a) * d(i, a);
+        }
+    }
+
+    auto const build = [&](cg::Graph &graph) {
+        auto                  &outer = graph.scratch_runtime<double>("K", std::vector<std::size_t>{ni, na});
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,a <- i ; a", &outer, x, w);
+        cg::dot_python(&energy, outer, d);
+    };
+
+    SECTION("a block fits, so the program is tiled") {
+        cg::Graph graph("outer product");
+        build(graph);
+        auto const tiling = decide(graph, static_cast<std::int64_t>(2 * na * sizeof(double)));
+        REQUIRE(tiling->num_tiled() == 1);
+        CHECK(tiling->emission() == "range");
+        auto manager = cg::PassManager::create_default();
+        graph.apply(manager);
+        energy.data()[0] = 0.0;
+        graph.execute();
+        CHECK_THAT(energy.data()[0], Catch::Matchers::WithinRel(want, 1e-12));
+    }
+    SECTION("only points fit, so it is declined with the reason") {
+        // One element: a point of both axes fits and a block of either does not.
+        cg::Graph graph("outer product");
+        build(graph);
+        auto const tiling = decide(graph, static_cast<std::int64_t>(sizeof(double)));
+        CHECK(tiling->num_tiled() == 0);
+        CHECK(declined_because(*tiling, "every axis of one operand is sliced"));
+    }
 }

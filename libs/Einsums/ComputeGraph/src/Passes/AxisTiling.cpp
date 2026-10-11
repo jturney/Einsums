@@ -30,6 +30,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -241,6 +242,15 @@ struct Labelling {
     /// Why an infeasible candidate is infeasible, shape-independent so the tally aggregates the
     /// candidates that fail the same way into one counted line.
     std::string reason;
+
+    /// The sliced axes of each operand EVERY one of whose axes is sliced, by label.
+    ///
+    /// A point slice drops its axis, so such an operand would be left with none, and no kernel
+    /// takes a rank-zero view. A block keeps its axis, so the operand survives a plan that cuts
+    /// at least one of these axes into blocks. Whether that holds depends on the blocks, which
+    /// are chosen after the labelling, so the propagation records the sets and the plan checks
+    /// them.
+    std::vector<std::set<int>> fully_sliced;
 };
 
 /// One operand of one node of the region, with the labelling the decision gave it.
@@ -280,6 +290,13 @@ struct Plan {
     std::size_t              slices{0};
     std::size_t              depth{1};
     std::size_t              iterations{0};
+
+    /// True when some axis is cut into blocks the body keeps as an axis, false for the grouped
+    /// chunk of points.
+    bool range{false};
+
+    /// The full block extent of each sliced axis, one for a point; empty for a grouped plan.
+    std::vector<std::size_t> blocks;
     std::size_t              largest_before{0};
     std::size_t              largest_after{0};
     long double              traffic{0.0L};
@@ -321,12 +338,13 @@ struct TileCursor {
     std::size_t calls{0};
 };
 
-/// The bound one axis of one chunk member takes, resolved afresh on every iteration.
+/// The bound one axis of one chunk member takes, resolved afresh on every iteration: the
+/// member's position along the axis, @p count positions @p step apart, plus @p bias.
 std::function<std::int64_t()> slice_bound(std::shared_ptr<TileCursor> cursor, std::size_t depth, std::size_t member, std::size_t stride,
-                                          std::size_t extent, std::int64_t bias) {
-    return [cursor = std::move(cursor), depth, member, stride, extent, bias]() -> std::int64_t {
+                                          std::size_t count, std::size_t step, std::int64_t bias) {
+    return [cursor = std::move(cursor), depth, member, stride, count, step, bias]() -> std::int64_t {
         std::size_t const slice = (cursor->calls++ * depth) + member;
-        return static_cast<std::int64_t>((slice / stride) % extent) + bias;
+        return static_cast<std::int64_t>(((slice / stride) % count) * step) + bias;
     };
 }
 
@@ -421,6 +439,18 @@ class RegionAnalysis {
     void cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::size_t depth, std::size_t &largest,
               long double &traffic) const;
 
+    /// The largest intermediate and the traffic of a plan that cuts each sliced axis into blocks
+    /// of @p blocks (one for a point), remainders included.
+    void range_cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::vector<std::size_t> const &blocks,
+                    std::size_t &largest, long double &traffic) const;
+
+    /// The sliced axes a block would reward: those some contraction of the loop carries while one
+    /// of its operands does not, so that operand is read once per block rather than once per slice.
+    [[nodiscard]] std::set<int> reusable_labels(Labelling const &labelling) const;
+
+    /// Why the loop cannot be emitted with blocks at all, empty when it can.
+    [[nodiscard]] std::string_view range_blocker(Labelling const &labelling) const;
+
     /// Names the decision gives to each sliced axis, and the letter a contraction calls it.
     void describe(std::vector<std::size_t> const &seed_positions, std::vector<std::string> &names, std::vector<std::string> &letters) const;
 
@@ -433,6 +463,9 @@ class RegionAnalysis {
 
   private:
     [[nodiscard]] std::vector<int> *labels_for(LabelStore &store, std::size_t node_index, std::size_t slot, SlotRef const &ref) const;
+
+    /// The labels one operand of one node carries, or nothing when the labelling gave it none.
+    [[nodiscard]] std::vector<int> const *slot_labels(Labelling const &labelling, std::size_t index, std::size_t slot) const;
 
     /// Whether any operand of the node at @p index carries a sliced axis under @p labelling.
     [[nodiscard]] bool node_is_sliced(Labelling const &labelling, std::size_t index) const;
@@ -719,23 +752,22 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
         }
     }
 
-    // A sliced axis becomes a loop variable and leaves the operand, so an operand every one of
-    // whose axes is sliced has nothing left to be. The emitted body would name a rank-zero
-    // view, which is not an operand any kernel takes.
-    auto survives = [](std::vector<int> const &labels) { return std::ranges::any_of(labels, [](int v) { return v == kFree; }); };
-    for (auto const &[tid, labels] : out.store.tensor) {
-        if (!labels.empty() && !survives(labels)) {
-            out.feasible = false;
-            out.reason   = "every axis of one operand is sliced, so the body would name an operand with no axes left";
-            return out;
+    // A point slice drops its axis, so an operand every one of whose axes is sliced has nothing
+    // left at a point. Whether a block keeps one of them is decided later, with the blocks.
+    auto const record = [&out](std::vector<int> const &labels) {
+        if (labels.empty() || std::ranges::any_of(labels, [](int v) { return v == kFree; })) {
+            return;
         }
+        std::set<int> const carried(labels.begin(), labels.end());
+        if (std::ranges::find(out.fully_sliced, carried) == out.fully_sliced.end()) {
+            out.fully_sliced.push_back(carried);
+        }
+    };
+    for (auto const &[tid, labels] : out.store.tensor) {
+        record(labels);
     }
     for (auto const &[key, labels] : out.store.use) {
-        if (!labels.empty() && !survives(labels)) {
-            out.feasible = false;
-            out.reason   = "every axis of one operand is sliced, so the body would name an operand with no axes left";
-            return out;
-        }
+        record(labels);
     }
     return out;
 }
@@ -1002,18 +1034,21 @@ void RegionAnalysis::partition(Labelling const &labelling, std::vector<std::stri
     }
 }
 
+std::vector<int> const *RegionAnalysis::slot_labels(Labelling const &labelling, std::size_t index, std::size_t slot) const {
+    TensorId const tid = _slots[index - _first][slot].tid;
+    if (_written_set.contains(tid)) {
+        auto const hit = labelling.store.tensor.find(tid);
+        return hit == labelling.store.tensor.end() ? nullptr : &hit->second;
+    }
+    auto const hit = labelling.store.use.find({index, slot});
+    return hit == labelling.store.use.end() ? nullptr : &hit->second;
+}
+
 std::set<int> RegionAnalysis::node_labels(Labelling const &labelling, std::size_t index) const {
     std::set<int> carried;
     auto const   &slots = _slots[index - _first];
     for (std::size_t slot = 0; slot < slots.size(); ++slot) {
-        std::vector<int> const *labels = nullptr;
-        if (_written_set.contains(slots[slot].tid)) {
-            auto const hit = labelling.store.tensor.find(slots[slot].tid);
-            labels         = hit == labelling.store.tensor.end() ? nullptr : &hit->second;
-        } else {
-            auto const hit = labelling.store.use.find({index, slot});
-            labels         = hit == labelling.store.use.end() ? nullptr : &hit->second;
-        }
+        std::vector<int> const *labels = slot_labels(labelling, index, slot);
         if (labels == nullptr) {
             continue;
         }
@@ -1028,6 +1063,96 @@ std::set<int> RegionAnalysis::node_labels(Labelling const &labelling, std::size_
 
 bool RegionAnalysis::node_is_sliced(Labelling const &labelling, std::size_t index) const {
     return !node_labels(labelling, index).empty();
+}
+
+std::set<int> RegionAnalysis::reusable_labels(Labelling const &labelling) const {
+    auto const   &nodes = _graph.nodes();
+    std::set<int> out;
+    for (std::size_t i = _first; i < _last; ++i) {
+        if (nodes[i].kind != OpKind::Einsum) {
+            continue;
+        }
+        std::set<int> const carried = node_labels(labelling, i);
+        for (std::size_t slot = 1; slot < _slots[i - _first].size(); ++slot) {
+            std::vector<int> const *labels = slot_labels(labelling, i, slot);
+            for (int const label : carried) {
+                if (labels == nullptr || std::ranges::find(*labels, label) == labels->end()) {
+                    out.insert(label);
+                }
+            }
+        }
+    }
+    return out;
+}
+
+std::string_view RegionAnalysis::range_blocker(Labelling const &labelling) const {
+    auto const &nodes = _graph.nodes();
+    for (std::size_t i = _first; i < _last; ++i) {
+        if (registered_sliceable(nodes[i]) && node_is_sliced(labelling, i)) {
+            return "a registered node's slice hook takes one point of an axis, not a block of it, so the loop keeps grouped chunks";
+        }
+    }
+    return {};
+}
+
+void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::vector<std::size_t> const &blocks,
+                                std::size_t &largest, long double &traffic) const {
+    // One tensor under the plan: the bytes one block of it holds, and the bytes every iteration
+    // together reads of it. An axis the tensor carries is read once in all, block by block; an
+    // axis it does not carry repeats the read once per block of that axis, which is the reuse a
+    // larger block buys.
+    struct Measure {
+        long double block{0.0L};
+        long double streamed{0.0L};
+    };
+    auto const measure = [&](TensorId tid, std::vector<int> const *labels) -> Measure {
+        auto const *handle = _graph.find_tensor(tid);
+        if (handle == nullptr) {
+            return {};
+        }
+        auto              free = static_cast<long double>(handle->element_size);
+        long double       held = 1.0L;
+        long double       all  = 1.0L;
+        std::vector<bool> carries(extents.size(), false);
+        for (std::size_t p = 0; p < handle->dims.size(); ++p) {
+            int const label = (labels != nullptr && p < labels->size()) ? (*labels)[p] : kFree;
+            if (label == kFree) {
+                free *= static_cast<long double>(handle->dims[p]);
+                continue;
+            }
+            auto const k = static_cast<std::size_t>(label);
+            carries[k]   = true;
+            held *= static_cast<long double>(blocks[k]);
+            all *= static_cast<long double>(extents[k]);
+        }
+        long double repeats = 1.0L;
+        for (std::size_t k = 0; k < extents.size(); ++k) {
+            if (!carries[k]) {
+                std::size_t const pieces = (extents[k] + blocks[k] - 1) / blocks[k];
+                repeats *= static_cast<long double>(pieces);
+            }
+        }
+        return {.block = free * held, .streamed = free * all * repeats};
+    };
+
+    largest = 0;
+    for (auto const &[tid, labels] : labelling.store.tensor) {
+        auto const *handle = _graph.find_tensor(tid);
+        if (handle == nullptr || !handle->is_intermediate) {
+            continue;
+        }
+        largest = std::max(largest, static_cast<std::size_t>(measure(tid, &labels).block));
+    }
+
+    // A statement carrying no sliced axis stays outside the loop and runs once.
+    traffic = 0.0L;
+    for (std::size_t i = _first; i < _last; ++i) {
+        bool const  inside = node_is_sliced(labelling, i);
+        auto const &slots  = _slots[i - _first];
+        for (std::size_t s = 0; s < slots.size(); ++s) {
+            traffic += inside ? measure(slots[s].tid, slot_labels(labelling, i, s)).streamed : measure(slots[s].tid, nullptr).block;
+        }
+    }
 }
 
 bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &reason) const {
@@ -1120,6 +1245,161 @@ std::size_t chunk_depth(std::size_t slices, std::size_t bytes_per_slice, std::si
     return 1;
 }
 
+/// The block extents worth trying on an axis of @p extent: for every block count, the smallest
+/// block that reaches it.
+///
+/// Two blocks that cut the axis into the same number of pieces stream the same bytes, since what
+/// a block saves is the number of times the operands it does not carry are re-read. The smaller
+/// of the two holds less and leaves a remainder no larger, so it is the only one worth costing:
+/// 21 in pieces of at most 8 is three blocks of 7 rather than 8, 8 and 5.
+std::vector<std::size_t> balanced_blocks(std::size_t extent) {
+    std::vector<std::size_t> out;
+    for (std::size_t count = 1; count <= extent; ++count) {
+        std::size_t const block = (extent + count - 1) / count;
+        if (out.empty() || out.back() != block) {
+            out.push_back(block);
+        }
+    }
+    return out;
+}
+
+/// One costed choice of block extents.
+struct BlockChoice {
+    std::vector<std::size_t> blocks;
+    std::size_t              largest{0};
+    long double              traffic{0.0L};
+
+    [[nodiscard]] std::size_t ranged() const {
+        return static_cast<std::size_t>(std::ranges::count_if(blocks, [](std::size_t b) { return b > 1; }));
+    }
+};
+
+/// Whether @p lhs is the better of two block choices: fewer bytes streamed, then fewer ranged
+/// axes, then the smaller footprint, then blocks on the inner axes rather than the outer ones,
+/// so a tie is broken the same way in every process.
+bool better(BlockChoice const &lhs, BlockChoice const &rhs) {
+    if (lhs.traffic != rhs.traffic) {
+        return lhs.traffic < rhs.traffic;
+    }
+    if (lhs.ranged() != rhs.ranged()) {
+        return lhs.ranged() < rhs.ranged();
+    }
+    if (lhs.largest != rhs.largest) {
+        return lhs.largest < rhs.largest;
+    }
+    return std::ranges::lexicographical_compare(std::views::reverse(rhs.blocks), std::views::reverse(lhs.blocks));
+}
+
+/// The block extents that stream the fewest bytes with every intermediate under @p cap, or
+/// nothing when no choice that cuts some axis into blocks fits.
+///
+/// Only the axes in @p reusable are cut, and at most two of them at once; every other axis stays a
+/// point. Two is the blocking a matrix product has, one block per operand the other does not
+/// carry, and it is every shape this pass has been measured on; a third ranged axis multiplies
+/// the search and the remainder loops for a reuse no program here has. Each operand in @p fully_sliced needs a block on one of its axes,
+/// since at a point it would have none left.
+template <typename Cost>
+std::optional<BlockChoice> choose_blocks(std::vector<std::size_t> const &extents, std::set<int> const &reusable,
+                                         std::vector<std::set<int>> const &fully_sliced, std::size_t cap, Cost &&cost) {
+    std::vector<std::size_t> const        axes(reusable.begin(), reusable.end());
+    std::vector<std::vector<std::size_t>> options(extents.size());
+    for (std::size_t const k : axes) {
+        options[k] = balanced_blocks(extents[k]);
+    }
+
+    std::optional<BlockChoice> best;
+    auto const                 consider = [&](std::vector<std::size_t> const &blocks) {
+        if (std::ranges::all_of(blocks, [](std::size_t b) { return b == 1; })) {
+            return;
+        }
+        for (auto const &operand : fully_sliced) {
+            if (std::ranges::none_of(operand, [&](int k) { return blocks[static_cast<std::size_t>(k)] > 1; })) {
+                return;
+            }
+        }
+        BlockChoice choice{.blocks = blocks};
+        cost(blocks, choice.largest, choice.traffic);
+        if (choice.largest > cap) {
+            return;
+        }
+        if (!best.has_value() || better(choice, *best)) {
+            best = std::move(choice);
+        }
+    };
+
+    std::vector<std::size_t> blocks(extents.size(), 1);
+    for (std::size_t x = 0; x < axes.size(); ++x) {
+        for (std::size_t const bx : options[axes[x]]) {
+            blocks[axes[x]] = bx;
+            consider(blocks);
+            for (std::size_t y = x + 1; y < axes.size(); ++y) {
+                for (std::size_t const by : options[axes[y]]) {
+                    blocks[axes[y]] = by;
+                    consider(blocks);
+                }
+                blocks[axes[y]] = 1;
+            }
+        }
+        blocks[axes[x]] = 1;
+    }
+    return best;
+}
+
+/// How one emitted loop walks one sliced axis.
+struct AxisWalk {
+    std::size_t count{1};  ///< Positions the loop visits along the axis.
+    std::size_t step{1};   ///< Distance between two consecutive positions.
+    std::size_t offset{0}; ///< The first position.
+    std::size_t length{1}; ///< How much of the axis the body holds at a position.
+    bool        range{false};
+};
+
+/// The loops a plan emits, each as the walk it takes over every sliced axis.
+///
+/// A grouped plan is one loop over every point. A range plan cuts each ranged axis into its full
+/// blocks and, when the block does not divide the axis, one remainder; the loops are every
+/// combination of those, so a body is declared at one fixed shape and the remainder needs no
+/// guard inside it.
+std::vector<std::vector<AxisWalk>> loop_walks(Plan const &plan) {
+    std::vector<std::vector<AxisWalk>> per_axis(plan.extents.size());
+    for (std::size_t k = 0; k < plan.extents.size(); ++k) {
+        std::size_t const n = plan.extents[k];
+        std::size_t const b = plan.range ? plan.blocks[k] : 1;
+        if (b <= 1) {
+            per_axis[k].push_back(AxisWalk{.count = n});
+            continue;
+        }
+        if (n / b > 0) {
+            per_axis[k].push_back(AxisWalk{.count = n / b, .step = b, .length = b, .range = true});
+        }
+        if (n % b != 0) {
+            per_axis[k].push_back(AxisWalk{.count = 1, .step = b, .offset = (n / b) * b, .length = n % b, .range = true});
+        }
+    }
+
+    std::vector<std::vector<AxisWalk>> loops{{}};
+    for (auto const &choices : per_axis) {
+        std::vector<std::vector<AxisWalk>> next;
+        for (auto const &prefix : loops) {
+            for (auto const &walk : choices) {
+                next.push_back(prefix);
+                next.back().push_back(walk);
+            }
+        }
+        loops = std::move(next);
+    }
+    return loops;
+}
+
+/// How many iterations one loop of @ref loop_walks runs.
+std::size_t walk_iterations(std::vector<AxisWalk> const &walks) {
+    std::size_t out = 1;
+    for (auto const &walk : walks) {
+        out *= walk.count;
+    }
+    return out;
+}
+
 /// Every subset of @p rank positions of size 1 to @ref kMaxSlicedAxes, in a fixed order.
 std::vector<std::vector<std::size_t>> candidate_sets(std::size_t rank) {
     std::vector<std::vector<std::size_t>> out;
@@ -1162,16 +1442,18 @@ void zero_accumulator(Graph &graph, TensorHandle const &handle) {
 
 /// The index letters a slot keeps once its sliced axes have become loop variables.
 ///
-/// A sliced axis is DROPPED from the operand rather than kept as an axis of extent one. Both
-/// spell the same arithmetic, and the drop is what makes the body's contractions the shapes a
-/// kernel recognises: at one occupied pair the four-index contraction is an ordinary matrix
-/// product over the auxiliary index, which is what the hand-written pair loop performs, where a
-/// rank-four contraction with two unit axes would reach the generic algorithm instead.
-std::vector<std::string> surviving(std::vector<std::string> const &letters, std::vector<int> const &labels) {
+/// An axis taken a point at a time is DROPPED from the operand rather than kept as an axis of
+/// extent one. Both spell the same arithmetic, and the drop is what makes the body's
+/// contractions the shapes a kernel recognises: at one occupied pair the four-index contraction
+/// is an ordinary matrix product over the auxiliary index, which is what the hand-written pair
+/// loop performs, where a rank-four contraction with two unit axes would reach the generic
+/// algorithm instead. An axis cut into blocks keeps its letter, at the block's extent.
+std::vector<std::string> surviving(std::vector<std::string> const &letters, std::vector<int> const &labels,
+                                   std::vector<AxisWalk> const &walks) {
     std::vector<std::string> out;
     out.reserve(letters.size());
     for (std::size_t p = 0; p < letters.size(); ++p) {
-        if (p < labels.size() && labels[p] != kFree) {
+        if (p < labels.size() && labels[p] != kFree && !walks[static_cast<std::size_t>(labels[p])].range) {
             continue;
         }
         out.push_back(letters[p]);
@@ -1245,15 +1527,19 @@ std::optional<double> real_prefactor(PrefactorScalar const &value) {
 /// member wherever a grouped kernel exists for that family. The accumulation is the exception
 /// and is grouped anyway, because a grouped accumulation runs its entries sequentially against a
 /// repeated destination, which is the same summation order the members were captured in.
+///
+/// A range plan emits one body per loop of @ref loop_walks, each at depth one: an axis cut into
+/// blocks is read through a RANGE view and kept in every spec at the block's extent, so one
+/// contraction covers the block, and @p tag keeps the parameters of one loop apart from another's.
 template <typename T>
-void emit_body(Graph &parent, Graph &body, Plan const &plan) {
-    std::size_t const depth = std::max<std::size_t>(1, plan.depth);
+void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWalk> const &walks, std::string const &tag) {
+    std::size_t const depth = plan.range ? 1 : std::max<std::size_t>(1, plan.depth);
     std::size_t const axes  = plan.extents.size();
 
-    // Row-major strides over the sliced axes, so one integer names one slice.
+    // Row-major strides over the positions the loop visits, so one integer names one slice.
     std::vector<std::size_t> stride(axes, 1);
     for (std::size_t k = axes; k-- > 0;) {
-        stride[k] = (k + 1 < axes) ? stride[k + 1] * plan.extents[k + 1] : 1;
+        stride[k] = (k + 1 < axes) ? stride[k + 1] * walks[k + 1].count : 1;
     }
 
     // ── Declarations, before the guard ──────────────────────────────────────
@@ -1266,6 +1552,9 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
         dims.reserve(handle.dims.size());
         for (std::size_t p = 0; p < handle.dims.size(); ++p) {
             if (p < labels.size() && labels[p] != kFree) {
+                if (auto const &walk = walks[static_cast<std::size_t>(labels[p])]; walk.range) {
+                    dims.push_back(walk.length);
+                }
                 continue;
             }
             dims.push_back(handle.dims[p]);
@@ -1285,16 +1574,32 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
     CaptureGuard const guard(body);
 
     // ── The slice index, one parameter per axis per member ──────────────────
+    // A block's end is a parameter of its own, since a bound is a name or a constant and not a
+    // sum of the two.
     std::vector<std::vector<std::string>> index_of(depth);
+    std::vector<std::vector<std::string>> end_of(depth);
+    auto const bound = [&](std::string const &name, std::size_t member, AxisWalk const &walk, std::size_t k, std::size_t bias) {
+        write_param(name, slice_bound(std::make_shared<TileCursor>(), depth, member, stride[k], walk.count, walk.step,
+                                      static_cast<std::int64_t>(bias)));
+        // Seed the table with the first iteration's index, so a view recorded below carries the
+        // SLICE's shape rather than the parent's and the capture-time shape checks see the
+        // program that will run. The write above overwrites it on every iteration.
+        std::size_t const first = (((member / stride[k]) % walk.count) * walk.step) + bias;
+        body.params_ptr()->set(name, static_cast<std::int64_t>(first));
+    };
     for (std::size_t member = 0; member < depth; ++member) {
         for (std::size_t k = 0; k < axes; ++k) {
-            auto const name = fmt::format("axtile:{}:{}", k, member);
-            write_param(name, slice_bound(std::make_shared<TileCursor>(), depth, member, stride[k], plan.extents[k], 0));
-            // Seed the table with the first iteration's index, so a view recorded below carries
-            // the SLICE's shape rather than the parent's and the capture-time shape checks see
-            // the program that will run. The write above overwrites it on every iteration.
-            body.params_ptr()->set(name, static_cast<std::int64_t>((member / stride[k]) % plan.extents[k]));
+            auto const &walk = walks[k];
+            auto const  name = tag.empty() ? fmt::format("axtile:{}:{}", k, member) : fmt::format("axtile:{}:{}:{}", tag, k, member);
+            bound(name, member, walk, k, walk.offset);
             index_of[member].push_back(name);
+            if (walk.range) {
+                auto const end = name + ":end";
+                bound(end, member, walk, k, walk.offset + walk.length);
+                end_of[member].push_back(end);
+            } else {
+                end_of[member].emplace_back();
+            }
         }
     }
 
@@ -1306,7 +1611,9 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
         out.reserve(rank);
         for (std::size_t p = 0; p < rank; ++p) {
             if (p < labels.size() && labels[p] != kFree) {
-                out.push_back(ViewAxis::drop(BoundExpr(index_of[member][static_cast<std::size_t>(labels[p])])));
+                auto const k = static_cast<std::size_t>(labels[p]);
+                out.push_back(walks[k].range ? ViewAxis::range(BoundExpr(index_of[member][k]), BoundExpr(end_of[member][k]))
+                                             : ViewAxis::drop(BoundExpr(index_of[member][k])));
             } else {
                 out.push_back(ViewAxis::full());
             }
@@ -1364,9 +1671,9 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
         case OpKind::Einsum: {
             auto const &desc     = op.op_data.get<EinsumDescriptor>();
             auto const  lists    = live_index_lists(desc);
-            auto const  c        = surviving(lists.c, op.slots[0].labels);
-            auto const  a        = surviving(lists.a, op.slots[1].labels);
-            auto const  b        = surviving(lists.b, op.slots[2].labels);
+            auto const  c        = surviving(lists.c, op.slots[0].labels, walks);
+            auto const  a        = surviving(lists.a, op.slots[1].labels, walks);
+            auto const  b        = surviving(lists.b, op.slots[2].labels, walks);
             auto const  alpha    = real_prefactor(live_ab_prefactor(desc));
             auto const  beta     = real_prefactor(live_c_prefactor(desc));
             auto const  as_gemm  = gemm_shape(c, a, b, lists.link);
@@ -1396,8 +1703,9 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
             // and the snapshot only stands in for a node that has none.
             PrefactorScalar const alpha = desc.params ? desc.params->alpha : PrefactorScalar{desc.alpha};
             PrefactorScalar const beta  = desc.params ? desc.params->beta : PrefactorScalar{desc.beta};
-            auto const text = fmt::format("{} <- {}{}", fmt::join(surviving(desc.c_indices, op.slots[0].labels), ","),
-                                          operator_prefix(desc.operators), fmt::join(surviving(desc.a_indices, op.slots[1].labels), ","));
+            auto const            text =
+                fmt::format("{} <- {}{}", fmt::join(surviving(desc.c_indices, op.slots[0].labels, walks), ","),
+                            operator_prefix(desc.operators), fmt::join(surviving(desc.a_indices, op.slots[1].labels, walks), ","));
             auto const re_a = real_prefactor(alpha);
             auto const re_c = real_prefactor(beta);
             if (chunked && re_a.has_value() && re_c.has_value() && desc.operators.empty()) {
@@ -1527,12 +1835,17 @@ bool emit_tiled_loop(Graph &graph, Plan const &plan) {
         graph.replace_nodes(remove, {{site, std::move(moved)}});
 
         // Where that landed: the splice shifts an insert down by the erased nodes BELOW it, and
-        // every replaced node but the last is below the site. The loop follows the zeroing.
+        // every replaced node but the last is below the site. The loops follow the zeroing, one
+        // after another, in the order @ref loop_walks lists them.
         std::size_t const position = (site - (plan.replaced.size() - 1)) + (plan.accumulator_id != 0 ? 1 : 0);
-        Graph            &body =
-            graph.add_loop_at("AxisTiling", plan.iterations,
-                              PredExpr::iteration(CmpOp::Lt, BoundExpr(static_cast<std::int64_t>(plan.iterations) - 1)), position);
-        emit_body<T>(graph, body, plan);
+        auto const        loops    = loop_walks(plan);
+        for (std::size_t l = 0; l < loops.size(); ++l) {
+            std::size_t const iterations = plan.range ? walk_iterations(loops[l]) : plan.iterations;
+            Graph            &body =
+                graph.add_loop_at(plan.range ? fmt::format("AxisTiling#{}", l) : std::string{"AxisTiling"}, iterations,
+                                  PredExpr::iteration(CmpOp::Lt, BoundExpr(static_cast<std::int64_t>(iterations) - 1)), position + l);
+            emit_body<T>(graph, body, plan, loops[l], plan.range ? fmt::format("{}", l) : std::string{});
+        }
     };
 
     switch (plan.dtype) {
@@ -1577,14 +1890,24 @@ void AxisTiling::reset_stats() {
     _streamed.clear();
     _whole.clear();
     _accumulator.clear();
+    _emission.clear();
+    _block_extents.clear();
+    _loops = 0;
+}
+
+std::string AxisTiling::describe_chunks() const {
+    if (_emission == "range") {
+        return fmt::format("blocks of {} in {} loop(s) of {} iteration(s) in all", fmt::join(_block_extents, " x "), _loops, _iterations);
+    }
+    return fmt::format("chunks of {}, {} iteration(s)", _depth, _iterations);
 }
 
 std::vector<std::string> AxisTiling::explain() const {
     if (_slice_count == 0) {
         return {};
     }
-    std::vector<std::string> lines{fmt::format("AxisTiling: sliced {} over {} slice(s) in chunks of {}, {} iteration(s)",
-                                               fmt::join(_axis_names, " x "), _slice_count, _depth, _iterations)};
+    std::vector<std::string> lines{
+        fmt::format("AxisTiling: sliced {} over {} slice(s) in {}", fmt::join(_axis_names, " x "), _slice_count, describe_chunks())};
     lines.push_back(fmt::format("AxisTiling: largest intermediate {} bytes -> {} bytes", _largest_before, _largest_after));
     if (!_accumulator.empty()) {
         lines.push_back(fmt::format("AxisTiling: '{}' accumulates across iterations", _accumulator));
@@ -1689,20 +2012,54 @@ bool AxisTiling::run(Graph &graph) {
             ++over_cap;
             continue;
         }
-        std::size_t const depth   = chunk_depth(slices, unit, static_cast<std::size_t>(cap));
-        std::size_t       largest = 0;
-        analysis.cost(labelling, extents, depth, largest, traffic);
+
+        // Blocks where a contraction of the loop rewards them, a grouped chunk of points
+        // otherwise.
+        std::optional<BlockChoice> blocks;
+        if (auto const reusable = analysis.reusable_labels(labelling); !reusable.empty()) {
+            if (std::string_view const blocker = analysis.range_blocker(labelling); !blocker.empty()) {
+                note_skip(blocker, fmt::format("candidate axes {}", fmt::join(positions, ",")));
+            } else {
+                blocks = choose_blocks(extents, reusable, labelling.fully_sliced, static_cast<std::size_t>(cap),
+                                       [&](std::vector<std::size_t> const &b, std::size_t &largest, long double &streamed) {
+                                           analysis.range_cost(labelling, extents, b, largest, streamed);
+                                       });
+            }
+        }
+        if (!blocks.has_value() && !labelling.fully_sliced.empty()) {
+            note_skip("every axis of one operand is sliced, so the body would name an operand with no axes left",
+                      fmt::format("candidate axes {}", fmt::join(positions, ",")));
+            continue;
+        }
 
         Plan plan;
         plan.first          = best_first;
         plan.last           = best_last;
         plan.extents        = extents;
         plan.slices         = slices;
-        plan.depth          = depth;
-        plan.iterations     = slices / depth;
         plan.largest_before = _largest_before;
-        plan.largest_after  = largest;
-        plan.traffic        = traffic;
+        if (blocks.has_value()) {
+            plan.range  = true;
+            plan.blocks = blocks->blocks;
+            plan.depth  = 1;
+            for (std::size_t const b : plan.blocks) {
+                plan.depth *= b;
+            }
+            plan.iterations = 0;
+            for (auto const &walks : loop_walks(plan)) {
+                plan.iterations += walk_iterations(walks);
+            }
+            plan.largest_after = blocks->largest;
+            plan.traffic       = blocks->traffic;
+        } else {
+            std::size_t const depth   = chunk_depth(slices, unit, static_cast<std::size_t>(cap));
+            std::size_t       largest = 0;
+            analysis.cost(labelling, extents, depth, largest, traffic);
+            plan.depth         = depth;
+            plan.iterations    = slices / depth;
+            plan.largest_after = largest;
+            plan.traffic       = traffic;
+        }
         plan.accumulator    = accumulator;
         plan.accumulator_id = accumulator_id;
         plan.store          = labelling.store;
@@ -1713,9 +2070,10 @@ bool AxisTiling::run(Graph &graph) {
         analysis.describe(positions, plan.axis_names, plan.axis_letters);
         analysis.partition(labelling, plan.streamed, plan.whole);
 
-        report(3, fmt::format("candidate {} streams {:.0f} bytes at depth {}", fmt::join(plan.axis_names, " x "),
-                              static_cast<double>(traffic), depth));
-        if (!best.has_value() || traffic < best->traffic) {
+        report(3, fmt::format("candidate {} streams {:.0f} bytes {}", fmt::join(plan.axis_names, " x "), static_cast<double>(plan.traffic),
+                              plan.range ? fmt::format("in blocks of {}", fmt::join(plan.blocks, " x "))
+                                         : fmt::format("at depth {}", plan.depth)));
+        if (!best.has_value() || plan.traffic < best->traffic) {
             best = std::move(plan);
         }
     }
@@ -1736,6 +2094,9 @@ bool AxisTiling::run(Graph &graph) {
     _streamed    = best->streamed;
     _whole       = best->whole;
     _accumulator = best->accumulator;
+    _emission    = best->range ? "range" : "grouped";
+    _block_extents.assign(best->blocks.begin(), best->blocks.end());
+    _loops = loop_walks(*best).size();
 
     if (!emit_tiled_loop(graph, *best)) {
         note_skip("the run's element type is not one the emitted body can name", fmt::format("dtype {}", static_cast<int>(best->dtype)));
@@ -1745,8 +2106,8 @@ bool AxisTiling::run(Graph &graph) {
     graph.note_structural_change();
     graph.topological_sort();
 
-    report(1, fmt::format("slicing {} into {} slice(s), chunks of {}, largest intermediate {} -> {} bytes", fmt::join(_axis_names, " x "),
-                          _slice_count, _depth, _largest_before, _largest_after));
+    report(1, fmt::format("slicing {} into {} slice(s), {}, largest intermediate {} -> {} bytes", fmt::join(_axis_names, " x "),
+                          _slice_count, describe_chunks(), _largest_before, _largest_after));
     return tiled.moved();
 }
 

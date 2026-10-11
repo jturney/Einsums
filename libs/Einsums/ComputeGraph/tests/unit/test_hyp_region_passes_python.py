@@ -1924,6 +1924,8 @@ def test_the_drawn_caps_reach_both_sides_of_the_tiling_decision():
     """A corpus on which the pass never fires proves nothing about it."""
     fired = 0
     declined = 0
+    ranged = 0
+    remainders = 0
     for seed in range(60):
         prog = _rng_program(seed)
         if _largest_intermediate_bytes(prog, "float64") == 0:
@@ -1935,7 +1937,13 @@ def test_the_drawn_caps_reach_both_sides_of_the_tiling_decision():
                 continue
             if tiling.num_tiled:
                 fired += 1
+                ranged += tiling.emission == "range"
+                remainders += tiling.loops > 1
             else:
                 declined += 1
     assert fired > 0, f"the tiling never fired over the corpus ({declined} declines)"
     assert declined > 0, "every trial tiled, so the decline half of the decision is untested"
+    # The blocks and their remainder loops are emissions of their own, so the corpus has to reach
+    # them too: an axis of 8 in blocks of 3 is the kind of trial that does.
+    assert ranged > 0, f"no trial cut an axis into blocks ({fired} fired)"
+    assert remainders > 0, f"no trial ran a remainder block through a loop of its own ({ranged} ranged)"

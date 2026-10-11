@@ -1256,6 +1256,65 @@ TEST_CASE("Descriptor hooks - a declared slicing lets AxisTiling stream a produc
     CHECK_THAT(opaque_energy, Catch::Matchers::WithinRel(want, 1e-12));
 }
 
+// A slice hook takes one point of an axis, so a loop holding a registered producer keeps grouped
+// chunks of points even where a contraction downstream would reward cutting the axis into blocks.
+TEST_CASE("Descriptor hooks - a registered producer keeps AxisTiling on grouped points", "[ComputeGraph][DescriptorHooks][AxisTiling]") {
+    register_hook_descriptors();
+    constexpr std::size_t nocc = 4;
+    constexpr std::size_t nvir = 6;
+    constexpr std::size_t nout = 5;
+    auto                  W    = create_random_tensor<double>("W", nvir, nout);
+    RuntimeTensor<double> weights("W", std::vector<std::size_t>{nvir, nout});
+    for (std::size_t a = 0; a < nvir; ++a) {
+        for (std::size_t b = 0; b < nout; ++b) {
+            weights(a, b) = W(a, b);
+        }
+    }
+    RuntimeTensor<double> E{"E", std::vector<std::size_t>{1}};
+    E.zero();
+
+    double want = 0.0;
+    for (std::size_t i = 0; i < nocc; ++i) {
+        for (std::size_t b = 0; b < nout; ++b) {
+            double k = 0.0;
+            for (std::size_t a = 0; a < nvir; ++a) {
+                k += grid_value(i, a) * W(a, b);
+            }
+            want += k * k;
+        }
+    }
+
+    // X[i,a] from the producer, K[i,b] = X[i,a] W[a,b], E = sum K K. W carries no i, so a block of
+    // i would read it once per block; the producer can only be sliced a point at a time.
+    cg::Graph graph("hooks_grid_contraction");
+    auto     &X = graph.scratch_runtime<double>("X", std::vector<std::size_t>{nocc, nvir});
+    auto     &K = graph.scratch_runtime<double>("K", std::vector<std::size_t>{nocc, nout});
+    {
+        cg::CaptureGuard const capture(graph);
+        auto                  &ctx = cg::CaptureContext::current();
+        record("grid", GridDescriptor{}, {}, {ctx.get_slot(X).first});
+        cg::einsum("i,b <- i,a ; a,b", &K, X, weights);
+        cg::dot_python(&E, K, K);
+    }
+    auto tiling = std::make_shared<cg::passes::AxisTiling>();
+    tiling->set_memory_cap(static_cast<std::int64_t>(2 * nvir * sizeof(double)));
+    cg::apply_single_pass(*tiling, graph);
+
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->emission() == "grouped");
+    CHECK(tiling->depth() == 2);
+    bool named = false;
+    for (auto const &[reason, count] : tiling->skip_reasons()) {
+        named = named || (reason.find("slice hook takes one point of an axis, not a block") != std::string::npos && count > 0);
+    }
+    CHECK(named);
+
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    graph.execute();
+    CHECK_THAT(E(0), Catch::Matchers::WithinRel(want, 1e-12));
+}
+
 // The conformance kit holds slice to the whole node: a truthful one is clean, one that writes the
 // next slice is caught.
 TEST_CASE("Descriptor conformance - a slicing claim is held to the whole node",
