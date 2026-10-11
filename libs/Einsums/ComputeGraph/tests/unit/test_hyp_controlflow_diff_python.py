@@ -195,6 +195,11 @@ def test_hyp_controlflow_diff(prog, dtype):
     # relative to the tolerance) long before double's; such a program tests
     # overflow, not the graph, as the differential fuzz shards' cap says.
     assume(dtype not in ("float32", "complex64") or peak <= 1e4)
+    # A complex product of infinities has no single right answer: implementations disagree about
+    # which parts come out nan, and here the library's vectorized product gave inf+nanj where numpy
+    # gave inf-infj. Once a complex program overflows, the comparison is between two conventions
+    # and not about the graph. Found by this fuzzer (complex128, a 2x2 squared five times).
+    assume(np.dtype(dtype).kind != "c" or np.isfinite(peak))
     rtol, atol = (1e-4, 1e-4 * max(1.0, peak)) if dtype in ("float32", "complex64") else (1e-7, 1e-9)
     for i in range(ntens):
         np.testing.assert_allclose(np.asarray(tens[i]), arrs[i], rtol=rtol, atol=atol,
