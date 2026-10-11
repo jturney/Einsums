@@ -12,6 +12,7 @@
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
+#include <Einsums/TensorImpl/StridedForEach.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
 #include <cmath>
@@ -71,16 +72,11 @@ void impl_real_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
 }
 
 template <typename T, Container Dims, Container InStrides, Container OutStrides>
-void impl_real_noncontiguous(int depth, int rank, Dims const &dims, std::complex<T> const *in, InStrides const &in_strides, T *out,
+void impl_real_noncontiguous(Dims const &dims, std::complex<T> const *in, InStrides const &in_strides, T *out,
                              OutStrides const &out_strides) {
-    if (depth == rank) {
-        *out = std::real(*in);
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_real_noncontiguous(depth + 1, rank, dims, in + i * in_strides[depth], in_strides, out + i * out_strides[depth],
-                                    out_strides);
-        }
-    }
+    strided_for_each(
+        dims, [](T &o, std::complex<T> const &i) { o = std::real(i); }, StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
+        StridedOperand<std::complex<T> const, InStrides>{.data = in, .strides = &in_strides});
 }
 
 template <typename T, typename TOther>
@@ -99,7 +95,7 @@ void impl_real(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
-        impl_real_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
+        impl_real_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
     } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
         EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
 
@@ -188,16 +184,11 @@ void impl_imag_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
 }
 
 template <typename T, Container Dims, Container InStrides, Container OutStrides>
-void impl_imag_noncontiguous(int depth, int rank, Dims const &dims, std::complex<T> const *in, InStrides const &in_strides, T *out,
+void impl_imag_noncontiguous(Dims const &dims, std::complex<T> const *in, InStrides const &in_strides, T *out,
                              OutStrides const &out_strides) {
-    if (depth == rank) {
-        *out = std::imag(*in);
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_imag_noncontiguous(depth + 1, rank, dims, in + i * in_strides[depth], in_strides, out + i * out_strides[depth],
-                                    out_strides);
-        }
-    }
+    strided_for_each(
+        dims, [](T &o, std::complex<T> const &i) { o = std::imag(i); }, StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
+        StridedOperand<std::complex<T> const, InStrides>{.data = in, .strides = &in_strides});
 }
 
 template <typename T, typename TOther>
@@ -216,7 +207,7 @@ void impl_imag(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
-        impl_imag_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
+        impl_imag_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
     } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
         EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
 
@@ -295,16 +286,10 @@ void impl_abs_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_siz
 }
 
 template <typename T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-void impl_abs_noncontiguous(int depth, int rank, Dims const &dims, TOther const *in, InStrides const &in_strides, T *out,
-                            OutStrides const &out_strides) {
-    if (depth == rank) {
-        *out = std::abs(*in);
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_abs_noncontiguous(depth + 1, rank, dims, in + i * in_strides[depth], in_strides, out + i * out_strides[depth],
-                                   out_strides);
-        }
-    }
+void impl_abs_noncontiguous(Dims const &dims, TOther const *in, InStrides const &in_strides, T *out, OutStrides const &out_strides) {
+    strided_for_each(
+        dims, [](T &o, TOther const &i) { o = std::abs(i); }, StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
+        StridedOperand<TOther const, InStrides>{.data = in, .strides = &in_strides});
 }
 
 template <typename T, typename TOther>
@@ -323,7 +308,7 @@ void impl_abs(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
-        impl_abs_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
+        impl_abs_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
     } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
         EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
 
@@ -491,20 +476,16 @@ void impl_axpy_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
 }
 
 template <typename T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-void impl_axpy_noncontiguous(int depth, int rank, T alpha, Dims const &dims, TOther const *in, InStrides const &in_strides, T *out,
+void impl_axpy_noncontiguous(T alpha, Dims const &dims, TOther const *in, InStrides const &in_strides, T *out,
                              OutStrides const &out_strides) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
         EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
-        if (depth == rank) {
-            *out += alpha * convert<TOther, T>(*in);
-        } else {
-            for (int i = 0; i < dims[depth]; i++) {
-                impl_axpy_noncontiguous(depth + 1, rank, alpha, dims, in + i * in_strides[depth], in_strides, out + i * out_strides[depth],
-                                        out_strides);
-            }
-        }
+        strided_for_each(
+            dims, [alpha](T &o, TOther const &i) { o += alpha * convert<TOther, T>(i); },
+            StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
+            StridedOperand<TOther const, InStrides>{.data = in, .strides = &in_strides});
     }
 }
 
@@ -584,7 +565,7 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         // layout flags are not enough for permuted views.
         EINSUMS_LOG_DEBUG("Operands have different memory layouts. Using the fully-general strided fallback.");
 
-        impl_axpy_noncontiguous(0, in.rank(), static_cast<T>(alpha), in.dims(), in.data(), in.strides(), out.data(), out.strides());
+        impl_axpy_noncontiguous(static_cast<T>(alpha), in.dims(), in.data(), in.strides(), out.data(), out.strides());
     } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
         EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
 
@@ -845,20 +826,15 @@ void impl_mult_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
 }
 
 template <typename T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-void impl_mult_noncontiguous(int depth, int rank, Dims const &dims, TOther const *in, InStrides const &in_strides, T *out,
-                             OutStrides const &out_strides) {
+void impl_mult_noncontiguous(Dims const &dims, TOther const *in, InStrides const &in_strides, T *out, OutStrides const &out_strides) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
         EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
-        if (depth == rank) {
-            *out *= convert<TOther, T>(*in);
-        } else {
-            for (int i = 0; i < dims[depth]; i++) {
-                impl_mult_noncontiguous(depth + 1, rank, dims, in + i * in_strides[depth], in_strides, out + i * out_strides[depth],
-                                        out_strides);
-            }
-        }
+        strided_for_each(
+            dims, [](T &o, TOther const &i) { o *= convert<TOther, T>(i); },
+            StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
+            StridedOperand<TOther const, InStrides>{.data = in, .strides = &in_strides});
     }
 }
 
@@ -878,7 +854,7 @@ void impl_mult(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
-        impl_mult_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
+        impl_mult_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
     } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
         EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
 
@@ -966,20 +942,15 @@ void impl_div_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_siz
 }
 
 template <typename T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-void impl_div_noncontiguous(int depth, int rank, Dims const &dims, TOther const *in, InStrides const &in_strides, T *out,
-                            OutStrides const &out_strides) {
+void impl_div_noncontiguous(Dims const &dims, TOther const *in, InStrides const &in_strides, T *out, OutStrides const &out_strides) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
         EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
-        if (depth == rank) {
-            *out /= convert<TOther, T>(*in);
-        } else {
-            for (int i = 0; i < dims[depth]; i++) {
-                impl_div_noncontiguous(depth + 1, rank, dims, in + i * in_strides[depth], in_strides, out + i * out_strides[depth],
-                                       out_strides);
-            }
-        }
+        strided_for_each(
+            dims, [](T &o, TOther const &i) { o /= convert<TOther, T>(i); },
+            StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
+            StridedOperand<TOther const, InStrides>{.data = in, .strides = &in_strides});
     }
 }
 
@@ -999,7 +970,7 @@ void impl_div(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
-        impl_div_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
+        impl_div_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
     } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
         EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using a flat loop.");
 
@@ -1091,20 +1062,15 @@ void impl_copy_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
 }
 
 template <typename T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-void impl_copy_noncontiguous(int depth, int rank, Dims const &dims, TOther const *in, InStrides const &in_strides, T *out,
-                             OutStrides const &out_strides) {
+void impl_copy_noncontiguous(Dims const &dims, TOther const *in, InStrides const &in_strides, T *out, OutStrides const &out_strides) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
         EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
-        if (depth == rank) {
-            *out = convert<TOther, T>(*in);
-        } else {
-            for (int i = 0; i < dims[depth]; i++) {
-                impl_copy_noncontiguous(depth + 1, rank, dims, in + i * in_strides[depth], in_strides, out + i * out_strides[depth],
-                                        out_strides);
-            }
-        }
+        strided_for_each(
+            dims, [](T &o, TOther const &i) { o = convert<TOther, T>(i); },
+            StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
+            StridedOperand<TOther const, InStrides>{.data = in, .strides = &in_strides});
     }
 }
 
@@ -1135,7 +1101,7 @@ void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if (in.strides() != out.strides()) {
         EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
 
-        impl_copy_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
+        impl_copy_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
     } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
         EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
 

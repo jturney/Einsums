@@ -11,6 +11,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Profile.hpp>
+#include <Einsums/TensorImpl/StridedForEach.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
 
@@ -65,18 +66,15 @@ void impl_direct_product_noncontiguous_vectorable(int depth, int hard_rank, size
     }
 }
 
-template <typename AType, typename BType, typename CType, Container HardDims, Container AStrides, Container BStrides, Container CStrides>
-void impl_direct_product_noncontiguous(int depth, int rank, HardDims const &dims, CType alpha, AType const *a_data,
-                                       AStrides const &a_strides, BType const *b_data, BStrides const &b_strides, CType beta, CType *c_data,
-                                       CStrides const &c_strides) {
-    if (depth == rank) {
-        *c_data = beta * *c_data + alpha * *a_data * *b_data;
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_direct_product_noncontiguous(depth + 1, rank, dims, alpha, a_data + i * a_strides[depth], a_strides,
-                                              b_data + i * b_strides[depth], b_strides, beta, c_data + i * c_strides[depth], c_strides);
-        }
-    }
+template <typename AType, typename BType, typename CType, Container Dims, Container AStrides, Container BStrides, Container CStrides>
+void impl_direct_product_noncontiguous(Dims const &dims, CType alpha, AType const *a_data, AStrides const &a_strides, BType const *b_data,
+                                       BStrides const &b_strides, CType beta, CType *c_data, CStrides const &c_strides) {
+    using einsums::detail::StridedOperand;
+    einsums::detail::strided_for_each(
+        dims, [alpha, beta](CType &c, AType const &a, BType const &b) { c = beta * c + alpha * a * b; },
+        StridedOperand<CType, CStrides>{.data = c_data, .strides = &c_strides},
+        StridedOperand<AType const, AStrides>{.data = a_data, .strides = &a_strides},
+        StridedOperand<BType const, BStrides>{.data = b_data, .strides = &b_strides});
 }
 
 template <typename AType, typename BType, typename CType>
@@ -116,8 +114,7 @@ void impl_direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &
     if (A.strides() != B.strides() || A.strides() != C->strides()) {
         EINSUMS_LOG_DEBUG("Operands have different memory layouts. Using the fully-general strided fallback.");
 
-        impl_direct_product_noncontiguous(0, A.rank(), A.dims(), alpha, A.data(), A.strides(), B.data(), B.strides(), beta, C->data(),
-                                          C->strides());
+        impl_direct_product_noncontiguous(A.dims(), alpha, A.data(), A.strides(), B.data(), B.strides(), beta, C->data(), C->strides());
     } else if (A.is_totally_vectorable() && B.is_totally_vectorable() && C->is_totally_vectorable()) {
         EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using direct product.");
 

@@ -5,7 +5,7 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(TensorImplHeaders Einsums/TensorImpl/TensorImpl.hpp Einsums/TensorImpl/TensorImplOperations.hpp)
+set(TensorImplHeaders Einsums/TensorImpl/StridedForEach.hpp Einsums/TensorImpl/TensorImpl.hpp Einsums/TensorImpl/TensorImplOperations.hpp)
 
 set(TensorImplSources)
 

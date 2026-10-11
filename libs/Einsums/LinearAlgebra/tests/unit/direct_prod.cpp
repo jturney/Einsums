@@ -9,6 +9,8 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <complex>
+#include <limits>
 
 #include <Einsums/Testing.hpp>
 
@@ -241,5 +243,59 @@ TEMPLATE_TEST_CASE("Disk direct products", "[linear-algebra]", float, double, st
                 REQUIRE_THAT(C_test(i), Catch::Matchers::WithinRel(C(i), (TestType)1.0e-6));
             }
         }
+    }
+}
+
+// A dense output beside a strided view has different strides, so these take the general fallback.
+// It used to recurse over the axes in index order, which for column-major tensors walks the largest
+// stride innermost (about 8 ns per element on a DF-MP2 denominator); it now walks the output's own
+// order a run at a time. Either way the result must be the index loop's.
+TEMPLATE_TEST_CASE("elementwise ops on a dense tensor beside a strided view", "[linear-algebra]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    using namespace einsums::linear_algebra;
+    using T            = TestType;
+    auto         P     = create_random_tensor<T>("P", 6, 7, 8);
+    auto         Q     = create_random_tensor<T>("Q", 5, 7, 9);
+    auto const   A     = P(Range{1, 5}, All, Range{2, 6});
+    auto const   B     = Q(Range{0, 4}, All, Range{3, 7});
+    auto         C     = create_random_tensor<T>("C", 4, 7, 4);
+    T const      alpha = T{0.75};
+    T const      beta  = T{-1.25};
+    double const tol   = 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
+    Tensor<T, 3> C_ref = C;
+
+    auto const check = [&]() {
+        for (size_t i = 0; i < 4; ++i) {
+            for (size_t j = 0; j < 7; ++j) {
+                for (size_t k = 0; k < 4; ++k) {
+                    REQUIRE(std::abs(C(i, j, k) - C_ref(i, j, k)) <= tol * (1.0 + std::abs(C_ref(i, j, k))));
+                }
+            }
+        }
+    };
+    auto const each = [&](auto &&f) {
+        for (size_t i = 0; i < 4; ++i) {
+            for (size_t j = 0; j < 7; ++j) {
+                for (size_t k = 0; k < 4; ++k) {
+                    f(i, j, k);
+                }
+            }
+        }
+    };
+
+    SECTION("direct product") {
+        each([&](size_t i, size_t j, size_t k) { C_ref(i, j, k) = beta * C(i, j, k) + alpha * A(i, j, k) * B(i, j, k); });
+        direct_product(alpha, A, B, beta, &C);
+        check();
+    }
+    SECTION("direct division") {
+        each([&](size_t i, size_t j, size_t k) { C_ref(i, j, k) = beta * C(i, j, k) + alpha * A(i, j, k) / B(i, j, k); });
+        direct_division(alpha, A, B, beta, &C);
+        check();
+    }
+    SECTION("axpy") {
+        each([&](size_t i, size_t j, size_t k) { C_ref(i, j, k) = C(i, j, k) + alpha * A(i, j, k); });
+        axpy(alpha, A, &C);
+        check();
     }
 }
