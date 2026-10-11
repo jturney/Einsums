@@ -22,6 +22,18 @@
  * This pass is that change of schedule, taken from the sizes rather than from a rule about
  * chemistry. It answers three questions and each is read off @ref option::GraphTilingMemoryCap.
  *
+ * @par Which statements
+ * A loop is built around one intermediate at a time, the largest over the cap first. Its region
+ * is that tensor's writers and readers, and then the writers and readers of every other
+ * intermediate over the cap that the slice labelling reaches, since the loop has to stream those
+ * too. A tensor the labelling reaches that fits the cap is not followed: it stays whole and is
+ * written and read through slices of its own buffer, so the statements of other terms that touch
+ * it stay outside the loop. That is what lets a coupled-cluster residual tile its particle ladder
+ * while the terms that sum over an occupied index of the same amplitudes run as captured. The
+ * region need not be contiguous: its statements gather where the loop stands, which is allowed
+ * when no statement in between depends on one of them while another depends on it. Every
+ * intermediate over the cap that is left gets a region of its own.
+ *
  * @par Which axes
  * A candidate is a free axis of the program that no contraction sums over, because slicing a
  * summed index would cut a contraction in half and cost a partial-sum buffer. A reduction into
@@ -173,6 +185,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE APIARY_GETTER("memory_cap") [[nodiscard]] std::int64_t memory_cap() const;
 
     /// @brief How many regions the last apply tiled.
+    ///
+    /// The other getters describe the first of them, the region around the largest intermediate;
+    /// @ref explain names every one.
     /// @return The count, zero when the pass declined.
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("num_tiled") [[nodiscard]] std::size_t num_tiled() const noexcept { return _num_tiled; }
@@ -255,8 +270,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE APIARY_GETTER("accumulator") [[nodiscard]] std::string accumulator() const { return _accumulator; }
 
   private:
-    /// The chunking of the last decision in words, for the report and @ref explain.
-    [[nodiscard]] std::string describe_chunks() const;
+    /// @brief Tile the region around one seed, if any candidate axis set can.
+    /// @param[in,out] graph The graph, rewritten when a region is tiled.
+    /// @param[in]     seed  An intermediate over the cap that a sliceable statement writes.
+    /// @param[in]     cap   The memory cap in bytes.
+    /// @return True when the region was replaced by a loop.
+    bool tile_region(Graph &graph, TensorId seed, std::int64_t cap);
 
     std::int64_t _memory_cap{0};
     bool         _cap_explicit{false};
@@ -276,6 +295,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::string               _emission;
     std::vector<std::int64_t> _block_extents;
     std::size_t               _loops{0};
+    std::vector<std::string>  _regions;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

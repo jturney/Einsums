@@ -284,9 +284,7 @@ SliceRequest slice_request(NodePlan const &op, NameOf &&name_of) {
 
 /// The description of one tiled region, produced by the analysis and consumed by the rewrite.
 struct Plan {
-    std::size_t              first{0}; ///< First node of the region, in the parent's numbering.
-    std::size_t              last{0};  ///< One past the last.
-    std::vector<std::size_t> extents;  ///< Extent of each sliced axis, outermost first.
+    std::vector<std::size_t> extents; ///< Extent of each sliced axis, outermost first.
     std::size_t              slices{0};
     std::size_t              depth{1};
     std::size_t              iterations{0};
@@ -308,6 +306,10 @@ struct Plan {
     LabelStore               store;
 
     std::vector<NodePlan> ops;
+
+    /// The replaced position the loop takes the place of: the last when the statements can all
+    /// move down to it, the first when they can all move up.
+    std::size_t site{0};
 
     /// Positions in the parent's node list the loop replaces, ascending. A statement none of
     /// whose operands carries a sliced axis is LOOP-INVARIANT and is not one of them: it stays
@@ -407,10 +409,19 @@ bool labels_are_distinct(std::vector<int> const &labels) {
     return true;
 }
 
-/// The analysis over one contiguous run of tileable nodes.
+/// The analysis over one region: a set of tileable nodes, in the parent's order, that need not be
+/// contiguous.
 class RegionAnalysis {
   public:
-    RegionAnalysis(Graph const &graph, std::size_t first, std::size_t last) : _graph(graph), _first(first), _last(last) {}
+    /// @param[in] members The region's nodes, by their position in the parent, ascending.
+    /// @param[in] seed    The intermediate whose axes the candidates are taken from; zero takes the
+    ///                    largest tensor the region writes.
+    RegionAnalysis(Graph const &graph, std::vector<std::size_t> members, TensorId seed = 0)
+        : _graph(graph), _members(std::move(members)), _seed(seed), _seed_given(seed != 0) {
+        for (std::size_t k = 0; k < _members.size(); ++k) {
+            _ordinal.emplace(_members[k], k);
+        }
+    }
 
     /// Collect what the region reads, writes and declares. False when the run holds a node
     /// this pass cannot read at all.
@@ -457,9 +468,11 @@ class RegionAnalysis {
     /// Which tensors stream and which are left whole under @p labelling.
     void partition(Labelling const &labelling, std::vector<std::string> &streamed, std::vector<std::string> &whole) const;
 
-    [[nodiscard]] Graph const &graph() const noexcept { return _graph; }
-    [[nodiscard]] std::size_t  first() const noexcept { return _first; }
-    [[nodiscard]] std::size_t  last() const noexcept { return _last; }
+    [[nodiscard]] Graph const                    &graph() const noexcept { return _graph; }
+    [[nodiscard]] std::vector<std::size_t> const &members() const noexcept { return _members; }
+
+    /// The tensor in one operand slot of the member at parent position @p index.
+    [[nodiscard]] TensorId slot_tensor(std::size_t index, std::size_t slot) const { return slots_at(index)[slot].tid; }
 
   private:
     [[nodiscard]] std::vector<int> *labels_for(LabelStore &store, std::size_t node_index, std::size_t slot, SlotRef const &ref) const;
@@ -476,9 +489,12 @@ class RegionAnalysis {
     /// @return The labels its operands and destination carry, empty for a loop-invariant node.
     [[nodiscard]] std::set<int> node_labels(Labelling const &labelling, std::size_t index) const;
 
-    Graph const &_graph;
-    std::size_t  _first{0};
-    std::size_t  _last{0};
+    /// The operand slots of the member at parent position @p index.
+    [[nodiscard]] std::vector<SlotRef> const &slots_at(std::size_t index) const { return _slots[_ordinal.at(index)]; }
+
+    Graph const                                 &_graph;
+    std::vector<std::size_t>                     _members;
+    std::unordered_map<std::size_t, std::size_t> _ordinal;
 
     std::vector<TensorId>             _written;
     std::unordered_set<TensorId>      _written_set;
@@ -486,6 +502,7 @@ class RegionAnalysis {
     std::vector<std::vector<SlotRef>> _slots;
     std::size_t                       _largest_written_bytes{0};
     TensorId                          _seed{0};
+    bool                              _seed_given{false};
     packed_gemm::ScalarType           _dtype{packed_gemm::ScalarType::Unknown};
     bool                              _all_runtime{true};
 };
@@ -496,9 +513,11 @@ bool RegionAnalysis::collect() {
     _written.clear();
     _written_set.clear();
     _largest_written_bytes = 0;
-    _seed                  = 0;
+    if (!_seed_given) {
+        _seed = 0;
+    }
 
-    for (std::size_t i = _first; i < _last; ++i) {
+    for (std::size_t const i : _members) {
         auto slots = slots_of(_graph, nodes[i]);
         if (!slots.has_value()) {
             return false;
@@ -545,7 +564,7 @@ bool RegionAnalysis::collect() {
     // lists would have declared it unread and re-declared it at one slice underneath a reader
     // that wanted the whole of it. The region fuzz found exactly that.
     for (std::size_t i = 0; i < nodes.size(); ++i) {
-        if (i >= _first && i < _last) {
+        if (_ordinal.contains(i)) {
             continue;
         }
         auto const [reads, writes] = const_cast<Graph &>(_graph).effective_io(nodes[i]);
@@ -563,12 +582,14 @@ bool RegionAnalysis::collect() {
             continue;
         }
         std::size_t const bytes = handle->total_bytes();
-        if (bytes > _largest_written_bytes || (bytes == _largest_written_bytes && _seed == 0)) {
+        if (bytes > _largest_written_bytes || (bytes == _largest_written_bytes && _largest_written_bytes == 0)) {
             _largest_written_bytes = bytes;
-            _seed                  = tid;
+            if (!_seed_given) {
+                _seed = tid;
+            }
         }
     }
-    return _seed != 0;
+    return _seed != 0 && _written_set.contains(_seed);
 }
 
 std::vector<int> *RegionAnalysis::labels_for(LabelStore &store, std::size_t node_index, std::size_t slot, SlotRef const &ref) const {
@@ -598,12 +619,12 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
     // A fixpoint over the region. Each sweep can only replace a free position with a label, so
     // the number of sweeps is bounded by the number of positions; the bound below is that,
     // stated generously, and a sweep that changes nothing ends it.
-    std::size_t const sweeps = (_last - _first) * (kMaxSlicedAxes + 1) + 4;
+    std::size_t const sweeps = _members.size() * (kMaxSlicedAxes + 1) + 4;
     for (std::size_t sweep = 0; sweep < sweeps; ++sweep) {
         bool changed = false;
-        for (std::size_t i = _first; i < _last; ++i) {
+        for (std::size_t const i : _members) {
             auto const                     &node  = nodes[i];
-            auto const                     &slots = _slots[i - _first];
+            auto const                     &slots = slots_at(i);
             std::vector<std::vector<int> *> labels;
             labels.reserve(slots.size());
             for (std::size_t s = 0; s < slots.size(); ++s) {
@@ -735,7 +756,7 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
         }
     }
     for (auto const &[key, labels] : out.store.use) {
-        auto const &slots = _slots[key.first - _first];
+        auto const &slots = slots_at(key.first);
         if (!check(slots[key.second].tid, labels)) {
             out.feasible = false;
             out.reason   = "one tensor would carry a sliced axis twice, or two of its uses disagree about that axis's extent";
@@ -837,8 +858,8 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
         // whose operands carries a sliced axis: it is loop-invariant, and it stays outside the
         // loop rather than being computed identically on every iteration.
         bool invariant = true;
-        for (std::size_t i = _first; i < _last; ++i) {
-            if (_slots[i - _first][0].tid != tid) {
+        for (std::size_t const i : _members) {
+            if (slots_at(i)[0].tid != tid) {
                 continue;
             }
             invariant = invariant && !node_is_sliced(labelling, i);
@@ -852,8 +873,8 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
         std::size_t writers      = 0;
         std::size_t readers      = 0;
         std::size_t writer_index = 0;
-        for (std::size_t i = _first; i < _last; ++i) {
-            auto const &slots = _slots[i - _first];
+        for (std::size_t const i : _members) {
+            auto const &slots = slots_at(i);
             if (slots[0].tid == tid) {
                 ++writers;
                 writer_index = i;
@@ -906,8 +927,8 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
             }
         }
     }
-    for (std::size_t i = _first; i < _last; ++i) {
-        bool const adds = node_accumulates(nodes[i]) || (accumulator_id != 0 && _slots[i - _first][0].tid == accumulator_id);
+    for (std::size_t const i : _members) {
+        bool const adds = node_accumulates(nodes[i]) || (accumulator_id != 0 && slots_at(i)[0].tid == accumulator_id);
         if (!adds) {
             continue;
         }
@@ -956,8 +977,8 @@ void RegionAnalysis::cost(Labelling const &labelling, std::vector<std::size_t> c
     // iteration count. Minimising it under the cap is the memory-constrained fusion problem;
     // minimising it alone would always prefer slicing nothing at all.
     long double per_iteration = 0.0L;
-    for (std::size_t i = _first; i < _last; ++i) {
-        auto const &slots = _slots[i - _first];
+    for (std::size_t const i : _members) {
+        auto const &slots = slots_at(i);
         for (std::size_t s = 0; s < slots.size(); ++s) {
             auto const *labels = _written_set.contains(slots[s].tid)
                                      ? (labelling.store.tensor.contains(slots[s].tid) ? &labelling.store.tensor.at(slots[s].tid) : nullptr)
@@ -988,8 +1009,8 @@ void RegionAnalysis::describe(std::vector<std::size_t> const &seed_positions, st
     // A letter is what a reader recognises the axis by, and the writer of the seed is where one
     // is named. A seed no contraction writes leaves the letters empty rather than inventing one.
     auto const &nodes = _graph.nodes();
-    for (std::size_t i = _first; i < _last; ++i) {
-        auto const &slots = _slots[i - _first];
+    for (std::size_t const i : _members) {
+        auto const &slots = slots_at(i);
         if (slots[0].tid != _seed) {
             continue;
         }
@@ -1008,8 +1029,8 @@ void RegionAnalysis::partition(Labelling const &labelling, std::vector<std::stri
     streamed.clear();
     whole.clear();
     std::unordered_set<TensorId> seen;
-    for (std::size_t i = _first; i < _last; ++i) {
-        for (auto const &slot : _slots[i - _first]) {
+    for (std::size_t const i : _members) {
+        for (auto const &slot : slots_at(i)) {
             if (!seen.insert(slot.tid).second) {
                 continue;
             }
@@ -1023,7 +1044,7 @@ void RegionAnalysis::partition(Labelling const &labelling, std::vector<std::stri
             }
             if (!labelled) {
                 for (auto const &[key, labels] : labelling.store.use) {
-                    if (_slots[key.first - _first][key.second].tid != slot.tid) {
+                    if (slots_at(key.first)[key.second].tid != slot.tid) {
                         continue;
                     }
                     labelled = labelled || std::ranges::any_of(labels, [](int v) { return v != kFree; });
@@ -1035,7 +1056,7 @@ void RegionAnalysis::partition(Labelling const &labelling, std::vector<std::stri
 }
 
 std::vector<int> const *RegionAnalysis::slot_labels(Labelling const &labelling, std::size_t index, std::size_t slot) const {
-    TensorId const tid = _slots[index - _first][slot].tid;
+    TensorId const tid = slots_at(index)[slot].tid;
     if (_written_set.contains(tid)) {
         auto const hit = labelling.store.tensor.find(tid);
         return hit == labelling.store.tensor.end() ? nullptr : &hit->second;
@@ -1046,7 +1067,7 @@ std::vector<int> const *RegionAnalysis::slot_labels(Labelling const &labelling, 
 
 std::set<int> RegionAnalysis::node_labels(Labelling const &labelling, std::size_t index) const {
     std::set<int> carried;
-    auto const   &slots = _slots[index - _first];
+    auto const   &slots = slots_at(index);
     for (std::size_t slot = 0; slot < slots.size(); ++slot) {
         std::vector<int> const *labels = slot_labels(labelling, index, slot);
         if (labels == nullptr) {
@@ -1068,12 +1089,12 @@ bool RegionAnalysis::node_is_sliced(Labelling const &labelling, std::size_t inde
 std::set<int> RegionAnalysis::reusable_labels(Labelling const &labelling) const {
     auto const   &nodes = _graph.nodes();
     std::set<int> out;
-    for (std::size_t i = _first; i < _last; ++i) {
+    for (std::size_t const i : _members) {
         if (nodes[i].kind != OpKind::Einsum) {
             continue;
         }
         std::set<int> const carried = node_labels(labelling, i);
-        for (std::size_t slot = 1; slot < _slots[i - _first].size(); ++slot) {
+        for (std::size_t slot = 1; slot < slots_at(i).size(); ++slot) {
             std::vector<int> const *labels = slot_labels(labelling, i, slot);
             for (int const label : carried) {
                 if (labels == nullptr || std::ranges::find(*labels, label) == labels->end()) {
@@ -1087,7 +1108,7 @@ std::set<int> RegionAnalysis::reusable_labels(Labelling const &labelling) const 
 
 std::string_view RegionAnalysis::range_blocker(Labelling const &labelling) const {
     auto const &nodes = _graph.nodes();
-    for (std::size_t i = _first; i < _last; ++i) {
+    for (std::size_t const i : _members) {
         if (registered_sliceable(nodes[i]) && node_is_sliced(labelling, i)) {
             return "a registered node's slice hook takes one point of an axis, not a block of it, so the loop keeps grouped chunks";
         }
@@ -1146,9 +1167,9 @@ void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::siz
 
     // A statement carrying no sliced axis stays outside the loop and runs once.
     traffic = 0.0L;
-    for (std::size_t i = _first; i < _last; ++i) {
+    for (std::size_t const i : _members) {
         bool const  inside = node_is_sliced(labelling, i);
-        auto const &slots  = _slots[i - _first];
+        auto const &slots  = slots_at(i);
         for (std::size_t s = 0; s < slots.size(); ++s) {
             traffic += inside ? measure(slots[s].tid, slot_labels(labelling, i, s)).streamed : measure(slots[s].tid, nullptr).block;
         }
@@ -1162,7 +1183,7 @@ bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &
     plan.dtype = _dtype;
 
     auto labels_of = [&](std::size_t node_index, std::size_t slot) -> std::vector<int> {
-        auto const &ref = _slots[node_index - _first][slot];
+        auto const &ref = slots_at(node_index)[slot];
         if (_written_set.contains(ref.tid)) {
             auto const hit = labelling.store.tensor.find(ref.tid);
             return hit == labelling.store.tensor.end() ? std::vector<int>(ref.rank, kFree) : hit->second;
@@ -1172,7 +1193,7 @@ bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &
     };
 
     plan.replaced.clear();
-    for (std::size_t i = _first; i < _last; ++i) {
+    for (std::size_t const i : _members) {
         if (!node_is_sliced(labelling, i)) {
             continue;
         }
@@ -1180,8 +1201,8 @@ bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &
         op.kind    = nodes[i].kind;
         op.op_data = nodes[i].op_data;
         op.label   = nodes[i].label;
-        for (std::size_t slot = 0; slot < _slots[i - _first].size(); ++slot) {
-            op.slots.push_back(SlotPlan{.tid = _slots[i - _first][slot].tid, .labels = labels_of(i, slot)});
+        for (std::size_t slot = 0; slot < slots_at(i).size(); ++slot) {
+            op.slots.push_back(SlotPlan{.tid = slots_at(i)[slot].tid, .labels = labels_of(i, slot)});
         }
         // A registered node is re-emitted through its slice hook, so one that cannot be sliced
         // on these axes declines the candidate here rather than at emission.
@@ -1198,7 +1219,6 @@ bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &
         reason = "no statement of the run carries a sliced axis, so there is nothing for a loop to hold";
         return false;
     }
-    plan.first = plan.replaced.front();
 
     for (TensorId const tid : _written) {
         auto const hit = labelling.store.tensor.find(tid);
@@ -1213,15 +1233,11 @@ bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &
             reason = "a tensor the region writes has no handle";
             return false;
         }
-        // A caller's tensor keeps its own buffer and is written through a slice of it; only a
-        // graph-owned intermediate is re-declared at slice extents, and only when nothing
-        // outside the run still wants the whole of it.
-        if (!handle->is_intermediate) {
+        // A caller's tensor keeps its own buffer and is written through a slice of it, and so does
+        // an intermediate something outside the region still reads or writes whole. Only an
+        // intermediate the region alone touches is re-declared at slice extents.
+        if (!handle->is_intermediate || _touched_outside.contains(_graph.buffer_of(tid))) {
             continue;
-        }
-        if (_touched_outside.contains(_graph.buffer_of(tid))) {
-            reason = "an intermediate the loop would declare at slice extents is read outside the run, where the whole of it is wanted";
-            return false;
         }
         plan.body_owned.emplace_back(tid, hit->second);
     }
@@ -1389,6 +1405,15 @@ std::vector<std::vector<AxisWalk>> loop_walks(Plan const &plan) {
         loops = std::move(next);
     }
     return loops;
+}
+
+/// The chunking of a plan in words, for the report and the explanation.
+std::string describe_chunks(Plan const &plan) {
+    if (plan.range) {
+        return fmt::format("blocks of {} in {} loop(s) of {} iteration(s) in all", fmt::join(plan.blocks, " x "), loop_walks(plan).size(),
+                           plan.iterations);
+    }
+    return fmt::format("chunks of {}, {} iteration(s)", plan.depth, plan.iterations);
 }
 
 /// How many iterations one loop of @ref loop_walks runs.
@@ -1825,19 +1850,16 @@ bool emit_tiled_loop(Graph &graph, Plan const &plan) {
         for (std::size_t const position : plan.replaced) {
             remove[position] = true;
         }
-        // At the LAST replaced position rather than the first. A statement none of whose
-        // operands carries a sliced axis stays where it is, and one of those may sit between two
-        // sliced statements: the loop reads what it writes, and a loop node carries no operand
-        // lists of its own for the dependency sort to order it by. The graph was sorted before
-        // the rewrite, so every such writer precedes the sliced statement that reads it, and
-        // therefore precedes the last of them.
-        std::size_t const site = plan.replaced.back();
+        // At the site the analysis chose, which every statement in between allows: the last
+        // replaced position when nothing between depends on an earlier statement, the first when
+        // no later statement depends on anything between.
+        std::size_t const site = plan.site;
         graph.replace_nodes(remove, {{site, std::move(moved)}});
 
-        // Where that landed: the splice shifts an insert down by the erased nodes BELOW it, and
-        // every replaced node but the last is below the site. The loops follow the zeroing, one
-        // after another, in the order @ref loop_walks lists them.
-        std::size_t const position = (site - (plan.replaced.size() - 1)) + (plan.accumulator_id != 0 ? 1 : 0);
+        // Where that landed: the splice shifts an insert down by the erased nodes BELOW it. The
+        // loops follow the zeroing, one after another, in the order @ref loop_walks lists them.
+        auto const below = static_cast<std::size_t>(std::ranges::count_if(plan.replaced, [site](std::size_t p) { return p < site; }));
+        std::size_t const position = (site - below) + (plan.accumulator_id != 0 ? 1 : 0);
         auto const        loops    = loop_walks(plan);
         for (std::size_t l = 0; l < loops.size(); ++l) {
             std::size_t const iterations = plan.range ? walk_iterations(loops[l]) : plan.iterations;
@@ -1893,27 +1915,88 @@ void AxisTiling::reset_stats() {
     _emission.clear();
     _block_extents.clear();
     _loops = 0;
-}
-
-std::string AxisTiling::describe_chunks() const {
-    if (_emission == "range") {
-        return fmt::format("blocks of {} in {} loop(s) of {} iteration(s) in all", fmt::join(_block_extents, " x "), _loops, _iterations);
-    }
-    return fmt::format("chunks of {}, {} iteration(s)", _depth, _iterations);
+    _regions.clear();
 }
 
 std::vector<std::string> AxisTiling::explain() const {
-    if (_slice_count == 0) {
-        return {};
+    std::vector<std::string> lines;
+    lines.reserve(_regions.size() + 1);
+    for (auto const &region : _regions) {
+        lines.push_back(fmt::format("AxisTiling: {}", region));
     }
-    std::vector<std::string> lines{
-        fmt::format("AxisTiling: sliced {} over {} slice(s) in {}", fmt::join(_axis_names, " x "), _slice_count, describe_chunks())};
-    lines.push_back(fmt::format("AxisTiling: largest intermediate {} bytes -> {} bytes", _largest_before, _largest_after));
     if (!_accumulator.empty()) {
-        lines.push_back(fmt::format("AxisTiling: '{}' accumulates across iterations", _accumulator));
+        lines.push_back(fmt::format("AxisTiling: '{}' accumulates across the first region's iterations", _accumulator));
     }
     return lines;
 }
+
+namespace {
+
+/// What one node reads and writes, by the buffer underneath each tensor.
+struct NodeIo {
+    std::set<TensorId> reads;
+    std::set<TensorId> writes;
+};
+
+/// Every node's buffers read and written. Effective rather than listed, so a loop or a
+/// conditional answers for its body.
+std::vector<NodeIo> buffer_io(Graph &graph) {
+    std::vector<NodeIo> out;
+    out.reserve(graph.nodes().size());
+    for (auto const &node : graph.nodes()) {
+        auto const [reads, writes] = graph.effective_io(node);
+        NodeIo io;
+        for (TensorId const tid : reads) {
+            io.reads.insert(graph.buffer_of(tid));
+        }
+        for (TensorId const tid : writes) {
+            io.writes.insert(graph.buffer_of(tid));
+        }
+        out.push_back(std::move(io));
+    }
+    return out;
+}
+
+bool intersects(std::set<TensorId> const &lhs, std::set<TensorId> const &rhs) {
+    return std::ranges::any_of(lhs, [&rhs](TensorId tid) { return rhs.contains(tid); });
+}
+
+/// Whether @p later has to run after @p earlier: it reads what @p earlier writes, writes what
+/// @p earlier reads, or writes what @p earlier writes.
+bool depends(NodeIo const &earlier, NodeIo const &later) {
+    return intersects(earlier.writes, later.reads) || intersects(earlier.writes, later.writes) || intersects(earlier.reads, later.writes);
+}
+
+/// Where the loop can stand in for the statements it replaces, or nothing when it cannot.
+///
+/// A region need not be contiguous: a statement of another term may sit between two of its
+/// statements. The loop takes the place of the LAST of them when nothing in between depends on
+/// an earlier one, so every earlier one can move down to it, and of the FIRST when no later one
+/// depends on anything in between, so every later one can move up. A node in between that
+/// depends on one statement while another depends on it allows neither.
+std::optional<std::size_t> gather_site(std::vector<NodeIo> const &io, std::vector<std::size_t> const &replaced) {
+    std::set<std::size_t> const moving(replaced.begin(), replaced.end());
+    bool                        sink  = true;
+    bool                        hoist = true;
+    for (std::size_t n = replaced.front() + 1; n < replaced.back(); ++n) {
+        if (moving.contains(n)) {
+            continue;
+        }
+        for (std::size_t const m : replaced) {
+            sink  = sink && !(m < n && depends(io[m], io[n]));
+            hoist = hoist && !(m > n && depends(io[n], io[m]));
+        }
+    }
+    if (sink) {
+        return replaced.back();
+    }
+    if (hoist) {
+        return replaced.front();
+    }
+    return std::nullopt;
+}
+
+} // namespace
 
 bool AxisTiling::run(Graph &graph) {
     PassCounter const tiled{_num_tiled};
@@ -1923,78 +2006,179 @@ bool AxisTiling::run(Graph &graph) {
         note_skip("the memory cap is zero, which is how a caller asks for the captured schedule");
         return tiled.moved();
     }
+    auto const limit = static_cast<std::size_t>(cap);
 
-    graph.topological_sort();
-    auto const &nodes = graph.nodes();
+    // One region at a time. Every rewrite renumbers the nodes and replaces a region with a loop,
+    // which no later region can take in, so the seeds are read afresh after each; a seed that
+    // declined once declines again on the same graph and is not retried.
+    std::set<TensorId> declined;
+    for (bool first = true;; first = false) {
+        graph.topological_sort();
+        auto const &nodes = graph.nodes();
 
-    // The longest run of nodes whose value at a slice is a function of their operands at that
-    // slice. Anything else terminates the run, which is the same escape rule the region
-    // framework uses spelled for a schedule rather than for an expression.
-    std::size_t best_first = 0;
-    std::size_t best_last  = 0;
-    std::size_t run_first  = 0;
-    for (std::size_t i = 0; i <= nodes.size(); ++i) {
-        bool ok = i < nodes.size() && (tileable_kind(nodes[i].kind) || registered_sliceable(nodes[i]));
-        // A node carrying a feature this pass does not understand is a barrier: the run never
-        // takes it into the loop body.
-        if (ok && !understands(graph, nodes[i])) {
+        // A seed is an intermediate over the cap that a sliceable statement writes: the tensors
+        // the loop exists to stream, largest first.
+        std::size_t                                   largest = 0;
+        std::vector<std::pair<std::size_t, TensorId>> seeds;
+        for (auto const &node : nodes) {
+            bool const sliceable = tileable_kind(node.kind) || registered_sliceable(node);
+            for (TensorId const tid : node.outputs) {
+                auto const *handle = graph.find_tensor(tid);
+                if (handle == nullptr || !handle->is_intermediate || handle->is_tiled || handle->is_distributed) {
+                    continue;
+                }
+                std::size_t const bytes = handle->total_bytes();
+                largest                 = std::max(largest, bytes);
+                if (sliceable && bytes > limit && !declined.contains(tid) &&
+                    std::ranges::find(seeds, std::pair{bytes, tid}) == seeds.end()) {
+                    seeds.emplace_back(bytes, tid);
+                }
+            }
+        }
+        if (first) {
+            _largest_before = largest;
+            if (largest <= limit) {
+                note_skip("the largest intermediate already fits the cap, so there is nothing to stream",
+                          fmt::format("{} bytes against a cap of {}", largest, cap));
+                report(1, fmt::format("declined: the largest intermediate is {} bytes and the cap is {}", largest, cap));
+                return tiled.moved();
+            }
+            if (seeds.empty()) {
+                note_skip("every intermediate over the cap is written by a statement this pass cannot slice",
+                          fmt::format("{} bytes against a cap of {}", largest, cap));
+                return tiled.moved();
+            }
+        }
+        std::ranges::sort(seeds, [](auto const &lhs, auto const &rhs) {
+            return lhs.first != rhs.first ? lhs.first > rhs.first : lhs.second < rhs.second;
+        });
+
+        bool rewrote = false;
+        for (auto const &[bytes, seed] : seeds) {
+            if (tile_region(graph, seed, cap)) {
+                rewrote = true;
+                break;
+            }
+            declined.insert(seed);
+        }
+        if (!rewrote) {
+            break;
+        }
+    }
+    return tiled.moved();
+}
+
+bool AxisTiling::tile_region(Graph &graph, TensorId seed, std::int64_t cap) {
+    auto const &nodes       = graph.nodes();
+    auto const  io          = buffer_io(graph);
+    auto const *seed_handle = graph.find_tensor(seed);
+    if (seed_handle == nullptr) {
+        return false;
+    }
+    auto const limit = static_cast<std::size_t>(cap);
+
+    // The statements that read or write a tensor, by the buffer underneath it.
+    auto const touchers = [&](TensorId tid) {
+        TensorId const           buffer = graph.buffer_of(tid);
+        std::vector<std::size_t> out;
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            if (io[i].reads.contains(buffer) || io[i].writes.contains(buffer)) {
+                out.push_back(i);
+            }
+        }
+        return out;
+    };
+    auto const sliceable = [&](std::size_t i) {
+        if (!tileable_kind(nodes[i].kind) && !registered_sliceable(nodes[i])) {
+            return false;
+        }
+        if (!understands(graph, nodes[i])) {
             note_skip("the node carries a feature this pass does not understand",
                       fmt::format("node '{}': {}", nodes[i].label, describe_features(features_of(graph, nodes[i]))));
-            ok = false;
+            return false;
         }
-        if (!ok) {
-            if (i - run_first > best_last - best_first) {
-                best_first = run_first;
-                best_last  = i;
-            }
-            run_first = i + 1;
-        }
-    }
-    if (best_last - best_first < 2) {
-        note_skip("the graph holds no run of two or more nodes whose value at a slice is a function of their operands at that slice");
-        return tiled.moved();
-    }
-
-    RegionAnalysis analysis(graph, best_first, best_last);
-    if (!analysis.collect()) {
-        note_skip("a node of the run names operands this pass cannot read as a dense, single-buffer slice");
-        return tiled.moved();
-    }
-    if (!analysis.all_runtime()) {
-        note_skip("the run names an operand this pass cannot slice, because a rank-erased operand is one the emitted body can name "
-                  "and a statically ranked one is not");
-        return tiled.moved();
-    }
-    _largest_before = analysis.largest_written_bytes();
-
-    if (_largest_before <= static_cast<std::size_t>(cap)) {
-        note_skip("the largest intermediate already fits the cap, so there is nothing to stream",
-                  fmt::format("{} bytes against a cap of {}", _largest_before, cap));
-        report(1, fmt::format("declined: the largest intermediate is {} bytes and the cap is {}", _largest_before, cap));
-        return tiled.moved();
-    }
-
-    auto const *seed_handle = graph.find_tensor(analysis.seed());
-    if (seed_handle == nullptr) {
-        note_skip("the largest intermediate of the run has no handle to take candidate axes from");
-        return tiled.moved();
-    }
+        return true;
+    };
 
     std::optional<Plan> best;
     std::size_t         infeasible = 0;
     std::size_t         over_cap   = 0;
     for (auto const &positions : candidate_sets(seed_handle->rank)) {
-        auto const labelling = analysis.propagate(positions);
-        if (!labelling.feasible) {
+        auto const detail = fmt::format("seed '{}', candidate axes {}", seed_handle->name, fmt::join(positions, ","));
+
+        // The region: the seed's writers and readers, and then every writer and reader of any
+        // other intermediate over the cap that the labelling reaches, since the loop has to
+        // stream that one too. A tensor the labelling reaches that fits the cap is not followed:
+        // it stays whole, written and read through slices of its own buffer, so the statements of
+        // other terms that touch it stay outside the loop.
+        std::vector<std::size_t>      members = touchers(seed);
+        std::optional<RegionAnalysis> analysis;
+        Labelling                     labelling;
+        std::string                   why;
+        std::string                   barrier_label;
+        while (true) {
+            if (auto const barrier = std::ranges::find_if_not(members, sliceable); barrier != members.end()) {
+                why           = "a statement that reads or writes an intermediate the loop has to stream is one this pass cannot slice";
+                barrier_label = fmt::format("; statement '{}'", nodes[*barrier].label);
+                break;
+            }
+            analysis.emplace(graph, members, seed);
+            if (!analysis->collect()) {
+                why = "a statement of the region names operands this pass cannot read as a dense, single-buffer slice";
+                break;
+            }
+            if (!analysis->all_runtime()) {
+                why = "the region names an operand this pass cannot slice, because a rank-erased operand is one the emitted body can name "
+                      "and a statically ranked one is not";
+                break;
+            }
+            labelling = analysis->propagate(positions);
+            if (!labelling.feasible) {
+                why = labelling.reason;
+                break;
+            }
+            // A tensor the region WRITES is completed by the loop, so every statement that touches
+            // it has to be in it. A tensor the region only READS is an input: its writers and
+            // other readers join when all of them can, which streams it too, and otherwise it is
+            // read through slices of its whole buffer, as any caller's tensor is.
+            std::set<std::size_t> grown(members.begin(), members.end());
+            auto const            follow = [&](TensorId tid, std::vector<int> const &labels, bool written) {
+                auto const *handle = graph.find_tensor(tid);
+                if (handle == nullptr || !handle->is_intermediate || handle->total_bytes() <= limit ||
+                    std::ranges::all_of(labels, [](int v) { return v == kFree; })) {
+                    return;
+                }
+                auto const others = touchers(tid);
+                if (!written && !std::ranges::all_of(others, [&](std::size_t i) {
+                        return grown.contains(i) ||
+                               ((tileable_kind(nodes[i].kind) || registered_sliceable(nodes[i])) && understands(graph, nodes[i]));
+                    })) {
+                    return;
+                }
+                grown.insert(others.begin(), others.end());
+            };
+            for (auto const &[tid, labels] : labelling.store.tensor) {
+                follow(tid, labels, true);
+            }
+            for (auto const &[site, labels] : labelling.store.use) {
+                follow(analysis->slot_tensor(site.first, site.second), labels, false);
+            }
+            if (grown.size() == members.size()) {
+                break;
+            }
+            members.assign(grown.begin(), grown.end());
+        }
+        if (!why.empty()) {
             ++infeasible;
-            note_skip(labelling.reason, fmt::format("candidate axes {}", fmt::join(positions, ",")));
+            note_skip(why, detail + barrier_label);
             continue;
         }
+
         std::string accumulator;
         TensorId    accumulator_id = 0;
         std::string reason;
-        if (!analysis.closes(labelling, accumulator, accumulator_id, reason)) {
-            note_skip(reason, fmt::format("candidate axes {}", fmt::join(positions, ",")));
+        if (!analysis->closes(labelling, accumulator, accumulator_id, reason)) {
+            note_skip(reason, detail);
             continue;
         }
 
@@ -2007,8 +2191,8 @@ bool AxisTiling::run(Graph &graph) {
 
         std::size_t unit    = 0;
         long double traffic = 0.0L;
-        analysis.cost(labelling, extents, 1, unit, traffic);
-        if (unit > static_cast<std::size_t>(cap)) {
+        analysis->cost(labelling, extents, 1, unit, traffic);
+        if (unit > limit) {
             ++over_cap;
             continue;
         }
@@ -2016,28 +2200,25 @@ bool AxisTiling::run(Graph &graph) {
         // Blocks where a contraction of the loop rewards them, a grouped chunk of points
         // otherwise.
         std::optional<BlockChoice> blocks;
-        if (auto const reusable = analysis.reusable_labels(labelling); !reusable.empty()) {
-            if (std::string_view const blocker = analysis.range_blocker(labelling); !blocker.empty()) {
-                note_skip(blocker, fmt::format("candidate axes {}", fmt::join(positions, ",")));
+        if (auto const reusable = analysis->reusable_labels(labelling); !reusable.empty()) {
+            if (std::string_view const blocker = analysis->range_blocker(labelling); !blocker.empty()) {
+                note_skip(blocker, detail);
             } else {
-                blocks = choose_blocks(extents, reusable, labelling.fully_sliced, static_cast<std::size_t>(cap),
+                blocks = choose_blocks(extents, reusable, labelling.fully_sliced, limit,
                                        [&](std::vector<std::size_t> const &b, std::size_t &largest, long double &streamed) {
-                                           analysis.range_cost(labelling, extents, b, largest, streamed);
+                                           analysis->range_cost(labelling, extents, b, largest, streamed);
                                        });
             }
         }
         if (!blocks.has_value() && !labelling.fully_sliced.empty()) {
-            note_skip("every axis of one operand is sliced, so the body would name an operand with no axes left",
-                      fmt::format("candidate axes {}", fmt::join(positions, ",")));
+            note_skip("every axis of one operand is sliced, so the body would name an operand with no axes left", detail);
             continue;
         }
 
         Plan plan;
-        plan.first          = best_first;
-        plan.last           = best_last;
         plan.extents        = extents;
         plan.slices         = slices;
-        plan.largest_before = _largest_before;
+        plan.largest_before = seed_handle->total_bytes();
         if (blocks.has_value()) {
             plan.range  = true;
             plan.blocks = blocks->blocks;
@@ -2052,9 +2233,9 @@ bool AxisTiling::run(Graph &graph) {
             plan.largest_after = blocks->largest;
             plan.traffic       = blocks->traffic;
         } else {
-            std::size_t const depth   = chunk_depth(slices, unit, static_cast<std::size_t>(cap));
+            std::size_t const depth   = chunk_depth(slices, unit, limit);
             std::size_t       largest = 0;
-            analysis.cost(labelling, extents, depth, largest, traffic);
+            analysis->cost(labelling, extents, depth, largest, traffic);
             plan.depth         = depth;
             plan.iterations    = slices / depth;
             plan.largest_after = largest;
@@ -2063,12 +2244,20 @@ bool AxisTiling::run(Graph &graph) {
         plan.accumulator    = accumulator;
         plan.accumulator_id = accumulator_id;
         plan.store          = labelling.store;
-        if (!analysis.build(labelling, plan, reason)) {
-            note_skip(reason, fmt::format("candidate axes {}", fmt::join(positions, ",")));
+        if (!analysis->build(labelling, plan, reason)) {
+            note_skip(reason, detail);
             continue;
         }
-        analysis.describe(positions, plan.axis_names, plan.axis_letters);
-        analysis.partition(labelling, plan.streamed, plan.whole);
+        if (auto const site = gather_site(io, plan.replaced); site.has_value()) {
+            plan.site = *site;
+        } else {
+            note_skip("a statement outside the region sits between two of its statements, depending on one while the other depends on "
+                      "it, so they cannot be gathered into one loop",
+                      detail);
+            continue;
+        }
+        analysis->describe(positions, plan.axis_names, plan.axis_letters);
+        analysis->partition(labelling, plan.streamed, plan.whole);
 
         report(3, fmt::format("candidate {} streams {:.0f} bytes {}", fmt::join(plan.axis_names, " x "), static_cast<double>(plan.traffic),
                               plan.range ? fmt::format("in blocks of {}", fmt::join(plan.blocks, " x "))
@@ -2079,36 +2268,42 @@ bool AxisTiling::run(Graph &graph) {
     }
 
     if (!best.has_value()) {
-        note_skip("no candidate axis set brings the largest intermediate under the cap",
-                  fmt::format("{} set(s) the program cannot carry a slice labelling for, {} above the cap", infeasible, over_cap));
-        return tiled.moved();
+        note_skip("no candidate axis set brings the seed under the cap",
+                  fmt::format("seed '{}': {} set(s) the program cannot carry a slice labelling for, {} above the cap", seed_handle->name,
+                              infeasible, over_cap));
+        return false;
     }
 
-    _slice_count   = best->slices;
-    _depth         = best->depth;
-    _iterations    = best->iterations;
-    _largest_after = best->largest_after;
-    _axis_names    = best->axis_names;
-    _axis_letters  = best->axis_letters;
-    _axis_extents.assign(best->extents.begin(), best->extents.end());
-    _streamed    = best->streamed;
-    _whole       = best->whole;
-    _accumulator = best->accumulator;
-    _emission    = best->range ? "range" : "grouped";
-    _block_extents.assign(best->blocks.begin(), best->blocks.end());
-    _loops = loop_walks(*best).size();
-
     if (!emit_tiled_loop(graph, *best)) {
-        note_skip("the run's element type is not one the emitted body can name", fmt::format("dtype {}", static_cast<int>(best->dtype)));
-        return tiled.moved();
+        note_skip("the region's element type is not one the emitted body can name", fmt::format("dtype {}", static_cast<int>(best->dtype)));
+        return false;
+    }
+
+    // The getters describe the first region, which is the one around the largest seed.
+    if (_num_tiled == 0) {
+        _slice_count   = best->slices;
+        _depth         = best->depth;
+        _iterations    = best->iterations;
+        _largest_after = best->largest_after;
+        _axis_names    = best->axis_names;
+        _axis_letters  = best->axis_letters;
+        _axis_extents.assign(best->extents.begin(), best->extents.end());
+        _streamed    = best->streamed;
+        _whole       = best->whole;
+        _accumulator = best->accumulator;
+        _emission    = best->range ? "range" : "grouped";
+        _block_extents.assign(best->blocks.begin(), best->blocks.end());
+        _loops = loop_walks(*best).size();
     }
     ++_num_tiled;
     graph.note_structural_change();
-    graph.topological_sort();
 
-    report(1, fmt::format("slicing {} into {} slice(s), {}, largest intermediate {} -> {} bytes", fmt::join(_axis_names, " x "),
-                          _slice_count, describe_chunks(), _largest_before, _largest_after));
-    return tiled.moved();
+    std::string const line =
+        fmt::format("slicing {} into {} slice(s), {}, seed {} bytes -> largest intermediate {} bytes", fmt::join(best->axis_names, " x "),
+                    best->slices, describe_chunks(*best), best->largest_before, best->largest_after);
+    _regions.push_back(line);
+    report(1, line);
+    return true;
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

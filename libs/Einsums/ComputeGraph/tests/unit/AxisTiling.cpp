@@ -982,3 +982,227 @@ TEST_CASE("AxisTiling keeps an operand it slices on every axis by cutting one of
         CHECK(declined_because(*tiling, "every axis of one operand is sliced"));
     }
 }
+
+// ── Regions ─────────────────────────────────────────────────────────────────
+
+TEMPLATE_TEST_CASE("AxisTiling tiles the ladder chain of a residual whose other terms sum over its occupied indices",
+                   "[ComputeGraph][Pass][AxisTiling]", float, double, std::complex<double>) {
+    // A coupled-cluster residual in miniature, in the order its terms are written:
+    //   Tau[i,j,a,b]  = t1[i,a] t1[j,b] + t2[i,j,a,b]
+    //   F[a,e]        = sum_mnf Tau[m,n,a,f] g[m,n,e,f]            sums Tau's occupied indices
+    //   r2[i,j,a,b]   = sum_e t2[i,j,a,e] F[b,e]
+    //   H[Q,a,f,i,j]  = sum_e Bvv[Q,a,e] Tau[i,j,e,f]              the ladder, over the cap
+    //   r2[i,j,a,b]  += sum_Qf H[Q,a,f,i,j] Bvv[Q,b,f]
+    //   X[i,j,a,b]    = sum_e Tau[i,j,a,e] F[e,b];  r2 += X + X[j,i,b,a]   exchanges i with j
+    // Taken as one run, any slice of the occupied pair reaches F's contraction, which sums over it,
+    // and the symmetrizing permutation, which exchanges it, so no occupied slicing survives. The
+    // ladder's own statements need neither: the region is H's writer and reader, and everything
+    // they share with the other terms fits the cap and stays whole.
+    using T                    = TestType;
+    constexpr std::size_t o    = 4;
+    constexpr std::size_t v    = 5;
+    constexpr std::size_t naux = 6;
+    auto                  t1   = filled_as<T>("t1", {o, v}, 3U);
+    auto                  t2   = filled_as<T>("t2", {o, o, v, v}, 5U);
+    auto                  g    = filled_as<T>("g", {o, o, v, v}, 7U);
+    auto                  bvv  = filled_as<T>("Bvv", {naux, v, v}, 11U);
+    RuntimeTensor<T>      r2("r2", std::vector<std::size_t>{o, o, v, v});
+    r2.zero();
+
+    // The reference, statement by statement.
+    RuntimeTensor<T> expected("r2ref", std::vector<std::size_t>{o, o, v, v});
+    expected.zero();
+    {
+        RuntimeTensor<T> tau("Tauref", std::vector<std::size_t>{o, o, v, v});
+        RuntimeTensor<T> fae("Fref", std::vector<std::size_t>{v, v});
+        RuntimeTensor<T> half("Href", std::vector<std::size_t>{naux, v, v, o, o});
+        RuntimeTensor<T> x("Xref", std::vector<std::size_t>{o, o, v, v});
+        tau.zero();
+        fae.zero();
+        half.zero();
+        x.zero();
+        testing::reference_einsum("i,j,a,b <- i,a ; j,b", &tau, t1, t1);
+        for (std::size_t n = 0; n < tau.size(); ++n) {
+            tau.data()[n] += t2.data()[n];
+        }
+        testing::reference_einsum("a,e <- m,n,a,f ; m,n,e,f", &fae, tau, g);
+        testing::reference_einsum("i,j,a,b <- i,j,a,e ; b,e", &expected, t2, fae);
+        testing::reference_einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", &half, bvv, tau);
+        testing::reference_einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", T{1}, &expected, T{1}, half, bvv);
+        testing::reference_einsum("i,j,a,b <- i,j,a,e ; e,b", &x, tau, fae);
+        for (std::size_t i = 0; i < o; ++i) {
+            for (std::size_t j = 0; j < o; ++j) {
+                for (std::size_t a = 0; a < v; ++a) {
+                    for (std::size_t b = 0; b < v; ++b) {
+                        expected(i, j, a, b) += x(i, j, a, b) + x(j, i, b, a);
+                    }
+                }
+            }
+        }
+    }
+
+    cg::Graph graph("residual");
+    {
+        std::vector<std::size_t> const doubles{o, o, v, v};
+        auto                          &tau  = graph.scratch_runtime<T>("Tau", doubles);
+        auto                          &fae  = graph.scratch_runtime<T>("F", std::vector<std::size_t>{v, v});
+        auto                          &half = graph.scratch_runtime<T>("H", std::vector<std::size_t>{naux, v, v, o, o});
+        auto                          &x    = graph.scratch_runtime<T>("X", doubles);
+        auto                          &xp   = graph.scratch_runtime<T>("Xp", doubles);
+        cg::CaptureGuard const         guard(graph);
+        cg::einsum("i,j,a,b <- i,a ; j,b", &tau, t1, t1);
+        cg::axpby(T{1}, t2, T{1}, &tau);
+        cg::einsum("a,e <- m,n,a,f ; m,n,e,f", &fae, tau, g);
+        cg::einsum("i,j,a,b <- i,j,a,e ; b,e", &r2, t2, fae);
+        cg::einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", &half, bvv, tau);
+        cg::einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", T{1}, &r2, T{1}, half, bvv);
+        cg::einsum("i,j,a,b <- i,j,a,e ; e,b", &x, tau, fae);
+        cg::permute("j,i,b,a <- i,j,a,b", &xp, x);
+        cg::axpby(T{1}, x, T{1}, &r2);
+        cg::axpby(T{1}, xp, T{1}, &r2);
+    }
+    std::size_t const captured = graph.num_nodes();
+
+    // Four pairs of H fit; Tau, F and X fit whole, so the region does not follow them.
+    auto const tiling = decide(graph, static_cast<std::int64_t>(4 * naux * v * v * sizeof(T)));
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->axis_names().front().starts_with("H["));
+    INFO("sliced " << fmt::format("{}", fmt::join(tiling->axis_letters(), ",")) << " blocks "
+                   << fmt::format("{}", fmt::join(tiling->block_extents(), ",")));
+    // An occupied index: one i of H is exactly the four pairs the cap allows. Slicing it labels
+    // Tau's occupied axes, which F's contraction sums over, so this is the decision a region that
+    // followed Tau into F would have had to give up.
+    CHECK(tiling->axis_letters() == std::vector<std::string>{"i"});
+
+    // The loop holds the ladder's two contractions and nothing else; the other eight statements
+    // run as captured, around it.
+    auto const bodies = loop_bodies(graph);
+    REQUIRE(!bodies.empty());
+    for (auto const *body : bodies) {
+        CHECK(kinds_of(*body).at(cg::OpKind::Einsum) == 2);
+        CHECK(kinds_of(*body).count(cg::OpKind::Permute) == 0);
+        CHECK(kinds_of(*body).count(cg::OpKind::Axpby) == 0);
+    }
+    CHECK(graph.num_nodes() == captured - 2 + bodies.size());
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    graph.execute();
+
+    double scale = 0.0;
+    for (std::size_t n = 0; n < expected.size(); ++n) {
+        scale = std::max(scale, static_cast<double>(std::abs(expected.data()[n])));
+    }
+    for (std::size_t n = 0; n < expected.size(); ++n) {
+        INFO("element " << n);
+        CHECK(std::abs(r2.data()[n] - expected.data()[n]) <= sum_tolerance<T>() * static_cast<double>(naux * v * v) * scale);
+    }
+}
+
+TEST_CASE("AxisTiling gives every intermediate over the cap a region of its own", "[ComputeGraph][Pass][AxisTiling]") {
+    // Two independent energies in one graph, each with its own four-index intermediates.
+    Mp2<double> first(4, 6, 7);
+    Mp2<double> second(5, 6, 7);
+    cg::Graph   graph("two energies");
+    capture_mp2(graph, first);
+    capture_mp2(graph, second);
+
+    auto const tiling = decide(graph, first.pairs(1));
+    CHECK(tiling->num_tiled() == 2);
+    CHECK(tiling->explain().size() >= 2);
+    CHECK(loop_bodies(graph).size() == 2);
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    first.energy.data()[0]  = 0.0;
+    second.energy.data()[0] = 0.0;
+    graph.execute();
+    for (auto *p : {&first, &second}) {
+        auto const expected = mp2_reference(*p);
+        INFO("o = " << p->o);
+        CHECK(std::abs(p->energy.data()[0] - expected.value) <= sum_tolerance<double>() * expected.magnitude);
+    }
+}
+
+TEST_CASE("AxisTiling declines a region it cannot gather around a statement between its own", "[ComputeGraph][Pass][AxisTiling]") {
+    // K = B B, v[i,j] = K M, u = v v as a matrix product, T = K u, E = sum T D. The product of v
+    // with itself is no statement this pass slices, and it sits between two that it must: it
+    // reads what the region writes before it and writes what the region reads after it, so the
+    // region can neither move down past it nor up past it.
+    Problem               problem;
+    auto                  weights = filled("M", {nvir, nvir}, 23U);
+    RuntimeTensor<double> u_out("u", std::vector<std::size_t>{nocc, nocc});
+    cg::Graph             graph("ungatherable");
+    {
+        std::vector<std::size_t> const shape{nocc, nvir, nocc, nvir};
+        auto                          &integral = graph.scratch_runtime<double>("K", shape);
+        auto                          &pairs    = graph.scratch_runtime<double>("v", std::vector<std::size_t>{nocc, nocc});
+        auto                          &scaled   = graph.scratch_runtime<double>("T", shape);
+        cg::CaptureGuard const         guard(graph);
+        cg::einsum("Q,i,a ; Q,j,b -> i,a,j,b", &integral, problem.fitted, problem.fitted);
+        cg::einsum("i,j <- i,a,j,b ; a,b", &pairs, integral, weights);
+        cg::gemm(1.0, pairs, pairs, 0.0, &u_out);
+        cg::einsum("i,a,j,b <- i,a,j,b ; i,j", &scaled, integral, u_out);
+        cg::dot_python(&problem.energy, scaled, problem.denominator);
+    }
+    // Two pairs of K fit, so the occupied pair can be cut into blocks and v, which carries
+    // nothing but the pair, keeps an axis; that is the candidate that reaches the gathering.
+    REQUIRE(2 * pair_bytes <= 600);
+    auto const  tiling = decide(graph, 600);
+    std::string said   = fmt::format("largest before {}; ", tiling->largest_before());
+    for (auto const &[reason, count] : tiling->skip_reasons()) {
+        said += fmt::format("{} x {}; ", count, reason);
+    }
+    INFO(said);
+    CHECK(tiling->num_tiled() == 0);
+    CHECK(declined_because(*tiling, "cannot be gathered into one loop"));
+}
+
+TEST_CASE("AxisTiling reads an input whole when its producer cannot join the loop", "[ComputeGraph][Pass][AxisTiling]") {
+    // The integral's factor is squared in place by an element transform, a kind no loop this pass
+    // emits carries. The region around the four-index integral reads that factor, and the factor is
+    // over the cap, but a tensor the region only READS is an input: it is read through slices of
+    // its whole buffer rather than pulling its producer into the loop and giving up.
+    Problem   problem;
+    double    reference = 0.0;
+    cg::Graph graph("squared factor");
+    {
+        auto                  &factor = graph.scratch_runtime<double>("Bsq", std::vector<std::size_t>{naux, nocc, nvir});
+        auto                  &K      = graph.scratch_runtime<double>("K", std::vector<std::size_t>{nocc, nvir, nocc, nvir});
+        cg::CaptureGuard const guard(graph);
+        cg::axpby(1.0, problem.fitted, 0.0, &factor);
+        cg::element_transform(&factor, "square");
+        cg::einsum("Q,i,a ; Q,j,b -> i,a,j,b", &K, factor, factor);
+        cg::dot_python(&problem.energy, K, problem.denominator);
+    }
+    {
+        RuntimeTensor<double> squared("Bsq_ref", std::vector<std::size_t>{naux, nocc, nvir});
+        for (std::size_t n = 0; n < squared.size(); ++n) {
+            squared.data()[n] = problem.fitted.data()[n] * problem.fitted.data()[n];
+        }
+        RuntimeTensor<double> integral("Kref", std::vector<std::size_t>{nocc, nvir, nocc, nvir});
+        integral.zero();
+        testing::reference_einsum("i,a,j,b <- Q,i,a ; Q,j,b", &integral, squared, squared);
+        for (std::size_t n = 0; n < integral.size(); ++n) {
+            reference += integral.data()[n] * problem.denominator.data()[n];
+        }
+    }
+
+    REQUIRE(naux * nocc * nvir * sizeof(double) > 400);
+    auto const tiling = decide(graph, 400);
+    REQUIRE(tiling->num_tiled() == 1);
+    auto const whole    = tiling->whole();
+    auto const streamed = tiling->streamed();
+    CHECK(std::ranges::find(streamed, std::string{"Bsq"}) != streamed.end());
+    CHECK(std::ranges::find(whole, std::string{"Bsq"}) == whole.end());
+    for (auto const *body : loop_bodies(graph)) {
+        CHECK(kinds_of(*body).count(cg::OpKind::ElementTransform) == 0);
+        CHECK(kinds_of(*body).count(cg::OpKind::Axpby) <= 1);
+    }
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    problem.energy.data()[0] = 0.0;
+    graph.execute();
+    CHECK_THAT(problem.energy.data()[0], Catch::Matchers::WithinRel(reference, 1e-12));
+}

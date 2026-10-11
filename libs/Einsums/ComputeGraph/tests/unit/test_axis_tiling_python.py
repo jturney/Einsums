@@ -488,17 +488,22 @@ def test_an_auxiliary_truncation_composes_with_the_tiling_on_one_program(water, 
     # The schedule, decided on the truncated program. The occupied pair is still the answer:
     # what the truncation moved is the length of a summed index, and a summed index was never a
     # candidate. The CAP has to move, and that is the composition's one visible cost: the
-    # truncation leaves a Y-by-Y coupling that carries no orbital index at all, so it is
-    # loop-invariant, it is formed whole outside the loop, and it is now the largest live
-    # intermediate. A cap tight enough to force per-pair streaming on the untruncated program
-    # does not clear it, and the pass says so rather than tiling around it.
+    # truncated factor x1[Y,i,a] is read by the integral's contraction, its writer can be sliced,
+    # so the loop streams it too, and one occupied index of it (Y by v, 5928 bytes) is more than
+    # a cap tight enough to force per-pair streaming on the untruncated program. The pass says
+    # so rather than tiling around it.
     assert _tiled(graph, _PAIR_CAP).num_tiled == 0
 
-    coupling = 39 * 39 * 8
+    nvir = water["nvir"]
     tiling = _tiled(graph, 13000)
     assert tiling.num_tiled == 1, _reason_fragments(tiling)
     assert tiling.axis_letters == ["i", "j"]
-    assert tiling.largest_after == coupling
+    # The truncated factor streams with the integral; the Y-by-Y coupling carries no orbital index,
+    # so it is formed whole outside the loop and read whole by it, and the largest thing the loop
+    # declares is a block of three pairs of the integral.
+    assert "NaturalAuxiliary_B_x1" in tiling.streamed
+    assert "NaturalAuxiliary_B_x0" in tiling.whole
+    assert tiling.largest_after == 3 * nvir * nvir * 8
 
     graph.apply(cg.default_pass_manager())
     graph.execute()
