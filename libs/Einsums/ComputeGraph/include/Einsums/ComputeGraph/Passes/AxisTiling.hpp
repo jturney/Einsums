@@ -112,6 +112,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -152,6 +154,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
                NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
     }
+
+    /// @copydoc OptimizerPass::recurse_into_subgraphs
+    ///
+    /// A loop body is where an iterative method keeps the work worth tiling: a coupled-cluster
+    /// residual lives in the body of its DIIS loop. A region never crosses out of the graph it was
+    /// found in, so the loop the rewrite emits nests inside the body, and a loop this pass emitted
+    /// is not visited again in the same apply.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// @copydoc OptimizerPass::tier
     ///
@@ -224,8 +234,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("iterations") [[nodiscard]] std::size_t iterations() const noexcept { return _iterations; }
 
-    /// @brief The largest single intermediate the region declared before the rewrite, in bytes.
-    /// @return The size, zero when no region was examined.
+    /// @brief The largest single intermediate any examined graph declared before the rewrite, in bytes.
+    /// @return The size over the graph and every loop body the pass visited, zero when none was examined.
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("largest_before") [[nodiscard]] std::size_t largest_before() const noexcept { return _largest_before; }
 
@@ -270,6 +280,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE APIARY_GETTER("accumulator") [[nodiscard]] std::string accumulator() const { return _accumulator; }
 
   private:
+    /// @brief Tile every region of one graph of the tree, without descending into its sub-graphs.
+    /// @param[in,out] graph The graph.
+    /// @return True when a region was replaced by a loop.
+    bool tile_graph(Graph &graph);
+
     /// @brief Tile the region around one seed, if any candidate axis set can.
     /// @param[in,out] graph The graph, rewritten when a region is tiled.
     /// @param[in]     seed  An intermediate over the cap that a sliceable statement writes.
@@ -296,6 +311,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::vector<std::int64_t> _block_extents;
     std::size_t               _loops{0};
     std::vector<std::string>  _regions;
+
+    /// For every graph this apply has visited, the graph that holds it and the position of the
+    /// node there that holds it, so a run on a loop body can resolve what its parent declared.
+    std::unordered_map<Graph const *, std::pair<Graph *, std::size_t>> _enclosing;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -409,6 +409,71 @@ bool labels_are_distinct(std::vector<int> const &labels) {
     return true;
 }
 
+/// Where each graph the pass has visited sits: the graph that holds it, and the position of the
+/// node there that holds it.
+using Enclosing = std::unordered_map<Graph const *, std::pair<Graph *, std::size_t>>;
+
+/// What one graph's place in the tree says about the tensors it names.
+///
+/// A loop body names a tensor its parent declared through a handle of its own, registered at
+/// capture with no ownership claim, so a parent's intermediate reaches the body with the flag
+/// clear and with none of the parent's other uses visible. The tensor's storage is the identity
+/// the two tables share, which is how both questions below walk out to the declaration.
+struct Scope {
+    Graph           &graph;
+    Enclosing const &enclosing;
+
+    /// Whether the tensor is a graph-owned intermediate, read off the declaration.
+    [[nodiscard]] bool intermediate(TensorId tid) const {
+        Graph const        *level  = &graph;
+        TensorHandle const *handle = graph.find_tensor(tid);
+        while (handle != nullptr && !handle->is_intermediate && handle->tensor_ptr != nullptr) {
+            auto const hit = enclosing.find(level);
+            if (hit == enclosing.end()) {
+                break;
+            }
+            Graph *outer = hit->second.first;
+            handle       = outer->find_tensor_by_ptr(handle->tensor_ptr);
+            level        = outer;
+        }
+        return handle != nullptr && handle->is_intermediate;
+    }
+
+    /// Whether a node outside this graph, in any graph that holds it, reads or writes the tensor.
+    [[nodiscard]] bool touched_beyond(TensorId tid) const {
+        Graph const        *level  = &graph;
+        TensorHandle const *handle = graph.find_tensor(tid);
+        while (handle != nullptr && handle->tensor_ptr != nullptr) {
+            auto const hit = enclosing.find(level);
+            if (hit == enclosing.end()) {
+                return false;
+            }
+            auto const [outer, owner] = hit->second;
+            TensorId const outer_tid  = outer->find_tensor_id_by_ptr(handle->tensor_ptr);
+            if (outer_tid == 0) {
+                return false;
+            }
+            TensorId const buffer = outer->buffer_of(outer_tid);
+            auto const    &nodes  = outer->nodes();
+            for (std::size_t j = 0; j < nodes.size(); ++j) {
+                if (j == owner) {
+                    continue;
+                }
+                auto const [reads, writes] = outer->effective_io(nodes[j]);
+                auto const names           = [&](std::vector<TensorId> const &ids) {
+                    return std::ranges::any_of(ids, [&](TensorId x) { return outer->buffer_of(x) == buffer; });
+                };
+                if (names(reads) || names(writes)) {
+                    return true;
+                }
+            }
+            handle = outer->find_tensor(outer_tid);
+            level  = outer;
+        }
+        return false;
+    }
+};
+
 /// The analysis over one region: a set of tileable nodes, in the parent's order, that need not be
 /// contiguous.
 class RegionAnalysis {
@@ -416,8 +481,8 @@ class RegionAnalysis {
     /// @param[in] members The region's nodes, by their position in the parent, ascending.
     /// @param[in] seed    The intermediate whose axes the candidates are taken from; zero takes the
     ///                    largest tensor the region writes.
-    RegionAnalysis(Graph const &graph, std::vector<std::size_t> members, TensorId seed = 0)
-        : _graph(graph), _members(std::move(members)), _seed(seed), _seed_given(seed != 0) {
+    RegionAnalysis(Graph const &graph, Scope const &scope, std::vector<std::size_t> members, TensorId seed = 0)
+        : _graph(graph), _scope(scope), _members(std::move(members)), _seed(seed), _seed_given(seed != 0) {
         for (std::size_t k = 0; k < _members.size(); ++k) {
             _ordinal.emplace(_members[k], k);
         }
@@ -493,6 +558,7 @@ class RegionAnalysis {
     [[nodiscard]] std::vector<SlotRef> const &slots_at(std::size_t index) const { return _slots[_ordinal.at(index)]; }
 
     Graph const                                 &_graph;
+    Scope const                                 &_scope;
     std::vector<std::size_t>                     _members;
     std::unordered_map<std::size_t, std::size_t> _ordinal;
 
@@ -967,7 +1033,7 @@ void RegionAnalysis::cost(Labelling const &labelling, std::vector<std::size_t> c
     largest = 0;
     for (auto const &[tid, labels] : labelling.store.tensor) {
         auto const *handle = _graph.find_tensor(tid);
-        if (handle == nullptr || !handle->is_intermediate) {
+        if (handle == nullptr || !_scope.intermediate(tid)) {
             continue;
         }
         largest = std::max(largest, static_cast<std::size_t>(sliced_bytes(tid, labels)));
@@ -1159,7 +1225,7 @@ void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::siz
     largest = 0;
     for (auto const &[tid, labels] : labelling.store.tensor) {
         auto const *handle = _graph.find_tensor(tid);
-        if (handle == nullptr || !handle->is_intermediate) {
+        if (handle == nullptr || !_scope.intermediate(tid)) {
             continue;
         }
         largest = std::max(largest, static_cast<std::size_t>(measure(tid, &labels).block));
@@ -1236,7 +1302,7 @@ bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &
         // A caller's tensor keeps its own buffer and is written through a slice of it, and so does
         // an intermediate something outside the region still reads or writes whole. Only an
         // intermediate the region alone touches is re-declared at slice extents.
-        if (!handle->is_intermediate || _touched_outside.contains(_graph.buffer_of(tid))) {
+        if (!_scope.intermediate(tid) || _touched_outside.contains(_graph.buffer_of(tid)) || _scope.touched_beyond(tid)) {
             continue;
         }
         plan.body_owned.emplace_back(tid, hit->second);
@@ -1916,6 +1982,7 @@ void AxisTiling::reset_stats() {
     _block_extents.clear();
     _loops = 0;
     _regions.clear();
+    _enclosing.clear();
 }
 
 std::vector<std::string> AxisTiling::explain() const {
@@ -1999,7 +2066,21 @@ std::optional<std::size_t> gather_site(std::vector<NodeIo> const &io, std::vecto
 } // namespace
 
 bool AxisTiling::run(Graph &graph) {
+    bool const moved = tile_graph(graph);
+
+    // The graphs this one holds: the manager runs this pass on each of them next, and that run
+    // walks out through this record to the declarations its tensors share with this graph.
+    auto const &nodes = graph.nodes();
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        for_each_child_graph(nodes[i], [&](auto const &sub) { _enclosing[&sub] = {&graph, i}; });
+    }
+    return moved;
+}
+
+bool AxisTiling::tile_graph(Graph &graph) {
     PassCounter const tiled{_num_tiled};
+
+    Scope const scope{.graph = graph, .enclosing = _enclosing};
 
     std::int64_t const cap = memory_cap();
     if (cap <= 0) {
@@ -2024,7 +2105,7 @@ bool AxisTiling::run(Graph &graph) {
             bool const sliceable = tileable_kind(node.kind) || registered_sliceable(node);
             for (TensorId const tid : node.outputs) {
                 auto const *handle = graph.find_tensor(tid);
-                if (handle == nullptr || !handle->is_intermediate || handle->is_tiled || handle->is_distributed) {
+                if (handle == nullptr || !scope.intermediate(tid) || handle->is_tiled || handle->is_distributed) {
                     continue;
                 }
                 std::size_t const bytes = handle->total_bytes();
@@ -2036,7 +2117,14 @@ bool AxisTiling::run(Graph &graph) {
             }
         }
         if (first) {
-            _largest_before = largest;
+            // A running maximum: the manager runs this pass once per graph of the tree, and the
+            // getters report over all of them.
+            _largest_before = std::max(_largest_before, largest);
+            if (largest == 0) {
+                // A graph that writes no intermediate, such as the parent of an iterative
+                // method's loop, has nothing here to decline.
+                return tiled.moved();
+            }
             if (largest <= limit) {
                 note_skip("the largest intermediate already fits the cap, so there is nothing to stream",
                           fmt::format("{} bytes against a cap of {}", largest, cap));
@@ -2075,7 +2163,8 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, std::int64_t cap) {
     if (seed_handle == nullptr) {
         return false;
     }
-    auto const limit = static_cast<std::size_t>(cap);
+    auto const  limit = static_cast<std::size_t>(cap);
+    Scope const scope{.graph = graph, .enclosing = _enclosing};
 
     // The statements that read or write a tensor, by the buffer underneath it.
     auto const touchers = [&](TensorId tid) {
@@ -2122,7 +2211,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, std::int64_t cap) {
                 barrier_label = fmt::format("; statement '{}'", nodes[*barrier].label);
                 break;
             }
-            analysis.emplace(graph, members, seed);
+            analysis.emplace(graph, scope, members, seed);
             if (!analysis->collect()) {
                 why = "a statement of the region names operands this pass cannot read as a dense, single-buffer slice";
                 break;
@@ -2144,7 +2233,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, std::int64_t cap) {
             std::set<std::size_t> grown(members.begin(), members.end());
             auto const            follow = [&](TensorId tid, std::vector<int> const &labels, bool written) {
                 auto const *handle = graph.find_tensor(tid);
-                if (handle == nullptr || !handle->is_intermediate || handle->total_bytes() <= limit ||
+                if (handle == nullptr || !scope.intermediate(tid) || handle->total_bytes() <= limit ||
                     std::ranges::all_of(labels, [](int v) { return v == kFree; })) {
                     return;
                 }

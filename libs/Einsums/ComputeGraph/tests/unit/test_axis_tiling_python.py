@@ -337,6 +337,47 @@ def test_blocks_of_pairs_with_a_remainder_replay_the_energy(water):
     assert energy == pytest.approx(water["reference"], abs=1e-9)
 
 
+def test_the_energy_inside_an_iterative_loop_is_tiled_where_it_lives(water):
+    """The full-axis energy captured in the body of a loop, its intermediates declared on the parent.
+
+    That is how an iterative method holds its work: the residual is the body of the DIIS loop and
+    the scratch belongs to the graph around it. The pass tiles the body, the loop it emits nests
+    inside, and every outer iteration reproduces the energy.
+    """
+    nvir = water["nvir"]
+    energy = einsums.create_zero_tensor("E_loop", [1])
+    graph = cg.Graph("mp2 in a loop")
+    denominator = _denominator(water)
+    shape = _shape(water)
+    B = water["fitted"]
+    K = graph.scratch("K", shape, "float64")
+    T = graph.scratch("T", shape, "float64")
+    exchange = graph.scratch("K_exchange", shape, "float64")
+    combination = graph.scratch("Kbar", shape, "float64")
+    body = graph.add_loop("iterate", 3, lambda it: it < 2)
+    with cg.capture(body):
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
+        la.direct_product(1.0, K, denominator, 0.0, T)
+        einsums.permute("iajb <- ibja", exchange, K)
+        la.axpby(2.0, K, 0.0, combination)
+        la.axpby(-1.0, exchange, 1.0, combination)
+        la.dot(energy, combination, T)
+
+    tiling = _tiled(graph, 4 * nvir * nvir * 8)
+    assert tiling.num_tiled == 1, _reason_fragments(tiling)
+    assert tiling.emission == "range"
+    assert tiling.axis_letters == ["i", "j"]
+    assert tiling.block_extents == [2, 2]
+    assert tiling.loops == 4
+    assert [n["kind"] for n in json.loads(graph.to_json())["nodes"]] == ["Loop"]
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    value = float(np.asarray(energy)[0])
+    assert value == pytest.approx(_pair_driven_energy(water), rel=1e-12, abs=1e-13)
+    assert value == pytest.approx(water["reference"], abs=1e-9)
+
+
 def test_the_rewritten_program_is_one_loop_and_the_zeroing_of_its_accumulation(water):
     """The node set, so the assertion is about what was emitted rather than that it ran.
 

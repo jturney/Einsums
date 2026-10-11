@@ -1206,3 +1206,112 @@ TEST_CASE("AxisTiling reads an input whole when its producer cannot join the loo
     graph.execute();
     CHECK_THAT(problem.energy.data()[0], Catch::Matchers::WithinRel(reference, 1e-12));
 }
+
+// ── Loop bodies ─────────────────────────────────────────────────────────────
+
+namespace {
+
+/// The loop body the capture made, and the integral the parent declared for it.
+template <typename T>
+struct InLoop {
+    cg::Graph        &body;
+    RuntimeTensor<T> &integral;
+};
+
+/// The MP2 program captured into the body of a loop of @p iterations, its intermediates declared
+/// on the PARENT, which is how an iterative method declares its scratch: the body names each of
+/// them through a handle of its own.
+template <typename T>
+InLoop<T> capture_mp2_in_loop(cg::Graph &graph, Mp2<T> &p, std::size_t iterations) {
+    std::vector<std::size_t> const shape{p.o, p.v, p.o, p.v};
+    auto                          &integral    = graph.scratch_runtime<T>("K", shape);
+    auto                          &amplitude   = graph.scratch_runtime<T>("T", shape);
+    auto                          &again       = graph.scratch_runtime<T>("K_again", shape);
+    auto                          &exchange    = graph.scratch_runtime<T>("K_exchange", shape);
+    auto                          &combination = graph.scratch_runtime<T>("Kbar", shape);
+    auto                  &body = graph.add_loop("iterate", iterations, [iterations](std::size_t it) { return it + 1 < iterations; });
+    cg::CaptureGuard const guard(body);
+    cg::einsum("Q,i,a ; Q,j,b -> i,a,j,b", &integral, p.fitted, p.fitted);
+    cg::direct_product(T{1}, integral, p.denominator, T{0}, &amplitude);
+    cg::einsum("Q,i,a ; Q,j,b -> i,a,j,b", &again, p.fitted, p.fitted);
+    cg::permute("i,a,j,b <- i,b,j,a", &exchange, again);
+    cg::axpby(T{2}, again, T{0}, &combination);
+    cg::axpby(T{-1}, exchange, T{1}, &combination);
+    cg::dot_python(&p.energy, combination, amplitude);
+    return {.body = body, .integral = integral};
+}
+
+} // namespace
+
+TEMPLATE_TEST_CASE("AxisTiling tiles a region inside a loop body, over intermediates the parent declared",
+                   "[ComputeGraph][Pass][AxisTiling]", float, double, std::complex<double>) {
+    // The body names the parent's intermediates through handles of its own, registered with no
+    // ownership claim, so read off the body alone they are not intermediates at all. The pass
+    // reads intermediacy off the declaration, so the body is tiled as the top level would be,
+    // and the loop it emits nests inside the body and runs once per outer iteration.
+    using T = TestType;
+    Mp2<T>      p(5, 6, 7);
+    cg::Graph   graph("mp2 in a loop");
+    auto const &body = capture_mp2_in_loop(graph, p, 3).body;
+
+    auto const tiling = decide(graph, p.pairs(4));
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->emission() == "range");
+    CHECK(tiling->block_extents() == std::vector<std::int64_t>{2, 2});
+
+    // The parent still holds one loop, and that loop's body now holds the four loops the blocks
+    // and their remainders need, each declaring its block rather than the whole integral.
+    REQUIRE(graph.num_nodes() == 1);
+    auto const inner = loop_bodies(body);
+    REQUIRE(inner.size() == 4);
+    CHECK(body_dims(*inner[0], "K#0") == std::vector<std::size_t>{2, p.v, 2, p.v});
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    auto const expected = mp2_reference(p);
+    T const    energy   = replay_mp2(graph, p);
+    INFO("tiled " << energy << ", reference " << expected.value);
+    // Every outer iteration recomputes the same energy, so the last one is checked; a nested
+    // sweep that continued from where the previous iteration left it would not reproduce it.
+    CHECK(std::abs(energy - expected.value) <= sum_tolerance<T>() * expected.magnitude);
+    CHECK(replay_mp2(graph, p) == energy);
+}
+
+TEST_CASE("AxisTiling keeps whole a body's intermediate that the parent reads after the loop", "[ComputeGraph][Pass][AxisTiling]") {
+    // The integral is formed in the body and read again by the parent once the loop is done, so
+    // the region inside cannot re-declare it a block at a time: the loop writes blocks of the
+    // parent's buffer instead, and the parent's reduction reads every element.
+    Mp2<double>           p(4, 6, 7);
+    RuntimeTensor<double> after("E_after", std::vector<std::size_t>{1});
+    cg::Graph             graph("mp2 read after the loop");
+    auto const            captured = capture_mp2_in_loop(graph, p, 2);
+    auto const           &body     = captured.body;
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::dot_python(&after, captured.integral, p.denominator);
+    }
+
+    auto const tiling = decide(graph, p.pairs(4));
+    REQUIRE(tiling->num_tiled() == 1);
+    auto const inner = loop_bodies(body);
+    REQUIRE(!inner.empty());
+    for (auto const *nested : inner) {
+        CHECK(body_dims(*nested, "K#0").empty());
+    }
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    p.energy.data()[0] = 0.0;
+    graph.execute();
+
+    RuntimeTensor<double> integral("Kref", std::vector<std::size_t>{p.o, p.v, p.o, p.v});
+    integral.zero();
+    testing::reference_einsum("i,a,j,b <- Q,i,a ; Q,j,b", &integral, p.fitted, p.fitted);
+    double want = 0.0;
+    for (std::size_t n = 0; n < integral.size(); ++n) {
+        want += integral.data()[n] * p.denominator.data()[n];
+    }
+    CHECK_THAT(after.data()[0], Catch::Matchers::WithinRel(want, 1e-12));
+    auto const expected = mp2_reference(p);
+    CHECK(std::abs(p.energy.data()[0] - expected.value) <= sum_tolerance<double>() * expected.magnitude);
+}
