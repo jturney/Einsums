@@ -33,6 +33,7 @@ function(_einsums_snake_to_camel out_var snake)
 endfunction()
 
 set(HardwareTests
+    Profile.cpp
     SimdWidth.cpp
     test_cpu_info_python.py
     test_thread_control_python.py

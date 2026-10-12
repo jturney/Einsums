@@ -659,21 +659,35 @@
 "einsums:hardware:profile":
   added: "2.0.0"
   body: |
-    Build the cost model from a calibrated hardware profile instead of the built-in device table.
+    Use this hardware profile instead of searching for one.
 
-    The passes that must choose between alternatives - ``ContractionPlanning``'s chain ordering,
-    ``GEMMBatching``'s profitability gate, ``GPUPlacement`` - price their candidates against a
-    ``CostModel``. Left unset, that model comes from a table of measured devices matched against this
-    machine's brand string, which is a generic answer for a machine the table names and a guess for one
-    it does not. Point this at the JSON the ``calibrate_hardware`` tool writes and the measured GEMM
-    efficiency curve and bandwidths are used instead.
+    A hardware profile is one JSON file holding everything ``einsums-tune`` measured on a machine:
+    the GEMM efficiency curve and bandwidths the cost model prices its candidates against
+    (``ContractionPlanning``'s chain ordering, ``GEMMBatching``'s profitability gate,
+    ``GPUPlacement``), and the cost of an OpenMP parallel region at each team size, which sets when
+    kernels go parallel. Left empty, the default, einsums looks for this machine's profile under
+    :option:`--einsums:cache-dir` and then under :option:`--einsums:hardware:site-profiles`, by a
+    fingerprint of the hardware, and uses the first that applies. Without one, the cost model comes
+    from a table of known devices and the region cost is measured in each process.
 
-    A path that will not load is a warning (shown at :option:`--einsums:log:level` 3 or lower) and a
-    fall back to the built-in table, never an error: the
-    profile shapes which optimization is chosen, never whether the answer is right.
+    A file applies when it describes this machine, the BLAS in use, and an Einsums version that
+    differs from this one at most in the patch number. A named file is used even when another
+    machine measured it, with a warning, since naming a file says you mean it; another Einsums
+    minor version or BLAS still makes it stale. A file that does not apply, or will not load, is
+    reported at :option:`--einsums:log:level` 3 or lower and never an error: the profile shapes
+    which optimization is chosen, never whether the answer is right.
 
-    Read once per cost model, while a pass manager is being populated, so it is settled well before
-    any graph executes.
+    Sharing a profile between machines of the same kind is copying this file.
+
+"einsums:hardware:site-profiles":
+  added: "2.0.0"
+  body: |
+    A directory of hardware profiles searched after the user's own cache directory. Empty, the
+    default, is the installation's ``share/einsums/profiles``.
+
+    An administrator runs ``einsums-tune --output`` once per kind of node and installs the files
+    here, and every user without a profile of their own gets the measured numbers. Files are named
+    by the machine's fingerprint, so one directory serves a cluster with several kinds of node.
 
 "einsums:hardware:l1-cache-size":
   added: "2.0.0"
@@ -704,27 +718,15 @@
     the platform's cache location: an ``einsums`` directory under ``%LOCALAPPDATA%`` on Windows, and
     under ``$XDG_CACHE_HOME`` or ``~/.cache`` elsewhere.
 
-    Today that is only the default calibration file, see
-    :option:`--einsums:hardware:calibration`. Point this somewhere disposable to keep a test or a CI
-    job from reading the machine's own calibration.
-
-"einsums:hardware:calibration":
-  added: "2.0.0"
-  body: |
-    The calibration file the cost of an OpenMP parallel region is read from. Empty, the default,
-    uses a file under :option:`--einsums:cache-dir` named for this host, so a shared home directory
-    cannot hand one machine's numbers to another.
-
-    Measured in each process, that cost drifts by tens of percent with whatever else the machine is
-    doing. A calibration makes it the same number in every run. Only the ``calibrate_hardware`` tool
-    writes the file, and einsums never does. A missing or unreadable file means the cost is measured
-    as if there were none.
+    Today that is this machine's hardware profile, in ``profiles/<fingerprint>.json``, see
+    :option:`--einsums:hardware:profile`. Point this somewhere disposable to keep a test or a CI job
+    from reading the machine's own profile.
 
 "einsums:hardware:omp-region-cost-ns":
   added: "2.0.0"
   body: |
     Pin the cost of entering an OpenMP parallel region, in nanoseconds. Negative, the default, takes
-    the calibrated value when there is one and measures otherwise.
+    the hardware profile's value when there is one and measures otherwise.
 
     The thresholds that decide whether a loop or a contraction is worth a team are derived from
     this cost. A pin holds them fixed across machines and runs without touching any file.

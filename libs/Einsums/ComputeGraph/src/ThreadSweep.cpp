@@ -7,7 +7,7 @@
 /// @brief The threading half of the hardware calibration: `e(w)` per kernel
 ///        family per size class.
 ///
-/// Lives in the library rather than in the `calibrate_hardware` tool so that
+/// Lives in the library rather than in the `einsums-tune` tool so that
 /// the tool and the tests run the same sweep. The tool runs it with the default
 /// caps; a test runs it with tiny ones to check the mechanics without spending
 /// the seconds.

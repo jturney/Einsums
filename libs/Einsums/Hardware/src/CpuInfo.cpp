@@ -6,6 +6,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Hardware/Options.hpp>
+#include <Einsums/Hardware/Profile.hpp>
 
 #include <Stripes/RuntimeFeatures.hpp>
 #include <algorithm>
@@ -44,25 +45,12 @@
 
 EINSUMS_NAMESPACE_BEGIN(hardware)
 
-namespace {
+namespace detail {
 
 /// Detect CPU cache sizes in bytes, keeping CacheSizes' conservative defaults
 /// for any level detection cannot read.
-CacheSizes detect_cache_sizes() {
+CacheSizes detected_cache_sizes() {
     CacheSizes cs;
-
-    // Diagnostic override for same-binary A/B runs. A level left at zero keeps the detected value.
-    auto const apply_override = [&cs]() {
-        if (auto const l1 = config::get(option::HardwareL1CacheSize); l1 > 0) {
-            cs.l1 = l1;
-        }
-        if (auto const l2 = config::get(option::HardwareL2CacheSize); l2 > 0) {
-            cs.l2 = l2;
-        }
-        if (auto const l3 = config::get(option::HardwareL3CacheSize); l3 > 0) {
-            cs.l3 = l3;
-        }
-    };
 
 #if defined(__APPLE__)
     auto sysctl_i64 = [](char const *name, int64_t fallback) -> int64_t {
@@ -139,7 +127,6 @@ CacheSizes detect_cache_sizes() {
     }
 #endif
 
-    apply_override();
     return cs;
 }
 
@@ -197,82 +184,49 @@ std::filesystem::path cache_directory() {
     return {};
 }
 
-/// This machine's name, reduced to something safe in a filename.
-std::string host_tag() {
-    char raw[256] = {};
-#if defined(_WIN32)
-    DWORD size = sizeof(raw);
-    if (GetComputerNameA(raw, &size) == 0) {
-        return "unknown";
+} // namespace detail
+
+namespace {
+
+/// Detected cache sizes with the diagnostic override applied: a level pinned for a same-binary
+/// A/B run replaces the detected one, and a level left at zero keeps it.
+CacheSizes detect_cache_sizes() {
+    CacheSizes cs = detail::detected_cache_sizes();
+    if (auto const l1 = config::get(option::HardwareL1CacheSize); l1 > 0) {
+        cs.l1 = l1;
     }
-#else
-    if (gethostname(raw, sizeof(raw) - 1) != 0) {
-        return "unknown";
+    if (auto const l2 = config::get(option::HardwareL2CacheSize); l2 > 0) {
+        cs.l2 = l2;
     }
-#endif
-    std::string tag(raw);
-    if (tag.empty()) {
-        return "unknown";
+    if (auto const l3 = config::get(option::HardwareL3CacheSize); l3 > 0) {
+        cs.l3 = l3;
     }
-    for (char &c : tag) {
-        if (std::isalnum(static_cast<unsigned char>(c)) == 0) {
-            c = '_';
-        }
-    }
-    return tag;
+    return cs;
 }
 
-/// The calibration file: option::HardwareCalibration, else one under the cache directory keyed by
-/// host, so a shared home directory cannot mix machines.
-std::filesystem::path calibration_file() {
-    if (auto const file = config::get(option::HardwareCalibration); !file.empty()) {
-        return std::filesystem::path(file);
-    }
-    std::filesystem::path const dir = cache_directory();
-    if (dir.empty()) {
-        return {};
-    }
-    return dir / ("hardware-calibration-v1-" + host_tag() + ".txt");
-}
-
-/// One ``omp_region_cost_ns <threads> <value>`` entry, if the file has one. Plain lines, not JSON:
-/// no parser is available at this level, and people read and diff the file.
-std::optional<double> read_calibrated_region_cost(std::filesystem::path const &path, int threads) {
-    if (path.empty()) {
+/// The profile's entry for @p threads, if it has a usable one.
+std::optional<double> profiled_region_cost(int threads) {
+    auto const section = profile_section("omp_region_cost_ns");
+    if (!section || !section->is_object()) {
         return std::nullopt;
     }
-    std::ifstream in(path);
-    if (!in) {
+    auto const *entry = section->as_object().peek(std::to_string(threads));
+    if (entry == nullptr || !entry->is_number()) {
         return std::nullopt;
     }
-    std::string line;
-    while (std::getline(in, line)) {
-        if (line.empty() || line[0] == '#') {
-            continue;
-        }
-        std::istringstream fields(line);
-        std::string        key;
-        int                entry_threads = 0;
-        double             value         = 0.0;
-        if (!(fields >> key >> entry_threads >> value)) {
-            continue;
-        }
-        if (key != "omp_region_cost_ns" || entry_threads != threads) {
-            continue;
-        }
-        // A negative, infinite or absurd number means a truncated or hand-edited
-        // file. Measuring again is always safe, so never trust one through.
-        if (!(value >= 0.0) || value > 1e9) {
-            return std::nullopt;
-        }
-        return value;
+    double const value = entry->as_double();
+    // A negative or absurd number means a hand-edited file. Measuring again is always safe, so
+    // never trust one through.
+    if (!(value >= 0.0) || value > 1e9) {
+        return std::nullopt;
     }
-    return std::nullopt;
+    return value;
 }
 
-/// The region cost: pinned, else calibrated, else measured now. A per-process measurement drifts
-/// by tens of percent, which is fine for a threshold but not for ranking options against it. The
-/// library never caches its own measurement: one taken on a busy machine looks like a slow machine.
+/// The region cost: pinned, else from the hardware profile, else measured now. A per-process
+/// measurement drifts by tens of percent, which is fine for a threshold but not for ranking options
+/// against it. The library never keeps its own measurement: one taken on a busy machine looks like
+/// a slow machine.
 struct ResolvedRegionCost {
     double value{0.0};
     bool   calibrated{false};
@@ -296,10 +250,10 @@ ResolvedRegionCost resolve_omp_region_cost_ns() {
         return {0.0, true};
     }
 
-    if (auto const calibrated = read_calibrated_region_cost(calibration_file(), threads)) {
-        return {*calibrated, true};
+    if (auto const profiled = profiled_region_cost(threads)) {
+        return {*profiled, true};
     }
-    return {measure_omp_region_cost_ns(), false};
+    return {detail::measure_omp_region_cost_ns(), false};
 }
 
 /// SIMD width in doubles implied by the compile-time ISA of this translation
@@ -336,81 +290,6 @@ CpuInfo const &cpu_info() {
         return i;
     }();
     return info;
-}
-
-std::string default_calibration_path() {
-    return calibration_file().string();
-}
-
-bool write_calibration(std::string const &path, std::string *error) {
-    std::filesystem::path const target = path.empty() ? calibration_file() : std::filesystem::path(path);
-    if (target.empty()) {
-        if (error != nullptr) {
-            *error = "no calibration path given and no usable cache directory";
-        }
-        return false;
-    }
-
-#ifdef _OPENMP
-    int const max_threads = omp_get_max_threads();
-#else
-    int const max_threads = 1;
-#endif
-
-    // Every team size, since the cost depends on the team. A few milliseconds each.
-    std::string body;
-    body += "# einsums hardware calibration, format 1\n";
-    body += "# host " + host_tag() + "\n";
-    body += "# Regenerate with calibrate_hardware. Delete to fall back to measuring\n";
-    body += "# per process. Read by einsums::hardware::omp_region_cost_ns().\n";
-    for (int t = 1; t <= max_threads; ++t) {
-#ifdef _OPENMP
-        omp_set_num_threads(t);
-#endif
-        double const value = measure_omp_region_cost_ns();
-        body += "omp_region_cost_ns " + std::to_string(t) + " " + std::to_string(value) + "\n";
-    }
-#ifdef _OPENMP
-    omp_set_num_threads(max_threads);
-#endif
-
-    std::error_code ec;
-    if (target.has_parent_path()) {
-        std::filesystem::create_directories(target.parent_path(), ec);
-        if (ec) {
-            if (error != nullptr) {
-                *error = "could not create " + target.parent_path().string() + ": " + ec.message();
-            }
-            return false;
-        }
-    }
-    // Temporary then rename, so a concurrent reader never sees half a file.
-    std::filesystem::path const tmp = target.string() + ".tmp";
-    {
-        std::ofstream out(tmp, std::ios::trunc);
-        if (!out) {
-            if (error != nullptr) {
-                *error = "could not open " + tmp.string() + " for writing";
-            }
-            return false;
-        }
-        out << body;
-        if (!out) {
-            if (error != nullptr) {
-                *error = "could not write " + tmp.string();
-            }
-            return false;
-        }
-    }
-    std::filesystem::rename(tmp, target, ec);
-    if (ec) {
-        std::filesystem::remove(tmp, ec);
-        if (error != nullptr) {
-            *error = "could not rename into " + target.string();
-        }
-        return false;
-    }
-    return true;
 }
 
 namespace {

@@ -838,9 +838,10 @@ See :ref:`Distributed computing <computegraph_distributed>` for full details.
 Hardware-Aware Optimization
 ============================
 
-The ``ContractionPlanning`` pass uses a ``CostModel`` database to make
-architecture-specific decisions. The database includes 25+ pre-filled profiles
-for common CPUs and GPUs, auto-detected at runtime:
+The ``ContractionPlanning`` pass uses a ``CostModel`` to make
+architecture-specific decisions. Without a measured profile it comes from a
+database of 25+ pre-filled profiles for common CPUs and GPUs, auto-detected at
+runtime:
 
 .. code-block:: cpp
 
@@ -848,17 +849,12 @@ for common CPUs and GPUs, auto-detected at runtime:
     auto profile = CostModel::detect_default();
     // → "Apple M4 Pro" on your machine
 
-    // Or provide calibrated data (returns expected<CostModel, GraphError>):
-    auto calibrated = CostModel::load_json("calibrated.json");
-    if (calibrated) {
-        profile = *calibrated;
-    }
-
-Run the calibration tool for precise measurements:
+Measure the machine once for precise numbers. Every later program on it finds
+the profile ``einsums-tune`` writes, with no flag:
 
 .. code-block:: bash
 
-    ./calibrate_hardware --output calibrated.json
+    einsums-tune
 
 See :ref:`Hardware profiles <computegraph_hardware_profiles>` for full details.
 

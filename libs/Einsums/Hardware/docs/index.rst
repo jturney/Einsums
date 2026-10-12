@@ -70,15 +70,38 @@ together. Only ``compiled_simd_width_f64`` comes from the compile-time ISA
 macros. For the runtime feature ladder and its psABI rungs, see
 :ref:`SIMD <modules_Einsums_SIMD>`.
 
+The hardware profile
+====================
+
+Everything ``einsums-tune`` measures on a machine is one JSON file, the
+hardware profile. Its header says what it describes: the machine (CPU, core
+counts, caches, memory rounded to the GiB, and SIMD rung, hashed into a
+16-digit fingerprint), the software (the Einsums version and the BLAS library
+that provides ``dgemm``, found from that function's address so that a BLAS
+swapped behind a conda environment is noticed) and when it was measured. Each
+remaining section belongs to the module that reads it: the OpenMP region cost
+to this one, the cost model to ComputeGraph's
+:ref:`hardware profiles <computegraph_hardware_profiles>`.
+
+:cpp:func:`~einsums::hardware::profile_status` decides which file is in effect,
+on first use. A file named by :option:`--einsums:hardware:profile` is used as
+given; otherwise ``profiles/<fingerprint>.json`` under
+:option:`--einsums:cache-dir`, then the same name under
+:option:`--einsums:hardware:site-profiles`. A file applies when it describes
+this machine, this BLAS, and an Einsums version that differs at most in the
+patch number; one that does not is skipped, and the first reason is kept so
+:cpp:func:`~einsums::hardware::profile_reason` can say why a tune had no
+effect. The file is read strictly, like the graph IR: an unknown section or
+key, or a fingerprint that disagrees with the machine it describes, makes it
+invalid rather than half read. Nothing in the library writes a profile.
+
 The cost of a parallel region
 =============================
 
 :cpp:func:`~einsums::hardware::omp_region_cost_ns` is resolved, not assumed.
 A value pinned with :option:`--einsums:hardware:omp-region-cost-ns` wins.
-Otherwise the entry for the current team size is read from a calibration file
-(:option:`--einsums:hardware:calibration`, or by default a host-keyed
-``hardware-calibration-v1-<host>.txt`` in the cache directory, written by the
-``calibrate_hardware`` tool). Failing that, it is measured in process: an empty
+Otherwise the entry for the current team size is read from the hardware profile
+(see below). Failing that, it is measured in process: an empty
 ``#pragma omp parallel`` at ``omp_get_max_threads()``, timed after the team is
 warmed so it captures steady-state fork/join rather than one-off thread
 creation, best of five trials. An in-process measurement drifts by tens of
@@ -161,8 +184,8 @@ hardware would give another.
   :option:`--einsums:hardware:l2-cache-size` and
   :option:`--einsums:hardware:l3-cache-size` replace the detected cache sizes.
 - :option:`--einsums:hardware:omp-region-cost-ns` pins
-  :cpp:func:`~einsums::hardware::omp_region_cost_ns`, ahead of any calibration
-  file.
+  :cpp:func:`~einsums::hardware::omp_region_cost_ns`, ahead of the hardware
+  profile.
 - :option:`--einsums:hardware:omp-min-parallel-elements` pins
   :cpp:func:`~einsums::hardware::omp_min_parallel_elements`. Zero restores
   "always parallelize".
@@ -193,8 +216,11 @@ API Reference
 - :cpp:struct:`~einsums::hardware::CpuInfo` - the detected facts: SIMD width, cache sizes, OpenMP region cost.
 - :cpp:struct:`~einsums::hardware::CacheSizes` - L1/L2/L3 data-cache sizes in bytes.
 - :cpp:func:`~einsums::hardware::cpu_info` - the cached singleton; detection happens on first call.
-- :cpp:func:`~einsums::hardware::omp_region_cost_ns` - cost of entering and leaving a parallel region at the current team size (pinned, calibrated, or measured).
-- :cpp:func:`~einsums::hardware::region_cost_is_calibrated` - whether that cost came from a pin or calibration rather than an in-process measurement.
+- :cpp:func:`~einsums::hardware::omp_region_cost_ns` - cost of entering and leaving a parallel region at the current team size (pinned, from the hardware profile, or measured).
+- :cpp:func:`~einsums::hardware::region_cost_is_calibrated` - whether that cost came from a pin or the hardware profile rather than an in-process measurement.
+- :cpp:func:`~einsums::hardware::profile_status` - which hardware profile is in effect, and why one is not; :cpp:func:`~einsums::hardware::profile_state`, :cpp:func:`~einsums::hardware::profile_path` and :cpp:func:`~einsums::hardware::profile_reason` are its parts, for Python.
+- :cpp:func:`~einsums::hardware::machine_identity` and :cpp:func:`~einsums::hardware::machine_fingerprint` - the machine a profile names, and the name it is filed under.
+- :cpp:func:`~einsums::hardware::default_profile_path` and :cpp:func:`~einsums::hardware::profile_search_path` - where a profile is written, and every place one is looked for.
 - :cpp:func:`~einsums::hardware::omp_min_parallel_elements` - elementwise parallelization break-even.
 - :cpp:func:`~einsums::hardware::omp_min_parallel_flops` - contraction parallelization break-even.
 

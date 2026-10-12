@@ -35,17 +35,13 @@ function(einsums_setup_target target)
     string(TOUPPER "${target_TYPE}" _type)
   else()
     einsums_get_target_property(type_prop ${target} TYPE)
-    if(type_prop STREQUAL "STATIC_LIBRARY")
+    if(type_prop STREQUAL "STATIC_LIBRARY"
+       OR type_prop STREQUAL "MODULE_LIBRARY"
+       OR type_prop STREQUAL "SHARED_LIBRARY"
+    )
       set(_type "LIBRARY")
-      if(type_prop STREQUAL "MODULE_LIBRARY")
-        set(_type "LIBRARY")
-      endif()
-      if(type_prop STREQUAL "SHARED_LIBRARY")
-        set(_type "LIBRARY")
-      endif()
-      if(type_prop STREQUAL "EXECUTABLE")
-        set(_type "EXECUTABLE")
-      endif()
+    elseif(type_prop STREQUAL "EXECUTABLE")
+      set(_type "EXECUTABLE")
     endif()
   endif()
 
@@ -141,10 +137,33 @@ function(einsums_setup_target target)
     set(install_export EXPORT einsums_targets)
   endif()
 
-  # set_target_properties(${target} PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE )
+  # An installed target finds the library directory relative to where it is installed itself. A
+  # bare library directory would be resolved against the user's working directory instead, which
+  # works only by accident, when the prefix's lib is also on the path for another reason.
+  if("${_type}" STREQUAL "EXECUTABLE")
+    set(_install_dir "${CMAKE_INSTALL_BINDIR}")
+  else()
+    set(_install_dir "${CMAKE_INSTALL_LIBDIR}")
+  endif()
+  list(FIND target_INSTALL_FLAGS DESTINATION _destination_at)
+  if(_destination_at GREATER -1)
+    math(EXPR _destination_at "${_destination_at} + 1")
+    list(GET target_INSTALL_FLAGS ${_destination_at} _install_dir)
+  endif()
+  file(RELATIVE_PATH _to_libdir "/${_install_dir}" "/${CMAKE_INSTALL_LIBDIR}")
+  if(APPLE)
+    set(_origin "@loader_path")
+  else()
+    set(_origin "\$ORIGIN")
+  endif()
+  if(_to_libdir STREQUAL "")
+    set(_libdir_rpath "${_origin}")
+  else()
+    set(_libdir_rpath "${_origin}/${_to_libdir}")
+  endif()
+
   set_target_properties(
-    ${target} PROPERTIES BUILD_RPATH "${CMAKE_BUILD_RPATH}"
-                         INSTALL_RPATH "${CMAKE_INSTALL_RPATH};${CMAKE_INSTALL_LIBDIR}"
+    ${target} PROPERTIES BUILD_RPATH "${CMAKE_BUILD_RPATH}" INSTALL_RPATH "${CMAKE_INSTALL_RPATH};${_libdir_rpath}"
   )
 
   # Code coverage

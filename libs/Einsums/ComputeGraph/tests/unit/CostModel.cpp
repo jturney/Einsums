@@ -9,6 +9,8 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/GPU/Runtime.hpp>
+#include <Einsums/Hardware/Options.hpp>
+#include <Einsums/Hardware/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -1147,11 +1149,12 @@ TEST_CASE("gpu::device_name returns string", "[ComputeGraph][GPU]") {
     CHECK(name.size() >= 0); // Always true, but exercises the function
 }
 
-TEST_CASE("CostModel - einsums:hardware:profile overrides the built-in table", "[ComputeGraph][CostModel]") {
-    // Write a minimal calibrated cost_model, point the option at it, and
-    // detect_default() must load it instead of the database. A bogus path
-    // must fall back to the table instead of failing (the cost_model shapes
-    // optimization choices, never correctness).
+TEST_CASE("CostModel - the hardware profile's cost model overrides the built-in table", "[ComputeGraph][CostModel]") {
+    // Write a profile for this machine whose cost_model section is a calibrated
+    // model, name it with the option, and detect_default() must use it instead
+    // of the database. A profile that does not apply, here one from another
+    // Einsums minor version, must fall back to the table instead of failing:
+    // the model shapes optimization choices, never correctness.
     //
     // The option is process-global and every other case here calls
     // detect_default(), so whatever it held has to come back even if a check
@@ -1161,24 +1164,45 @@ TEST_CASE("CostModel - einsums:hardware:profile overrides the built-in table", "
         ~Restore() { config::set(option::HardwareProfile, previous); }
     } const restore{config::get(option::HardwareProfile)};
 
-    auto cost_model     = cg::CostModel::detect_default();
+    auto cost_model     = cg::CostModel::built_in();
     cost_model.source   = "calibrated";
-    cost_model.cpu.name = "EnvOverrideTest CPU";
+    cost_model.cpu.name = "ProfileOverrideTest CPU";
 
-    std::string const path = (std::filesystem::temp_directory_path() / "einsums_hw_env_test.json").string();
-    REQUIRE(cost_model.save_json(path));
+    auto const write = [&](std::string const &name, std::string const &version) {
+        json::Object profile = hardware::profile_header();
+        if (!version.empty()) {
+            json::Object software;
+            software.set("einsums", version);
+            software.set("blas", hardware::software_identity().blas);
+            json::Object replaced;
+            for (auto const &key : profile.keys()) {
+                replaced.set(key, key == "software" ? json::Value{software} : *profile.peek(key));
+            }
+            profile = std::move(replaced);
+        }
+        profile.set("cost_model", cost_model.to_json());
+        std::string const path = (std::filesystem::temp_directory_path() / name).string();
+        std::string       error;
+        REQUIRE(hardware::write_profile(path, json::Value{std::move(profile)}, error));
+        return path;
+    };
 
-    config::set(option::HardwareProfile, path);
+    std::string const current = write("einsums_profile_cost_model_test.json", "");
+    config::set(option::HardwareProfile, current);
     auto loaded = cg::CostModel::detect_default();
-
+    CHECK(hardware::profile_state() == "loaded");
     CHECK(loaded.source == "calibrated");
-    CHECK(loaded.cpu.name == "EnvOverrideTest CPU");
+    CHECK(loaded.cpu.name == "ProfileOverrideTest CPU");
 
-    config::set(option::HardwareProfile, std::string{"/nonexistent/einsums_hw.json"});
+    auto const       &software = hardware::software_identity();
+    std::string const stale    = write("einsums_profile_cost_model_stale.json", fmt::format("{}.{}.0", software.major, software.minor + 1));
+    config::set(option::HardwareProfile, stale);
     auto fallback = cg::CostModel::detect_default();
-
+    CHECK(hardware::profile_state() == "stale");
     CHECK(fallback.source == "database");
-    std::remove(path.c_str());
+
+    std::remove(current.c_str());
+    std::remove(stale.c_str());
 }
 
 TEST_CASE("ContractionPlanning - user-visible interior blocks restructuring", "[ComputeGraph][Passes]") {

@@ -105,7 +105,7 @@ def penalty_source():
     Worth reporting rather than assuming: an in-process measurement is taken
     under whatever the machine is doing at that moment and drifts by tens of
     percent, so a bucket count derived from one is reproducible only by luck.
-    Run ``calibrate_hardware`` once and it stops being luck.
+    Run ``einsums-tune`` once and it stops being luck.
     """
     return "calibrated" if _hardware.region_cost_is_calibrated() else "measured in-process"
 

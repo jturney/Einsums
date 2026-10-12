@@ -31,6 +31,7 @@ set(BLASVendorSources
     getri.cpp
     getrf.cpp
     heev.cpp
+    Identity.cpp
     lacgv.cpp
     lange.cpp
     lassq.cpp
@@ -68,7 +69,7 @@ einsums_add_module(
   Einsums BLASVendor
   SOURCES ${BLASVendorSources}
   HEADERS ${BLASVendorHeaders}
-  DEPENDENCIES tgt::lapack
+  DEPENDENCIES tgt::lapack ${CMAKE_DL_LIBS}
         MODULE_DEPENDENCIES Einsums_Assertion Einsums_Config Einsums_Print Einsums_Profile
                             Einsums_BLASBase Einsums_HPTT Einsums_Errors Einsums_Logging Einsums_BufferAllocator
                             Einsums_Hardware

@@ -14,7 +14,8 @@ int register_Einsums_Hardware_options() {
     cl::register_option(option::HardwareL2CacheSize);
     cl::register_option(option::HardwareL3CacheSize);
     cl::register_option(option::CacheDir);
-    cl::register_option(option::HardwareCalibration);
+    cl::register_option(option::HardwareProfile);
+    cl::register_option(option::HardwareSiteProfiles);
     cl::register_option(option::HardwareOmpRegionCostNs);
     cl::register_option(option::HardwareOmpMinParallelElements);
     cl::register_option(option::HardwareOmpMinParallelFlops);

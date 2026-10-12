@@ -12,6 +12,7 @@
 #include <Einsums/ComputeGraph/Node.hpp> // Target enum
 #include <Einsums/ComputeGraphTypes/EnumNames.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Json/Json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -321,7 +322,7 @@ struct DeviceProfile {
      * where HPTT's threading beats the single-threaded copy benchmark that
      * mem_bandwidth_gbps comes from. The constants below track the small end,
      * which is where a cost model actually has to make a call, and so they
-     * over-price a large permute. @c calibrate_hardware replaces them with
+     * over-price a large permute. @c einsums-tune replaces them with
      * measured points.
      */
     [[nodiscard]] static double default_permute_efficiency(size_t rank) {
@@ -716,8 +717,19 @@ struct EINSUMS_EXPORT CostModel {
 
     // ── Factory methods ────────────────────────────────────────────────────
 
-    /// Auto-detect hardware and load profile from shipped database.
+    /// This machine's hardware profile when one applies, else @ref built_in.
     [[nodiscard]] static CostModel detect_default();
+
+    /**
+     * @brief The built-in device table's model for this machine, with detected cache levels.
+     *
+     * What @ref detect_default returns when no hardware profile applies, and where a tune starts
+     * from, so that a new measurement never inherits an older one's numbers.
+     *
+     * @return The model.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] static CostModel built_in();
 
     /**
      * @brief A model that prices a GEMM by its flop count alone, identical on every machine.
@@ -736,6 +748,24 @@ struct EINSUMS_EXPORT CostModel {
 
     /// Save to a JSON file. Returns error if file cannot be written.
     [[nodiscard]] expected<void, GraphError> save_json(std::string const &path) const;
+
+    /**
+     * @brief Read a model from the object @ref to_json writes.
+     *
+     * Lenient by design, unlike the graph IR: a row this build cannot price is dropped rather
+     * than failing the load, since a model is a machine measurement that may have been written by
+     * an older build or by hand.
+     *
+     * @param[in] object The model.
+     * @return The model.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] static CostModel from_json(json::Object const &object);
+
+    /// @brief The model as the object a file and a hardware profile's @c cost_model section hold.
+    /// @return The object.
+    /// @versionadded{2.0.0}
+    [[nodiscard]] json::Object to_json() const;
 };
 
 /**
@@ -770,7 +800,7 @@ class EINSUMS_EXPORT DeviceProfileDB {
 
     [[nodiscard]] std::vector<DeviceProfile> const &profiles() const { return _profiles; }
 
-    /// Detect the CPU brand string at runtime.
+    /// Detect the CPU brand string at runtime: @c hardware::cpu_brand.
     [[nodiscard]] static std::string detect_cpu_brand();
 
     /// Detect the GPU device name at runtime.
@@ -789,7 +819,7 @@ class EINSUMS_EXPORT DeviceProfileDB {
 };
 
 /// Knobs for @ref measure_thread_efficiency. The defaults are what
-/// `calibrate_hardware` runs; the caps are what keep it to tens of seconds.
+/// `einsums-tune` runs; the caps are what keep it to tens of seconds.
 struct ThreadSweepOptions {
     size_t   warmup{1};                     ///< Untimed runs before each timed set
     size_t   repeats{3};                    ///< Timed runs per point; the median is kept

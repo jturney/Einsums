@@ -10,6 +10,8 @@
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/Hardware/Machine.hpp>
+#include <Einsums/Hardware/Profile.hpp>
 #include <Einsums/Json/Json.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -38,100 +40,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 std::string DeviceProfileDB::detect_cpu_brand() {
-#ifdef __APPLE__
-    char   buf[256] = {}; // NOLINT
-    size_t len      = sizeof(buf);
-    if (sysctlbyname("machdep.cpu.brand_string", buf, &len, nullptr, 0) == 0) {
-        return {buf};
-    }
-#elif defined(__x86_64__) || defined(_M_X64)
-    // CPUID brand string: functions 0x80000002 - 0x80000004
-    char     brand[49] = {};
-    unsigned regs[4];
-    for (int i = 0; i < 3; i++) {
-        __asm__ __volatile__("cpuid" : "=a"(regs[0]), "=b"(regs[1]), "=c"(regs[2]), "=d"(regs[3]) : "a"(0x80000002 + i), "c"(0));
-        std::memcpy(brand + i * 16, regs, 16);
-    }
-    return std::string(brand);
-#elif defined(__linux__)
-    // Non-x86 Linux, in practice aarch64: there is no CPUID, and an ARM
-    // /proc/cpuinfo carries no "model name" line - the CPU is identified by
-    // numeric implementer and part codes instead. Returning "Unknown CPU" here
-    // left every aarch64 Linux run without a device profile, matching nothing
-    // in the database and silently costing against a generic CPU.
-    //
-    // A hypervisor commonly masks the part number (Docker on Apple silicon
-    // reports implementer 0x61 with part 0x000), so the implementer alone has
-    // to be enough to name something useful.
-    {
-        auto value_of = [](std::string const &l) -> std::string {
-            auto const colon = l.find(':');
-            if (colon == std::string::npos) {
-                return {};
-            }
-            auto const v = l.substr(colon + 1);
-            auto const b = v.find_first_not_of(" \t");
-            auto const e = v.find_last_not_of(" \t\r\n");
-            return b == std::string::npos ? std::string{} : v.substr(b, e - b + 1);
-        };
-
-        std::ifstream cpuinfo("/proc/cpuinfo");
-        std::string   line;
-        std::string   implementer;
-        std::string   part;
-        while (std::getline(cpuinfo, line)) {
-            // Some ARM boards, and every x86 kernel, do publish a name. Prefer
-            // it whenever it is present.
-            if (line.rfind("model name", 0) == 0 || line.rfind("Model", 0) == 0) {
-                if (auto const v = value_of(line); !v.empty()) {
-                    return v;
-                }
-            } else if (line.rfind("CPU implementer", 0) == 0) {
-                implementer = value_of(line);
-            } else if (line.rfind("CPU part", 0) == 0) {
-                part = value_of(line);
-            }
-        }
-
-        if (!implementer.empty()) {
-            struct CodeName {
-                char const *code;
-                char const *name;
-            };
-            // Implementer codes are assigned by ARM. Anything unlisted still
-            // reports its raw code rather than falling through to "Unknown CPU".
-            static constexpr CodeName kImplementers[] = {
-                {"0x41", "ARM"},    {"0x42", "Broadcom"}, {"0x43", "Cavium"},   {"0x46", "Fujitsu"}, {"0x48", "HiSilicon"},
-                {"0x4e", "NVIDIA"}, {"0x50", "APM"},      {"0x51", "Qualcomm"}, {"0x53", "Samsung"}, {"0x56", "Marvell"},
-                {"0x61", "Apple"},  {"0x69", "Intel"},    {"0x70", "Phytium"},  {"0xc0", "Ampere"}};
-            // ARM's own cores, where the part number names a specific design.
-            static constexpr CodeName kArmParts[] = {{"0xd03", "Cortex-A53"},  {"0xd05", "Cortex-A55"},  {"0xd07", "Cortex-A57"},
-                                                     {"0xd08", "Cortex-A72"},  {"0xd09", "Cortex-A73"},  {"0xd0a", "Cortex-A75"},
-                                                     {"0xd0b", "Cortex-A76"},  {"0xd0c", "Neoverse-N1"}, {"0xd40", "Neoverse-V1"},
-                                                     {"0xd49", "Neoverse-N2"}, {"0xd4f", "Neoverse-V2"}};
-
-            char const *vendor = nullptr;
-            for (auto const &entry : kImplementers) {
-                if (implementer == entry.code) {
-                    vendor = entry.name;
-                    break;
-                }
-            }
-            if (vendor != nullptr && implementer == std::string("0x41")) {
-                for (auto const &entry : kArmParts) {
-                    if (part == entry.code) {
-                        return fmt::format("{} {}", vendor, entry.name);
-                    }
-                }
-            }
-            if (vendor != nullptr) {
-                return fmt::format("{} aarch64 (part {})", vendor, part.empty() ? "unknown" : part);
-            }
-            return fmt::format("aarch64 (implementer {}, part {})", implementer, part.empty() ? "unknown" : part);
-        }
-    }
-#endif
-    return "Unknown CPU";
+    return hardware::cpu_brand();
 }
 
 std::string DeviceProfileDB::detect_gpu_name() {
@@ -365,37 +274,34 @@ DeviceProfileDB DeviceProfileDB::load_defaults() {
 // CostModel factory
 // ═══════════════════════════════════════════════════════════════════════════════
 
+CostModel CostModel::built_in() {
+    // Cache sizes are pure topology, so runtime detection beats a table entry
+    // that omits them.
+    CostModel model = DeviceProfileDB::load_defaults().build_cost_model();
+    if (model.cpu.caches.empty()) {
+        model.cpu.caches = detect_cpu_caches();
+    }
+    return model;
+}
+
 CostModel CostModel::detect_default() {
-    // A calibrated profile (written by the calibrate_hardware tool) takes
-    // precedence over the built-in table: point --einsums:hardware:profile at
-    // its JSON and every profile consumer (ContractionPlanning's chain DP,
-    // GPUPlacement, GEMMBatching's profitability gate) uses the measured
-    // efficiency curve and bandwidths instead of generic estimates. A
-    // missing or unreadable file falls back to the table with a warning
-    // rather than failing: the profile shapes optimization choices, never
-    // correctness.
-    // Cache sizes are pure topology, so runtime detection beats any table or
-    // calibration file that omits them; a profile that DOES carry cache data
-    // (a calibrated JSON) keeps its own numbers.
-    auto const with_detected_caches = [](CostModel model) {
+    // The machine's hardware profile, written by einsums-tune, takes precedence
+    // over the built-in table: every profile consumer (ContractionPlanning's
+    // chain DP, GPUPlacement, GEMMBatching's profitability gate) then uses the
+    // measured efficiency curve and bandwidths instead of generic estimates.
+    // The Hardware module finds the profile and decides whether it applies to
+    // this machine and build, and says why when it does not; without one the
+    // table is used, since the profile shapes optimization choices, never
+    // correctness. A profile that carries no cache data takes the detected
+    // levels, as the table does.
+    if (auto const section = hardware::profile_section("cost_model"); section && section->is_object()) {
+        CostModel model = from_json(section->as_object());
         if (model.cpu.caches.empty()) {
             model.cpu.caches = detect_cpu_caches();
         }
         return model;
-    };
-
-    if (auto const profile_path = config::get(option::HardwareProfile); !profile_path.empty()) {
-        auto loaded = load_json(profile_path);
-        if (loaded) {
-            EINSUMS_LOG_INFO("CostModel: using calibrated profile from --einsums:hardware:profile={}", profile_path);
-            return with_detected_caches(*loaded);
-        }
-        EINSUMS_LOG_WARN("CostModel: --einsums:hardware:profile={} could not be loaded ({}); falling back to the built-in table",
-                         profile_path, loaded.error().message);
     }
-
-    auto db = DeviceProfileDB::load_defaults();
-    return with_detected_caches(db.build_cost_model());
+    return built_in();
 }
 
 CostModel CostModel::flop_count() {
@@ -684,12 +590,16 @@ expected<json::Value, GraphError> read_document(std::string const &path, std::st
 
 } // namespace
 
-expected<void, GraphError> CostModel::save_json(std::string const &path) const {
+json::Object CostModel::to_json() const {
     json::Object root;
     root.set("source", source);
     root.set("cpu", write_profile(cpu));
     root.set("gpu", write_profile(gpu));
-    return write_document(path, json::Value{std::move(root)}, "CostModel::save_json");
+    return root;
+}
+
+expected<void, GraphError> CostModel::save_json(std::string const &path) const {
+    return write_document(path, json::Value{to_json()}, "CostModel::save_json");
 }
 
 expected<CostModel, GraphError> CostModel::load_json(std::string const &path) {
@@ -697,8 +607,10 @@ expected<CostModel, GraphError> CostModel::load_json(std::string const &path) {
     if (!document) {
         return unexpected(document.error());
     }
-    auto const &root = document->as_object();
+    return from_json(document->as_object());
+}
 
+CostModel CostModel::from_json(json::Object const &root) {
     CostModel p;
     // Only when the file names one: an absent key leaves the struct default
     // ("default") rather than blanking it.

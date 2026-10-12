@@ -3,17 +3,19 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-/// @file calibrate_hardware.cpp
-/// @brief Hardware calibration tool for the ContractionPlanning pass.
+/// @file einsums_tune.cpp
+/// @brief Measure this machine and write its hardware profile.
 ///
-/// Measures GEMM performance across a range of matrix shapes and memory
-/// bandwidth, then saves the results as a JSON CostModel that the
-/// ContractionPlanning pass can load for architecture-specific optimization.
+/// Measures GEMM performance across a range of matrix shapes, memory and
+/// cache bandwidth, permute throughput, call overhead, per-kernel thread
+/// efficiency and the OpenMP region cost, then writes them as one hardware
+/// profile. Every later Einsums process on a machine of the same kind, with
+/// the same Einsums minor version and BLAS, finds and uses it with no flag.
 ///
 /// Usage:
-///   ./calibrate_hardware --output my_hardware.json
-///   ./calibrate_hardware --output gpu_profile.json --dtype float
-///   ./calibrate_hardware --min-size 16 --max-size 4096 --num-points 30
+///   einsums-tune                         # this machine's profile, in the cache directory
+///   einsums-tune --output profile.json   # somewhere else, to share or install
+///   einsums-tune --min-size 16 --max-size 4096 --num-points 30
 ///
 /// The tool sweeps GEMM shapes logarithmically from min-size to max-size,
 /// measuring sustained GFLOPS at each point. It also measures memory
@@ -22,11 +24,14 @@
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/Hardware/Profile.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/TensorPermute/Permute.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+
+#include <fmt/chrono.h>
 
 #include <algorithm>
 #include <array>
@@ -40,6 +45,7 @@
 #include <cstring>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace einsums;
@@ -48,8 +54,7 @@ namespace cg = einsums::compute_graph;
 namespace {
 
 struct Config {
-    std::string output = "hardware_profile.json";
-    std::string calibration; // empty: hardware::default_calibration_path()
+    std::string output; // empty: hardware::default_profile_path()
     std::string dtype          = "double";
     size_t      min_size       = 16;
     size_t      max_size       = 2048;
@@ -61,14 +66,27 @@ struct Config {
     size_t      thread_max_mb  = 64;
 };
 
+void print_usage() {
+    fmt::print("Usage: einsums-tune [options]\n");
+    fmt::print("  --output <path>    Profile to write (default: this machine's, in the cache directory)\n");
+    fmt::print("  --dtype <type>     Data type: double or float (default: double)\n");
+    fmt::print("  --min-size <N>     Minimum matrix dimension (default: 16)\n");
+    fmt::print("  --max-size <N>     Maximum matrix dimension (default: 2048)\n");
+    fmt::print("  --num-points <N>   Number of measurement points (default: 15)\n");
+    fmt::print("  --warmup <N>       Warmup iterations (default: 3)\n");
+    fmt::print("  --repeats <N>      Measurement iterations (default: 10)\n");
+    fmt::print("  --no-thread-sweep  Skip the per-family efficiency curves\n");
+    fmt::print("  --thread-repeats <N>  Timed runs per curve point (default: 3)\n");
+    fmt::print("  --thread-max-mb <N>   Cap on a curve cell's working set (default: 64)\n");
+    fmt::print("\nEvery Einsums option below also applies.\n\n");
+}
+
 Config parse_args(int argc, char **argv) {
     Config cfg;
     for (int i = 1; i < argc; i++) {
         std::string const arg(argv[i]);
         if (arg == "--output" && i + 1 < argc)
             cfg.output = argv[++i];
-        else if (arg == "--calibration" && i + 1 < argc)
-            cfg.calibration = argv[++i];
         else if (arg == "--dtype" && i + 1 < argc)
             cfg.dtype = argv[++i];
         else if (arg == "--min-size" && i + 1 < argc)
@@ -87,21 +105,6 @@ Config parse_args(int argc, char **argv) {
             cfg.thread_repeats = std::stoull(argv[++i]);
         else if (arg == "--thread-max-mb" && i + 1 < argc)
             cfg.thread_max_mb = std::stoull(argv[++i]);
-        else if (arg == "--help" || arg == "-h") {
-            println("Usage: calibrate_hardware [options]");
-            println("  --output <path>    Output JSON file (default: hardware_profile.json)");
-            println("  --calibration <path>  Hardware calibration file (default: platform cache dir)");
-            println("  --dtype <type>     Data type: double or float (default: double)");
-            println("  --min-size <N>     Minimum matrix dimension (default: 16)");
-            println("  --max-size <N>     Maximum matrix dimension (default: 2048)");
-            println("  --num-points <N>   Number of measurement points (default: 15)");
-            println("  --warmup <N>       Warmup iterations (default: 3)");
-            println("  --repeats <N>      Measurement iterations (default: 10)");
-            println("  --no-thread-sweep  Skip the per-family efficiency curves");
-            println("  --thread-repeats <N>  Timed runs per curve point (default: 3)");
-            println("  --thread-max-mb <N>   Cap on a curve cell's working set (default: 64)");
-            std::exit(0);
-        }
     }
     return cfg;
 }
@@ -431,16 +434,25 @@ int    g_argc = 0;
 char **g_argv = nullptr;
 
 int einsums_main() {
-    Config const cfg = parse_args(g_argc, g_argv);
+    Config cfg = parse_args(g_argc, g_argv);
+    if (cfg.output.empty()) {
+        cfg.output = einsums::hardware::default_profile_path();
+        if (cfg.output.empty()) {
+            einsums::println("ERROR: there is no cache directory to write the profile to; pass --output or --einsums:cache-dir");
+            return EXIT_FAILURE;
+        }
+    }
 
-    einsums::println("=== Einsums Hardware Calibration Tool ===\n");
+    einsums::println("=== einsums-tune ===\n");
+    einsums::println("Machine: {}", einsums::hardware::machine_fingerprint());
     einsums::println("Output: {}", cfg.output);
     einsums::println("Data type: {}", cfg.dtype);
     einsums::println("Size range: {} to {} ({} points)", cfg.min_size, cfg.max_size, cfg.num_points);
     einsums::println("Warmup: {}, Repeats: {}", cfg.warmup, cfg.repeats);
 
-    // Start from auto-detected cost_model
-    cg::CostModel cost_model = cg::CostModel::detect_default();
+    // Start from the built-in table, never from an earlier profile, so nothing
+    // this run does not measure is inherited from one.
+    cg::CostModel cost_model = cg::CostModel::built_in();
     cost_model.source        = "calibrated";
 
     // Detect CPU brand
@@ -568,24 +580,27 @@ int einsums_main() {
     cost_model.cpu.name   = fmt::format("{} (calibrated)", cpu_brand);
     cost_model.cpu.source = "calibrated";
 
-    // The OpenMP region cost, swept across team sizes and written where the
-    // Hardware module reads it. Separate from the profile JSON on purpose:
-    // Hardware sits below the module that owns this JSON parser, and the number
-    // is consumed by things that never load a CostModel (PackedGemm's parallel
-    // gate, the DLPNO bucket chooser through the Python binding).
+    // The OpenMP region cost, swept across team sizes. It lives in the same
+    // file as the cost model but is read by the Hardware module, since things
+    // that never load a cost model consume it too (PackedGemm's parallel gate,
+    // the DLPNO bucket chooser through the Python binding).
     einsums::println("\n--- OpenMP Region Cost ---\n");
-    std::string       calib_error;
-    std::string const calib_path = cfg.calibration.empty() ? einsums::hardware::default_calibration_path() : cfg.calibration;
-    if (einsums::hardware::write_calibration(calib_path, &calib_error)) {
-        einsums::println("  Calibration written to: {}", calib_path);
-    } else {
-        einsums::println("  WARNING: could not write calibration ({}); consumers will measure per process", calib_error);
+    json::Object region_cost = einsums::hardware::measure_region_cost_section();
+    for (std::size_t idx = 0; idx < region_cost.size(); ++idx) {
+        einsums::println("  {:>3} threads: {:.0f} ns", region_cost.key_at(idx), region_cost.value_at(idx).as_double());
     }
 
-    // Save
-    auto save_result = cost_model.save_json(cfg.output);
-    if (!save_result) {
-        einsums::println("ERROR: {}", save_result.error().message);
+    // One file: the header saying what it describes, then each module's section.
+    json::Object measured;
+    measured.set("date", fmt::format("{:%Y-%m-%d}", std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now())));
+    json::Object profile = einsums::hardware::profile_header();
+    profile.set("measured", std::move(measured));
+    profile.set("omp_region_cost_ns", std::move(region_cost));
+    profile.set("cost_model", cost_model.to_json());
+
+    std::string error;
+    if (!einsums::hardware::write_profile(cfg.output, json::Value{std::move(profile)}, error)) {
+        einsums::println("ERROR: {}", error);
         return EXIT_FAILURE;
     }
     einsums::println("\nProfile saved to: {}", cfg.output);
@@ -596,6 +611,14 @@ int einsums_main() {
 } // namespace
 
 int main(int argc, char **argv) {
+    // The runtime answers --help with its own options and exits before einsums_main runs, so the
+    // tool's usage is printed first and the runtime's follows.
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view const arg(argv[i]); arg == "--help" || arg == "-h") {
+            print_usage();
+            break;
+        }
+    }
     g_argc = argc;
     g_argv = argv;
     return einsums::start(einsums_main, argc, argv);

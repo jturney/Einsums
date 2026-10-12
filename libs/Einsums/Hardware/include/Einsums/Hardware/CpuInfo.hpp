@@ -22,6 +22,9 @@ struct CacheSizes {
     std::int64_t l1{std::int64_t{32} << 10};
     std::int64_t l2{std::int64_t{256} << 10};
     std::int64_t l3{std::int64_t{8} << 20};
+
+    /// @brief Level-by-level equality.
+    bool operator==(CacheSizes const &) const = default;
 };
 
 /**
@@ -57,8 +60,9 @@ EINSUMS_EXPORT CpuInfo const &cpu_info();
  * @brief Cost in nanoseconds of entering and leaving an OpenMP parallel region.
  *
  * An empty region at the current team size, warm team, best of several trials: around 20 us on
- * a 10-thread machine. Read from a calibration file (written only by @c calibrate_hardware) when
- * there is one, otherwise measured, which drifts by tens of percent per process.
+ * a 10-thread machine. Read from the hardware profile (written only by @c einsums-tune) when it
+ * has an entry for the current team size, otherwise measured, which drifts by tens of percent
+ * per process.
  * @c --einsums:hardware:omp-region-cost-ns pins it.
  */
 APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT double omp_region_cost_ns();
@@ -80,30 +84,10 @@ APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::size_t omp_min_paral
 APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::int64_t omp_min_parallel_flops();
 
 /**
- * @brief Where @ref omp_region_cost_ns looks for a calibration file.
- *
- * @c --einsums:hardware:calibration if set, otherwise a host-keyed file in the platform cache
- * directory. Empty when there is nowhere to look; the cost is then measured.
- */
-APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::string default_calibration_path();
-
-/**
- * @brief Whether @ref omp_region_cost_ns came from a calibration, not an in-process measurement.
+ * @brief Whether @ref omp_region_cost_ns came from the hardware profile, not an in-process measurement.
  *        Also true single-threaded (the cost is zero) and when pinned.
  */
 APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT bool region_cost_is_calibrated();
-
-/**
- * @brief Measure the OpenMP region cost at every team size and record it.
- *
- * Called by the @c calibrate_hardware tool; the library never writes the file itself. Sweeps
- * team sizes 1..@c omp_get_max_threads(), a few milliseconds each.
- *
- * @param path Destination, or empty for @ref default_calibration_path.
- * @param error Set to a human-readable reason when this returns false.
- * @return Whether the file was written.
- */
-EINSUMS_EXPORT bool write_calibration(std::string const &path, std::string *error = nullptr);
 
 /**
  * @brief The OpenMP runtime's current ceiling on a parallel region's team size.

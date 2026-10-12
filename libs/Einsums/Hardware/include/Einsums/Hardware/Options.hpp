@@ -44,15 +44,28 @@ inline constinit cl::ConfigOption<std::string> CacheDir = cl::config_opt<std::st
     "einsums:cache-dir", "Directory for measured constants kept between runs (empty = the platform cache location)", "Hardware", "",
     "PATH");
 
-/// The optional calibration file for the OpenMP region cost; empty means a host-keyed file under
-/// @ref CacheDir. Written only by `calibrate_hardware`.
-inline constinit cl::ConfigOption<std::string> HardwareCalibration = cl::config_opt<std::string>(
-    "einsums:hardware:calibration", "Calibration file for the OpenMP region cost (empty = a host-keyed file under the cache directory)",
+/// A hardware profile to use in place of searching for one.
+///
+/// Empty, the default, looks for this machine's profile under @ref CacheDir and then under the
+/// site directory. A named file is used even when another machine measured it, with a warning,
+/// since a user who names a file means it; another Einsums version or BLAS still makes it stale.
+inline constinit cl::ConfigOption<std::string> HardwareProfile = cl::config_opt<std::string>(
+    "einsums:hardware:profile", "Hardware profile to use instead of searching the cache and site directories (see einsums-tune)",
     "Hardware", "", "PATH");
 
-/// Pin the cost of entering an OpenMP parallel region, in nanoseconds. Negative calibrates or measures.
+/// The site directory of hardware profiles, searched after the user's cache directory.
+///
+/// Empty, the default, is the installation's `share/einsums/profiles`. An administrator tunes
+/// once per node type and installs the files there for every user.
+inline constinit cl::ConfigOption<std::string> HardwareSiteProfiles =
+    cl::config_opt<std::string>("einsums:hardware:site-profiles",
+                                "Directory of hardware profiles searched after the cache directory (empty = the installation's "
+                                "share/einsums/profiles)",
+                                "Hardware", "", "PATH");
+
+/// Pin the cost of entering an OpenMP parallel region, in nanoseconds. Negative reads the profile or measures.
 inline constinit cl::ConfigOption<double> HardwareOmpRegionCostNs = cl::config_opt<double>(
-    "einsums:hardware:omp-region-cost-ns", "Pin the cost of entering an OpenMP parallel region, in ns (-1 = calibrate or measure)",
+    "einsums:hardware:omp-region-cost-ns", "Pin the cost of entering an OpenMP parallel region, in ns (-1 = read the profile or measure)",
     "Hardware", -1.0, "NS", cl::RangeBetween(-1.0, 1e9));
 
 /// Pin the element count at which elementwise kernels go parallel. Negative derives it; zero always.

@@ -10,8 +10,8 @@ Hardware Profiles
 Passes that must choose between alternatives - ``ContractionPlanning`` and
 ``GPUPlacement`` among them - estimate execution time through a ``CostModel``.
 That model is only as good as the machine measurements behind it, and this page
-covers where those measurements come from: the built-in table, the calibration
-tool, and the :option:`--einsums:hardware:profile` override.
+covers where those measurements come from: the built-in table, and the
+hardware profile the ``einsums-tune`` tool measures.
 
 Profile Structure
 ==================
@@ -84,40 +84,49 @@ Cost Estimation
    // Network communication
    double ar = profile.estimate_allreduce_time_us(bytes, num_ranks);
 
-Calibration Tool
-=================
+Measuring a Machine
+====================
 
-The ``calibrate_hardware`` tool measures real performance on the current machine:
+The ``einsums-tune`` tool, installed with Einsums, measures the machine it runs
+on and writes its hardware profile:
 
 .. code-block:: bash
 
-   ./calibrate_hardware --output my_hardware.json
+   einsums-tune                          # this machine's profile, in the cache directory
+   einsums-tune --output profile.json    # somewhere else, to share or install for a site
 
 It sweeps DGEMM over a log-spaced range of sizes (default 16 to 2048, set by
 ``--min-size``/``--max-size``) and measures copy and per-cache-level bandwidth,
-permute throughput, BLAS call overhead, and per-kernel thread-efficiency curves
-(skipped with ``--no-thread-sweep``). It also records the OpenMP region cost,
-separately from the profile. Output is a JSON file loadable by:
+permute throughput, BLAS call overhead, per-kernel thread-efficiency curves
+(skipped with ``--no-thread-sweep``) and the OpenMP region cost at every team
+size. It starts from the built-in table rather than from an earlier profile, so
+nothing it does not measure is inherited from one.
 
-.. code-block:: cpp
-
-   auto profile = CostModel::load_json("my_hardware.json");  // expected<CostModel, GraphError>
-   if (profile) {
-       pm.add<cg::passes::ContractionPlanning>(*profile);
-   }
-
-Handing the same file to :option:`--einsums:hardware:profile` puts it behind
-``CostModel::detect_default()`` instead, so every cost-model pass in a default
-pass manager prices against it without any code naming the path:
+Everything goes into one file, whose ``cost_model`` section is this page's
+model and whose other sections belong to the Hardware module; see
+:ref:`the hardware profile <modules_Einsums_Hardware>` for its layout and for
+when a profile applies. ``CostModel::detect_default()`` uses the profile in
+effect, so every cost-model pass in a default pass manager prices against it
+without any code naming a path. To use a particular file:
 
 .. code-block:: bash
 
-   ./my_program --einsums:hardware:profile my_hardware.json
-   EINSUMS_HARDWARE_PROFILE=my_hardware.json ./my_program
+   ./my_program --einsums:hardware:profile profile.json
+   EINSUMS_HARDWARE_PROFILE=profile.json ./my_program
 
-A file that will not load is a warning and a fall back to the built-in table
-rather than a failure: the profile shapes which optimization is chosen, never
-whether the answer is right.
+A profile that does not apply, or will not load, is a warning and a fall back to
+the built-in table rather than a failure: the profile shapes which optimization
+is chosen, never whether the answer is right.
+
+A model can also be handed to a pass directly. ``CostModel::save_json`` and
+``CostModel::load_json`` write and read a model on its own:
+
+.. code-block:: cpp
+
+   auto profile = CostModel::load_json("model.json");  // expected<CostModel, GraphError>
+   if (profile) {
+       pm.add<cg::passes::ContractionPlanning>(*profile);
+   }
 
 Shared Profile in create_default()
 ====================================
