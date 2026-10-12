@@ -28,6 +28,13 @@ splits into two o²v³ steps through a DF intermediate. Every other block stays
 exact via the half-transform bridge. Validate the DF shift against psi4 conv
 CCSD.
 
+The ladder is written over every index, its intermediate H[Q,a,f,i,j] declared
+whole, and the schedule is left to the optimizer: AxisTiling, in the default
+pipeline, streams H a block at a time when the program would not fit in
+--einsums:max-memory, and leaves it whole when it would. To watch it tile,
+give the run a smaller budget:
+
+    EINSUMS_MAX_MEMORY=4MB \
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \
         examples/psi4-bridge/ccsd_rhf_graph_numpy_style.py
@@ -119,7 +126,7 @@ oovv_ba = zt("oovv_ba", (nocc, nocc, nv, nv)); einsums.permute("i,j,b,a <- i,j,a
 
 NV2 = (nocc, nv); SH2 = (nocc, nocc, nv, nv); VV = (nv, nv); OO = (nocc, nocc)
 OOOO = (nocc, nocc, nocc, nocc); OVVO = (nocc, nv, nv, nocc); OVOV = (nocc, nv, nocc, nv)
-OVOO = (nocc, nv, nocc, nocc); HPAIR = (naux, nv, nv)  # DF ladder intermediate, ONE occupied pair
+OVOO = (nocc, nv, nocc, nocc); HFULL = (naux, nv, nv, nocc, nocc)  # DF ladder intermediate
 t1 = einsums.zeros((nocc, nv), name="t1")
 t2 = E("i,j,a,b <- i,j,a,b ; i,j,a,b", G["oovv"], Dijab, SH2, 1.0, "t2init")  # placeholder, overwrite next
 # MP2 guess t2 = oovv / Dijab (eager)
@@ -141,7 +148,7 @@ S = {}
 for nm, sh in [("Tau", SH2), ("Taut", SH2), ("Fae", VV), ("Fmi", OO), ("Fme", NV2),
                ("Wmnij", OOOO), ("Wmbej", OVVO), ("Wmbje", OVOV), ("Zmbij", OVOO), ("jnfb", SH2),
                ("r1", NV2), ("r2", SH2), ("be", VV), ("jm", OO), ("imea", SH2), ("imeb", SH2),
-               ("tmp", SH2), ("tmpP", SH2), ("Hpair", HPAIR)]:
+               ("tmp", SH2), ("tmpP", SH2), ("H", HFULL)]:
     S[nm] = dz(nm, sh)
 # The update steps rd1/rd2 double as the DIIS error vectors, and the scalars
 # feed the predicate; everything the host reads between iterations stays
@@ -233,27 +240,15 @@ with cg.capture(body):
     ein("ijab <- mnab ; mnij", r2, Tau, Wmnij, 1.0, True)
     # DF particle-ladder (replaces ein("ijab <- ijef ; abef", Tau, G["vvvv"], ...)):
     #   r2_ijab += Σ_ef Tau_ijef <ab|ef>,  <ab|ef> = (ae|bf) = Σ_Q Bvv_ae Bvv_bf
-    # PAIR-DRIVEN, the same idiom the DF-MP2 examples use: i and j are spectator
-    # indices here, summed in NEITHER step, so the contraction factorizes over
-    # them and the intermediate has no business carrying them. One reused
-    # (naux, v, v) buffer per pair instead of (naux, v, o, o, v) for all pairs at
-    # once - 30,324 elements against 758,100 at this geometry, 25x - with each
-    # pair accumulating straight into the r2[i,j] view. The arithmetic is
-    # identical either way (naux·o²v³ per step), and the v⁴ tensor is still never
-    # formed. Slicing a graph-owned DEFERRED tensor like this needs the view
-    # placeholder to read the parent's shell metadata; see
-    # test_view_python.py::test_view_of_deferred_tensor_has_real_dims_at_capture.
-    #
-    # Unrolling o² pairs at capture is fine at this size (25 pairs) but grows as
-    # o²; the scalable form wants a captured loop over pairs, or the planned
-    # SlicedContraction pass deriving this blocking automatically.
-    _FULL = (0, 0, 0)  # view_indexed axis kinds: 0 = full, 2 = drop (rank-reducing)
-    for _i in range(nocc):
-        for _j in range(nocc):
-            Tau_ij = cg.view_indexed(Tau, [(2, _i, 0), (2, _j, 0), _FULL, _FULL])
-            r2_ij  = cg.view_indexed(r2,  [(2, _i, 0), (2, _j, 0), _FULL, _FULL])
-            ein("Q,a,f <- Q,a,e ; e,f", S["Hpair"], Bvv, Tau_ij, 1.0, False)
-            ein("a,b <- Q,a,f ; Q,b,f", r2_ij, S["Hpair"], Bvv, 1.0, True)
+    # Two o²v³ steps through H, and the v⁴ tensor is never formed. Written over
+    # every index: i and j are summed in neither step, so the contraction could
+    # run one occupied pair at a time, and whether it should is a question about
+    # memory rather than algebra. H holds naux·v²·o² elements (6 MB for water, 13 GB
+    # for benzene in cc-pVDZ); AxisTiling answers the question when the graph is
+    # optimized, streaming H in blocks that fit beside everything else the
+    # program holds, and leaving the two contractions as captured otherwise.
+    ein("Q,a,f,i,j <- Q,a,e ; i,j,e,f", S["H"], Bvv, Tau, 1.0, False)
+    ein("i,j,a,b <- Q,a,f,i,j ; Q,b,f", r2, S["H"], Bvv, 1.0, True)
     symacc("ijab <- ma ; mbij", t1, Zmbij, 1.0, -1.0)
     # ring 1: sym((t_imae - t_imea)·Wmbej)
     ein("ijab <- imae ; mbej", S["tmp"], t2, Wmbej, 1.0, False)
@@ -301,10 +296,15 @@ print(f"LinearCombinationContractionFolding: body contractions {_before} -> {_co
 # MemoryPlanning arena-pack the [Materialize, Free] brackets. Parent node count
 # grows, body stays put. Passes also recurse into the body (each opts in via
 # recurse_into_subgraphs), where Reorder reschedules; the scratch is reused in
-# place so CSE/InplaceOptimization have nothing to fold. Correctness holds
-# (vs psi4 conv CCSD).
+# place so CSE/InplaceOptimization have nothing to fold. AxisTiling, also in the
+# default pipeline, decides the ladder's schedule: it compares everything the
+# graph holds with --einsums:max-memory and, only when that does not fit, turns
+# the two full-axis contractions into a loop over blocks of H. Correctness holds
+# either way (vs psi4 conv CCSD).
 mod = g.apply(cg.default_pass_manager())
 print(f"optimized: modified={mod}, parent {g.num_nodes()} nodes (Materialize hoisted), body {body.num_nodes()} nodes")
+_tiled = [n for n in _json.loads(body.to_json()).get("nodes", []) if n.get("kind") == "Loop"]
+print(f"ladder: {'H streamed in ' + str(len(_tiled)) + ' loop(s)' if _tiled else 'H held whole'}")
 
 g.execute()
 e_new = float(np.asarray(Ecorr)[0])
