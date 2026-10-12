@@ -31,8 +31,9 @@ CCSD.
 The ladder is written over every index, its intermediate H[Q,a,f,i,j] declared
 whole, and the schedule is left to the optimizer: AxisTiling, in the default
 pipeline, streams H a block at a time when the program would not fit in
---einsums:max-memory, and leaves it whole when it would. To watch it tile,
-give the run a smaller budget:
+--einsums:max-memory or when H alone would take more than its share of it
+(--einsums:graph:tiling-budget-share), and leaves it whole otherwise. To watch
+it tile, give the run a smaller budget:
 
     EINSUMS_MAX_MEMORY=4MB \
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
@@ -298,9 +299,9 @@ print(f"LinearCombinationContractionFolding: body contractions {_before} -> {_co
 # recurse_into_subgraphs), where Reorder reschedules; the scratch is reused in
 # place so CSE/InplaceOptimization have nothing to fold. AxisTiling, also in the
 # default pipeline, decides the ladder's schedule: it compares everything the
-# graph holds with --einsums:max-memory and, only when that does not fit, turns
-# the two full-axis contractions into a loop over blocks of H. Correctness holds
-# either way (vs psi4 conv CCSD).
+# graph holds with --einsums:max-memory and, when that does not fit or H takes
+# more than its share of it, turns the two full-axis contractions into a loop
+# over blocks of H. Correctness holds either way (vs psi4 conv CCSD).
 mod = g.apply(cg.default_pass_manager())
 print(f"optimized: modified={mod}, parent {g.num_nodes()} nodes (Materialize hoisted), body {body.num_nodes()} nodes")
 _tiled = [n for n in _json.loads(body.to_json()).get("nodes", []) if n.get("kind") == "Loop"]

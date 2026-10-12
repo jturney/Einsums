@@ -220,16 +220,32 @@ inline constinit cl::ConfigOption<double> GraphFnoOccupation = cl::config_opt<do
 ///
 /// The default, any negative value, derives the cap from the machine: an intermediate may be as
 /// large as ``--einsums:max-memory`` less every other tensor the graph names, counted as if all
-/// were live at once. The pass then fires only when the program would not fit, because tiling a
-/// program that fits costs kernel efficiency for memory nobody was short of. A positive value is
-/// a cap on each intermediate alone, for a caller who wants a footprint smaller than the machine
-/// allows.
+/// were live at once, and no larger than ``--einsums:graph:tiling-budget-share`` of the budget. A
+/// positive value is a cap on each intermediate alone, for a caller who wants a footprint smaller
+/// than the machine allows.
 inline constinit cl::ConfigOption<std::int64_t> GraphTilingMemoryCap = cl::config_opt<std::int64_t>(
     "einsums:graph:tiling-memory-cap",
     "Largest a single live intermediate may be, in bytes, before AxisTiling slices the free axes it is carried over and streams it a "
     "chunk at a time. A program whose largest intermediate already fits is left alone. Zero disables the pass; a negative value, the "
     "default, lets an intermediate take whatever --einsums:max-memory leaves after the graph's other tensors",
     "ComputeGraph Passes", std::int64_t{-1}, "BYTES");
+
+/// The largest fraction of ``--einsums:max-memory`` one intermediate may hold before ``AxisTiling``
+/// streams it, in a program that fits the budget as well as in one that does not.
+///
+/// Fitting is not the only reason to stream. An intermediate that takes a large part of the
+/// machine is written and read back at memory bandwidth, and the kernels around it run on panels
+/// far larger than they need, so a program that holds it whole can be slower than the same program
+/// streaming it in blocks. The share bounds both the trigger and the result: a tiled region's
+/// buffers are held to the same share together, beside whatever the budget already requires.
+///
+/// Read only when the tiling cap is derived; a positive cap is the caller's own bound and is
+/// taken as given. Zero or one turns the rule off, leaving the budget as the only bound.
+inline constinit cl::ConfigOption<double> GraphTilingBudgetShare = cl::config_opt<double>(
+    "einsums:graph:tiling-budget-share",
+    "Largest fraction of --einsums:max-memory one intermediate may hold before AxisTiling streams it, even in a program that fits. A "
+    "tiled region's buffers are held to the same share together. Read only when the tiling cap is derived; zero or one turns it off",
+    "ComputeGraph Passes", 0.16, "FRACTION", cl::RangeBetween(0.0, 1.0));
 
 /// How long a search pass may run, in milliseconds. Zero means unlimited.
 ///

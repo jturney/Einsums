@@ -96,12 +96,15 @@
  * @c --einsums:max-memory option, and holds the whole tree to it: every tensor some node of the
  * tree reads or writes, inputs included and each counted once, as if all were live at the same
  * time. That is conservative, since a tensor freed before another is written still counts, and it
- * makes the question the pass asks the one a user asks: does the program fit. When it does, the
- * pass declines before it reads a node. When it does not, every intermediate a sliceable
- * statement writes is a seed, largest first, and its loop's buffers are held to what the tensors
- * outside the loop leave, together: every streamed intermediate's block, and the buffers of each
- * remainder loop beside the full block's, since every loop declares its own and all of them live
- * for the whole replay.
+ * makes the question the pass asks the one a user asks: does the program fit. Fitting is not the
+ * whole question, though, since an intermediate that takes a large part of the machine costs the
+ * kernels that write and read it, so the budget also gives each intermediate a share,
+ * @ref option::GraphTilingBudgetShare of it. When the program fits and no intermediate is over its
+ * share, the pass declines before it reads a node. Otherwise every intermediate a sliceable
+ * statement writes that is over the lesser of its share and what the other tensors leave is a
+ * seed, largest first, and its loop's buffers are held to that lesser bound together: every
+ * streamed intermediate's block, and the buffers of each remainder loop beside the full block's,
+ * since every loop declares its own and all of them live for the whole replay.
  *
  * @par What it declines
  * A program whose largest intermediate already fits the cap, which is what makes the pass a
@@ -307,6 +310,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         /// The memory budget the loop's buffers are held to together with every tensor outside
         /// the loop, or zero when @ref cap alone bounds them.
         std::size_t budget{0};
+        /// The most the loop's buffers may hold together whatever the budget leaves, when
+        /// @ref budget is set.
+        std::size_t share{0};
         /// What the tree's tensors hold before the region is tiled, when @ref budget is set.
         std::size_t total{0};
     };

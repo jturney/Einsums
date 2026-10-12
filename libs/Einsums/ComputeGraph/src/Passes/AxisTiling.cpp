@@ -2165,16 +2165,20 @@ bool AxisTiling::tile_graph(Graph &graph) {
     }
 
     // A negative cap is derived: an intermediate may take what the memory budget leaves after
-    // every other tensor of the tree. A program that fits as a whole is left alone before a node
-    // is read or reordered, which is what keeps the pass free in the default pipeline.
+    // every other tensor of the tree, and no more than its share of the budget. A program that
+    // fits as a whole with no intermediate over its share is left alone before a node is read or
+    // reordered, which is what keeps the pass free in the default pipeline.
     bool const  derived = cap < 0;
     std::size_t budget  = 0;
+    std::size_t share   = 0;
     if (derived) {
         budget = string_util::memory_string(config::get(option::MaxMemory));
         if (budget == 0) {
             note_skip("the cap is derived from --einsums:max-memory, which is zero, so there is no budget to tile against");
             return tiled.moved();
         }
+        double const fraction = config::get(option::GraphTilingBudgetShare);
+        share = fraction > 0.0 && fraction < 1.0 ? static_cast<std::size_t>(fraction * static_cast<double>(budget)) : budget;
     }
 
     // One region at a time. Every rewrite renumbers the nodes and replaces a region with a loop,
@@ -2183,18 +2187,16 @@ bool AxisTiling::tile_graph(Graph &graph) {
     std::set<TensorId> declined;
     for (bool first = true;; first = false) {
         std::size_t const total = derived ? footprint(graph) : 0;
-        if (derived && !first && total <= budget) {
-            break;
-        }
 
-        // The cap one intermediate of @p bytes is held to: the fixed cap, or what the budget
-        // leaves after everything else. Zero when the others alone exceed the budget.
+        // The cap one intermediate of @p bytes is held to: the fixed cap, or the lesser of its
+        // share and what the budget leaves after everything else. Zero when the others alone
+        // exceed the budget.
         auto const limit_for = [&](std::size_t bytes) -> std::size_t {
             if (!derived) {
                 return static_cast<std::size_t>(cap);
             }
             std::size_t const others = total - std::min(total, bytes);
-            return others < budget ? budget - others : 0;
+            return others < budget ? std::min(budget - others, share) : 0;
         };
 
         // A seed is an intermediate over its cap that a sliceable statement writes: the tensors
@@ -2226,9 +2228,11 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 // method's loop, has nothing here to decline.
                 return tiled.moved();
             }
-            if (derived && total <= budget) {
-                note_skip("the program's tensors fit the memory budget together, so there is nothing to stream",
-                          fmt::format("{} bytes against --einsums:max-memory of {}", total, budget));
+            if (derived && total <= budget && largest <= share) {
+                note_skip("the program's tensors fit the memory budget together and no intermediate holds more than its share, so there "
+                          "is nothing to stream",
+                          fmt::format("{} bytes against --einsums:max-memory of {}, the largest intermediate {} against a share of {}",
+                                      total, budget, largest, share));
                 report(1, fmt::format("declined: the program's tensors hold {} bytes and the memory budget is {}", total, budget));
                 return tiled.moved();
             }
@@ -2251,7 +2255,8 @@ bool AxisTiling::tile_graph(Graph &graph) {
         graph.topological_sort();
         bool rewrote = false;
         for (auto const &[bytes, seed] : seeds) {
-            Allowance const allowance{.cap = limit_for(bytes), .budget = derived ? budget : 0, .total = total};
+            Allowance const allowance{
+                .cap = limit_for(bytes), .budget = derived ? budget : 0, .share = derived ? share : 0, .total = total};
             if (tile_region(graph, seed, allowance)) {
                 rewrote = true;
                 break;
@@ -2389,7 +2394,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
 
         // Against a fixed cap every intermediate is held to it alone. Against the memory budget
         // the loop's buffers are held to it together, beside every tensor the loop does not
-        // re-declare.
+        // re-declare, and to their share of it.
         bool const  joint = allowance.budget != 0;
         std::size_t room  = limit;
         if (joint) {
@@ -2400,7 +2405,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                     fmt::format("{}; {} bytes outside the loop against --einsums:max-memory of {}", detail, outside, allowance.budget));
                 continue;
             }
-            room = allowance.budget - outside;
+            room = std::min(allowance.budget - outside, allowance.share);
         }
         auto const fits = [joint, room](std::size_t largest, std::size_t held) { return (joint ? held : largest) <= room; };
 

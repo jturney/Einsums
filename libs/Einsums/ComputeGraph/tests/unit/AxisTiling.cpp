@@ -1326,9 +1326,21 @@ namespace {
 /// four-index intermediates.
 constexpr std::size_t program_bytes = (naux * nocc * nvir * sizeof(double)) + whole_bytes + sizeof(double) + (5 * whole_bytes);
 
-/// --einsums:max-memory at @p bytes for one case, restored on the way out.
+/// --einsums:graph:tiling-budget-share at @p fraction for one case, restored on the way out.
+struct Share {
+    double previous{config::get(option::GraphTilingBudgetShare)};
+
+    explicit Share(double fraction) { config::set(option::GraphTilingBudgetShare, fraction); }
+    Share(Share const &)            = delete;
+    Share &operator=(Share const &) = delete;
+    ~Share() { config::set(option::GraphTilingBudgetShare, previous); }
+};
+
+/// --einsums:max-memory at @p bytes for one case, restored on the way out. The share is off, so
+/// the budget is the only bound; the cases for the share set it themselves.
 struct Budget {
     std::string previous{config::get(option::MaxMemory)};
+    Share       share{1.0};
 
     explicit Budget(std::size_t bytes) { config::set(option::MaxMemory, std::to_string(bytes) + "b"); }
     explicit Budget(std::string const &spec) { config::set(option::MaxMemory, spec); }
@@ -1357,6 +1369,8 @@ std::vector<std::string> labels_of(cg::Graph const &graph) {
 TEST_CASE("AxisTiling derives its cap from the memory budget by default", "[ComputeGraph][Pass][AxisTiling]") {
     CHECK(config::get(option::GraphTilingMemoryCap) < 0);
     CHECK(cg::passes::AxisTiling{}.memory_cap() < 0);
+    CHECK(config::get(option::GraphTilingBudgetShare) > 0.0);
+    CHECK(config::get(option::GraphTilingBudgetShare) < 1.0);
 
     Problem   problem;
     cg::Graph graph("mp2 full axis");
@@ -1517,6 +1531,73 @@ TEST_CASE("AxisTiling holds every loop's buffers to the memory budget, remainder
     REQUIRE(tiling->num_tiled() >= 1);
     INFO("blocks " << tiling->block_extents()[0] << " x " << tiling->block_extents()[1] << ", " << tiling->loops() << " loops");
     CHECK(tree_bytes(graph) <= limit);
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    auto const   expected = mp2_reference(p);
+    double const energy   = replay_mp2(graph, p);
+    CHECK(std::abs(energy - expected.value) <= sum_tolerance<double>() * expected.magnitude);
+}
+
+TEST_CASE("AxisTiling streams an intermediate over its share of a budget the program fits", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem      problem;
+    double const untiled = untiled_energy(problem);
+    cg::Graph    graph("mp2 full axis");
+    capture(graph, problem);
+
+    // The program fits four times over, but each intermediate is twice its share.
+    Budget const budget(4 * program_bytes);
+    Share const  share(static_cast<double>(whole_bytes / 2) / static_cast<double>(4 * program_bytes));
+    auto const   tiling = decide_by_default(graph);
+    REQUIRE(tiling->num_tiled() >= 1);
+    CHECK(tiling->largest_before() == whole_bytes);
+    CHECK(tiling->largest_after() <= whole_bytes / 2);
+    REQUIRE(loop_body(graph) != nullptr);
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    problem.energy.data()[0] = 0.0;
+    graph.execute();
+    CHECK_THAT(problem.energy.data()[0], Catch::Matchers::WithinRel(untiled, 1e-12));
+}
+
+TEST_CASE("AxisTiling leaves a program alone when it fits and the share is off", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem   problem;
+    cg::Graph graph("mp2 full axis");
+    capture(graph, problem);
+    auto const before = labels_of(graph);
+
+    // The same budget and an intermediate as large, with the rule turned off at either end.
+    Budget const budget(4 * program_bytes);
+    double const fraction = GENERATE(0.0, 1.0);
+    Share const  share(fraction);
+    auto const   tiling = decide_by_default(graph);
+    CHECK(tiling->num_tiled() == 0);
+    CHECK(declined_because(*tiling, "no intermediate holds more than its share"));
+    CHECK(labels_of(graph) == before);
+}
+
+TEST_CASE("AxisTiling holds a loop's buffers to their share together, remainders included", "[ComputeGraph][Pass][AxisTiling]") {
+    // Five occupied orbitals leave a remainder loop whose buffers live beside the full block's.
+    // The share bounds them together, not the largest block alone.
+    Mp2<double> p(5, nvir, naux);
+    cg::Graph   graph("mp2 with remainders");
+    capture_mp2(graph, p);
+    std::size_t const before = tree_bytes(graph);
+    std::size_t const four   = p.o * p.v * p.o * p.v * sizeof(double);
+
+    // A budget the program fits many times over, whose share is less than one four-index tensor.
+    std::size_t const budget_bytes = 16 * before;
+    std::size_t const share_bytes  = (3 * four) / 5;
+    Budget const      budget(budget_bytes);
+    Share const       share(static_cast<double>(share_bytes) / static_cast<double>(budget_bytes));
+    auto const        tiling = decide_by_default(graph);
+    REQUIRE(tiling->num_tiled() >= 1);
+    INFO("blocks " << tiling->block_extents()[0] << " x " << tiling->block_extents()[1] << ", " << tiling->loops() << " loops");
+    CHECK(tiling->largest_after() <= share_bytes);
+    // The four-index seed left the tree and every loop's buffers came in, together within the
+    // share.
+    CHECK(tree_bytes(graph) <= before - four + share_bytes);
 
     auto manager = cg::PassManager::create_default();
     graph.apply(manager);

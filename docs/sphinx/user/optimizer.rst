@@ -520,12 +520,17 @@ captured schedule.
 
 By default the cap is derived from the machine. An intermediate may take what
 :option:`--einsums:max-memory` leaves after every other tensor the graph names,
-counted as if all of them were live at once, so the pass fires only when the
-program would not fit: slicing a program that fits costs kernel efficiency for
-memory nobody was short of. On that basis the pass is in the default pipeline,
-after the algebraic rewrites, and a full-axis capture that would not fit is
-tiled without being asked. A positive cap, as above, bounds each intermediate on
-its own, for a caller who wants a smaller footprint than the machine allows.
+counted as if all of them were live at once, and no more than
+:option:`--einsums:graph:tiling-budget-share` of the budget. The share is there
+because fitting is not the only reason to stream: an intermediate that takes a
+large part of the machine costs the kernels that write and read it, and a
+program that holds it whole can be slower than one that streams it in blocks. A
+program that fits with no intermediate over its share is left alone. On that
+basis the pass is in the default pipeline, after the algebraic rewrites, and a
+full-axis capture is tiled without being asked when it would not fit or when one
+of its intermediates is that large. A positive cap, as above, bounds each
+intermediate on its own, for a caller who wants a smaller footprint than the
+machine allows, and the share is not read.
 
 On the full-axis DF-MP2 capture at water in cc-pVDZ, under a cap of 4096 bytes,
 it chooses the two occupied axes, 25 slices at depth one, and the largest
