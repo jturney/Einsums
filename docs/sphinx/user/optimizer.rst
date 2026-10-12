@@ -516,10 +516,16 @@ whose largest intermediate already fits is left alone; which axes, since the
 pass keeps the candidate set that streams the fewest bytes among those that
 bring the footprint under the cap; and how deep, since a chunk of slices is the
 grouped form of the same body. Zero is the spelling for a caller who wants the
-captured schedule, and the default is deliberately far above anything a captured
-program declares, because slicing a program that already fits costs kernel
-efficiency for memory nobody was short of. The pass is **not** in the default
-pipeline for that reason.
+captured schedule.
+
+By default the cap is derived from the machine. An intermediate may take what
+:option:`--einsums:max-memory` leaves after every other tensor the graph names,
+counted as if all of them were live at once, so the pass fires only when the
+program would not fit: slicing a program that fits costs kernel efficiency for
+memory nobody was short of. On that basis the pass is in the default pipeline,
+after the algebraic rewrites, and a full-axis capture that would not fit is
+tiled without being asked. A positive cap, as above, bounds each intermediate on
+its own, for a caller who wants a smaller footprint than the machine allows.
 
 On the full-axis DF-MP2 capture at water in cc-pVDZ, under a cap of 4096 bytes,
 it chooses the two occupied axes, 25 slices at depth one, and the largest

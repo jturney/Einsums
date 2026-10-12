@@ -125,10 +125,10 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         // runs over, and a reload that quietly dropped it would change what the graph computes.
         {"BasisTruncation", cg::PassPhase::StructuralAlgebraic},
 
-        // Outside the pipeline for a different reason from the three above: it is not lossy, it
-        // is a schedule a caller asks for by stating a memory cap. Structural-resource because
+        // In the default pipeline, unlike the three above: it is not lossy, and under its default
+        // cap it acts only on a program the memory budget cannot hold. Structural-resource because
         // what it changes is the node set and it changes it for the machine, so a save keeps the
-        // algebraic form and a load re-derives the loop from whatever cap is in force there.
+        // algebraic form and a load re-derives the loop from whatever budget is in force there.
         {"AxisTiling", cg::PassPhase::StructuralResource},
     };
     return table;

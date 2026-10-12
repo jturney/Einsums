@@ -882,7 +882,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Ordering rationale: provenance first (DeltaElimination reads the tags it carries), then
      * lowering (TiledExpansion, so every pass below sees dense nodes), then index-space analysis,
      * then the algebraic rewrites (delta elimination, the antisymmetrizer passes, folding,
-     * absorption, fusion, elimination, hoisting, factorization), then planning, then scheduling
+     * absorption, fusion, elimination, hoisting, factorization), then planning, then tiling, then scheduling
      * (Reorder/IOPrefetch), then deferred materialization and the read-only analyses of the
      * planned graph, then backend placement (GPU, distributed), then memory management. The GPU
      * and distributed blocks are compile-time-gated by backend availability; the numbering below
@@ -920,34 +920,35 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * 22. MultiTermFactorization (structural-algebraic): parenthesize a region's contractions and share terms
      * 23. LayoutAssignment (structural-algebraic): choose storage orders so contractions read operands flat
      * 24. ContractionPlanning (structural-algebraic): cost-model chain reassociation
-     * 25. GEMMBatching (tuning): collapse compatible GEMMs into one BatchedGemm
-     * 26. Reorder (tuning): memory-aware topological sort
-     * 27. IOPrefetch (tuning): overlap DiskRead with compute
-     * 28. DistributionPlanning (structural-resource): classify indices for distributed dispatch
-     * 29. Materialization (tuning): resize deferred tensors to local partitions
-     * 30. SymmetryPropagation (analysis): infer symmetry on graph intermediates and
+     * 25. AxisTiling (structural-resource): stream an intermediate the memory budget cannot hold
+     * 26. GEMMBatching (tuning): collapse compatible GEMMs into one BatchedGemm
+     * 27. Reorder (tuning): memory-aware topological sort
+     * 28. IOPrefetch (tuning): overlap DiskRead with compute
+     * 29. DistributionPlanning (structural-resource): classify indices for distributed dispatch
+     * 30. Materialization (tuning): resize deferred tensors to local partitions
+     * 31. SymmetryPropagation (analysis): infer symmetry on graph intermediates and
      *                                 push to backing tensors for rank-2 BLAS dispatch
-     * 31. ScalingAnalysis (diagnostic): report every contraction's cost polynomial and what limits it
-     * 32. StreamContractionFusion (tuning): loop-fuse sibling contractions over one big tensor
+     * 32. ScalingAnalysis (diagnostic): report every contraction's cost polynomial and what limits it
+     * 33. StreamContractionFusion (tuning): loop-fuse sibling contractions over one big tensor
      *
      * GPU block (when a GPU backend or mock is available):
-     * 33. GPUPlacement (structural-resource): cost-model based node-to-GPU assignment
-     * 34. TransferInsertion (structural-resource): insert HostToDevice / DeviceToHost nodes
-     * 35. TransferElimination (structural-resource): drop redundant transfers
-     * 36. GPUDiagnostics (diagnostic): log placement decisions
-     * 37. StreamAssignment (tuning): assign CUDA/HIP streams for overlap
+     * 34. GPUPlacement (structural-resource): cost-model based node-to-GPU assignment
+     * 35. TransferInsertion (structural-resource): insert HostToDevice / DeviceToHost nodes
+     * 36. TransferElimination (structural-resource): drop redundant transfers
+     * 37. GPUDiagnostics (diagnostic): log placement decisions
+     * 38. StreamAssignment (tuning): assign CUDA/HIP streams for overlap
      *
      * Distributed block (when MPI or its mock is available):
-     * 38. InputSlicing (structural-resource): create per-rank views of distributed inputs
-     * 39. SUMMAExpansion (structural-resource): expand einsums to SUMMA loops on square grids
-     * 40. CommunicationInsertion (structural-resource): insert allreduces for replicated outputs
-     * 41. CommunicationElimination (structural-resource): drop redundant communications
-     * 42. CommunicationScheduling (structural-resource): split allreduce into async iallreduce + wait
+     * 39. InputSlicing (structural-resource): create per-rank views of distributed inputs
+     * 40. SUMMAExpansion (structural-resource): expand einsums to SUMMA loops on square grids
+     * 41. CommunicationInsertion (structural-resource): insert allreduces for replicated outputs
+     * 42. CommunicationElimination (structural-resource): drop redundant communications
+     * 43. CommunicationScheduling (structural-resource): split allreduce into async iallreduce + wait
      *
      * Tail (always registered):
-     * 43. InplaceOptimization (tuning): merge elementwise outputs into dying inputs
-     * 44. FreeInsertion (tuning): free intermediates after last consumer
-     * 45. MemoryPlanning (tuning): tensor liveness, peak memory, and arena planning
+     * 44. InplaceOptimization (tuning): merge elementwise outputs into dying inputs
+     * 45. FreeInsertion (tuning): free intermediates after last consumer
+     * 46. MemoryPlanning (tuning): tensor liveness, peak memory, and arena planning
      *
      * Passes registered with @ref register_default_pass run beside their anchors.
      *

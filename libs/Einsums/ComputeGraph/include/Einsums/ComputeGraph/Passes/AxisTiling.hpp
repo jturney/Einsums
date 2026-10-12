@@ -91,6 +91,18 @@
  * ORDER of the reduction that becomes the accumulation, so the pass is re-associating rather
  * than bitwise-exact and is validated against that bound.
  *
+ * @par Where the cap comes from
+ * A positive cap bounds each intermediate on its own. The default derives a budget instead, the
+ * @c --einsums:max-memory option, and holds the whole tree to it: every tensor some node of the
+ * tree reads or writes, inputs included and each counted once, as if all were live at the same
+ * time. That is conservative, since a tensor freed before another is written still counts, and it
+ * makes the question the pass asks the one a user asks: does the program fit. When it does, the
+ * pass declines before it reads a node. When it does not, every intermediate a sliceable
+ * statement writes is a seed, largest first, and its loop's buffers are held to what the tensors
+ * outside the loop leave, together: every streamed intermediate's block, and the buffers of each
+ * remainder loop beside the full block's, since every loop declares its own and all of them live
+ * for the whole replay.
+ *
  * @par What it declines
  * A program whose largest intermediate already fits the cap, which is what makes the pass a
  * no-op on a form that never needed it, and what makes the order against
@@ -129,9 +141,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   graph.apply(manager);
  * @endcode
  *
- * Not a member of @ref PassManager::create_default. The cap's default is far above anything a
- * captured program declares, so a default-pipeline membership would only ever pay for the
- * analysis; a caller who has a footprint to live inside says so and adds the pass.
+ * A member of @ref PassManager::create_default, after the algebraic rewrites. By default the cap
+ * is what the @c --einsums:max-memory option leaves after every other tensor of the graph, so in the default
+ * pipeline the pass acts only on a program that would not fit and otherwise declines without
+ * touching the graph. A caller with a smaller footprint to live inside sets a cap of its own.
  * @versionadded{2.0.0}
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT AxisTiling : public OptimizerPass {
@@ -181,7 +194,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /**
      * @brief Override the cap for this pipeline, in bytes.
-     * @param[in] bytes Largest a single live intermediate may be. Zero disables the pass.
+     * @param[in] bytes Largest a single live intermediate may be. Zero disables the pass, and a
+     *            negative value derives the cap from the @c --einsums:max-memory option and the graph's other
+     *            tensors.
      *
      * Beats @ref option::GraphTilingMemoryCap, which is the two-level shape every other
      * per-pass knob in this module has.
@@ -190,7 +205,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE void set_memory_cap(std::int64_t bytes);
 
     /// @brief The cap in force: this pipeline's override, or the option's value.
-    /// @return The cap in bytes.
+    /// @return The cap in bytes; negative when it is derived per graph from the @c --einsums:max-memory option.
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("memory_cap") [[nodiscard]] std::int64_t memory_cap() const;
 
@@ -285,12 +300,32 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return True when a region was replaced by a loop.
     bool tile_graph(Graph &graph);
 
+    /// @brief The memory one region may take.
+    struct Allowance {
+        /// The cap on each intermediate alone; an intermediate that fits it is not streamed.
+        std::size_t cap{0};
+        /// The memory budget the loop's buffers are held to together with every tensor outside
+        /// the loop, or zero when @ref cap alone bounds them.
+        std::size_t budget{0};
+        /// What the tree's tensors hold before the region is tiled, when @ref budget is set.
+        std::size_t total{0};
+    };
+
     /// @brief Tile the region around one seed, if any candidate axis set can.
-    /// @param[in,out] graph The graph, rewritten when a region is tiled.
-    /// @param[in]     seed  An intermediate over the cap that a sliceable statement writes.
-    /// @param[in]     cap   The memory cap in bytes.
+    /// @param[in,out] graph     The graph, rewritten when a region is tiled.
+    /// @param[in]     seed      An intermediate over the cap that a sliceable statement writes.
+    /// @param[in]     allowance The memory the region may take.
     /// @return True when the region was replaced by a loop.
-    bool tile_region(Graph &graph, TensorId seed, std::int64_t cap);
+    bool tile_region(Graph &graph, TensorId seed, Allowance const &allowance);
+
+    /// @brief The bytes of every tensor the tree around @p graph names, each counted once.
+    ///
+    /// The tree is the one whose root this pass has walked out to through @ref _enclosing, so a
+    /// loop body counts its parent's tensors too. A view owns no storage and is not counted, and
+    /// neither is a tensor no node of its graph reads or writes, which is never allocated.
+    /// @param[in] graph A graph of the tree.
+    /// @return The total in bytes.
+    [[nodiscard]] std::size_t footprint(Graph const &graph) const;
 
     std::int64_t _memory_cap{0};
     bool         _cap_explicit{false};

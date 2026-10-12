@@ -524,10 +524,11 @@ kernels. The cap, :option:`--einsums:graph:tiling-memory-cap`, is read three tim
 to tile at all, since a program whose largest intermediate already fits is left alone; which axes
 to slice; and how deep a chunk may be.
 
-It is **not** in the default pipeline, and the default cap is deliberately far above anything a
-captured program declares. Slicing a program that already fits costs kernel efficiency for memory
-nobody was short of, so this fires when a caller asks for it. Zero is the spelling for the
-captured schedule.
+It is in the default pipeline, and by default the cap is derived from the machine: an intermediate
+may take what :option:`--einsums:max-memory` leaves after every other tensor the graph names. Slicing
+a program that fits costs kernel efficiency for memory nobody was short of, so under that default
+the pass fires only on a program that would not fit. A positive cap, as above, asks for a smaller
+footprint than the machine allows, and zero is the spelling for the captured schedule.
 
 On the full-axis DF-MP2 capture at water in cc-pVDZ, a cap of 4096 bytes slices ``i`` and ``j``,
 takes the six intermediates it streams from 72200 bytes to 2888 each, and moves them into a

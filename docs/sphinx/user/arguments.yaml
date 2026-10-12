@@ -447,9 +447,13 @@
     under the cap. And it decides *how deep*, since the chunk is the largest number of slices whose
     intermediates still fit.
 
-    Zero disables the pass. The default is deliberately far above any program that needs tiling,
-    because slicing a program that already fits costs kernel efficiency for memory nobody was
-    short of; the pass should fire when a caller states a footprint they have to live inside.
+    Zero disables the pass. A negative value, the default, derives the cap from the machine: an
+    intermediate may take whatever :option:`--einsums:max-memory` leaves after every other tensor
+    the graph names, counted as if all of them were live at once. The pass therefore fires only
+    when the program would not fit, since slicing a program that fits costs kernel efficiency for
+    memory nobody was short of, and it is a member of the default pipeline on that basis. A
+    positive value caps each intermediate on its own, for a caller who wants a smaller footprint
+    than the machine allows.
 
 "einsums:graph:thc-epsilon":
   added: "2.0.0"

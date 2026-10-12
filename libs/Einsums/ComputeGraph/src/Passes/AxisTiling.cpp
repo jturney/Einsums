@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
@@ -17,6 +18,7 @@
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Options/Get.hpp>
+#include <Einsums/StringUtil/MemoryString.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <fmt/format.h>
@@ -511,14 +513,23 @@ class RegionAnalysis {
     /// writes is either its reduction target or purely internal.
     [[nodiscard]] bool closes(Labelling const &labelling, std::string &accumulator, TensorId &accumulator_id, std::string &reason) const;
 
-    /// Bytes per slice of the largest intermediate, and the traffic the schedule streams.
+    /// Bytes per slice of the largest intermediate, the bytes every intermediate's chunk holds
+    /// together, and the traffic the schedule streams.
     void cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::size_t depth, std::size_t &largest,
-              long double &traffic) const;
+              std::size_t &held, long double &traffic) const;
 
-    /// The largest intermediate and the traffic of a plan that cuts each sliced axis into blocks
-    /// of @p blocks (one for a point), remainders included.
+    /// The largest intermediate, the bytes every block buffer of the loops holds together, and the
+    /// traffic of a plan that cuts each sliced axis into blocks of @p blocks (one for a point),
+    /// remainders included.
+    ///
+    /// Each loop of the plan declares its own buffers at its own extents and every one of them is
+    /// allocated for the whole replay, so the held bytes count a remainder loop's buffers beside
+    /// the full block's.
     void range_cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::vector<std::size_t> const &blocks,
-                    std::size_t &largest, long double &traffic) const;
+                    std::size_t &largest, std::size_t &held, long double &traffic) const;
+
+    /// The bytes the intermediates the loop re-declares hold whole, before tiling.
+    [[nodiscard]] std::size_t streamed_whole_bytes(Labelling const &labelling) const;
 
     /// The sliced axes a block would reward: those some contraction of the loop carries while one
     /// of its operands does not, so that operand is read once per block rather than once per slice.
@@ -1009,7 +1020,7 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
 }
 
 void RegionAnalysis::cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::size_t depth, std::size_t &largest,
-                          long double &traffic) const {
+                          std::size_t &held, long double &traffic) const {
     // A chunk holds @p depth SLICES, so its cost is one slice times the depth however many
     // axes the slice is cut on. Multiplying by the depth once per sliced axis would charge a
     // chunk of two pairs for four, which is a square where the schedule is linear.
@@ -1031,12 +1042,15 @@ void RegionAnalysis::cost(Labelling const &labelling, std::vector<std::size_t> c
     };
 
     largest = 0;
+    held    = 0;
     for (auto const &[tid, labels] : labelling.store.tensor) {
         auto const *handle = _graph.find_tensor(tid);
         if (handle == nullptr || !_scope.intermediate(tid)) {
             continue;
         }
-        largest = std::max(largest, static_cast<std::size_t>(sliced_bytes(tid, labels)));
+        auto const bytes = static_cast<std::size_t>(sliced_bytes(tid, labels));
+        largest          = std::max(largest, bytes);
+        held += bytes;
     }
 
     // Traffic is what the whole schedule streams: every read, once per iteration, times the
@@ -1183,7 +1197,7 @@ std::string_view RegionAnalysis::range_blocker(Labelling const &labelling) const
 }
 
 void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::vector<std::size_t> const &blocks,
-                                std::size_t &largest, long double &traffic) const {
+                                std::size_t &largest, std::size_t &held, long double &traffic) const {
     // One tensor under the plan: the bytes one block of it holds, and the bytes every iteration
     // together reads of it. An axis the tensor carries is read once in all, block by block; an
     // axis it does not carry repeats the read once per block of that axis, which is the reuse a
@@ -1191,6 +1205,7 @@ void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::siz
     struct Measure {
         long double block{0.0L};
         long double streamed{0.0L};
+        long double every_loop{0.0L};
     };
     auto const measure = [&](TensorId tid, std::vector<int> const *labels) -> Measure {
         auto const *handle = _graph.find_tensor(tid);
@@ -1198,7 +1213,7 @@ void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::siz
             return {};
         }
         auto              free = static_cast<long double>(handle->element_size);
-        long double       held = 1.0L;
+        long double       kept = 1.0L;
         long double       all  = 1.0L;
         std::vector<bool> carries(extents.size(), false);
         for (std::size_t p = 0; p < handle->dims.size(); ++p) {
@@ -1209,26 +1224,38 @@ void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::siz
             }
             auto const k = static_cast<std::size_t>(label);
             carries[k]   = true;
-            held *= static_cast<long double>(blocks[k]);
+            kept *= static_cast<long double>(blocks[k]);
             all *= static_cast<long double>(extents[k]);
         }
         long double repeats = 1.0L;
+        // One buffer per loop: along an axis with a remainder, a tensor carrying the axis has a
+        // full-block buffer and a remainder one, and a tensor that does not has one per loop.
+        long double every_loop = free;
         for (std::size_t k = 0; k < extents.size(); ++k) {
+            std::size_t const remainder = extents[k] % blocks[k];
+            if (carries[k]) {
+                every_loop *= static_cast<long double>(blocks[k] + remainder);
+            } else if (remainder != 0) {
+                every_loop *= 2.0L;
+            }
             if (!carries[k]) {
                 std::size_t const pieces = (extents[k] + blocks[k] - 1) / blocks[k];
                 repeats *= static_cast<long double>(pieces);
             }
         }
-        return {.block = free * held, .streamed = free * all * repeats};
+        return {.block = free * kept, .streamed = free * all * repeats, .every_loop = every_loop};
     };
 
     largest = 0;
+    held    = 0;
     for (auto const &[tid, labels] : labelling.store.tensor) {
         auto const *handle = _graph.find_tensor(tid);
         if (handle == nullptr || !_scope.intermediate(tid)) {
             continue;
         }
-        largest = std::max(largest, static_cast<std::size_t>(measure(tid, &labels).block));
+        Measure const m = measure(tid, &labels);
+        largest         = std::max(largest, static_cast<std::size_t>(m.block));
+        held += static_cast<std::size_t>(m.every_loop);
     }
 
     // A statement carrying no sliced axis stays outside the loop and runs once.
@@ -1240,6 +1267,17 @@ void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::siz
             traffic += inside ? measure(slots[s].tid, slot_labels(labelling, i, s)).streamed : measure(slots[s].tid, nullptr).block;
         }
     }
+}
+
+std::size_t RegionAnalysis::streamed_whole_bytes(Labelling const &labelling) const {
+    std::size_t total = 0;
+    for (auto const &[tid, labels] : labelling.store.tensor) {
+        auto const *handle = _graph.find_tensor(tid);
+        if (handle != nullptr && _scope.intermediate(tid)) {
+            total += handle->total_bytes();
+        }
+    }
+    return total;
 }
 
 bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &reason) const {
@@ -1349,6 +1387,7 @@ std::vector<std::size_t> balanced_blocks(std::size_t extent) {
 struct BlockChoice {
     std::vector<std::size_t> blocks;
     std::size_t              largest{0};
+    std::size_t              held{0};
     long double              traffic{0.0L};
 
     [[nodiscard]] std::size_t ranged() const {
@@ -1372,17 +1411,17 @@ bool better(BlockChoice const &lhs, BlockChoice const &rhs) {
     return std::ranges::lexicographical_compare(std::views::reverse(rhs.blocks), std::views::reverse(lhs.blocks));
 }
 
-/// The block extents that stream the fewest bytes with every intermediate under @p cap, or
-/// nothing when no choice that cuts some axis into blocks fits.
+/// The block extents that stream the fewest bytes among those @p fits accepts, or nothing when no
+/// choice that cuts some axis into blocks fits.
 ///
 /// Only the axes in @p reusable are cut, and at most two of them at once; every other axis stays a
 /// point. Two is the blocking a matrix product has, one block per operand the other does not
 /// carry, and it is every shape this pass has been measured on; a third ranged axis multiplies
 /// the search and the remainder loops for a reuse no program here has. Each operand in @p fully_sliced needs a block on one of its axes,
 /// since at a point it would have none left.
-template <typename Cost>
+template <typename Fits, typename Cost>
 std::optional<BlockChoice> choose_blocks(std::vector<std::size_t> const &extents, std::set<int> const &reusable,
-                                         std::vector<std::set<int>> const &fully_sliced, std::size_t cap, Cost &&cost) {
+                                         std::vector<std::set<int>> const &fully_sliced, Fits &&fits, Cost &&cost) {
     std::vector<std::size_t> const        axes(reusable.begin(), reusable.end());
     std::vector<std::vector<std::size_t>> options(extents.size());
     for (std::size_t const k : axes) {
@@ -1400,8 +1439,8 @@ std::optional<BlockChoice> choose_blocks(std::vector<std::size_t> const &extents
             }
         }
         BlockChoice choice{.blocks = blocks};
-        cost(blocks, choice.largest, choice.traffic);
-        if (choice.largest > cap) {
+        cost(blocks, choice.largest, choice.held, choice.traffic);
+        if (!fits(choice.largest, choice.held)) {
             return;
         }
         if (!best.has_value() || better(choice, *best)) {
@@ -2077,28 +2116,90 @@ bool AxisTiling::run(Graph &graph) {
     return moved;
 }
 
+std::size_t AxisTiling::footprint(Graph const &graph) const {
+    Graph const *root = &graph;
+    for (auto hit = _enclosing.find(root); hit != _enclosing.end(); hit = _enclosing.find(root)) {
+        root = hit->second.first;
+    }
+
+    // A body names its parent's tensors through handles of its own over the same tensor object,
+    // so one tensor is counted once by that object; a handle with no object is its graph's own.
+    std::set<void const *>                       objects;
+    std::set<std::pair<Graph const *, TensorId>> unbacked;
+    std::size_t                                  total = 0;
+    auto const                                   count = [&](Graph const &g) {
+        // Only what a node reads or writes is ever allocated: a rewrite leaves the handles of the
+        // tensors it replaced registered, and a deferred one nobody names is never materialized.
+        std::set<TensorId> named;
+        for (auto const &node : g.nodes()) {
+            for (auto const *ids : {&node.inputs, &node.outputs}) {
+                for (TensorId const tid : *ids) {
+                    named.insert(g.buffer_of(tid));
+                }
+            }
+        }
+        for (auto const &[tid, handle] : g.tensors_map()) {
+            if (handle.is_tensor_view || g.buffer_of(tid) != tid || !named.contains(tid)) {
+                continue;
+            }
+            bool const fresh = handle.tensor_ptr != nullptr ? objects.insert(handle.tensor_ptr).second : unbacked.emplace(&g, tid).second;
+            if (fresh) {
+                total += handle.total_bytes();
+            }
+        }
+    };
+    count(*root);
+    root->for_each_descendant([&](Graph const &g) { count(g); });
+    return total;
+}
+
 bool AxisTiling::tile_graph(Graph &graph) {
     PassCounter const tiled{_num_tiled};
 
     Scope const scope{.graph = graph, .enclosing = _enclosing};
 
     std::int64_t const cap = memory_cap();
-    if (cap <= 0) {
+    if (cap == 0) {
         note_skip("the memory cap is zero, which is how a caller asks for the captured schedule");
         return tiled.moved();
     }
-    auto const limit = static_cast<std::size_t>(cap);
+
+    // A negative cap is derived: an intermediate may take what the memory budget leaves after
+    // every other tensor of the tree. A program that fits as a whole is left alone before a node
+    // is read or reordered, which is what keeps the pass free in the default pipeline.
+    bool const  derived = cap < 0;
+    std::size_t budget  = 0;
+    if (derived) {
+        budget = string_util::memory_string(config::get(option::MaxMemory));
+        if (budget == 0) {
+            note_skip("the cap is derived from --einsums:max-memory, which is zero, so there is no budget to tile against");
+            return tiled.moved();
+        }
+    }
 
     // One region at a time. Every rewrite renumbers the nodes and replaces a region with a loop,
     // which no later region can take in, so the seeds are read afresh after each; a seed that
     // declined once declines again on the same graph and is not retried.
     std::set<TensorId> declined;
     for (bool first = true;; first = false) {
-        graph.topological_sort();
-        auto const &nodes = graph.nodes();
+        std::size_t const total = derived ? footprint(graph) : 0;
+        if (derived && !first && total <= budget) {
+            break;
+        }
 
-        // A seed is an intermediate over the cap that a sliceable statement writes: the tensors
+        // The cap one intermediate of @p bytes is held to: the fixed cap, or what the budget
+        // leaves after everything else. Zero when the others alone exceed the budget.
+        auto const limit_for = [&](std::size_t bytes) -> std::size_t {
+            if (!derived) {
+                return static_cast<std::size_t>(cap);
+            }
+            std::size_t const others = total - std::min(total, bytes);
+            return others < budget ? budget - others : 0;
+        };
+
+        // A seed is an intermediate over its cap that a sliceable statement writes: the tensors
         // the loop exists to stream, largest first.
+        auto const                                   &nodes   = graph.nodes();
         std::size_t                                   largest = 0;
         std::vector<std::pair<std::size_t, TensorId>> seeds;
         for (auto const &node : nodes) {
@@ -2110,7 +2211,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 }
                 std::size_t const bytes = handle->total_bytes();
                 largest                 = std::max(largest, bytes);
-                if (sliceable && bytes > limit && !declined.contains(tid) &&
+                if (sliceable && bytes > limit_for(bytes) && !declined.contains(tid) &&
                     std::ranges::find(seeds, std::pair{bytes, tid}) == seeds.end()) {
                     seeds.emplace_back(bytes, tid);
                 }
@@ -2125,7 +2226,13 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 // method's loop, has nothing here to decline.
                 return tiled.moved();
             }
-            if (largest <= limit) {
+            if (derived && total <= budget) {
+                note_skip("the program's tensors fit the memory budget together, so there is nothing to stream",
+                          fmt::format("{} bytes against --einsums:max-memory of {}", total, budget));
+                report(1, fmt::format("declined: the program's tensors hold {} bytes and the memory budget is {}", total, budget));
+                return tiled.moved();
+            }
+            if (!derived && largest <= static_cast<std::size_t>(cap)) {
                 note_skip("the largest intermediate already fits the cap, so there is nothing to stream",
                           fmt::format("{} bytes against a cap of {}", largest, cap));
                 report(1, fmt::format("declined: the largest intermediate is {} bytes and the cap is {}", largest, cap));
@@ -2133,7 +2240,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
             }
             if (seeds.empty()) {
                 note_skip("every intermediate over the cap is written by a statement this pass cannot slice",
-                          fmt::format("{} bytes against a cap of {}", largest, cap));
+                          fmt::format("{} bytes against a cap of {}", largest, limit_for(largest)));
                 return tiled.moved();
             }
         }
@@ -2141,9 +2248,11 @@ bool AxisTiling::tile_graph(Graph &graph) {
             return lhs.first != rhs.first ? lhs.first > rhs.first : lhs.second < rhs.second;
         });
 
+        graph.topological_sort();
         bool rewrote = false;
         for (auto const &[bytes, seed] : seeds) {
-            if (tile_region(graph, seed, cap)) {
+            Allowance const allowance{.cap = limit_for(bytes), .budget = derived ? budget : 0, .total = total};
+            if (tile_region(graph, seed, allowance)) {
                 rewrote = true;
                 break;
             }
@@ -2156,15 +2265,15 @@ bool AxisTiling::tile_graph(Graph &graph) {
     return tiled.moved();
 }
 
-bool AxisTiling::tile_region(Graph &graph, TensorId seed, std::int64_t cap) {
+bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allowance) {
     auto const &nodes       = graph.nodes();
     auto const  io          = buffer_io(graph);
     auto const *seed_handle = graph.find_tensor(seed);
     if (seed_handle == nullptr) {
         return false;
     }
-    auto const  limit = static_cast<std::size_t>(cap);
-    Scope const scope{.graph = graph, .enclosing = _enclosing};
+    std::size_t const limit = allowance.cap;
+    Scope const       scope{.graph = graph, .enclosing = _enclosing};
 
     // The statements that read or write a tensor, by the buffer underneath it.
     auto const touchers = [&](TensorId tid) {
@@ -2278,10 +2387,28 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, std::int64_t cap) {
             slices *= seed_handle->dims[position];
         }
 
-        std::size_t unit    = 0;
-        long double traffic = 0.0L;
-        analysis->cost(labelling, extents, 1, unit, traffic);
-        if (unit > limit) {
+        // Against a fixed cap every intermediate is held to it alone. Against the memory budget
+        // the loop's buffers are held to it together, beside every tensor the loop does not
+        // re-declare.
+        bool const  joint = allowance.budget != 0;
+        std::size_t room  = limit;
+        if (joint) {
+            std::size_t const outside = allowance.total - std::min(allowance.total, analysis->streamed_whole_bytes(labelling));
+            if (outside >= allowance.budget) {
+                note_skip(
+                    "the program's other tensors alone exceed the memory budget, so no slice of the region fits beside them",
+                    fmt::format("{}; {} bytes outside the loop against --einsums:max-memory of {}", detail, outside, allowance.budget));
+                continue;
+            }
+            room = allowance.budget - outside;
+        }
+        auto const fits = [joint, room](std::size_t largest, std::size_t held) { return (joint ? held : largest) <= room; };
+
+        std::size_t unit      = 0;
+        std::size_t unit_held = 0;
+        long double traffic   = 0.0L;
+        analysis->cost(labelling, extents, 1, unit, unit_held, traffic);
+        if (!fits(unit, unit_held)) {
             ++over_cap;
             continue;
         }
@@ -2293,10 +2420,11 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, std::int64_t cap) {
             if (std::string_view const blocker = analysis->range_blocker(labelling); !blocker.empty()) {
                 note_skip(blocker, detail);
             } else {
-                blocks = choose_blocks(extents, reusable, labelling.fully_sliced, limit,
-                                       [&](std::vector<std::size_t> const &b, std::size_t &largest, long double &streamed) {
-                                           analysis->range_cost(labelling, extents, b, largest, streamed);
-                                       });
+                blocks =
+                    choose_blocks(extents, reusable, labelling.fully_sliced, fits,
+                                  [&](std::vector<std::size_t> const &b, std::size_t &largest, std::size_t &held, long double &streamed) {
+                                      analysis->range_cost(labelling, extents, b, largest, held, streamed);
+                                  });
             }
         }
         if (!blocks.has_value() && !labelling.fully_sliced.empty()) {
@@ -2322,9 +2450,10 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, std::int64_t cap) {
             plan.largest_after = blocks->largest;
             plan.traffic       = blocks->traffic;
         } else {
-            std::size_t const depth   = chunk_depth(slices, unit, limit);
+            std::size_t const depth   = chunk_depth(slices, joint ? unit_held : unit, room);
             std::size_t       largest = 0;
-            analysis->cost(labelling, extents, depth, largest, traffic);
+            std::size_t       held    = 0;
+            analysis->cost(labelling, extents, depth, largest, held, traffic);
             plan.depth         = depth;
             plan.iterations    = slices / depth;
             plan.largest_after = largest;

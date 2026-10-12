@@ -217,14 +217,19 @@ inline constinit cl::ConfigOption<double> GraphFnoOccupation = cl::config_opt<do
 /// fits is declined, which is what makes the pass a no-op on the forms that never needed it.
 ///
 /// Zero disables the pass, which is the spelling a caller who wants the captured schedule uses.
-/// The default is deliberately large: tiling a program that fits in cache costs kernel
-/// efficiency for memory nobody was short of, so the pass should fire when a caller says the
-/// footprint matters and not because a default guessed that it does.
+///
+/// The default, any negative value, derives the cap from the machine: an intermediate may be as
+/// large as ``--einsums:max-memory`` less every other tensor the graph names, counted as if all
+/// were live at once. The pass then fires only when the program would not fit, because tiling a
+/// program that fits costs kernel efficiency for memory nobody was short of. A positive value is
+/// a cap on each intermediate alone, for a caller who wants a footprint smaller than the machine
+/// allows.
 inline constinit cl::ConfigOption<std::int64_t> GraphTilingMemoryCap = cl::config_opt<std::int64_t>(
     "einsums:graph:tiling-memory-cap",
     "Largest a single live intermediate may be, in bytes, before AxisTiling slices the free axes it is carried over and streams it a "
-    "chunk at a time. A program whose largest intermediate already fits is left alone. Zero disables the pass",
-    "ComputeGraph Passes", std::int64_t{1} << 34, "BYTES");
+    "chunk at a time. A program whose largest intermediate already fits is left alone. Zero disables the pass; a negative value, the "
+    "default, lets an intermediate take whatever --einsums:max-memory leaves after the graph's other tensors",
+    "ComputeGraph Passes", std::int64_t{-1}, "BYTES");
 
 /// How long a search pass may run, in milliseconds. Zero means unlimited.
 ///

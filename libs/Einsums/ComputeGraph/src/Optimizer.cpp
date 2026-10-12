@@ -14,6 +14,7 @@
 #include <Einsums/ComputeGraph/Passes/AntisymmetrizerLinearity.hpp>
 #include <Einsums/ComputeGraph/Passes/AntisymmetryDetection.hpp>
 #include <Einsums/ComputeGraph/Passes/AntisymmetryInference.hpp>
+#include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp>
@@ -1145,6 +1146,13 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_builtin_default_p
     // node set) and DistributionPlanning/Materialization (which size and
     // allocate the intermediates it introduces).
     list.push_back(std::make_shared<passes::ContractionPlanning>(cost_model));
+    // Tiling, once the algebraic node set has settled: it slices the contractions that will
+    // actually run, so a rewrite above that dissolves or re-brackets a large intermediate leaves
+    // it nothing to do, and it runs before the passes that batch, schedule and allocate the loop
+    // it emits. Self-gating on memory: under its default cap it declines before reading a node
+    // unless the graph's tensors together exceed --einsums:max-memory, which is the case where
+    // the captured schedule would not run at all.
+    list.push_back(std::make_shared<passes::AxisTiling>());
     // GEMMBatching collapses groups of independent, shape-compatible
     // 2D×2D→2D einsums into a single BatchedGemm node backed by
     // blas::gemm_batch. Runs after CSE/DNE so duplicates/unused nodes

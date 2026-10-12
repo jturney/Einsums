@@ -1636,7 +1636,7 @@ _DEFAULT_PASS_NAMES = (
     "AntisymmetrizerFolding", "AntisymmetrizerExpansion", "ConstantFolding", "ScaleAbsorption",
     "PermuteFusion", "CSE", "DeadNodeElimination", "SymmetrizedAccumulation", "ElementWiseFusion",
     "LinearCombinationContractionFolding", "DistributiveFactoring", "LoopInvariantHoisting",
-    "ScratchPrivatization", "MultiTermFactorization", "LayoutAssignment", "ContractionPlanning",
+    "ScratchPrivatization", "MultiTermFactorization", "LayoutAssignment", "ContractionPlanning", "AxisTiling",
     "GEMMBatching", "Reorder", "IOPrefetch", "DistributionPlanning", "Materialization",
     "SymmetryPropagation", "SpacePropagation", "CrossSpaceValidation", "ScalingAnalysis",
     "StreamContractionFusion", "GPUPlacement", "TransferInsertion", "TransferElimination",

@@ -17,6 +17,7 @@
 /// many slices, in chunks of what, and what the largest intermediate measures on both sides of
 /// the rewrite.
 
+#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/ComputeGraph.hpp>
 // Not reached through the umbrella header, which does not carry this pass.
 #include <Einsums/ComputeGraph/Options.hpp>
@@ -32,6 +33,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1314,4 +1316,211 @@ TEST_CASE("AxisTiling keeps whole a body's intermediate that the parent reads af
     CHECK_THAT(after.data()[0], Catch::Matchers::WithinRel(want, 1e-12));
     auto const expected = mp2_reference(p);
     CHECK(std::abs(p.energy.data()[0] - expected.value) <= sum_tolerance<double>() * expected.magnitude);
+}
+
+// ── The cap derived from the memory budget ──────────────────────────────────
+
+namespace {
+
+/// Every byte the four-index program names: the factor, the denominator, the energy and the five
+/// four-index intermediates.
+constexpr std::size_t program_bytes = (naux * nocc * nvir * sizeof(double)) + whole_bytes + sizeof(double) + (5 * whole_bytes);
+
+/// --einsums:max-memory at @p bytes for one case, restored on the way out.
+struct Budget {
+    std::string previous{config::get(option::MaxMemory)};
+
+    explicit Budget(std::size_t bytes) { config::set(option::MaxMemory, std::to_string(bytes) + "b"); }
+    explicit Budget(std::string const &spec) { config::set(option::MaxMemory, spec); }
+    Budget(Budget const &)            = delete;
+    Budget &operator=(Budget const &) = delete;
+    ~Budget() { config::set(option::MaxMemory, previous); }
+};
+
+/// Run the pass alone under the cap the option gives, which by default is derived.
+std::shared_ptr<cg::passes::AxisTiling> decide_by_default(cg::Graph &graph) {
+    auto tiling = std::make_shared<cg::passes::AxisTiling>();
+    cg::apply_single_pass(*tiling, graph);
+    return tiling;
+}
+
+std::vector<std::string> labels_of(cg::Graph const &graph) {
+    std::vector<std::string> out;
+    for (auto const &node : graph.nodes()) {
+        out.push_back(node.label);
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("AxisTiling derives its cap from the memory budget by default", "[ComputeGraph][Pass][AxisTiling]") {
+    CHECK(config::get(option::GraphTilingMemoryCap) < 0);
+    CHECK(cg::passes::AxisTiling{}.memory_cap() < 0);
+
+    Problem   problem;
+    cg::Graph graph("mp2 full axis");
+    capture(graph, problem);
+
+    // The budget falls half an intermediate short of the program, so the integral may hold what
+    // the budget leaves after everything else: half of itself.
+    Budget const budget(program_bytes - (whole_bytes / 2));
+    auto const   tiling = decide_by_default(graph);
+    REQUIRE(tiling->num_tiled() >= 1);
+    CHECK(tiling->largest_before() == whole_bytes);
+    CHECK(tiling->largest_after() <= whole_bytes / 2);
+    CHECK(loop_body(graph) != nullptr);
+}
+
+TEST_CASE("AxisTiling leaves a program that fits the memory budget as captured", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem   problem;
+    cg::Graph graph("mp2 full axis");
+    capture(graph, problem);
+    auto const before = labels_of(graph);
+
+    Budget const budget(program_bytes + 4096);
+    auto const   tiling = decide_by_default(graph);
+    CHECK(tiling->num_tiled() == 0);
+    CHECK(declined_because(*tiling, "fit the memory budget together"));
+    // Declined before anything was read or reordered, which is what the default pipeline relies
+    // on to carry the pass at no cost to every program that fits.
+    CHECK(labels_of(graph) == before);
+}
+
+TEST_CASE("AxisTiling says when the tensors besides an intermediate already exceed the budget", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem   problem;
+    cg::Graph graph("mp2 full axis");
+    capture(graph, problem);
+
+    // The factor and the denominator alone are over this, so no slice of any intermediate fits
+    // beside them, and tiling the small ones would shrink nothing that matters.
+    Budget const budget(std::size_t{2000});
+    auto const   tiling = decide_by_default(graph);
+    CHECK(tiling->num_tiled() == 0);
+    CHECK(declined_because(*tiling, "other tensors alone exceed the memory budget"));
+}
+
+TEST_CASE("AxisTiling has no budget to derive a cap from when the memory ceiling is off", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem   problem;
+    cg::Graph graph("mp2 full axis");
+    capture(graph, problem);
+
+    Budget const budget(std::string{"0"});
+    auto const   tiling = decide_by_default(graph);
+    CHECK(tiling->num_tiled() == 0);
+    CHECK(declined_because(*tiling, "--einsums:max-memory, which is zero"));
+}
+
+TEST_CASE("The default pipeline tiles a program the memory budget cannot hold", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem      problem;
+    double const untiled = untiled_energy(problem);
+
+    // The pipeline's CSE merges the duplicated integral before the pass runs, which is the point
+    // of running it after the algebraic rewrites: it budgets the program that will execute. So the
+    // budget falls short of the program less that copy.
+    cg::Graph graph("mp2 full axis");
+    capture(graph, problem);
+    Budget const budget(program_bytes - whole_bytes - (whole_bytes / 2));
+    auto         manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    for (auto const &pass : manager.passes()) {
+        if (auto const *tiling = dynamic_cast<cg::passes::AxisTiling const *>(pass.get()); tiling != nullptr) {
+            for (auto const &[reason, count] : tiling->skip_reasons()) {
+                UNSCOPED_INFO("AxisTiling declined: " << reason);
+            }
+        }
+    }
+    for (auto const &node : graph.nodes()) {
+        UNSCOPED_INFO("node: " << node.label);
+    }
+    REQUIRE(loop_body(graph) != nullptr);
+
+    problem.energy.data()[0] = 0.0;
+    graph.execute();
+    CHECK_THAT(problem.energy.data()[0], Catch::Matchers::WithinRel(untiled, 1e-12));
+}
+
+TEST_CASE("AxisTiling counts a loop body's budget against every tensor of the tree", "[ComputeGraph][Pass][AxisTiling]") {
+    // The body names only the program's own tensors, which fit the budget. The parent also holds
+    // a tensor the body never names, and with it the program does not fit: a body that counted
+    // only what it names would decline.
+    Mp2<double>           p(nocc, nvir, naux);
+    RuntimeTensor<double> other = filled("X", {8192}, 3U);
+    RuntimeTensor<double> norm("N", std::vector<std::size_t>{1});
+    cg::Graph             graph("mp2 in a loop beside a large tensor");
+    auto const           &body = capture_mp2_in_loop(graph, p, 2).body;
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::dot_python(&norm, other, other);
+    }
+    std::size_t const other_bytes = other.size() * sizeof(double) + sizeof(double);
+
+    Budget const budget(program_bytes + other_bytes - (whole_bytes / 2));
+    auto const   tiling = decide_by_default(graph);
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK_FALSE(loop_bodies(body).empty());
+    CHECK(tiling->largest_after() <= whole_bytes / 2);
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    p.energy.data()[0] = 0.0;
+    graph.execute();
+    auto const expected = mp2_reference(p);
+    CHECK(std::abs(p.energy.data()[0] - expected.value) <= sum_tolerance<double>() * expected.magnitude);
+}
+
+namespace {
+
+/// Every byte the tree around @p graph allocates once optimized: each tensor object once, views
+/// not at all, block buffers of every emitted loop included.
+std::size_t tree_bytes(cg::Graph const &graph) {
+    std::set<void const *> objects;
+    std::size_t            total = 0;
+    auto const             count = [&](cg::Graph const &g) {
+        std::set<cg::TensorId> named;
+        for (auto const &node : g.nodes()) {
+            for (auto const *ids : {&node.inputs, &node.outputs}) {
+                for (cg::TensorId const tid : *ids) {
+                    named.insert(g.buffer_of(tid));
+                }
+            }
+        }
+        for (auto const &[tid, handle] : g.tensors_map()) {
+            if (handle.is_tensor_view || g.buffer_of(tid) != tid || handle.tensor_ptr == nullptr || !named.contains(tid)) {
+                continue;
+            }
+            if (objects.insert(handle.tensor_ptr).second) {
+                total += handle.total_bytes();
+            }
+        }
+    };
+    count(graph);
+    graph.for_each_descendant([&](cg::Graph const &g) { count(g); });
+    return total;
+}
+
+} // namespace
+
+TEST_CASE("AxisTiling holds every loop's buffers to the memory budget, remainders included", "[ComputeGraph][Pass][AxisTiling]") {
+    // Five occupied orbitals cut into blocks leave a remainder, and the remainder loop declares
+    // buffers of its own that live beside the full block's for the whole replay. Held to the
+    // budget one block at a time, a block that fit alone overran it once its remainder was added.
+    Mp2<double> p(5, nvir, naux);
+    cg::Graph   graph("mp2 with remainders");
+    capture_mp2(graph, p);
+    std::size_t const before = tree_bytes(graph);
+    std::size_t const four   = p.o * p.v * p.o * p.v * sizeof(double);
+
+    std::size_t const limit = before - (3 * four);
+    Budget const      budget(limit);
+    auto const        tiling = decide_by_default(graph);
+    REQUIRE(tiling->num_tiled() >= 1);
+    INFO("blocks " << tiling->block_extents()[0] << " x " << tiling->block_extents()[1] << ", " << tiling->loops() << " loops");
+    CHECK(tree_bytes(graph) <= limit);
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    auto const   expected = mp2_reference(p);
+    double const energy   = replay_mp2(graph, p);
+    CHECK(std::abs(energy - expected.value) <= sum_tolerance<double>() * expected.magnitude);
 }
