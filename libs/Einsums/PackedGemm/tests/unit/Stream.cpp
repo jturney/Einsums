@@ -208,7 +208,7 @@ TEST_CASE("stream_contract - an empty stream still applies the output prefactor"
 
 TEMPLATE_TEST_CASE("Stream route - the exchange contraction streams and matches the reference", "[PackedGemm][Stream]", float, double,
                    std::complex<float>, std::complex<double>) {
-    size_t const n   = 16; // 65536 elements in the streamed operand, above kStreamMinElems
+    size_t const n   = 16; // 65536 elements in the streamed operand, above the stream minimum
     auto         TEI = create_random_tensor<TestType>("TEI", n, n, n, n);
     auto         D   = create_random_tensor<TestType>("D", n, n);
 
@@ -246,7 +246,7 @@ TEST_CASE("Stream route - shapes it must leave alone", "[PackedGemm][Stream]") {
             }
         }
     }
-    SECTION("below kStreamMinElems") {
+    SECTION("below the stream minimum") {
         size_t const      n   = 6; // 1296 elements
         auto              TEI = create_random_tensor<double>("TEI", n, n, n, n);
         auto              D   = create_random_tensor<double>("D", n, n);
@@ -336,7 +336,7 @@ TEST_CASE("stream_contract - contiguous axes merge only where every operand allo
 // stream read the same 800 MB operand 1.6x faster on ten. OpenBLAS (threads through OpenMP) and MKL (a
 // per-thread count) keep their gemv.
 TEST_CASE("Stream route - a large GEMV streams only where the vendor's cannot be threaded", "[PackedGemm][Stream]") {
-    size_t const      n   = 24; // 331776 elements in the supplying operand, past kStreamGemvMinElems
+    size_t const      n   = 24; // 331776 elements in the supplying operand, past the stream-GEMV minimum
     auto              TEI = create_random_tensor<double>("TEI", n, n, n, n);
     auto              D   = create_random_tensor<double>("D", n, n);
     Tensor<double, 2> J("J", n, n), J_ref("J_ref", n, n);

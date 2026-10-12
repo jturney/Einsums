@@ -4,6 +4,8 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Options/Get.hpp>
+#include <Einsums/PackedGemm/Options.hpp>
 #include <Einsums/PackedGemm/Stream.hpp>
 #include <Einsums/PackedGemm/StreamKernel.hpp>
 
@@ -67,12 +69,6 @@ void for_each_element(StreamLayout const &x, F &&body) {
 
 // Prefix blocks each thread must have for the prefix split to balance.
 constexpr int64_t kBlocksPerThread = 4;
-
-// Elements of S each thread must have before another thread is worth forking.
-// Measured on the M4 over the exchange shape and a large-output shape: 16384
-// forked too early and was slower at every mid size (K at n = 20: 66 us
-// against 35 us at 65536).
-constexpr int64_t kElemsPerThread = 65536;
 
 } // namespace
 
@@ -172,7 +168,11 @@ void stream_walk(T const *s, StreamLayout const &s_layout, std::vector<StreamTer
     // walk of a few thousand elements), so a small call runs on this thread.
     int64_t const s_elems = elems_of(s_layout);
 #ifdef _OPENMP
-    int const requested = static_cast<int>(std::clamp<int64_t>(s_elems / kElemsPerThread, 1, omp_get_max_threads()));
+    // Elements per thread from --einsums:packed-gemm:stream-elems-per-thread: measured on the M4
+    // over the exchange shape and a large-output shape, 16384 forked too early and was slower at
+    // every mid size (K at n = 20: 66 us against 35 us at 65536).
+    int const requested =
+        static_cast<int>(std::clamp<int64_t>(s_elems / config::get(option::PackedGemmStreamElemsPerThread), 1, omp_get_max_threads()));
 #else
     int const requested = 1;
 #endif

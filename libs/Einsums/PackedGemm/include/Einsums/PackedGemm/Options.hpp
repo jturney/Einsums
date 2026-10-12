@@ -50,6 +50,40 @@ inline constinit cl::ConfigOption<std::int64_t> PackedGemmCTempBudget = cl::conf
     "einsums:packed-gemm:c-temp-budget", "Budget for the block-GEMM strategy's C temporary, in KiB (0 = derive from the L1)", "PackedGemm",
     0, "KIB", cl::RangeBetween<std::int64_t>(0, std::int64_t{1} << 30));
 
+/// Output elements below which an outer product is left to the generic loop.
+///
+/// The packed passes cost a fixed setup that a small outer product does not repay. Where the
+/// generic loop stops winning depends on the machine and moves whenever that loop does; the
+/// default was measured on an Apple M4, and @c einsums-tune measures it on the machine at hand.
+inline constinit cl::ConfigOption<std::int64_t> PackedGemmOuterProductFloor =
+    cl::config_opt<std::int64_t>("einsums:packed-gemm:outer-product-floor",
+                                 "Output elements below which an outer product takes the generic loop rather than the packed passes",
+                                 "PackedGemm", 768, "ELEMENTS", cl::RangeBetween<std::int64_t>(0, std::int64_t{1} << 40));
+
+/// Output elements from which a contiguous outer product with a prefactor takes ger and a separate
+/// scaling pass rather than a k=1 GEMM.
+///
+/// ger has no beta, so a prefactor costs a pass over C; the k=1 GEMM folds it in, and wins until
+/// its blocking overhead outgrows that pass. Measured between 65k and 332k elements on an Apple M4.
+inline constinit cl::ConfigOption<std::int64_t> PackedGemmOuterGemmMax = cl::config_opt<std::int64_t>(
+    "einsums:packed-gemm:outer-gemm-max", "Output elements from which an outer product with a prefactor takes ger instead of a k=1 GEMM",
+    "PackedGemm", std::int64_t{1} << 17, "ELEMENTS", cl::RangeBetween<std::int64_t>(0, std::int64_t{1} << 40));
+
+/// Elements of the supplying operand below which a GEMV-shaped contraction whose axes do not form a
+/// matrix is not streamed: where the stream starts to beat the compiled generic loop.
+inline constinit cl::ConfigOption<std::int64_t> PackedGemmStreamMinElems = cl::config_opt<std::int64_t>(
+    "einsums:packed-gemm:stream-min-elems", "Supplying-operand elements below which a GEMV-shaped contraction is not streamed",
+    "PackedGemm", 4096, "ELEMENTS", cl::RangeBetween<std::int64_t>(0, std::int64_t{1} << 40));
+
+/// Elements of the streamed operand each thread must have before the stream forks another.
+///
+/// Below it the region's fork and the per-thread buffers cost more than the elements they would
+/// share. Measured on an Apple M4: 16384 forked too early and was slower at every mid size. A GEMV
+/// the vendor cannot thread is streamed from two threads' worth.
+inline constinit cl::ConfigOption<std::int64_t> PackedGemmStreamElemsPerThread = cl::config_opt<std::int64_t>(
+    "einsums:packed-gemm:stream-elems-per-thread", "Streamed-operand elements each thread must have before the stream forks another",
+    "PackedGemm", 65536, "ELEMENTS", cl::RangeBetween<std::int64_t>(1, std::int64_t{1} << 40));
+
 /// Print each packed contraction's resolved plan and blocking to stderr.
 ///
 /// Group dims and strides, register and cache blocks, and the write-back taken. For diagnosis.

@@ -11,13 +11,20 @@
 
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/CostModel.hpp>
+#include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp>
+#include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Tune.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Hardware/Machine.hpp>
+#include <Einsums/Hardware/Options.hpp>
 #include <Einsums/Hardware/Profile.hpp>
 #include <Einsums/Json/Json.hpp>
 #include <Einsums/LinearAlgebra.hpp>
+#include <Einsums/Options/Get.hpp>
+#include <Einsums/PackedGemm/Options.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
+#include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorPermute/Permute.hpp>
@@ -38,6 +45,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <functional>
+#include <limits>
 #include <optional>
 #include <random>
 #include <string>
@@ -67,6 +76,8 @@ struct Config {
     bool        thread_sweep   = true;
     size_t      thread_repeats = 3;
     size_t      thread_max_mb  = 64;
+    bool        probes         = true;
+    size_t      probe_repeats  = 5;
 };
 
 void print_usage() {
@@ -87,6 +98,8 @@ void print_usage() {
     fmt::print("  --no-thread-sweep  Skip the per-family efficiency curves\n");
     fmt::print("  --thread-repeats <N>  Timed runs per curve point (default: 3)\n");
     fmt::print("  --thread-max-mb <N>   Cap on a curve cell's working set (default: 64)\n");
+    fmt::print("  --quick            Measure the cost model and region cost only, without the crossover probes\n");
+    fmt::print("  --probe-repeats <N>   Timed runs per side and size in a crossover probe (default: 5)\n");
     fmt::print("\nEvery --einsums:* option also applies.\n");
 }
 
@@ -153,6 +166,10 @@ std::optional<Config> parse_args(std::vector<std::string> const &args, std::stri
             ok = size_at(i, cfg.thread_repeats);
         } else if (arg == "--thread-max-mb") {
             ok = size_at(i, cfg.thread_max_mb);
+        } else if (arg == "--quick") {
+            cfg.probes = false;
+        } else if (arg == "--probe-repeats") {
+            ok = size_at(i, cfg.probe_repeats);
         } else {
             error = fmt::format("unknown argument '{}'; see --help", arg);
             ok    = false;
@@ -161,8 +178,8 @@ std::optional<Config> parse_args(std::vector<std::string> const &args, std::stri
             return std::nullopt;
         }
     }
-    if (cfg.repeats == 0 || cfg.num_points == 0 || cfg.min_size == 0 || cfg.min_size > cfg.max_size) {
-        error = "--repeats and --num-points must be positive, and --min-size at most --max-size";
+    if (cfg.repeats == 0 || cfg.probe_repeats == 0 || cfg.num_points == 0 || cfg.min_size == 0 || cfg.min_size > cfg.max_size) {
+        error = "--repeats, --probe-repeats and --num-points must be positive, and --min-size at most --max-size";
         return std::nullopt;
     }
     return cfg;
@@ -561,6 +578,306 @@ int import_file(std::string const &path) {
     return filed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
+// ── Crossover probes ──────────────────────────────────────────────────────────────────────────
+//
+// Each threshold that decides between two routes is measured by running the decision's own shape
+// through the public einsum with the threshold forced to each extreme, so what is timed is what a
+// program runs, and the route each side took is checked to differ: a side that silently takes a
+// third route would otherwise time noise and write it into the profile.
+
+/// An option held at a value for one scope, restored on the way out.
+template <typename T>
+class OptionPin {
+  public:
+    OptionPin(cl::ConfigOption<T> const &option, T value) : _option(option), _previous(config::get(option)) { config::set(option, value); }
+    OptionPin(OptionPin const &)            = delete;
+    OptionPin &operator=(OptionPin const &) = delete;
+    ~OptionPin() { config::set(_option, _previous); }
+
+  private:
+    cl::ConfigOption<T> const &_option;
+    T                          _previous;
+};
+
+/// How a probe's two sides are forced, and the call it times at one size.
+struct ProbeSides {
+    std::function<void()> small; ///< Forces the side small sizes get.
+    std::function<void()> large; ///< Forces the side large sizes get.
+    std::function<void()> reset; ///< Back to the configured threshold.
+};
+
+/// A sweep's points, or why the probe could not separate its sides.
+struct Sweep {
+    std::vector<detail::CrossoverPoint> points;
+    std::string                         small_route;
+    std::string                         large_route;
+    std::string                         failure;
+};
+
+/// The route a call took: the string engine's, and the packed engine's path within it.
+std::string route_taken() {
+    std::string route{dispatch::last_dispatch_route()};
+    if (std::string_view const path{packed_gemm::last_packed_decision()}; !path.empty()) {
+        route += fmt::format("/{}", path);
+    }
+    return route;
+}
+
+/// Time both sides at every size, interleaved so drift lands on both. Unless @p same_route, the two
+/// sides must take different routes at every size; with it, the same one, as when the sides differ
+/// in how many threads run a path rather than in the path.
+Sweep sweep(std::vector<double> const &sizes, std::function<std::function<void()>(double)> const &make, ProbeSides const &sides,
+            size_t repeats, bool same_route = false) {
+    Sweep result;
+    for (double const size : sizes) {
+        auto const          run = make(size);
+        std::vector<double> small_times;
+        std::vector<double> large_times;
+        std::string         small_route;
+        std::string         large_route;
+        auto const          timed = [&run](std::vector<double> &times) {
+            auto const t0 = std::chrono::steady_clock::now();
+            run();
+            auto const t1 = std::chrono::steady_clock::now();
+            times.push_back(std::chrono::duration<double>(t1 - t0).count());
+        };
+        // One untimed call of each side first, for the caches and any plan built on first use.
+        sides.small();
+        run();
+        sides.large();
+        run();
+        for (size_t r = 0; r < repeats; ++r) {
+            sides.small();
+            timed(small_times);
+            small_route = route_taken();
+            sides.large();
+            timed(large_times);
+            large_route = route_taken();
+        }
+        sides.reset();
+        if (!same_route && small_route == large_route) {
+            result.failure = fmt::format("both sides took the route '{}' at size {:.0f}", small_route, size);
+            return result;
+        }
+        if (same_route && small_route != large_route) {
+            result.failure = fmt::format("the sides took '{}' and '{}' at size {:.0f}", small_route, large_route, size);
+            return result;
+        }
+        result.small_route = small_route;
+        result.large_route = large_route;
+        std::ranges::sort(small_times);
+        std::ranges::sort(large_times);
+        result.points.push_back({.size = size, .small_side = small_times[repeats / 2], .large_side = large_times[repeats / 2]});
+    }
+    return result;
+}
+
+/// Sizes from @p lo to @p hi, @p count of them, evenly spaced in the logarithm and rounded.
+std::vector<double> log_sizes(double lo, double hi, size_t count) {
+    std::vector<double> sizes;
+    for (size_t i = 0; i < count; ++i) {
+        double const t = count > 1 ? static_cast<double>(i) / static_cast<double>(count - 1) : 0.0;
+        double const s = std::round(std::exp(std::log(lo) + t * (std::log(hi) - std::log(lo))));
+        if (sizes.empty() || s > sizes.back()) {
+            sizes.push_back(s);
+        }
+    }
+    return sizes;
+}
+
+/// The value a probe writes, said the way the run log says it.
+std::string describe(detail::Crossover const &c) {
+    switch (c.bound) {
+    case detail::CrossoverBound::AtMost:
+        return fmt::format("at most {:.0f}", c.value);
+    case detail::CrossoverBound::AtLeast:
+        return fmt::format("at least {:.0f}", c.value);
+    case detail::CrossoverBound::Exact:
+        break;
+    }
+    return fmt::format("{:.0f}", c.value);
+}
+
+/// Report a crossover probe and, when it separated its sides, record its option.
+void record(json::Object &options, std::string_view option, std::string_view what, Sweep const &result, double scale = 1.0) {
+    if (!result.failure.empty()) {
+        einsums::println("  {:<44} not measured: {}", what, result.failure);
+        return;
+    }
+    auto const crossover = detail::find_crossover(result.points);
+    einsums::println("  {:<44} {} ({} below, {} above)", what, describe(crossover), result.small_route, result.large_route);
+    options.set(std::string(option), static_cast<std::int64_t>(std::llround(crossover.value * scale)));
+}
+
+/// A threshold no size reaches: 2^40, the options' upper bound.
+constexpr std::int64_t kNever = 1'099'511'627'776;
+
+/// Output elements from which an outer product of rank three takes the packed passes.
+void probe_outer_product_floor(json::Object &options, size_t repeats) {
+    OptionPin<std::int64_t> const hold(option::PackedGemmOuterProductFloor, config::get(option::PackedGemmOuterProductFloor));
+    ProbeSides const              sides{
+        .small = [] { config::set(option::PackedGemmOuterProductFloor, kNever); },
+        .large = [] { config::set(option::PackedGemmOuterProductFloor, std::int64_t{0}); },
+        .reset = [] {},
+    };
+    // Below 4096 output elements, where the matrix-shaped direct paths leave outer products to it.
+    std::vector<double> sizes;
+    for (double const m : {4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0}) {
+        sizes.push_back(m * m * m);
+    }
+    auto const make = [](double elements) -> std::function<void()> {
+        auto const m = static_cast<size_t>(std::llround(std::cbrt(elements)));
+        auto       A = std::make_shared<Tensor<double, 2>>(random_tensor<double>("A", m, m));
+        auto       B = std::make_shared<Tensor<double, 1>>(random_tensor<double>("B", m));
+        auto       C = std::make_shared<Tensor<double, 3>>("C", m, m, m);
+        return [A, B, C] { einsum("ijk <- ij ; k", 0.0, C.get(), 1.0, *A, *B); };
+    };
+    record(options, "einsums:packed-gemm:outer-product-floor", "outer-product floor (elements)", sweep(sizes, make, sides, repeats));
+}
+
+/// Output elements from which an outer product with a prefactor takes ger over a k=1 GEMM.
+void probe_outer_gemm_max(json::Object &options, size_t repeats) {
+    OptionPin<std::int64_t> const hold(option::PackedGemmOuterGemmMax, config::get(option::PackedGemmOuterGemmMax));
+    ProbeSides const              sides{
+        .small = [] { config::set(option::PackedGemmOuterGemmMax, kNever); },
+        .large = [] { config::set(option::PackedGemmOuterGemmMax, std::int64_t{0}); },
+        .reset = [] {},
+    };
+    // A rank-2 outer product takes the string engine's own GER route, so the decision is the packed
+    // engine's matrix-shaped direct path for a higher rank, from 4096 elements where that path starts.
+    std::vector<double> sizes;
+    for (double const m : log_sizes(16, 100, 9)) {
+        sizes.push_back(m * m * m);
+    }
+    auto const make = [](double elements) -> std::function<void()> {
+        auto const m = static_cast<size_t>(std::llround(std::cbrt(elements)));
+        auto       A = std::make_shared<Tensor<double, 2>>(random_tensor<double>("A", m, m));
+        auto       B = std::make_shared<Tensor<double, 1>>(random_tensor<double>("B", m));
+        auto       C = std::make_shared<Tensor<double, 3>>(random_tensor<double>("C", m, m, m));
+        return [A, B, C] { einsum("ijk <- ij ; k", 0.5, C.get(), 1.0, *A, *B); };
+    };
+    record(options, "einsums:packed-gemm:outer-gemm-max", "outer product, GEMM to ger (elements)", sweep(sizes, make, sides, repeats));
+}
+
+/// The exchange shape K(i,j) = A(i,k,j,l) B(k,l) at @p n per axis.
+std::function<void()> exchange(size_t n) {
+    auto A = std::make_shared<Tensor<double, 4>>(random_tensor<double>("A", n, n, n, n));
+    auto B = std::make_shared<Tensor<double, 2>>(random_tensor<double>("B", n, n));
+    auto C = std::make_shared<Tensor<double, 2>>("C", n, n);
+    return [A, B, C] { einsum("ij <- ikjl ; kl", 0.0, C.get(), 1.0, *A, *B); };
+}
+
+/// Supplying-operand elements from which an interleaved GEMV-shaped contraction is streamed.
+void probe_stream_min_elems(json::Object &options, size_t repeats) {
+    OptionPin<std::int64_t> const hold(option::PackedGemmStreamMinElems, config::get(option::PackedGemmStreamMinElems));
+    ProbeSides const              sides{
+        .small = [] { config::set(option::PackedGemmStreamMinElems, kNever); },
+        .large = [] { config::set(option::PackedGemmStreamMinElems, std::int64_t{0}); },
+        .reset = [] {},
+    };
+    std::vector<double> sizes;
+    for (double const n : {4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 12.0, 14.0, 16.0}) {
+        sizes.push_back(n * n * n * n);
+    }
+    auto const make = [](double elements) { return exchange(static_cast<size_t>(std::llround(std::sqrt(std::sqrt(elements))))); };
+    record(options, "einsums:packed-gemm:stream-min-elems", "stream minimum (operand elements)", sweep(sizes, make, sides, repeats));
+}
+
+/// Streamed elements per thread: not a crossover between two routes but a team size, so each
+/// candidate is timed over a range of exchange sizes and the one closest to the best at every size
+/// is kept.
+void probe_stream_elems_per_thread(json::Object &options, size_t repeats) {
+#ifdef _OPENMP
+    if (omp_get_max_threads() <= 1) {
+        einsums::println("  {:<44} not measured: one thread, so the stream never forks", "stream elements per thread");
+        return;
+    }
+#else
+    einsums::println("  {:<44} not measured: built without OpenMP", "stream elements per thread");
+    return;
+#endif
+    OptionPin<std::int64_t> const    hold(option::PackedGemmStreamElemsPerThread, config::get(option::PackedGemmStreamElemsPerThread));
+    std::vector<std::int64_t> const  candidates{8192, 16384, 32768, 65536, 131072, 262144, 524288};
+    std::vector<size_t> const        extents{12, 16, 20, 24, 28, 32};
+    std::vector<std::vector<double>> times(candidates.size(), std::vector<double>(extents.size()));
+    for (size_t e = 0; e < extents.size(); ++e) {
+        auto const                       run = exchange(extents[e]);
+        std::vector<std::vector<double>> samples(candidates.size());
+        run();
+        for (size_t r = 0; r < repeats; ++r) {
+            for (size_t c = 0; c < candidates.size(); ++c) {
+                config::set(option::PackedGemmStreamElemsPerThread, candidates[c]);
+                auto const t0 = std::chrono::steady_clock::now();
+                run();
+                auto const t1 = std::chrono::steady_clock::now();
+                samples[c].push_back(std::chrono::duration<double>(t1 - t0).count());
+            }
+        }
+        for (size_t c = 0; c < candidates.size(); ++c) {
+            std::ranges::sort(samples[c]);
+            times[c][e] = samples[c][repeats / 2];
+        }
+    }
+    // Score each candidate by the geometric mean of its time over the best at each size.
+    size_t best       = 0;
+    double best_score = std::numeric_limits<double>::infinity();
+    for (size_t c = 0; c < candidates.size(); ++c) {
+        double log_sum = 0.0;
+        for (size_t e = 0; e < extents.size(); ++e) {
+            double fastest = std::numeric_limits<double>::infinity();
+            for (size_t k = 0; k < candidates.size(); ++k) {
+                fastest = std::min(fastest, times[k][e]);
+            }
+            log_sum += std::log(times[c][e] / fastest);
+        }
+        double const score = std::exp(log_sum / static_cast<double>(extents.size()));
+        if (score < best_score) {
+            best_score = score;
+            best       = c;
+        }
+    }
+    einsums::println("  {:<44} {} ({:.2f}x the best at each size, on average)", "stream elements per thread", candidates[best], best_score);
+    options.set("einsums:packed-gemm:stream-elems-per-thread", candidates[best]);
+}
+
+/// Flops per nanosecond of region cost from which a packed contraction is worth a team.
+void probe_parallel_break_even(json::Object &options, size_t repeats) {
+    double const region_ns = hardware::omp_region_cost_ns();
+    if (region_ns <= 0.0) {
+        einsums::println("  {:<44} not measured: one thread, so nothing forks", "parallel break-even (flops/ns)");
+        return;
+    }
+    ProbeSides const sides{
+        .small = [] { packed_gemm::set_min_parallel_flops_for_tuning(std::numeric_limits<std::int64_t>::max()); },
+        .large = [] { packed_gemm::set_min_parallel_flops_for_tuning(0); },
+        .reset = [] { packed_gemm::set_min_parallel_flops_for_tuning(-1); },
+    };
+    // A contraction whose output interleaves its operands' axes, so it takes the packed engine
+    // rather than a vendor GEMM, at a cube of extent m per axis pair: 2 m^3 n^2 flops.
+    std::vector<double> sizes;
+    for (double const m : log_sizes(4, 48, 10)) {
+        sizes.push_back(2.0 * m * m * m * m);
+    }
+    auto const make = [](double flops) -> std::function<void()> {
+        auto const m = static_cast<size_t>(std::llround(std::pow(flops / 2.0, 0.25)));
+        auto       A = std::make_shared<Tensor<double, 3>>(random_tensor<double>("A", m, m, m));
+        auto       B = std::make_shared<Tensor<double, 2>>(random_tensor<double>("B", m, m));
+        auto       C = std::make_shared<Tensor<double, 3>>("C", m, m, m);
+        return [A, B, C] { einsum("ibj <- ikj ; kb", 0.0, C.get(), 1.0, *A, *B); };
+    };
+    auto result = sweep(sizes, make, sides, repeats, /*same_route=*/true);
+    sides.reset();
+    if (!result.failure.empty()) {
+        einsums::println("  {:<44} not measured: {}", "parallel break-even (flops/ns)", result.failure);
+        return;
+    }
+    auto const   crossover = detail::find_crossover(result.points);
+    double const rate      = std::clamp(crossover.value / region_ns, 1e-3, 1e6);
+    einsums::println("  {:<44} {:.3g} ({} flops over a {:.0f} ns region)", "parallel break-even (flops/ns)", rate, describe(crossover),
+                     region_ns);
+    options.set("einsums:hardware:omp-break-even-flops-per-ns", rate);
+}
+
 int measure(Config cfg) {
     if (cfg.output.empty()) {
         cfg.output = einsums::hardware::default_profile_path();
@@ -723,6 +1040,18 @@ int measure(Config cfg) {
     json::Object profile = einsums::hardware::profile_header();
     profile.set("measured", std::move(measured));
     profile.set("omp_region_cost_ns", std::move(region_cost));
+    if (cfg.probes) {
+        einsums::println("\n--- Crossovers ---\n");
+        json::Object options;
+        probe_outer_product_floor(options, cfg.probe_repeats);
+        probe_outer_gemm_max(options, cfg.probe_repeats);
+        probe_stream_min_elems(options, cfg.probe_repeats);
+        probe_stream_elems_per_thread(options, cfg.probe_repeats);
+        probe_parallel_break_even(options, cfg.probe_repeats);
+        if (!options.empty()) {
+            profile.set("options", std::move(options));
+        }
+    }
     profile.set("cost_model", cost_model.to_json());
 
     std::string error;
@@ -774,3 +1103,23 @@ int tune(std::vector<std::string> const &args) {
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)
+
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
+
+Crossover find_crossover(std::vector<CrossoverPoint> const &points, double tie) {
+    // The large side loses at a point when it is slower by more than the tie band.
+    auto const loses = [tie](CrossoverPoint const &p) { return p.large_side > p.small_side * (1.0 + tie); };
+    size_t     first = points.size();
+    while (first > 0 && !loses(points[first - 1])) {
+        --first;
+    }
+    if (first == 0) {
+        return {.value = points.front().size, .bound = CrossoverBound::AtMost};
+    }
+    if (first == points.size()) {
+        return {.value = points.back().size, .bound = CrossoverBound::AtLeast};
+    }
+    return {.value = std::sqrt(points[first - 1].size * points[first].size), .bound = CrossoverBound::Exact};
+}
+
+EINSUMS_NAMESPACE_END(compute_graph::detail)

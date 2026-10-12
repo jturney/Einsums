@@ -249,6 +249,29 @@ inline constexpr int64_t BLIS_NR = 6; ///< N register-block (fully unrolled by L
 /// @brief Return the native CPU vector configuration (computed once, cached).
 EINSUMS_EXPORT CpuConfig const &cpu_config();
 
+/**
+ * @brief The flop count from which a contraction's loops run on a team.
+ *
+ * @ref CpuConfig::min_parallel_flops, unless a measurement has set one for its duration through
+ * @ref set_min_parallel_flops_for_tuning: the configuration is computed once per process, and the
+ * tune has to try thresholds within one.
+ *
+ * @return The threshold in flops.
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT int64_t min_parallel_flops();
+
+/**
+ * @brief Replace @ref min_parallel_flops while measuring the break-even it is derived from.
+ *
+ * Only for @c einsums-tune. Not a setting: a program pins the threshold with
+ * @c --einsums:hardware:omp-min-parallel-flops.
+ *
+ * @param[in] flops The threshold, or a negative value to return to the configured one.
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT void set_min_parallel_flops_for_tuning(int64_t flops);
+
 /// @brief Signature of a resolved panel transpose: writes
 ///        `panel[r + k * ld] = rows[r][k]` for `r < nrows`, `k < kc`.
 ///

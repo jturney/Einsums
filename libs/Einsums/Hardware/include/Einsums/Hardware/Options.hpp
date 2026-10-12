@@ -68,6 +68,17 @@ inline constinit cl::ConfigOption<double> HardwareOmpRegionCostNs = cl::config_o
     "einsums:hardware:omp-region-cost-ns", "Pin the cost of entering an OpenMP parallel region, in ns (-1 = read the profile or measure)",
     "Hardware", -1.0, "NS", cl::RangeBetween(-1.0, 1e9));
 
+/// Flops per nanosecond of region cost at which a contraction goes parallel.
+///
+/// The break-even work is the region cost times this rate: a calibration, not a flop rate. The
+/// default was measured end to end on tiled CCSD residuals on an Apple M4 Pro; @c einsums-tune
+/// measures it on the machine at hand. @c --einsums:hardware:omp-min-parallel-flops pins the
+/// product instead.
+inline constinit cl::ConfigOption<double> HardwareOmpBreakEvenFlopsPerNs = cl::config_opt<double>(
+    "einsums:hardware:omp-break-even-flops-per-ns",
+    "Flops per ns of OpenMP region cost at which a contraction goes parallel (the region cost times this is the threshold)", "Hardware",
+    12.0, "RATE", cl::RangeBetween(1e-3, 1e6));
+
 /// Pin the element count at which elementwise kernels go parallel. Negative derives it; zero always.
 inline constinit cl::ConfigOption<std::int64_t> HardwareOmpMinParallelElements = cl::config_opt<std::int64_t>(
     "einsums:hardware:omp-min-parallel-elements", "Elements at which elementwise kernels go parallel (-1 = derive from the region cost)",

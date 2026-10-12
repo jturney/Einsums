@@ -17,6 +17,7 @@
 
 #include <Stripes/RuntimeFeatures.hpp>
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -159,6 +160,19 @@ CpuConfig const &cpu_config() {
         return c;
     }();
     return cfg;
+}
+
+namespace {
+std::atomic<int64_t> tuning_min_parallel_flops{-1};
+} // namespace
+
+int64_t min_parallel_flops() {
+    int64_t const tuning = tuning_min_parallel_flops.load(std::memory_order_relaxed);
+    return tuning >= 0 ? tuning : cpu_config().min_parallel_flops;
+}
+
+void set_min_parallel_flops_for_tuning(int64_t flops) {
+    tuning_min_parallel_flops.store(flops, std::memory_order_relaxed);
 }
 
 BlockingParams compute_blocking(int64_t elem_size) {

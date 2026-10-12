@@ -19,6 +19,7 @@ int register_Einsums_Hardware_options() {
     cl::register_option(option::HardwareOmpRegionCostNs);
     cl::register_option(option::HardwareOmpMinParallelElements);
     cl::register_option(option::HardwareOmpMinParallelFlops);
+    cl::register_option(option::HardwareOmpBreakEvenFlopsPerNs);
     return 0;
 }
 

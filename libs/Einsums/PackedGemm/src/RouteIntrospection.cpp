@@ -15,6 +15,11 @@ char const *&last_contraction_route() {
     return route;
 }
 
+char const *&last_packed_decision() {
+    thread_local char const *decision = "";
+    return decision;
+}
+
 char const *&last_packed_engine() {
     thread_local char const *engine = "none";
     return engine;

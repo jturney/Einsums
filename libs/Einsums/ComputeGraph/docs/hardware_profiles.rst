@@ -111,6 +111,14 @@ permute throughput, BLAS call overhead, per-kernel thread-efficiency curves
 size. It starts from the built-in table rather than from an earlier profile, so
 nothing it does not measure is inherited from one.
 
+Then it measures the thresholds that decide between two routes and were set on
+one machine: the outer-product floor, the outer product's GEMM-to-ger limit,
+the stream minimum, the stream's elements per thread, and the parallel
+break-even rate. Each runs the decision's own shape through ``einsum`` with the
+threshold forced to either extreme, checks that the two sides took different
+routes, and records where one overtakes the other; a probe that cannot separate
+its routes says so and writes nothing. ``--quick`` skips this part.
+
 Everything goes into one file, whose ``cost_model`` section is this page's
 model, whose ``options`` section holds tuned option values, applied below the
 environment and the command line so anything a user sets still wins, and whose

@@ -139,8 +139,9 @@ worth a thread team?".
 
 :cpp:func:`~einsums::hardware::omp_min_parallel_flops`
     Work, in flops, below which parallelizing a contraction is a net loss.
-    Scaled from the same measured region cost by a calibration constant of 12
-    flops per nanosecond. That constant is not a claim about achieved
+    Scaled from the same measured region cost by
+    :option:`--einsums:hardware:omp-break-even-flops-per-ns`, 12 flops per
+    nanosecond unless the hardware profile says otherwise. That rate is not a claim about achieved
     throughput: it is the multiplier that landed on the measured optimum across
     two tiled CCSD residuals. A tiled residual at 50 spin orbitals expands to
     3751 contractions of roughly 295 KFLOP each, and forking for every one of
@@ -153,8 +154,9 @@ runtimes.
 
 .. note::
 
-    The flops calibration was swept on arm64 (Apple M4 Pro, 10 threads) only.
-    x86 wants the same sweep before the constant is trusted there.
+    The default rate was swept on arm64 (Apple M4 Pro, 10 threads) only.
+    ``einsums tune`` measures it on the machine at hand, as the work at which a
+    packed contraction on a team overtakes the same contraction on one thread.
 
 Conditional OpenMP pragmas
 ==========================

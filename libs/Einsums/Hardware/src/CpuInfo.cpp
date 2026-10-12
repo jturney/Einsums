@@ -349,9 +349,9 @@ std::int64_t omp_min_parallel_flops() {
     //   300k           4.0-4.1 ms      33.6-34.3 ms
     //   835k           4.2-4.3 ms      33.5-33.6 ms
     //
-    // 12 lands on ~300k. Measured on arm64 (M4 Pro, 10 threads) only; x86 wants the same sweep.
-    constexpr double kBreakEvenFlopsPerNs = 12.0;
-    return static_cast<std::int64_t>(omp_region_cost_ns() * kBreakEvenFlopsPerNs);
+    // 12 lands on ~300k. Measured on arm64 (M4 Pro, 10 threads) only, which is why the rate is
+    // an option that einsums-tune measures on the machine at hand.
+    return static_cast<std::int64_t>(omp_region_cost_ns() * config::get(option::HardwareOmpBreakEvenFlopsPerNs));
 }
 
 int get_max_threads() {

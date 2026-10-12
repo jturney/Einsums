@@ -122,6 +122,9 @@ if(EINSUMS_BUILD_PYTHON
     set(_example_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib")
     set(_example_env "${_example_env};EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1")
     set(_example_env "${_example_env};EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1")
+    # Not the machine's hardware profile, so an example runs the same tuned or not.
+    einsums_profile_test_environment(_example_profile_env)
+    list(APPEND _example_env ${_example_profile_env})
     # These scripts print physics: Greek letters in the progress lines. Windows
     # still defaults stdout to the ANSI code page, which cannot encode them, so
     # ask for UTF-8 mode there (see einsums_add_python_unit_test).

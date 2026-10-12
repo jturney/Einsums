@@ -9,6 +9,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -34,3 +35,51 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT int tune(std::vector<std::string> const &args);
 
 EINSUMS_NAMESPACE_END(compute_graph)
+
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
+
+/**
+ * @brief One size of a crossover sweep: the median time of each side of a decision there.
+ * @versionadded{2.0.0}
+ */
+struct CrossoverPoint {
+    double size{0.0};       ///< What the decision's threshold is compared against: elements, flops.
+    double small_side{0.0}; ///< Seconds on the side the threshold gives small sizes.
+    double large_side{0.0}; ///< Seconds on the side the threshold gives large sizes.
+};
+
+/**
+ * @brief How far a crossover is known.
+ * @versionadded{2.0.0}
+ */
+enum class CrossoverBound : std::uint8_t {
+    Exact,   ///< Between two swept sizes.
+    AtMost,  ///< The large side already wins at the smallest size swept.
+    AtLeast, ///< The large side still loses at the largest size swept.
+};
+
+/**
+ * @brief Where a decision's threshold belongs, from a sweep.
+ * @versionadded{2.0.0}
+ */
+struct Crossover {
+    double         value{0.0};                   ///< The threshold.
+    CrossoverBound bound{CrossoverBound::Exact}; ///< Whether the sweep bracketed it.
+};
+
+/**
+ * @brief The size from which the large side wins and keeps winning.
+ *
+ * A point within @p tie of even counts for neither side, so one noisy point near the crossover
+ * does not move it. Between the last size the large side loses and the first from which it never
+ * does, the threshold is their geometric mean; a sweep that never brackets it returns the end it
+ * ran into, marked as a bound.
+ *
+ * @param[in] points The sweep, by increasing size; not empty.
+ * @param[in] tie The relative difference below which two times are even.
+ * @return The crossover.
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT Crossover find_crossover(std::vector<CrossoverPoint> const &points, double tie = 0.03);
+
+EINSUMS_NAMESPACE_END(compute_graph::detail)

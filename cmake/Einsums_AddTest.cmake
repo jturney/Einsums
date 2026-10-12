@@ -239,6 +239,27 @@ function(einsums_sanitizer_test_environment out_var)
 endfunction()
 
 #:
+#: einsums_profile_test_environment
+#:
+#:    The environment that keeps a test from reading the machine's hardware profile.
+#:
+#:    A profile tunes options and the cost model, so a developer who has run ``einsums tune``
+#:    would otherwise run every test against their own machine's numbers, and a test asserting a
+#:    route or a default would pass or fail by whether the machine was tuned. Every test sees an
+#:    empty cache directory and an empty site directory in the build tree instead; the tests of
+#:    the profile itself point these at profiles they write.
+#:
+#:    **Signature**
+#:    ``einsums_profile_test_environment(<out_var>)``
+function(einsums_profile_test_environment out_var)
+  set(${out_var}
+      "EINSUMS_CACHE_DIR=${PROJECT_BINARY_DIR}/test-cache"
+      "EINSUMS_HARDWARE_SITE_PROFILES=${PROJECT_BINARY_DIR}/test-cache/site"
+      PARENT_SCOPE
+  )
+endfunction()
+
+#:
 #: einsums_set_test_properties
 #:
 #:    Apply standard Einsums labels and sanitizer/profiler environment to a test.
@@ -265,13 +286,15 @@ function(einsums_set_test_properties name labels)
   # cannot drift from the SIMD-rung and Python test paths.
   set(_san_env "") # out-param, populated by the helper below
   einsums_sanitizer_test_environment(_san_env)
+  set(_profile_env "")
+  einsums_profile_test_environment(_profile_env)
   set_tests_properties(
     ${name}
     PROPERTIES
       LABELS
       ${labels}
       ENVIRONMENT
-      "LLVM_PROFILE_FILE=${name}.profraw;${_san_env}"
+      "LLVM_PROFILE_FILE=${name}.profraw;${_san_env};${_profile_env}"
   )
 endfunction()
 
@@ -348,6 +371,9 @@ function(einsums_add_python_unit_test subcategory name)
     "EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1"
     "EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1"
   )
+  set(_profile_env "")
+  einsums_profile_test_environment(_profile_env)
+  list(APPEND _pyt_env ${_profile_env})
   # Windows still defaults stdout to the ANSI code page (cp1252 on the CI
   # image), so printing any non-ASCII character - a Greek letter in a test's
   # progress line, say - raises UnicodeEncodeError and fails a test that has

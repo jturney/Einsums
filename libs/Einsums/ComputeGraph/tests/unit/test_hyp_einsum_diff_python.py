@@ -121,7 +121,7 @@ def _einsum_problem(draw):
         # GEMV-shaped (no N) with the supplying operand's output and summed
         # axes in any order, large enough to stream: PackedGemm walks such a
         # contraction once in storage order when its axes do not form a matrix,
-        # but only above kStreamMinElems (4096) elements, which the general
+        # but only above --einsums:packed-gemm:stream-min-elems (4096) elements, which the general
         # class's extents of at most 3 never reach. Four or five axes of 8-10
         # put every draw over the floor. Either operand may supply the output.
         n_batch = draw(st.integers(0, 1))

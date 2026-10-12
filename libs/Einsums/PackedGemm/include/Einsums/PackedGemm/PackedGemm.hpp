@@ -40,20 +40,15 @@
 #    include <omp.h>
 #endif
 
+/// Name the path a packed contraction took, to the profiler and to @ref
+/// einsums::packed_gemm::last_packed_decision, which tests and the tune read.
+#define EINSUMS_PACKED_GEMM_PATH(key, value)                                                                                               \
+    do {                                                                                                                                   \
+        WAGGLE_ANNOTATE(key, value);                                                                                                       \
+        ::einsums::packed_gemm::last_packed_decision() = (value);                                                                          \
+    } while (false)
+
 EINSUMS_NAMESPACE_BEGIN(packed_gemm)
-
-/// Output elements below which an outer product is left to the generic loop.
-/// Measured, not chosen; see the decline site for the data and its caveats.
-inline constexpr int64_t kOuterProductFloor = 768;
-
-/// Elements of the supplying operand below which a GEMV-shaped contraction whose axes do not form a
-/// matrix is not streamed: where the stream starts to beat the compiled generic loop. Measured, not
-/// chosen; see the stream route for the data.
-inline constexpr int64_t kStreamMinElems = 4096;
-
-/// Elements of the supplying operand from which a GEMV that the vendor cannot thread is streamed
-/// instead: two threads' worth, the least from which the stream runs on more than one.
-inline constexpr int64_t kStreamGemvMinElems = int64_t{2} << 16;
 
 /// Whether a GEMV whose matrix operand has @p elems elements should go to the stream route rather
 /// than the vendor's gemv. Only where nothing can give that gemv threads: Accelerate's runs on one
@@ -64,8 +59,9 @@ inline constexpr int64_t kStreamGemvMinElems = int64_t{2} << 16;
 /// contraction takes the same route from either.
 inline bool stream_gemv_preferred(int64_t elems) {
 #ifdef _OPENMP
-    return elems >= kStreamGemvMinElems && omp_get_max_threads() > 1 && !einsums::blas::threads_with_openmp() &&
-           !einsums::blas::has_per_thread_control();
+    // Two threads' worth: the least from which the stream runs on more than one.
+    return elems >= 2 * config::get(option::PackedGemmStreamElemsPerThread) && omp_get_max_threads() > 1 &&
+           !einsums::blas::threads_with_openmp() && !einsums::blas::has_per_thread_control();
 #else
     (void)elems;
     return false;
@@ -105,13 +101,6 @@ inline std::vector<std::string> compute_link_indices(std::vector<std::string> co
     }
     return link;
 }
-
-/// Outer-product destination size at which the k=1 GEMM stops paying.
-///
-/// ger has no beta, so a destination prefactor costs a separate pass over C. A k=1 GEMM folds beta
-/// in, which wins while C is small, until GEMM's blocking overhead outgrows the extra pass. The
-/// measured crossover lies between 65k and 332k elements.
-constexpr size_t kOuterGemmMaxElems = 1u << 17;
 
 /// Outer-product destination size below which no BLAS call is worth making: the call's fixed cost
 /// dominates, so the direct paths leave these to the small-outer deferral.
@@ -292,6 +281,15 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 /// contraction it names the last slice this thread ran. Exported and defined out of line so the
 /// whole process shares one slot.
 [[nodiscard]] EINSUMS_EXPORT char const *&last_contraction_route();
+
+/// Which path the most recent @ref try_packed_gemm call on this thread chose, or why it declined:
+/// "direct_outer_gemm", "direct_ger", "direct_gemv", "stream", "scatter", "single_mn", or a reason
+/// for declining such as "defer_small_outer_to_generic". One level above @ref last_contraction_route, which names the kernel route
+/// within the scatter and single_mn paths. Empty when the call ended before any decision.
+///
+/// Test introspection, and how @c einsums-tune checks that the two forced sides of a threshold took
+/// different paths. Thread-local and out of line, like @ref last_contraction_route.
+[[nodiscard]] EINSUMS_EXPORT char const *&last_packed_decision();
 
 /// Which engine the most recent "packed" contraction on this thread ran: "tile", "block_gemm" (one
 /// vendor GEMM per cache block, then a scatter), "3m" (the block strategy on three real GEMMs), or
@@ -1421,8 +1419,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 #ifdef _OPENMP
         n_threads = omp_get_max_threads();
         if (n_threads > 1 && !omp_in_parallel() && !parallel_batch && !(scatter_c && shape.block_gemm) && !(is_complex && shape.use_1m) &&
-            2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K) >=
-                static_cast<double>(cpu_config().min_parallel_flops)) {
+            2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K) >= static_cast<double>(min_parallel_flops())) {
             int const per_l3 = cpu_config().cores_per_l3;
             if (per_l3 > 1 && n_threads % per_l3 == 0) {
                 team_size = per_l3;
@@ -1627,9 +1624,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         bool const blk_runs_stream =
             plan.c_m_dims.back().tensor_stride == 1 && blk_m_fast * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes;
 
-        // The NC loop is parallel only above cpu_config().min_parallel_flops.
+        // The NC loop is parallel only above min_parallel_flops().
         double const work_flops    = 2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K);
-        bool const   worth_threads = work_flops >= static_cast<double>(cpu_config().min_parallel_flops);
+        bool const   worth_threads = work_flops >= static_cast<double>(min_parallel_flops());
         bool const   parallel_nc   = !parallel_batch && worth_threads;
 
         // NC starts from the cache model's blk.NC; the thread grid below shrinks it so every thread
@@ -2565,6 +2562,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                      BType const &B, bool allow_scatter = true, ContractionSite *site = nullptr) {
     WAGGLE_ZONE("packed_gemm: {} <- {} ; {}", fmt::join(spec_in.c_indices, ","), fmt::join(spec_in.a_indices, ","),
                 fmt::join(spec_in.b_indices, ","));
+    last_packed_decision() = "";
 
     using ValueType  = typename AType::ValueType;
     using ValueTypeB = typename BType::ValueType;
@@ -2572,11 +2570,11 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     constexpr ScalarType st   = get_scalar_type<ValueType>();
     constexpr ScalarType st_b = get_scalar_type<ValueTypeB>();
     if constexpr (st == ScalarType::Unknown) {
-        WAGGLE_ANNOTATE("packed_gemm_skip", "unknown_scalar_type");
+        EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "unknown_scalar_type");
         return false;
     }
     if constexpr (st != st_b) {
-        WAGGLE_ANNOTATE("packed_gemm_skip", "mixed_dtype");
+        EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "mixed_dtype");
         return false;
     }
 
@@ -2591,7 +2589,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     if (site != nullptr && site->resolved && site->allow_scatter == allow_scatter &&
         (site->plan != nullptr || site->declined_packed == prefer_packed) && site_key_matches(site->key, spec_in, st, A, B, *C)) {
         if (site->plan == nullptr) {
-            WAGGLE_ANNOTATE("packed_gemm_skip", "site_declined");
+            EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "site_declined");
             return false;
         }
         WAGGLE_ANNOTATE("packed_gemm_plan", "site");
@@ -2689,7 +2687,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             return std::ranges::any_of(raw, [&](std::string const &x) { return other.count(x) == 0 && c_set.count(x) == 0; });
         };
         if (has_lone(a_raw, b_set) || has_lone(b_raw, a_set)) {
-            WAGGLE_ANNOTATE("packed_gemm_skip", "lone_summed_index");
+            EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "lone_summed_index");
             remember(key, nullptr);
             return false;
         }
@@ -2699,7 +2697,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // A matrix BLAS cannot address stays here too, since the direct route would run a loop.
         if (m_count == 1 && n_count == 1 && link.size() == 1 && !spec.conj_a && !spec.conj_b && m_count + n_count == target.size() &&
             !prefer_packed && blas_addressable(A) && blas_addressable(B) && blas_addressable(*C)) {
-            WAGGLE_ANNOTATE("packed_gemm_skip", "defer_to_direct_gemm");
+            EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "defer_to_direct_gemm");
             remember(key, nullptr);
             return false; // Deferred to direct BLAS GEMM, not a rejection.
         }
@@ -2780,14 +2778,15 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
 
                 // A k=1 GEMM rather than scal-then-ger: ger has no beta, so a prefactor would cost
                 // a separate pass over C, which is the whole cost of an outer product. Past
-                // kOuterGemmMaxElems GEMM's blocking overhead outgrows that pass. A strided operand
-                // has no ldb to express, so it takes ger.
-                if (inc_r == 1 && inc_c2 == 1 && (static_cast<size_t>(rows) * cols) < kOuterGemmMaxElems) {
-                    WAGGLE_ANNOTATE("packed_gemm_path", "direct_outer_gemm");
+                // --einsums:packed-gemm:outer-gemm-max GEMM's blocking overhead outgrows that pass. A
+                // strided operand has no ldb to express, so it takes ger.
+                if (inc_r == 1 && inc_c2 == 1 &&
+                    static_cast<int64_t>(rows) * static_cast<int64_t>(cols) < config::get(option::PackedGemmOuterGemmMax)) {
+                    EINSUMS_PACKED_GEMM_PATH("packed_gemm_path", "direct_outer_gemm");
                     einsums::blas::gemm<ValueType>('n', 'n', rows, cols, 1, alpha, rp, rows, cq, 1, beta, cp, ldc);
                     return true;
                 }
-                WAGGLE_ANNOTATE("packed_gemm_path", "direct_ger");
+                EINSUMS_PACKED_GEMM_PATH("packed_gemm_path", "direct_ger");
                 if (beta == ValueType{0}) {
                     std::fill(cp, cp + (m * n), ValueType{0});
                 } else if (beta != ValueType{1}) {
@@ -2860,7 +2859,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                         if (lda < static_cast<int_t>(m)) {
                             return false;
                         }
-                        WAGGLE_ANNOTATE("packed_gemm_path", "direct_gemv");
+                        EINSUMS_PACKED_GEMM_PATH("packed_gemm_path", "direct_gemv");
                         einsums::blas::gemv<ValueType>('n', static_cast<int_t>(m), static_cast<int_t>(k), alpha, sp, lda, vp,
                                                        static_cast<int_t>(inc_v), beta, cp, static_cast<int_t>(inc_c));
                         return true;
@@ -2874,7 +2873,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                         if (lda < static_cast<int_t>(k)) {
                             return false;
                         }
-                        WAGGLE_ANNOTATE("packed_gemm_path", "direct_gemv");
+                        EINSUMS_PACKED_GEMM_PATH("packed_gemm_path", "direct_gemv");
                         einsums::blas::gemv<ValueType>('t', static_cast<int_t>(k), static_cast<int_t>(m), alpha, sp, lda, vp,
                                                        static_cast<int_t>(inc_v), beta, cp, static_cast<int_t>(inc_c));
                         return true;
@@ -2896,8 +2895,8 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // link axes interleave (the exchange K(i,j) = A(i,k,j,l) B(k,l)), no matrix view exists for
         // gemv, and packing would copy the whole operand only to read it again with nothing to
         // reuse it against. stream_contract reads it once in storage order, the least this
-        // bandwidth-bound shape can cost. Below kStreamMinElems the call is a few microseconds
-        // whichever way it goes.
+        // bandwidth-bound shape can cost. Below --einsums:packed-gemm:stream-min-elems the call is a
+        // few microseconds whichever way it goes.
         if (!spec.conj_a && !spec.conj_b && !link.empty() && (m_count == 0) != (n_count == 0)) {
             auto try_stream = [&]<einsums::BasicTensorConcept SupT, einsums::BasicTensorConcept VecT>(
                                   SupT const &S, VecT const &V, std::vector<std::string> const &sup,
@@ -2921,7 +2920,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                 for (int64_t const d : s_layout.dims) {
                     s_elems *= d;
                 }
-                if (s_elems < kStreamMinElems) {
+                if (s_elems < config::get(option::PackedGemmStreamMinElems)) {
                     return false;
                 }
                 for (size_t d = 0; d < other.size(); d++) {
@@ -2976,7 +2975,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                     }
                 }
 
-                WAGGLE_ANNOTATE("packed_gemm_path", "stream");
+                EINSUMS_PACKED_GEMM_PATH("packed_gemm_path", "stream");
                 last_contraction_route() = "stream";
                 stream_contract<ValueType>(S.data(), s_layout, {std::move(term)}, partition_axes);
                 return true;
@@ -2993,12 +2992,12 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // is slower than the packed path, so they keep it. A GEMV-shaped contraction gets here only
         // when the gemv and stream routes above declined.
         if (!allow_scatter && m_count == 0 && n_count == 0) {
-            WAGGLE_ANNOTATE("packed_gemm_skip", "defer_to_generic_batch_dot");
+            EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "defer_to_generic_batch_dot");
             remember(key, nullptr);
             return false;
         }
         if (!allow_scatter && (m_count == 0 || n_count == 0)) {
-            WAGGLE_ANNOTATE("packed_gemm_skip", "defer_to_generic_gemv_shaped");
+            EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "defer_to_generic_gemv_shaped");
             remember(key, nullptr);
             return false;
         }
@@ -3045,12 +3044,13 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         bool const needs_scatter = multi_m || multi_n || (plan.c_m_dims[0].tensor_stride != 1 && plan.c_n_dims[0].tensor_stride != 1);
 
         // Outer products (no link indices, K synthesized to 1) pay a fixed setup cost for the
-        // packed passes, so below kOuterProductFloor output elements the generic loop wins. Rank-2
+        // packed passes, so below --einsums:packed-gemm:outer-product-floor output elements the
+        // generic loop wins. Rank-2
         // outer products never get here (StringDispatch's GER path takes them first), so the
         // comparison is always against the generic loop: the crossover moves whenever that loop
         // does, and it differs between machines.
-        if (outer_shaped && plan.M_total * plan.N_total < kOuterProductFloor) {
-            WAGGLE_ANNOTATE("packed_gemm_skip", "defer_small_outer_to_generic");
+        if (outer_shaped && plan.M_total * plan.N_total < config::get(option::PackedGemmOuterProductFloor)) {
+            EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "defer_small_outer_to_generic");
             remember(key, nullptr);
             return false;
         }
@@ -3059,14 +3059,14 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // scatter path or the shape is batched: Sort+GEMM's per-batch GEMMs beat the scatter
         // engines on batched shapes at every size tested.
         if (needs_scatter && ttgt_exists && !allow_scatter && (!micro_kernel_shape<ValueType>().fast_scatter || plan.batch_total > 1)) {
-            WAGGLE_ANNOTATE("packed_gemm_skip", "scatter_defer_to_ttgt");
+            EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "scatter_defer_to_ttgt");
             EINSUMS_LOG_INFO("PackedGemm: declining — scatter-path shape, the caller has a TTGT fallback, "
                              "and this rung's kernel does not beat it for this shape.");
             remember(key, nullptr);
             return false;
         }
 
-        WAGGLE_ANNOTATE("packed_gemm_path", needs_scatter ? "scatter" : "single_mn");
+        EINSUMS_PACKED_GEMM_PATH("packed_gemm_path", needs_scatter ? "scatter" : "single_mn");
         // Only a cache-owned plan is stable enough to remember. If the re-lookup above missed, skip
         // the memo rather than record a null plan, which would read as declined.
         if (cached != nullptr) {
@@ -3076,7 +3076,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                                     plan.swap_ab ? spec.conj_b : spec.conj_a, plan.swap_ab ? spec.conj_a : spec.conj_b, prefer_packed);
         return true;
     } else {
-        WAGGLE_ANNOTATE("packed_gemm_skip", "invalid_topology");
+        EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "invalid_topology");
         EINSUMS_LOG_INFO("PackedGemm: skipping — packing topology invalid for this contraction pattern.");
         remember(key, nullptr);
     }

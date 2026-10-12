@@ -14,6 +14,10 @@ int register_Einsums_PackedGemm_options() {
     cl::register_option(option::PackedGemmComplex1m);
     cl::register_option(option::PackedGemmCoresPerL3);
     cl::register_option(option::PackedGemmCTempBudget);
+    cl::register_option(option::PackedGemmOuterProductFloor);
+    cl::register_option(option::PackedGemmOuterGemmMax);
+    cl::register_option(option::PackedGemmStreamMinElems);
+    cl::register_option(option::PackedGemmStreamElemsPerThread);
     cl::register_option(option::PackedGemmDumpPlan);
     return 0;
 }

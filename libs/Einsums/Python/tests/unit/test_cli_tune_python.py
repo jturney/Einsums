@@ -23,7 +23,17 @@ from einsums import hardware as hw
 
 #: Sizes small enough that a full measuring run takes a second or two. The numbers are not looked
 #: at; what is checked is that a run writes a profile this machine then uses.
-QUICK = ["--min-size", "16", "--max-size", "32", "--num-points", "2", "--warmup", "0", "--repeats", "1", "--no-thread-sweep"]
+QUICK = ["--min-size", "16", "--max-size", "32", "--num-points", "2", "--warmup", "0", "--repeats", "1", "--no-thread-sweep",
+         "--probe-repeats", "1"]
+
+#: The options the crossover probes measure.
+TUNED = {
+    "einsums:packed-gemm:outer-product-floor",
+    "einsums:packed-gemm:outer-gemm-max",
+    "einsums:packed-gemm:stream-min-elems",
+    "einsums:packed-gemm:stream-elems-per-thread",
+    "einsums:hardware:omp-break-even-flops-per-ns",
+}
 
 
 def _env(tmp_path: Path) -> dict[str, str]:
@@ -74,10 +84,21 @@ def test_a_measured_profile_is_found_by_the_next_process(tmp_path):
     document = json.loads(_cached(tmp_path).read_text())
     assert {"machine", "software", "measured", "omp_region_cost_ns", "cost_model"} <= set(document)
 
+    # Every probe separates its two routes here, at two threads, so every option is written; a probe
+    # that could not would say so rather than write a number.
+    assert set(document["options"]) == TUNED, measured.stdout
+    assert "not measured" not in measured.stdout
+
     checked = _tune(tmp_path, "--check")
     assert checked.returncode == 0 and checked.stdout.strip() == str(_cached(tmp_path))
     assert _tune(tmp_path, "--export").stdout.strip() == str(_cached(tmp_path))
     assert "loaded" in _tune(tmp_path, "--show").stdout
+
+
+def test_quick_measures_no_crossovers(tmp_path):
+    measured = _tune(tmp_path, *QUICK, "--quick")
+    assert measured.returncode == 0, measured.stderr
+    assert "options" not in json.loads(_cached(tmp_path).read_text())
 
 
 def test_einsums_tune_is_the_same_command(tmp_path):

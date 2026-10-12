@@ -247,6 +247,42 @@
     The budget bounds the blocks that strategy works in, so it trades memory against speed and never
     changes a result. It exists for sweeps.
 
+"einsums:packed-gemm:outer-product-floor":
+  added: "2.0.0"
+  body: |
+    Output elements below which an outer product of rank three or more is left to the generic loop
+    rather than the packed passes, whose fixed setup a small product does not repay. The default,
+    768, was measured on an Apple M4, and where the generic loop stops winning moves with the
+    machine and with that loop; ``einsums tune`` measures it and writes it to the hardware profile.
+    From 4096 elements a matrix-shaped outer product takes the direct BLAS paths instead, so the
+    floor matters only below that.
+
+"einsums:packed-gemm:outer-gemm-max":
+  added: "2.0.0"
+  body: |
+    Output elements from which a contiguous outer product with a prefactor on its output takes
+    ``ger`` and a separate scaling pass rather than a GEMM of inner extent one. ``ger`` has no
+    beta, so the prefactor costs a pass over the output; the GEMM folds it in and wins until its
+    blocking overhead outgrows that pass. Measured between 65k and 332k elements on an Apple M4,
+    with a default of 131072; ``einsums tune`` measures it.
+
+"einsums:packed-gemm:stream-min-elems":
+  added: "2.0.0"
+  body: |
+    Elements of the supplying operand below which a contraction shaped like a matrix-vector product
+    whose axes do not form a matrix (the exchange ``K(i,j) = A(i,k,j,l) B(k,l)``) is not streamed
+    but left to the packed engine. Below the default, 4096, the call takes a few microseconds
+    either way; ``einsums tune`` measures where the stream starts to win.
+
+"einsums:packed-gemm:stream-elems-per-thread":
+  added: "2.0.0"
+  body: |
+    Elements of the streamed operand each thread must have before the stream forks another. Below
+    it the region's fork and the per-thread buffers cost more than the elements they would share.
+    The default, 65536, was measured on an Apple M4, where 16384 forked too early and was slower at
+    every mid size. A matrix-vector product the vendor's BLAS cannot thread is streamed from two
+    threads' worth. ``einsums tune`` picks the value closest to the best across a range of sizes.
+
 "einsums:packed-gemm:dump-plan":
   added: "2.0.0"
   body: |
@@ -749,6 +785,17 @@
 
     This is for comparing thresholds from one binary, since rebuilds move timings for unrelated
     reasons. Any value gives the same results.
+
+"einsums:hardware:omp-break-even-flops-per-ns":
+  added: "2.0.0"
+  body: |
+    The rate that turns the cost of an OpenMP region into the work at which a contraction goes
+    parallel: the threshold is the region cost in nanoseconds times this. A calibration, not a flop
+    rate. The default, 12, landed on the measured optimum across two tiled CCSD residuals on an
+    Apple M4 Pro; ``einsums tune`` measures it on the machine at hand, as the work at which a packed
+    contraction on a team overtakes the same contraction on one thread, and writes it to the
+    hardware profile. :option:`--einsums:hardware:omp-min-parallel-flops` pins the threshold itself
+    instead.
 
 "einsums:simd:arch":
   added: "2.0.0"
