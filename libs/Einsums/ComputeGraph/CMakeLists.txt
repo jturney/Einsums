@@ -46,7 +46,6 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Detail/ErasedEinsum.hpp
     Einsums/ComputeGraph/Detail/ErasedOperations.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
-    Einsums/ComputeGraph/Detail/Json.hpp
     Einsums/ComputeGraph/Detail/MixedPrecision.hpp
     Einsums/ComputeGraph/Detail/WidthGuard.hpp
     Einsums/ComputeGraph/CostModel.hpp
@@ -158,7 +157,6 @@ set(ComputeGraphSources
     GraphIR/Read.cpp
     GraphIR/Build.cpp
     InterfaceManifest.cpp
-    Json.cpp
     SymbolicExtents.cpp
     GroupedBatchedGemm.cpp
     UsageAnalysis.cpp
@@ -258,6 +256,7 @@ einsums_add_module(
     Einsums_Errors
     Einsums_GPU
     Einsums_Hardware
+    Einsums_Json
     Einsums_LinearAlgebra
     Einsums_Logging
     Einsums_PackedGemm

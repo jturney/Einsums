@@ -48,12 +48,12 @@
 /// what travels is the space NAMES; a loaded graph resolves them against the
 /// registry it is given.
 
-#include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/GraphIR.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
+#include <Einsums/Json/Json.hpp>
 
 #include <fmt/format.h>
 

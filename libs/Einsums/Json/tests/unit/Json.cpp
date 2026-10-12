@@ -22,7 +22,7 @@
 ///  4. **Hostile input.** Truncation, garbage and a depth bomb must fail with a
 ///     position and must never partially succeed or overrun the stack.
 
-#include <Einsums/ComputeGraph/Detail/Json.hpp>
+#include <Einsums/Json/Json.hpp>
 
 #include <bit>
 #include <cmath>
@@ -35,7 +35,7 @@
 
 #include <Einsums/Testing.hpp>
 
-namespace json = einsums::compute_graph::json;
+namespace json = einsums::json;
 
 namespace {
 
@@ -59,7 +59,7 @@ std::string canonical(json::Value const &value) {
 
 } // namespace
 
-TEST_CASE("json: value model round-trips every alternative", "[computegraph][json]") {
+TEST_CASE("json: value model round-trips every alternative", "[json]") {
     SECTION("scalars keep their type") {
         REQUIRE(must_parse("null").is_null());
         REQUIRE(must_parse("true").as_bool());
@@ -105,7 +105,7 @@ TEST_CASE("json: value model round-trips every alternative", "[computegraph][jso
     }
 }
 
-TEST_CASE("json: doubles round-trip bit-exactly", "[computegraph][json]") {
+TEST_CASE("json: doubles round-trip bit-exactly", "[json]") {
     std::vector<double> const values{0.0,
                                      -0.0,
                                      1.0,
@@ -134,7 +134,7 @@ TEST_CASE("json: doubles round-trip bit-exactly", "[computegraph][json]") {
     }
 }
 
-TEST_CASE("json: int64 bounds", "[computegraph][json]") {
+TEST_CASE("json: int64 bounds", "[json]") {
     REQUIRE(must_parse("9223372036854775807").as_int() == std::numeric_limits<std::int64_t>::max());
     REQUIRE(must_parse("-9223372036854775808").as_int() == std::numeric_limits<std::int64_t>::min());
 
@@ -144,7 +144,7 @@ TEST_CASE("json: int64 bounds", "[computegraph][json]") {
     }
 }
 
-TEST_CASE("json: emit refuses non-finite doubles", "[computegraph][json]") {
+TEST_CASE("json: emit refuses non-finite doubles", "[json]") {
     // JSON has no NaN and no infinity. Writing `null` in their place is the
     // silent-corruption class this model exists to refuse; a schema that must
     // carry a special tags it as a string inside its own typed object.
@@ -159,7 +159,7 @@ TEST_CASE("json: emit refuses non-finite doubles", "[computegraph][json]") {
     }
 }
 
-TEST_CASE("json: the consumed-key audit is what a strict loader stands on", "[computegraph][json]") {
+TEST_CASE("json: the consumed-key audit is what a strict loader stands on", "[json]") {
     json::Value const document = must_parse(R"({"a":1,"b":{"c":2,"d":3},"e":[{"f":4}]})");
     auto const       &root     = document.as_object();
 
@@ -214,7 +214,7 @@ TEST_CASE("json: the consumed-key audit is what a strict loader stands on", "[co
     }
 }
 
-TEST_CASE("json: canonical emission is a fixpoint", "[computegraph][json]") {
+TEST_CASE("json: canonical emission is a fixpoint", "[json]") {
     std::vector<std::string> const canonical_documents{
         R"({})",
         R"([])",
@@ -232,7 +232,7 @@ TEST_CASE("json: canonical emission is a fixpoint", "[computegraph][json]") {
     }
 }
 
-TEST_CASE("json: pretty emission is diff-tuned but says the same thing", "[computegraph][json]") {
+TEST_CASE("json: pretty emission is diff-tuned but says the same thing", "[json]") {
     std::string const source = R"({"version":"1.0.0","nodes":[{"id":0,"kind":"Einsum"},{"id":1,"kind":"Scale"}]})";
     json::Value const value  = must_parse(source);
 
@@ -250,7 +250,7 @@ TEST_CASE("json: pretty emission is diff-tuned but says the same thing", "[compu
     REQUIRE(canonical(must_parse(pretty)) == source);
 }
 
-TEST_CASE("json: hostile input fails cleanly and says where", "[computegraph][json]") {
+TEST_CASE("json: hostile input fails cleanly and says where", "[json]") {
     SECTION("truncation") {
         for (std::string const full = R"({"a":[1,2,{"b":"c"}]})"; auto const cut : {1U, 4U, 6U, 9U, 14U, 18U, 20U}) {
             std::string const text = full.substr(0, cut);
@@ -322,7 +322,7 @@ TEST_CASE("json: hostile input fails cleanly and says where", "[computegraph][js
     }
 }
 
-TEST_CASE("json: Object::set refuses a duplicate key", "[computegraph][json]") {
+TEST_CASE("json: Object::set refuses a duplicate key", "[json]") {
     json::Object object;
     object.set("a", json::Value{1});
     REQUIRE_THROWS_AS(object.set("a", json::Value{2}), std::invalid_argument);

@@ -125,12 +125,12 @@ void register_test_shift_descriptor() {
     static bool const registered = [] {
         cg::register_descriptor<TestShiftDescriptor>(
             [](TestShiftDescriptor const &desc) {
-                cg::json::Object fields;
-                fields.set("amount", cg::json::Value{desc.amount});
-                return cg::json::Value{std::move(fields)};
+                json::Object fields;
+                fields.set("amount", json::Value{desc.amount});
+                return json::Value{std::move(fields)};
             },
-            [](cg::json::Object const &fields) {
-                cg::json::Value const *amount = fields.take("amount");
+            [](json::Object const &fields) {
+                json::Value const *amount = fields.take("amount");
                 if (amount == nullptr || !amount->is_number()) {
                     throw std::invalid_argument("'amount' must be a number");
                 }
@@ -1372,8 +1372,8 @@ TEST_CASE("SaveLoad - a registered descriptor saves, loads and rebuilds", "[Comp
     }
 
     SECTION("names must be qualified and unique") {
-        auto const noop        = cg::DescriptorCodec{.write = [](cg::OpData const &) { return cg::json::Value{cg::json::Object{}}; },
-                                                     .read  = [](cg::json::Object const &) { return cg::OpData{}; },
+        auto const noop        = cg::DescriptorCodec{.write = [](cg::OpData const &) { return json::Value{json::Object{}}; },
+                                                     .read  = [](json::Object const &) { return cg::OpData{}; },
                                                      .build = [](cg::OpData const &, cg::Graph &, packed_gemm::ScalarType, std::size_t,
                                                                  std::span<cg::TensorId const>,
                                                                  std::span<cg::TensorId const>) { return std::function<void()>{[] {}}; }};

@@ -8,7 +8,6 @@
 #include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
 #include <Einsums/ComputeGraph/DestinationRead.hpp>
-#include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/Executor.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
@@ -16,6 +15,7 @@
 #include <Einsums/ComputeGraph/Moldability.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Json/Json.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 
 #include <fmt/format.h>

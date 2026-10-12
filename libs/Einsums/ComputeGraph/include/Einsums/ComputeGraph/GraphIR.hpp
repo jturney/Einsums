@@ -226,7 +226,7 @@
  * than what the file says.
  *
  * @see Graph::serializability_report for what a graph must satisfy to be saved
- * @see Einsums/ComputeGraph/Detail/Json.hpp for the strict document model
+ * @see Einsums/Json/Json.hpp for the strict document model
  */
 
 #include <Einsums/Config.hpp>

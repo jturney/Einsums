@@ -31,12 +31,12 @@
 /// pass can reach into the other's machinery by accident.
 
 #include <Einsums/ComputeGraph/Approximation.hpp>
-#include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/GraphIR.hpp>
 #include <Einsums/ComputeGraph/InterfaceManifest.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Json/Json.hpp>
 
 #include <cmath>
 #include <cstdint>

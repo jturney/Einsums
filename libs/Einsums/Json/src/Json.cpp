@@ -3,9 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
+#include <Einsums/Json/Json.hpp>
 
 #include <fmt/format.h>
 
@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-EINSUMS_NAMESPACE_BEGIN(compute_graph::json)
+EINSUMS_NAMESPACE_BEGIN(json)
 
 std::string ParseError::to_string() const {
     return fmt::format("line {} column {}: {}", where.line, where.column, message);
@@ -736,4 +736,4 @@ void collect_unconsumed(Value const &value, std::string const &path, std::vector
     }
 }
 
-EINSUMS_NAMESPACE_END(compute_graph::json)
+EINSUMS_NAMESPACE_END(json)

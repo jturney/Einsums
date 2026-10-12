@@ -7,7 +7,12 @@
 
 /**
  * @file Json.hpp
- * @brief A strict, consumed-key JSON document model for the graph IR.
+ * @brief A strict, consumed-key JSON document model.
+ *
+ * The graph IR is written on it, and so is the machine's hardware profile. It
+ * sits low in the module stack, depending only on the configuration, the
+ * C++23 compatibility layer and the error module, so that a module below
+ * ComputeGraph can read its own part of a file ComputeGraph also reads.
  *
  * @par Why a document model of our own
  * A reader that silently skips unknown fields loads a half-understood file as
@@ -39,7 +44,7 @@
  * does not invent them: @ref emit REFUSES a non-finite double rather than
  * writing ``null`` or a bare ``nan`` token. A schema that needs to carry a
  * special encodes it as a tagged STRING inside its own typed object -
- * ``{"dtype":"float64","re":"nan"}`` - which is what GraphIR.hpp does for
+ * ``{"dtype":"float64","re":"nan"}`` - which is what the graph IR does for
  * prefactors.
  *
  * @par Errors
@@ -48,8 +53,8 @@
  * partially populated value. Nesting is capped (@ref ParseOptions::max_depth)
  * so a depth bomb is a diagnostic rather than a stack overflow.
  *
- * @see GraphIR.hpp for the schema this document model carries
- * @see Einsums/ComputeGraph/GraphIR.hpp for the schema written on top of this.
+ * The graph IR's schema, written on this model, is described in
+ * Einsums/ComputeGraph/GraphIR.hpp.
  */
 
 #include <Einsums/Config.hpp>
@@ -64,7 +69,7 @@
 #include <variant>
 #include <vector>
 
-EINSUMS_NAMESPACE_BEGIN(compute_graph::json)
+EINSUMS_NAMESPACE_BEGIN(json)
 
 class Value;
 
@@ -384,4 +389,4 @@ struct ParseOptions {
  */
 EINSUMS_EXPORT void collect_unconsumed(Value const &value, std::string const &path, std::vector<std::string> &out);
 
-EINSUMS_NAMESPACE_END(compute_graph::json)
+EINSUMS_NAMESPACE_END(json)

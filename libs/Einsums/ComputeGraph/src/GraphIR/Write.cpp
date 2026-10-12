@@ -17,7 +17,6 @@
 /// threads through itself, never leaves this translation unit.
 
 #include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
-#include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
@@ -26,6 +25,7 @@
 #include <Einsums/Config/ABI.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
+#include <Einsums/Json/Json.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Version.hpp>
 

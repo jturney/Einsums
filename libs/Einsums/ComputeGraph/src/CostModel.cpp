@@ -4,13 +4,13 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
-#include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/Json/Json.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <fmt/format.h>

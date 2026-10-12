@@ -41,6 +41,7 @@ generated API reference for its public headers.
     /libs/Einsums/HPTT/docs/index.rst
     /libs/Einsums/Hardware/docs/index.rst
     /libs/Einsums/Iterator/docs/index.rst
+    /libs/Einsums/Json/docs/index.rst
     /libs/Einsums/LinearAlgebra/docs/index.rst
     /libs/Einsums/Logging/docs/index.rst
     /libs/Einsums/Options/docs/index.rst

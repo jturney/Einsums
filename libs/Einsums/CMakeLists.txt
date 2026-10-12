@@ -22,6 +22,7 @@ set(_Einsums_modules
   CXX23
   Debugging
   Errors
+  Json
   FFT
   GPU
   Comm

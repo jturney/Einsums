@@ -226,12 +226,12 @@ template <typename D>
 void register_scaled(cg::DescriptorHooksFor<D> hooks) {
     cg::register_descriptor<D>(
         [](D const &desc) {
-            cg::json::Object fields;
-            fields.set("factor", cg::json::Value{desc.factor});
-            return cg::json::Value{std::move(fields)};
+            json::Object fields;
+            fields.set("factor", json::Value{desc.factor});
+            return json::Value{std::move(fields)};
         },
-        [](cg::json::Object const &fields) {
-            cg::json::Value const *factor = fields.take("factor");
+        [](json::Object const &fields) {
+            json::Value const *factor = fields.take("factor");
             return D{.factor = factor != nullptr ? factor->as_double() : 1.0};
         },
         [](D const &desc, cg::Graph &graph, packed_gemm::ScalarType, std::size_t, std::span<cg::TensorId const> inputs,
@@ -251,12 +251,12 @@ template <typename D>
 void register_block_fill(cg::DescriptorHooksFor<D> hooks) {
     cg::register_descriptor<D>(
         [](D const &desc) {
-            cg::json::Object fields;
-            fields.set("lie", cg::json::Value{static_cast<double>(desc.lie)});
-            return cg::json::Value{std::move(fields)};
+            json::Object fields;
+            fields.set("lie", json::Value{static_cast<double>(desc.lie)});
+            return json::Value{std::move(fields)};
         },
-        [](cg::json::Object const &fields) {
-            cg::json::Value const *lie = fields.take("lie");
+        [](json::Object const &fields) {
+            json::Value const *lie = fields.take("lie");
             return D{.lie = lie != nullptr ? static_cast<int>(lie->as_double()) : 0};
         },
         [](D const &, cg::Graph &graph, packed_gemm::ScalarType, std::size_t, std::span<cg::TensorId const> inputs,
@@ -285,16 +285,16 @@ template <typename D>
 void register_grid(cg::NodeEffects effects) {
     cg::register_descriptor<D>(
         [](D const &desc) {
-            cg::json::Array params;
+            json::Array params;
             for (auto const &name : desc.index_params) {
-                params.emplace_back(cg::json::Value{name});
+                params.emplace_back(json::Value{name});
             }
-            cg::json::Object fields;
-            fields.set("index_params", cg::json::Value{std::move(params)});
-            fields.set("lie", cg::json::Value{static_cast<double>(desc.lie)});
-            return cg::json::Value{std::move(fields)};
+            json::Object fields;
+            fields.set("index_params", json::Value{std::move(params)});
+            fields.set("lie", json::Value{static_cast<double>(desc.lie)});
+            return json::Value{std::move(fields)};
         },
-        [](cg::json::Object const &fields) {
+        [](json::Object const &fields) {
             D desc;
             if (auto const *params = fields.take("index_params"); params != nullptr && params->is_array()) {
                 desc.index_params.clear();
@@ -364,12 +364,12 @@ void register_grid(cg::NodeEffects effects) {
 
 /// A codec's write and read for a descriptor with no fields.
 template <typename D>
-cg::json::Value write_nothing(D const & /*descriptor*/) {
-    return cg::json::Value{cg::json::Object{}};
+json::Value write_nothing(D const & /*descriptor*/) {
+    return json::Value{json::Object{}};
 }
 
 template <typename D>
-D read_nothing(cg::json::Object const & /*fields*/) {
+D read_nothing(json::Object const & /*fields*/) {
     return D{};
 }
 
@@ -396,12 +396,12 @@ void register_hook_descriptors() {
 
         cg::register_descriptor<LogDescriptor>(
             [](LogDescriptor const &desc) {
-                cg::json::Object fields;
-                fields.set("tag", cg::json::Value{static_cast<double>(desc.tag)});
-                return cg::json::Value{std::move(fields)};
+                json::Object fields;
+                fields.set("tag", json::Value{static_cast<double>(desc.tag)});
+                return json::Value{std::move(fields)};
             },
-            [](cg::json::Object const &fields) {
-                cg::json::Value const *tag = fields.take("tag");
+            [](json::Object const &fields) {
+                json::Value const *tag = fields.take("tag");
                 return LogDescriptor{.tag = tag != nullptr ? static_cast<std::int64_t>(tag->as_double()) : 0};
             },
             [](LogDescriptor const &desc, cg::Graph &graph, packed_gemm::ScalarType, std::size_t, std::span<cg::TensorId const>,
@@ -531,8 +531,7 @@ void register_hook_descriptors() {
                 .accesses = [](DeclaredParamDescriptor const &, cg::Node const &) { return cg::NamedAccesses{.param_reads = {"k"}}; }});
 
         cg::register_descriptor<CostedDescriptor>(
-            [](CostedDescriptor const &) { return cg::json::Value{cg::json::Object{}}; },
-            [](cg::json::Object const &) { return CostedDescriptor{}; },
+            [](CostedDescriptor const &) { return json::Value{json::Object{}}; }, [](json::Object const &) { return CostedDescriptor{}; },
             [](CostedDescriptor const &, cg::Graph &, packed_gemm::ScalarType, std::size_t, std::span<cg::TensorId const>,
                std::span<cg::TensorId const>) -> std::function<void()> { return [] {}; },
             cg::DescriptorHooksFor<CostedDescriptor>{.cost = [](CostedDescriptor const &desc, cg::CostQuery const &) {
@@ -589,15 +588,15 @@ void register_hook_descriptors() {
 
         cg::register_descriptor<BlockFillTileDescriptor>(
             [](BlockFillTileDescriptor const &desc) {
-                cg::json::Object fields;
-                fields.set("row", cg::json::Value{static_cast<double>(desc.row)});
-                fields.set("col", cg::json::Value{static_cast<double>(desc.col)});
-                fields.set("offset", cg::json::Value{desc.offset});
-                return cg::json::Value{std::move(fields)};
+                json::Object fields;
+                fields.set("row", json::Value{static_cast<double>(desc.row)});
+                fields.set("col", json::Value{static_cast<double>(desc.col)});
+                fields.set("offset", json::Value{desc.offset});
+                return json::Value{std::move(fields)};
             },
-            [](cg::json::Object const &fields) {
+            [](json::Object const &fields) {
                 auto number = [&fields](char const *key) {
-                    cg::json::Value const *value = fields.take(key);
+                    json::Value const *value = fields.take(key);
                     return value != nullptr ? value->as_double() : 0.0;
                 };
                 return BlockFillTileDescriptor{
@@ -621,8 +620,8 @@ void register_hook_descriptors() {
         register_grid<GridOpaqueDescriptor>(cg::opaque_effects);
 
         cg::register_descriptor<ForgetfulDescriptor>(
-            [](ForgetfulDescriptor const &) { return cg::json::Value{cg::json::Object{}}; },
-            [](cg::json::Object const &) { return ForgetfulDescriptor{}; },
+            [](ForgetfulDescriptor const &) { return json::Value{json::Object{}}; },
+            [](json::Object const &) { return ForgetfulDescriptor{}; },
             [](ForgetfulDescriptor const &desc, cg::Graph &graph, packed_gemm::ScalarType, std::size_t,
                std::span<cg::TensorId const> inputs, std::span<cg::TensorId const> outputs) -> std::function<void()> {
                 return unary(graph, inputs, outputs, [scale = desc.scale](double x, double) { return scale * x; });

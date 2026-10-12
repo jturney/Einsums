@@ -17,11 +17,11 @@
 /// passes ask of a node (DescriptorHooks.hpp).
 
 #include <Einsums/ComputeGraph/DescriptorHooks.hpp>
-#include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Json/Json.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 
 #include <cstddef>
@@ -47,13 +47,13 @@ struct DescriptorCodec {
 
     /// The descriptor's fields as a JSON object. Called only with an @ref OpData holding this
     /// descriptor.
-    std::function<einsums::compute_graph::json::Value(OpData const &descriptor)> write;
+    std::function<einsums::json::Value(OpData const &descriptor)> write;
 
     /// The descriptor rebuilt from what @ref write produced. Read each key with
     /// @c json::Object::take: the loader reports any key left unread, as it does for this
     /// library's own descriptors. Throw @c std::invalid_argument on a malformed object; the loader
     /// reports the message against the node.
-    std::function<OpData(einsums::compute_graph::json::Object const &fields)> read;
+    std::function<OpData(einsums::json::Object const &fields)> read;
 
     /// The node's executor, built from data alone: the descriptor, the node's destination dtype and
     /// rank, and its operand ids in @p graph. Resolve each operand once with @ref resolve_operand
