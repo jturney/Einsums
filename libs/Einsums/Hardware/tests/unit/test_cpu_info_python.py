@@ -68,7 +68,7 @@ def _in_subprocess(expression, env):
     """``expression`` evaluated by a fresh process, which reads the profile anew."""
     out = subprocess.run(
         [sys.executable, "-c",
-         f"import json; from einsums import hardware as hw; print(json.dumps({expression}))"],
+         f"import json; from einsums import _core, hardware as hw; print(json.dumps({expression}))"],
         capture_output=True, text=True, check=True,
         env={**os.environ, **env},
     )
@@ -263,10 +263,56 @@ def test_a_stale_cache_profile_does_not_hide_a_current_site_profile(tmp_path):
 
 def test_an_unknown_section_makes_a_profile_invalid(tmp_path):
     """Strict like the graph IR: a section this build does not read is not skipped silently."""
-    _write(_cached(tmp_path), _profile(options={"einsums:graph:tiling-budget-share": 0.2}))
+    _write(_cached(tmp_path), _profile(surprise={"anything": 1}))
     env = _isolated(tmp_path)
     assert _in_subprocess("hw.profile_state()", env) == "invalid"
-    assert "'options'" in _in_subprocess("hw.profile_reason()", env)
+    assert "'surprise'" in _in_subprocess("hw.profile_reason()", env)
+
+
+SHARE = "_core._option_values()['graph-tiling-budget-share']"
+
+
+def test_profile_options_apply_below_the_environment(tmp_path):
+    """A tuned value is the default this machine runs with, and anything a user says still wins."""
+    _write(_cached(tmp_path), _profile(options={"einsums:graph:tiling-budget-share": 0.3}))
+    assert _in_subprocess(SHARE, _isolated(tmp_path)) == "0.3"
+    assert _in_subprocess(SHARE, _isolated(tmp_path, EINSUMS_GRAPH_TILING_BUDGET_SHARE="0.4")) == "0.4"
+
+
+def test_a_profile_without_options_leaves_the_defaults(tmp_path):
+    _write(_cached(tmp_path), _profile())
+    default = next(o["default"] for o in __import__("einsums")._core._registered_options()
+                   if o["name"] == "einsums:graph:tiling-budget-share")
+    assert float(_in_subprocess(SHARE, _isolated(tmp_path))) == default
+
+
+@pytest.mark.parametrize("name, value, needle", [
+    ("einsums:cache-dir", "/elsewhere", "locates the profile"),
+    ("einsums:hardware:profile", "/elsewhere.json", "locates the profile"),
+    ("einsums:log:level", 1, "performance options"),
+    ("einsums:no:such-option", 1, "no such option"),
+])
+def test_a_profile_may_set_only_performance_options(tmp_path, name, value, needle):
+    """Never where profiles are, nor anything read before the profile is found."""
+    _write(_cached(tmp_path), _profile(options={name: value}))
+    env = _isolated(tmp_path)
+    assert _in_subprocess("hw.profile_state()", env) == "invalid"
+    reason = _in_subprocess("hw.profile_reason()", env)
+    assert name in reason and needle in reason
+
+
+def test_a_profile_option_must_be_a_value(tmp_path):
+    _write(_cached(tmp_path), _profile(options={"einsums:graph:tiling-budget-share": [0.3]}))
+    assert _in_subprocess("hw.profile_state()", _isolated(tmp_path)) == "invalid"
+
+
+def test_a_value_the_parser_rejects_drops_only_the_options(tmp_path):
+    """Out of range is reported, not fatal; the rest of the profile still serves."""
+    _write(_cached(tmp_path), _profile(options={"einsums:graph:tiling-budget-share": 2.0}))
+    env = _isolated(tmp_path)
+    assert _in_subprocess("hw.profile_state()", env) == "loaded"
+    assert _in_subprocess("hw.omp_region_cost_ns()", env) == 4242.0
+    assert float(_in_subprocess(SHARE, env)) != 2.0
 
 
 def test_another_format_makes_a_profile_invalid(tmp_path):

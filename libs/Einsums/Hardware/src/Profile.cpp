@@ -41,10 +41,23 @@ EINSUMS_NAMESPACE_BEGIN(hardware)
 namespace {
 
 /// The top-level keys a profile may hold. Anything else makes the file invalid.
-constexpr std::array<std::string_view, 6> kKnownSections{"einsums_profile",    "machine",   "software", "measured",
+constexpr std::array<std::string_view, 7> kKnownSections{"einsums_profile",    "machine",   "software", "measured", "options",
                                                          "omp_region_cost_ns", "cost_model"};
 
-std::atomic<std::string (*)()> blas_provider{nullptr};
+std::atomic<std::string (*)()>  blas_provider{nullptr};
+std::atomic<ProfileOptionCheck> option_check{nullptr};
+
+/// An option value as the command line spells it.
+std::string option_text(json::Value const &value) {
+    if (value.is_bool()) {
+        return value.as_bool() ? "true" : "false";
+    }
+    if (value.is_string()) {
+        return value.as_string();
+    }
+    // Integers and doubles in their shortest round-tripping form.
+    return json::emit(value);
+}
 
 /// "2.0.3" into its three numbers.
 std::optional<std::array<int, 3>> parse_version(std::string_view text) {
@@ -144,7 +157,7 @@ std::optional<std::pair<ProfileStatus, json::Value>> consider(std::filesystem::p
         return std::pair{ProfileStatus{.state = ProfileState::Invalid, .path = path.string(), .reason = "the file " + error},
                          json::Value{}};
     }
-    auto status = evaluate_profile(*document, path.string(), machine_identity(), software_identity(), named);
+    auto status = evaluate_profile(*document, path.string(), machine_identity(), software_identity(), named, option_check.load());
     return std::pair{std::move(status), std::move(*document)};
 }
 
@@ -214,6 +227,10 @@ std::shared_ptr<Active const> current() {
 
 } // namespace
 
+void set_profile_option_check(ProfileOptionCheck check) {
+    option_check.store(check);
+}
+
 void set_blas_identity_provider(std::string (*provider)()) {
     blas_provider.store(provider);
 }
@@ -257,7 +274,7 @@ std::string_view to_string(ProfileState state) noexcept {
 }
 
 ProfileStatus evaluate_profile(json::Value const &document, std::string const &path, MachineIdentity const &machine,
-                               SoftwareIdentity const &software, bool named) {
+                               SoftwareIdentity const &software, bool named, ProfileOptionCheck option_check) {
     auto const invalid = [&path](std::string reason) {
         return ProfileStatus{.state = ProfileState::Invalid, .path = path, .reason = std::move(reason)};
     };
@@ -335,6 +352,26 @@ ProfileStatus evaluate_profile(json::Value const &document, std::string const &p
         }
     }
 
+    // Options: scalars only, each one the parser accepts from a profile.
+    if (auto const *options = root.peek("options"); options != nullptr) {
+        if (!options->is_object()) {
+            return invalid("the options section is not an object");
+        }
+        auto const &entries = options->as_object();
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            auto const &name  = entries.key_at(i);
+            auto const &value = entries.value_at(i);
+            if (value.is_object() || value.is_array() || value.is_null()) {
+                return invalid(fmt::format("options.{} is a {}, not a value", name, value.type_name()));
+            }
+            std::string const refusal =
+                option_check == nullptr ? std::string{"no option may come from a profile here"} : option_check(name);
+            if (!refusal.empty()) {
+                return invalid(fmt::format("options.{}: {}", name, refusal));
+            }
+        }
+    }
+
     // Kernels change between minor versions; a patch release keeps them.
     if ((*version)[0] != software.major || (*version)[1] != software.minor) {
         return ProfileStatus{.state  = ProfileState::Stale,
@@ -382,6 +419,54 @@ std::optional<json::Value> profile_section(std::string_view name) {
         return std::nullopt;
     }
     return *section;
+}
+
+std::map<std::string, std::string, std::less<>> profile_options() {
+    std::map<std::string, std::string, std::less<>> options;
+    auto const                                      section = profile_section("options");
+    if (!section || !section->is_object()) {
+        return options;
+    }
+    auto const &entries = section->as_object();
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        options.emplace(entries.key_at(i), option_text(entries.value_at(i)));
+    }
+    return options;
+}
+
+bool import_profile(std::string const &path, std::string &message) {
+    std::string error;
+    auto        document = read_document(std::filesystem::path(path), error);
+    if (!document) {
+        message = fmt::format("{} {}", path, error);
+        return false;
+    }
+    auto const status = evaluate_profile(*document, path, machine_identity(), software_identity(), false, option_check.load());
+    if (status.state == ProfileState::Invalid || status.state == ProfileState::Stale) {
+        message = fmt::format("not importing {}: {}", path, status.reason);
+        return false;
+    }
+
+    // Filed under the machine it describes, which is this one unless it is foreign. The verdict
+    // above guarantees the fingerprint is there and is a string.
+    auto const dir = detail::cache_directory();
+    if (dir.empty()) {
+        message = "there is no cache directory to import into; set --einsums:cache-dir";
+        return false;
+    }
+    auto const &fingerprint = document->as_object().peek("machine")->as_object().peek("fingerprint")->as_string();
+    auto const  destination = dir / "profiles" / (fingerprint + ".json");
+    if (!write_profile(destination.string(), *document, error)) {
+        message = error;
+        return false;
+    }
+    if (status.state == ProfileState::Foreign) {
+        message =
+            fmt::format("filed {} for machines of another kind ({}); it will not be used on this one", destination.string(), status.reason);
+    } else {
+        message = fmt::format("filed {} for this machine", destination.string());
+    }
+    return true;
 }
 
 std::string default_profile_path() {

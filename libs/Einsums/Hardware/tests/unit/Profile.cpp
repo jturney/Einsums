@@ -11,6 +11,7 @@
 #include <Einsums/Hardware/Profile.hpp>
 
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <Einsums/Testing.hpp>
@@ -34,6 +35,11 @@ hardware::SoftwareIdentity a_build() {
     return hardware::SoftwareIdentity{.major = 2, .minor = 1, .patch = 3, .blas = "OpenBLAS 0.3.28 (libopenblas.so)"};
 }
 
+/// Accepts one option, as the parser's check accepts the tunable ones.
+std::string accept_tunables(std::string_view name) {
+    return name == "einsums:graph:tiling-budget-share" ? std::string{} : std::string{"not a tunable"};
+}
+
 json::Value document_for(hardware::MachineIdentity const &machine, hardware::SoftwareIdentity const &software) {
     json::Object root;
     root.set("einsums_profile", hardware::profile_format);
@@ -43,7 +49,7 @@ json::Value document_for(hardware::MachineIdentity const &machine, hardware::Sof
 }
 
 hardware::ProfileState state_of(json::Value const &document, bool named = false) {
-    return hardware::evaluate_profile(document, "test.json", a_machine(), a_build(), named).state;
+    return hardware::evaluate_profile(document, "test.json", a_machine(), a_build(), named, accept_tunables).state;
 }
 
 } // namespace
@@ -130,15 +136,48 @@ TEST_CASE("Hardware profile - what makes a document invalid", "[Hardware][Profil
     for (auto const &key : edited.keys()) {
         tampered.set(key, key == "memory_gib" ? json::Value{std::int64_t{128}} : *edited.peek(key));
     }
-    auto const verdict =
-        hardware::evaluate_profile(with("machine", json::Value{std::move(tampered)}), "test.json", a_machine(), a_build(), false);
+    auto const verdict = hardware::evaluate_profile(with("machine", json::Value{std::move(tampered)}), "test.json", a_machine(), a_build(),
+                                                    false, accept_tunables);
     CHECK(verdict.state == ProfileState::Invalid);
     CHECK_THAT(verdict.reason, Catch::Matchers::ContainsSubstring("fingerprint"));
 
     auto extra = hardware::machine_section(a_machine());
     extra.set("hostname", "node17");
-    auto const unknown =
-        hardware::evaluate_profile(with("machine", json::Value{std::move(extra)}), "test.json", a_machine(), a_build(), false);
+    auto const unknown = hardware::evaluate_profile(with("machine", json::Value{std::move(extra)}), "test.json", a_machine(), a_build(),
+                                                    false, accept_tunables);
     CHECK(unknown.state == ProfileState::Invalid);
     CHECK_THAT(unknown.reason, Catch::Matchers::ContainsSubstring("machine.hostname"));
+}
+
+TEST_CASE("Hardware profile - the options section", "[Hardware][Profile]") {
+    using hardware::ProfileState;
+    auto const with_options = [](json::Object options) {
+        auto         document = document_for(a_machine(), a_build());
+        json::Object root;
+        for (auto const &key : document.as_object().keys()) {
+            root.set(key, *document.as_object().peek(key));
+        }
+        root.set("options", std::move(options));
+        return json::Value{std::move(root)};
+    };
+    auto const verdict = [](json::Value const &document, hardware::ProfileOptionCheck check) {
+        return hardware::evaluate_profile(document, "test.json", a_machine(), a_build(), false, check);
+    };
+
+    json::Object tunable;
+    tunable.set("einsums:graph:tiling-budget-share", 0.25);
+    CHECK(verdict(with_options(tunable), accept_tunables).state == ProfileState::Loaded);
+
+    // Without a registered check, as below the parser, no option may come from a profile.
+    CHECK(verdict(with_options(tunable), nullptr).state == ProfileState::Invalid);
+
+    json::Object refused;
+    refused.set("einsums:log:level", std::int64_t{1});
+    auto const not_tunable = verdict(with_options(refused), accept_tunables);
+    CHECK(not_tunable.state == ProfileState::Invalid);
+    CHECK_THAT(not_tunable.reason, Catch::Matchers::ContainsSubstring("einsums:log:level"));
+
+    json::Object nested;
+    nested.set("einsums:graph:tiling-budget-share", json::Object{});
+    CHECK(verdict(with_options(nested), accept_tunables).state == ProfileState::Invalid);
 }

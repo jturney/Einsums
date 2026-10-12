@@ -850,11 +850,11 @@ runtime:
     // → "Apple M4 Pro" on your machine
 
 Measure the machine once for precise numbers. Every later program on it finds
-the profile ``einsums-tune`` writes, with no flag:
+the profile ``einsums tune`` writes, with no flag:
 
 .. code-block:: bash
 
-    einsums-tune
+    einsums tune
 
 See :ref:`Hardware profiles <computegraph_hardware_profiles>` for full details.
 

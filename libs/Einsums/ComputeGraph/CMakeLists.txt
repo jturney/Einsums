@@ -110,6 +110,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/StringDispatch.hpp
     Einsums/ComputeGraph/TensorHandle.hpp
     Einsums/ComputeGraph/TensorSlot.hpp
+    Einsums/ComputeGraph/Tune.hpp
     Einsums/ComputeGraph/View.hpp
     Einsums/ComputeGraph/Workspace.hpp
 )
@@ -227,6 +228,7 @@ set(ComputeGraphSources
     Pipeline.cpp
     SpaceRegistry.cpp
     ThreadSweep.cpp
+    Tune.cpp
 )
 
 include(Einsums_AddModule)

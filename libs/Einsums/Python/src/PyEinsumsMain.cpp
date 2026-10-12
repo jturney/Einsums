@@ -7,6 +7,7 @@
 // register functions come from a header einsums_finalize_pybind generates at configure time.
 
 #include <Einsums/Config/ABI.hpp>
+#include <Einsums/Options/Declare.hpp>
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/Options/Parse.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
@@ -228,6 +229,19 @@ PYBIND11_MODULE(_core, m) {
         "Every option a descriptor registered, as dicts: name, key, the einsums.rc\n"
         "attribute it maps to, kind, value type, and declared default. The generated\n"
         "``--no-`` twin of a flag is named by ``negated_name`` rather than listed.");
+
+    m.def(
+        "_option_values",
+        []() {
+            py::dict out;
+            for (auto const &[key, value] : einsums::cl::registered_option_values()) {
+                out[py::str(key)] = value;
+            }
+            return out;
+        },
+        "Every option's current value, keyed by its config key and rendered as the\n"
+        "runtime log prints it (strings quoted). What the runtime actually uses, after\n"
+        "the hardware profile, the environment and the command line.");
 
     m.def(
         "_argv_from_rc", []() { return argv_from_rc(py::module_::import("einsums.rc")); },

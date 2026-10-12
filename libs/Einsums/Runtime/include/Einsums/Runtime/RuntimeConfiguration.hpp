@@ -116,6 +116,20 @@ struct EINSUMS_EXPORT RuntimeConfiguration {
 
     [[nodiscard]] std::vector<std::string> const &unknown_arguments() const { return _unknown_arguments; }
 
+    /**
+     * @brief Apply the hardware profile's options, as a layer below the environment and the command line.
+     *
+     * The profile can only be found once the options are parsed, since the options say where to
+     * look and which SIMD rung the machine identity names, so its options are applied by parsing
+     * again with them as the config-file layer. Call it after the SIMD options are applied and
+     * before anything that the profile may tune reads its options. A profile value the parser
+     * rejects is reported and the profile's options are dropped, never fatal: the profile shapes
+     * performance, not results.
+     *
+     * @versionadded{2.0.0}
+     */
+    void apply_hardware_profile();
+
   private:
     /**
      * Currently sets reasonable defaults for the development of Einsums.

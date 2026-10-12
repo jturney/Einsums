@@ -13,7 +13,8 @@
  * One JSON object. Its header says what it describes: @c einsums_profile (the format),
  * @c machine (see Machine.hpp), @c software (the Einsums version and the BLAS) and @c measured
  * (when). Each remaining section belongs to the module that reads it: @c omp_region_cost_ns to
- * this one, @c cost_model to ComputeGraph's cost model. An unknown top-level key makes the whole
+ * this one, @c cost_model to ComputeGraph's cost model, and @c options to the option parser, as a
+ * layer below the environment and the command line. An unknown top-level key makes the whole
  * file invalid, naming the key, for the reason the graph IR refuses one: a reader that skips what
  * it does not understand loads a half-understood file as if it were whole.
  *
@@ -38,6 +39,8 @@
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -117,10 +120,27 @@ struct ProfileStatus {
 };
 
 /**
+ * @brief Decide whether a profile may set an option.
+ *
+ * Returns an empty string when it may, and otherwise why not. The option parser registers one at
+ * start-up, since the registry of options lives above this module; until it does, a profile may
+ * set no option.
+ *
+ * @versionadded{2.0.0}
+ */
+using ProfileOptionCheck = std::string (*)(std::string_view name);
+
+/// @brief Register the check @ref evaluate_profile applies to the @c options section.
+/// @param[in] check The check.
+/// @versionadded{2.0.0}
+EINSUMS_EXPORT void set_profile_option_check(ProfileOptionCheck check);
+
+/**
  * @brief Decide what a profile document means here.
  *
  * Pure, so every rule can be tested without a file: the format, the known top-level keys, the
- * machine (whose stored fingerprint must also match its fields), and the software.
+ * machine (whose stored fingerprint must also match its fields), the software, and the
+ * @c options section, whose values must be scalars and whose names @p option_check must accept.
  *
  * @param[in] document The parsed file.
  * @param[in] path Where it came from, for the status.
@@ -128,11 +148,12 @@ struct ProfileStatus {
  * @param[in] software This build and BLAS.
  * @param[in] named Whether the user named the file, which makes another machine a warning
  *                  rather than a refusal.
+ * @param[in] option_check Whether the @c options section may set each option; null refuses all.
  * @return The verdict.
  * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT ProfileStatus evaluate_profile(json::Value const &document, std::string const &path, MachineIdentity const &machine,
-                                              SoftwareIdentity const &software, bool named);
+                                              SoftwareIdentity const &software, bool named, ProfileOptionCheck option_check);
 
 /// @brief The verdict on the profile in effect.
 /// @return The status, resolved on first use.
@@ -162,6 +183,30 @@ APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::string profile_reaso
  * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT std::optional<json::Value> profile_section(std::string_view name);
+
+/**
+ * @brief The @c options section of the profile in effect, as the option parser's config layer.
+ *
+ * Each value spelled as the command line would spell it, keyed by the option's long name.
+ *
+ * @return The options, or an empty map when no profile is in use or it sets none.
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT std::map<std::string, std::string, std::less<>> profile_options();
+
+/**
+ * @brief Adopt a profile from another machine of a kind, or from a site.
+ *
+ * Checks the file against this machine and build and files it in the cache directory under its
+ * own machine's fingerprint, so one from another kind of machine is kept for that kind and never
+ * used here. A stale or invalid file is refused.
+ *
+ * @param[in] path The file.
+ * @param[out] message What happened, for the user.
+ * @return Whether the file was filed.
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT bool import_profile(std::string const &path, std::string &message);
 
 /// @brief Where a tune writes this machine's profile: @c <cache-dir>/profiles/<fingerprint>.json.
 /// @return The path, or empty when there is no cache directory.

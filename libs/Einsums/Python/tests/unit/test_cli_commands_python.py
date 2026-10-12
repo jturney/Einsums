@@ -28,6 +28,7 @@ def test_info_reports_the_build_and_machine(capsys):
     assert "EINSUMS_WITH_PROFILER" in info["einsums"]["options"]
     assert info["cpu"]["logical_cores"] >= 1
     assert set(info["python"]["optional"]) >= {"numpy", "textual"}
+    assert info["profile"]["state"] in {"none", "loaded", "loaded-foreign", "foreign", "stale", "invalid"}
     assert main(["info"]) == 0
     assert "Einsums" in capsys.readouterr().out
 
@@ -56,7 +57,7 @@ def test_options_filter_and_no_match(capsys):
 
 def test_completion_covers_forwarded_commands():
     tree = command_tree()
-    assert {"profiler", "bench", "stages", "info", "options", "completion"} <= set(tree[()][0])
+    assert {"profiler", "bench", "stages", "info", "options", "completion", "tune"} <= set(tree[()][0])
     assert "report" in tree[("profiler",)][0] and "--fail-above" in tree[("profiler", "diff")][1]
     assert "promote" in tree[("stages",)][0] and "--jobs" in tree[("bench", "run")][1]
     assert "complete -c einsums" in fish(tree)

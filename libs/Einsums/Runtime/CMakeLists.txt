@@ -30,6 +30,7 @@ einsums_add_module(
     Einsums_Assertion
     Einsums_Options
     Einsums_Config
+    Einsums_Hardware
     Einsums_Debugging
     Einsums_Profile
     Einsums_Errors

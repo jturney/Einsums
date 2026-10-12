@@ -198,10 +198,13 @@ function(einsums_finalize_pybind)
     # COPYONLY tracks source mtime so edits trigger a re-configure (the runtime
     # copy never goes stale).
     file(MAKE_DIRECTORY "${_pkg_dir}")
-    configure_file("${_pkg_src}/__init__.py" "${_pkg_dir}/__init__.py" COPYONLY)
-    configure_file("${_pkg_src}/graph.py"    "${_pkg_dir}/graph.py"    COPYONLY)
-    configure_file("${_pkg_src}/profile.py"  "${_pkg_dir}/profile.py"  COPYONLY)
-    configure_file("${_pkg_src}/sealed.py"   "${_pkg_dir}/sealed.py"   COPYONLY)
+    # Globbed for the reason the stages package below is: a top-level module left off a list ships
+    # a package without it, which fails only at run time and only in the copy under lib/.
+    file(GLOB _top_py CONFIGURE_DEPENDS "${_pkg_src}/*.py")
+    foreach(_f IN LISTS _top_py)
+        get_filename_component(_name "${_f}" NAME)
+        configure_file("${_f}" "${_pkg_dir}/${_name}" COPYONLY)
+    endforeach()
     file(MAKE_DIRECTORY "${_pkg_dir}/testing")
     configure_file("${_pkg_src}/testing/__init__.py" "${_pkg_dir}/testing/__init__.py" COPYONLY)
     file(MAKE_DIRECTORY "${_pkg_dir}/interop")
@@ -224,7 +227,6 @@ function(einsums_finalize_pybind)
     foreach(_f IN LISTS _cli_files)
         configure_file("${_pkg_src}/${_f}" "${_pkg_dir}/${_f}" COPYONLY)
     endforeach()
-    configure_file("${_pkg_src}/__main__.py" "${_pkg_dir}/__main__.py" COPYONLY)
 
     # The `einsums` command beside the executables, so `einsums bench ...` works with
     # build/bin on PATH. The package has no install step that could generate an entry

@@ -3,7 +3,9 @@
 
 """``einsums info``: what this Einsums is and what it runs on, for a bug report.
 
-Reads the build configuration compiled into ``_core`` without starting the runtime.
+Reads the build configuration compiled into ``_core`` without starting the runtime. The hardware
+profile is the one fact that needs the runtime, so it is read by a child process, and a runtime
+that will not start is reported rather than taking the report down with it.
 """
 
 from __future__ import annotations
@@ -78,6 +80,31 @@ def _blas(libraries: list[str]) -> list[str]:
     return sorted({Path(lib).name for lib in libraries if pattern.search(Path(lib).name)})
 
 
+_PROFILE_PROBE = (
+    "import json; from einsums import hardware as hw; "
+    "print(json.dumps({'state': hw.profile_state(), 'path': hw.profile_path(), "
+    "'reason': hw.profile_reason(), 'fingerprint': hw.machine_fingerprint()}))"
+)
+
+
+def _profile() -> dict[str, object]:
+    """The hardware profile in effect, as a fresh process with this environment sees it."""
+    from .. import __file__ as package_init
+
+    # The child imports this same package, which the `einsums` launcher put on sys.path rather
+    # than in the environment.
+    search = os.pathsep.join(filter(None, [str(Path(package_init).resolve().parent.parent), os.environ.get("PYTHONPATH")]))
+    try:
+        out = subprocess.run([sys.executable, "-c", _PROFILE_PROBE], capture_output=True, text=True, timeout=120,
+                             env={**os.environ, "PYTHONPATH": search})
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"state": "unknown", "reason": f"could not start the runtime: {error}"}
+    if out.returncode != 0:
+        tail = out.stderr.strip().splitlines()[-1:] or ["no message"]
+        return {"state": "unknown", "reason": f"the runtime failed to start: {tail[0]}"}
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
 def collect() -> dict[str, object]:
     from .. import _core
 
@@ -117,6 +144,7 @@ def collect() -> dict[str, object]:
         "python": {"version": platform.python_version(), "executable": sys.executable, "optional": optional},
         "platform": {"system": platform.platform()},
         "cpu": _cpu(),
+        "profile": _profile(),
     }
 
 
@@ -145,6 +173,15 @@ def run(args: argparse.Namespace) -> int:
         rows.append(("ISA level", f"x86-64-{cpu['x86_64_level']} (the highest SIMD rung this CPU supports)"))
     if cpu["simd_override"]:
         rows.append(("SIMD override", " ".join(f"{k}={v}" for k, v in cpu["simd_override"].items())))
+    profile = info["profile"]
+    summary = profile["state"]
+    if profile.get("path"):
+        summary += f", {profile['path']}"
+    if profile.get("reason"):
+        summary += f" ({profile['reason']})"
+    elif profile["state"] == "none":
+        summary += " (run einsums tune to measure one)"
+    rows.append(("Profile", summary))
     width = max(len(name) for name, _ in rows)
     for name, value in rows:
         print(f"{name:<{width}}  {value}")

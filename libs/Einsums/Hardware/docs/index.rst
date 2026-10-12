@@ -73,7 +73,7 @@ macros. For the runtime feature ladder and its psABI rungs, see
 The hardware profile
 ====================
 
-Everything ``einsums-tune`` measures on a machine is one JSON file, the
+Everything ``einsums tune`` measures on a machine is one JSON file, the
 hardware profile. Its header says what it describes: the machine (CPU, core
 counts, caches, memory rounded to the GiB, and SIMD rung, hashed into a
 16-digit fingerprint), the software (the Einsums version and the BLAS library
@@ -81,7 +81,13 @@ that provides ``dgemm``, found from that function's address so that a BLAS
 swapped behind a conda environment is noticed) and when it was measured. Each
 remaining section belongs to the module that reads it: the OpenMP region cost
 to this one, the cost model to ComputeGraph's
-:ref:`hardware profiles <computegraph_hardware_profiles>`.
+:ref:`hardware profiles <computegraph_hardware_profiles>`, and tuned option
+values to the option parser. The profile can be found only once the options
+are parsed, since they say where to look and which SIMD rung the machine is
+using, so the runtime parses again with the profile's options as the
+config-file layer, below the environment and the command line. A profile may
+set only performance options, and never one that locates profiles; a value the
+parser rejects is reported and the profile's options are dropped, never fatal.
 
 :cpp:func:`~einsums::hardware::profile_status` decides which file is in effect,
 on first use. A file named by :option:`--einsums:hardware:profile` is used as

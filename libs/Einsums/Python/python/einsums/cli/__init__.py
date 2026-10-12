@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import bench, completion, info, options, profiler, stages
+from . import bench, completion, info, options, profiler, stages, tune
 
 
 def build_parser(prog: str = "einsums") -> argparse.ArgumentParser:
@@ -27,6 +27,7 @@ def build_parser(prog: str = "einsums") -> argparse.ArgumentParser:
     stages.register(sub)
     info.register(sub)
     options.register(sub)
+    tune.register(sub)
     completion.register(sub)
     parser.set_defaults(top_prog=prog)
     return parser

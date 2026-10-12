@@ -661,11 +661,12 @@
   body: |
     Use this hardware profile instead of searching for one.
 
-    A hardware profile is one JSON file holding everything ``einsums-tune`` measured on a machine:
+    A hardware profile is one JSON file holding everything ``einsums tune`` measured on a machine:
     the GEMM efficiency curve and bandwidths the cost model prices its candidates against
     (``ContractionPlanning``'s chain ordering, ``GEMMBatching``'s profitability gate,
-    ``GPUPlacement``), and the cost of an OpenMP parallel region at each team size, which sets when
-    kernels go parallel. Left empty, the default, einsums looks for this machine's profile under
+    ``GPUPlacement``), the cost of an OpenMP parallel region at each team size, which sets when
+    kernels go parallel, and tuned values of performance options, applied below the environment
+    and the command line. Left empty, the default, einsums looks for this machine's profile under
     :option:`--einsums:cache-dir` and then under :option:`--einsums:hardware:site-profiles`, by a
     fingerprint of the hardware, and uses the first that applies. Without one, the cost model comes
     from a table of known devices and the region cost is measured in each process.
@@ -685,7 +686,7 @@
     A directory of hardware profiles searched after the user's own cache directory. Empty, the
     default, is the installation's ``share/einsums/profiles``.
 
-    An administrator runs ``einsums-tune --output`` once per kind of node and installs the files
+    An administrator runs ``einsums tune --output`` once per kind of node and installs the files
     here, and every user without a profile of their own gets the measured numbers. Files are named
     by the machine's fingerprint, so one directory serves a cluster with several kinds of node.
 

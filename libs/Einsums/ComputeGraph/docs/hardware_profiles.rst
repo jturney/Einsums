@@ -11,7 +11,7 @@ Passes that must choose between alternatives - ``ContractionPlanning`` and
 ``GPUPlacement`` among them - estimate execution time through a ``CostModel``.
 That model is only as good as the machine measurements behind it, and this page
 covers where those measurements come from: the built-in table, and the
-hardware profile the ``einsums-tune`` tool measures.
+hardware profile that ``einsums tune`` measures.
 
 Profile Structure
 ==================
@@ -87,13 +87,22 @@ Cost Estimation
 Measuring a Machine
 ====================
 
-The ``einsums-tune`` tool, installed with Einsums, measures the machine it runs
-on and writes its hardware profile:
+``einsums tune`` measures the machine it runs on and writes its hardware profile.
+The same code runs as ``python -m einsums.tune`` and as the ``einsums-tune``
+executable, which an installation without Python has:
 
 .. code-block:: bash
 
-   einsums-tune                          # this machine's profile, in the cache directory
-   einsums-tune --output profile.json    # somewhere else, to share or install for a site
+   einsums tune                          # this machine's profile, in the cache directory
+   einsums tune --output profile.json    # somewhere else, to share or install for a site
+   einsums tune --show                   # the profile in effect, and why one is not used
+   einsums tune --check                  # exit 0 only when a current profile applies
+   einsums tune --import profile.json    # adopt one measured on another machine of a kind
+   einsums tune --export                 # the path of the profile in effect
+
+An imported file is filed under the machine it describes, so on a cluster whose
+home directories are shared, a login node can import the compute nodes'
+profile and only the compute nodes use it.
 
 It sweeps DGEMM over a log-spaced range of sizes (default 16 to 2048, set by
 ``--min-size``/``--max-size``) and measures copy and per-cache-level bandwidth,
@@ -103,7 +112,9 @@ size. It starts from the built-in table rather than from an earlier profile, so
 nothing it does not measure is inherited from one.
 
 Everything goes into one file, whose ``cost_model`` section is this page's
-model and whose other sections belong to the Hardware module; see
+model, whose ``options`` section holds tuned option values, applied below the
+environment and the command line so anything a user sets still wins, and whose
+other sections belong to the Hardware module; see
 :ref:`the hardware profile <modules_Einsums_Hardware>` for its layout and for
 when a profile applies. ``CostModel::detect_default()`` uses the profile in
 effect, so every cost-model pass in a default pass manager prices against it

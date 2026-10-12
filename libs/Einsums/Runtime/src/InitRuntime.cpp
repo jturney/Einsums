@@ -113,6 +113,11 @@ int run(std::function<int()> const &f, std::vector<std::string> const &argv, Ini
     // the logger first.
     apply_SIMD_options();
 
+    // The hardware profile can be found only now: the options say where it is, and the SIMD rung
+    // just settled is part of the machine it must describe. Its options join below the
+    // environment and the command line before anything they tune is read.
+    config.apply_hardware_profile();
+
     // Report build settings.
     EINSUMS_LOG_INFO("Starting Einsums: {}", build_string());
 

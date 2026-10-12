@@ -7,6 +7,7 @@
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
+#include <Einsums/Hardware/Profile.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Options.hpp>
 #include <Einsums/Print.hpp>
@@ -15,9 +16,12 @@
 #include <Einsums/TypeSupport/Singleton.hpp>
 #include <Einsums/Version.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #if defined(EINSUMS_WINDOWS)
@@ -37,6 +41,27 @@
 EINSUMS_NAMESPACE_BEGIN()
 
 namespace {
+
+/// Which options a hardware profile may set: performance options a tune measures, and never one
+/// that decides where the profile is or which machine it describes.
+std::string profile_option_check(std::string_view name) {
+    static constexpr std::array<std::string_view, 3> locating{"einsums:hardware:profile", "einsums:hardware:site-profiles",
+                                                              "einsums:cache-dir"};
+    static constexpr std::array<std::string_view, 5> performance{"ComputeGraph Passes", "PackedGemm", "Hardware", "Buffer Allocator",
+                                                                 "HPTT"};
+    if (std::ranges::find(locating, name) != locating.end()) {
+        return "it locates the profile, so a profile cannot set it";
+    }
+    for (auto const &option : cl::registered_options()) {
+        if (option.name == name) {
+            if (std::ranges::find(performance, option.category) != performance.end()) {
+                return {};
+            }
+            return fmt::format("it is a {} option, and a profile sets only performance options", option.category);
+        }
+    }
+    return "no such option";
+}
 
 // NOT EINSUMS_EXPORT: dllexport requires external linkage, and this type
 // lives in an anonymous namespace on purpose (TU-local singleton).
@@ -149,6 +174,8 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
     // silent read of the wrong slot has a chance to look like a default.
     cl::verify_registered_options();
 
+    hardware::set_profile_option_check(&profile_option_check);
+
     try {
         auto pr = cl::parse(original, "Einsums", full_version_as_string(), &_unknown_arguments);
 
@@ -162,6 +189,25 @@ void RuntimeConfiguration::parse_command_line(std::function<void()> const &user_
     // Registration belongs to this window and nowhere else. Values stay
     // writable: a slot is atomic, and writing one was never the problem.
     cl::freeze_registry();
+}
+
+void RuntimeConfiguration::apply_hardware_profile() {
+    auto const options = hardware::profile_options();
+    if (options.empty()) {
+        return;
+    }
+    std::vector<std::string> unknown;
+    auto const               applied = cl::parse_internal(original, "Einsums", full_version_as_string(), &options, &unknown);
+    if (applied.ok) {
+        _unknown_arguments = std::move(unknown);
+        EINSUMS_LOG_INFO("hardware profile: applied {} option(s) from {}", options.size(), hardware::profile_path());
+        return;
+    }
+    // The parser has said which value it rejected. Parse again without the profile, so every
+    // option is back to what the environment and the command line made it.
+    EINSUMS_LOG_WARN("hardware profile: the options in {} were not applied, since the parser rejected one", hardware::profile_path());
+    _unknown_arguments.clear();
+    cl::parse_internal(original, "Einsums", full_version_as_string(), nullptr, &_unknown_arguments);
 }
 
 EINSUMS_NAMESPACE_END()

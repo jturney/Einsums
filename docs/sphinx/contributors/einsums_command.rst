@@ -21,6 +21,7 @@ loads with the Python it was compiled for, and finds the package relative to its
     export PATH=$PWD/build/bin:$PATH
     einsums info                       # what this Einsums is, for a bug report
     einsums options profile            # runtime options matching "profile"
+    einsums tune                       # measure this machine and write its hardware profile
     einsums profiler                   # attach to a program run with --einsums:profile:server
     einsums bench run                  # build and run the performance tests, store the results
     einsums stages promote mymethod/stages.py --out cpp/
@@ -29,14 +30,24 @@ loads with the Python it was compiled for, and finds the package relative to its
     The version, commit and build type, which ``EINSUMS_WITH_*`` features are compiled in, the
     package and ``libEinsums`` locations, the BLAS library ``libEinsums`` links, the Python and
     its optional packages, and the CPU with the highest x86-64 level it supports (the ceiling for
-    the SIMD rung; ``EINSUMS_SIMD_ARCH`` and ``STRIPES_ARCH`` overrides are listed when set).
-    ``--json`` for scripts. The runtime is not started.
+    the SIMD rung; ``EINSUMS_SIMD_ARCH`` and ``STRIPES_ARCH`` overrides are listed when set), and
+    the hardware profile in effect or why none is. ``--json`` for scripts. The runtime is not
+    started; the profile is read by a child process, so a runtime that will not start is reported
+    rather than ending the report.
 
 ``options [PATTERN]``
     Every runtime option this build accepts, read from the library's own option registry: its
     ``--einsums:`` flag, the ``EINSUMS_*`` environment variable, the ``einsums.rc`` field, the
     default and the help text. ``PATTERN`` is a case-insensitive regular expression over the
     name, category and help. ``--json`` for scripts.
+
+``tune``
+    Measures this machine and writes its hardware profile, which every later Einsums process on a
+    machine of the same kind uses with no flag; ``--show`` reports the profile in effect and why one
+    is not used, ``--check`` exits 0 only when a current one applies, ``--export`` prints its path,
+    and ``--import FILE`` adopts one measured elsewhere, filed under the machine it describes. The
+    same code runs as ``python -m einsums.tune`` and as the ``einsums-tune`` executable, which a
+    C++-only installation has. See :ref:`computegraph_hardware_profiles`.
 
 ``profiler``
     The terminal profile viewer, described in :ref:`tutorial-performance`; ``profiler report`` and
