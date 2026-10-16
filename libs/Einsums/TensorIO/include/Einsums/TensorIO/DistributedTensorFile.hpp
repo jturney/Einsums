@@ -140,7 +140,8 @@ void DistributedTensorFile::write(std::string_view name, Tensor<T, Rank> const &
     entry.init();
     entry.set_name(name);
     entry.dtype = static_cast<uint8_t>(dtype_for<T>());
-    entry.rank  = static_cast<uint8_t>(Rank);
+    static_assert(Rank <= ETN_MAX_RANK, "an .etn entry holds at most ETN_MAX_RANK extents");
+    entry.rank = static_cast<uint8_t>(Rank);
     for (size_t d = 0; d < Rank; d++)
         entry.dims[d] = tensor.dim(d);
     entry.data_size   = data_bytes;
@@ -170,7 +171,8 @@ void DistributedTensorFile::write_local(std::string_view name, Tensor<T, Rank> c
     entry.init();
     entry.set_name(name);
     entry.dtype = static_cast<uint8_t>(dtype_for<T>());
-    entry.rank  = static_cast<uint8_t>(Rank);
+    static_assert(Rank <= ETN_MAX_RANK, "an .etn entry holds at most ETN_MAX_RANK extents");
+    entry.rank = static_cast<uint8_t>(Rank);
     for (size_t d = 0; d < Rank; d++)
         entry.dims[d] = tensor.dim(d);
     entry.data_offset = my_offset;

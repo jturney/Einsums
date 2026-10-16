@@ -59,6 +59,13 @@ void check_entry_type(std::string_view path, std::string_view operation, TensorE
     }
 }
 
+void check_writable_rank(std::string_view path, std::string_view operation, std::string_view name, size_t rank) {
+    if (rank > ETN_MAX_RANK) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: '{}' in '{}' has rank {}, and an .etn entry holds at most {} extents",
+                                operation, name, path, rank, ETN_MAX_RANK);
+    }
+}
+
 void check_slab_ranges(std::string_view path, std::string_view operation, TensorEntry const &entry,
                        std::vector<std::pair<size_t, size_t>> const &ranges) {
     std::string const name = entry.get_name();
@@ -290,6 +297,12 @@ TensorEntry const &TensorFile::find_entry(std::string_view name) const {
     auto it = _name_to_index.find(std::string(name));
     if (it == _name_to_index.end()) {
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: tensor '{}' not found in '{}'", name, _path);
+    }
+    // An entry of rank above the maximum was written by a writer that did not refuse it, and its
+    // extents past the maximum overwrote the fields after them; nothing in it can be trusted.
+    if (TensorEntry const &entry = _entries[it->second]; entry.rank > ETN_MAX_RANK) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: entry '{}' in '{}' is damaged: stored rank {} exceeds the maximum {}",
+                                name, _path, entry.rank, ETN_MAX_RANK);
     }
     return _entries[it->second];
 }

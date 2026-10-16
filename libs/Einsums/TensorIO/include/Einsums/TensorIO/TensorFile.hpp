@@ -291,6 +291,7 @@ void walk_slab(uint64_t entry_data_offset, std::vector<size_t> const &entry_dims
 
 template <typename T, size_t Rank>
 void TensorFile::write(std::string_view name, Tensor<T, Rank> const &tensor) {
+    static_assert(Rank <= ETN_MAX_RANK, "an .etn entry holds at most ETN_MAX_RANK extents");
     TensorEntry entry;
     entry.init();
     entry.set_name(name);
@@ -312,6 +313,7 @@ void TensorFile::write(std::string_view name, Tensor<T, Rank> const &tensor) {
 
 template <typename T, size_t Rank>
 void TensorFile::write_local(std::string_view name, Tensor<T, Rank> const &tensor, int rank, int num_ranks) {
+    static_assert(Rank <= ETN_MAX_RANK, "an .etn entry holds at most ETN_MAX_RANK extents");
     TensorEntry entry;
     entry.init();
     entry.set_name(name);
@@ -405,9 +407,7 @@ void TensorFile::write_slice(std::string_view name, Tensor<T, Rank> const &tenso
 
 template <typename T>
 void TensorFile::reserve(std::string_view name, std::vector<size_t> const &dims) {
-    if (dims.size() > 8) {
-        throw std::runtime_error(fmt::format("TensorFile::reserve: rank {} exceeds maximum supported rank 8", dims.size()));
-    }
+    detail::check_writable_rank(_path, "TensorFile::reserve", name, dims.size());
 
     TensorEntry entry;
     entry.init();
@@ -450,6 +450,7 @@ void TensorFile::read(std::string_view name, GeneralRuntimeTensor<T, Alloc> &ten
 
 template <typename T, typename Alloc>
 void TensorFile::write(std::string_view name, GeneralRuntimeTensor<T, Alloc> const &tensor) {
+    detail::check_writable_rank(_path, "TensorFile::write", name, tensor.rank());
     TensorEntry entry;
     entry.init();
     entry.set_name(name);

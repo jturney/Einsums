@@ -894,3 +894,22 @@ TEST_CASE("TensorFile - tensor_names lists all tensors", "[TensorIO][Query]") {
     CHECK(in.dtype("X") == DType::Float64);
     CHECK(in.dtype("Y") == DType::Float32);
 }
+
+// An entry stores ETN_MAX_RANK extents. A rank-9 RuntimeTensor used to be written anyway: its last
+// extent landed in the entry's data offset, which then overwrote it, so the file reported the
+// last extent as 64 (and rank 12 or more wrote past the entry). Found through Python, where
+// einsums.io.write of a rank-9 array round-tripped with the wrong shape.
+TEST_CASE("TensorFile - a tensor above the maximum rank is refused and leaves no entry", "[TensorIO][Error]") {
+    TempFile const                                       tmp("rank9.etn");
+    std::vector<size_t> const                            dims(ETN_MAX_RANK + 1, 1);
+    GeneralRuntimeTensor<double, std::allocator<double>> tensor("A", dims);
+    tensor.zero();
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        CHECK_THROWS_WITH(out.write("A", tensor), Catch::Matchers::ContainsSubstring("holds at most 8 extents"));
+        CHECK_THROWS_WITH(out.reserve<double>("R", dims), Catch::Matchers::ContainsSubstring("holds at most 8 extents"));
+    }
+    TensorFile in(tmp.path, TensorFile::Mode::Read);
+    CHECK_FALSE(in.contains("A"));
+    CHECK_FALSE(in.contains("R"));
+}
