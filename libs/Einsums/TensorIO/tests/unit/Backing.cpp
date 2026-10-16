@@ -18,6 +18,7 @@
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
+#include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/TensorIO/Backing.hpp>
 #include <Einsums/TensorIO/TensorFile.hpp>
@@ -261,6 +262,32 @@ TEST_CASE("A write to a backed tensor fails verification, at any depth", "[Tenso
             cg::axpby(1.0, other, 1.0, &b);
         }
         CHECK(writes_backed(graph.verify()));
+    }
+    SECTION("through a view of it") {
+        cg::Graph graph("writer");
+        auto     &b = graph.declare_runtime_tensor<double>("B", {4, 3});
+        graph.annotate_backing(b, tensor_io::etn_backing(tmp.path, "B"));
+        {
+            cg::CaptureGuard const guard(graph);
+            auto                  &view = cg::view_runtime(b, std::vector<cg::ViewAxis>{cg::ViewAxis::full(), cg::ViewAxis::full()});
+            cg::axpby(1.0, other, 1.0, &view);
+        }
+        CHECK(writes_backed(graph.verify()));
+    }
+    // A View aliases the tensor and writes nothing. The write rule once counted the View node's
+    // output as a write, so verification rejected any graph that merely READ a backed tensor
+    // through a view, which is how AxisTiling's block loops read the operands they do not slice.
+    SECTION("but not a view of it that is only read") {
+        auto      c = RuntimeTensor<double>("C", std::vector<std::size_t>{4, 3});
+        cg::Graph graph("reader");
+        auto     &b = graph.declare_runtime_tensor<double>("B", {4, 3});
+        graph.annotate_backing(b, tensor_io::etn_backing(tmp.path, "B"));
+        {
+            cg::CaptureGuard const guard(graph);
+            auto                  &view = cg::view_runtime(b, std::vector<cg::ViewAxis>{cg::ViewAxis::full(), cg::ViewAxis::full()});
+            cg::axpby(1.0, view, 0.0, &c);
+        }
+        CHECK_FALSE(writes_backed(graph.verify()));
     }
     SECTION("but not the lifecycle that fills it, nor a reader") {
         Product<double> backed(filled<double>("A", {5, 4}, 0.25), {4, 3}, tensor_io::etn_backing(tmp.path, "B"), nullptr);
