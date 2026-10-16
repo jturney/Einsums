@@ -251,3 +251,54 @@ TEST_CASE("Parametric loop - a branch reads a parameter written before the condi
     REQUIRE_NOTHROW(graph.execute());
     CHECK(row(0) + row(1) + row(2) == 24.0); // 7 + 8 + 9
 }
+
+// A view a graph's View node maintains is re-seated on every replay. A loop body that viewed one
+// its parent made used to take a capture-time stand-in COPY of it, as it does for a caller's
+// operand, and a copy of a view over a tensor the graph declares holds only the placeholder
+// address the parent had at capture: the body's view of it then read and wrote through that
+// placeholder, and the replay crashed (SIGSEGV in the contraction that wrote through it). A
+// caller's materialized parent hid it, since its placeholder address is its real one.
+TEST_CASE("A loop body reads a parent's view of a declared tensor through the live view", "[ComputeGraph][View][ControlFlow]") {
+    RuntimeTensor<double> a("A", std::vector<size_t>{3, 4});
+    RuntimeTensor<double> b("B", std::vector<size_t>{4, 5});
+    RuntimeTensor<double> c("C", std::vector<size_t>{3, 5});
+    for (size_t n = 0; n < a.size(); ++n) {
+        a.data()[n] = static_cast<double>(n % 7) - 3.0;
+    }
+    for (size_t n = 0; n < b.size(); ++n) {
+        b.data()[n] = static_cast<double>(n % 5) - 2.0;
+    }
+    c.zero();
+
+    cg::Graph graph("view_in_loop");
+    auto     &h = graph.declare_runtime_tensor<double>("H", {3, 5}, /*intermediate=*/true);
+
+    RuntimeTensorView<double> *outer = nullptr;
+    {
+        cg::CaptureGuard const guard(graph);
+        outer = &cg::view_runtime(h, std::vector<cg::ViewAxis>{cg::ViewAxis::full(), cg::ViewAxis::full()});
+    }
+    auto &body = graph.add_loop("once", 1, cg::PredExpr::iteration(cg::CmpOp::Lt, cg::BoundExpr(std::int64_t{0})));
+    {
+        cg::CaptureGuard const guard(body);
+        auto                  &inner = cg::view_runtime(*outer, std::vector<cg::ViewAxis>{cg::ViewAxis::full(), cg::ViewAxis::full()});
+        cg::einsum("i,j <- i,k ; k,j", &inner, a, b);
+    }
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::axpby(1.0, h, 0.0, &c);
+    }
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    graph.execute();
+
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 5; ++j) {
+            double want = 0.0;
+            for (size_t k = 0; k < 4; ++k) {
+                want += a(i, k) * b(k, j);
+            }
+            CHECK(c(i, j) == want);
+        }
+    }
+}

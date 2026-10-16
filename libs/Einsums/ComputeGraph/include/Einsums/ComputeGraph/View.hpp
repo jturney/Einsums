@@ -7,6 +7,7 @@
 
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/Detail/MaintainedViews.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Pipeline.hpp>
@@ -80,6 +81,9 @@ template <typename T, size_t Rank>
 struct ViewHolder {
     std::optional<TensorView<T, Rank>> view;
 
+    /// Records @ref view as maintained for the holder's lifetime (MaintainedViews.hpp).
+    MaintainedViewMark mark;
+
     /// @see bind_holder_liveness.
     std::shared_ptr<void> life{std::make_shared<char>()};
 };
@@ -99,6 +103,9 @@ struct ViewHolder {
 template <typename T>
 struct RuntimeViewHolder {
     std::optional<RuntimeTensorView<T>> view;
+
+    /// Records @ref view as maintained for the holder's lifetime (MaintainedViews.hpp).
+    MaintainedViewMark mark;
 
     std::vector<ViewAxis>       axes;          ///< The slice recipe, moved in at capture.
     std::vector<size_t>         perm;          ///< Axis permutation (empty == identity).
@@ -260,6 +267,7 @@ TensorView<T, Rank> &record_typed_view(ParentT &parent, std::vector<ViewAxis> co
         ph_base += ph_offset;
     }
     holder->view.emplace(ph_base, parent_dims, parent_strides);
+    holder->mark.mark(&holder->view.value(), holder->life);
 
     // Register the parent first so its TensorId is stable.
     auto [parent_id, parent_slot] = ctx.get_slot(parent);
@@ -522,6 +530,7 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     // For a materialized parent the two are the same pointer. The real address
     // is re-emplaced by the executor below once the parent is allocated.
     holder->view.emplace(::einsums::detail::TensorImpl<T>(const_cast<T *>(parent.impl().data()) + ph_offset, parent_dims, parent_strides));
+    holder->mark.mark(&holder->view.value(), holder->life);
 
     auto [parent_id, parent_slot] = ctx.get_slot(parent);
 
@@ -855,6 +864,7 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &tile_view_p
     }
     auto *holder = graph->own(std::make_unique<Holder>());
     holder->view.emplace(tile.impl());
+    holder->mark.mark(&holder->view.value(), holder->life);
 
     RuntimeTensorView<T> &slice_ref = holder->view.value();
     auto                  handle    = make_handle(slice_ref, 0);

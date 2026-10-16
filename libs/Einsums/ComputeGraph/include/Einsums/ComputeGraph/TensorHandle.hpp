@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Comm/Collectives.hpp>
+#include <Einsums/ComputeGraph/Detail/MaintainedViews.hpp>
 #include <Einsums/ComputeGraph/TensorBacking.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
@@ -157,9 +158,19 @@ inline bool same_tensor(std::weak_ptr<void> const &a, std::weak_ptr<void> const 
 /// identify a tensor across a destruction. The types that expose no token keep the
 /// pre-existing behaviour through @ref same_tensor, which matches an untracked token
 /// against anything.
+///
+/// A view a graph's View node maintains answers with its HOLDER's token instead of its own: the
+/// node re-emplaces the view on every replay, so the instance's token expires while the view
+/// lives on, in this graph and in any loop body that names it (Detail/MaintainedViews.hpp).
 template <typename TensorType>
 [[nodiscard]] std::weak_ptr<void> liveness_token_of(TensorType const &tensor) noexcept {
     if constexpr (requires { tensor.liveness_token(); }) {
+        try {
+            if (auto life = maintained_view_life(static_cast<void const *>(&tensor))) {
+                return *life;
+            }
+        } catch (...) { // NOLINT(bugprone-empty-catch): a failed lookup falls back to the instance's own token
+        }
         return tensor.liveness_token();
     } else {
         return {};

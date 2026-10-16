@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/Approximation.hpp>
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
 #include <Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp>
+#include <Einsums/ComputeGraph/Detail/MaintainedViews.hpp>
 #include <Einsums/ComputeGraph/DeviceShadowMap.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
@@ -3778,7 +3779,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * buffer and the caller reads its results as before. One stand-in per
      * caller wrapper, so repeat captures of the same tensor stay one operand.
      *
-     * Three kinds of operand are returned unchanged:
+     * Four kinds of operand are returned unchanged:
      *
      *  - tensors this graph already owns (``create_tensor`` / ``declare_tensor``),
      *    because their wrapper is graph-owned already;
@@ -3789,6 +3790,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *    pointer. They need no stand-in either, since whatever declared them
      *    (a Workspace, a Pipeline, this Graph) outlives the capture by
      *    construction;
+     *  - views a graph's View node maintains, in this graph or any other. The
+     *    node re-seats the view on every replay, so a copy taken at capture
+     *    holds what its parent had then, which for a declared tensor is only a
+     *    placeholder; the graph that made the view keeps it alive, so a loop
+     *    body that names one binds the live object (Detail/MaintainedViews.hpp);
      *  - types with no ``shallow_alias()`` (tile-wise sparse tensors have no
      *    single storage block to share), which keep the older "operands must
      *    outlive the graph" contract.
@@ -4779,6 +4785,9 @@ auto Graph::adopt_operand(TensorType const &tensor) -> std::shared_ptr<void> {
         return {};
     } else {
         if (_owned_tensor_ptrs.contains(static_cast<void const *>(&tensor))) {
+            return {};
+        }
+        if (detail::is_maintained_view(static_cast<void const *>(&tensor))) {
             return {};
         }
         if constexpr (requires(Clean const &t) { t.is_materialized(); }) {
