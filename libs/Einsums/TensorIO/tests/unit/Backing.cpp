@@ -19,7 +19,9 @@
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
+#include <Einsums/Options/Get.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/TensorBase/Options.hpp>
 #include <Einsums/TensorIO/Backing.hpp>
 #include <Einsums/TensorIO/TensorFile.hpp>
 
@@ -163,6 +165,40 @@ TEST_CASE("A file rewritten between replays is read afresh", "[TensorIO][Backing
         std::remove(tmp.path.c_str());
         write_entry(tmp.path, "B", filled<double>("B", {3, 4}, 1.0));
         CHECK_THROWS_WITH(backed.graph.execute(), Catch::Matchers::ContainsSubstring("is now [3,4], not the [4,3]"));
+    }
+}
+
+// A backing writes its storage's column-major order, and Python declares tensors row-major. The
+// whole load refused any tensor not laid out column-major, so every backed tensor a Python program
+// declared failed at its first replay; it is now filled through a scatter by the tensor's strides.
+TEST_CASE("A row-major backed tensor is filled in its own layout", "[TensorIO][Backing]") {
+    TempFile const tmp("row_major.etn");
+    auto const     stored = filled<double>("B", {4, 3}, 0.5);
+    write_entry(tmp.path, "B", stored);
+
+    bool const previous = config::get(option::RowMajor);
+    config::set(option::RowMajor, true);
+    struct Restore {
+        bool previous;
+        ~Restore() { config::set(option::RowMajor, previous); }
+    } const restore{previous};
+
+    cg::Graph graph("row_major");
+    auto     &b = graph.declare_runtime_tensor<double>("B", {4, 3});
+    REQUIRE(b.impl().is_row_major());
+    graph.annotate_backing(b, tensor_io::etn_backing(tmp.path, "B"));
+    auto c = RuntimeTensor<double>("C", std::vector<size_t>{3});
+    auto v = filled<double>("v", {4}, 1.0);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("j <- k ; k,j", &c, v, b);
+    }
+    materialize(graph);
+    graph.execute();
+    for (size_t k = 0; k < 4; ++k) {
+        for (size_t j = 0; j < 3; ++j) {
+            CHECK(b(k, j) == stored(k, j));
+        }
     }
 }
 

@@ -23,6 +23,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "BackingFill.hpp"
 #include "LifecycleNodes.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -32,9 +33,9 @@ namespace {
 /// The executor that fills a backed tensor whole from its backing, after its Materialize.
 ///
 /// Reads the tensor's storage through @ref TensorHandle::impl_fn at run time rather than any
-/// pointer known now, since the memory planner may place it anywhere. The reader writes the
-/// file's dense column-major order, so a tensor laid out any other way is refused rather than
-/// filled with its elements in the wrong places.
+/// pointer known now, since the memory planner may place it anywhere. The backing writes its
+/// storage's column-major order, and a tensor laid out otherwise (row-major, as Python declares
+/// one) is filled through a scatter by its strides.
 std::function<void()> load_whole(TensorHandle const &handle) {
     if (!handle.backing) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "Materialization: tensor '{}' is initialized from a backing but carries none",
@@ -44,22 +45,17 @@ std::function<void()> load_whole(TensorHandle const &handle) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "Materialization: backed tensor '{}' has no storage accessor to fill", handle.name);
     }
     return [backing = handle.backing, impl_fn = handle.impl_fn, dtype = handle.dtype, name = handle.name]() {
-        detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
+        compute_graph::detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
             auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(impl_fn());
             if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
                 EINSUMS_THROW_EXCEPTION(std::logic_error, "backed tensor '{}' has no storage to fill from {}", name, backing->describe());
-            }
-            if (!impl->is_contiguous() || !impl->is_column_major()) {
-                EINSUMS_THROW_EXCEPTION(std::logic_error,
-                                        "backed tensor '{}' is not dense and column-major, so it cannot be filled from {} in place", name,
-                                        backing->describe());
             }
             std::vector<std::pair<std::size_t, std::size_t>> ranges;
             ranges.reserve(backing->dims.size());
             for (std::size_t const extent : backing->dims) {
                 ranges.emplace_back(0, extent);
             }
-            backing->read_slab(impl->data(), ranges);
+            detail::fill_from_backing(*backing, impl->data(), *impl, ranges);
         });
     };
 }

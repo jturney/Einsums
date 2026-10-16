@@ -1,0 +1,67 @@
+//----------------------------------------------------------------------------------------------
+// Copyright (c) The Einsums Developers. All rights reserved.
+// Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+//----------------------------------------------------------------------------------------------
+
+#pragma once
+
+/**
+ * @file BackingFill.hpp
+ * @brief Fill a tensor's storage from a backing, whatever the tensor's layout.
+ *
+ * Private to the pass sources. A backing writes a slab densely in column-major order, the order
+ * its storage keeps. A tensor the library declares follows @c --einsums:row-major, which Python
+ * turns on, so the tensor a slab lands in is not always laid out that way. A dense column-major
+ * tensor takes the read directly; any other is read into scratch and scattered by its strides, so
+ * every element lands where the tensor indexes it.
+ */
+
+#include <Einsums/ComputeGraph/TensorBacking.hpp>
+#include <Einsums/Config/Namespace.hpp>
+#include <Einsums/TensorImpl/TensorImpl.hpp>
+
+#include <cstddef>
+#include <utility>
+#include <vector>
+
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes::detail)
+
+/**
+ * @brief Read the slab @p ranges of @p backing into a tensor's storage.
+ * @param[in] backing The storage to read.
+ * @param[out] data The tensor's first element, writable.
+ * @param[in] layout The tensor's extents and strides, which must be the slab's extents.
+ * @param[in] ranges Per axis, the range of the stored tensor to read.
+ */
+template <typename T>
+void fill_from_backing(TensorBacking const &backing, T *data, einsums::detail::TensorImpl<T> const &layout,
+                       std::vector<std::pair<std::size_t, std::size_t>> const &ranges) {
+    std::size_t const count = layout.size();
+    if (count == 0) {
+        return;
+    }
+    if (layout.is_contiguous() && layout.is_column_major()) {
+        backing.read_slab(data, ranges);
+        return;
+    }
+    std::vector<T> scratch(count);
+    backing.read_slab(scratch.data(), ranges);
+    std::size_t const        rank = layout.rank();
+    std::vector<std::size_t> index(rank, 0);
+    for (std::size_t n = 0; n < count; ++n) {
+        std::size_t offset = 0;
+        for (std::size_t d = 0; d < rank; ++d) {
+            offset += index[d] * layout.stride(d);
+        }
+        data[offset] = scratch[n];
+        // Column-major: the first index runs fastest, which is the order the scratch holds.
+        for (std::size_t d = 0; d < rank; ++d) {
+            if (++index[d] < layout.dim(d)) {
+                break;
+            }
+            index[d] = 0;
+        }
+    }
+}
+
+EINSUMS_NAMESPACE_END(compute_graph::passes::detail)
