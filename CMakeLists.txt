@@ -140,6 +140,14 @@ einsums_option(
   BUILD_SHARED_LIBS BOOL "Build using shared libraries (default: ON)" ON CATEGORY "Build Targets"
 )
 
+# A target that links libEinsums shared loads it at run time, so a change inside the library needs
+# no relink of the tests, examples and Python modules that link it: about 350 links after a
+# one-file edit otherwise. A header change still recompiles their own objects, which relinks them.
+# -DCMAKE_LINK_DEPENDS_NO_SHARED=OFF restores relinking on every change to the library file.
+if(BUILD_SHARED_LIBS AND NOT DEFINED CMAKE_LINK_DEPENDS_NO_SHARED)
+  set(CMAKE_LINK_DEPENDS_NO_SHARED ON)
+endif()
+
 if(MSVC)
   einsums_option(
     EINSUMS_WITH_VS_STARTUP_PROJECT STRING
