@@ -130,6 +130,7 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         // what it changes is the node set and it changes it for the machine, so a save keeps the
         // algebraic form and a load re-derives the loop from whatever budget is in force there.
         {"AxisTiling", cg::PassPhase::StructuralResource},
+        {"SlabStreaming", cg::PassPhase::StructuralResource},
     };
     return table;
 }
@@ -205,6 +206,10 @@ std::map<std::string, cg::PassTier> const &expected_tiers() {
         // operation for operation, and the reduction it turns into an accumulation across
         // iterations is what adds in a different order.
         {"AxisTiling", cg::PassTier::ReAssociating}, // legs pending; the accumulation is the whole of it
+        // Re-associating only where the streamed letter is summed: the blocks add their partial
+        // sums into the destination in a different order. A letter the output keeps writes each
+        // block's slice by the captured contraction.
+        {"SlabStreaming", cg::PassTier::ReAssociating}, // legs pending
     };
     return table;
 }

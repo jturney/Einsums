@@ -921,34 +921,35 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * 23. LayoutAssignment (structural-algebraic): choose storage orders so contractions read operands flat
      * 24. ContractionPlanning (structural-algebraic): cost-model chain reassociation
      * 25. AxisTiling (structural-resource): stream an intermediate the memory budget cannot hold
-     * 26. GEMMBatching (tuning): collapse compatible GEMMs into one BatchedGemm
-     * 27. Reorder (tuning): memory-aware topological sort
-     * 28. IOPrefetch (tuning): overlap DiskRead with compute
-     * 29. DistributionPlanning (structural-resource): classify indices for distributed dispatch
-     * 30. Materialization (tuning): resize deferred tensors to local partitions
-     * 31. SymmetryPropagation (analysis): infer symmetry on graph intermediates and
+     * 26. SlabStreaming (structural-resource): read a backed tensor too large for its share a slab at a time
+     * 27. GEMMBatching (tuning): collapse compatible GEMMs into one BatchedGemm
+     * 28. Reorder (tuning): memory-aware topological sort
+     * 29. IOPrefetch (tuning): overlap DiskRead with compute
+     * 30. DistributionPlanning (structural-resource): classify indices for distributed dispatch
+     * 31. Materialization (tuning): resize deferred tensors to local partitions
+     * 32. SymmetryPropagation (analysis): infer symmetry on graph intermediates and
      *                                 push to backing tensors for rank-2 BLAS dispatch
-     * 32. ScalingAnalysis (diagnostic): report every contraction's cost polynomial and what limits it
-     * 33. StreamContractionFusion (tuning): loop-fuse sibling contractions over one big tensor
+     * 33. ScalingAnalysis (diagnostic): report every contraction's cost polynomial and what limits it
+     * 34. StreamContractionFusion (tuning): loop-fuse sibling contractions over one big tensor
      *
      * GPU block (when a GPU backend or mock is available):
-     * 34. GPUPlacement (structural-resource): cost-model based node-to-GPU assignment
-     * 35. TransferInsertion (structural-resource): insert HostToDevice / DeviceToHost nodes
-     * 36. TransferElimination (structural-resource): drop redundant transfers
-     * 37. GPUDiagnostics (diagnostic): log placement decisions
-     * 38. StreamAssignment (tuning): assign CUDA/HIP streams for overlap
+     * 35. GPUPlacement (structural-resource): cost-model based node-to-GPU assignment
+     * 36. TransferInsertion (structural-resource): insert HostToDevice / DeviceToHost nodes
+     * 37. TransferElimination (structural-resource): drop redundant transfers
+     * 38. GPUDiagnostics (diagnostic): log placement decisions
+     * 39. StreamAssignment (tuning): assign CUDA/HIP streams for overlap
      *
      * Distributed block (when MPI or its mock is available):
-     * 39. InputSlicing (structural-resource): create per-rank views of distributed inputs
-     * 40. SUMMAExpansion (structural-resource): expand einsums to SUMMA loops on square grids
-     * 41. CommunicationInsertion (structural-resource): insert allreduces for replicated outputs
-     * 42. CommunicationElimination (structural-resource): drop redundant communications
-     * 43. CommunicationScheduling (structural-resource): split allreduce into async iallreduce + wait
+     * 40. InputSlicing (structural-resource): create per-rank views of distributed inputs
+     * 41. SUMMAExpansion (structural-resource): expand einsums to SUMMA loops on square grids
+     * 42. CommunicationInsertion (structural-resource): insert allreduces for replicated outputs
+     * 43. CommunicationElimination (structural-resource): drop redundant communications
+     * 44. CommunicationScheduling (structural-resource): split allreduce into async iallreduce + wait
      *
      * Tail (always registered):
-     * 44. InplaceOptimization (tuning): merge elementwise outputs into dying inputs
-     * 45. FreeInsertion (tuning): free intermediates after last consumer
-     * 46. MemoryPlanning (tuning): tensor liveness, peak memory, and arena planning
+     * 45. InplaceOptimization (tuning): merge elementwise outputs into dying inputs
+     * 46. FreeInsertion (tuning): free intermediates after last consumer
+     * 47. MemoryPlanning (tuning): tensor liveness, peak memory, and arena planning
      *
      * Passes registered with @ref register_default_pass run beside their anchors.
      *

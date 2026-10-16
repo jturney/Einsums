@@ -2036,6 +2036,12 @@ std::size_t AxisTiling::footprint(Graph const &graph) const {
             if (handle.is_tensor_view || g.buffer_of(tid) != tid || !named.contains(tid)) {
                 continue;
             }
+            // A backed tensor's bytes are on disk, and SlabStreaming reads it a slab at a time
+            // when it does not fit; a body's handle for one is recognized by the same object.
+            if (handle.backing && handle.tensor_ptr != nullptr) {
+                objects.insert(handle.tensor_ptr);
+                continue;
+            }
             bool const fresh = handle.tensor_ptr != nullptr ? objects.insert(handle.tensor_ptr).second : unbacked.emplace(&g, tid).second;
             if (fresh) {
                 total += handle.total_bytes();

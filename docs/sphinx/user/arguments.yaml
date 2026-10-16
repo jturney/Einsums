@@ -504,9 +504,13 @@
     streaming it in blocks. The share bounds the result as well as the trigger: a tiled region's
     buffers, remainder loops included, are held to the same share together.
 
-    It is read only when :option:`--einsums:graph:tiling-memory-cap` is derived, the default. A
-    positive cap is the caller's own bound and is taken as given. Zero or one turns the rule off,
-    leaving the budget as the only bound.
+    The same share decides when ``SlabStreaming`` reads a backed tensor (one annotated with a
+    backing, read from storage at every replay) a slab at a time instead of loading it whole, and
+    bounds each slab it reads.
+
+    ``AxisTiling`` reads it only when :option:`--einsums:graph:tiling-memory-cap` is derived, the
+    default. A positive cap is the caller's own bound and is taken as given. Zero or one turns the
+    rule off, leaving the budget as the only bound.
 
 "einsums:graph:thc-epsilon":
   added: "2.0.0"

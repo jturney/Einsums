@@ -97,6 +97,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/SpacePropagation.hpp
     Einsums/ComputeGraph/Passes/StreamAssignment.hpp
     Einsums/ComputeGraph/Passes/SymmetryPropagation.hpp
+    Einsums/ComputeGraph/Passes/SlabStreaming.hpp
     Einsums/ComputeGraph/Passes/ThreadPlanning.hpp
     Einsums/ComputeGraph/Passes/TransferElimination.hpp
     Einsums/ComputeGraph/Passes/TransferInsertion.hpp
@@ -185,6 +186,7 @@ set(ComputeGraphSources
     Passes/AntisymmetrizerFolding.cpp
     Passes/AntisymmetrizerLinearity.cpp
     Passes/AxisTiling.cpp
+    Passes/SlabStreaming.cpp
     LaplaceQuadrature.cpp
     Passes/LaplaceTransform.cpp
     Passes/ProvenancePropagation.cpp

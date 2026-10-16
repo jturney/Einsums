@@ -31,6 +31,7 @@ set(ComputeGraphTests
     AntisymmetrizerFolding.cpp
     AntisymmetrizerLinearity.cpp
     AxisTiling.cpp
+    SlabStreaming.cpp
     BisectDriver.cpp
     Blueprints.cpp
     Factorization.cpp

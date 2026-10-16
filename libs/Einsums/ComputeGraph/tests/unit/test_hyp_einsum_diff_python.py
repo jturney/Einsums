@@ -33,6 +33,8 @@ This is the registered/regression form of the local mining harness; the
 from __future__ import annotations
 
 import itertools
+import os
+import tempfile
 
 import numpy as np
 from hypothesis import HealthCheck, example, given, settings
@@ -275,7 +277,10 @@ def _einsum_problem(draw):
             draw(st.booleans()),
             # operator: appended LAST so the pinned @example tuples, which
             # predate it, keep working through the *rest unpacking below.
-            _draw_permutation_operator(draw, c_idx, extent))
+            _draw_permutation_operator(draw, c_idx, extent),
+            # backed: B lives in an .etn file the graph reads, after the operator
+            # for the same reason.
+            draw(st.booleans()))
 
 
 def _run_einsum_diff(prob, exact):
@@ -295,6 +300,12 @@ def _run_einsum_diff(prob, exact):
      view_a, view_b, passes, eager, *rest) = prob
     disjoint = bool(rest[0]) if rest else False
     operator = rest[1] if len(rest) > 1 else None
+    # B read from storage instead of held: declared on the graph, annotated with
+    # an .etn backing, and streamed a slab of one index at a time where
+    # SlabStreaming can, loaded whole where it declines (a trace, a repeated
+    # letter, a rank-0 B), so both paths meet the oracle. Graph mode only, and not
+    # with an aliased or viewed B, which is not a tensor a backing can stand for.
+    backed = bool(rest[2]) if len(rest) > 2 else False
     # A summed letter is one both operands carry once and the output does not.
     # Only such a letter can make the contraction zero; a batched one is walked
     # rather than summed, and a repeated one has no single annotated slot.
@@ -304,6 +315,8 @@ def _run_einsum_diff(prob, exact):
     # permute_view produced, and pinning down which axis order it then carries is
     # a separate question from the one this draw is asking.
     disjoint = disjoint and bool(links) and not eager and not alias_ab and not view_a and not view_b
+    # An .etn entry stores at most eight extents, so a higher-rank B has no backing.
+    backed = backed and not eager and not alias_ab and not view_b and not disjoint and len(b_idx) <= 8
     rng = np.random.default_rng(0)
     if exact:
         dt    = "complex128" if dt.startswith("complex") else "float64"
@@ -349,8 +362,26 @@ def _run_einsum_diff(prob, exact):
             reg.register_space(cg.index_space("aux", "x", 4.0))
             reg.declare_disjoint(occ, virt)
             g.set_space_registry(reg)
+        if backed:
+            store = tempfile.NamedTemporaryFile(suffix=".etn", delete=False)
+            store.close()
+            os.remove(store.name)
+            einsums.io.write(store.name, "B", einsums.asarray(B0, dtype=dt))
+            Bt = g.declare_tensor("B", [extent[x] for x in b_idx], dtype=dt)
+            cg.annotate(Bt, backing=einsums.io.etn(store.name, "B"), graph=g)
         with cg.capture(g):
             einsums.einsum(es_spec, Ct, At, Bt, c_pf=c_pf, ab_pf=ab_pf)
+        if backed:
+            # One index of B's last axis per slab, so any contraction the pass can
+            # stream is streamed in as many blocks as that axis has.
+            slab = int(np.dtype(dt).itemsize * max(1, int(np.prod([extent[x] for x in b_idx[:-1]]))))
+            streaming = cg.SlabStreaming()
+            streaming.set_slab_budget(slab)
+            manager = cg.PassManager()
+            manager.add(streaming)
+            manager.add(cg.Materialization())
+            g.apply(manager)
+            passes = False
         if disjoint:
             # Annotated AFTER capture, which is the surface a Python caller has and
             # the one the descriptor's capture-time space map never sees. Every
@@ -361,7 +392,11 @@ def _run_einsum_diff(prob, exact):
             cg.annotate(Bt, tuple("virt" if x == link else "aux" for x in b_idx), graph=g)
         if passes:
             g.apply(cg.default_pass_manager())
-        g.execute()
+        try:
+            g.execute()
+        finally:
+            if backed:
+                os.remove(store.name)
     if exact:
         assert_exact(np.asarray(Ct), oracle)
     else:
@@ -370,7 +405,7 @@ def _run_einsum_diff(prob, exact):
             np.asarray(Ct), oracle, rtol=rt, atol=at,
             err_msg=f"einsums '{es_spec}' dt={dt} c_pf={c_pf} ab_pf={ab_pf} "
                     f"view_a={view_a} view_b={view_b} passes={passes} eager={eager} "
-                    f"disjoint={disjoint} extents={extent}")
+                    f"disjoint={disjoint} backed={backed} extents={extent}")
 
 
 @given(prob=_einsum_problem())

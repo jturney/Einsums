@@ -243,8 +243,9 @@ inline constinit cl::ConfigOption<std::int64_t> GraphTilingMemoryCap = cl::confi
 /// taken as given. Zero or one turns the rule off, leaving the budget as the only bound.
 inline constinit cl::ConfigOption<double> GraphTilingBudgetShare = cl::config_opt<double>(
     "einsums:graph:tiling-budget-share",
-    "Largest fraction of --einsums:max-memory one intermediate may hold before AxisTiling streams it, even in a program that fits. A "
-    "tiled region's buffers are held to the same share together. Read only when the tiling cap is derived; zero or one turns it off",
+    "Largest fraction of --einsums:max-memory one intermediate may hold before AxisTiling streams it, even in a program that fits, "
+    "and one backed tensor before SlabStreaming reads it a slab at a time. A tiled region's buffers are held to the same share "
+    "together, and so is each slab. AxisTiling reads it only when the tiling cap is derived; zero or one turns it off",
     "ComputeGraph Passes", 0.16, "FRACTION", cl::RangeBetween(0.0, 1.0));
 
 /// How long a search pass may run, in milliseconds. Zero means unlimited.

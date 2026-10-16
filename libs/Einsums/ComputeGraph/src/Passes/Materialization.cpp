@@ -427,7 +427,10 @@ bool Materialization::run(Graph &graph) {
         // declaration behind, since a caller may still hold the handle, and allocating storage
         // for it would spend memory on a tensor whose whole point was to stop existing: for the
         // CCSD tau terms that is a v^4 buffer nobody writes.
-        if (!used && handle.is_intermediate) {
+        // A backed tensor no node reads any more, because every reader now reads it a slab at a
+        // time, has nothing to hold: loading it whole would spend exactly the memory the streaming
+        // saved.
+        if (!used && (handle.is_intermediate || handle.backing)) {
             _num_unused++;
             report(2, fmt::format("deferred tensor '{}' is used by no node; left unallocated", handle.name));
             continue;
@@ -465,12 +468,14 @@ bool Materialization::run(Graph &graph) {
             used = use->first_use() != TensorUsage::npos;
         }
         bool intermediate = handle.is_intermediate;
-        if (!intermediate && handle.tensor_ptr != nullptr) {
+        bool backed       = handle.backing != nullptr;
+        if (handle.tensor_ptr != nullptr) {
             if (TensorHandle const *declared = graph.find_tensor_by_ptr(handle.tensor_ptr); declared != nullptr) {
-                intermediate = declared->is_intermediate;
+                intermediate = intermediate || declared->is_intermediate;
+                backed       = backed || declared->backing != nullptr;
             }
         }
-        if (!used && intermediate) {
+        if (!used && (intermediate || backed)) {
             _num_unused++;
             report(2,
                    fmt::format("deferred tensor '{}' is used by no node of '{}'; left unallocated", handle.name, h.handle_owner->name()));

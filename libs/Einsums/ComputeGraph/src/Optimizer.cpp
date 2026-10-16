@@ -47,6 +47,7 @@
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>
 #include <Einsums/ComputeGraph/Passes/ScalingAnalysis.hpp>
 #include <Einsums/ComputeGraph/Passes/ScratchPrivatization.hpp>
+#include <Einsums/ComputeGraph/Passes/SlabStreaming.hpp>
 #include <Einsums/ComputeGraph/Passes/SpacePropagation.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamAssignment.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
@@ -1153,6 +1154,11 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_builtin_default_p
     // unless the graph's tensors together exceed --einsums:max-memory, which is the case where
     // the captured schedule would not run at all.
     list.push_back(std::make_shared<passes::AxisTiling>());
+    // After AxisTiling, so a contraction it placed in a block loop is streamed there too: each
+    // contraction that reads a backed tensor too large for its share of the budget reads it a slab
+    // at a time. Before Materialization, which then never allocates a backed tensor no node reads
+    // whole any more.
+    list.push_back(std::make_shared<passes::SlabStreaming>());
     // GEMMBatching collapses groups of independent, shape-compatible
     // 2D×2D→2D einsums into a single BatchedGemm node backed by
     // blas::gemm_batch. Runs after CSE/DNE so duplicates/unused nodes
