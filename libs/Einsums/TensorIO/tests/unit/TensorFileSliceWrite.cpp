@@ -228,6 +228,48 @@ TEMPLATE_LIST_TEST_CASE("TensorFile RuntimeTensor read_slice + write_slice", "[T
     }
 }
 
+// A slab empty along an OUTER axis holds no element. The slab walker visited its first run before
+// asking whether there was a next one, so it read a whole inner run into a destination sized for
+// nothing (from Python: "pread failed ... Bad address", or a silent overrun when the destination
+// had storage) and wrote one into the file over elements the slab does not contain.
+TEMPLATE_LIST_TEST_CASE("TensorFile - a slab empty on an outer axis moves no element", "[TensorIO][runtime][slice]",
+                        testing::AllScalarTypes) {
+    TempFile const                                           tmp("empty_outer.etn");
+    GeneralRuntimeTensor<TestType, std::allocator<TestType>> stored("A", std::vector<size_t>{2, 3});
+    for (size_t n = 0; n < stored.size(); ++n) {
+        stored.data()[n] = value<TestType>(static_cast<double>(n) + 1.0);
+    }
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("A", stored);
+    }
+    // Column 1 of 3 and column 3 of 3, the second past the last stored column.
+    for (auto const &ranges :
+         {std::vector<std::pair<size_t, size_t>>{{0, 2}, {1, 1}}, std::vector<std::pair<size_t, size_t>>{{0, 2}, {3, 3}}}) {
+        TensorFile file(tmp.path, TensorFile::Mode::ReadWrite);
+
+        std::vector<TestType> sentinel(4, value<TestType>(-7.0));
+        file.read_slab("A", sentinel.data(), ranges);
+        for (auto const &element : sentinel) {
+            REQUIRE(element == value<TestType>(-7.0));
+        }
+
+        GeneralRuntimeTensor<TestType, std::allocator<TestType>> slab("s", std::vector<size_t>{2, 0});
+        file.read_slice("A", slab, ranges);
+        CHECK(slab.size() == 0);
+        file.write_slice("A", slab, ranges);
+    }
+    GeneralRuntimeTensor<TestType, std::allocator<TestType>> back("B", std::vector<size_t>{0});
+    {
+        TensorFile in(tmp.path, TensorFile::Mode::Read);
+        in.read("A", back);
+    }
+    REQUIRE(back.size() == stored.size());
+    for (size_t n = 0; n < stored.size(); ++n) {
+        REQUIRE(back.data()[n] == stored.data()[n]);
+    }
+}
+
 // A scalar entry's only slab is the empty one, and it holds the scalar. The
 // slab walker used to emit a zero-byte run for it, so read_slice returned the
 // destination untouched and write_slice silently wrote nothing.

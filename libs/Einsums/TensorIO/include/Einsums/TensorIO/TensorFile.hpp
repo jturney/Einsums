@@ -32,6 +32,7 @@
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorIO/Format.hpp>
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -229,6 +230,12 @@ void walk_slab(uint64_t entry_data_offset, std::vector<size_t> const &entry_dims
     if (rank == 0) {
         // A scalar entry has exactly one slab, the empty one, and it holds the scalar.
         visit(entry_data_offset, std::size_t{0}, sizeof(T));
+        return;
+    }
+    // A slab empty along any axis holds no element. The walk below visits its first run before it
+    // asks whether there is a next one, so without this it would read a whole inner run into a
+    // destination sized for nothing, from an offset that may lie past the entry.
+    if (std::ranges::any_of(ranges, [](auto const &range) { return range.first == range.second; })) {
         return;
     }
 
