@@ -119,6 +119,15 @@ struct IrTensor {
     TensorOwnership scope{TensorOwnership::Graph};
     InitKind        init{InitKind::None};
 
+    /// The storage a backed tensor is read from, as kind and location; the reader is rebuilt at
+    /// load through the kind's registration. Absent for every unbacked tensor, and in every file
+    /// written before 1.11.0, which is exactly what those tensors were.
+    struct Backing {
+        std::string                                      kind;
+        std::vector<std::pair<std::string, std::string>> location;
+    };
+    std::optional<Backing> backing;
+
     /// Whether the tensor still needs storage. Absent in files written before this was
     /// recorded, and Materialized is the right reading of those: a graph that never said
     /// otherwise had its intermediates allocated at capture.

@@ -33,11 +33,23 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
 
+/// Backed storage visible from one graph, by tensor object, with the backing that names it.
+///
+/// By object and not by id, because a loop body numbers its tensors on its own and its handle for
+/// a parent's backed tensor carries no backing (TensorHandle::backing): the object is the identity
+/// the two levels share.
+using BackedStorage = std::unordered_map<void const *, TensorBacking const *>;
+
 // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
-void verify_into(Graph const &graph, std::string const &where, std::vector<std::string> &problems) {
+void verify_into(Graph const &graph, std::string const &where, std::vector<std::string> &problems, BackedStorage backed) {
     auto const note = [&](Node const &node, std::string const &message) {
         problems.push_back(fmt::format("{}node #{} '{}' ({}): {}", where, node.id, node.label, node.kind, message));
     };
+    for (auto const &[tid, handle] : graph.tensors_map()) {
+        if (handle.backing && handle.tensor_ptr != nullptr) {
+            backed.emplace(handle.tensor_ptr, handle.backing.get());
+        }
+    }
     auto const rank_of = [&graph](TensorId id) -> std::optional<std::size_t> {
         auto const *handle = graph.find_tensor(id);
         return handle != nullptr ? std::optional<std::size_t>{handle->rank} : std::nullopt;
@@ -168,6 +180,22 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
             }
         }
 
+        // A backed tensor is read-only to the graph. A write would land in the copy in memory and
+        // never in the storage, so the next replay's load would silently undo it. Its own
+        // lifecycle (the Materialize and the Initialize that fills it) is the one writer allowed.
+        if (!backed.empty() && !is_lifecycle(node.kind)) {
+            for (TensorId const id : node.outputs) {
+                TensorHandle const *handle = graph.find_tensor(graph.buffer_of(id));
+                if (handle == nullptr || handle->tensor_ptr == nullptr) {
+                    continue;
+                }
+                if (auto const hit = backed.find(handle->tensor_ptr); hit != backed.end()) {
+                    note(node, fmt::format("writes '{}', which is backed by {}; a backed tensor is read-only to the graph", handle->name,
+                                           hit->second->describe()));
+                }
+            }
+        }
+
         // The destination rule (DestinationRead.hpp): operands first, then the destination once,
         // exactly when the node reads it.
         if (auto const violation = destination_rule_violation(graph, node)) {
@@ -179,8 +207,9 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
             note(node, *mismatch);
         }
 
-        for_each_child_graph(
-            node, [&](Graph const &child) { verify_into(child, fmt::format("{}{} '{}' / ", where, node.kind, node.label), problems); });
+        for_each_child_graph(node, [&](Graph const &child) {
+            verify_into(child, fmt::format("{}{} '{}' / ", where, node.kind, node.label), problems, backed);
+        });
     }
 }
 
@@ -188,7 +217,7 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
 
 std::vector<std::string> Graph::verify() const {
     std::vector<std::string> problems;
-    verify_into(*this, fmt::format("graph '{}': ", _name), problems);
+    verify_into(*this, fmt::format("graph '{}': ", _name), problems, {});
     return problems;
 }
 

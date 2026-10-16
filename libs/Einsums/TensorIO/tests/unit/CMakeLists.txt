@@ -4,6 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 set(TensorIOTests
+    Backing.cpp
     TensorFileBasic.cpp
     TensorFileSliceWrite.cpp
     TensorFileLayout.cpp
@@ -32,4 +33,9 @@ einsums_add_python_unit_test(
 einsums_add_python_unit_test(
   "Modules.TensorIO" GraphSlabPython
   SCRIPT test_graph_slab_python.py
+)
+
+einsums_add_python_unit_test(
+  "Modules.TensorIO" BackingPython
+  SCRIPT test_backing_python.py
 )

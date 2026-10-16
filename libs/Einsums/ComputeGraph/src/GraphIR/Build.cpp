@@ -250,6 +250,33 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         }
     }
 
+    // Backings: the reader is rebuilt through the kind's registration and the tensor is annotated
+    // again, so the load checks the storage against the record exactly as the original call did.
+    // A file whose storage has moved, vanished or changed shape fails here, naming the tensor,
+    // rather than at the first replay.
+    for (auto const &spec : tensors) {
+        if (!spec.backing.has_value()) {
+            if (spec.init == InitKind::FromDisk) {
+                throw BuildFailure(fmt::format("tensor '{}' is initialized from a backing but names none", spec.name));
+            }
+            continue;
+        }
+        TensorBacking backing;
+        try {
+            backing = open_backing(spec.backing->kind, spec.backing->location);
+        } catch (std::exception const &error) {
+            throw BuildFailure(fmt::format("tensor '{}': {}", spec.name, error.what()));
+        }
+        // The record's "init" is what annotating sets, and annotating refuses a tensor already
+        // initialized some other way, so the one it is about to set is cleared first.
+        graph.tensor(loaded[spec.id].id).init_kind = InitKind::None;
+        try {
+            graph.annotate_backing(loaded[spec.id].id, std::move(backing));
+        } catch (std::exception const &error) {
+            throw BuildFailure(error.what());
+        }
+    }
+
     for (auto const &spec : nodes) {
         Node node;
         node.id    = graph.reserve_node_id();

@@ -236,8 +236,8 @@ def _resolve_tag(tag):
     return core.provenance_tag(str(name), attributes)
 
 
-def annotate(tensor, spaces=None, tag=None, graph=None):
-    """Annotate a tensor with what its axes range over, what it is, or both.
+def annotate(tensor, spaces=None, tag=None, backing=None, graph=None):
+    """Annotate a tensor with what its axes range over, what it is, where it lives, or any of these.
 
     ``spaces`` is one entry per axis, in axis order, each a registered space
     NAME or a ``SpaceId``. Names are the user-facing spelling: an id is a
@@ -272,6 +272,17 @@ def annotate(tensor, spaces=None, tag=None, graph=None):
             cg.annotate(T2, ("occ", "occ", "virt", "virt"))
             einsums.einsum("ijab <- ijcd ; cdab", R2, T2, Vvvvv)
 
+    ``backing`` says where the tensor LIVES when the graph reads it rather than
+    holding it: a ``TensorBacking`` built by the module that knows the storage,
+    such as ``einsums.io.etn(path, entry)`` for an entry of a ``.etn`` file. The
+    tensor must be declared on the graph and still deferred; every replay then
+    fills it from the storage, and the caller never holds it. A backed tensor is
+    read-only to the graph and has nothing to bind. It is a separate question
+    from ``tag``, and a tensor may carry both::
+
+        B = g.declare_tensor("B_vv", [naux, nvir, nvir], dtype="float64")
+        cg.annotate(B, tag="eri", backing=einsums.io.etn("ints.etn", "B_vv"), graph=g)
+
     Annotate BEFORE the operations that use the tensor are captured: capture
     reads the annotation off the handle to bind each contraction's letters,
     and one that arrives afterwards does not reach nodes already recorded.
@@ -280,8 +291,8 @@ def annotate(tensor, spaces=None, tag=None, graph=None):
 
     Returns ``tensor``, so an annotation can wrap an allocation in one line.
     """
-    if spaces is None and tag is None:
-        raise TypeError("cg.annotate needs spaces=, tag=, or both; it was given neither")
+    if spaces is None and tag is None and backing is None:
+        raise TypeError("cg.annotate needs spaces=, tag=, backing=, or a combination; it was given none")
 
     g = graph if graph is not None else current_graph()
     if g is None:
@@ -294,6 +305,8 @@ def annotate(tensor, spaces=None, tag=None, graph=None):
         g.annotate_spaces(tensor, [_resolve_space(registry, s) for s in spaces])
     if tag is not None:
         g.annotate_tag(tensor, _resolve_tag(tag))
+    if backing is not None:
+        g.annotate_backing(tensor, backing)
     return tensor
 
 

@@ -108,6 +108,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/KhatriRao.hpp
     Einsums/ComputeGraph/Executor.hpp
     Einsums/ComputeGraph/StringDispatch.hpp
+    Einsums/ComputeGraph/TensorBacking.hpp
     Einsums/ComputeGraph/TensorHandle.hpp
     Einsums/ComputeGraph/TensorSlot.hpp
     Einsums/ComputeGraph/Tune.hpp
@@ -158,6 +159,7 @@ set(ComputeGraphSources
     GraphIR/Read.cpp
     GraphIR/Build.cpp
     InterfaceManifest.cpp
+    TensorBacking.cpp
     SymbolicExtents.cpp
     GroupedBatchedGemm.cpp
     UsageAnalysis.cpp

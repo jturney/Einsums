@@ -39,6 +39,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <complex>
 #include <cstdint>
 #include <cstdlib>
@@ -47,6 +48,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -1386,6 +1388,117 @@ TEST_CASE("SaveLoad - a registered descriptor saves, loads and rebuilds", "[Comp
     }
 }
 
+namespace {
+
+/// A backing that holds one value for every element, so a backed graph saves, loads and replays
+/// with no file and no storage module. Its location is the extents and the value.
+cg::TensorBacking constant_backing(std::vector<size_t> const &dims, double fill) {
+    cg::TensorBacking out;
+    out.kind      = "saveload_test.constant";
+    out.location  = {{"dims", fmt::format("{}", fmt::join(dims, ","))}, {"fill", fmt::format("{}", fill)}};
+    out.dims      = dims;
+    out.dtype     = packed_gemm::ScalarType::Float64;
+    out.read_slab = [fill](void *destination, std::vector<std::pair<size_t, size_t>> const &ranges) {
+        size_t count = 1;
+        for (auto const &[first, last] : ranges) {
+            count *= last - first;
+        }
+        std::fill_n(static_cast<double *>(destination), count, fill);
+    };
+    return out;
+}
+
+void register_constant_backing() {
+    static bool const registered = [] {
+        cg::register_backing_kind({.name = "saveload_test.constant", .open = [](auto const &location) {
+                                       std::vector<size_t> dims;
+                                       double              fill = 0.0;
+                                       for (auto const &[key, value] : location) {
+                                           if (key == "dims") {
+                                               for (auto const part : std::views::split(value, ',')) {
+                                                   dims.push_back(std::stoul(std::string(part.begin(), part.end())));
+                                               }
+                                           } else if (key == "fill") {
+                                               fill = std::stod(value);
+                                           } else {
+                                               throw std::invalid_argument("unknown key " + key);
+                                           }
+                                       }
+                                       return constant_backing(dims, fill);
+                                   }});
+        return true;
+    }();
+    static_cast<void>(registered);
+}
+
+} // namespace
+
+TEST_CASE("SaveLoad - a backed tensor keeps its backing and is reopened through its kind", "[ComputeGraph][SaveLoad][Backing]") {
+    register_constant_backing();
+    auto A = create_random_tensor<double>("A", 3, 4);
+    auto C = create_zero_tensor<double>("C", 3, 2);
+
+    cg::Graph graph("backed");
+    auto     &B = graph.declare_runtime_tensor<double>("B", {4, 2});
+    graph.annotate_backing(B, constant_backing({4, 2}, 1.5));
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &C, A, B);
+    }
+
+    std::string const saved = must_save(graph);
+    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+        std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_11_0_backing.eig.json", std::ios::binary);
+        out << saved;
+    }
+    CHECK_THAT(saved, Catch::Matchers::ContainsSubstring(R"("kind":"saveload_test.constant")"));
+
+    cg::Graph loaded = must_load(saved);
+    CHECK(loaded.manifest().find("B") == nullptr);
+    auto const backed = std::ranges::find_if(loaded.tensors_map(), [](auto const &entry) { return entry.second.name == "B"; });
+    REQUIRE(backed != loaded.tensors_map().end());
+    REQUIRE(backed->second.backing != nullptr);
+    CHECK(backed->second.backing->describe() == "saveload_test.constant (dims=4,2, fill=1.5)");
+    CHECK(backed->second.alloc_state == cg::AllocState::Deferred);
+
+    auto C2 = create_zero_tensor<double>("C2", 3, 2);
+    loaded.bind("A", A, "C", C2);
+    auto manager = cg::PassManager::create_default();
+    loaded.apply(manager);
+    loaded.execute();
+
+    Tensor<double, 2> ones("B1", 4, 2);
+    ones.set_all(1.5);
+    auto expected = create_zero_tensor<double>("E", 3, 2);
+    reference_einsum("i,j <- i,k ; k,j", &expected, A, ones);
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 2; ++j) {
+            CHECK_THAT(C2(i, j), Catch::Matchers::WithinRel(expected(i, j), 1e-13));
+        }
+    }
+
+    SECTION("a kind nobody registered is refused naming the tensor and the kind") {
+        std::string text = saved;
+        auto const  at   = text.find("saveload_test.constant");
+        REQUIRE(at != std::string::npos);
+        text.replace(at, std::string_view{"saveload_test.constant"}.size(), "saveload_test.unregistered");
+        auto const message = load_refusal(text);
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("tensor 'B'"));
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("no backing kind is registered under 'saveload_test.unregistered'"));
+    }
+}
+
+TEST_CASE("register_backing_kind takes only qualified, new names with an opener", "[ComputeGraph][SaveLoad][Backing]") {
+    auto const open = [](auto const &) { return cg::TensorBacking{}; };
+    CHECK_THROWS_WITH(cg::register_backing_kind({.name = "unqualified", .open = open}),
+                      Catch::Matchers::ContainsSubstring("is not qualified"));
+    CHECK_THROWS_WITH(cg::register_backing_kind({.name = "saveload_test.no_open", .open = {}}),
+                      Catch::Matchers::ContainsSubstring("needs an open"));
+    register_constant_backing();
+    CHECK_THROWS_WITH(cg::register_backing_kind({.name = "saveload_test.constant", .open = open}),
+                      Catch::Matchers::ContainsSubstring("is already registered"));
+}
+
 // ── Tier 4: goldens ────────────────────────────────────────────────────────
 
 TEST_CASE("SaveLoad - every checked-in golden still loads", "[ComputeGraph][SaveLoad]") {
@@ -1406,6 +1519,9 @@ TEST_CASE("SaveLoad - every checked-in golden still loads", "[ComputeGraph][Save
     // Likewise for a golden that carries a descriptor declared outside the library: the file
     // names it, and the process has to have registered its codec.
     register_test_shift_descriptor();
+    // And for a golden whose tensor is backed: the file names the kind, and the process has to have
+    // registered it.
+    register_constant_backing();
 
     size_t loaded_count = 0;
     for (auto const &entry : std::filesystem::directory_iterator(directory)) {

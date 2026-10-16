@@ -543,6 +543,27 @@ void write_shape(Object &out, packed_gemm::ScalarType dtype, std::size_t rank, s
     }
 }
 
+/// Write a tensor's backing into @p out, when it carries one.
+///
+/// The kind and location only. The reader is code and is rebuilt at load by the kind's registered
+/// BackingKind; the dims and element type are re-read from the storage then, and checked against
+/// the record, so a file whose storage changed shape since the save fails to load rather than
+/// reading the wrong elements. Written only when present, so an unbacked tensor's record is the
+/// bytes 1.10.0 wrote.
+void write_backing(Object &out, TensorBacking const *backing) {
+    if (backing == nullptr) {
+        return;
+    }
+    Object location;
+    for (auto const &[key, value] : backing->location) {
+        location.set(key, Value{value});
+    }
+    Object record;
+    record.set("kind", Value{backing->kind});
+    record.set("location", Value{std::move(location)});
+    out.set("backing", Value{std::move(record)});
+}
+
 /// Whether a rank-0 record is a tensor object or a bare element, which rank alone cannot say
 /// and a loader must know to rebuild the right one. Nothing for any other rank.
 void write_rank0_kind(Object &out, std::size_t rank, TensorHandle const *handle) {
@@ -573,6 +594,7 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
     // materialized one, and a materialized intermediate refuses the extent-changing bind that
     // cross-problem reuse is made of.
     out.set("alloc", Value{alloc_state_name(handle.alloc_state)});
+    write_backing(out, handle.backing.get());
 
     if (auto const outer = frame.outer_of(handle.tensor_ptr); outer.has_value()) {
         out.set("outer", Value{*outer});

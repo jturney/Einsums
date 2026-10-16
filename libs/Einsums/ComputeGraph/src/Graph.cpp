@@ -40,6 +40,7 @@
 #include <Einsums/Tensor/Tensor.hpp>
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <algorithm>
 #include <array>
@@ -337,6 +338,59 @@ void Graph::annotate_tag(TensorId id, ProvenanceTag tag) {
 
 ProvenanceTag const &Graph::tensor_tag(TensorId id) const {
     return tensor(id).tag;
+}
+
+void Graph::annotate_backing(TensorId id, TensorBacking backing) {
+    auto &handle = tensor(id);
+
+    auto const refuse = [&](std::string const &why) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': annotate_backing tensor '{}' with {}: {}", _name, handle.name,
+                                backing.describe(), why);
+    };
+    if (!backing.read_slab) {
+        refuse("the backing has no reader");
+    }
+    if (handle.backing) {
+        refuse(fmt::format("the tensor is already backed by {}", handle.backing->describe()));
+    }
+    // An input, not scratch: the memory passes may hand an intermediate's buffer to another tensor
+    // after its last use, which would put a writer on storage the graph only reads.
+    if (handle.is_intermediate) {
+        refuse("a backed tensor is an input the graph reads, and this one is declared as an intermediate; declare it with "
+               "intermediate=false");
+    }
+    // The reader fills one dense buffer, so the tensor has to be one.
+    if (handle.is_tiled || handle.is_tensor_view || handle.raw_scalar || handle.is_distributed) {
+        refuse("only an owning, dense tensor can be backed; a view, a tiled tensor, a distributed tensor or a bare scalar cannot");
+    }
+    // The point of a backing is that the caller never holds the tensor, and an allocated one is
+    // already held: filling it from storage would overwrite whatever the caller put there. A
+    // tensor with no elements counts as allocated from the moment it is declared, and holds
+    // nothing a fill could overwrite, so it is accepted.
+    bool const materialized = handle.is_materialized_fn ? handle.is_materialized_fn() : handle.alloc_state != AllocState::Deferred;
+    bool const empty        = std::ranges::find(handle.dims, std::size_t{0}) != handle.dims.end();
+    if (materialized && !empty) {
+        refuse("the tensor is already allocated; declare it on the graph (declare_tensor) so it stays deferred");
+    }
+    if (handle.init_kind != InitKind::None) {
+        refuse(fmt::format("the tensor is already initialized by '{}' after allocation, and a backing fills it instead",
+                           init_kind_name(handle.init_kind)));
+    }
+    if (handle.dims != backing.dims) {
+        refuse(fmt::format("the tensor is [{}] and the storage holds [{}]", fmt::join(handle.dims, ","), fmt::join(backing.dims, ",")));
+    }
+    if (handle.dtype != backing.dtype) {
+        refuse(
+            fmt::format("the tensor holds {} and the storage holds {}", scalar_type_name(handle.dtype), scalar_type_name(backing.dtype)));
+    }
+
+    handle.init_kind = InitKind::FromDisk;
+    handle.backing   = std::make_shared<TensorBacking const>(std::move(backing));
+}
+
+std::optional<TensorBacking> Graph::tensor_backing(TensorId id) const {
+    auto const &handle = tensor(id);
+    return handle.backing ? std::optional<TensorBacking>{*handle.backing} : std::nullopt;
 }
 
 void Graph::annotate_spaces(TensorId id, std::vector<SpaceId> spaces) {

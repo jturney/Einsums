@@ -202,6 +202,12 @@ InterfaceManifest Graph::manifest() {
         if (handle.is_intermediate) {
             continue;
         }
+        // A backed tensor's data comes from its storage, so a caller has nothing to bind to it. It
+        // is saved as a deferred tensor record carrying its backing, which is what keeps a loaded
+        // graph from allocating it whole as a placeholder.
+        if (handle.backing) {
+            continue;
+        }
         TensorUsage const *use = uses.find(*this, id);
         if (use == nullptr) {
             // Referenced by no node, not even through a control-flow subtree.

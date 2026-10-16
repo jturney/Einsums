@@ -7,7 +7,9 @@
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/TensorIO/TensorFile.hpp>
 
+#include <array>
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -290,6 +292,43 @@ TensorEntry const &TensorFile::find_entry(std::string_view name) const {
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: tensor '{}' not found in '{}'", name, _path);
     }
     return _entries[it->second];
+}
+
+namespace {
+/// An element of @p Bytes bytes, for walking a slab when only the element SIZE matters.
+template <size_t Bytes>
+struct RawElement {
+    std::array<std::byte, Bytes> bytes;
+};
+} // namespace
+
+void TensorFile::read_slab(std::string_view name, void *destination, std::vector<std::pair<size_t, size_t>> const &ranges) const {
+    auto const &entry = find_entry(name);
+    detail::check_slab_ranges(_path, "TensorFile::read_slab", entry, ranges);
+
+    std::vector<size_t> entry_dims(entry.rank);
+    for (size_t d = 0; d < entry.rank; ++d) {
+        entry_dims[d] = entry.dims[d];
+    }
+    auto *const dst   = static_cast<char *>(destination);
+    auto const  visit = [&](uint64_t file_off, size_t dst_off, size_t bytes) { read_at(file_off, dst + dst_off, bytes); };
+
+    switch (size_t const size = dtype_size(static_cast<DType>(entry.dtype))) {
+    case 4:
+        detail::walk_slab<RawElement<4>>(entry.data_offset, entry_dims, ranges, visit);
+        break;
+    case 8:
+        detail::walk_slab<RawElement<8>>(entry.data_offset, entry_dims, ranges, visit);
+        break;
+    case 16:
+        detail::walk_slab<RawElement<16>>(entry.data_offset, entry_dims, ranges, visit);
+        break;
+    default:
+        EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                "TensorFile::read_slab: entry '{}' in '{}' has elements of {} bytes, which is not a size "
+                                "this reads",
+                                name, _path, size);
+    }
 }
 
 bool TensorFile::contains(std::string_view name) const {

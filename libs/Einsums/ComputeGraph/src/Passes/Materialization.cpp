@@ -3,11 +3,14 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/TensorImpl/TensorImpl.hpp>
 
 #include <algorithm>
 #include <functional>
@@ -25,6 +28,41 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
+
+/// The executor that fills a backed tensor whole from its backing, after its Materialize.
+///
+/// Reads the tensor's storage through @ref TensorHandle::impl_fn at run time rather than any
+/// pointer known now, since the memory planner may place it anywhere. The reader writes the
+/// file's dense column-major order, so a tensor laid out any other way is refused rather than
+/// filled with its elements in the wrong places.
+std::function<void()> load_whole(TensorHandle const &handle) {
+    if (!handle.backing) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "Materialization: tensor '{}' is initialized from a backing but carries none",
+                                handle.name);
+    }
+    if (!handle.impl_fn) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "Materialization: backed tensor '{}' has no storage accessor to fill", handle.name);
+    }
+    return [backing = handle.backing, impl_fn = handle.impl_fn, dtype = handle.dtype, name = handle.name]() {
+        detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
+            auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(impl_fn());
+            if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
+                EINSUMS_THROW_EXCEPTION(std::logic_error, "backed tensor '{}' has no storage to fill from {}", name, backing->describe());
+            }
+            if (!impl->is_contiguous() || !impl->is_column_major()) {
+                EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                        "backed tensor '{}' is not dense and column-major, so it cannot be filled from {} in place", name,
+                                        backing->describe());
+            }
+            std::vector<std::pair<std::size_t, std::size_t>> ranges;
+            ranges.reserve(backing->dims.size());
+            for (std::size_t const extent : backing->dims) {
+                ranges.emplace_back(0, extent);
+            }
+            backing->read_slab(impl->data(), ranges);
+        });
+    };
+}
 
 // Build the Materialize (and optional Initialize) node for a single
 // deferred tensor. The returned vector either has size 1 (Materialize
@@ -74,6 +112,9 @@ std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid)
                     random_fn();
                 }
             };
+        } else if (handle.init_kind == InitKind::FromDisk) {
+            init_node.execute = load_whole(handle);
+            init_node.label   = fmt::format("init_from_backing({})", handle.name);
         }
 
         out.push_back(std::move(init_node));
@@ -244,12 +285,14 @@ std::vector<std::string> Materialization::explain() const {
     if (_num_materialized == 0 && _num_initialized == 0) {
         return {};
     }
-    return {fmt::format("Materialization: allocated {} deferred tensor(s), zero-initialized {}", _num_materialized, _num_initialized)};
+    return {fmt::format("Materialization: allocated {} deferred tensor(s), initialized {} ({} filled whole from a backing)",
+                        _num_materialized, _num_initialized, _num_loaded)};
 }
 
 void Materialization::reset_stats() {
     _num_materialized = 0;
     _num_initialized  = 0;
+    _num_loaded       = 0;
     _num_unused       = 0;
 }
 
@@ -527,6 +570,9 @@ bool Materialization::run(Graph &graph) {
         if (handle.init_kind != InitKind::None) {
             _num_initialized++;
         }
+        if (handle.init_kind == InitKind::FromDisk) {
+            _num_loaded++;
+        }
         return built;
     };
 
@@ -646,8 +692,8 @@ bool Materialization::run(Graph &graph) {
         modified = true;
     }
 
-    report(1, fmt::format("materialized {} deferred tensor(s) ({} initialized, {} unused and left unallocated)", _num_materialized,
-                          _num_initialized, _num_unused));
+    report(1, fmt::format("materialized {} deferred tensor(s) ({} initialized, {} of them from a backing, {} unused and left unallocated)",
+                          _num_materialized, _num_initialized, _num_loaded, _num_unused));
     return modified;
 }
 

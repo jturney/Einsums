@@ -387,6 +387,44 @@ ProvenanceTag read_provenance_tag(Fields const &record) {
     return out;
 }
 
+/// A tensor's backing, or nothing when the record carries none.
+///
+/// OPTIONAL, like the tag: absent means unbacked, which every tensor written before 1.11.0 was.
+/// The location's keys are the kind's own, so they are read generically and every one of them is
+/// consumed; the kind's registered opener is what judges whether they make sense.
+std::optional<IrTensor::Backing> read_backing(Fields const &record) {
+    Value const *value = record.optional("backing");
+    if (value == nullptr || value->is_null()) {
+        return std::nullopt;
+    }
+    auto const backing = Fields::of(*value, record.child("backing"), record.problems());
+    if (!backing.has_value()) {
+        return std::nullopt;
+    }
+    IrTensor::Backing out;
+    out.kind = backing->str("kind");
+    if (Value const *location = backing->required("location"); location != nullptr) {
+        if (auto const entries = Fields::of(*location, backing->child("location"), record.problems())) {
+            for (auto const &key : entries->object().keys()) {
+                Value const *entry = entries->optional(key);
+                if (entry == nullptr) {
+                    continue;
+                }
+                if (!entry->is_string()) {
+                    entries->note(key, entry->position, fmt::format("expected a string, found {}", entry->type_name()));
+                    continue;
+                }
+                out.location.emplace_back(key, entry->as_string());
+            }
+            std::ranges::sort(out.location, [](auto const &lhs, auto const &rhs) { return lhs.first < rhs.first; });
+        }
+    }
+    if (out.kind.empty()) {
+        backing->note("a backing with an empty kind names no storage; omit the key instead");
+    }
+    return out;
+}
+
 /// A permutation operator list: an array of operators, each an array of groups,
 /// each an array of index letters.
 ///
@@ -615,8 +653,9 @@ IrTensor read_tensor(Fields const &record, bool manifest_entry) {
         out.init         = record.named<InitKind>("init", init_kind_from_name, "initialization kind", InitKind::None);
         // Optional: a file written before this key existed means Materialized, which is what
         // its graph's intermediates were.
-        out.alloc = record.named<AllocState>("alloc", alloc_state_from_name, "allocation state", AllocState::Materialized,
-                                             /*optional=*/true);
+        out.alloc   = record.named<AllocState>("alloc", alloc_state_from_name, "allocation state", AllocState::Materialized,
+                                               /*optional=*/true);
+        out.backing = read_backing(record);
     }
 
     if (out.dims.size() != out.rank) {

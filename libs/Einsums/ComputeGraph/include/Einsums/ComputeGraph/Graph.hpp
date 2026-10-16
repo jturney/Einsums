@@ -1217,6 +1217,82 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     // clang-format on
     [[nodiscard]] ProvenanceTag const &tensor_tag(TensorType const &tensor) const;
 
+    // ── Backing ─────────────────────────────────────────────────────────────
+
+    /**
+     * @brief Declare that a tensor's data lives in storage the graph reads at each replay.
+     * @param[in] id The tensor.
+     * @param[in] backing The storage, built by the module that knows it.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @throws std::invalid_argument when the tensor is not a deferred, owning, dense tensor; when it
+     *         is declared as an intermediate rather than an input; when
+     *         its extents or element type differ from the backing's; when it already carries a
+     *         backing; or when the backing has no reader.
+     *
+     * The tensor becomes a read-only input whose elements the caller never holds. Materialization
+     * fills it whole from the backing before its first reader, at every replay, so a graph that
+     * reads a backed tensor is correct with no other pass; a pass that streams it instead reads
+     * it a slab at a time and the whole tensor is never allocated. A node that writes it is an
+     * error that @ref verify reports, since the write would reach the copy in memory and never
+     * the storage.
+     *
+     * The backing is kept by a saved graph by kind and location and rebuilt at load through the
+     * kind's registered @ref BackingKind. A backed tensor is not part of the graph's interface:
+     * it has no manifest entry, and so nothing to bind.
+     *
+     * Separate from @ref annotate_tag, and a tensor may carry both: a tag says what the tensor is,
+     * a backing where it lives.
+     * @versionadded{2.0.0}
+     */
+    void annotate_backing(TensorId id, TensorBacking backing);
+
+    /**
+     * @brief Declare a tensor's backing, addressing it by the caller's tensor object.
+     * @tparam TensorType The tensor type.
+     * @param[in] tensor The tensor, declared on this graph and still deferred.
+     * @param[in] backing The storage.
+     * @versionadded{2.0.0}
+     */
+    template <GraphCapturableTensor TensorType>
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_backing", TensorType = einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_backing", TensorType = einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_backing", TensorType = einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_backing", TensorType = einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    void annotate_backing(TensorType const &tensor, TensorBacking backing);
+
+    /**
+     * @brief The storage a registered tensor is backed by.
+     * @param[in] id The tensor to read.
+     * @return The backing, or nothing for a tensor this graph's handle carries none for.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     *
+     * Asks this graph's handle only. A loop body's handle for a parent's backed tensor carries
+     * none (see @ref TensorHandle::backing); resolve it through the enclosing graph.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::optional<TensorBacking> tensor_backing(TensorId id) const;
+
+    /**
+     * @brief The storage a tensor is backed by, addressing it by the caller's object.
+     * @tparam TensorType The tensor type.
+     * @param[in] tensor The tensor to read.
+     * @return The backing, or nothing.
+     * @throws std::out_of_range if this graph has never seen that tensor.
+     * @versionadded{2.0.0}
+     */
+    template <GraphCapturableTensor TensorType>
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_backing", TensorType = einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_backing", TensorType = einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_backing", TensorType = einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_backing", TensorType = einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    // clang-format on
+    [[nodiscard]] std::optional<TensorBacking> tensor_backing(TensorType const &tensor) const;
+
     // ── Space-typed dimensions (prototype) ──────────────────────────────────
 
     /**
@@ -4674,6 +4750,14 @@ auto Graph::annotate_tag(TensorType const &tensor, ProvenanceTag tag) -> void {
 template <GraphCapturableTensor TensorType>
 auto Graph::tensor_tag(TensorType const &tensor) const -> ProvenanceTag const & {
     return tensor_tag(registered_id_or_throw(tensor, "provenance tag"));
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::annotate_backing(TensorType const &tensor, TensorBacking backing) -> void {
+    annotate_backing(register_operand(tensor), std::move(backing));
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::tensor_backing(TensorType const &tensor) const -> std::optional<TensorBacking> {
+    return tensor_backing(registered_id_or_throw(tensor, "backing"));
 }
 template <GraphCapturableTensor TensorType>
 auto Graph::annotate_dims(TensorType const &tensor, std::vector<std::string> symbols) -> void {

@@ -128,6 +128,17 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     APIARY_INSTANTIATE_MEMBER_AS("write_slice", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>) void
     write_slice(std::string_view name, GeneralRuntimeTensor<T, Alloc> const &tensor, std::vector<std::pair<size_t, size_t>> const &ranges);
 
+    /// Read a slab into raw memory, whatever the entry's element type.
+    ///
+    /// @p destination receives the slab's elements densely and in column-major order over the
+    /// slab's own extents, which is the file's order, so no element is converted or moved: each
+    /// contiguous run of the slab is one read. It must hold the slab's element count times the
+    /// entry's element size. An empty range on any axis reads nothing.
+    /// @param name The entry.
+    /// @param destination Where the elements go.
+    /// @param ranges Per-dimension [start, end) ranges into the stored tensor.
+    void read_slab(std::string_view name, void *destination, std::vector<std::pair<size_t, size_t>> const &ranges) const;
+
     // ── Query ────────────────────────────────────────────────────────────
 
     /// Check if a tensor exists in the file.

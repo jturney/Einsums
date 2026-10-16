@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/Comm/Collectives.hpp>
+#include <Einsums/ComputeGraph/TensorBacking.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
@@ -472,6 +473,24 @@ struct TensorHandle {
      * @see Graph::tensor_tag
      */
     ProvenanceTag tag;
+
+    /**
+     * @brief Where the tensor's data lives when the graph reads it rather than holding it.
+     *
+     * Null for every tensor not annotated through @ref Graph::annotate_backing. Set, the tensor
+     * is deferred, never written by the graph, and filled from the backing's reader: whole by the
+     * Initialize node Materialization emits, or a slab at a time by a pass that streams it.
+     *
+     * Kept apart from @ref tag because the two answer different questions and change
+     * differently. A tag says what the tensor IS and follows it through a view, a permute or a
+     * copy; a backing says where it LIVES, and a copy of a backed tensor lives in memory. It is
+     * therefore never propagated, and like every other piece of handle metadata it does not cross
+     * into a loop body's fresh handle: a pass that needs it inside a body resolves it by
+     * @ref tensor_ptr through the enclosing graphs.
+     *
+     * @see Graph::annotate_backing
+     */
+    std::shared_ptr<TensorBacking const> backing;
 
     /**
      * @brief Per-axis symbolic extent declaration, parallel to @ref dims.

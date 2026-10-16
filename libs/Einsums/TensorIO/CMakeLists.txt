@@ -4,6 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 set(TensorIOHeaders
+    Einsums/TensorIO/Backing.hpp
     Einsums/TensorIO/Format.hpp
     Einsums/TensorIO/TensorFile.hpp
     Einsums/TensorIO/DistributedTensorFile.hpp
@@ -12,6 +13,7 @@ set(TensorIOHeaders
 )
 
 set(TensorIOSources
+    Backing.cpp
     TensorFile.cpp
     DistributedTensorFile.cpp
     Checkpoint.cpp

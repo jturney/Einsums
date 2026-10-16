@@ -119,6 +119,13 @@
  * so a reader rebuilds their input lists from the prefactors, and a 1.10.0 file whose lists
  * break the rule is refused.
  *
+ * Since 1.11.0 a tensor record may carry a ``backing``: the ``kind`` and ``location`` of the
+ * storage a backed tensor is read from (@ref Graph::annotate_backing). The reader is not saved.
+ * Loading rebuilds it through the kind's registered @ref BackingKind and re-checks the storage's
+ * extents and element type against the record, so a reader without that kind registered, or
+ * whose storage is missing or has changed shape, refuses the file naming the tensor. An absent
+ * key reads as unbacked, which is what every earlier tensor was.
+ *
  * @par The hash domain
  * @ref Graph::content_hash digests the canonical bytes of that object with
  * ``provenance`` REMOVED and nothing else changed. Provenance is therefore
@@ -252,7 +259,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.10.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.11.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}
