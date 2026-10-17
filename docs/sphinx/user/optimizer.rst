@@ -671,10 +671,12 @@ the order of a new entry, for a caller who knows how a later run will read it.
 
 The report says which tensors were streamed and why the others were not. A
 decline names its reason: the last-axis letter repeated in an operand, a view
-that permutes the tensor, two backed operands in one contraction, a
-destination accumulated into rather than overwritten. A box over an axis that
-is not the last is many short runs of the file, and the report gives the count
-for each box.
+that permutes the tensor, a second backed tensor in a contraction the pass
+would loop over itself, a destination accumulated into rather than
+overwritten. Boxes are read and written independently, so a contraction in a
+loop may read a box of each of two backed operands, two views of one tensor
+among them, and write a box of a third. A box over an axis that is not the last
+is many short runs of the file, and the report gives the count for each box.
 
 ``out_of_core.py`` in the ComputeGraph examples builds one program as a CC code
 is built, for water in cc-pVTZ under a 16 MB budget: a setup body produces

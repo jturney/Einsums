@@ -543,12 +543,14 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                 continue;
             }
             // A contraction that produces a write-backed tensor is a write candidate, whatever it reads.
+            // Written a box at a time, it is a new node the next round reads from; written in memory,
+            // what it reads may still be read from storage.
             if (auto const out = backed_operand(graph, backed, node.outputs[0], 0); out && out->backing->write) {
                 if (stream_write(graph, backed, i, cap)) {
                     moved = true;
                     again = true;
+                    continue;
                 }
-                continue;
             }
             auto const in_a = backed_operand(graph, backed, node.inputs[0], 1);
             auto const in_b = backed_operand(graph, backed, node.inputs[1], 2);
@@ -556,30 +558,59 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                 continue;
             }
             auto const where = fmt::format("node '{}'", node.label);
+            // The bytes of a backed tensor whole.
+            auto const whole_of = [](TensorBacking const &backing) {
+                std::size_t bytes = compute_graph::detail::dispatch_scalar_type(backing.dtype, []<typename T>(T) { return sizeof(T); });
+                for (std::size_t const extent : backing.dims) {
+                    bytes *= extent;
+                }
+                return bytes;
+            };
+            // Whether a backed operand is read from its storage here at all, noting why not when not.
+            auto const readable = [&](BackedOperand const &use) {
+                // A write-backed tensor's storage holds it only once it has been produced there.
+                // Produced in memory anywhere, it is read from memory, and stored after its last writer.
+                if (use.backing->write && (use.written_outside || compute_graph::detail::written_in_memory(graph, use.object))) {
+                    note_skip("the tensor is produced in memory, so its readers read it there and it is stored after its last writer",
+                              where);
+                    return false;
+                }
+                if (std::size_t const bytes = whole_of(*use.backing); bytes <= cap) {
+                    note_skip("the backed tensor fits its share of the budget, so it is loaded once rather than read per contraction",
+                              fmt::format("{}: '{}' is {} bytes against {}", where, use.name, bytes, cap));
+                    return false;
+                }
+                return true;
+            };
+            // A box a loop's view names is read on its own, whatever the other operand is, so both
+            // operands may be read so: two views of one tensor among them, as (ae|bf) = Bvv Bvv
+            // inside a loop over Q is. One is rewritten now, and the next round sees it as a buffer
+            // and takes the other. Only the pass's own loop over a last axis reads one backed
+            // operand at a time.
             if (in_a && in_b) {
-                note_skip("both operands of the contraction are backed, so it is loaded whole", where);
+                bool streamed = false;
+                for (BackedOperand const *box : {&*in_a, &*in_b}) {
+                    if (!box->full && box->view_node && readable(*box) &&
+                        stream_box(graph, *box->view_node, box->name, box->backing, describe(node, *desc), std::nullopt)) {
+                        streamed = true;
+                        break;
+                    }
+                }
+                if (streamed) {
+                    moved = true;
+                    again = true;
+                } else {
+                    note_skip("both operands of the contraction are backed and neither is a box a loop's view names, so it is loaded whole",
+                              where);
+                }
                 continue;
             }
             BackedOperand const &use     = in_a ? *in_a : *in_b;
             auto const          &backing = *use.backing;
-            // A write-backed tensor's storage holds it only once it has been produced there. Produced
-            // in memory anywhere, it is read from memory, and stored after its last writer.
-            if (backing.write && (use.written_outside || compute_graph::detail::written_in_memory(graph, use.object))) {
-                note_skip("the tensor is produced in memory, so its readers read it there and it is stored after its last writer", where);
+            if (!readable(use)) {
                 continue;
             }
-            std::size_t const element = [&] {
-                return compute_graph::detail::dispatch_scalar_type(backing.dtype, []<typename T>(T) { return sizeof(T); });
-            }();
-            std::size_t whole = element;
-            for (std::size_t const extent : backing.dims) {
-                whole *= extent;
-            }
-            if (whole <= cap) {
-                note_skip("the backed tensor fits its share of the budget, so it is loaded once rather than read per contraction",
-                          fmt::format("{}: '{}' is {} bytes against {}", where, use.name, whole, cap));
-                continue;
-            }
+            std::size_t const whole = whole_of(backing);
             // A view that slices the tensor names the box this contraction needs, and a loop around
             // it (AxisTiling's, typically) has already chosen that box. It is read as it stands,
             // every time the view would have been made, rather than a loop of this pass's own.
@@ -737,11 +768,6 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
         note_skip(fmt::format("another operation writes the write-backed tensor in memory, {}", decline), where);
         return false;
     }
-    if (backed_operand(graph, backed, node.inputs[0], 1) || backed_operand(graph, backed, node.inputs[1], 2)) {
-        note_skip(fmt::format("the contraction also reads a backed tensor, {}", decline), where);
-        return false;
-    }
-
     std::size_t const element = compute_graph::detail::dispatch_scalar_type(backing.dtype, []<typename T>(T) { return sizeof(T); });
     std::size_t       whole   = element;
     for (std::size_t const extent : backing.dims) {
@@ -760,6 +786,13 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
             return false;
         }
         return stream_box(graph, *out->view_node, out->name, out->backing, describe(node, *desc), index);
+    }
+    // The pass's own loop over the last axis reads its operands whole or a slab of that axis at a
+    // time, and has no place for a second tensor read from storage. A box a loop's view names is
+    // written above whatever the contraction reads, since the box it reads is read on its own.
+    if (backed_operand(graph, backed, node.inputs[0], 1) || backed_operand(graph, backed, node.inputs[1], 2)) {
+        note_skip(fmt::format("the contraction also reads a backed tensor, {}", decline), where);
+        return false;
     }
     auto const lists = live_index_lists(*desc);
     if (!lists.operators.empty()) {
