@@ -2126,7 +2126,8 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 }
                 if (!scope.intermediate(tid)) {
                     std::size_t const bytes = handle->total_bytes();
-                    if (sliceable && handle->alloc_state == AllocState::Deferred && bytes > limit_for(bytes) &&
+                    // A backed tensor is not one: its storage holds it, and SlabStreaming moves it.
+                    if (sliceable && handle->alloc_state == AllocState::Deferred && !handle->backing && bytes > limit_for(bytes) &&
                         (held == nullptr || bytes > held->total_bytes())) {
                         held = handle;
                     }

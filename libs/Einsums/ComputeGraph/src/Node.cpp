@@ -246,6 +246,8 @@ std::vector<std::string> param_reads(Node const &node) {
         if (wd->source_expr.has_value()) {
             add(*wd->source_expr);
         }
+    } else if (auto const *io = node.op_data.get_if<DiskIODescriptor>()) {
+        append(names, io->bound_params);
     } else if (auto accesses = hooked_accesses(node)) {
         append(names, accesses->param_reads);
     }

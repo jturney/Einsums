@@ -20,6 +20,7 @@
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -98,6 +99,16 @@ std::optional<BackedOperand> backed_operand(Graph const &graph, Backed const &ba
                            std::ranges::all_of(view->axes, [](ViewAxis const &axis) { return axis.kind == ViewAxis::Kind::Full; });
     }
     return out;
+}
+
+/// The node's label, or for a node built without one, the contraction it performs, in the words
+/// capture labels one with.
+std::string describe(Node const &node, EinsumDescriptor const &desc) {
+    if (!node.label.empty()) {
+        return node.label;
+    }
+    auto const lists = live_index_lists(desc);
+    return fmt::format("einsum: C[{}] = A[{}] * B[{}]", fmt::join(lists.c, ","), fmt::join(lists.a, ","), fmt::join(lists.b, ","));
 }
 
 /// How many times @p letter occurs in @p letters.
@@ -460,11 +471,6 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                 note_skip("the tensor is produced in memory, so its readers read it there and it is stored after its last writer", where);
                 continue;
             }
-            if (!use.full) {
-                note_skip("the backed tensor is read through a view that slices or permutes it, so it is loaded whole", where);
-                continue;
-            }
-
             std::size_t const element = [&] {
                 return compute_graph::detail::dispatch_scalar_type(backing.dtype, []<typename T>(T) { return sizeof(T); });
             }();
@@ -475,6 +481,18 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
             if (whole <= cap) {
                 note_skip("the backed tensor fits its share of the budget, so it is loaded once rather than read per contraction",
                           fmt::format("{}: '{}' is {} bytes against {}", where, use.name, whole, cap));
+                continue;
+            }
+            // A view that slices the tensor names the box this contraction needs, and a loop around
+            // it (AxisTiling's, typically) has already chosen that box. It is read as it stands,
+            // every time the view would have been made, rather than a loop of this pass's own.
+            if (!use.full) {
+                if (!use.view_node) {
+                    note_skip("the backed tensor is read through a view this pass cannot see, so it is loaded whole", where);
+                } else if (stream_box(graph, *use.view_node, use.name, use.backing, describe(node, *desc), std::nullopt)) {
+                    moved = true;
+                    again = true;
+                }
                 continue;
             }
 
@@ -620,10 +638,6 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
         note_skip(fmt::format("another operation writes the write-backed tensor in memory, {}", decline), where);
         return false;
     }
-    if (!out->full) {
-        note_skip(fmt::format("the contraction writes a view that slices or permutes the write-backed tensor, {}", decline), where);
-        return false;
-    }
     if (backed_operand(graph, backed, node.inputs[0], 1) || backed_operand(graph, backed, node.inputs[1], 2)) {
         note_skip(fmt::format("the contraction also reads a backed tensor, {}", decline), where);
         return false;
@@ -638,6 +652,15 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
         note_skip(fmt::format("the write-backed tensor fits its share of the budget, {}", decline),
                   fmt::format("{}: '{}' is {} bytes against {}", where, out->name, whole, cap));
         return false;
+    }
+    // A view that slices the tensor names the box this contraction produces, and a loop around it
+    // has chosen that box: the contraction computes it into a buffer of its size, which is written.
+    if (!out->full) {
+        if (!out->view_node) {
+            note_skip(fmt::format("the contraction writes a view this pass cannot see, {}", decline), where);
+            return false;
+        }
+        return stream_box(graph, *out->view_node, out->name, out->backing, describe(node, *desc), index);
     }
     auto const lists = live_index_lists(*desc);
     if (!lists.operators.empty()) {
@@ -755,10 +778,166 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
     return true;
 }
 
+bool SlabStreaming::stream_box(Graph &graph, std::size_t view_node, std::string const &name,
+                               std::shared_ptr<TensorBacking const> const &backing, std::string const &label,
+                               std::optional<std::size_t> writer) {
+    auto const        where   = fmt::format("node '{}'", label);
+    std::string const decline = writer ? "so it is computed in memory and stored after its last writer" : "so it is loaded whole";
+    auto             &nodes   = graph.nodes();
+    auto const       *view    = nodes[view_node].op_data.get_if<ViewDescriptor>();
+    if (view == nullptr || nodes[view_node].outputs.size() != 1 || view->axes.size() != backing->dims.size()) {
+        note_skip(fmt::format("the backed tensor is used through a view this pass cannot see, {}", decline), where);
+        return false;
+    }
+    if (!view->permutation.empty()) {
+        note_skip(fmt::format("the backed tensor is used through a view that permutes it, {}", decline), where);
+        return false;
+    }
+    TensorHandle const *parent = graph.find_tensor(view->parent_id);
+    if (parent == nullptr || parent->is_tensor_view) {
+        note_skip(fmt::format("the backed tensor is used through a view of a view, {}", decline), where);
+        return false;
+    }
+    TensorId const      sliced = nodes[view_node].outputs[0];
+    TensorHandle const *slice  = graph.find_tensor(sliced);
+    if (slice == nullptr || slice->dtype != backing->dtype || !graph.has_slot(sliced)) {
+        note_skip(fmt::format("the backed tensor is used through a view this pass cannot redirect, {}", decline), where);
+        return false;
+    }
+    // The box replaces the view for this graph's own nodes. A body below that names the view is
+    // beyond what a redirect here reaches, and so is any write through it but the one producing a
+    // written box: the storage would never see it.
+    for (std::size_t j = 0; j < nodes.size(); ++j) {
+        if (j == view_node || (writer && j == *writer)) {
+            continue;
+        }
+        auto const [reads, writes] = graph.effective_io(nodes[j]);
+        bool const read_below =
+            std::ranges::find(reads, sliced) != reads.end() && std::ranges::find(nodes[j].inputs, sliced) == nodes[j].inputs.end();
+        bool const written = std::ranges::find(writes, sliced) != writes.end();
+        if (read_below || written) {
+            note_skip(
+                fmt::format("the view of the backed tensor is written by another operation or used inside a nested graph, {}", decline),
+                where);
+            return false;
+        }
+    }
+
+    // The box over the stored tensor's axes: a dropped axis is one index, which the buffer leaves out
+    // without changing the order its elements are held in.
+    std::vector<std::size_t> extents;
+    std::size_t              kept = 0;
+    for (auto const &axis : view->axes) {
+        extents.push_back(axis.kind == ViewAxis::Kind::Drop ? 1 : slice->dims[kept++]);
+    }
+    // The runs a box costs: every leading axis it covers whole is one run with the next.
+    std::size_t inner = 0;
+    while (inner + 1 < view->axes.size() && view->axes[inner].kind == ViewAxis::Kind::Full) {
+        ++inner;
+    }
+    std::size_t runs = 1;
+    for (std::size_t p = inner + 1; p < extents.size(); ++p) {
+        runs *= extents[p];
+    }
+    std::vector<std::string> bound_params;
+    for (auto const &axis : view->axes) {
+        if (axis.kind != ViewAxis::Kind::Full && axis.lo.is_param()) {
+            bound_params.push_back(axis.lo.param_name());
+        }
+        if (axis.kind == ViewAxis::Kind::Range && axis.hi.is_param()) {
+            bound_params.push_back(axis.hi.param_name());
+        }
+    }
+
+    TensorId    box_id = 0;
+    std::size_t bytes  = 0;
+    compute_graph::detail::dispatch_scalar_type(backing->dtype, [&]<typename T>(T) {
+        auto &box = graph.declare_runtime_tensor<T>(fmt::format("{}#box{}", name, _num_boxes), slice->dims, /*intermediate=*/true);
+        box_id    = graph.find_tensor_id_by_ptr(&box);
+        graph.get_or_create_slot(box, box_id);
+        bytes = box.size() * sizeof(T);
+    });
+    TensorHandle const &box = graph.tensor(box_id);
+
+    Node io_node;
+    io_node.kind  = writer ? OpKind::DiskWrite : OpKind::DiskRead;
+    io_node.label = fmt::format("{}_box({})", writer ? "write" : "read", name);
+    if (writer) {
+        io_node.inputs = {box_id};
+    } else {
+        io_node.outputs = {box_id};
+    }
+    auto io         = compute_graph::detail::backing_io(*backing, box_id, bytes);
+    io.bound_params = bound_params;
+    io_node.op_data = std::move(io);
+    // The box is resolved when the transfer runs, from the parameters the view would have read, and
+    // the buffer is reached through its accessor, since the memory planner may place it anywhere.
+    io_node.execute = [backing, impl_fn = box.impl_fn, axes = view->axes, params = graph.params_ptr(), name, store = writer.has_value()]() {
+        if (!params) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' has no parameter table", name);
+        }
+        compute_graph::detail::dispatch_scalar_type(backing->dtype, [&]<typename T>(T) {
+            auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(impl_fn());
+            if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
+                EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' has no storage", name);
+            }
+            std::vector<std::pair<std::size_t, std::size_t>> ranges;
+            ranges.reserve(axes.size());
+            std::size_t kept_axis = 0;
+            for (std::size_t p = 0; p < axes.size(); ++p) {
+                auto const        &axis   = axes[p];
+                std::int64_t const extent = static_cast<std::int64_t>(backing->dims[p]);
+                std::int64_t       lo     = 0;
+                std::int64_t       hi     = extent;
+                if (axis.kind == ViewAxis::Kind::Drop) {
+                    lo = axis.lo.resolve(*params);
+                    hi = lo + 1;
+                } else if (axis.kind == ViewAxis::Kind::Range) {
+                    lo = axis.lo.resolve(*params);
+                    hi = axis.hi.resolve(*params);
+                }
+                bool const fits_buffer =
+                    axis.kind == ViewAxis::Kind::Drop || static_cast<std::size_t>(hi - lo) == impl->dim(static_cast<int>(kept_axis));
+                if (lo < 0 || hi < lo || hi > extent || !fits_buffer) {
+                    EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' on axis {} is [{}, {}), which does not fit",
+                                            name, p, lo, hi);
+                }
+                if (axis.kind != ViewAxis::Kind::Drop) {
+                    ++kept_axis;
+                }
+                ranges.emplace_back(static_cast<std::size_t>(lo), static_cast<std::size_t>(hi));
+            }
+            if (store) {
+                detail::store_to_backing(*backing, impl->data(), *impl, ranges);
+            } else {
+                detail::fill_from_backing(*backing, impl->data(), *impl, ranges);
+            }
+        });
+    };
+
+    // Every executor built over the view now uses the box, and every node that names the view names
+    // the box, so a read is ordered before its readers and a write after its writer.
+    graph.redirect_slot(sliced, box_id);
+    for (auto &node : nodes) {
+        std::ranges::replace(node.inputs, sliced, box_id);
+        std::ranges::replace(node.outputs, sliced, box_id);
+    }
+    std::vector<bool> remove(nodes.size(), false);
+    remove[view_node] = true;
+    graph.replace_nodes(remove, {{writer ? *writer + 1 : view_node, {std::move(io_node)}}});
+
+    _records.push_back(
+        Record{.tensor = name, .label = label, .extent = 0, .block = runs, .bytes = bytes, .writes = writer.has_value(), .box = true});
+    ++_num_boxes;
+    report(1, fmt::format("{} '{}' for '{}' a box at a time, {} bytes in {} run(s)", writer ? "wrote" : "read", name, label, bytes, runs));
+    return true;
+}
+
 void SlabStreaming::reset_stats() {
     _records.clear();
     _num_streamed = 0;
     _num_written  = 0;
+    _num_boxes    = 0;
     // Per apply, not per run: the manager reads compensated_reads() once, after the descent, and
     // a graph address from an earlier apply may now be a different graph.
     _backed_of.clear();
@@ -772,6 +951,12 @@ std::vector<std::string> SlabStreaming::explain() const {
     std::vector<std::string> out;
     for (auto const &record : _records) {
         double const per_byte = record.bytes > 0 ? record.flops / static_cast<double>(record.bytes) : 0.0;
+        if (record.box) {
+            out.push_back(fmt::format("SlabStreaming: '{}' {} '{}' a box at a time, the box its view names: {} bytes in {} run(s) "
+                                      "each time the view is made, in place of the whole tensor",
+                                      record.label, record.writes ? "writes" : "reads", record.tensor, record.bytes, record.block));
+            continue;
+        }
         if (record.writes) {
             out.push_back(fmt::format("SlabStreaming: '{}' writes '{}' in blocks of {} of {} along its last axis; {} bytes written per "
                                       "execution, about {:.0f} flop per byte written",

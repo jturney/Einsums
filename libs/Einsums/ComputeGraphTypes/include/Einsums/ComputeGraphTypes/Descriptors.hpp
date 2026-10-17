@@ -162,6 +162,10 @@ struct DiskIODescriptor {
     std::string                       dataset_name; ///< Dataset/key name within the file
     TensorId                          tensor_id{0}; ///< Which tensor is being read/written
     size_t                            size_bytes{0};
+    /// The parameters the transfer's region is resolved from when it runs, for a transfer of a
+    /// box a loop's iteration chooses. The scheduler orders the transfer after the nodes that
+    /// write them, as it orders a parameter-bound view; empty for a fixed region.
+    std::vector<std::string> bound_params;
 };
 
 /**

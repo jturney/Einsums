@@ -147,6 +147,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("blocks") [[nodiscard]] std::vector<std::int64_t> blocks() const { return _blocks; }
 
+    /// @brief How many views of a backed tensor the last apply turned into a read of the box each one names.
+    /// @return The count, one per view, whichever loop chose the box.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("num_boxes") [[nodiscard]] std::size_t num_boxes() const noexcept { return _num_boxes; }
+
   private:
     /// One streamed contraction's report line.
     struct Record {
@@ -158,6 +163,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         double      flops{0.0};
         bool        summed{false};
         bool        writes{false}; ///< The contraction produces the tensor into its storage.
+        bool        box{false};    ///< A view's box is read in place of the view; @c block holds its runs.
     };
 
     /// What a graph knows about one backed tensor object.
@@ -178,6 +184,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     bool stream_graph(Graph &graph, Backed const &backed);
     bool stream_write(Graph &graph, Backed const &backed, std::size_t index, std::size_t cap);
+    /// Replace the View node @p view_node, a slice of the backed tensor @p name, with a buffer of the
+    /// slice's shape and a transfer of the box the view names: a read where the view stood, or,
+    /// when @p writer is the node that produces the slice, a write after it.
+    bool stream_box(Graph &graph, std::size_t view_node, std::string const &name, std::shared_ptr<TensorBacking const> const &backing,
+                    std::string const &label, std::optional<std::size_t> writer);
 
     std::int64_t                              _budget_override{-1};
     std::unordered_map<Graph const *, Backed> _backed_of;
@@ -186,6 +197,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::vector<Record>                       _records;
     std::size_t                               _num_streamed{0};
     std::size_t                               _num_written{0};
+    std::size_t                               _num_boxes{0};
     std::vector<std::string>                  _streamed;
     std::vector<std::int64_t>                 _blocks;
 };

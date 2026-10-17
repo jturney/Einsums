@@ -545,6 +545,133 @@ TEST_CASE("SlabStreaming streams the shared integrals inside AxisTiling's block 
     check_close(r2, expected, static_cast<double>(naux * v * v));
 }
 
+TEST_CASE("SlabStreaming reads the box AxisTiling's view names, at every iteration of its loop", "[ComputeGraph][Pass][SlabStreaming]") {
+    //   H[Q,a,f] = sum_e Bvv[Q,a,e] X[e,f]
+    //   out[a]   = sum_Qf H[Q,a,f] Y[Q,f]
+    // Q and f are summed by the second contraction, so AxisTiling can only loop over a, and every
+    // iteration views Bvv[:, a-block, :]. That view used to have Bvv loaded whole before the loop;
+    // the loop has already chosen the box, so each iteration now reads exactly that box.
+    constexpr std::size_t naux = 6;
+    constexpr std::size_t v    = 5;
+    constexpr std::size_t w    = 3;
+    MemoryStore           store(filled("Bvv", {naux, v, v}, 11U));
+    auto const            x   = filled("X", {v, w}, 13U);
+    auto const            y   = filled("Y", {naux, w}, 7U);
+    auto                  out = filled("out", {v}, 17U);
+
+    cg::Graph graph("box");
+    {
+        auto &bvv = graph.declare_runtime_tensor<double>("Bvv", {naux, v, v});
+        graph.annotate_backing(bvv, store.backing());
+        auto &half = graph.declare_runtime_tensor<double>("H", std::vector<std::size_t>{naux, v, w}, /*intermediate=*/true);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("Q,a,f <- Q,a,e ; e,f", &half, bvv, x);
+        cg::einsum("a <- Q,a,f ; Q,f", &out, half, y);
+    }
+
+    auto tiling = std::make_shared<cg::passes::AxisTiling>();
+    tiling->set_memory_cap(static_cast<std::int64_t>(2 * naux * w * sizeof(double)));
+    auto slabs = std::make_shared<cg::passes::SlabStreaming>();
+    slabs->set_slab_budget(static_cast<std::int64_t>(naux * v * 2 * sizeof(double)));
+    auto            materialize = std::make_shared<cg::passes::Materialization>();
+    cg::PassManager manager;
+    manager.add(tiling);
+    manager.add(slabs);
+    manager.add(materialize);
+    graph.apply(manager);
+
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(slabs->num_boxes() >= 1);
+    CHECK(materialize->num_loaded() == 0);
+
+    graph.execute();
+    CHECK_FALSE(store.read_whole());
+    // Every read is a box over a alone, and together they cover a exactly once.
+    std::vector<int> covered(v, 0);
+    for (auto const &ranges : store.reads) {
+        REQUIRE(ranges.size() == 3);
+        CHECK(ranges[0] == std::pair<std::size_t, std::size_t>{0, naux});
+        CHECK(ranges[2] == std::pair<std::size_t, std::size_t>{0, v});
+        for (std::size_t a = ranges[1].first; a < ranges[1].second; ++a) {
+            ++covered[a];
+        }
+    }
+    CHECK(std::ranges::all_of(covered, [](int count) { return count == 1; }));
+
+    RuntimeTensor<double> half("Href", std::vector<std::size_t>{naux, v, w});
+    half.zero();
+    testing::reference_einsum("Q,a,f <- Q,a,e ; e,f", &half, store.source, x);
+    RuntimeTensor<double> expected("out_ref", std::vector<std::size_t>{v});
+    expected.zero();
+    testing::reference_einsum("a <- Q,a,f ; Q,f", &expected, half, y);
+    check_close(out, expected, static_cast<double>(naux * v * w));
+}
+
+TEST_CASE("SlabStreaming writes the box AxisTiling's view names, at every iteration of its loop", "[ComputeGraph][Pass][SlabStreaming]") {
+    //   H[Q,a,n] = sum_m P[Q,m,n] C[m,a]
+    //   W[Q,a,b] = sum_n H[Q,a,n] C[n,b]
+    // H is an intermediate over the cap, so AxisTiling loops over one of its axes and the second
+    // contraction, H's reader, joins the loop and writes W through a view that slices it. That view
+    // used to leave W computed whole in memory and stored after the loop; now each iteration writes
+    // the box it computed, and W is never held whole.
+    constexpr std::size_t naux = 6;
+    constexpr std::size_t nbf  = 4;
+    constexpr std::size_t v    = 5;
+    WriteStore            store("W");
+    auto const            p = filled("P", {naux, nbf, nbf}, 3U);
+    auto const            c = filled("C", {nbf, v}, 7U);
+
+    cg::Graph graph("box write");
+    {
+        auto &w = graph.declare_runtime_tensor<double>("W", {naux, v, v});
+        graph.annotate_backing(w, store.backing());
+        auto &half = graph.declare_runtime_tensor<double>("H", std::vector<std::size_t>{naux, v, nbf}, /*intermediate=*/true);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("Q,a,n <- Q,m,n ; m,a", &half, p, c);
+        cg::einsum("Q,a,b <- Q,a,n ; n,b", &w, half, c);
+    }
+
+    auto tiling = std::make_shared<cg::passes::AxisTiling>();
+    tiling->set_memory_cap(static_cast<std::int64_t>(2 * naux * nbf * sizeof(double)));
+    auto slabs = std::make_shared<cg::passes::SlabStreaming>();
+    slabs->set_slab_budget(static_cast<std::int64_t>(naux * v * 2 * sizeof(double)));
+    auto            materialize = std::make_shared<cg::passes::Materialization>();
+    cg::PassManager manager;
+    manager.add(tiling);
+    manager.add(slabs);
+    manager.add(materialize);
+    graph.apply(manager);
+
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(slabs->num_boxes() >= 1);
+    CHECK(graph.verify().empty());
+
+    graph.execute();
+    // No write covers the whole tensor, and together the writes cover every element exactly once.
+    std::vector<int> covered(naux * v * v, 0);
+    for (auto const &ranges : store.writes) {
+        REQUIRE(ranges.size() == 3);
+        CHECK_FALSE((ranges[0] == std::pair<std::size_t, std::size_t>{0, naux} && ranges[1] == std::pair<std::size_t, std::size_t>{0, v} &&
+                     ranges[2] == std::pair<std::size_t, std::size_t>{0, v}));
+        for (std::size_t q = ranges[0].first; q < ranges[0].second; ++q) {
+            for (std::size_t a = ranges[1].first; a < ranges[1].second; ++a) {
+                for (std::size_t b = ranges[2].first; b < ranges[2].second; ++b) {
+                    ++covered[q + (a * naux) + (b * naux * v)];
+                }
+            }
+        }
+    }
+    CHECK(std::ranges::all_of(covered, [](int count) { return count == 1; }));
+
+    RuntimeTensor<double> half("Href", std::vector<std::size_t>{naux, v, nbf});
+    half.zero();
+    testing::reference_einsum("Q,a,n <- Q,m,n ; m,a", &half, p, c);
+    RuntimeTensor<double> want("W_ref", std::vector<std::size_t>{naux, v, v});
+    want.zero();
+    testing::reference_einsum("Q,a,b <- Q,a,n ; n,b", &want, half, c);
+    check_close(store.stored(), want, static_cast<double>(nbf * nbf));
+}
+
 TEST_CASE("SlabStreaming produces a write-backed tensor a slab per block, straight into its storage",
           "[ComputeGraph][Pass][SlabStreaming]") {
     // T[i,j] = A[i,k] B[k,j] overwrites T, and nothing else writes it: each block computes its

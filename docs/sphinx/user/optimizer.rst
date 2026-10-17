@@ -621,13 +621,17 @@ default pipeline. A backed tensor larger than its share of
 :option:`--einsums:max-memory` (the same
 :option:`--einsums:graph:tiling-budget-share` tiling reads) is never held whole:
 
-* Each contraction that reads it becomes a loop over blocks of its **last**
-  axis, reading one slab per block. The last axis because the file keeps
-  elements column-major, so a block of it is one contiguous read.
-* The contraction that produces a write-backed tensor becomes a loop that
-  computes one block and writes that slab. It must overwrite the tensor (a
-  destination prefactor of zero), be its only writer, and read no backed
-  tensor.
+* A contraction inside a loop that already slices the tensor, such as the
+  loop ``AxisTiling`` builds, reads or writes the box that loop's view names,
+  at every iteration, in place of the view. The loop has chosen the box, on
+  whichever axes it slices.
+* Any other contraction that reads it becomes a loop over blocks of its
+  **last** axis, reading one slab per block. The last axis because the file
+  keeps elements column-major, so a block of it is one contiguous read.
+* The contraction that produces a write-backed tensor computes one block at a
+  time and writes it, in either kind of loop. It must overwrite the tensor (a
+  destination prefactor of zero) and be its only writer, and in a loop of the
+  pass's own it must also read no backed tensor.
 
 A backed tensor that fits, or one the pass declines, is loaded whole before its
 first reader or stored whole after its last writer, once per replay. That is
@@ -638,8 +642,10 @@ sum in a different order, within the re-association tolerance.
 
 The report says which tensors were streamed and why the others were not. A
 decline names its reason: the last-axis letter repeated in an operand, a view
-that is not the whole tensor, two backed operands in one contraction, a
-destination accumulated into rather than overwritten.
+that permutes the tensor, two backed operands in one contraction, a
+destination accumulated into rather than overwritten. A box over an axis that
+is not the last is many short runs of the file, and the report gives the count
+for each box.
 
 ``out_of_core.py`` in the ComputeGraph examples produces ``Bvv`` for water in
 cc-pVTZ into a file from one graph and runs the particle ladder on it from a

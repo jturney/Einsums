@@ -10,14 +10,16 @@ largest tensor a DF-CCSD program holds, and the particle ladder reads it
 twice per iteration. Annotated with a backing, it never has to be held whole.
 
 The first graph produces it. Annotated with ``einsums.io.etn(path, entry,
-write=True)``, Bvv is stored to that entry of an ``.etn`` file. SlabStreaming
-turns the contraction that produces it into a loop: each iteration computes
-one block of Bvv's last axis and writes that slab to the file.
+write=True)``, Bvv is stored to that entry of an ``.etn`` file. The
+contraction that produces it runs in a loop, and each iteration writes the
+block of Bvv it computed: AxisTiling's loop over the half-transformed tensor
+when that one is too large as well, as here, or a loop of SlabStreaming's own
+over Bvv's last axis.
 
 The second graph reads it. Annotated with ``einsums.io.etn(path, entry)``,
-Bvv is filled from the file at every replay. SlabStreaming turns each
-contraction that reads it into a loop over blocks of its last axis, one slab
-read per iteration.
+Bvv is filled from the file at every replay. Each contraction that reads it
+reads one block at a time: the box AxisTiling's loop names, or a block of
+Bvv's last axis in a loop of SlabStreaming's own.
 
 Neither graph asks for any of this beyond the annotation. The default pipeline
 streams a backed tensor when it is larger than its share of
@@ -88,7 +90,9 @@ def produce(path, problem):
     graph = cg.Graph("produce_bvv")
     bvv = graph.declare_tensor("Bvv", [naux, nvir, nvir])
     cg.annotate(bvv, backing=einsums.io.etn(path, "Bvv", write=True), graph=graph)
-    half = graph.declare_tensor("half", [naux, nvir, nbf])
+    # Like H in the ladder, only this graph reads the half-transformed tensor, so it is an
+    # intermediate and the graph may build it a block at a time.
+    half = graph.declare_tensor("half", [naux, nvir, nbf], intermediate=True)
     P = _tensor("P", fitted)
     C = _tensor("Cv", cv)
     with cg.capture(graph):
