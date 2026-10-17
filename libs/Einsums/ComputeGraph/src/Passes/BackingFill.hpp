@@ -64,4 +64,45 @@ void fill_from_backing(TensorBacking const &backing, T *data, einsums::detail::T
     }
 }
 
+/**
+ * @brief Write a tensor's storage to the slab @p ranges of @p backing.
+ *
+ * The mirror of @ref fill_from_backing: a dense column-major tensor is written directly, any
+ * other is gathered by its strides into scratch in the storage's column-major order first.
+ *
+ * @param[in] backing The storage to write.
+ * @param[in] data The tensor's first element.
+ * @param[in] layout The tensor's extents and strides, which must be the slab's extents.
+ * @param[in] ranges Per axis, the range of the stored tensor to write.
+ */
+template <typename T>
+void store_to_backing(TensorBacking const &backing, T const *data, einsums::detail::TensorImpl<T> const &layout,
+                      std::vector<std::pair<std::size_t, std::size_t>> const &ranges) {
+    std::size_t const count = layout.size();
+    if (count == 0) {
+        return;
+    }
+    if (layout.is_contiguous() && layout.is_column_major()) {
+        backing.write_slab(data, ranges);
+        return;
+    }
+    std::vector<T>           scratch(count);
+    std::size_t const        rank = layout.rank();
+    std::vector<std::size_t> index(rank, 0);
+    for (std::size_t n = 0; n < count; ++n) {
+        std::size_t offset = 0;
+        for (std::size_t d = 0; d < rank; ++d) {
+            offset += index[d] * layout.stride(d);
+        }
+        scratch[n] = data[offset];
+        for (std::size_t d = 0; d < rank; ++d) {
+            if (++index[d] < layout.dim(d)) {
+                break;
+            }
+            index[d] = 0;
+        }
+    }
+    backing.write_slab(scratch.data(), ranges);
+}
+
 EINSUMS_NAMESPACE_END(compute_graph::passes::detail)

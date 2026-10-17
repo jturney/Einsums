@@ -56,8 +56,8 @@ void register_backing_kind(BackingKind kind) {
     }
 }
 
-TensorBacking open_backing(std::string const &kind, std::vector<std::pair<std::string, std::string>> const &location) {
-    std::function<TensorBacking(std::vector<std::pair<std::string, std::string>> const &)> open;
+TensorBacking open_backing(std::string const &kind, std::vector<std::pair<std::string, std::string>> const &location, bool write) {
+    std::function<TensorBacking(std::vector<std::pair<std::string, std::string>> const &, bool)> open;
     {
         auto                               &reg = registry();
         std::shared_lock<std::shared_mutex> lock(reg.mutex);
@@ -71,12 +71,17 @@ TensorBacking open_backing(std::string const &kind, std::vector<std::pair<std::s
     }
     // Outside the lock: opening reads storage, and a kind that registers another from inside its
     // open would otherwise deadlock.
-    TensorBacking backing = open(location);
+    TensorBacking backing = open(location, write);
     if (backing.kind != kind) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "backing kind '{}' opened a backing that names itself '{}'", kind, backing.kind);
     }
-    if (!backing.read_slab) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "backing kind '{}' opened a backing with no reader", kind);
+    if (backing.write != write) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "backing kind '{}' opened a {} backing for a {} location", kind,
+                                backing.write ? "write" : "read", write ? "write" : "read");
+    }
+    if (write ? !backing.prepare : !backing.read_slab) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "backing kind '{}' opened a {} backing with no {}", kind, write ? "write" : "read",
+                                write ? "prepare step" : "reader");
     }
     return backing;
 }

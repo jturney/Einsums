@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/Detail/BackedWrites.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -75,24 +76,24 @@ std::function<void()> load_whole(TensorHandle const &handle) {
 //                       For a hoisted body tensor this is a parent id
 //                       minted via Graph::find_or_register_tensor_ptr,
 //                       not the body's own id.
-std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid) {
+std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid, InitKind init) {
     std::vector<Node> out;
 
     // ── Materialize ────────────────────────────────────────────────────
     out.push_back(lifecycle::make_materialize_node(handle, emit_tid));
 
     // ── Initialize (optional) ──────────────────────────────────────────
-    if (handle.init_kind != InitKind::None) {
+    if (init != InitKind::None) {
         Node init_node;
         init_node.kind    = OpKind::Initialize;
         init_node.outputs = {emit_tid};
 
         InitializeDescriptor desc;
         desc.tensor_id    = handle.id;
-        desc.kind         = handle.init_kind;
+        desc.kind         = init;
         init_node.op_data = desc;
 
-        if (handle.init_kind == InitKind::Zero) {
+        if (init == InitKind::Zero) {
             init_node.label   = fmt::format("init_zero({})", handle.name);
             auto zero_fn      = handle.zero_fn;
             init_node.execute = [zero_fn]() {
@@ -100,7 +101,7 @@ std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid)
                     zero_fn();
                 }
             };
-        } else if (handle.init_kind == InitKind::Random) {
+        } else if (init == InitKind::Random) {
             init_node.label   = fmt::format("init_random({})", handle.name);
             auto random_fn    = handle.random_fn;
             init_node.execute = [random_fn]() {
@@ -108,7 +109,11 @@ std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid)
                     random_fn();
                 }
             };
-        } else if (handle.init_kind == InitKind::FromDisk) {
+        } else if (init == InitKind::FromDisk) {
+            // Carries the storage's name, so the scheduler orders it after every node that writes
+            // the storage: a tensor produced a slab at a time into storage is read back here.
+            desc.source_path  = handle.backing ? handle.backing->describe() : std::string{};
+            init_node.op_data = desc;
             init_node.execute = load_whole(handle);
             init_node.label   = fmt::format("init_from_backing({})", handle.name);
         }
@@ -289,7 +294,72 @@ void Materialization::reset_stats() {
     _num_materialized = 0;
     _num_initialized  = 0;
     _num_loaded       = 0;
+    _num_stored       = 0;
     _num_unused       = 0;
+}
+
+namespace {
+
+/// The node that stores a tensor produced in memory whole into its write backing.
+Node store_node(TensorHandle const &handle, TensorId tid) {
+    std::size_t bytes = handle.element_size;
+    for (std::size_t const extent : handle.dims) {
+        bytes *= extent;
+    }
+    Node node;
+    node.kind    = OpKind::DiskWrite;
+    node.label   = fmt::format("store_backing({})", handle.name);
+    node.inputs  = {tid};
+    node.op_data = compute_graph::detail::backing_io(*handle.backing, tid, bytes);
+    node.execute = [backing = handle.backing, impl_fn = handle.impl_fn, dtype = handle.dtype, name = handle.name]() {
+        compute_graph::detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
+            auto const *impl = static_cast<einsums::detail::TensorImpl<T> const *>(impl_fn());
+            if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
+                EINSUMS_THROW_EXCEPTION(std::logic_error, "write-backed tensor '{}' has no storage to store into {}", name,
+                                        backing->describe());
+            }
+            std::vector<std::pair<std::size_t, std::size_t>> ranges;
+            ranges.reserve(backing->dims.size());
+            for (std::size_t const extent : backing->dims) {
+                ranges.emplace_back(0, extent);
+            }
+            detail::store_to_backing(*backing, impl->data(), *impl, ranges);
+        });
+    };
+    return node;
+}
+
+} // namespace
+
+bool Materialization::store_written_backings(Graph &graph) {
+    // A tensor with a write backing that the graph produces in memory reaches its storage only if
+    // something stores it: one whole write after its last writer, which is also what keeps a graph
+    // correct when nothing streams the producer. One produced a slab at a time into its storage
+    // needs none. Re-runnable: a tensor that already has its store is left alone.
+    std::vector<std::pair<std::size_t, std::vector<Node>>> groups;
+    auto const                                            &nodes = graph.nodes();
+    for (auto const &[tid, handle] : graph.tensors_map()) {
+        if (!handle.backing || !handle.backing->write || handle.tensor_ptr == nullptr ||
+            !compute_graph::detail::written_in_memory(graph, handle.tensor_ptr)) {
+            continue;
+        }
+        std::string const label = fmt::format("store_backing({})", handle.name);
+        if (std::ranges::any_of(nodes, [&](Node const &node) { return node.kind == OpKind::DiskWrite && node.label == label; })) {
+            continue;
+        }
+        auto const *use = graph.usage().find_owner(tid);
+        if (use == nullptr || use->last_writer() == TensorUsage::npos) {
+            continue;
+        }
+        groups.emplace_back(use->last_writer() + 1, std::vector<Node>{store_node(handle, tid)});
+        ++_num_stored;
+        report(2, fmt::format("store write-backed tensor '{}' into {} after its last writer", handle.name, handle.backing->describe()));
+    }
+    if (groups.empty()) {
+        return false;
+    }
+    graph.insert_node_groups(std::move(groups));
+    return true;
 }
 
 bool Materialization::run(Graph &graph) {
@@ -562,16 +632,29 @@ bool Materialization::run(Graph &graph) {
         return tid != 0 ? std::optional<TensorId>{tid} : std::nullopt;
     };
 
+    // What a tensor is filled with once allocated. Its declaration says, except for a tensor with a
+    // WRITE backing, which the graph produces: produced in memory, it needs no fill, and produced
+    // a slab at a time straight into its storage (by SlabStreaming), a reader that still wants it
+    // whole has it read back from that storage.
+    auto const init_of = [&graph](TensorHandle const &handle) {
+        if (handle.backing && handle.backing->write) {
+            return handle.tensor_ptr != nullptr && compute_graph::detail::written_in_memory(graph, handle.tensor_ptr) ? InitKind::None
+                                                                                                                      : InitKind::FromDisk;
+        }
+        return handle.init_kind;
+    };
+
     // build_lifecycle_nodes plus the two counters that always move with it: every
     // lifecycle this pass emits materializes one tensor, and initializes it as well
     // when the handle asks for it. Kept together so the three cannot drift.
-    auto lifecycle_for = [this](TensorHandle &handle, TensorId emit_tid) {
-        auto built = build_lifecycle_nodes(handle, emit_tid);
+    auto lifecycle_for = [this, &init_of](TensorHandle &handle, TensorId emit_tid) {
+        InitKind const init  = init_of(handle);
+        auto           built = build_lifecycle_nodes(handle, emit_tid, init);
         _num_materialized++;
-        if (handle.init_kind != InitKind::None) {
+        if (init != InitKind::None) {
             _num_initialized++;
         }
-        if (handle.init_kind == InitKind::FromDisk) {
+        if (init == InitKind::FromDisk) {
             _num_loaded++;
         }
         return built;
@@ -624,7 +707,7 @@ bool Materialization::run(Graph &graph) {
         auto           new_nodes = lifecycle_for(handle, emit_tid);
         EINSUMS_LOG_INFO("Materialization: materialize({}) at position {} (owns_tid={})", handle.name, r.position, r.owns_tid);
         report(2, fmt::format("materialize deferred tensor '{}' at position {}{}", handle.name, r.position,
-                              handle.init_kind != InitKind::None ? " (+initialize)" : ""));
+                              init_of(handle) != InitKind::None ? " (+initialize)" : ""));
         insertions.push_back({.position = r.position, .new_nodes = std::move(new_nodes)});
     }
 
@@ -692,6 +775,8 @@ bool Materialization::run(Graph &graph) {
         graph.insert_node_groups(std::move(groups));
         modified = true;
     }
+
+    modified = store_written_backings(graph) || modified;
 
     report(1, fmt::format("materialized {} deferred tensor(s) ({} initialized, {} of them from a backing, {} unused and left unallocated)",
                           _num_materialized, _num_initialized, _num_loaded, _num_unused));

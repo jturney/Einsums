@@ -38,12 +38,27 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 using SlabReader = std::function<void(void *destination, std::vector<std::pair<std::size_t, std::size_t>> const &ranges)>;
 
 /**
- * @brief The storage behind a tensor the graph reads but never holds whole.
+ * @brief Write one slab of a backed tensor.
  *
- * @ref kind and @ref location are what a saved graph records. @ref dims and @ref dtype describe
- * what the storage holds and are checked against the tensor when the backing is annotated, so a
- * mismatch is reported where it is made rather than at the first replay. @ref read_slab is the
- * reader; it is rebuilt at load by the registered @ref BackingKind and never written to a file.
+ * The mirror of @ref SlabReader: @p source holds the slab densely and in column-major order over
+ * its own extents, and the writer stores it at @p ranges of the stored tensor. Throws on any
+ * failure to write.
+ */
+using SlabWriter = std::function<void(void const *source, std::vector<std::pair<std::size_t, std::size_t>> const &ranges)>;
+
+/**
+ * @brief The storage behind a tensor the graph reads, or writes, but never holds whole.
+ *
+ * @ref kind and @ref location are what a saved graph records, with @ref write. @ref dims and
+ * @ref dtype describe what the storage holds and are checked against the tensor when the backing
+ * is annotated, so a mismatch is reported where it is made rather than at the first replay.
+ * @ref read_slab and @ref write_slab are rebuilt at load by the registered @ref BackingKind and
+ * never written to a file.
+ *
+ * A READ backing names storage that already holds the tensor: an input the graph only reads. A
+ * WRITE backing names storage the graph fills: the tensor is an output the graph produces, and
+ * may read back after producing it. A write backing is completed by the tensor it is annotated
+ * on, through @ref prepare, since the storage may not exist yet to describe it.
  *
  * Built by the module that knows the storage, as ``tensor_io::etn_backing`` builds one for a
  * ``.etn`` entry, and handed to @ref Graph::annotate_backing.
@@ -65,8 +80,20 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") TensorBacking {
     /// The stored tensor's element type.
     packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown};
 
+    /// Whether the graph writes the storage (an output it produces) rather than only reading it.
+    APIARY_EXPOSE APIARY_READONLY bool write{false};
+
     /// Reads a slab of the stored tensor; see @ref SlabReader.
     SlabReader read_slab;
+
+    /// Writes a slab of the stored tensor; see @ref SlabWriter. Set on a write backing only.
+    SlabWriter write_slab;
+
+    /// Completes a write backing for the tensor it is annotated on: given the tensor's extents
+    /// and element type, makes the storage hold a tensor of that shape and returns the backing
+    /// with @ref dims, @ref dtype, @ref read_slab and @ref write_slab filled in. Throws when the
+    /// storage already holds something of another shape or type. Set on a write backing only.
+    std::function<TensorBacking(std::vector<std::size_t> const &dims, packed_gemm::ScalarType dtype)> prepare;
 
     /// @brief The kind and location in one phrase, for diagnostics.
     /// @return Text such as ``tensor_io.etn (entry=B_vv, path=ints.etn)``.
@@ -83,10 +110,12 @@ struct BackingKind {
     /// The kind's name, as @ref TensorBacking::kind spells it.
     std::string name;
 
-    /// The backing for a saved location, with its dims, dtype and reader filled in. Throw
+    /// The backing for a saved location. For a read backing, with its dims, dtype and reader
+    /// filled in; for a write backing (@p write true), unprepared, as the kind's own constructor
+    /// returns one, to be completed by @ref TensorBacking::prepare when it is annotated. Throw
     /// @c std::invalid_argument when the storage cannot be opened or does not hold the location;
     /// the loader reports the message against the tensor.
-    std::function<TensorBacking(std::vector<std::pair<std::string, std::string>> const &location)> open;
+    std::function<TensorBacking(std::vector<std::pair<std::string, std::string>> const &location, bool write)> open;
 };
 
 /**
@@ -104,11 +133,12 @@ EINSUMS_EXPORT void register_backing_kind(BackingKind kind);
  * @brief Open a saved location through its registered kind.
  * @param[in] kind The kind's name.
  * @param[in] location The saved location.
- * @return The backing, its reader rebuilt.
+ * @param[in] write Whether the backing is a write backing.
+ * @return The backing, its reader rebuilt (a write backing unprepared).
  * @throws std::invalid_argument when no kind is registered under @p kind, or when the kind's
  *         @ref BackingKind::open throws.
  */
 [[nodiscard]] EINSUMS_EXPORT TensorBacking open_backing(std::string const                                      &kind,
-                                                        std::vector<std::pair<std::string, std::string>> const &location);
+                                                        std::vector<std::pair<std::string, std::string>> const &location, bool write);
 
 EINSUMS_NAMESPACE_END(compute_graph)

@@ -309,6 +309,14 @@ std::vector<std::string> named_reads(Node const &node) {
             keys.push_back(std::move(key));
         }
     }
+    // A tensor filled whole from its backing reads that backing's storage, under the key every
+    // node that writes the storage carries (detail::backing_io), so the fill follows them.
+    if (node.kind == OpKind::Initialize) {
+        if (auto const *init = node.op_data.get_if<InitializeDescriptor>();
+            init != nullptr && init->kind == InitKind::FromDisk && !init->source_path.empty()) {
+            keys.push_back(fmt::format("disk:{}#", init->source_path));
+        }
+    }
     if (!effects_of(node).deterministic) {
         keys.emplace_back(any_named_key);
     }

@@ -283,6 +283,19 @@ def annotate(tensor, spaces=None, tag=None, backing=None, graph=None):
         B = g.declare_tensor("B_vv", [naux, nvir, nvir], dtype="float64")
         cg.annotate(B, tag="eri", backing=einsums.io.etn("ints.etn", "B_vv"), graph=g)
 
+    A backing built with ``write=True`` is the other direction: the graph
+    PRODUCES the tensor and the storage receives it. Annotating it creates the
+    file if needed and reserves the entry at the tensor's shape and dtype; an
+    entry that already has that shape and dtype is reused, and one of another
+    shape or dtype is refused. A graph with a write backing that nothing writes
+    fails ``verify()``, and so does a write to a tensor whose backing is only
+    read. The tensor is stored once, after its last writer; when
+    ``SlabStreaming`` can produce it a block at a time, each block goes straight
+    to the storage and the tensor is never held whole::
+
+        T2 = g.declare_tensor("T2", [nocc, nocc, nvir, nvir], dtype="float64")
+        cg.annotate(T2, backing=einsums.io.etn("amps.etn", "T2", write=True), graph=g)
+
     Annotate BEFORE the operations that use the tensor are captured: capture
     reads the annotation off the handle to bind each contraction's letters,
     and one that arrives afterwards does not reach nodes already recorded.

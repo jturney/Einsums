@@ -115,6 +115,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_loaded") [[nodiscard]] size_t num_loaded() const { return _num_loaded; }
 
+    /// @brief How many tensors produced in memory it stored whole into their write backings.
+    /// @return The count.
+    APIARY_EXPOSE APIARY_GETTER("num_stored") [[nodiscard]] size_t num_stored() const { return _num_stored; }
+
     /// @brief How many graph-owned deferred tensors no node uses, and which were therefore left unallocated.
     ///
     /// A structural rewrite that dissolves an intermediate keeps its declaration, because a caller
@@ -126,6 +130,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     size_t _num_materialized{0};
     size_t _num_initialized{0};
     size_t _num_loaded{0};
+    size_t _num_stored{0};
+
+    /// Insert the whole-tensor store after the last writer of each tensor this graph produces in
+    /// memory into a write backing. Returns whether it inserted any.
+    bool   store_written_backings(Graph &graph);
     size_t _num_unused{0};
 };
 

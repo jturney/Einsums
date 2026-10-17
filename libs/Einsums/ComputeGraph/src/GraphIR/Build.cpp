@@ -263,7 +263,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         }
         TensorBacking backing;
         try {
-            backing = open_backing(spec.backing->kind, spec.backing->location);
+            backing = open_backing(spec.backing->kind, spec.backing->location, spec.backing->write);
         } catch (std::exception const &error) {
             throw BuildFailure(fmt::format("tensor '{}': {}", spec.name, error.what()));
         }

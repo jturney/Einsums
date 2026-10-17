@@ -12,6 +12,7 @@
 
 #include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/DestinationRead.hpp>
+#include <Einsums/ComputeGraph/Detail/BackedWrites.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -180,18 +181,20 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
             }
         }
 
-        // A backed tensor is read-only to the graph. A write would land in the copy in memory and
-        // never in the storage, so the next replay's load would silently undo it. Its own
-        // lifecycle (the Materialize and the Initialize that fills it) is the one writer allowed.
-        // A View writes nothing: its output is an alias, and a node that writes THROUGH the alias
-        // is caught here, since the alias resolves to the backed buffer underneath it.
+        // A tensor with a READ backing is read-only to the graph. A write would land in the copy in
+        // memory and never in the storage, so the next replay's load would silently undo it; for an
+        // input file that is the protection against overwriting it by mistake. Its own lifecycle
+        // (the Materialize and the Initialize that fills it) is the one writer allowed. A View
+        // writes nothing: its output is an alias, and a node that writes THROUGH the alias is
+        // caught here, since the alias resolves to the backed buffer underneath it. A WRITE
+        // backing names a tensor the graph produces, so its writers are expected.
         if (!backed.empty() && !is_lifecycle(node.kind) && node.kind != OpKind::View) {
             for (TensorId const id : node.outputs) {
                 TensorHandle const *handle = graph.find_tensor(graph.buffer_of(id));
                 if (handle == nullptr || handle->tensor_ptr == nullptr) {
                     continue;
                 }
-                if (auto const hit = backed.find(handle->tensor_ptr); hit != backed.end()) {
+                if (auto const hit = backed.find(handle->tensor_ptr); hit != backed.end() && !hit->second->write) {
                     note(node, fmt::format("writes '{}', which is backed by {}; a backed tensor is read-only to the graph", handle->name,
                                            hit->second->describe()));
                 }
@@ -220,6 +223,21 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
 std::vector<std::string> Graph::verify() const {
     std::vector<std::string> problems;
     verify_into(*this, fmt::format("graph '{}': ", _name), problems, {});
+
+    // The other direction: a write backing declares the tensor an output the graph produces, and
+    // one that nothing produces, in memory or straight into its storage, is a declaration the
+    // program does not keep. Asked of the whole tree, since the producer may be in a loop body.
+    auto const check = [&](Graph const &graph) {
+        for (auto const &[tid, handle] : graph.tensors_map()) {
+            if (handle.backing && handle.backing->write && handle.tensor_ptr != nullptr &&
+                !detail::written_in_memory(*this, handle.tensor_ptr) && !detail::written_to_storage(*this, *handle.backing)) {
+                problems.push_back(fmt::format("graph '{}': tensor '{}' has a write backing, {}, but no node writes it", _name, handle.name,
+                                               handle.backing->describe()));
+            }
+        }
+    };
+    check(*this);
+    for_each_descendant([&](Graph const &graph) { check(graph); });
     return problems;
 }
 

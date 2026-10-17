@@ -347,16 +347,17 @@ void Graph::annotate_backing(TensorId id, TensorBacking backing) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': annotate_backing tensor '{}' with {}: {}", _name, handle.name,
                                 backing.describe(), why);
     };
-    if (!backing.read_slab) {
-        refuse("the backing has no reader");
+    if (backing.write ? !backing.prepare : !backing.read_slab) {
+        refuse(backing.write ? "the write backing has no prepare step" : "the backing has no reader");
     }
     if (handle.backing) {
         refuse(fmt::format("the tensor is already backed by {}", handle.backing->describe()));
     }
-    // An input, not scratch: the memory passes may hand an intermediate's buffer to another tensor
-    // after its last use, which would put a writer on storage the graph only reads.
+    // Not scratch: the memory passes may hand an intermediate's buffer to another tensor after its
+    // last use, which would put a writer on storage the graph reads, and would let a tensor whose
+    // storage is the graph's result be freed before it is stored.
     if (handle.is_intermediate) {
-        refuse("a backed tensor is an input the graph reads, and this one is declared as an intermediate; declare it with "
+        refuse("a backed tensor is read from or kept in storage, and this one is declared as an intermediate; declare it with "
                "intermediate=false");
     }
     // The reader fills one dense buffer, so the tensor has to be one.
@@ -376,6 +377,15 @@ void Graph::annotate_backing(TensorId id, TensorBacking backing) {
         refuse(fmt::format("the tensor is already initialized by '{}' after allocation, and a backing fills it instead",
                            init_kind_name(handle.init_kind)));
     }
+    // A write backing describes storage that may not exist yet, so the tensor completes it: the
+    // storage is made to hold a tensor of this shape, reusing what is there when it already does.
+    if (backing.write) {
+        TensorBacking prepared = backing.prepare(handle.dims, handle.dtype);
+        if (!prepared.write || !prepared.write_slab || !prepared.read_slab) {
+            refuse("preparing the write backing gave no writer and reader");
+        }
+        backing = std::move(prepared);
+    }
     if (handle.dims != backing.dims) {
         refuse(fmt::format("the tensor is [{}] and the storage holds [{}]", fmt::join(handle.dims, ","), fmt::join(backing.dims, ",")));
     }
@@ -384,8 +394,13 @@ void Graph::annotate_backing(TensorId id, TensorBacking backing) {
             fmt::format("the tensor holds {} and the storage holds {}", scalar_type_name(handle.dtype), scalar_type_name(backing.dtype)));
     }
 
-    handle.init_kind = InitKind::FromDisk;
-    handle.backing   = std::make_shared<TensorBacking const>(std::move(backing));
+    // A read backing fills the tensor whole wherever a reader needs it whole. A write backing's
+    // tensor is produced by the graph, so whether it is ever filled from storage is decided by
+    // Materialization from how it is produced.
+    if (!backing.write) {
+        handle.init_kind = InitKind::FromDisk;
+    }
+    handle.backing = std::make_shared<TensorBacking const>(std::move(backing));
 }
 
 std::optional<TensorBacking> Graph::tensor_backing(TensorId id) const {

@@ -48,6 +48,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <map>
 #include <ranges>
 #include <span>
 #include <stdexcept>
@@ -1410,7 +1411,7 @@ cg::TensorBacking constant_backing(std::vector<size_t> const &dims, double fill)
 
 void register_constant_backing() {
     static bool const registered = [] {
-        cg::register_backing_kind({.name = "saveload_test.constant", .open = [](auto const &location) {
+        cg::register_backing_kind({.name = "saveload_test.constant", .open = [](auto const &location, bool /*write*/) {
                                        std::vector<size_t> dims;
                                        double              fill = 0.0;
                                        for (auto const &[key, value] : location) {
@@ -1488,8 +1489,127 @@ TEST_CASE("SaveLoad - a backed tensor keeps its backing and is reopened through 
     }
 }
 
+namespace {
+
+/// A write backing that keeps what it is given in a shared buffer, so a write-backed graph saves,
+/// loads and replays with no file. Its location names the buffer; the shape comes from the tensor.
+std::map<std::string, std::vector<double>> &sink_buffers() {
+    static std::map<std::string, std::vector<double>> buffers;
+    return buffers;
+}
+
+cg::TensorBacking sink_backing(std::string const &name) {
+    cg::TensorBacking out;
+    out.kind     = "saveload_test.sink";
+    out.location = {{"name", name}};
+    out.write    = true;
+    out.prepare  = [name](std::vector<size_t> const &dims, packed_gemm::ScalarType dtype) {
+        size_t count = 1;
+        for (size_t const extent : dims) {
+            count *= extent;
+        }
+        sink_buffers()[name].assign(count, 0.0);
+        cg::TensorBacking ready;
+        ready.kind     = "saveload_test.sink";
+        ready.location = {{"name", name}};
+        ready.dims     = dims;
+        ready.dtype    = dtype;
+        ready.write    = true;
+        // Whole-tensor slabs only, which is all Materialization's store asks for.
+        ready.read_slab = [name](void *destination, std::vector<std::pair<size_t, size_t>> const &) {
+            auto const &buffer = sink_buffers()[name];
+            std::copy(buffer.begin(), buffer.end(), static_cast<double *>(destination));
+        };
+        ready.write_slab = [name](void const *source, std::vector<std::pair<size_t, size_t>> const &) {
+            auto &buffer = sink_buffers()[name];
+            std::copy_n(static_cast<double const *>(source), buffer.size(), buffer.begin());
+        };
+        return ready;
+    };
+    return out;
+}
+
+void register_sink_backing() {
+    static bool const registered = [] {
+        cg::register_backing_kind({.name = "saveload_test.sink", .open = [](auto const &location, bool write) {
+                                       if (!write) {
+                                           throw std::invalid_argument("a sink is written, never read");
+                                       }
+                                       for (auto const &[key, value] : location) {
+                                           if (key == "name") {
+                                               return sink_backing(value);
+                                           }
+                                       }
+                                       throw std::invalid_argument("a sink location names its buffer");
+                                   }});
+        return true;
+    }();
+    static_cast<void>(registered);
+}
+
+} // namespace
+
+TEST_CASE("SaveLoad - a write backing keeps its access and is reopened for writing", "[ComputeGraph][SaveLoad][Backing]") {
+    register_sink_backing();
+    auto A = create_random_tensor<double>("A", 3, 4);
+    auto B = create_random_tensor<double>("B", 4, 2);
+
+    cg::Graph graph("write_backed");
+    auto     &T = graph.declare_runtime_tensor<double>("T", {3, 2});
+    graph.annotate_backing(T, sink_backing("saved"));
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &T, A, B);
+    }
+
+    std::string const saved = must_save(graph);
+    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+        std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_12_0_write_backing.eig.json", std::ios::binary);
+        out << saved;
+    }
+    CHECK_THAT(saved, Catch::Matchers::ContainsSubstring(R"("access":"write")"));
+
+    cg::Graph  loaded = must_load(saved);
+    auto const backed = std::ranges::find_if(loaded.tensors_map(), [](auto const &entry) { return entry.second.name == "T"; });
+    REQUIRE(backed != loaded.tensors_map().end());
+    REQUIRE(backed->second.backing != nullptr);
+    CHECK(backed->second.backing->write);
+    CHECK(loaded.verify().empty());
+
+    loaded.bind("A", A, "B", B);
+    auto manager = cg::PassManager::create_default();
+    loaded.apply(manager);
+    loaded.execute();
+
+    auto expected = create_zero_tensor<double>("E", 3, 2);
+    reference_einsum("i,j <- i,k ; k,j", &expected, A, B);
+    auto const &stored = sink_buffers()["saved"];
+    REQUIRE(stored.size() == 6);
+    // The sink holds the backing's column-major order.
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 2; ++j) {
+            CHECK_THAT(stored[i + (j * 3)], Catch::Matchers::WithinRel(expected(i, j), 1e-13));
+        }
+    }
+
+    SECTION("an access other than read or write is refused") {
+        std::string text = saved;
+        auto const  at   = text.find(R"("access":"write")");
+        REQUIRE(at != std::string::npos);
+        text.replace(at, std::string_view{R"("access":"write")"}.size(), R"("access":"append")");
+        CHECK_THAT(load_refusal(text), Catch::Matchers::ContainsSubstring(R"(expected "read" or "write")"));
+    }
+    SECTION("the access reaches the kind, which may refuse it") {
+        std::string text = saved;
+        auto const  at   = text.find(R"("access":"write")");
+        REQUIRE(at != std::string::npos);
+        text.replace(at, std::string_view{R"("access":"write")"}.size(), R"("access":"read")");
+        CHECK_THAT(load_refusal(text), Catch::Matchers::ContainsSubstring("a sink is written, never read"));
+    }
+}
+
 TEST_CASE("register_backing_kind takes only qualified, new names with an opener", "[ComputeGraph][SaveLoad][Backing]") {
-    auto const open = [](auto const &) { return cg::TensorBacking{}; };
+    auto const open = [](auto const &, bool) { return cg::TensorBacking{}; };
     CHECK_THROWS_WITH(cg::register_backing_kind({.name = "unqualified", .open = open}),
                       Catch::Matchers::ContainsSubstring("is not qualified"));
     CHECK_THROWS_WITH(cg::register_backing_kind({.name = "saveload_test.no_open", .open = {}}),
@@ -1522,6 +1642,7 @@ TEST_CASE("SaveLoad - every checked-in golden still loads", "[ComputeGraph][Save
     // And for a golden whose tensor is backed: the file names the kind, and the process has to have
     // registered it.
     register_constant_backing();
+    register_sink_backing();
 
     size_t loaded_count = 0;
     for (auto const &entry : std::filesystem::directory_iterator(directory)) {

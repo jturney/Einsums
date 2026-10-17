@@ -140,6 +140,15 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     /// @param ranges Per-dimension [start, end) ranges into the stored tensor.
     void read_slab(std::string_view name, void *destination, std::vector<std::pair<size_t, size_t>> const &ranges) const;
 
+    /// Write a slab from raw memory into an existing entry, whatever its element type.
+    ///
+    /// The mirror of @ref read_slab: @p source holds the slab's elements densely and in
+    /// column-major order over the slab's own extents, and each contiguous run is one write.
+    /// @param name The entry, which must exist (see @ref reserve).
+    /// @param source Where the elements come from.
+    /// @param ranges Per-dimension [start, end) ranges into the stored tensor.
+    void write_slab(std::string_view name, void const *source, std::vector<std::pair<size_t, size_t>> const &ranges);
+
     // ── Query ────────────────────────────────────────────────────────────
 
     /// Check if a tensor exists in the file.

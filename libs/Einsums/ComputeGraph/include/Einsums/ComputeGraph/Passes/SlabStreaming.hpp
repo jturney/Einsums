@@ -41,6 +41,15 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * order of operations with its sum cut into parts, so the result moves within the
  * re-association tolerance.
  *
+ * A tensor with a WRITE backing is streamed the other way. The contraction that produces it
+ * becomes a loop over blocks of its last axis: every iteration computes one block into a buffer
+ * the size of the block and writes that slab to the storage, so the tensor is never held whole.
+ * The contraction must overwrite the tensor (a destination prefactor of zero), be its only
+ * writer in memory, and read no backed tensor; otherwise the tensor is produced in memory and
+ * Materialization stores it whole after its last writer. Its readers are streamed as any backed
+ * tensor's are, but only once nothing writes it in memory, and they run after the writes: every
+ * read and write of a storage carries the storage's key.
+ *
  * It acts only under a memory budget, the same one AxisTiling plans against: a backed tensor is
  * streamed when it is larger than its share of @c --einsums:max-memory
  * (@c --einsums:graph:tiling-budget-share). One that fits is loaded once per replay, which beats
@@ -102,6 +111,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
 
+    /// @copydoc OptimizerPass::compensated_reads
+    ///
+    /// A contraction that produces a write-backed tensor into its storage leaves the tensor's
+    /// remaining readers without an in-graph writer. They read the stored tensor instead: its fill
+    /// from the storage carries the storage's key, which orders it after every slab write.
+    [[nodiscard]] std::vector<std::pair<NodeId, TensorId>> compensated_reads() const override { return _compensated; }
+
     /**
      * @brief Override the slab budget for this pipeline, in bytes.
      * @param[in] bytes A backed tensor larger than this is streamed, in slabs no larger than it.
@@ -121,6 +137,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("streamed") [[nodiscard]] std::vector<std::string> streamed() const { return _streamed; }
 
+    /// @brief How many of the streamed contractions produce their tensor into its storage.
+    /// @return The count of contractions turned into loops ending in a slab write.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("num_written") [[nodiscard]] std::size_t num_written() const noexcept { return _num_written; }
+
     /// @brief The block each streamed contraction reads, along the backed tensor's last axis.
     /// @return One entry per streamed contraction, in the order of @ref streamed.
     /// @versionadded{2.0.0}
@@ -133,24 +154,38 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         std::string label;
         std::size_t extent{0};
         std::size_t block{0};
-        std::size_t bytes_read{0};
+        std::size_t bytes{0};
         double      flops{0.0};
         bool        summed{false};
+        bool        writes{false}; ///< The contraction produces the tensor into its storage.
     };
 
-    /// The backed tensor objects visible from a graph, with their backings, which the enclosing
-    /// graph hands each body it holds: a body's own handle for one carries none.
-    using Backed = std::unordered_map<void const *, std::pair<std::string, std::shared_ptr<TensorBacking const>>>;
+    /// What a graph knows about one backed tensor object.
+    struct BackedEntry {
+        std::string                          name;
+        std::shared_ptr<TensorBacking const> backing;
+        /// For a write-backed tensor: an operation outside this graph and the graphs below it
+        /// writes it in memory, so neither its producer nor its readers here may be streamed.
+        bool written_outside{false};
+    };
+
+    /// The backed tensor objects visible from a graph, which the enclosing graph hands each body it
+    /// holds: a body's own handle for one carries none.
+    using Backed = std::unordered_map<void const *, BackedEntry>;
 
     /// The budget in force for this apply, in bytes; zero when off.
     [[nodiscard]] std::size_t budget() const;
 
     bool stream_graph(Graph &graph, Backed const &backed);
+    bool stream_write(Graph &graph, Backed const &backed, std::size_t index, std::size_t cap);
 
     std::int64_t                              _budget_override{-1};
     std::unordered_map<Graph const *, Backed> _backed_of;
+    Graph const                              *_root{nullptr};
+    std::vector<std::pair<NodeId, TensorId>>  _compensated;
     std::vector<Record>                       _records;
     std::size_t                               _num_streamed{0};
+    std::size_t                               _num_written{0};
     std::vector<std::string>                  _streamed;
     std::vector<std::int64_t>                 _blocks;
 };

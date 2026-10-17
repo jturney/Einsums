@@ -561,6 +561,10 @@ void write_backing(Object &out, TensorBacking const *backing) {
     Object record;
     record.set("kind", Value{backing->kind});
     record.set("location", Value{std::move(location)});
+    // Only for a write backing, so a read backing's record is the bytes 1.11.0 wrote.
+    if (backing->write) {
+        record.set("access", Value{"write"});
+    }
     out.set("backing", Value{std::move(record)});
 }
 

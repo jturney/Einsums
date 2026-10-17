@@ -125,6 +125,7 @@ struct IrTensor {
     struct Backing {
         std::string                                      kind;
         std::vector<std::pair<std::string, std::string>> location;
+        bool                                             write{false}; ///< Absent before 1.12.0, which is read.
     };
     std::optional<Backing> backing;
 

@@ -37,10 +37,11 @@ import os
 import tempfile
 
 import numpy as np
-from hypothesis import HealthCheck, example, given, settings
+from hypothesis import HealthCheck, event, example, given, settings
 from _permutation_operators import P_SHAPES, apply_operator, operator_prefix
 from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
+from hypothesis.control import currently_in_test_context
 
 import einsums
 import einsums.graph as cg
@@ -280,6 +281,8 @@ def _einsum_problem(draw):
             _draw_permutation_operator(draw, c_idx, extent),
             # backed: B lives in an .etn file the graph reads, after the operator
             # for the same reason.
+            draw(st.booleans()),
+            # written: C is produced into an .etn file, last for the same reason.
             draw(st.booleans()))
 
 
@@ -317,6 +320,19 @@ def _run_einsum_diff(prob, exact):
     disjoint = disjoint and bool(links) and not eager and not alias_ab and not view_a and not view_b
     # An .etn entry stores at most eight extents, so a higher-rank B has no backing.
     backed = backed and not eager and not alias_ab and not view_b and not disjoint and len(b_idx) <= 8
+    # C produced into storage instead of held: declared on the graph with a write
+    # backing, produced a slab of one index at a time where SlabStreaming can and
+    # stored whole after its writer where it declines, and read back from the
+    # file for the oracle. The graph owns a write-backed tensor's contents, so
+    # there is no prior C to accumulate onto: the draw overwrites.
+    written = bool(rest[3]) if len(rest) > 3 else False
+    written = written and not eager and bool(c_idx) and len(c_idx) <= 8
+    if written:
+        c_pf = 0.0
+    # Recorded so --hypothesis-show-statistics shows how often each storage path runs.
+    # Only under a test: a reproduction calls this helper directly, outside one.
+    if currently_in_test_context():
+        event(f"storage: B {'backed' if backed else 'held'}, C {'written' if written else 'held'}")
     rng = np.random.default_rng(0)
     if exact:
         dt    = "complex128" if dt.startswith("complex") else "float64"
@@ -369,12 +385,19 @@ def _run_einsum_diff(prob, exact):
             einsums.io.write(store.name, "B", einsums.asarray(B0, dtype=dt))
             Bt = g.declare_tensor("B", [extent[x] for x in b_idx], dtype=dt)
             cg.annotate(Bt, backing=einsums.io.etn(store.name, "B"), graph=g)
+        if written:
+            sink = tempfile.NamedTemporaryFile(suffix=".etn", delete=False)
+            sink.close()
+            os.remove(sink.name)
+            Ct = g.declare_tensor("C", [extent[x] for x in c_idx], dtype=dt)
+            cg.annotate(Ct, backing=einsums.io.etn(sink.name, "C", write=True), graph=g)
         with cg.capture(g):
             einsums.einsum(es_spec, Ct, At, Bt, c_pf=c_pf, ab_pf=ab_pf)
-        if backed:
-            # One index of B's last axis per slab, so any contraction the pass can
+        if backed or written:
+            # One index of the last axis per slab, so any contraction the pass can
             # stream is streamed in as many blocks as that axis has.
-            slab = int(np.dtype(dt).itemsize * max(1, int(np.prod([extent[x] for x in b_idx[:-1]]))))
+            per_index = lambda idx: int(np.dtype(dt).itemsize * max(1, int(np.prod([extent[x] for x in idx[:-1]]))))
+            slab = min([per_index(b_idx)] * backed + [per_index(c_idx)] * written)
             streaming = cg.SlabStreaming()
             streaming.set_slab_budget(slab)
             manager = cg.PassManager()
@@ -394,9 +417,14 @@ def _run_einsum_diff(prob, exact):
             g.apply(cg.default_pass_manager())
         try:
             g.execute()
+            if written:
+                Ct = einsums.create_zero_tensor("C", [extent[x] for x in c_idx], dtype=dt)
+                einsums.io.read(sink.name, "C", Ct)
         finally:
             if backed:
                 os.remove(store.name)
+            if written and os.path.exists(sink.name):
+                os.remove(sink.name)
     if exact:
         assert_exact(np.asarray(Ct), oracle)
     else:
@@ -405,7 +433,7 @@ def _run_einsum_diff(prob, exact):
             np.asarray(Ct), oracle, rtol=rt, atol=at,
             err_msg=f"einsums '{es_spec}' dt={dt} c_pf={c_pf} ab_pf={ab_pf} "
                     f"view_a={view_a} view_b={view_b} passes={passes} eager={eager} "
-                    f"disjoint={disjoint} backed={backed} extents={extent}")
+                    f"disjoint={disjoint} backed={backed} written={written} extents={extent}")
 
 
 @given(prob=_einsum_problem())
@@ -452,6 +480,8 @@ def test_hyp_einsum_diff(prob):
                {"i": 2, "p": 3, "l": 4, "q": 2, "j": 3}, False, "float64", 0.0, 1.0, False, False, True, False))   # two lone + link, exact
 @example(prob=(["i", "j", "k"], ["i", "j"], ["i", "j"],
                {"i": 2, "j": 3, "k": 4}, False, "float64", 0.0, 1.0, False, False, False, False))            # P1 weighted trace, exact
+@example(prob=(["k", "k", "j", "i"], ["k", "k", "j", "i"], [],
+               {"i": 2, "j": 2, "k": 2}, True, "float64", 0.0, 1.0, True, False, False, False))              # folded diagonal of a permuted view, dotted with itself: strides (5,2,8) once passed as one run
 def test_hyp_einsum_diff_exact(prob):
     # Exact-integer differential: integer data + integer prefactors make the
     # contraction bit-exact, so assert_exact catches indexing/tail bugs that a

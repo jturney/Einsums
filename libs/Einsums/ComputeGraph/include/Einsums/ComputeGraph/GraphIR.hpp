@@ -126,6 +126,11 @@
  * whose storage is missing or has changed shape, refuses the file naming the tensor. An absent
  * key reads as unbacked, which is what every earlier tensor was.
  *
+ * Since 1.12.0 a backing may carry ``"access": "write"``: the graph produces the tensor and
+ * stores it (@ref TensorBacking::write). Loading reopens such a backing unprepared and annotating
+ * the loaded tensor prepares it again, which reuses storage of the same shape. An absent key
+ * reads as a read backing, which is what every earlier backing was.
+ *
  * @par The hash domain
  * @ref Graph::content_hash digests the canonical bytes of that object with
  * ``provenance`` REMOVED and nothing else changed. Provenance is therefore
@@ -259,7 +264,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.11.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.12.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

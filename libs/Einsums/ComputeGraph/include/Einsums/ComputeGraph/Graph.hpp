@@ -755,10 +755,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Checks that every node id is issued and unique within its graph, that every operand is a
      * registered tensor, that each lifecycle node names the registered tensor it manages, that
      * every node has an executor, and that each contraction and permutation carries index lists
-     * as long as its operands' ranks. Empty for a well-formed graph. Run after every pass when
+     * as long as its operands' ranks. Backings are checked both ways: no node may write a tensor
+     * whose backing is only read, and a tensor with a write backing must be written, in memory or
+     * straight into its storage. Empty for a well-formed graph. Run after every pass when
      * ``einsums:pass:verify`` is set.
      */
-    [[nodiscard]] std::vector<std::string> verify() const;
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::string> verify() const;
 
     /**
      * @brief Register a tensor handle with the graph.

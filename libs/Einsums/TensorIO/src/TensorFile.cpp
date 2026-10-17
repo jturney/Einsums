@@ -344,6 +344,35 @@ void TensorFile::read_slab(std::string_view name, void *destination, std::vector
     }
 }
 
+void TensorFile::write_slab(std::string_view name, void const *source, std::vector<std::pair<size_t, size_t>> const &ranges) {
+    auto const &entry = find_entry(name);
+    detail::check_slab_ranges(_path, "TensorFile::write_slab", entry, ranges);
+
+    std::vector<size_t> entry_dims(entry.rank);
+    for (size_t d = 0; d < entry.rank; ++d) {
+        entry_dims[d] = entry.dims[d];
+    }
+    auto const *const src   = static_cast<char const *>(source);
+    auto const        visit = [&](uint64_t file_off, size_t src_off, size_t bytes) { write_at(file_off, src + src_off, bytes); };
+
+    switch (size_t const size = dtype_size(static_cast<DType>(entry.dtype))) {
+    case 4:
+        detail::walk_slab<RawElement<4>>(entry.data_offset, entry_dims, ranges, visit);
+        break;
+    case 8:
+        detail::walk_slab<RawElement<8>>(entry.data_offset, entry_dims, ranges, visit);
+        break;
+    case 16:
+        detail::walk_slab<RawElement<16>>(entry.data_offset, entry_dims, ranges, visit);
+        break;
+    default:
+        EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                "TensorFile::write_slab: entry '{}' in '{}' has elements of {} bytes, which is not a size "
+                                "this writes",
+                                name, _path, size);
+    }
+}
+
 bool TensorFile::contains(std::string_view name) const {
     return _name_to_index.count(std::string(name)) > 0;
 }

@@ -45,6 +45,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Detail/DenseElementTransform.hpp
     Einsums/ComputeGraph/Detail/ErasedEinsum.hpp
     Einsums/ComputeGraph/Detail/ErasedOperations.hpp
+    Einsums/ComputeGraph/Detail/BackedWrites.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/Detail/MaintainedViews.hpp
     Einsums/ComputeGraph/Detail/MixedPrecision.hpp
@@ -162,6 +163,7 @@ set(ComputeGraphSources
     GraphIR/Build.cpp
     InterfaceManifest.cpp
     MaintainedViews.cpp
+    BackedWrites.cpp
     TensorBacking.cpp
     SymbolicExtents.cpp
     GroupedBatchedGemm.cpp

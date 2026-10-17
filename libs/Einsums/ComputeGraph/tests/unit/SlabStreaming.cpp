@@ -27,7 +27,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -104,6 +106,103 @@ struct MemoryStore {
             }
             return true;
         });
+    }
+};
+
+/// A write backing over column-major storage in memory that logs every slab it reads and writes.
+/// The storage takes its shape from the tensor the backing is annotated on, as a file entry does.
+struct WriteStore {
+    std::string              name;
+    std::vector<std::size_t> dims;
+    std::vector<double>      storage;
+    std::vector<Ranges>      reads;
+    std::vector<Ranges>      writes;
+
+    explicit WriteStore(std::string tensor) : name(std::move(tensor)) {}
+
+    /// Visit every element of @p ranges in column-major order with its offset in the storage.
+    template <typename F>
+    void walk(Ranges const &ranges, F &&visit) const {
+        std::size_t const        rank = ranges.size();
+        std::vector<std::size_t> index(rank);
+        std::size_t              count = 1;
+        for (std::size_t d = 0; d < rank; ++d) {
+            index[d] = ranges[d].first;
+            count *= ranges[d].second - ranges[d].first;
+        }
+        for (std::size_t n = 0; n < count; ++n) {
+            std::size_t offset = 0;
+            std::size_t stride = 1;
+            for (std::size_t d = 0; d < rank; ++d) {
+                offset += index[d] * stride;
+                stride *= dims[d];
+            }
+            visit(n, offset);
+            for (std::size_t d = 0; d < rank; ++d) {
+                if (++index[d] < ranges[d].second) {
+                    break;
+                }
+                index[d] = ranges[d].first;
+            }
+        }
+    }
+
+    cg::TensorBacking backing() {
+        cg::TensorBacking out;
+        out.kind     = "slab_test.memory";
+        out.location = {{"name", name}};
+        out.write    = true;
+        out.prepare  = [this](std::vector<std::size_t> const &shape, packed_gemm::ScalarType dtype) {
+            REQUIRE(dtype == packed_gemm::ScalarType::Float64);
+            dims              = shape;
+            std::size_t count = 1;
+            for (std::size_t const extent : shape) {
+                count *= extent;
+            }
+            // NaN until written, so an element the graph never stores cannot pass for a result.
+            storage.assign(count, std::numeric_limits<double>::quiet_NaN());
+            cg::TensorBacking ready;
+            ready.kind      = "slab_test.memory";
+            ready.location  = {{"name", name}};
+            ready.dims      = shape;
+            ready.dtype     = dtype;
+            ready.write     = true;
+            ready.read_slab = [this](void *destination, Ranges const &ranges) {
+                reads.push_back(ranges);
+                auto *dst = static_cast<double *>(destination);
+                walk(ranges, [&](std::size_t n, std::size_t offset) { dst[n] = storage[offset]; });
+            };
+            ready.write_slab = [this](void const *source, Ranges const &ranges) {
+                writes.push_back(ranges);
+                auto const *src = static_cast<double const *>(source);
+                walk(ranges, [&](std::size_t n, std::size_t offset) { storage[offset] = src[n]; });
+            };
+            return ready;
+        };
+        return out;
+    }
+
+    /// The stored tensor, as a column-major tensor of the same shape.
+    [[nodiscard]] RuntimeTensor<double> stored() const {
+        RuntimeTensor<double> out(name, dims);
+        Ranges                whole;
+        for (std::size_t const extent : dims) {
+            whole.emplace_back(0, extent);
+        }
+        walk(whole, [&](std::size_t, std::size_t offset) {
+            std::vector<std::size_t> index(dims.size());
+            std::size_t              rest = offset;
+            for (std::size_t d = 0; d < dims.size(); ++d) {
+                index[d] = rest % dims[d];
+                rest /= dims[d];
+            }
+            std::size_t at = 0;
+            for (std::size_t d = 0; d < dims.size(); ++d) {
+                at += index[d] * out.stride(static_cast<int>(d));
+            }
+            out.data()[at] = storage[offset];
+        });
+        return out;
     }
 };
 
@@ -444,4 +543,261 @@ TEST_CASE("SlabStreaming streams the shared integrals inside AxisTiling's block 
         testing::reference_einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", 1.0, &expected, 1.0, half, store.source);
     }
     check_close(r2, expected, static_cast<double>(naux * v * v));
+}
+
+TEST_CASE("SlabStreaming produces a write-backed tensor a slab per block, straight into its storage",
+          "[ComputeGraph][Pass][SlabStreaming]") {
+    // T[i,j] = A[i,k] B[k,j] overwrites T, and nothing else writes it: each block computes its
+    // columns of T into a slab and writes the slab, so T is never held whole. The reader after it,
+    // D[i,l] = T[i,j] E[j,l], then reads T back from the storage a block of j at a time.
+    constexpr std::size_t ni = 5;
+    constexpr std::size_t nk = 3;
+    constexpr std::size_t nj = 7;
+    constexpr std::size_t nl = 2;
+    WriteStore            store("T");
+    auto const            a = filled("A", {ni, nk}, 3U);
+    auto const            b = filled("B", {nk, nj}, 7U);
+    auto const            e = filled("E", {nj, nl}, 9U);
+    auto                  d = filled("D", {ni, nl}, 5U);
+
+    cg::Graph graph("produce");
+    auto     &t = graph.declare_runtime_tensor<double>("T", {ni, nj});
+    graph.annotate_backing(t, store.backing());
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &t, 2.0, a, b);
+        cg::einsum("i,l <- i,j ; j,l", &d, t, e);
+    }
+    CHECK(graph.verify().empty());
+
+    // Two columns of T fit: blocks of two, and a remainder of one.
+    auto const pass = stream(graph, static_cast<std::int64_t>(2 * ni * sizeof(double)));
+    REQUIRE(pass->num_streamed() == 2);
+    CHECK(pass->num_written() == 1);
+    CHECK(pass->streamed() == std::vector<std::string>{"T", "T"});
+    CHECK(graph.verify().empty());
+
+    graph.execute();
+    CHECK_FALSE(t.is_materialized());
+    std::vector<std::pair<std::size_t, std::size_t>> written;
+    for (auto const &ranges : store.writes) {
+        CHECK(ranges[0] == std::pair<std::size_t, std::size_t>{0, ni});
+        written.push_back(ranges[1]);
+    }
+    CHECK(written == std::vector<std::pair<std::size_t, std::size_t>>{{0, 2}, {2, 4}, {4, 6}, {6, 7}});
+    CHECK(store.reads.size() == 4);
+
+    auto want_t = RuntimeTensor<double>("T", std::vector<std::size_t>{ni, nj});
+    want_t.zero();
+    testing::reference_einsum("i,j <- i,k ; k,j", 0.0, &want_t, 2.0, a, b);
+    check_close(store.stored(), want_t, static_cast<double>(nk));
+
+    auto want_d = RuntimeTensor<double>("D", std::vector<std::size_t>{ni, nl});
+    want_d.zero();
+    testing::reference_einsum("i,l <- i,j ; j,l", &want_d, want_t, e);
+    check_close(d, want_d, static_cast<double>(nk * nj));
+
+    SECTION("and a replay writes every block again") {
+        store.writes.clear();
+        store.reads.clear();
+        std::ranges::fill(store.storage, std::numeric_limits<double>::quiet_NaN());
+        graph.execute();
+        CHECK(store.writes.size() == 4);
+        check_close(store.stored(), want_t, static_cast<double>(nk));
+    }
+}
+
+TEST_CASE("SlabStreaming loads a streamed-out tensor whole for a reader it cannot stream, after the writes",
+          "[ComputeGraph][Pass][SlabStreaming]") {
+    // D[i,l] = T[i,j] T[l,j] reads T twice, which this pass declines, so T is filled whole from its
+    // storage. The fill carries the storage's key, so it runs after the block loops that wrote it.
+    constexpr std::size_t ni = 4;
+    constexpr std::size_t nk = 3;
+    constexpr std::size_t nj = 5;
+    WriteStore            store("T");
+    auto const            a = filled("A", {ni, nk}, 3U);
+    auto const            b = filled("B", {nk, nj}, 7U);
+    auto                  d = RuntimeTensor<double>("D", std::vector<std::size_t>{ni, ni});
+    d.zero();
+
+    cg::Graph graph("whole_reader");
+    auto     &t = graph.declare_runtime_tensor<double>("T", {ni, nj});
+    graph.annotate_backing(t, store.backing());
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &t, a, b);
+        cg::einsum("i,l <- i,j ; l,j", &d, t, t);
+    }
+    auto const pass = stream(graph, static_cast<std::int64_t>(2 * ni * sizeof(double)));
+    REQUIRE(pass->num_written() == 1);
+    CHECK(pass->num_streamed() == 1);
+    CHECK(declined_because(*pass, "both operands of the contraction are backed"));
+
+    // Ordered by the storage's key, not by where the nodes happen to sit: the fill reads T's
+    // storage and each block loop writes it, so a scheduler that runs independent nodes together
+    // must still put the fill after every loop. Sequential replay alone would not show a missing
+    // edge, since the fill is placed after the loops anyway.
+    graph.topological_sort();
+    std::vector<std::size_t> level_of(graph.nodes().size(), 0);
+    for (std::size_t l = 0; l < graph.dependencies().levels.size(); ++l) {
+        for (std::size_t const n : graph.dependencies().levels[l]) {
+            level_of[n] = l;
+        }
+    }
+    std::optional<std::size_t> fill;
+    std::vector<std::size_t>   loops;
+    for (std::size_t n = 0; n < graph.nodes().size(); ++n) {
+        if (graph.nodes()[n].kind == cg::OpKind::Initialize) {
+            fill = n;
+        } else if (graph.nodes()[n].kind == cg::OpKind::Loop) {
+            loops.push_back(n);
+        }
+    }
+    REQUIRE(fill.has_value());
+    REQUIRE(loops.size() == 2);
+    for (std::size_t const loop : loops) {
+        CHECK(level_of[*fill] > level_of[loop]);
+    }
+
+    graph.execute();
+    REQUIRE(store.reads.size() == 1);
+    CHECK(store.reads[0] == Ranges{{0, ni}, {0, nj}});
+
+    auto want_t = RuntimeTensor<double>("T", std::vector<std::size_t>{ni, nj});
+    want_t.zero();
+    testing::reference_einsum("i,j <- i,k ; k,j", &want_t, a, b);
+    auto want_d = RuntimeTensor<double>("D", std::vector<std::size_t>{ni, ni});
+    want_d.zero();
+    testing::reference_einsum("i,l <- i,j ; l,j", &want_d, want_t, want_t);
+    check_close(d, want_d, static_cast<double>(nk * nj));
+}
+
+TEST_CASE("A write-backed tensor computed in memory is stored after its last writer", "[ComputeGraph][Pass][SlabStreaming]") {
+    // T = A B, then T += A B2: the second contraction adds, so the pass cannot produce T in
+    // blocks. T is computed in memory, read from there, and stored once, after the last writer.
+    // F = T E is a reader the pass would stream from a stored tensor; here it reads memory.
+    constexpr std::size_t ni = 3;
+    constexpr std::size_t nk = 2;
+    constexpr std::size_t nj = 4;
+    auto const            a  = filled("A", {ni, nk}, 3U);
+    auto const            b  = filled("B", {nk, nj}, 7U);
+    auto const            b2 = filled("B2", {nk, nj}, 13U);
+    auto const            e  = filled("E", {nj, 2}, 9U);
+
+    auto want = RuntimeTensor<double>("T", std::vector<std::size_t>{ni, nj});
+    want.zero();
+    testing::reference_einsum("i,j <- i,k ; k,j", &want, a, b);
+    testing::reference_einsum("i,j <- i,k ; k,j", 1.0, &want, 1.0, a, b2);
+
+    auto const capture = [&](cg::Graph &graph, WriteStore &store, RuntimeTensor<double> &d, RuntimeTensor<double> &f) {
+        auto &t = graph.declare_runtime_tensor<double>("T", {ni, nj});
+        graph.annotate_backing(t, store.backing());
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &t, a, b);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &t, 1.0, a, b2);
+        cg::einsum("i,l <- i,j ; l,j", &d, t, t);
+        cg::einsum("i,m <- i,j ; j,m", &f, t, e);
+    };
+    auto want_d = RuntimeTensor<double>("D", std::vector<std::size_t>{ni, ni});
+    want_d.zero();
+    testing::reference_einsum("i,l <- i,j ; l,j", &want_d, want, want);
+    auto want_f = RuntimeTensor<double>("F", std::vector<std::size_t>{ni, 2});
+    want_f.zero();
+    testing::reference_einsum("i,m <- i,j ; j,m", &want_f, want, e);
+
+    SECTION("under a budget the producers do not fit") {
+        WriteStore store("T");
+        auto       d = RuntimeTensor<double>("D", std::vector<std::size_t>{ni, ni});
+        d.zero();
+        auto f = RuntimeTensor<double>("F", std::vector<std::size_t>{ni, 2});
+        f.zero();
+        cg::Graph graph("accumulate");
+        capture(graph, store, d, f);
+        auto const pass = stream(graph, static_cast<std::int64_t>(ni * sizeof(double)));
+        CHECK(pass->num_streamed() == 0);
+        CHECK(declined_because(*pass, "adds into the write-backed tensor"));
+        CHECK(declined_because(*pass, "another operation writes the write-backed tensor in memory"));
+        CHECK(declined_because(*pass, "the tensor is produced in memory, so its readers read it there"));
+        graph.execute();
+        CHECK(store.reads.empty());
+        CHECK(store.writes == std::vector<Ranges>{Ranges{{0, ni}, {0, nj}}});
+        check_close(store.stored(), want, static_cast<double>(2 * nk));
+        check_close(d, want_d, static_cast<double>(4 * nk * nj));
+        check_close(f, want_f, static_cast<double>(2 * nk * nj));
+    }
+    SECTION("with the pass off") {
+        WriteStore store("T");
+        auto       d = RuntimeTensor<double>("D", std::vector<std::size_t>{ni, ni});
+        d.zero();
+        auto f = RuntimeTensor<double>("F", std::vector<std::size_t>{ni, 2});
+        f.zero();
+        cg::Graph graph("pass_off");
+        capture(graph, store, d, f);
+        auto const pass = stream(graph, 0);
+        CHECK(pass->num_streamed() == 0);
+        graph.execute();
+        CHECK(store.writes.size() == 1);
+        check_close(store.stored(), want, static_cast<double>(2 * nk));
+        check_close(d, want_d, static_cast<double>(4 * nk * nj));
+        check_close(f, want_f, static_cast<double>(2 * nk * nj));
+    }
+}
+
+TEST_CASE("SlabStreaming writes slabs out of row-major buffers in the storage's own order", "[ComputeGraph][Pass][SlabStreaming]") {
+    bool const previous = config::get(option::RowMajor);
+    config::set(option::RowMajor, true);
+    struct Restore {
+        bool previous;
+        ~Restore() { config::set(option::RowMajor, previous); }
+    } const restore{previous};
+
+    constexpr std::size_t ni = 3;
+    constexpr std::size_t nk = 4;
+    constexpr std::size_t nj = 5;
+    WriteStore            store("T");
+    auto const            a = filled("A", {ni, nk}, 3U);
+    auto const            b = filled("B", {nk, nj}, 11U);
+
+    cg::Graph graph("row_major_write");
+    auto     &t = graph.declare_runtime_tensor<double>("T", {ni, nj});
+    graph.annotate_backing(t, store.backing());
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &t, a, b);
+    }
+    auto const pass = stream(graph, static_cast<std::int64_t>(2 * ni * sizeof(double)));
+    REQUIRE(pass->num_written() == 1);
+    graph.execute();
+
+    auto want = RuntimeTensor<double>("E", std::vector<std::size_t>{ni, nj});
+    want.zero();
+    testing::reference_einsum("i,j <- i,k ; k,j", &want, a, b);
+    // The storage is column-major whatever the tensors are: element (i, j) at i + j * ni.
+    for (std::size_t i = 0; i < ni; ++i) {
+        for (std::size_t j = 0; j < nj; ++j) {
+            CHECK_THAT(store.storage[i + (j * ni)], Catch::Matchers::WithinAbs(want(i, j), 1e-12));
+        }
+    }
+}
+
+TEST_CASE("verify refuses a write backing nothing writes", "[ComputeGraph][Pass][SlabStreaming]") {
+    WriteStore store("T");
+    cg::Graph  graph("unwritten");
+    auto      &t = graph.declare_runtime_tensor<double>("T", {2, 3});
+    graph.annotate_backing(t, store.backing());
+    auto const problems = graph.verify();
+    REQUIRE(problems.size() == 1);
+    CHECK_THAT(problems[0],
+               Catch::Matchers::ContainsSubstring("has a write backing") && Catch::Matchers::ContainsSubstring("no node writes it"));
+
+    // Written, through either route, the declaration holds.
+    auto const a = filled("A", {2, 2}, 3U);
+    auto const b = filled("B", {2, 3}, 7U);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &t, a, b);
+    }
+    CHECK(graph.verify().empty());
+    stream(graph, static_cast<std::int64_t>(2 * sizeof(double)));
+    CHECK(graph.verify().empty());
 }

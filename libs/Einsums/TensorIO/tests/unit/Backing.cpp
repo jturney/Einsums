@@ -11,6 +11,8 @@
 /// same values held in memory, a file rewritten between replays is read afresh, the annotation
 /// refuses every tensor it could not fill correctly, a write to a backed tensor is a verify
 /// failure at any depth, and a saved graph keeps the backing and checks the storage at load.
+/// A WRITE backing is the other direction: the graph produces the tensor and the entry receives
+/// it, whole after its last writer or a slab per block when SlabStreaming produces it there.
 
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
@@ -18,6 +20,7 @@
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
+#include <Einsums/ComputeGraph/Passes/SlabStreaming.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
@@ -25,6 +28,7 @@
 #include <Einsums/TensorIO/Backing.hpp>
 #include <Einsums/TensorIO/TensorFile.hpp>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -389,5 +393,163 @@ TEST_CASE("A saved graph keeps the backing and checks the storage at load", "[Te
         auto const loaded = cg::load_graph_string(text);
         REQUIRE_FALSE(loaded.has_value());
         CHECK_THAT(loaded.error().message, Catch::Matchers::ContainsSubstring("no backing kind is registered under 'nobody.kind'"));
+    }
+}
+
+namespace {
+
+/// T[i,j] = sum_k A[i,k] B[k,j] into a deferred T backed by @p backing, captured on @p graph.
+template <typename T>
+RuntimeTensor<T> &produce(cg::Graph &graph, cg::TensorBacking backing, RuntimeTensor<T> const &a, RuntimeTensor<T> const &b) {
+    auto &t = graph.declare_runtime_tensor<T>("T", {a.dim(0), b.dim(1)});
+    graph.annotate_backing(t, std::move(backing));
+    cg::CaptureGuard const guard(graph);
+    cg::einsum("i,j <- i,k ; k,j", &t, a, b);
+    return t;
+}
+
+/// The same product, computed eagerly.
+template <typename T>
+RuntimeTensor<T> product_of(RuntimeTensor<T> const &a, RuntimeTensor<T> const &b) {
+    RuntimeTensor<T> out("T", std::vector<size_t>{a.dim(0), b.dim(1)});
+    out.zero();
+    cg::einsum("i,j <- i,k ; k,j", &out, a, b);
+    return out;
+}
+
+template <typename T>
+RuntimeTensor<T> read_entry(std::string const &path, std::string const &name, std::vector<size_t> dims) {
+    RuntimeTensor<T> out(name, std::move(dims));
+    TensorFile       file(path, TensorFile::Mode::Read);
+    file.read(name, out);
+    return out;
+}
+
+} // namespace
+
+TEMPLATE_LIST_TEST_CASE("A write-backed tensor is stored to its entry after its last writer", "[TensorIO][Backing]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    TempFile const tmp("write.etn");
+    auto const     a = filled<T>("A", {5, 4}, 0.25);
+    auto const     b = filled<T>("B", {4, 3}, 0.5);
+
+    // The file does not exist yet: annotating the tensor creates it and reserves the entry.
+    REQUIRE_FALSE(std::filesystem::exists(tmp.path));
+    cg::Graph graph("write");
+    auto     &t = produce(graph, tensor_io::etn_backing(tmp.path, "T", true), a, b);
+    CHECK(std::filesystem::exists(tmp.path));
+    CHECK(graph.verify().empty());
+
+    auto const pass = materialize(graph);
+    CHECK(pass->num_stored() == 1);
+    CHECK(pass->num_loaded() == 0);
+    graph.execute();
+
+    auto const expected = product_of(a, b);
+    CHECK(bytes_of(read_entry<T>(tmp.path, "T", {5, 3})) == bytes_of(expected));
+    // The tensor stays readable in memory too: the store copies it out, it does not move it.
+    CHECK(bytes_of(t) == bytes_of(expected));
+}
+
+TEST_CASE("A write backing reuses an entry of the tensor's shape and refuses another", "[TensorIO][Backing]") {
+    TempFile const tmp("reuse.etn");
+    auto const     a     = filled<double>("A", {5, 4}, 0.25);
+    auto const     b     = filled<double>("B", {4, 3}, 0.5);
+    auto const     other = filled<double>("X", {2, 2}, 3.0);
+
+    SECTION("an entry of the same shape and type is overwritten, and the file's other entries kept") {
+        {
+            TensorFile file(tmp.path, TensorFile::Mode::Write);
+            file.write("T", filled<double>("T", {5, 3}, -9.0));
+            file.write("X", other);
+        }
+        cg::Graph graph("reuse");
+        produce(graph, tensor_io::etn_backing(tmp.path, "T", true), a, b);
+        materialize(graph);
+        graph.execute();
+        CHECK(bytes_of(read_entry<double>(tmp.path, "T", {5, 3})) == bytes_of(product_of(a, b)));
+        CHECK(bytes_of(read_entry<double>(tmp.path, "X", {2, 2})) == bytes_of(other));
+    }
+    SECTION("an entry of another shape is refused when the tensor is annotated") {
+        write_entry(tmp.path, "T", filled<double>("T", {3, 5}, 1.0));
+        cg::Graph graph("reshaped");
+        CHECK_THROWS_WITH(produce(graph, tensor_io::etn_backing(tmp.path, "T", true), a, b),
+                          Catch::Matchers::ContainsSubstring("already holds [3,5] of another shape or type than the tensor's [5,3]"));
+    }
+    SECTION("an entry of another type is refused when the tensor is annotated") {
+        write_entry(tmp.path, "T", filled<float>("T", {5, 3}, 1.0));
+        cg::Graph graph("retyped");
+        CHECK_THROWS_WITH(produce(graph, tensor_io::etn_backing(tmp.path, "T", true), a, b),
+                          Catch::Matchers::ContainsSubstring("of another shape or type"));
+    }
+}
+
+TEST_CASE("SlabStreaming produces a write-backed tensor into its entry a slab at a time", "[TensorIO][Backing]") {
+    TempFile const tmp("streamed_write.etn");
+    auto const     a = filled<double>("A", {5, 4}, 0.25);
+    auto const     b = filled<double>("B", {4, 7}, 0.5);
+
+    cg::Graph graph("streamed_write");
+    auto     &t = produce(graph, tensor_io::etn_backing(tmp.path, "T", true), a, b);
+    auto      d = RuntimeTensor<double>("D", std::vector<size_t>{5, 2});
+    d.zero();
+    auto const e = filled<double>("E", {7, 2}, 0.75);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,l <- i,j ; j,l", &d, t, e);
+    }
+
+    auto stream = std::make_shared<cg::passes::SlabStreaming>();
+    stream->set_slab_budget(static_cast<std::int64_t>(2 * 5 * sizeof(double)));
+    cg::PassManager manager;
+    manager.add(stream);
+    manager.add(std::make_shared<cg::passes::Materialization>());
+    graph.apply(manager);
+    REQUIRE(stream->num_written() == 1);
+    CHECK(stream->num_streamed() == 2);
+    graph.execute();
+    CHECK_FALSE(t.is_materialized());
+
+    // Each block's columns are computed alone, which is the same arithmetic per element.
+    auto const expected = product_of(a, b);
+    CHECK(bytes_of(read_entry<double>(tmp.path, "T", {5, 7})) == bytes_of(expected));
+    auto want = RuntimeTensor<double>("D", std::vector<size_t>{5, 2});
+    want.zero();
+    cg::einsum("i,l <- i,j ; j,l", &want, expected, e);
+    for (size_t n = 0; n < want.size(); ++n) {
+        CHECK_THAT(d.data()[n], Catch::Matchers::WithinRel(want.data()[n], 1e-12) || Catch::Matchers::WithinAbs(want.data()[n], 1e-12));
+    }
+}
+
+TEST_CASE("A saved graph keeps a write backing's access", "[TensorIO][Backing][SaveLoad]") {
+    TempFile const tmp("saved_write.etn");
+    auto const     a = filled<double>("A", {5, 4}, 0.25);
+    auto const     b = filled<double>("B", {4, 3}, 0.5);
+    cg::Graph      graph("saved_write");
+    produce(graph, tensor_io::etn_backing(tmp.path, "T", true), a, b);
+    auto const saved = cg::save_graph_string(graph);
+    REQUIRE(saved.has_value());
+    CHECK_THAT(*saved, Catch::Matchers::ContainsSubstring(R"("access":"write")"));
+
+    // The entry is reserved at annotation; the loaded graph finds and reuses it, and replays into it.
+    auto loaded = cg::load_graph_string(*saved);
+    INFO((loaded ? std::string{} : loaded.error().message));
+    REQUIRE(loaded.has_value());
+    auto a_in = a;
+    auto b_in = b;
+    loaded->bind("A", a_in, "B", b_in);
+    CHECK(loaded->verify().empty());
+    materialize(*loaded);
+    loaded->execute();
+    CHECK(bytes_of(read_entry<double>(tmp.path, "T", {5, 3})) == bytes_of(product_of(a, b)));
+
+    SECTION("and a read backing saves none") {
+        TempFile const input("saved_read.etn");
+        write_entry(input.path, "B", b);
+        Product<double> const backed(a, {4, 3}, tensor_io::etn_backing(input.path, "B"), nullptr);
+        auto const            read_saved = cg::save_graph_string(backed.graph);
+        REQUIRE(read_saved.has_value());
+        CHECK_THAT(*read_saved, !Catch::Matchers::ContainsSubstring(R"("access")"));
     }
 }

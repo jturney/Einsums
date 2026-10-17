@@ -419,6 +419,14 @@ std::optional<IrTensor::Backing> read_backing(Fields const &record) {
             std::ranges::sort(out.location, [](auto const &lhs, auto const &rhs) { return lhs.first < rhs.first; });
         }
     }
+    // OPTIONAL: absent means read, which every backing written before 1.12.0 was.
+    if (Value const *access = backing->optional("access"); access != nullptr && !access->is_null()) {
+        if (!access->is_string() || (access->as_string() != "read" && access->as_string() != "write")) {
+            backing->note("access", access->position, R"(expected "read" or "write")");
+        } else {
+            out.write = access->as_string() == "write";
+        }
+    }
     if (out.kind.empty()) {
         backing->note("a backing with an empty kind names no storage; omit the key instead");
     }
