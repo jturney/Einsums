@@ -124,6 +124,33 @@ TEST_CASE("FreeInsertion - hoists a body intermediate to after the loop", "[Comp
     REQUIRE_NOTHROW(g.execute());
 }
 
+TEST_CASE("FreeInsertion - a body intermediate no node uses is neither freed nor allocated", "[ComputeGraph][FreeInsertion][Loop]") {
+    // AxisTiling leaves this shape: a loop body's declared intermediate whose every use now reads a
+    // block buffer of it, so no node of the body touches the declaration. Materialization leaves
+    // it unallocated for that reason. This pass used to collect it anyway, free it after the loop,
+    // and pair a Materialize before the loop to reallocate it, so the whole tensor the tiling had
+    // avoided was allocated on every replay: 79 MB of H in out_of_core.py with the ladder's
+    // intermediate declared on the body, against a peak of 5.75 MB.
+    auto A = create_random_tensor<double>("A", 8, 8);
+    auto C = create_zero_tensor<double>("C", 8, 8);
+
+    cg::Graph g("unused_body_intermediate");
+    auto     &body = g.add_loop("iter", /*max_iterations=*/1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        (void)body.declare_runtime_tensor<double>("H", {8, 8}, /*intermediate=*/true);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, A);
+    }
+
+    cg::passes::FreeInsertion fi(/*min_bytes=*/0);
+    fi.run(g);
+    CHECK(fi.num_freed() == 0);
+    CHECK(count_nodes(g, cg::OpKind::Free) == 0);
+    CHECK(count_nodes(g, cg::OpKind::Materialize) == 0);
+
+    REQUIRE_NOTHROW(g.execute());
+}
+
 TEST_CASE("FreeInsertion - hoists a deeply-nested body intermediate past every loop", "[ComputeGraph][FreeInsertion][Loop]") {
     auto A = create_random_tensor<double>("A", 5, 5);
     auto C = create_zero_tensor<double>("C", 5, 5);

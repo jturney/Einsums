@@ -78,9 +78,18 @@ struct DescendantFreeable {
 // the descent is chosen.
 void collect_freeable(Graph &graph, size_t min_bytes, std::vector<DescendantFreeable> &out) {
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (handle.is_intermediate && handle.release_fn && handle.aliases == 0 && handle.total_bytes() >= min_bytes) {
-            out.push_back({.owner = &graph, .tid = tid});
+        if (!handle.is_intermediate || !handle.release_fn || handle.aliases != 0 || handle.total_bytes() < min_bytes) {
+            continue;
         }
+        // A declaration no node of the body uses has no storage to free, and the Materialize this
+        // pass pairs with a Free would give it some: AxisTiling leaves a body's intermediate in
+        // that state once every use reads a block buffer instead, and Materialization leaves it
+        // unallocated for that reason. The same question Materialization asks of the body.
+        auto const *use = graph.usage().find_owner(tid);
+        if (use == nullptr || use->first_use() == TensorUsage::npos) {
+            continue;
+        }
+        out.push_back({.owner = &graph, .tid = tid});
     }
 
     for (auto &node : graph.nodes()) {
