@@ -276,6 +276,29 @@ TEST_CASE("AxisTiling declines a program whose largest intermediate already fits
     CHECK(declined_because(*tiling, "already fits the cap"));
 }
 
+TEST_CASE("AxisTiling holds a declared result whole and says how to let it stream", "[ComputeGraph][Pass][AxisTiling]") {
+    // A declared tensor is a result unless it is declared an intermediate: the caller may read it
+    // after execute(), so it has to exist whole. The pass used to leave such a tensor whole without
+    // a word, and a program over its memory budget gave no sign of why nothing was streamed.
+    auto const a = filled("A", {6, 5}, 3U);
+    auto const b = filled("B", {7, 5}, 5U);
+    auto const d = filled("D", {7, 5, 3}, 7U);
+    for (bool const intermediate : {false, true}) {
+        CAPTURE(intermediate);
+        RuntimeTensor<double> e("E", std::vector<std::size_t>{6, 3});
+        cg::Graph             graph("declared result");
+        auto                 &product = graph.declare_runtime_tensor<double>("T", std::vector<std::size_t>{6, 7, 5}, intermediate);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("i,j,k <- i,k ; j,k", &product, a, b);
+            cg::einsum("i,m <- i,j,k ; j,k,m", &e, product, d);
+        }
+        auto const tiling = decide(graph, 400);
+        CHECK(tiling->num_tiled() == (intermediate ? 1 : 0));
+        CHECK(declined_because(*tiling, "declared as a result") == !intermediate);
+    }
+}
+
 TEST_CASE("AxisTiling is off when the cap is zero", "[ComputeGraph][Pass][AxisTiling]") {
     Problem   problem;
     cg::Graph graph("mp2 full axis");

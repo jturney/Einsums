@@ -347,6 +347,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::vector<std::int64_t> _axis_extents;
     std::vector<std::string>  _streamed;
     std::vector<std::string>  _whole;
+    /// One line per declared result over its cap that was held whole; reported at every
+    /// verbosity, because the fix is in the caller's declaration and nothing else says so.
+    std::vector<std::string>  _held_results;
     std::string               _accumulator;
     std::string               _emission;
     std::vector<std::int64_t> _block_extents;

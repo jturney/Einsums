@@ -532,6 +532,23 @@ of its intermediates is that large. A positive cap, as above, bounds each
 intermediate on its own, for a caller who wants a smaller footprint than the
 machine allows, and the share is not read.
 
+Only intermediates are streamed, and a declared tensor is an intermediate only
+when its declaration says so. ``graph.declare_tensor(name, dims)`` declares a
+result: the caller may read it once the graph has run, so it has to exist whole
+then, and the pass leaves it whole however large. Nothing in the equations says
+which declared tensors the caller reads afterwards, so the declaration is the
+only place that can. A tensor the program builds for its own use, such as the
+half-transformed integrals of a density-fitted ladder, belongs in
+``graph.declare_tensor(name, dims, intermediate=True)``. Declared as a result,
+that one is the largest tensor of the program and nothing streams it, and the
+report says so at every verbosity:
+
+.. code-block:: text
+
+    - [structural-resource] AxisTiling: held 'H' whole, 79213800 bytes against a cap
+      of 2684354, because it is declared as a result the caller may read after
+      execute(); declare it as an intermediate if nothing does
+
 On the full-axis DF-MP2 capture at water in cc-pVDZ, under a cap of 4096 bytes,
 it chooses the two occupied axes, 25 slices at depth one, and the largest
 intermediate the loop holds falls from 72200 bytes to 2888. With the denominator

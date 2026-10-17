@@ -1912,6 +1912,7 @@ void AxisTiling::reset_stats() {
     _axis_extents.clear();
     _streamed.clear();
     _whole.clear();
+    _held_results.clear();
     _accumulator.clear();
     _emission.clear();
     _block_extents.clear();
@@ -1922,9 +1923,12 @@ void AxisTiling::reset_stats() {
 
 std::vector<std::string> AxisTiling::explain() const {
     std::vector<std::string> lines;
-    lines.reserve(_regions.size() + 1);
+    lines.reserve(_regions.size() + _held_results.size() + 1);
     for (auto const &region : _regions) {
         lines.push_back(fmt::format("AxisTiling: {}", region));
+    }
+    for (auto const &held : _held_results) {
+        lines.push_back(fmt::format("AxisTiling: {}", held));
     }
     if (!_accumulator.empty()) {
         lines.push_back(fmt::format("AxisTiling: '{}' accumulates across the first region's iterations", _accumulator));
@@ -2103,14 +2107,29 @@ bool AxisTiling::tile_graph(Graph &graph) {
 
         // A seed is an intermediate over its cap that a sliceable statement writes: the tensors
         // the loop exists to stream, largest first.
+        //
+        // A tensor the graph declares WITHOUT calling it an intermediate is a result: the caller may
+        // read it after execute(), so it has to exist whole then, and the loop would leave only
+        // slices of it. It is left whole however large, and the largest such one over its cap is
+        // reported, because nothing in a program says which of its declared tensors the caller
+        // reads afterwards and the declaration is the only place that can.
         auto const                                   &nodes   = graph.nodes();
         std::size_t                                   largest = 0;
         std::vector<std::pair<std::size_t, TensorId>> seeds;
+        TensorHandle const                           *held = nullptr;
         for (auto const &node : nodes) {
             bool const sliceable = tileable_kind(node.kind) || registered_sliceable(node);
             for (TensorId const tid : node.outputs) {
                 auto const *handle = graph.find_tensor(tid);
-                if (handle == nullptr || !scope.intermediate(tid) || handle->is_tiled || handle->is_distributed) {
+                if (handle == nullptr || handle->is_tiled || handle->is_distributed) {
+                    continue;
+                }
+                if (!scope.intermediate(tid)) {
+                    std::size_t const bytes = handle->total_bytes();
+                    if (sliceable && handle->alloc_state == AllocState::Deferred && bytes > limit_for(bytes) &&
+                        (held == nullptr || bytes > held->total_bytes())) {
+                        held = handle;
+                    }
                     continue;
                 }
                 std::size_t const bytes = handle->total_bytes();
@@ -2120,6 +2139,16 @@ bool AxisTiling::tile_graph(Graph &graph) {
                     seeds.emplace_back(bytes, tid);
                 }
             }
+        }
+        if (first && held != nullptr) {
+            std::size_t const bytes = held->total_bytes();
+            note_skip("a tensor over the cap is declared as a result, which the caller may read after execute(), so it is held whole; "
+                      "declare it as an intermediate if nothing reads it afterwards",
+                      fmt::format("'{}', {} bytes against a cap of {}", held->name, bytes, limit_for(bytes)));
+            _held_results.push_back(fmt::format("held '{}' whole, {} bytes against a cap of {}, because it is declared as a result the "
+                                                "caller may read after execute(); declare it as an intermediate if nothing does",
+                                                held->name, bytes, limit_for(bytes)));
+            report(1, _held_results.back());
         }
         if (first) {
             // A running maximum: the manager runs this pass once per graph of the tree, and the

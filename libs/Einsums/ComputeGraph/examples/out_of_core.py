@@ -106,7 +106,11 @@ def ladder(path, problem):
     graph = cg.Graph("ladder")
     bvv = graph.declare_tensor("Bvv", [naux, nvir, nvir])
     cg.annotate(bvv, backing=einsums.io.etn(path, "Bvv"), graph=graph)
-    half = graph.declare_tensor("H", [naux, nvir, nvir, nocc, nocc])
+    # H is the largest tensor here, 25 times Bvv, and only this graph reads it. Declared as an
+    # intermediate, the graph may build it a block at a time; declared without, it is a result the
+    # caller could read after execute(), so it would be held whole, over the budget, and the
+    # AxisTiling line of the report would say so.
+    half = graph.declare_tensor("H", [naux, nvir, nvir, nocc, nocc], intermediate=True)
     T = _tensor("tau", tau)
     r2 = einsums.create_zero_tensor("r2", [nocc, nocc, nvir, nvir])
     with cg.capture(graph):
@@ -116,11 +120,11 @@ def ladder(path, problem):
 
 
 def print_explanation(manager):
-    """What SlabStreaming and AxisTiling did, from the pass report."""
+    """What SlabStreaming and AxisTiling did, and the peak MemoryPlanning found, from the pass report."""
     # Each line reads "  - [category] Pass: what it did".
     for line in manager.explain().splitlines():
         _, _, entry = line.partition("] ")
-        if entry.startswith(("SlabStreaming:", "AxisTiling:", "Materialization:")):
+        if entry.startswith(("SlabStreaming:", "AxisTiling:", "Materialization:", "MemoryPlanning:")):
             print(f"    | {entry}")
 
 

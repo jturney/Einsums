@@ -3110,6 +3110,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * buffer (unlike create_*_tensor, which is allocated eagerly and so is opaque
      * to those passes). Use this for graph/loop-body scratch you want the memory
      * passes to manage.
+     *
+     * @param[in] name The tensor's name.
+     * @param[in] dims Its extents.
+     * @param[in] intermediate Whether nothing reads the tensor after ``execute()``. A tensor
+     *            declared without it is a RESULT: the caller may read it once the graph has run,
+     *            so it has to exist whole then, and ``AxisTiling`` leaves it whole however large,
+     *            naming it in its report when it is over the memory budget. Declare every tensor
+     *            the program builds only for its own use as an intermediate, so the graph may
+     *            stream it in blocks and never hold it whole.
+     * @return The declared tensor, owned by this graph.
      */
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = float, Alloc = std::allocator<float>)
