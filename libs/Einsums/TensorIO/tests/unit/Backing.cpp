@@ -19,6 +19,7 @@
 #include <Einsums/ComputeGraph/GraphIR.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/SlabStreaming.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
@@ -520,6 +521,115 @@ TEST_CASE("SlabStreaming produces a write-backed tensor into its entry a slab at
     for (size_t n = 0; n < want.size(); ++n) {
         CHECK_THAT(d.data()[n], Catch::Matchers::WithinRel(want.data()[n], 1e-12) || Catch::Matchers::WithinAbs(want.data()[n], 1e-12));
     }
+}
+
+namespace {
+
+/// W[Q,a,b] = H[Q,a,n] C[n,b] with H[Q,a,n] = P[Q,m,n] C[m,a] an intermediate over the cap: AxisTiling
+/// loops over an axis of H, and W is written a box at a time through the loop's view. Applies the
+/// passes and returns SlabStreaming, to read what it chose.
+struct BoxWrite {
+    static constexpr std::size_t naux = 6;
+    static constexpr std::size_t nbf  = 4;
+    static constexpr std::size_t v    = 5;
+
+    RuntimeTensor<double>                      p{filled<double>("P", {naux, nbf, nbf}, 0.25)};
+    RuntimeTensor<double>                      c{filled<double>("C", {nbf, v}, 0.5)};
+    cg::Graph                                  graph{"box_write"};
+    std::shared_ptr<cg::passes::SlabStreaming> stream{std::make_shared<cg::passes::SlabStreaming>()};
+
+    explicit BoxWrite(cg::TensorBacking backing) {
+        auto &w = graph.declare_runtime_tensor<double>("W", {naux, v, v});
+        graph.annotate_backing(w, std::move(backing));
+        auto &half = graph.declare_runtime_tensor<double>("H", std::vector<std::size_t>{naux, v, nbf}, /*intermediate=*/true);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("Q,a,n <- Q,m,n ; m,a", &half, p, c);
+            cg::einsum("Q,a,b <- Q,a,n ; n,b", &w, half, c);
+        }
+        auto tiling = std::make_shared<cg::passes::AxisTiling>();
+        tiling->set_memory_cap(static_cast<std::int64_t>(2 * naux * nbf * sizeof(double)));
+        stream->set_slab_budget(static_cast<std::int64_t>(naux * v * 2 * sizeof(double)));
+        cg::PassManager manager;
+        manager.add(tiling);
+        manager.add(stream);
+        manager.add(std::make_shared<cg::passes::Materialization>());
+        graph.apply(manager);
+    }
+
+    [[nodiscard]] RuntimeTensor<double> expected() const {
+        RuntimeTensor<double> half("Href", std::vector<std::size_t>{naux, v, nbf});
+        half.zero();
+        cg::einsum("Q,a,n <- Q,m,n ; m,a", &half, p, c);
+        RuntimeTensor<double> want("W", std::vector<std::size_t>{naux, v, v});
+        want.zero();
+        cg::einsum("Q,a,b <- Q,a,n ; n,b", &want, half, c);
+        return want;
+    }
+
+    [[nodiscard]] bool explains(std::string const &fragment) const {
+        auto const lines = stream->explain();
+        return std::ranges::any_of(lines, [&](std::string const &line) { return line.find(fragment) != std::string::npos; });
+    }
+};
+
+void check_entry(std::string const &path, RuntimeTensor<double> const &want) {
+    auto const got = read_entry<double>(path, "W", {BoxWrite::naux, BoxWrite::v, BoxWrite::v});
+    for (std::size_t n = 0; n < want.size(); ++n) {
+        CHECK_THAT(got.data()[n], Catch::Matchers::WithinRel(want.data()[n], 1e-12) || Catch::Matchers::WithinAbs(want.data()[n], 1e-12));
+    }
+}
+
+} // namespace
+
+TEST_CASE("A new entry is stored in the order that makes the boxes written of it contiguous", "[TensorIO][Backing][Order]") {
+    // The loop writes W a block of one axis at a time. Stored as declared, a block of any axis but
+    // the last is many runs of the file; the pass stores the entry with the looped axis last, the
+    // file records it, and the entry still reads back in its declared order.
+    TempFile const tmp("box_order.etn");
+    BoxWrite       program(tensor_io::etn_backing(tmp.path, "W", true));
+    REQUIRE(program.stream->num_boxes() >= 1);
+    auto const order = program.stream->stored_order("W");
+    CHECK(order != std::vector<std::size_t>{0, 1, 2});
+    CHECK(tensor_io::TensorFile(tmp.path, tensor_io::TensorFile::Mode::Read).stored_order("W") == order);
+    CHECK(program.explains("stores 'W' with its axes in the order"));
+    CHECK(program.explains("in 1 run(s)"));
+    CHECK(program.graph.verify().empty());
+
+    program.graph.execute();
+    check_entry(tmp.path, program.expected());
+}
+
+TEST_CASE("An entry another run created keeps its order, and the report says what another would save", "[TensorIO][Backing][Order]") {
+    TempFile const tmp("box_order_reused.etn");
+    {
+        tensor_io::TensorFile file(tmp.path, tensor_io::TensorFile::Mode::Write);
+        file.reserve<double>("W", {BoxWrite::naux, BoxWrite::v, BoxWrite::v});
+    }
+    BoxWrite program(tensor_io::etn_backing(tmp.path, "W", true));
+    CHECK(program.stream->stored_order("W") == std::vector<std::size_t>{0, 1, 2});
+    CHECK(tensor_io::TensorFile(tmp.path, tensor_io::TensorFile::Mode::Read).stored_order("W") == std::vector<std::size_t>{0, 1, 2});
+    CHECK(program.explains("is stored with its axes in the order [0,1,2]"));
+
+    program.graph.execute();
+    check_entry(tmp.path, program.expected());
+}
+
+TEST_CASE("An order the caller gives is the one the entry is stored in", "[TensorIO][Backing][Order]") {
+    TempFile const            tmp("box_order_given.etn");
+    std::vector<size_t> const given{2, 0, 1};
+    BoxWrite                  program(tensor_io::etn_backing(tmp.path, "W", true, given));
+    CHECK(tensor_io::TensorFile(tmp.path, tensor_io::TensorFile::Mode::Read).stored_order("W") == given);
+    CHECK(program.stream->stored_order("W") == given);
+    CHECK_FALSE(program.explains("stores 'W'"));
+
+    program.graph.execute();
+    check_entry(tmp.path, program.expected());
+
+    // Reusing the entry asks for the order it holds.
+    cg::Graph again("again");
+    auto     &w = again.declare_runtime_tensor<double>("W", {BoxWrite::naux, BoxWrite::v, BoxWrite::v});
+    CHECK_THROWS_AS(again.annotate_backing(w, tensor_io::etn_backing(tmp.path, "W", true, {0, 1, 2})), std::invalid_argument);
 }
 
 TEST_CASE("A saved graph keeps a write backing's access", "[TensorIO][Backing][SaveLoad]") {

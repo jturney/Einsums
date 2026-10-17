@@ -33,11 +33,16 @@ inline constexpr std::string_view etn_backing_kind = "tensor_io.etn";
  *            produces and stores: the file and entry are created, or reused when the entry already
  *            holds a tensor of the same shape and type, when the backing is annotated on its
  *            tensor, which supplies that shape and type.
+ * @param[in] order For a write backing, the order to store a new entry's axes in: the declared
+ *            axis at each stored position (see @ref TensorEntry::stored_order). Empty, the default,
+ *            leaves it to the graph, which stores a new entry so the boxes it moves are long
+ *            contiguous runs of the file. Give it when another run will read the entry in boxes of
+ *            its own. An entry that already exists has to be stored in this order to be reused.
  * @return The backing, for @ref compute_graph::Graph::annotate_backing.
  * @throws std::runtime_error when a read backing's file cannot be opened or holds no such entry.
  * @throws std::invalid_argument when a read backing's entry holds integers, which no graph tensor
  *         does, or, at annotation, when a write backing's entry already holds another shape or
- *         type.
+ *         type, or is stored in another order than @p order asks for.
  *
  * Each read or write opens the file, checks that the entry still has the extents and element
  * type it had when the backing was built, and moves the slab: a file rewritten between replays
@@ -53,7 +58,7 @@ inline constexpr std::string_view etn_backing_kind = "tensor_io.etn";
  * @versionadded{2.0.0}
  */
 APIARY_EXPOSE APIARY_RENAME("etn") [[nodiscard]] EINSUMS_EXPORT compute_graph::TensorBacking
-                                                                etn_backing(std::string path, std::string entry, bool write = false);
+etn_backing(std::string path, std::string entry, bool write = false, std::vector<std::size_t> order = std::vector<std::size_t>{});
 
 } // namespace tensor_io
 EINSUMS_NAMESPACE_END()

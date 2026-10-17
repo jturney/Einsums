@@ -650,6 +650,16 @@ footprint and never the answer: a block that writes a slice of the result gives
 the captured result exactly, and a block over a summed letter adds its partial
 sum in a different order, within the re-association tolerance.
 
+How the file lays the tensor out is chosen as well. An entry a write backing
+creates is stored with its axes in the order that makes the boxes the program
+moves of it the fewest runs of the file, which puts the axis a loop slices last.
+The entry records that order, and every read and write takes the declared order
+whatever it is, so a later run reads the tensor back without being told how it
+was stored. An entry another run created keeps its order; when another order
+would at least halve the runs its boxes cost here, the report says which, at
+every verbosity. ``einsums.io.etn(path, entry, write=True, order=[...])`` fixes
+the order of a new entry, for a caller who knows how a later run will read it.
+
 The report says which tensors were streamed and why the others were not. A
 decline names its reason: the last-axis letter repeated in an operand, a view
 that permutes the tensor, two backed operands in one contraction, a

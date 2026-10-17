@@ -167,6 +167,17 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     /// The stored dtype. Not bound to Python, where ``read``/``write`` take ``dtype=``.
     [[nodiscard]] DType dtype(std::string_view name) const;
 
+    /// The order @p name is stored in: the declared axis held at each stored position, which is
+    /// ``0, 1, ..., rank - 1`` for an entry stored as declared. See @ref TensorEntry::stored_order.
+    [[nodiscard]] std::vector<size_t> stored_order(std::string_view name) const;
+
+    /// Store @p name with its axes in @p order from now on, recording it in the entry table.
+    ///
+    /// Only the record changes: the elements already in the data region are not moved, so this is
+    /// for an entry nothing has been written to yet, as a program that reserved it and then chose
+    /// how to lay it out has. Throws when @p order is not a permutation of the entry's axes.
+    void set_stored_order(std::string_view name, std::vector<size_t> const &order);
+
     /// List all tensor names in the file.
     APIARY_EXPOSE [[nodiscard]] std::vector<std::string> tensor_names() const;
 

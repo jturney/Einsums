@@ -89,6 +89,18 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") TensorBacking {
     /// Writes a slab of the stored tensor; see @ref SlabWriter. Set on a write backing only.
     SlabWriter write_slab;
 
+    /// The order the storage holds the tensor's axes in: the declared axis at each stored
+    /// position, ``0, 1, ..., rank - 1`` for the declared order. Unset for a kind that stores only
+    /// the declared order. The slabs @ref read_slab and @ref write_slab move are in the declared
+    /// order whatever this is; it decides only which slabs are long contiguous runs of the storage.
+    std::function<std::vector<std::size_t>()> stored_order;
+
+    /// Store the tensor's axes in @p order from now on. Returns false, changing nothing, when the
+    /// storage's order is no longer the graph's to choose: storage this graph did not create, an
+    /// order its creator fixed, or storage a slab has already been written to. Set on a write
+    /// backing whose kind can store another order.
+    std::function<bool(std::vector<std::size_t> const &order)> reorder;
+
     /// Completes a write backing for the tensor it is annotated on: given the tensor's extents
     /// and element type, makes the storage hold a tensor of that shape and returns the backing
     /// with @ref dims, @ref dtype, @ref read_slab and @ref write_slab filled in. Throws when the

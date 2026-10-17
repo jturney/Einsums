@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -88,8 +89,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::recurse_into_subgraphs
     ///
     /// The contraction worth streaming is often inside a loop: an iterative method's body, or a
-    /// block loop AxisTiling emitted.
-    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+    /// block loop AxisTiling emitted. The pass walks those bodies itself rather than being handed
+    /// them one at a time, because how a backed tensor is best stored follows from every box of it
+    /// the whole tree moves, which is known only once the walk is over.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
 
     /// @copydoc OptimizerPass::understood_features
     ///
@@ -152,6 +155,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("num_boxes") [[nodiscard]] std::size_t num_boxes() const noexcept { return _num_boxes; }
 
+    /// @brief The order the last apply left a backed tensor stored in.
+    /// @param[in] name The backed tensor's name.
+    /// @return The declared axis at each stored position, as @ref TensorBacking::stored_order gives
+    ///         it; empty for a tensor the apply moved no box of, or whose storage has no order.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::size_t> stored_order(std::string const &name) const;
+
   private:
     /// One streamed contraction's report line.
     struct Record {
@@ -163,7 +173,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         double      flops{0.0};
         bool        summed{false};
         bool        writes{false}; ///< The contraction produces the tensor into its storage.
-        bool        box{false};    ///< A view's box is read in place of the view; @c block holds its runs.
+        bool        box{false};    ///< A view's box is moved in place of the view.
+        /// For a box: its extent on each declared axis, and whether that is the whole axis, which
+        /// with the order the tensor ends up stored in gives its runs.
+        std::vector<std::size_t> extents;
+        std::vector<bool>        whole_axis;
+    };
+
+    /// One shape of box a backed tensor is moved in, and how many such boxes a replay moves: what
+    /// the choice of its stored order weighs.
+    struct BoxUse {
+        std::shared_ptr<TensorBacking const> backing;
+        std::string                          name;
+        std::vector<std::size_t>             extents;
+        std::vector<bool>                    whole_axis;
+        double                               count{1.0};
     };
 
     /// What a graph knows about one backed tensor object.
@@ -182,6 +206,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// The budget in force for this apply, in bytes; zero when off.
     [[nodiscard]] std::size_t budget() const;
 
+    /// Stream @p graph's contractions, then each body below it, handing each what it inherits.
+    bool walk(Graph &graph, Backed backed);
+    /// Note a box shape @p backing is moved in, @p count of them per replay.
+    void note_box(std::shared_ptr<TensorBacking const> const &backing, std::string const &name, std::vector<std::size_t> extents,
+                  std::vector<bool> whole_axis, double count);
+    /// Store each written tensor in the order that makes the boxes moved of it the fewest runs, where
+    /// it may still be chosen, and advise where it may not; after the walk.
+    void choose_orders();
+
     bool stream_graph(Graph &graph, Backed const &backed);
     bool stream_write(Graph &graph, Backed const &backed, std::size_t index, std::size_t cap);
     /// Replace the View node @p view_node, a slice of the backed tensor @p name, with a buffer of the
@@ -190,16 +223,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool stream_box(Graph &graph, std::size_t view_node, std::string const &name, std::shared_ptr<TensorBacking const> const &backing,
                     std::string const &label, std::optional<std::size_t> writer);
 
-    std::int64_t                              _budget_override{-1};
-    std::unordered_map<Graph const *, Backed> _backed_of;
-    Graph const                              *_root{nullptr};
-    std::vector<std::pair<NodeId, TensorId>>  _compensated;
-    std::vector<Record>                       _records;
-    std::size_t                               _num_streamed{0};
-    std::size_t                               _num_written{0};
-    std::size_t                               _num_boxes{0};
-    std::vector<std::string>                  _streamed;
-    std::vector<std::int64_t>                 _blocks;
+    std::int64_t                                    _budget_override{-1};
+    Graph const                                    *_root{nullptr};
+    std::vector<BoxUse>                             _box_uses;
+    std::map<std::string, std::vector<std::size_t>> _orders;
+    std::vector<std::string>                        _order_lines;
+    std::vector<std::pair<NodeId, TensorId>>        _compensated;
+    std::vector<Record>                             _records;
+    std::size_t                                     _num_streamed{0};
+    std::size_t                                     _num_written{0};
+    std::size_t                                     _num_boxes{0};
+    std::vector<std::string>                        _streamed;
+    std::vector<std::int64_t>                       _blocks;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

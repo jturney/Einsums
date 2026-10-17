@@ -11,7 +11,9 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include <atomic>
 #include <complex>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -57,8 +59,15 @@ namespace {
 /// Both open the file at every call rather than holding it open: a file replaced between
 /// replays is then the one used, and the entry is checked again, so one rewritten with another
 /// shape is refused rather than read or written as the wrong elements.
+/// What a write backing knows about the entry's order: whether it may still choose it, which it may
+/// only for an entry it created, whose order its caller left open, before any slab is written.
+struct OrderState {
+    bool              may_choose{false};
+    std::atomic<bool> written{false};
+};
+
 compute_graph::TensorBacking complete(std::string const &path, std::string const &entry, std::vector<size_t> const &dims,
-                                      packed_gemm::ScalarType dtype, bool write) {
+                                      packed_gemm::ScalarType dtype, bool write, std::shared_ptr<OrderState> const &order_state = {}) {
     compute_graph::TensorBacking out;
     out.kind     = std::string{etn_backing_kind};
     out.location = {{"entry", entry}, {"path", path}};
@@ -78,19 +87,38 @@ compute_graph::TensorBacking complete(std::string const &path, std::string const
         check(file);
         file.read_slab(entry, destination, ranges);
     };
+    out.stored_order = [path, entry]() {
+        TensorFile const file(path, TensorFile::Mode::Read);
+        return file.stored_order(entry);
+    };
     if (write) {
-        out.write_slab = [path, entry, check](void const *source, std::vector<std::pair<size_t, size_t>> const &ranges) {
+        out.write_slab = [path, entry, check, order_state](void const *source, std::vector<std::pair<size_t, size_t>> const &ranges) {
+            if (order_state) {
+                order_state->written = true;
+            }
             TensorFile file(path, TensorFile::Mode::ReadWrite);
             check(file);
             file.write_slab(entry, source, ranges);
+        };
+        out.reorder = [path, entry, order_state](std::vector<size_t> const &order) {
+            if (!order_state || !order_state->may_choose || order_state->written) {
+                return false;
+            }
+            TensorFile file(path, TensorFile::Mode::ReadWrite);
+            file.set_stored_order(entry, order);
+            return true;
         };
     }
     return out;
 }
 
 /// Make @p file hold an entry of @p dims and @p dtype under @p entry: reuse one that already
-/// does, refuse one that holds another shape or type, and reserve a new one otherwise.
-void hold(TensorFile &file, std::string const &entry, std::vector<size_t> const &dims, packed_gemm::ScalarType dtype) {
+/// does, refuse one that holds another shape or type, and reserve a new one otherwise, stored in
+/// @p order when it is given. An order given for an entry that already exists has to be the one it
+/// is stored in, since the elements another run wrote are laid out by it.
+/// @return True when the entry was reserved here, false when an existing one was reused.
+bool hold(TensorFile &file, std::string const &entry, std::vector<size_t> const &dims, packed_gemm::ScalarType dtype,
+          std::vector<size_t> const &order) {
     if (file.contains(entry)) {
         auto const [now_dims, now_dtype] = describe_entry(file, entry);
         if (now_dims != dims || now_dtype != dtype) {
@@ -100,30 +128,37 @@ void hold(TensorFile &file, std::string const &entry, std::vector<size_t> const 
                 "another entry",
                 entry, file.path(), fmt::join(now_dims, ","), fmt::join(dims, ","));
         }
-        return;
+        if (!order.empty() && file.stored_order(entry) != order) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "entry '{}' in '{}' is already stored with its axes in the order [{}], not the [{}] asked for; remove "
+                                    "it or name another entry",
+                                    entry, file.path(), fmt::join(file.stored_order(entry), ","), fmt::join(order, ","));
+        }
+        return false;
     }
     switch (dtype) {
     case packed_gemm::ScalarType::Float32:
-        file.reserve<float>(entry, dims);
+        file.reserve<float>(entry, dims, order);
         break;
     case packed_gemm::ScalarType::Float64:
-        file.reserve<double>(entry, dims);
+        file.reserve<double>(entry, dims, order);
         break;
     case packed_gemm::ScalarType::Complex64:
-        file.reserve<std::complex<float>>(entry, dims);
+        file.reserve<std::complex<float>>(entry, dims, order);
         break;
     case packed_gemm::ScalarType::Complex128:
-        file.reserve<std::complex<double>>(entry, dims);
+        file.reserve<std::complex<double>>(entry, dims, order);
         break;
     default:
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "entry '{}' in '{}': a tensor of unknown element type cannot be stored", entry,
                                 file.path());
     }
+    return true;
 }
 
 } // namespace
 
-compute_graph::TensorBacking etn_backing(std::string path, std::string entry, bool write) {
+compute_graph::TensorBacking etn_backing(std::string path, std::string entry, bool write, std::vector<std::size_t> order) {
     if (!write) {
         std::vector<size_t>     dims;
         packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown};
@@ -140,12 +175,15 @@ compute_graph::TensorBacking etn_backing(std::string path, std::string entry, bo
     out.kind     = std::string{etn_backing_kind};
     out.location = {{"entry", entry}, {"path", path}};
     out.write    = true;
-    out.prepare  = [path = std::move(path), entry = std::move(entry)](std::vector<size_t> const &dims, packed_gemm::ScalarType dtype) {
+    out.prepare  = [path = std::move(path), entry = std::move(entry), order = std::move(order)](std::vector<size_t> const &dims,
+                                                                                                packed_gemm::ScalarType    dtype) {
+        // The graph may choose how a new entry is laid out, unless its caller already has.
+        auto state = std::make_shared<OrderState>();
         {
             TensorFile file(path, TensorFile::Mode::ReadWrite);
-            hold(file, entry, dims, dtype);
+            state->may_choose = hold(file, entry, dims, dtype, order) && order.empty();
         }
-        return complete(path, entry, dims, dtype, true);
+        return complete(path, entry, dims, dtype, true, state);
     };
     return out;
 }

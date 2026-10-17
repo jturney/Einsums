@@ -338,6 +338,17 @@ void TensorEntry::set_stored_order(std::vector<size_t> const &stored) {
     order[2] = static_cast<uint8_t>((bits >> 16U) & 0xFFU);
 }
 
+std::vector<size_t> TensorFile::stored_order(std::string_view name) const {
+    return find_entry(name).stored_order();
+}
+
+void TensorFile::set_stored_order(std::string_view name, std::vector<size_t> const &order) {
+    auto const &entry = find_entry(name);
+    auto const  index = static_cast<size_t>(&entry - _entries.data());
+    _entries[index].set_stored_order(order);
+    write_metadata();
+}
+
 void TensorFile::write_metadata() {
     // Update header. A file stays at the version every release reads unless an entry needs more.
     _header.version =
