@@ -501,9 +501,11 @@
     in storage rather than memory).
 
     The pass prefers the loop that moves the fewest bytes, and a byte that comes from a file costs
-    more than one that comes from memory: a solid-state drive moves 5 to 7 GB/s where memory moves
-    50 to 100. The default of 8 is a provisional figure from those numbers rather than a measurement
-    of the machine.
+    more than one that comes from memory. The default of 20 is measured: on an M4 laptop memory
+    reads at 66.6 GB/s and an ``.etn`` entry read from the drive at 3.26 GB/s. A file the page cache
+    still holds reads at 16.6 GB/s there, a weight of 4; the default takes the drive's figure,
+    since a tensor is streamed because it does not fit, and a tensor that does not fit is not
+    cached.
 
 "einsums:graph:storage-run-bytes":
   added: "2.0.0"
@@ -512,8 +514,9 @@
     ``AxisTiling`` chooses the loop over a region that reads or writes a backed tensor.
 
     A block of a stored tensor is one run when it covers every axis stored before its first partial
-    one, and many short runs otherwise, each a system call and a seek. The default of 64 KiB is a
-    provisional figure for one of those, about 20 microseconds at a few GB/s.
+    one, and many short runs otherwise, each a system call. The default of 512 KiB is measured on
+    the same machine: a short run read from the drive takes 8.1 microseconds, as long as reading
+    about 512 KiB from memory. From the page cache it takes 0.3 microseconds, about 22 KiB.
 
 "einsums:graph:tiling-budget-share":
   added: "2.0.0"

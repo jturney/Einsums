@@ -251,24 +251,26 @@ inline constinit cl::ConfigOption<double> GraphTilingBudgetShare = cl::config_op
 /// How many bytes of memory traffic one byte read from or written to storage costs, in AxisTiling's
 /// choice of loop.
 ///
-/// A provisional figure: a solid-state drive moves 5 to 7 GB/s where memory moves 50 to 100, which
-/// puts a byte of storage at roughly ten bytes of memory. A machine's own figure is einsums-tune's
-/// to measure.
+/// Measured on an M4 laptop (2026-10-17): memory reads 66.6 GB/s; an .etn read from the drive with
+/// the page cache emptied, 3.26 GB/s, a weight of 20; the same read from the page cache, 16.6 GB/s,
+/// a weight of 4. The default is the drive's, since a tensor is streamed because it does not fit,
+/// and a tensor that does not fit is not in the page cache.
 inline constinit cl::ConfigOption<double> GraphStorageByteWeight = cl::config_opt<double>(
     "einsums:graph:storage-byte-weight",
     "Bytes of memory traffic one byte moved to or from storage counts as when AxisTiling chooses a loop over a region that reads or "
     "writes a backed tensor",
-    "ComputeGraph Passes", 8.0, "WEIGHT", cl::RangeBetween(1.0, 1.0e6));
+    "ComputeGraph Passes", 20.0, "WEIGHT", cl::RangeBetween(1.0, 1.0e6));
 
 /// What one contiguous run of storage costs beyond its bytes, in bytes of memory traffic.
 ///
-/// A provisional figure for one system call and its seek, about 20 microseconds at a few GB/s. A
-/// machine's own figure is einsums-tune's to measure.
+/// Measured with the byte weight above: a short run from the drive with the page cache emptied takes
+/// 8.1 microseconds, about 512 KiB of memory traffic at 66.6 GB/s; from the page cache, 0.3, about
+/// 22 KiB. The default is the drive's, for the reason the byte weight's is.
 inline constinit cl::ConfigOption<std::int64_t> GraphStorageRunBytes = cl::config_opt<std::int64_t>(
     "einsums:graph:storage-run-bytes",
     "Bytes of memory traffic one contiguous run of storage costs beyond the bytes it moves, when AxisTiling chooses a loop over a "
     "region that reads or writes a backed tensor",
-    "ComputeGraph Passes", 65536, "BYTES");
+    "ComputeGraph Passes", 524288, "BYTES");
 
 /// How long a search pass may run, in milliseconds. Zero means unlimited.
 ///
