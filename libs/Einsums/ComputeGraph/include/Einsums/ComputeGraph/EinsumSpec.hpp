@@ -183,6 +183,32 @@ struct EINSUMS_EXPORT ParsedEinsumSpec {
 };
 
 /**
+ * @brief The index lists of an einsum over any number of operands.
+ *
+ * ``"i,j,a,b <- Q,a,e ; Q,b,f ; i,j,e,f"`` names the output and three operands. Each operand may be
+ * wrapped in ``conj(...)``, and permutation operators may prefix the operands as in a two-operand
+ * spec; they act on the output. A letter in the output is kept, and every other letter is summed,
+ * whichever operands carry it.
+ * @versionadded{2.0.0}
+ */
+struct EINSUMS_EXPORT ParsedNaryEinsumSpec {
+    std::vector<std::string>              c_indices; ///< The output's indices.
+    std::vector<std::vector<std::string>> operands;  ///< Each operand's indices, in order.
+    std::vector<bool>                     conj;      ///< Whether each operand is wrapped in conj(...).
+    std::vector<PermutationOperator>      operators; ///< Permutation operators prefixing the term.
+    std::string                           raw;       ///< The spec as written.
+};
+
+/**
+ * @brief Parse an einsum spec with any number of operands, two or more.
+ * @param[in] spec The spec.
+ * @return The index lists, or why the spec is malformed: a missing arrow, an operand with no
+ *         indices, an output index no operand carries, or a letter that is not a letter or digit.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] EINSUMS_EXPORT expected<ParsedNaryEinsumSpec, GraphError> parse_nary_einsum_spec(std::string_view spec);
+
+/**
  * @brief Where an operand's link (contracted) indices sit in its index list.
  *
  * A GEMM reads its operands as flat matrices, A as (M,K) and B as (K,N), so an

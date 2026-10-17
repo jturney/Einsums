@@ -299,6 +299,21 @@ def test_higher_rank_contraction():
     assert np.allclose(np.asarray(W), expect)
 
 
+def test_more_than_two_operands():
+    A = einsums.create_random_tensor("A", [100, 2])
+    B = einsums.create_random_tensor("B", [2, 100])
+    C = einsums.create_random_tensor("C", [100, 3])
+    D = einsums.zeros([100, 3], name="D")
+
+    einsums.einsum("ij;jk;kl->il", D, A, B, C)
+    expect = np.asarray(A) @ np.asarray(B) @ np.asarray(C)
+    assert np.allclose(np.asarray(D), expect)
+
+    import einsums.graph as cg
+    steps = cg.plan_nary_einsum("ij;jk;kl->il", [[100, 2], [2, 100], [100, 3]])
+    assert (steps[0].left, steps[0].right) == (1, 2)
+
+
 def test_two_step_capture_matches_eager():
     A = einsums.create_random_tensor("A", [7, 7])
     B = einsums.create_random_tensor("B", [7, 7])

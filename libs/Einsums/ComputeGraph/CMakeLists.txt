@@ -109,6 +109,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/SpaceRegistryAccess.hpp
     Einsums/ComputeGraph/SymbolicCost.hpp
     Einsums/ComputeGraph/EinsumSpec.hpp
+    Einsums/ComputeGraph/NaryEinsum.hpp
     Einsums/ComputeGraph/KhatriRao.hpp
     Einsums/ComputeGraph/Executor.hpp
     Einsums/ComputeGraph/StringDispatch.hpp
@@ -129,6 +130,7 @@ set(ComputeGraphSources
     NaturalAuxiliaryFactorization.cpp
     Options.cpp
     EinsumSpec.cpp
+    NaryEinsum.cpp
     ElementOps.cpp
     Executor.cpp
     StringDispatch.cpp

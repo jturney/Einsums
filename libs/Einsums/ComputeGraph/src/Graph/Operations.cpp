@@ -317,6 +317,47 @@ Node Graph::make_node(OpKind kind, packed_gemm::ScalarType dtype, OpData descrip
     return node;
 }
 
+void Graph::materialize_internal_tensors() {
+    // The buffers some Materialize node, here or in any sub-graph, already brings to life, by the
+    // tensor pointer two graphs' handles share.
+    std::unordered_set<void const *> covered;
+    auto const                       note = [&covered](Graph const &graph) {
+        for (auto const &node : graph._nodes) {
+            if (node.kind != OpKind::Materialize) {
+                continue;
+            }
+            for (TensorId const out : node.outputs) {
+                if (auto const *target = graph.find_tensor(out); target != nullptr && target->tensor_ptr != nullptr) {
+                    covered.insert(target->tensor_ptr);
+                }
+            }
+        }
+    };
+    note(*this);
+    std::as_const(*this).for_each_descendant(note);
+
+    // An internal tensor no node uses has no value to hold: AxisTiling leaves one that way once a
+    // block buffer stands in for it, and storage then would be the memory the tiling saved.
+    auto const give = [&covered](Graph &graph) {
+        std::unordered_set<TensorId> referenced;
+        for (auto const &node : graph._nodes) {
+            referenced.insert(node.inputs.begin(), node.inputs.end());
+            referenced.insert(node.outputs.begin(), node.outputs.end());
+        }
+        for (auto &[id, handle] : graph._tensors) {
+            if (!handle.materialize_on_execute || handle.alloc_state != AllocState::Deferred || !referenced.contains(id) ||
+                (handle.is_materialized_fn && handle.is_materialized_fn()) ||
+                (handle.tensor_ptr != nullptr && covered.contains(handle.tensor_ptr)) || !handle.materialize_fn) {
+                continue;
+            }
+            handle.materialize_fn();
+            handle.alloc_state = AllocState::Materialized;
+        }
+    };
+    give(*this);
+    for_each_descendant(give);
+}
+
 expected<void, GraphError> Graph::validate_tensors() const {
     // Lazily built: TensorIds and tensor_ptrs that some Materialize node in
     // this graph will bring to life during execution. (tensor_ptr matters for

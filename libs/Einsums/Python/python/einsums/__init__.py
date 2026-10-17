@@ -1311,6 +1311,80 @@ def full_like(t, fill_value, dtype=None, name=None):
     return full(_tensor_shape(t), fill_value, dtype=_dtype_str_of(t, dtype), name=name or "full_like")
 
 
+def einsum(spec, C, *operands, **kwargs):
+    """Graph-aware einsum over two or more operands.
+
+    With two operands this is the compiled ``einsums.einsum``, whose
+    prefactors and ``conj_a``/``conj_b`` follow the operands::
+
+        einsums.einsum("ij <- ik ; kj", C, A, B)
+
+    With three or more, the spec names each operand and every letter not in
+    the output is summed. The einsum is contracted two operands at a time, in
+    the order :func:`einsums.graph.plan_nary_einsum` finds cheapest at these
+    extents, so the program is written as the equation reads::
+
+        einsums.einsum("i,j,a,b <- Q,a,e ; Q,b,f ; i,j,e,f", r2, Bvv, Bvv, tau)
+
+    ``c_pf`` and ``ab_pf`` scale C and the product as for two operands, by
+    keyword or after the operands; an operand is conjugated by wrapping its
+    indices in ``conj(...)`` in the spec. Inside ``cg.capture`` each partial
+    product is a graph intermediate the passes may build a block at a time;
+    outside, each is a temporary held to ``--einsums:max-memory``.
+    """
+    count = 0
+    while count < len(operands) and not isinstance(operands[count], _numbers.Number):
+        count += 1
+    _bootstrap()
+    if count <= 2:
+        return _core.einsum(spec, C, *operands, **kwargs)
+    return _nary_einsum(spec, C, operands[:count], *operands[count:], **kwargs)
+
+
+# The compiled binding the wrapper hands two operands to, whose __doc__ lists every overload.
+einsum.__wrapped__ = _core.einsum
+
+
+def _nary_einsum(spec, C, operands, c_pf=None, ab_pf=None):
+    """Run an einsum over three or more operands as the planner's binary steps."""
+    graph_module = _importlib.import_module("einsums.graph")
+    graph = graph_module.current_graph()
+    dtype = _dtype_for_class(type(C))
+    limit = 0 if graph is not None else graph_module.eager_einsum_intermediate_limit(dtype.itemsize)
+    steps = graph_module.plan_nary_einsum(spec, [[int(s) for s in op.shape] for op in operands], limit)
+
+    prefactors = {}
+    if c_pf is not None:
+        prefactors["c_pf"] = c_pf
+    if ab_pf is not None:
+        prefactors["ab_pf"] = ab_pf
+
+    # Each partial product is named for what it multiplies, as "Bvv*tau", so a report that slices
+    # one says which.
+    names = [getattr(op, "name", None) or "view" for op in operands]
+
+    def spell(number):
+        return names[number] if number < len(operands) else f"({names[number]})"
+
+    formed = list(operands)
+    for k, step in enumerate(steps):
+        left, right = formed[step.left], formed[step.right]
+        if k + 1 == len(steps):
+            _core.einsum(step.spec, C, left, right, **prefactors)
+            break
+        # A captured partial product is an internal intermediate: the passes may build it a block
+        # at a time, and a graph run without them allocates it at its first execute. An eager one
+        # is a temporary the steps after it read.
+        name = f"{spell(step.left)}*{spell(step.right)}"
+        names.append(name)
+        if graph is not None:
+            partial = graph.declare_internal_tensor(name, list(step.dims), dtype=dtype.name)
+        else:
+            partial = _core.create_zero_tensor(name, list(step.dims), dtype=dtype.name)
+        _core.einsum(step.spec, partial, left, right)
+        formed.append(partial)
+
+
 def __getattr__(name):
     """PEP 562 lazy attribute lookup.
 

@@ -96,6 +96,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/KhatriRao.hpp>
 #include <Einsums/ComputeGraph/LuPivots.hpp>
+#include <Einsums/ComputeGraph/NaryEinsum.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>

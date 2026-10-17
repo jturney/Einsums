@@ -323,7 +323,13 @@ struct TensorHandle {
     /// needs neither: @ref impl_fn answers that for both without asking.
     bool is_tensor_view{false};
     bool is_distributed{false}; ///< True if this tensor is distributed across ranks
-    bool is_replicated{true};   ///< True if distributed tensor is replicated on all ranks
+    /// True for a deferred intermediate a library helper declared on its caller's behalf, such as a
+    /// partial product of an einsum over three or more operands. The caller never sees it, so a
+    /// graph run without the Materialization pass gives it storage at its first execute when a node
+    /// still reads or writes it and no Materialize does; a tensor the caller declared is refused
+    /// there instead. See @ref Graph::declare_internal_tensor.
+    bool materialize_on_execute{false};
+    bool is_replicated{true}; ///< True if distributed tensor is replicated on all ranks
 
     /**
      * @brief Which scope owns this tensor's storage.

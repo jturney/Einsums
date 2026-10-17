@@ -17,6 +17,7 @@
 /// reads like a test harness.
 
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/ComputeGraph/NaryEinsum.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Pipeline.hpp>
@@ -338,6 +339,25 @@ TEST_CASE("tutorial - einsum: the forms the page teaches", "[Docs][Tutorials]") 
     auto U = create_random_tensor<double>("U", {4, 4, 4, 4});
     auto W = create_zero_tensor<double>("W", {4, 4, 4, 4});
     CHECK_NOTHROW(cg::einsum("ijkl;klmn->ijmn", &W, T, U));
+
+    // More than two operands, contracted B with C first.
+    auto A3 = create_random_tensor<double>("A", {100, 2});
+    auto B3 = create_random_tensor<double>("B", {2, 100});
+    auto C3 = create_random_tensor<double>("C", {100, 3});
+    auto D3 = create_zero_tensor<double>("D", {100, 3});
+    cg::einsum("ij;jk;kl->il", &D3, A3, B3, C3);
+    auto const steps = cg::plan_nary_einsum("ij;jk;kl->il", {{100, 2}, {2, 100}, {100, 3}});
+    CHECK(steps.front().left == 1);
+    CHECK(steps.front().right == 2);
+    auto BC = create_zero_tensor<double>("BC", {2, 3});
+    auto D2 = create_zero_tensor<double>("D2", {100, 3});
+    cg::einsum("jk;kl->jl", &BC, B3, C3);
+    cg::einsum("ij;jl->il", &D2, A3, BC);
+    for (size_t i = 0; i < 100; ++i) {
+        for (size_t l = 0; l < 3; ++l) {
+            CHECK(D3(i, l) == Catch::Approx(D2(i, l)));
+        }
+    }
 }
 
 TEST_CASE("tutorial - einsum: scratch and result inside one capture", "[Docs][Tutorials]") {

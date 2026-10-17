@@ -249,6 +249,58 @@ An index repeated **within one operand** is a diagonal rather than a contraction
 the diagonal as a strided view of the operand, without copying it, so ``"iik;kj->ij"`` still runs
 on the packed contraction backend rather than the generic loop.
 
+.. _tutorial-einsum-many-operands:
+
+More Than Two Operands
+======================
+
+A spec may name any number of operands. :math:`D_{il} = \sum_{jk} A_{ij} B_{jk} C_{kl}`:
+
+.. tab-set::
+
+    .. tab-item:: C++
+        :sync: cpp
+
+        .. code-block:: cpp
+
+            auto A = create_random_tensor<double>("A", {100, 2});
+            auto B = create_random_tensor<double>("B", {2, 100});
+            auto C = create_random_tensor<double>("C", {100, 3});
+            auto D = create_zero_tensor<double>("D", {100, 3});
+
+            cg::einsum("ij;jk;kl->il", &D, A, B, C);
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.create_random_tensor("A", [100, 2])
+            B = einsums.create_random_tensor("B", [2, 100])
+            C = einsums.create_random_tensor("C", [100, 3])
+            D = einsums.zeros([100, 3], name="D")
+
+            einsums.einsum("ij;jk;kl->il", D, A, B, C)
+
+Einsums contracts the operands two at a time, in the order that costs the least arithmetic at
+these extents, and each partial product keeps only the indices a later step still needs. Here
+that means B with C first, a 2 by 3 product, rather than the 100 by 100 one A with B would form:
+1,200 multiply-adds against 50,000. Written as two calls, the order would be yours to get right.
+``einsums.graph.plan_nary_einsum`` returns the steps a spec will take at given extents.
+
+An index carried by more than two operands, or by one operand alone, is summed like any other
+index missing from the output. The prefactors work as they do for two operands, and an operand
+is conjugated by wrapping its indices in ``conj(...)`` in the spec. The particle ladder of a
+density-fitted coupled-cluster program is one call,
+``"i,j,a,b <- Q,a,e ; Q,b,f ; i,j,e,f"`` on ``B, B, tau``, and whether it forms the integrals
+:math:`(ae|bf)` first or contracts ``B`` with the amplitudes first depends on the sizes of the
+auxiliary, occupied and virtual spaces, which is why it is chosen for you.
+
+Captured, the call records one contraction per step, and each partial product is an intermediate
+the graph owns. The optimizer may then build one a block at a time when it does not fit in memory
+(see :ref:`optimizer-backed-tensors`). Run eagerly, a partial product is a temporary that stays
+within :option:`--einsums:max-memory` when some order allows it.
+
 .. _tutorial-einsum-graph:
 
 The Same Contractions, Captured

@@ -30,11 +30,16 @@ pipeline streams a backed tensor when it is larger than its share of
 ``--einsums:max-memory``, set small below so that a cc-pVTZ water is enough to
 show it. A backed tensor that fits is loaded or stored whole, once per replay.
 
-The half-transformed tensor and H are declared ``intermediate=True``. A tensor
-declared on the graph without it is a result the caller may read after
-``execute()``, so the graph has to hold all of it; H is 25 times the size of
-Bvv, and held whole it would be over the budget by itself. AxisTiling's line
-of the report names such a tensor when it meets one.
+Each transformation is one einsum over all of its factors, written as the
+equation reads. Einsums contracts the factors two at a time, in the order
+that costs least at these extents: for the ladder of water, Bvv with the
+amplitudes first, which forms a four-index partial product named
+``Bvv*tau``, 25 times the size of Bvv. A partial product is an intermediate
+the graph owns, so AxisTiling builds it a block at a time and it is never
+held whole. Written instead as two einsums through a tensor of your own,
+that tensor would have to be declared ``intermediate=True`` for the same: a
+tensor declared on the graph is otherwise a result the caller may read after
+``execute()``, held whole.
 
 What to read in the report the example prints:
 
@@ -44,8 +49,10 @@ What to read in the report the example prints:
 * ``writes 'Bvv' a box at a time`` and ``reads 'Bvv' a box at a time``: each
   iteration of a loop moves the block its view names, one run of the file,
   in place of the whole tensor.
+* ``AxisTiling: slicing Bvv*tau[0]``: the ladder's partial product is built
+  three values of Q at a time, and the residual collects each block's share.
 * ``MemoryPlanning: peak``: 5.75 MB for the program and 2.74 MB for the later
-  run, under a budget of 16 MB; Bvv alone is 3.2 MB, and H 79 MB.
+  run, under a budget of 16 MB; Bvv alone is 3.2 MB, and ``Bvv*tau`` 79 MB.
 
 Run with::
 
@@ -106,20 +113,14 @@ def load():
 def program(path, problem, iterations):
     """Bvv produced once into the file by a setup body, and the DF particle ladder run on it per iteration.
 
-    Bvv[Q,a,b] = sum_mn (Q|mn) C[m,a] C[n,b]; r2[i,j,a,b] = sum_ef (ae|bf) tau[i,j,e,f].
+    Bvv[Q,a,b] = sum_mn (Q|mn) C[m,a] C[n,b]; r2[i,j,a,b] = sum_Qef Bvv[Q,a,e] Bvv[Q,b,f] tau[i,j,e,f].
     """
     fitted, cv, tau = problem["fitted"], problem["cv"], problem["tau"]
-    naux, nbf, nvir, nocc = fitted.shape[0], fitted.shape[1], cv.shape[1], tau.shape[0]
+    naux, nvir, nocc = fitted.shape[0], cv.shape[1], tau.shape[0]
 
     graph = cg.Graph("ladder_program")
     bvv = graph.declare_tensor("Bvv", [naux, nvir, nvir])
     cg.annotate(bvv, backing=einsums.io.etn(path, "Bvv", write=True), graph=graph)
-    # Only this program reads the half-transformed tensors, so both are intermediates and the
-    # graph may build them a block at a time. H is the largest tensor here, 25 times Bvv; declared
-    # without, it would be a result the caller could read after execute(), held whole over the
-    # budget, and the AxisTiling line of the report would say so.
-    half = graph.declare_tensor("half", [naux, nvir, nbf], intermediate=True)
-    H = graph.declare_tensor("H", [naux, nvir, nvir, nocc, nocc], intermediate=True)
     P = _tensor("P", fitted)
     C = _tensor("Cv", cv)
     T = _tensor("tau", tau)
@@ -127,12 +128,10 @@ def program(path, problem, iterations):
 
     setup = graph.add_setup("integrals")
     with cg.capture(setup):
-        einsums.einsum("Q,a,n <- Q,m,n ; m,a", half, P, C)
-        einsums.einsum("Q,a,b <- Q,a,n ; n,b", bvv, half, C)
+        einsums.einsum("Q,a,b <- Q,m,n ; m,a ; n,b", bvv, P, C, C)
     body = graph.add_loop("iterations", iterations, lambda it: it + 1 < iterations)
     with cg.capture(body):
-        einsums.einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", H, bvv, T)
-        einsums.einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", r2, H, bvv)
+        einsums.einsum("i,j,a,b <- Q,a,e ; Q,b,f ; i,j,e,f", r2, bvv, bvv, T)
     return graph, r2
 
 
@@ -145,12 +144,10 @@ def later_run(path, problem):
     graph = cg.Graph("ladder")
     bvv = graph.declare_tensor("Bvv", [naux, nvir, nvir])
     cg.annotate(bvv, backing=einsums.io.etn(path, "Bvv"), graph=graph)
-    H = graph.declare_tensor("H", [naux, nvir, nvir, nocc, nocc], intermediate=True)
     T = _tensor("tau", tau)
     r2 = einsums.create_zero_tensor("r2", [nocc, nocc, nvir, nvir])
     with cg.capture(graph):
-        einsums.einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", H, bvv, T)
-        einsums.einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", r2, H, bvv)
+        einsums.einsum("i,j,a,b <- Q,a,e ; Q,b,f ; i,j,e,f", r2, bvv, bvv, T)
     return graph, r2
 
 

@@ -3461,6 +3461,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         return t;
     }
 
+    /**
+     * @brief Declare a deferred intermediate on a caller's behalf.
+     *
+     * For a helper that adds tensors the caller never sees, such as the partial products of an
+     * einsum over three or more operands. It is an ordinary declared intermediate to every pass,
+     * so ``AxisTiling`` may build it a block at a time and ``Materialization`` gives it storage
+     * or leaves it without any once nothing uses it. Unlike a tensor the caller declared, it does
+     * not make a graph run without those passes fail: its first ``execute()`` gives it storage
+     * when a node still reads or writes it and no Materialize node does.
+     *
+     * @param[in] name The tensor's name.
+     * @param[in] dims Its extents.
+     * @return The declared tensor, owned by this graph.
+     * @versionadded{2.0.0}
+     */
+    template <typename T, typename Alloc = std::allocator<T>>
+    APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_internal_tensor", T = float, Alloc = std::allocator<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_internal_tensor", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_internal_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_internal_tensor", T = std::complex<double>,
+                                 Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
+    declare_internal_tensor(std::string name, std::vector<size_t> dims);
+
     /// Runtime-rank scratch (see scratch(); pybind-facing analog).
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("scratch", T = float, Alloc = std::allocator<float>)
@@ -3717,6 +3740,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * @return Error if any tensor appears to have been destroyed.
      */
+    /// Give storage to every internal tensor (@ref declare_internal_tensor) here or below that a node
+    /// still reads or writes and no Materialize node brings to life. Run before the first replay validates.
+    void                                     materialize_internal_tensors();
     [[nodiscard]] expected<void, GraphError> validate_tensors() const;
 
     /**
@@ -4731,6 +4757,14 @@ template <typename T, typename Alloc>
 auto Graph::scratch_zero_runtime(std::string name, std::vector<size_t> dims) -> GeneralRuntimeTensor<T, Alloc> & {
     return declare_zero_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), /*intermediate=*/true);
 }
+template <typename T, typename Alloc>
+auto Graph::declare_internal_tensor(std::string name, std::vector<size_t> dims) -> GeneralRuntimeTensor<T, Alloc> & {
+    auto &t = declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), /*intermediate=*/true);
+    if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
+        handle->materialize_on_execute = true;
+    }
+    return t;
+}
 
 #define EINSUMS_GRAPH_ELEMENT_MEMBERS(PREFIX, T)                                                                                           \
     PREFIX auto Graph::create_runtime_tensor<T, std::allocator<T>>(std::string name, std::vector<size_t> dims, bool intermediate)          \
@@ -4760,6 +4794,8 @@ auto Graph::scratch_zero_runtime(std::string name, std::vector<size_t> dims) -> 
     PREFIX auto Graph::scratch_runtime<T, std::allocator<T>>(std::string name, std::vector<size_t> dims)                                   \
         -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
     PREFIX auto Graph::scratch_zero_runtime<T, std::allocator<T>>(std::string name, std::vector<size_t> dims)                              \
+        -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
+    PREFIX auto Graph::declare_internal_tensor<T, std::allocator<T>>(std::string name, std::vector<size_t> dims)                           \
         -> GeneralRuntimeTensor<T, std::allocator<T>> &;
 #define EINSUMS_EXTERN_GRAPH_ELEMENT_MEMBERS(T) EINSUMS_GRAPH_ELEMENT_MEMBERS(extern template EINSUMS_EXPORT, T)
 EINSUMS_CG_ELEMENT_TYPES(EINSUMS_EXTERN_GRAPH_ELEMENT_MEMBERS)

@@ -51,6 +51,7 @@ set(ComputeGraphTests
     AxpbyDescriptor.cpp
     EinsumLiveState.cpp
     EinsumSpec.cpp
+    NaryEinsum.cpp
     ElementOps.cpp
     EscapeAnalysis.cpp
     Executor.cpp
@@ -295,6 +296,8 @@ set(ComputeGraphTests
     test_tiled_parity_python.py
     test_view_lifetime_python.py
     test_view_python.py
+    test_nary_einsum_python.py
+    test_hyp_nary_einsum_diff_python.py
 )
 
 foreach(test ${ComputeGraphTests})

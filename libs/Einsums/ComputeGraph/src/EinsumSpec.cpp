@@ -451,6 +451,74 @@ expected<ParsedEinsumSpec, GraphError> parse_einsum_spec(std::string_view spec) 
     return result;
 }
 
+expected<ParsedNaryEinsumSpec, GraphError> parse_nary_einsum_spec(std::string_view spec) {
+    std::string const stripped = strip_whitespace(spec);
+    auto const        sides    = split_arrow(stripped, "einsum", spec);
+    if (!sides) {
+        return unexpected(sides.error());
+    }
+
+    // Operators prefix the term, as in a two-operand spec, and come off before the operands are
+    // split so the commas inside them cannot decide how the first operand is read.
+    ParsedNaryEinsumSpec result;
+    result.raw              = std::string(spec);
+    std::string_view inputs = sides->inputs;
+    {
+        std::string error;
+        inputs = parse_permutation_prefix(inputs, result.operators, error);
+        if (!error.empty()) {
+            return unexpected(GraphError::parse(fmt::format("einsum spec '{}': {}", spec, error)));
+        }
+    }
+
+    result.c_indices = parse_index_group(sides->output, has_commas(sides->output));
+    if (auto const bad = first_non_alphanumeric(result.c_indices)) {
+        return unexpected(GraphError::parse(fmt::format("einsum spec '{}': output index '{}' has a non-letter character", spec, *bad)));
+    }
+
+    std::size_t position = 0;
+    while (true) {
+        auto const       semi = inputs.find(';');
+        std::string_view part = inputs.substr(0, semi);
+        ++position;
+        if (part.find("P(") != std::string_view::npos) {
+            return unexpected(GraphError::parse(fmt::format(
+                "einsum spec '{}': permutation operator inside operand {}; it prefixes the whole term, as 'C <- P(i/j) A ; B ; D'", spec,
+                position)));
+        }
+        bool conj    = false;
+        part         = unwrap_conj(part, conj);
+        auto indices = parse_index_group(part, has_commas(part));
+        if (indices.empty()) {
+            return unexpected(GraphError::parse(fmt::format("einsum spec '{}': operand {} has no indices", spec, position)));
+        }
+        if (auto const bad = first_non_alphanumeric(indices)) {
+            return unexpected(
+                GraphError::parse(fmt::format("einsum spec '{}': operand {} index '{}' has a non-letter character", spec, position, *bad)));
+        }
+        result.operands.push_back(std::move(indices));
+        result.conj.push_back(conj);
+        if (semi == std::string_view::npos) {
+            break;
+        }
+        inputs = inputs.substr(semi + 1);
+    }
+    if (result.operands.size() < 2) {
+        return unexpected(GraphError::parse(fmt::format("einsum spec '{}': missing ';' between operands", spec)));
+    }
+
+    for (auto const &letter : result.c_indices) {
+        if (std::ranges::none_of(result.operands,
+                                 [&](auto const &operand) { return std::ranges::find(operand, letter) != operand.end(); })) {
+            return unexpected(GraphError::parse(fmt::format("einsum spec '{}': output index '{}' appears in no operand", spec, letter)));
+        }
+    }
+    if (auto const bad = validate_operators(result.operators, result.c_indices)) {
+        return unexpected(GraphError::parse(fmt::format("einsum spec '{}': {}", spec, *bad)));
+    }
+    return result;
+}
+
 namespace {
 
 // The ``P(...) P(...) `` prefix a rendered term carries, empty when there is

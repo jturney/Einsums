@@ -278,10 +278,16 @@ struct TreePlan {
  * @param[in] output  The index list the whole product must expose.
  * @param[in] table   The letter lookup, complete over every letter any factor mentions.
  * @param[in] ctx     What the comparison may consult.
- * @return The plan. @ref TreePlan::ok is false when no tree was found.
+ * @param[in] max_intermediate The most elements a partial product may hold, by the table's extents,
+ *            or zero for no limit. The whole product is the output and is never held to it. A
+ *            caller that has no pass to slice its intermediates afterwards, an eager einsum,
+ *            bounds them here, so that a tree whose arithmetic is cheapest but whose partial
+ *            product would not fit is never chosen.
+ * @return The plan. @ref TreePlan::ok is false when no tree was found, including when every tree
+ *         holds a partial product over @p max_intermediate.
  */
 inline TreePlan solve_tree(std::vector<Factor> const &factors, std::vector<ExprIndex> const &output, LetterTable const &table,
-                           ComparisonContext const &ctx) {
+                           ComparisonContext const &ctx, double max_intermediate = 0.0) {
     std::size_t const count = factors.size();
     Mask const        full  = static_cast<Mask>((Mask{1} << count) - 1);
 
@@ -334,9 +340,22 @@ inline TreePlan solve_tree(std::vector<Factor> const &factors, std::vector<ExprI
         have[single]      = 1;
     }
 
+    // The elements a partial product holds, by the extents the table observed.
+    auto elements_of = [&](std::set<std::string> const &letters) {
+        double product = 1.0;
+        for (auto const &letter : letters) {
+            auto const it = table.extent.find(letter);
+            product *= it == table.extent.end() ? 1.0 : static_cast<double>(it->second);
+        }
+        return product;
+    };
+
     for (Mask mask = 1; mask <= full; mask++) {
         if (std::popcount(mask) < 2) {
             continue;
+        }
+        if (max_intermediate > 0.0 && mask != full && elements_of(external[mask]) > max_intermediate) {
+            continue; // never formed, so no larger set can be built through it
         }
         // Proper non-empty submasks, each pair visited once: taking only halves whose lowest set
         // bit is the mask's lowest set bit avoids visiting (S1,S2) and (S2,S1).

@@ -101,7 +101,10 @@ def _op(name):
 
 def _has_tiled_overload(op):
     """pybind11 lists every overload signature in __doc__; the tiled overloads
-    name the registered TiledRuntimeTensor{F,D,C,Z} classes there."""
+    name the registered TiledRuntimeTensor{F,D,C,Z} classes there. A Python
+    wrapper over a binding (einsums.einsum, which also takes three or more
+    operands) names the binding as __wrapped__."""
+    op = getattr(op, "__wrapped__", op)
     return "TiledRuntimeTensor" in (op.__doc__ or "")
 
 

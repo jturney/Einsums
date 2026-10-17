@@ -153,6 +153,7 @@ void Graph::execute() {
     }
 
     if (!_executed) {
+        materialize_internal_tensors();
         auto validation = validate_tensors();
         if (!validation) {
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "{}", validation.error().message);
@@ -525,6 +526,7 @@ void Graph::execute(Executor &executor) {
     }
 
     if (!_executed) {
+        materialize_internal_tensors();
         auto validation = validate_tensors();
         if (!validation) {
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "{}", validation.error().message);
