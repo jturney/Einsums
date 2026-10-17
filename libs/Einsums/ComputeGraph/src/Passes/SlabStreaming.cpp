@@ -123,6 +123,8 @@ std::vector<std::size_t> positions_of(std::vector<std::string> const &letters, s
 /// An operand that is itself a view is viewed through to its parent with its own axes rather than
 /// viewed again, so the loop holds one view per operand whatever produced the original.
 struct OtherOperand {
+    /// The tensor's live object (@ref TensorHandle::live_ptr), which is what the loop captures
+    /// over: the caller may have dropped its own tensor once it was captured.
     void                      *object{nullptr};
     bool                       is_view{false};
     std::vector<ViewAxis>      base;
@@ -141,7 +143,7 @@ std::optional<OtherOperand> underlying(Graph const &graph, TensorId tid, std::ve
     }
     OtherOperand out;
     if (!handle->is_tensor_view) {
-        out.object   = handle->tensor_ptr;
+        out.object   = handle->live_ptr();
         out.base     = std::vector<ViewAxis>(handle->rank, ViewAxis::full());
         out.streamed = positions;
         return out;
@@ -167,7 +169,7 @@ std::optional<OtherOperand> underlying(Graph const &graph, TensorId tid, std::ve
         }
         out.streamed.push_back(kept[k]);
     }
-    out.object  = parent->tensor_ptr;
+    out.object  = parent->live_ptr();
     out.is_view = parent->is_tensor_view;
     out.base    = view->axes;
     return out;

@@ -1490,9 +1490,9 @@ template <typename T>
 void zero_accumulator(Graph &graph, TensorHandle const &handle) {
     CaptureGuard const guard(graph);
     if (handle.is_tensor_view) {
-        scale(T{0}, static_cast<RuntimeTensorView<T> *>(handle.tensor_ptr));
+        scale(T{0}, static_cast<RuntimeTensorView<T> *>(handle.live_ptr()));
     } else {
-        scale(T{0}, static_cast<RuntimeTensor<T> *>(handle.tensor_ptr));
+        scale(T{0}, static_cast<RuntimeTensor<T> *>(handle.live_ptr()));
     }
 }
 
@@ -1654,10 +1654,12 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
         if (auto const local = owned.find({tid, member}); local != owned.end()) {
             made = &view_runtime(*local->second, std::vector<ViewAxis>(local->second->rank(), ViewAxis::full()));
         } else {
+            // The live object, not the caller's: the caller may have dropped its tensor once it
+            // was captured, and capturing over the stand-in still names the same operand.
             auto const &handle = parent.tensor(tid);
             auto        recipe = axes_for(labels, handle.rank, member);
-            made = handle.is_tensor_view ? &view_runtime(*static_cast<RuntimeTensorView<T> *>(handle.tensor_ptr), std::move(recipe))
-                                         : &view_runtime(*static_cast<RuntimeTensor<T> *>(handle.tensor_ptr), std::move(recipe));
+            made = handle.is_tensor_view ? &view_runtime(*static_cast<RuntimeTensorView<T> *>(handle.live_ptr()), std::move(recipe))
+                                         : &view_runtime(*static_cast<RuntimeTensor<T> *>(handle.live_ptr()), std::move(recipe));
         }
         views.emplace(key, made);
         return *made;

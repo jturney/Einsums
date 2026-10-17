@@ -607,6 +607,55 @@ TEST_CASE("SlabStreaming produces a write-backed tensor a slab per block, straig
     }
 }
 
+TEST_CASE("SlabStreaming builds its loops over the graph's operands, not the caller's", "[ComputeGraph][Pass][SlabStreaming]") {
+    // Capture adopts each operand's storage so the caller may drop its own tensor before the graph
+    // runs. The pass used to view the caller's tensor in the loops it built, and a program that
+    // captured in a function and returned only the graph read freed memory in apply(). Here every
+    // operand but the result is replaced, at the same address, by a tensor of another shape, which
+    // a loop built over the caller's tensor would read, and both the slabs written and the result
+    // read back from them are still the captured ones.
+    constexpr std::size_t                ni = 5;
+    constexpr std::size_t                nk = 3;
+    constexpr std::size_t                nj = 7;
+    constexpr std::size_t                nl = 2;
+    WriteStore                           store("T");
+    std::optional<RuntimeTensor<double>> a{filled("A", {ni, nk}, 3U)};
+    std::optional<RuntimeTensor<double>> b{filled("B", {nk, nj}, 7U)};
+    std::optional<RuntimeTensor<double>> e{filled("E", {nj, nl}, 9U)};
+    auto                                 d  = filled("D", {ni, nl}, 5U);
+    auto const                           d0 = d;
+
+    auto want_t = RuntimeTensor<double>("T", std::vector<std::size_t>{ni, nj});
+    want_t.zero();
+    testing::reference_einsum("i,j <- i,k ; k,j", 0.0, &want_t, 2.0, *a, *b);
+    auto want_d = d0;
+    testing::reference_einsum("i,l <- i,j ; j,l", &want_d, want_t, *e);
+
+    cg::Graph graph("dropped operands");
+    auto     &t = graph.declare_runtime_tensor<double>("T", {ni, nj});
+    graph.annotate_backing(t, store.backing());
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &t, 2.0, *a, *b);
+        cg::einsum("i,l <- i,j ; j,l", &d, t, *e);
+    }
+    for (auto *operand : {&a, &b, &e}) {
+        operand->reset();
+        operand->emplace(filled("other", {2, 2}, 13U));
+    }
+
+    auto const pass = stream(graph, static_cast<std::int64_t>(2 * ni * sizeof(double)));
+    REQUIRE(pass->num_streamed() == 2);
+    REQUIRE(pass->num_written() == 1);
+    CHECK(graph.verify().empty());
+
+    graph.execute();
+    CHECK(store.writes.size() == 4);
+    CHECK(store.reads.size() == 4);
+    check_close(store.stored(), want_t, static_cast<double>(nk));
+    check_close(d, want_d, static_cast<double>(nk * nj));
+}
+
 TEST_CASE("SlabStreaming loads a streamed-out tensor whole for a reader it cannot stream, after the writes",
           "[ComputeGraph][Pass][SlabStreaming]") {
     // D[i,l] = T[i,j] T[l,j] reads T twice, which this pass declines, so T is filled whole from its

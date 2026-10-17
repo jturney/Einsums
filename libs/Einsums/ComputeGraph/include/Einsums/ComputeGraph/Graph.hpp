@@ -11,6 +11,7 @@
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
 #include <Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp>
 #include <Einsums/ComputeGraph/Detail/MaintainedViews.hpp>
+#include <Einsums/ComputeGraph/Detail/StandIns.hpp>
 #include <Einsums/ComputeGraph/DeviceShadowMap.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
@@ -485,6 +486,15 @@ struct GraphState {
     ///
     /// ``rebind_impl`` keeps it in step when a repoint moves a handle's ``tensor_ptr``.
     std::unordered_map<void const *, TensorId> _ptr_index;
+
+    /// Stand-in object to the id of the handle that holds it (``TensorHandle::owner``).
+    ///
+    /// A pass that rewrites a graph captures over the stand-in, because the caller's tensor may
+    /// already be gone, and capture has to find the operand's handle from that object.
+    /// @ref _ptr_index cannot answer: it is keyed on the caller's address, which a later
+    /// registration may have reclaimed. A stand-in lives as long as its handle, so nothing here
+    /// goes stale.
+    std::unordered_map<void const *, TensorId> _stand_in_index;
 
     bool _sorted{false};
 
@@ -3808,9 +3818,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] tensor The caller's tensor.
      * @return An owning reference to the stand-in, or empty when the graph
      *         adopted nothing and the caller's own tensor is used directly.
-     *         The caller stores it in the operand's TensorHandle and TensorSlot;
-     *         the graph keeps no separate index, so adoption costs one
-     *         allocation and nothing per node afterwards.
+     *         The caller stores it in the operand's TensorHandle and TensorSlot,
+     *         so adoption costs one allocation and nothing per node afterwards.
+     *
+     * The stand-in is recorded as standing in for @p tensor for as long as it lives
+     * (Detail/StandIns.hpp), which is how a pass that captures over it later, in this
+     * graph or in a loop body it builds, reaches the same handle.
      */
     template <GraphCapturableTensor TensorType>
     std::shared_ptr<void> adopt_operand(TensorType const &tensor);
@@ -4798,21 +4811,25 @@ auto Graph::adopt_operand(TensorType const &tensor) -> std::shared_ptr<void> {
             }
         }
         // make_shared, not shared_ptr(new ...): one allocation for the
-        // object and its control block rather than two. Capture allocates
-        // one of these per distinct operand, so the difference shows up in
-        // BenchmarkGraphOverhead.
+        // object, its record and the control block rather than several.
+        // Capture allocates one of these per distinct operand, so the
+        // difference shows up in BenchmarkGraphOverhead.
         //
         // Built through the tagged constructor, never from the prvalue
         // shallow_alias() returns: these types have no move constructor, so
-        // make_shared would bind that prvalue to the COPY constructor and
-        // hand back a deep copy that shares nothing. See
+        // the block would bind that prvalue to the COPY constructor and
+        // hold a deep copy that shares nothing. See
         // einsums::detail::SharedStorageTag. Views own no storage, so their
         // plain copy already aliases.
+        std::shared_ptr<detail::AdoptedOperand<Clean>> block;
         if constexpr (requires { Clean(::einsums::detail::SharedStorageTag{}, tensor); }) {
-            return std::make_shared<Clean>(::einsums::detail::SharedStorageTag{}, tensor);
+            block = std::make_shared<detail::AdoptedOperand<Clean>>(::einsums::detail::SharedStorageTag{}, tensor);
         } else {
-            return std::make_shared<Clean>(tensor);
+            block = std::make_shared<detail::AdoptedOperand<Clean>>(tensor);
         }
+        std::shared_ptr<void> stand_in(block, &block->tensor);
+        block->mark.mark(&block->tensor, const_cast<Clean *>(&tensor), detail::liveness_token_of(tensor), stand_in);
+        return stand_in;
     }
 }
 template <GraphCapturableTensor TensorType>
@@ -4823,6 +4840,32 @@ auto Graph::register_operand(TensorType const &tensor) -> TensorId {
 
     if (TensorId const existing = live_tensor_id_by_ptr(ptr, token); existing != 0) {
         return existing;
+    }
+
+    // A stand-in, which a pass captures over because the caller's tensor may be gone. It names
+    // the caller's tensor: this graph's own stand-in is that operand's handle, and another graph's
+    // is the operand its parent names, registered here under the same identity and kept alive by
+    // the same stand-in rather than adopted a second time.
+    if (auto const own = _stand_in_index.find(ptr); own != _stand_in_index.end()) {
+        return own->second;
+    }
+    if (auto adopted = detail::stand_in_of(ptr)) {
+        // Only a handle that provably IS this operand: one holding the same stand-in, or one whose
+        // caller's token is this one. The caller may be gone, and its address with it: a tensor
+        // allocated there since registers under the same pointer with an untracked token, which
+        // the ordinary by-address match would take for this operand.
+        if (TensorId const existing = find_tensor_id_by_ptr(adopted->identity); existing != 0) {
+            TensorHandle const *held = find_tensor(existing);
+            if (held != nullptr &&
+                (held->owner == adopted->owner || (!detail::untracked(held->caller_token) && !detail::untracked(adopted->caller_token) &&
+                                                   detail::same_tensor(held->caller_token, adopted->caller_token)))) {
+                return existing;
+            }
+        }
+        auto handle         = make_handle(tensor, 0, adopted->identity);
+        handle.owner        = std::move(adopted->owner);
+        handle.caller_token = std::move(adopted->caller_token);
+        return register_tensor(std::move(handle));
     }
 
     using Clean = std::remove_cvref_t<TensorType>;

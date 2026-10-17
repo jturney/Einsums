@@ -48,6 +48,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Detail/BackedWrites.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/Detail/MaintainedViews.hpp
+    Einsums/ComputeGraph/Detail/StandIns.hpp
     Einsums/ComputeGraph/Detail/MixedPrecision.hpp
     Einsums/ComputeGraph/Detail/WidthGuard.hpp
     Einsums/ComputeGraph/CostModel.hpp
@@ -163,6 +164,7 @@ set(ComputeGraphSources
     GraphIR/Build.cpp
     InterfaceManifest.cpp
     MaintainedViews.cpp
+    StandIns.cpp
     BackedWrites.cpp
     TensorBacking.cpp
     SymbolicExtents.cpp

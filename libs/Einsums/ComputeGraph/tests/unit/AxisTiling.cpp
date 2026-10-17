@@ -33,6 +33,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -1207,6 +1208,57 @@ TEST_CASE("AxisTiling reads an input whole when its producer cannot join the loo
     problem.energy.data()[0] = 0.0;
     graph.execute();
     CHECK_THAT(problem.energy.data()[0], Catch::Matchers::WithinRel(reference, 1e-12));
+}
+
+TEST_CASE("AxisTiling builds its loop over the graph's operands, not the caller's", "[ComputeGraph][Pass][AxisTiling]") {
+    // Capture adopts each operand's storage so the caller may drop its own tensor before the graph
+    // runs. The pass used to build its loop body over the caller's tensor instead, and a program
+    // that captured in a function and returned only the graph read freed memory in apply(). Here
+    // each operand is replaced, at the same address, by a tensor of another shape, which a body
+    // built over the caller's tensor would read, and the result is still the captured one.
+    constexpr std::size_t                ni = 6;
+    constexpr std::size_t                nj = 7;
+    constexpr std::size_t                nk = 5;
+    constexpr std::size_t                nm = 3;
+    std::optional<RuntimeTensor<double>> a{filled("A", {ni, nk}, 3U)};
+    std::optional<RuntimeTensor<double>> b{filled("B", {nj, nk}, 5U)};
+    std::optional<RuntimeTensor<double>> d{filled("D", {nj, nk, nm}, 7U)};
+    RuntimeTensor<double>                e("E", std::vector<std::size_t>{ni, nm});
+    e.zero();
+
+    RuntimeTensor<double> expected("E_ref", std::vector<std::size_t>{ni, nm});
+    expected.zero();
+    {
+        RuntimeTensor<double> product("T_ref", std::vector<std::size_t>{ni, nj, nk});
+        product.zero();
+        testing::reference_einsum("i,j,k <- i,k ; j,k", &product, *a, *b);
+        testing::reference_einsum("i,m <- i,j,k ; j,k,m", &expected, product, *d);
+    }
+
+    cg::Graph graph("dropped operands");
+    {
+        auto                  &product = graph.scratch_runtime<double>("T", std::vector<std::size_t>{ni, nj, nk});
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j,k <- i,k ; j,k", &product, *a, *b);
+        cg::einsum("i,m <- i,j,k ; j,k,m", &e, product, *d);
+    }
+    for (auto *operand : {&a, &b, &d}) {
+        operand->reset();
+        operand->emplace(filled("other", {2, 2}, 13U));
+    }
+
+    REQUIRE(ni * nj * nk * sizeof(double) > 400);
+    auto const tiling = decide(graph, 400);
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(graph.verify().empty());
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    graph.execute();
+    for (std::size_t n = 0; n < expected.size(); ++n) {
+        INFO("element " << n);
+        CHECK_THAT(e.data()[n], Catch::Matchers::WithinAbs(expected.data()[n], 1e-12));
+    }
 }
 
 // ── Loop bodies ─────────────────────────────────────────────────────────────

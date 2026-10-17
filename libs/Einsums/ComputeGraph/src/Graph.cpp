@@ -260,6 +260,9 @@ TensorId Graph::register_tensor(TensorHandle handle) {
         // what routes a recycled address here for re-registration.
         _ptr_index.insert_or_assign(stored.tensor_ptr, id);
     }
+    if (stored.owner != nullptr) {
+        _stand_in_index.emplace(stored.owner.get(), id);
+    }
     // Deliberately not linked here: containment is resolved in one amortized
     // pass (see link_alias_storage), because doing it per registration is
     // O(n) each and quadratic overall. A DLPNO-MP2 capture registers ~13k
