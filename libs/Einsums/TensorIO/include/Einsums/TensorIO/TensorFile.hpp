@@ -230,8 +230,13 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
 
 namespace detail {
 
-/// Call @p visit(file_offset, dst_offset, inner_bytes) for each contiguous innermost run of a
-/// hyperslab of a column-major tensor. The caller checks that the sizes match the rank.
+/// Call @p visit(file_offset, dst_offset, bytes) for each contiguous run of a hyperslab of a
+/// column-major tensor, in the order the slab holds its elements densely in column-major order.
+///
+/// A run is as long as the slab's shape allows: every leading axis the slab covers whole, and the
+/// first axis it does not, read as one range, since the file holds those elements back to back and
+/// so does the slab. A block of the last axis is one run, and a slab is never split more finely
+/// than its first partial axis requires. The caller checks that the sizes match the rank.
 template <typename T, typename Visit>
 void walk_slab(uint64_t entry_data_offset, std::vector<size_t> const &entry_dims, std::vector<std::pair<size_t, size_t>> const &ranges,
                Visit &&visit) {
@@ -255,22 +260,20 @@ void walk_slab(uint64_t entry_data_offset, std::vector<size_t> const &entry_dims
         strides[d] = strides[d - 1] * entry_dims[d - 1];
     }
 
-    size_t const inner_count = ranges[0].second - ranges[0].first;
-    size_t const inner_bytes = inner_count * sizeof(T);
-
-    if (rank == 1) {
-        uint64_t const src_offset = entry_data_offset + ranges[0].first * sizeof(T);
-        visit(src_offset, std::size_t{0}, inner_bytes);
-        return;
+    // The run: the leading axes the slab covers whole, then the first one it covers in part.
+    size_t inner = 0;
+    while (inner + 1 < rank && ranges[inner].first == 0 && ranges[inner].second == entry_dims[inner]) {
+        ++inner;
     }
+    size_t const run_bytes = strides[inner] * (ranges[inner].second - ranges[inner].first) * sizeof(T);
 
+    // The axes after the run, walked as an odometer.
     std::vector<size_t> idx(rank);
     for (size_t d = 0; d < rank; ++d) {
         idx[d] = ranges[d].first;
     }
-
     auto advance_outer = [&]() -> bool {
-        for (size_t d = 1; d < rank; ++d) {
+        for (size_t d = inner + 1; d < rank; ++d) {
             idx[d]++;
             if (idx[d] < ranges[d].second) {
                 return true;
@@ -283,12 +286,11 @@ void walk_slab(uint64_t entry_data_offset, std::vector<size_t> const &entry_dims
     size_t dst_offset = 0;
     do {
         uint64_t file_offset = entry_data_offset;
-        for (size_t d = 1; d < rank; ++d) {
+        for (size_t d = inner; d < rank; ++d) {
             file_offset += idx[d] * strides[d] * sizeof(T);
         }
-        file_offset += ranges[0].first * sizeof(T);
-        visit(file_offset, dst_offset, inner_bytes);
-        dst_offset += inner_bytes;
+        visit(file_offset, dst_offset, run_bytes);
+        dst_offset += run_bytes;
     } while (advance_outer());
 }
 

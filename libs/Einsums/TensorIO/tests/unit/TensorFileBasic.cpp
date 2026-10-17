@@ -20,6 +20,8 @@
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -253,6 +255,50 @@ TEMPLATE_LIST_TEST_CASE("TensorFile - read_slice 2D", "[TensorIO][Slice]", testi
     for (size_t i = 0; i < 5; i++)
         for (size_t j = 0; j < 8; j++)
             CHECK(slice(i, j) == A(3 + i, 4 + j));
+}
+
+TEST_CASE("TensorFile - a slab is read in as few runs as its shape allows", "[TensorIO][Slice]") {
+    // The walk visited one run per element of every axis after the first, so a slab of the last
+    // axis, one contiguous range of the file, was read in dims[1] x ... separate calls. A run now
+    // takes in every leading axis the slab covers whole and the first axis it does not.
+    std::vector<size_t> const dims{4, 3, 5};
+    using Ranges = std::vector<std::pair<size_t, size_t>>;
+    struct Case {
+        Ranges      ranges;
+        std::size_t runs;
+    };
+    std::vector<Case> const cases{
+        {.ranges = {{0, 4}, {0, 3}, {0, 5}}, .runs = 1},  // the whole tensor
+        {.ranges = {{0, 4}, {0, 3}, {1, 4}}, .runs = 1},  // a block of the last axis
+        {.ranges = {{0, 4}, {1, 3}, {0, 5}}, .runs = 5},  // a block of the middle axis
+        {.ranges = {{1, 3}, {0, 3}, {0, 5}}, .runs = 15}, // a block of the first axis
+        {.ranges = {{0, 4}, {0, 2}, {1, 3}}, .runs = 2},  // first whole, the others partial
+        {.ranges = {{2, 3}, {1, 2}, {4, 5}}, .runs = 1},  // one element
+    };
+    for (auto const &[ranges, runs] : cases) {
+        CAPTURE(ranges);
+        // File element index for each destination element, from the visits.
+        std::vector<std::size_t> read;
+        std::size_t              visits = 0;
+        tensor_io::detail::walk_slab<double>(0, dims, ranges, [&](uint64_t file_off, size_t dst_off, size_t bytes) {
+            ++visits;
+            CHECK(dst_off == read.size() * sizeof(double));
+            for (std::size_t n = 0; n < bytes / sizeof(double); ++n) {
+                read.push_back(file_off / sizeof(double) + n);
+            }
+        });
+        // The slab's elements in column-major order over its own extents.
+        std::vector<std::size_t> want;
+        for (std::size_t k = ranges[2].first; k < ranges[2].second; ++k) {
+            for (std::size_t j = ranges[1].first; j < ranges[1].second; ++j) {
+                for (std::size_t i = ranges[0].first; i < ranges[0].second; ++i) {
+                    want.push_back(i + (j * dims[0]) + (k * dims[0] * dims[1]));
+                }
+            }
+        }
+        CHECK(read == want);
+        CHECK(visits == runs);
+    }
 }
 
 TEMPLATE_LIST_TEST_CASE("TensorFile - read_slice 1D", "[TensorIO][Slice]", testing::AllScalarTypes) {

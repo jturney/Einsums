@@ -7,6 +7,7 @@
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/TensorIO/TensorFile.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstddef>
@@ -199,6 +200,14 @@ TensorFile::~TensorFile() {
     }
 }
 
+namespace {
+/// The most one pread or pwrite is asked to move. macOS rejects a request over INT_MAX bytes with
+/// EINVAL, and the Windows shim narrows the count to a 32-bit DWORD, which turns a request of a
+/// multiple of 4 GiB into a read of nothing; a merged slab run can be that long. The loops below
+/// move the rest.
+constexpr size_t kMaxIoBytes = size_t{1} << 30;
+} // namespace
+
 void TensorFile::write_at(uint64_t offset, void const *data, size_t bytes) {
     if (bytes == 0)
         return;
@@ -206,7 +215,7 @@ void TensorFile::write_at(uint64_t offset, void const *data, size_t bytes) {
     size_t total = 0;
     while (total < bytes) {
         detail::io_result_t const written =
-            detail::pwrite_file(_fd, ptr + total, bytes - total, static_cast<detail::file_offset_t>(offset + total));
+            detail::pwrite_file(_fd, ptr + total, std::min(bytes - total, kMaxIoBytes), static_cast<detail::file_offset_t>(offset + total));
         if (written < 0) {
             if (errno == EINTR)
                 continue;
@@ -223,7 +232,7 @@ void TensorFile::read_at(uint64_t offset, void *data, size_t bytes) const {
     size_t total = 0;
     while (total < bytes) {
         detail::io_result_t const nread =
-            detail::pread_file(_fd, ptr + total, bytes - total, static_cast<detail::file_offset_t>(offset + total));
+            detail::pread_file(_fd, ptr + total, std::min(bytes - total, kMaxIoBytes), static_cast<detail::file_offset_t>(offset + total));
         if (nread < 0) {
             if (errno == EINTR)
                 continue;
