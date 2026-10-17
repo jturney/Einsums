@@ -548,9 +548,10 @@ TEST_CASE("SlabStreaming streams the shared integrals inside AxisTiling's block 
 TEST_CASE("SlabStreaming reads the box AxisTiling's view names, at every iteration of its loop", "[ComputeGraph][Pass][SlabStreaming]") {
     //   H[Q,a,f] = sum_e Bvv[Q,a,e] X[e,f]
     //   out[a]   = sum_Qf H[Q,a,f] Y[Q,f]
-    // Q and f are summed by the second contraction, so AxisTiling can only loop over a, and every
-    // iteration views Bvv[:, a-block, :]. That view used to have Bvv loaded whole before the loop;
-    // the loop has already chosen the box, so each iteration now reads exactly that box.
+    // AxisTiling loops over an axis of H, and every iteration views the box of Bvv that block
+    // needs: Bvv[:, a-block, :] over a, or Bvv[Q-block, :, :] over Q, which the second contraction
+    // sums into out. That view used to have Bvv loaded whole before the loop; the loop has already
+    // chosen the box, so each iteration now reads exactly that box, whichever axis it is on.
     constexpr std::size_t naux = 6;
     constexpr std::size_t v    = 5;
     constexpr std::size_t w    = 3;
@@ -586,14 +587,16 @@ TEST_CASE("SlabStreaming reads the box AxisTiling's view names, at every iterati
 
     graph.execute();
     CHECK_FALSE(store.read_whole());
-    // Every read is a box over a alone, and together they cover a exactly once.
-    std::vector<int> covered(v, 0);
+    // Every read is a box, and together they cover every element exactly once.
+    std::vector<int> covered(naux * v * v, 0);
     for (auto const &ranges : store.reads) {
         REQUIRE(ranges.size() == 3);
-        CHECK(ranges[0] == std::pair<std::size_t, std::size_t>{0, naux});
-        CHECK(ranges[2] == std::pair<std::size_t, std::size_t>{0, v});
-        for (std::size_t a = ranges[1].first; a < ranges[1].second; ++a) {
-            ++covered[a];
+        for (std::size_t q = ranges[0].first; q < ranges[0].second; ++q) {
+            for (std::size_t a = ranges[1].first; a < ranges[1].second; ++a) {
+                for (std::size_t e = ranges[2].first; e < ranges[2].second; ++e) {
+                    ++covered[q + (a * naux) + (e * naux * v)];
+                }
+            }
         }
     }
     CHECK(std::ranges::all_of(covered, [](int count) { return count == 1; }));

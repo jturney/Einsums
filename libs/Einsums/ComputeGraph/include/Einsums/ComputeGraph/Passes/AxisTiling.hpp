@@ -297,6 +297,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("accumulator") [[nodiscard]] std::string accumulator() const { return _accumulator; }
 
+    /// @brief The tensors a contraction of the tiled region sums one of the sliced axes into.
+    /// @return Their names. Each is scaled by its contraction's destination prefactor once, before
+    ///         the loop, and added to at every iteration; empty when no contraction sums a sliced axis.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("summed_into") [[nodiscard]] std::vector<std::string> summed_into() const { return _summed_into; }
+
   private:
     /// @brief Tile every region of one graph of the tree, without descending into its sub-graphs.
     /// @param[in,out] graph The graph.
@@ -351,6 +357,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// verbosity, because the fix is in the caller's declaration and nothing else says so.
     std::vector<std::string>  _held_results;
     std::string               _accumulator;
+    std::vector<std::string>  _summed_into;
     std::string               _emission;
     std::vector<std::int64_t> _block_extents;
     std::size_t               _loops{0};

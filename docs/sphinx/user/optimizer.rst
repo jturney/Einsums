@@ -532,6 +532,16 @@ of its intermediates is that large. A positive cap, as above, bounds each
 intermediate on its own, for a caller who wants a smaller footprint than the
 machine allows, and the share is not read.
 
+An axis a contraction sums over can be sliced as well, when that contraction's
+destination keeps none of the sliced axes and nothing else in the loop reads it.
+The destination is scaled by the contraction's prefactor once, before the loop,
+and each iteration adds its block's share, so a destination that starts with a
+value keeps it exactly once. The report names each such destination. The
+density-fitted particle ladder is the usual case: both of its contractions
+share the auxiliary index, the first producing it and the second summing it,
+and one loop over blocks of it holds the half-transformed tensor a block at a
+time.
+
 Only intermediates are streamed, and a declared tensor is an intermediate only
 when its declaration says so. ``graph.declare_tensor(name, dims)`` declares a
 result: the caller may read it once the graph has run, so it has to exist whole

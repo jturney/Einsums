@@ -299,6 +299,49 @@ TEST_CASE("AxisTiling holds a declared result whole and says how to let it strea
     }
 }
 
+TEST_CASE("AxisTiling slices an axis a contraction sums, when its destination collects the sum", "[ComputeGraph][Pass][AxisTiling]") {
+    //   H[Q,i]  = sum_m A[Q,m] C[m,i]
+    //   out[k]  = 0.5 out[k] + 2 sum_Qi H[Q,i] G[Q,i,k]
+    // The second contraction sums both of H's axes, so every candidate slices a summed letter, and
+    // the pass used to decline them all. out keeps none of them and nothing in the region reads it,
+    // so it can collect the sum: scaled by 0.5 once before the loop, added to at every iteration.
+    // out starts nonzero, so a prefactor applied per block, or not at all, shows in the result.
+    constexpr std::size_t naux = 7;
+    constexpr std::size_t m    = 4;
+    constexpr std::size_t ni   = 6;
+    constexpr std::size_t nk   = 3;
+    auto const            a    = filled("A", {naux, m}, 3U);
+    auto const            c    = filled("C", {m, ni}, 5U);
+    auto const            g    = filled("G", {naux, ni, nk}, 7U);
+    auto                  out  = filled("out", {nk}, 11U);
+    auto const            out0 = out;
+
+    cg::Graph graph("summed axis");
+    {
+        auto                  &half = graph.declare_runtime_tensor<double>("H", std::vector<std::size_t>{naux, ni}, /*intermediate=*/true);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("Q,i <- Q,m ; m,i", &half, a, c);
+        cg::einsum("k <- Q,i ; Q,i,k", 0.5, &out, 2.0, half, g);
+    }
+    auto const tiling = decide(graph, 100);
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->summed_into() == std::vector<std::string>{"out"});
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    graph.execute();
+
+    RuntimeTensor<double> half("Href", std::vector<std::size_t>{naux, ni});
+    half.zero();
+    testing::reference_einsum("Q,i <- Q,m ; m,i", &half, a, c);
+    auto expected = out0;
+    testing::reference_einsum("k <- Q,i ; Q,i,k", 0.5, &expected, 2.0, half, g);
+    for (std::size_t n = 0; n < nk; ++n) {
+        INFO("element " << n);
+        CHECK_THAT(out.data()[n], Catch::Matchers::WithinAbs(expected.data()[n], 1e-12));
+    }
+}
+
 TEST_CASE("AxisTiling is off when the cap is zero", "[ComputeGraph][Pass][AxisTiling]") {
     Problem   problem;
     cg::Graph graph("mp2 full axis");

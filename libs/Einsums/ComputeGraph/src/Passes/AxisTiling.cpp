@@ -337,6 +337,11 @@ struct Plan {
     /// no such reduction.
     TensorId accumulator_id{0};
 
+    /// Destinations a contraction sums a sliced axis into, with the contraction's destination
+    /// prefactor: scaled by it once before the loop, then added to at every iteration.
+    std::vector<std::pair<TensorId, PrefactorScalar>> summed_into;
+    std::vector<std::string>                          summed_names;
+
     packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown};
 };
 
@@ -478,7 +483,12 @@ class RegionAnalysis {
 
     /// Whether a labelling can be turned into a loop: every unlabelled tensor the region
     /// writes is either its reduction target or purely internal.
-    [[nodiscard]] bool closes(Labelling const &labelling, std::string &accumulator, TensorId &accumulator_id, std::string &reason) const;
+    [[nodiscard]] bool closes(Labelling const &labelling, std::string &accumulator, TensorId &accumulator_id,
+                              std::vector<std::pair<TensorId, PrefactorScalar>> &summed_into, std::string &reason) const;
+
+    /// Whether node @p index is a contraction that sums one of the sliced axes: an input carries
+    /// it and the destination does not.
+    [[nodiscard]] bool sums_sliced(Labelling const &labelling, std::size_t index) const;
 
     /// Bytes per slice of the largest intermediate, the bytes every intermediate's chunk holds
     /// together, and the traffic the schedule streams.
@@ -714,9 +724,10 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
                         return out;
                     }
                 }
-                // Slicing a summed letter would cut the contraction in half and cost a
-                // partial-sum buffer the schedule was supposed to save.
-                for (auto const &link : link_letters_of(node)) {
+                // Slicing a summed letter cuts the contraction in half. An einsum's halves add, and
+                // closes() decides whether its destination can carry the sum across the loop; any
+                // other kind's would cost a partial-sum buffer the schedule was supposed to save.
+                for (auto const &link : node.kind == OpKind::Einsum ? std::vector<std::string>{} : link_letters_of(node)) {
                     if (by_letter.contains(link)) {
                         out.feasible = false;
                         out.reason   = "a contraction sums over one of the candidate's sliced axes, which would cut it in half";
@@ -879,10 +890,51 @@ bool node_accumulates(Node const &node) {
 
 } // namespace
 
-bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator, TensorId &accumulator_id, std::string &reason) const {
+bool RegionAnalysis::sums_sliced(Labelling const &labelling, std::size_t index) const {
+    auto const &node = _graph.nodes()[index];
+    if (node.kind != OpKind::Einsum) {
+        return false;
+    }
+    auto const letters = letters_of(node);
+    if (!letters.has_value() || letters->empty()) {
+        return false;
+    }
+    auto const &output = letters->front();
+    for (std::size_t slot = 1; slot < letters->size() && slot < slots_at(index).size(); ++slot) {
+        std::vector<int> const *labels = slot_labels(labelling, index, slot);
+        if (labels == nullptr) {
+            continue;
+        }
+        for (std::size_t p = 0; p < labels->size() && p < (*letters)[slot].size(); ++p) {
+            if ((*labels)[p] != kFree && std::ranges::find(output, (*letters)[slot][p]) == output.end()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator, TensorId &accumulator_id,
+                            std::vector<std::pair<TensorId, PrefactorScalar>> &summed_into, std::string &reason) const {
     auto const &nodes = _graph.nodes();
     accumulator.clear();
     accumulator_id = 0;
+    summed_into.clear();
+
+    // A contraction that sums a sliced axis adds one block's share per iteration, so its
+    // destination must keep none of the sliced axes: one that kept another would have its
+    // prefactor applied once per block of the summed one.
+    for (std::size_t const i : _members) {
+        if (!sums_sliced(labelling, i)) {
+            continue;
+        }
+        std::vector<int> const *destination = slot_labels(labelling, i, 0);
+        if (destination != nullptr && std::ranges::any_of(*destination, [](int v) { return v != kFree; })) {
+            reason = "a contraction sums over one of the candidate's sliced axes, which would cut it in half, into a destination that "
+                     "keeps another of them";
+            return false;
+        }
+    }
 
     for (TensorId const tid : _written) {
         auto const hit = labelling.store.tensor.find(tid);
@@ -929,6 +981,20 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
                 }
             }
         }
+        // A contraction that sums a sliced axis: each iteration adds its block's share, the
+        // destination scaled by the contraction's prefactor once, before the loop. Only for a
+        // destination the region does not also read, since a reader inside the loop would see a
+        // partial sum.
+        if (sums_sliced(labelling, writer_index)) {
+            auto const *desc = nodes[writer_index].op_data.get_if<EinsumDescriptor>();
+            if (writers != 1 || readers != 0 || desc == nullptr) {
+                reason = "a contraction sums over one of the candidate's sliced axes, which would cut it in half, into a tensor the "
+                         "region also reads or writes";
+                return false;
+            }
+            summed_into.emplace_back(tid, live_c_prefactor(*desc));
+            continue;
+        }
         if (writers != 1 || readers != 0 || nodes[writer_index].kind != OpKind::Dot) {
             reason = "a tensor the region writes carries no sliced axis and is not the reduction the loop would accumulate";
             return false;
@@ -972,7 +1038,8 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
         }
     }
     for (std::size_t const i : _members) {
-        bool const adds = node_accumulates(nodes[i]) || (accumulator_id != 0 && slots_at(i)[0].tid == accumulator_id);
+        bool const adds = node_accumulates(nodes[i]) || (accumulator_id != 0 && slots_at(i)[0].tid == accumulator_id) ||
+                          std::ranges::any_of(summed_into, [&](auto const &entry) { return entry.first == slots_at(i)[0].tid; });
         if (!adds) {
             continue;
         }
@@ -1480,6 +1547,18 @@ std::vector<std::vector<std::size_t>> candidate_sets(std::size_t rank) {
     return out;
 }
 
+/// Scale @p handle's tensor by @p factor in the PARENT, before the loop: the destination prefactor a
+/// contraction applied once, which the loop's additions must not apply again.
+template <typename T>
+void scale_in_parent(Graph &graph, TensorHandle const &handle, T factor) {
+    CaptureGuard const guard(graph);
+    if (handle.is_tensor_view) {
+        scale(factor, static_cast<RuntimeTensorView<T> *>(handle.live_ptr()));
+    } else {
+        scale(factor, static_cast<RuntimeTensor<T> *>(handle.live_ptr()));
+    }
+}
+
 /// Zero the accumulator in the PARENT, before the loop.
 ///
 /// The reduction the region wrote OVERWROTE its destination, and the loop accumulates into it,
@@ -1488,12 +1567,7 @@ std::vector<std::vector<std::size_t>> candidate_sets(std::size_t rank) {
 /// from carrying it into the sum.
 template <typename T>
 void zero_accumulator(Graph &graph, TensorHandle const &handle) {
-    CaptureGuard const guard(graph);
-    if (handle.is_tensor_view) {
-        scale(T{0}, static_cast<RuntimeTensorView<T> *>(handle.live_ptr()));
-    } else {
-        scale(T{0}, static_cast<RuntimeTensor<T> *>(handle.live_ptr()));
-    }
+    scale_in_parent(graph, handle, T{0});
 }
 
 /// The index letters a slot keeps once its sliced axes have become loop variables.
@@ -1669,6 +1743,9 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
     bool const chunked = depth > 1;
     for (auto const &op : plan.ops) {
         bool const accumulating = plan.accumulator_id != 0 && op.slots[0].tid == plan.accumulator_id;
+        // A contraction summing a sliced axis adds its block's share to a destination the parent
+        // scaled once before the loop.
+        bool const summing = std::ranges::any_of(plan.summed_into, [&](auto const &entry) { return entry.first == op.slots[0].tid; });
 
         // [slot][member]. Collected before anything is emitted, because a grouped node takes the
         // whole chunk at once and an ungrouped one takes it a member at a time.
@@ -1709,16 +1786,17 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
                     readable = readable && gemm_readable(*view);
                 }
             }
-            // A GEMM computes the one term; an operator's other terms need the per-member path.
-            if (chunked && readable && as_gemm.has_value() && alpha.has_value() && beta.has_value() && !live_conj_a(desc) &&
+            // A GEMM computes the one term; an operator's other terms need the per-member path. A
+            // summing contraction's members all add into one destination, one after another.
+            if (chunked && !summing && readable && as_gemm.has_value() && alpha.has_value() && beta.has_value() && !live_conj_a(desc) &&
                 !live_conj_b(desc) && lists.operators.empty()) {
                 grouped_batched_gemm(*alpha, sources(1), sources(2), *beta, operand[0], as_gemm->trans_a, as_gemm->trans_b);
                 break;
             }
             auto const text = einsum_spec_text(a, b, c, live_conj_a(desc), live_conj_b(desc), lists.operators);
             for (std::size_t member = 0; member < depth; ++member) {
-                einsum(EinsumFormatString(text), as<T>(live_c_prefactor(desc)), operand[0][member], as<T>(live_ab_prefactor(desc)),
-                       *operand[1][member], *operand[2][member]);
+                einsum(EinsumFormatString(text), summing ? T{1} : as<T>(live_c_prefactor(desc)), operand[0][member],
+                       as<T>(live_ab_prefactor(desc)), *operand[1][member], *operand[2][member]);
             }
             break;
         }
@@ -1836,17 +1914,28 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
 /// The dtype dispatch, and the only place the pass names an element type.
 bool emit_tiled_loop(Graph &graph, Plan const &plan) {
     auto emit = [&]<typename T>() {
+        std::size_t prologue = 0;
         if (plan.accumulator_id != 0) {
             zero_accumulator<T>(graph, graph.tensor(plan.accumulator_id));
+            ++prologue;
+        }
+        // A destination a contraction sums a sliced axis into takes the contraction's prefactor
+        // here, once; the loop then only adds. A scale by zero assigns, so a non-finite value the
+        // destination held is not carried into the sum.
+        for (auto const &[tid, prefactor] : plan.summed_into) {
+            if (T const factor = as<T>(prefactor); factor != T{1}) {
+                scale_in_parent(graph, graph.tensor(tid), factor);
+                ++prologue;
+            }
         }
         // The zeroing was appended; it belongs where the region was, ahead of the loop. One
         // splice moves it there and erases the region in the same edit, so no writer can end up
         // behind a reader that survived.
         std::vector<bool> remove(graph.nodes().size(), false);
         std::vector<Node> moved;
-        if (plan.accumulator_id != 0) {
-            remove.back() = true;
-            moved.push_back(graph.nodes().back());
+        for (std::size_t k = remove.size() - prologue; k < remove.size(); ++k) {
+            remove[k] = true;
+            moved.push_back(graph.nodes()[k]);
         }
         for (std::size_t const position : plan.replaced) {
             remove[position] = true;
@@ -1860,7 +1949,7 @@ bool emit_tiled_loop(Graph &graph, Plan const &plan) {
         // Where that landed: the splice shifts an insert down by the erased nodes BELOW it. The
         // loops follow the zeroing, one after another, in the order @ref loop_walks lists them.
         auto const below = static_cast<std::size_t>(std::ranges::count_if(plan.replaced, [site](std::size_t p) { return p < site; }));
-        std::size_t const position = (site - below) + (plan.accumulator_id != 0 ? 1 : 0);
+        std::size_t const position = (site - below) + prologue;
         auto const        loops    = loop_walks(plan);
         for (std::size_t l = 0; l < loops.size(); ++l) {
             std::size_t const iterations = plan.range ? walk_iterations(loops[l]) : plan.iterations;
@@ -1914,6 +2003,7 @@ void AxisTiling::reset_stats() {
     _whole.clear();
     _held_results.clear();
     _accumulator.clear();
+    _summed_into.clear();
     _emission.clear();
     _block_extents.clear();
     _loops = 0;
@@ -1932,6 +2022,9 @@ std::vector<std::string> AxisTiling::explain() const {
     }
     if (!_accumulator.empty()) {
         lines.push_back(fmt::format("AxisTiling: '{}' accumulates across the first region's iterations", _accumulator));
+    }
+    for (auto const &name : _summed_into) {
+        lines.push_back(fmt::format("AxisTiling: '{}' collects a sum over a sliced axis, one block's share per iteration", name));
     }
     return lines;
 }
@@ -2309,10 +2402,11 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
             continue;
         }
 
-        std::string accumulator;
-        TensorId    accumulator_id = 0;
-        std::string reason;
-        if (!analysis->closes(labelling, accumulator, accumulator_id, reason)) {
+        std::string                                       accumulator;
+        TensorId                                          accumulator_id = 0;
+        std::vector<std::pair<TensorId, PrefactorScalar>> summed_into;
+        std::string                                       reason;
+        if (!analysis->closes(labelling, accumulator, accumulator_id, summed_into, reason)) {
             note_skip(reason, detail);
             continue;
         }
@@ -2398,7 +2492,11 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         }
         plan.accumulator    = accumulator;
         plan.accumulator_id = accumulator_id;
-        plan.store          = labelling.store;
+        plan.summed_into    = summed_into;
+        for (auto const &[tid, prefactor] : summed_into) {
+            plan.summed_names.push_back(graph.tensor(tid).name);
+        }
+        plan.store = labelling.store;
         if (!analysis->build(labelling, plan, reason)) {
             note_skip(reason, detail);
             continue;
@@ -2446,7 +2544,8 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         _streamed    = best->streamed;
         _whole       = best->whole;
         _accumulator = best->accumulator;
-        _emission    = best->range ? "range" : "grouped";
+        _summed_into.insert(_summed_into.end(), best->summed_names.begin(), best->summed_names.end());
+        _emission = best->range ? "range" : "grouped";
         _block_extents.assign(best->blocks.begin(), best->blocks.end());
         _loops = loop_walks(*best).size();
     }

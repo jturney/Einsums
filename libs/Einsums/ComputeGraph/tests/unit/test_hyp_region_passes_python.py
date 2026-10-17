@@ -1930,7 +1930,10 @@ def test_the_drawn_caps_reach_both_sides_of_the_tiling_decision():
         prog = _rng_program(seed)
         if _largest_intermediate_bytes(prog, "float64") == 0:
             continue
-        for divisor in (1, 4, 256):
+        # A cap of a sixteenth is the one that still leaves a remainder block on this corpus once
+        # a summed axis is a candidate too: the trials that had one at a quarter now slice an axis
+        # the program's reduction collects, in blocks that divide it evenly.
+        for divisor in (1, 4, 16, 256):
             try:
                 tiling = _check_tiled(prog, divisor, "float64", seed=seed)
             except pytest.skip.Exception:
