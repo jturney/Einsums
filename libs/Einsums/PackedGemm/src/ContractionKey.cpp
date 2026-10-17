@@ -5,6 +5,7 @@
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/Hardware/Machine.hpp>
 #include <Einsums/Logging.hpp>
 
 #ifdef _OPENMP
@@ -130,6 +131,11 @@ int detect_cores_per_l3() {
 }
 
 } // anonymous namespace
+
+int k_split_width() {
+    static int const width = std::max(1, hardware::machine_identity().physical_cores);
+    return width;
+}
 
 CpuConfig const &cpu_config() {
     static CpuConfig const cfg = []() -> CpuConfig {

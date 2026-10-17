@@ -262,6 +262,18 @@ EINSUMS_EXPORT CpuConfig const &cpu_config();
 EINSUMS_EXPORT int64_t min_parallel_flops();
 
 /**
+ * @brief The thread count a packed contraction decides whether to cut its contracted extent for:
+ *        the machine's physical cores, detected once.
+ *
+ * A constant of the machine rather than of the call, so a contraction is cut the same way, and
+ * gives the same bits, at every thread count it runs at (see @c choose_k_split).
+ *
+ * @return The width, at least 1.
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT int k_split_width();
+
+/**
  * @brief Replace @ref min_parallel_flops while measuring the break-even it is derived from.
  *
  * Only for @c einsums-tune. Not a setting: a program pins the threshold with

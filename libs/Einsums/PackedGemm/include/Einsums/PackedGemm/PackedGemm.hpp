@@ -28,11 +28,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <numeric>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
@@ -302,6 +304,12 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 /// Test introspection only, like @ref last_packed_engine.
 [[nodiscard]] EINSUMS_EXPORT int &last_team_size();
 
+/// Shares the most recent packed contraction on this thread divided its contracted extent into: 1
+/// when its threads divided only the output, more when each summed a share of K into a buffer of
+/// its own and the shares were added into C (see @ref choose_k_split). Test introspection only, like
+/// @ref last_team_size.
+[[nodiscard]] EINSUMS_EXPORT int &last_k_split();
+
 /// The cache blocks a packed contraction ran with: MC rows of A, NC columns of B, KC of the
 /// contracted extent, after the C-temporary budget and the thread grid have had their say.
 struct PackedBlocking {
@@ -395,6 +403,17 @@ inline bool mn_roles_should_swap(PackingPlan const &plan, MicroKernelShape const
                          (plan.c_m_dims[0].tensor_stride != 1 && plan.c_n_dims[0].tensor_stride != 1);
     return scatter && !shape.block_gemm && !(is_complex && shape.use_1m) && plan.c_n_dims.back().tensor_stride == 1 &&
            plan.c_m_dims.back().tensor_stride != 1 && plan.N_total >= 2 * static_cast<int64_t>(shape.mr);
+}
+
+/// @brief Whether a parallel region opened here would run on more than one thread: false inside a
+/// region already at the deepest active level the runtime allows, where a nested one runs serially
+/// and a thread grid planned for it would only cut the work finer for one thread.
+inline bool can_fork_threads() {
+#ifdef _OPENMP
+    return omp_get_active_level() < omp_get_max_active_levels();
+#else
+    return false;
+#endif
 }
 
 /// @brief How blis_contraction's threads divide the output: @c tn groups along N, each split
@@ -753,12 +772,15 @@ void flush_c_block_transposed(T *C_data, T const *Cb, int64_t mc, int64_t mc_len
     }
 }
 
-/// @brief Execute a tensor contraction with the packed engine: the vendor fast paths when the plan
-/// maps onto one GEMM or a batch of them, and otherwise BLIS-style packed loops over the resolved
-/// SIMD rung's tile kernel.
-template <typename ValueType, einsums::BasicTensorConcept CType, einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType>
-void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType const &B, ValueType alpha, ValueType beta,
-                      bool conj_a = false, bool conj_b = false, bool prefer_packed = false) {
+/// @brief The packed engine on all of K: the vendor fast paths when the plan maps onto one GEMM or a
+/// batch of them, and otherwise BLIS-style packed loops over the resolved SIMD rung's tile kernel,
+/// its threads dividing the output. @ref blis_contraction runs it once, or once per share of K.
+///
+/// It reads an operand only through @c data(), @c dim(), @c stride() and its rank, so a
+/// @ref StridedOperand serves as well as a tensor.
+template <typename ValueType, typename CType, typename AType, typename BType>
+void blis_contraction_body(PackingPlan const &plan, CType &C, AType const &A, BType const &B, ValueType alpha, ValueType beta, bool conj_a,
+                           bool conj_b, bool prefer_packed) {
     WAGGLE_ZONE_FUNC();
 
     // Resolve the rung's tile kernel and its register-block shape once per contraction, so the
@@ -1627,7 +1649,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // The NC loop is parallel only above min_parallel_flops().
         double const work_flops    = 2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K);
         bool const   worth_threads = work_flops >= static_cast<double>(min_parallel_flops());
-        bool const   parallel_nc   = !parallel_batch && worth_threads;
+        bool const   parallel_nc   = !parallel_batch && worth_threads && can_fork_threads();
 
         // NC starts from the cache model's blk.NC; the thread grid below shrinks it so every thread
         // gets a block, at the price of re-packing A once per extra block.
@@ -2531,6 +2553,254 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         }
 
     } // end batch loop
+}
+
+/// @brief An operand as @ref blis_contraction_body reads it: an element pointer, extents and
+/// strides. A share of a split contraction reads its block of A and B, and writes its partial
+/// result, through these.
+template <typename T>
+struct StridedOperand {
+    T                   *ptr{nullptr};
+    std::vector<int64_t> dims;
+    std::vector<int64_t> strides;
+
+    [[nodiscard]] T     *data() const { return ptr; }
+    [[nodiscard]] size_t rank() const { return dims.size(); }
+    [[nodiscard]] size_t dim(size_t i) const { return static_cast<size_t>(dims[i]); }
+    [[nodiscard]] size_t stride(size_t i) const { return static_cast<size_t>(strides[i]); }
+};
+
+/// @brief @p tensor as a @ref StridedOperand starting @p offset elements in, with axis @p axis cut
+/// to @p length, or no axis cut when @p axis is out of range.
+template <typename TensorType>
+auto strided_operand(TensorType const &tensor, int64_t offset, size_t axis, int64_t length) {
+    using T = std::remove_reference_t<decltype(*tensor.data())>;
+    StridedOperand<T> out;
+    size_t            rank = 0;
+    if constexpr (requires { TensorType::Rank; }) {
+        if constexpr (TensorType::Rank >= 0) {
+            rank = static_cast<size_t>(TensorType::Rank);
+        } else {
+            rank = static_cast<size_t>(tensor.rank());
+        }
+    } else {
+        rank = static_cast<size_t>(tensor.rank());
+    }
+    out.ptr = tensor.data() + offset;
+    for (size_t i = 0; i < rank; ++i) {
+        out.dims.push_back(i == axis ? length : static_cast<int64_t>(tensor.dim(i)));
+        out.strides.push_back(static_cast<int64_t>(tensor.stride(i)));
+    }
+    return out;
+}
+
+/// @brief How a split contraction cuts its contracted extent: along one of the plan's K dims, into
+/// @c shares contiguous blocks.
+struct KSplit {
+    int    shares = 1;
+    size_t dim    = 0;
+};
+
+/// @brief Whether a contraction should sum its contracted extent in shares rather than have its
+/// threads divide the output, and into how many shares.
+///
+/// Every thread packs its rows of A and its columns of B across the whole of K, and threads that
+/// cover the same rows or columns pack them again. An output of a few tiles leaves each thread
+/// little arithmetic against that packing, so more threads buy nothing: the DF particle ladder's
+/// 63 x 93 output over K = 28560 took 1.40 ms on one thread and 1.37 ms on four. A share of K is a
+/// share of both the arithmetic and the packing.
+///
+/// The decision is made for @p width threads, the machine's (see @ref k_split_width), not for the
+/// threads a call happens to run on. Cutting K changes the order of the sums, and a graph node
+/// whose width changes between replays must give the same bits at every width; the shares are cut
+/// the same way whatever the width, and the width decides only how many threads work through them.
+///
+/// The busiest thread's cost decides, counted in multiply-adds: one per output element per K, and
+/// @c kPackWeight per element packed or per output element a share writes and the adds read back.
+/// That weight is what packing an element costs against a multiply-add on the M4's tile kernel,
+/// measured on that ladder (0.31 ns against 0.0064 ns; a gathered operand costs more, a contiguous
+/// one less). A share is at least one K block deep, the depth the engine's blocking amortizes its
+/// passes over C against, and the shares' buffers together are at most 64 MiB. A split is taken
+/// only when it is clearly cheaper, and only above @ref min_parallel_flops; a batched contraction
+/// is never split, since its batch is the parallelism it already has.
+template <typename ValueType>
+KSplit choose_k_split(PackingPlan const &plan, int width, int MR, int NR, int64_t nc_cap, int64_t kc) {
+    constexpr double kPackWeight = 32.0;
+    int64_t const    M           = plan.M_total;
+    int64_t const    N           = plan.N_total;
+    int64_t const    K           = plan.K_total;
+    if (width < 2 || plan.batch_total != 1 || M <= 0 || N <= 0 || K < 2 * std::max<int64_t>(kc, 1) ||
+        2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K) < static_cast<double>(min_parallel_flops())) {
+        return {};
+    }
+    // Cut the K dim outermost in both operands, so each share is whole runs of their memory and
+    // takes the same route the whole contraction would: the engine peels the outer K dims of a
+    // multi-K contraction into a loop of GEMMs over the inner one, and a share cut along an inner
+    // dim breaks those GEMMs into gathers (the ladder's K = (Q, f), Q innermost, ran 2.6 times
+    // slower on one thread cut along Q). Among dims long enough to give every thread a share, the
+    // outermost; failing any, the longest.
+    KSplit     split;
+    auto const outer = [&](size_t d) { return std::min(plan.k_dims_in_a[d].tensor_stride, plan.k_dims_in_b[d].tensor_stride); };
+    bool       found = false;
+    for (size_t d = 0; d < plan.k_dims_in_a.size(); ++d) {
+        if (plan.k_dims_in_a[d].size >= width && (!found || outer(d) > outer(split.dim))) {
+            split.dim = d;
+            found     = true;
+        }
+    }
+    for (size_t d = 0; !found && d < plan.k_dims_in_a.size(); ++d) {
+        if (plan.k_dims_in_a[d].size > plan.k_dims_in_a[split.dim].size) {
+            split.dim = d;
+        }
+    }
+    int64_t const extent = plan.k_dims_in_a[split.dim].size;
+    int64_t const per_k  = K / extent; // K elements per step of the cut dim
+    if (extent < 2) {
+        return {};
+    }
+
+    auto const   md = static_cast<double>(M);
+    auto const   nd = static_cast<double>(N);
+    double const kd = static_cast<double>(K);
+
+    // Dividing the output: the grid blis_contraction_body would choose, its busiest thread taking
+    // its share of the work items, each an N block by an M group, across all of K.
+    ThreadGrid const grid     = choose_thread_grid(width, M, N, MR, NR, nc_cap);
+    int64_t const    n_blocks = (N + grid.nc_blk - 1) / grid.nc_blk;
+    int64_t const    n_mr     = (M + MR - 1) / MR;
+    int64_t const    items    = n_blocks * grid.tm;
+    auto const       per_thr  = static_cast<double>((items + width - 1) / width);
+    auto const       m_group  = static_cast<double>(std::min(M, ((n_mr + grid.tm - 1) / grid.tm) * MR));
+    auto const       nc       = static_cast<double>(std::min(grid.nc_blk, N));
+    double const     by_grid  = per_thr * (kd * (m_group * nc + kPackWeight * (m_group + nc)) + kPackWeight * m_group * nc);
+
+    double     best      = by_grid;
+    int        best_tk   = 1;
+    auto const max_bytes = static_cast<double>(int64_t{64} << 20);
+    for (int tk = 2; tk <= width && tk <= extent; ++tk) {
+        // The smallest share at least one K block deep, and the buffers within their budget.
+        if ((extent / tk) * per_k < kc || static_cast<double>(tk) * md * nd * static_cast<double>(sizeof(ValueType)) > max_bytes) {
+            break;
+        }
+        // The largest share, all of the output written into its buffer, and the adds of every
+        // share into C, divided among the threads.
+        double const share = static_cast<double>((extent + tk - 1) / tk) * static_cast<double>(per_k);
+        double const by_k  = share * (md * nd + kPackWeight * (md + nd)) + kPackWeight * md * nd * (1.0 + static_cast<double>(tk) / width);
+        if (by_k < best) {
+            best    = by_k;
+            best_tk = tk;
+        }
+    }
+    // A split must be clearly cheaper: the estimate is rough.
+    if (best_tk == 1 || best > 0.8 * by_grid) {
+        return {};
+    }
+    split.shares = best_tk;
+    return split;
+}
+
+/// @brief Execute a tensor contraction with the packed engine.
+///
+/// The engine's threads divide the output (see @ref blis_contraction_body). When the output is too
+/// small to keep the machine's threads busy (see @ref choose_k_split), the contracted extent is cut
+/// into shares instead: the threads take the shares in turn, each running the engine alone on its
+/// block of K into a buffer of its own, and the buffers are added into C in share order. The cut
+/// does not depend on how many threads run it, so every width gives the same result.
+template <typename ValueType, einsums::BasicTensorConcept CType, einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType>
+void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType const &B, ValueType alpha, ValueType beta,
+                      bool conj_a = false, bool conj_b = false, bool prefer_packed = false) {
+    MicroKernelShape const shape = micro_kernel_shape<ValueType>();
+    auto const             blk =
+        compute_blocking(static_cast<int64_t>(sizeof(ValueType)), shape.mr, shape.nr, plan.M_total, plan.N_total, plan.K_total);
+    KSplit const split = choose_k_split<ValueType>(plan, k_split_width(), shape.mr, shape.nr, blk.NC, blk.KC);
+    if (split.shares < 2) {
+        blis_contraction_body(plan, C, A, B, alpha, beta, conj_a, conj_b, prefer_packed);
+        last_k_split() = 1;
+        return;
+    }
+    WAGGLE_ZONE("split-K contraction");
+
+    int64_t const M      = plan.M_total;
+    int64_t const N      = plan.N_total;
+    int64_t const extent = plan.k_dims_in_a[split.dim].size;
+    int64_t const per_k  = plan.K_total / extent; // K elements per step of the cut dim
+    auto const    mn     = static_cast<size_t>(M * N);
+
+    // Each share writes all of the output, dense with M fastest, so its plan sees C as one M dim
+    // and one N dim: the flat coordinates the plan's C dims enumerate, in the same order.
+    PackingPlan share_plan = plan;
+    share_plan.c_m_dims    = {DimSpec{.tensor_pos = 0, .size = M, .tensor_stride = 1}};
+    share_plan.c_n_dims    = {DimSpec{.tensor_pos = 1, .size = N, .tensor_stride = M}};
+
+    // The plan's A role is the tensor B when it describes the contraction transposed, and the cut
+    // dim is that role's K dim. A coalesced or synthesized dim has no tensor axis to cut, and the
+    // engine reads such an operand only through the plan's strides.
+    auto const axis_of = [&](DimSpec const &d) { return (plan.coalesced || d.tensor_pos == kSyntheticDimPos) ? ~size_t{0} : d.tensor_pos; };
+    DimSpec const &cut_a = plan.swap_ab ? plan.k_dims_in_b[split.dim] : plan.k_dims_in_a[split.dim];
+    DimSpec const &cut_b = plan.swap_ab ? plan.k_dims_in_a[split.dim] : plan.k_dims_in_b[split.dim];
+
+    std::vector<ValueType> partials(mn * static_cast<size_t>(split.shares));
+    std::vector<int64_t>   m_offsets, n_offsets;
+    precompute_offsets(0, M, plan.c_m_dims, m_offsets);
+    precompute_offsets(0, N, plan.c_n_dims, n_offsets);
+    ValueType *const   c_data = C.data();
+    std::exception_ptr failure;
+
+#ifdef _OPENMP
+#    pragma omp parallel num_threads(std::min(split.shares, omp_get_max_threads())) if (can_fork_threads())
+#endif
+    {
+        int share = 0;
+        int got   = 1;
+#ifdef _OPENMP
+        share = omp_get_thread_num();
+        got   = omp_get_num_threads();
+#endif
+        // The runtime may give fewer threads than shares; each then takes every got-th share.
+        for (int s = share; s < split.shares; s += got) {
+            try {
+                int64_t const lo                 = (extent * s) / split.shares;
+                int64_t const hi                 = (extent * (s + 1)) / split.shares;
+                PackingPlan   mine               = share_plan;
+                mine.k_dims_in_a[split.dim].size = hi - lo;
+                mine.k_dims_in_b[split.dim].size = hi - lo;
+                mine.K_total                     = per_k * (hi - lo);
+                StridedOperand<ValueType> part{partials.data() + mn * static_cast<size_t>(s), {M, N}, {1, M}};
+                auto const                a = strided_operand(A, lo * cut_a.tensor_stride, axis_of(cut_a), hi - lo);
+                auto const                b = strided_operand(B, lo * cut_b.tensor_stride, axis_of(cut_b), hi - lo);
+                blis_contraction_body(mine, part, a, b, alpha, ValueType{0}, conj_a, conj_b, prefer_packed);
+            } catch (...) {
+#ifdef _OPENMP
+#    pragma omp critical(einsums_split_k_failure)
+#endif
+                if (!failure) {
+                    failure = std::current_exception();
+                }
+            }
+        }
+#ifdef _OPENMP
+#    pragma omp barrier
+#endif
+        // The shares into C, columns divided among the threads, each element summed in share order.
+        if (!failure) {
+            for (int64_t n = share; n < N; n += got) {
+                ValueType *const column = c_data + n_offsets[static_cast<size_t>(n)];
+                for (int64_t m = 0; m < M; ++m) {
+                    size_t const f   = static_cast<size_t>(m + n * M);
+                    ValueType    sum = partials[f];
+                    for (int s = 1; s < split.shares; ++s) {
+                        sum += partials[mn * static_cast<size_t>(s) + f];
+                    }
+                    ValueType &out = column[m_offsets[static_cast<size_t>(m)]];
+                    out            = beta == ValueType{0} ? sum : beta * out + sum;
+                }
+            }
+        }
+    }
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+    last_k_split() = split.shares;
 }
 
 // ---------------------------------------------------------------------------

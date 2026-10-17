@@ -30,6 +30,11 @@ int &last_team_size() {
     return size;
 }
 
+int &last_k_split() {
+    thread_local int shares = 1;
+    return shares;
+}
+
 PackedBlocking &last_packed_blocking() {
     thread_local PackedBlocking blocking{};
     return blocking;

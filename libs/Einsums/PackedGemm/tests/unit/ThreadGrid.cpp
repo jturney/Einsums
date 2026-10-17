@@ -24,6 +24,7 @@
 #include <complex>
 #include <string>
 #include <tuple>
+#include <utility>
 
 #ifdef _OPENMP
 #    include <omp.h>
@@ -246,6 +247,42 @@ void short_wide(int threads) {
     check_against(C, C_ref, 64, ab_pf, c_pf);
 }
 
+/// C(i,j,b) = A(d,e,i,j) * B(d,b,e), the DF particle ladder's second contraction at test size: an
+/// output of 21 x 93, too few tiles to divide among threads, over K = (d, e) = 12000, about 47 MFLOP.
+/// d is long enough that the engine runs the whole contraction as a loop of GEMMs over it, one per
+/// e, rather than gathering its operands.
+/// Its K is summed in shares instead (see choose_k_split). Scattered, C is C(j,b,i), whose M group
+/// (i, j) is not contiguous in it, so the shares are added through C's offsets rather than into a
+/// dense block.
+template <typename T>
+struct Ladder {
+    Tensor<T, 4> A = create_random_tensor<T>("A", 600, 20, 3, 7);
+    Tensor<T, 3> B = create_random_tensor<T>("B", 600, 93, 20);
+    Tensor<T, 3> C0;
+    Tensor<T, 3> C_ref;
+    bool         scattered;
+    T            c_pf, ab_pf;
+
+    Ladder(bool scattered_, T c_pf_, T ab_pf_)
+        : C0{scattered_ ? create_random_tensor<T>("C", 7, 93, 3) : create_random_tensor<T>("C", 3, 7, 93)}, C_ref{C0},
+          scattered{scattered_}, c_pf{c_pf_}, ab_pf{ab_pf_} {
+        testing::reference_einsum(scattered ? "jbi <- deij ; dbe" : "ijb <- deij ; dbe", c_pf, &C_ref, ab_pf, A, B);
+    }
+
+    /// The contraction at @p threads threads, checked against the reference.
+    Tensor<T, 3> run(int threads) const {
+        ThreadCount const guard{threads};
+        Tensor<T, 3>      C       = C0;
+        bool const        handled = scattered ? tensor_algebra::detail::try_packed_gemm_indices<false, false>(
+                                                    c_pf, Indices{j, b, i}, &C, ab_pf, Indices{d, e, i, j}, A, Indices{d, b, e}, B)
+                                              : tensor_algebra::detail::try_packed_gemm_indices<false, false>(
+                                                    c_pf, Indices{i, j, b}, &C, ab_pf, Indices{d, e, i, j}, A, Indices{d, b, e}, B);
+        REQUIRE(handled);
+        check_against(C, C_ref, 600 * 20, ab_pf, c_pf);
+        return C;
+    }
+};
+
 } // namespace
 
 TEMPLATE_LIST_TEST_CASE("thread grid: tall thin-N contraction at every thread count", "[PackedGemm][ThreadGrid]", testing::AllScalarTypes) {
@@ -281,6 +318,74 @@ TEMPLATE_LIST_TEST_CASE("thread grid: too few M blocks keeps every thread alone"
     for (int const threads : {3, 12, 24}) {
         CAPTURE(threads);
         short_wide<T>(threads);
+    }
+}
+
+TEMPLATE_LIST_TEST_CASE("split K: a small output over a long K, the same at every thread count", "[PackedGemm][ThreadGrid][SplitK]",
+                        testing::AllScalarTypes) {
+    // Dividing a small output gave four threads no more speed than one, since each packed its rows
+    // and columns across all of K: the ladder's 63 x 93 output over K = 28560 took 1.40 ms on one
+    // thread and 1.37 ms on four. K is now summed in shares, cut for the machine's cores whatever
+    // the thread count, so every count, including ones that do not divide the shares, gives the
+    // same bits: a graph node whose width changes between replays must not change its result.
+    using T            = TestType;
+    bool const machine = packed_gemm::k_split_width() > 1;
+    for (bool const scattered : {false, true}) {
+        CAPTURE(scattered);
+        for (auto const &[c_pf, ab_pf] : {std::pair{T{0}, testing::prefactor<T>(1.1, 0.4)},
+                                          std::pair{testing::prefactor<T>(0.3, -0.7), testing::prefactor<T>(-0.9, 0.2)}}) {
+            Ladder<T> const    ladder{scattered, c_pf, ab_pf};
+            Tensor<T, 3> const first  = ladder.run(1);
+            int const          shares = packed_gemm::last_k_split();
+            CHECK((shares > 1) == machine);
+            // Cut along e, the K dim outermost in both operands, each share is a loop of GEMMs over d
+            // like the whole contraction; cut along d, the longest, each share was a gather.
+            if (shares > 1) {
+                CHECK(std::string(packed_gemm::last_contraction_route()) != "flatten_gemm_gather");
+            }
+            for (int const threads : kThreadCounts) {
+                CAPTURE(threads);
+                Tensor<T, 3> const C = ladder.run(threads);
+                CHECK(packed_gemm::last_k_split() == shares);
+                for (size_t e = 0; e < C.size(); ++e) {
+                    REQUIRE(C.data()[e] == first.data()[e]);
+                }
+            }
+        }
+    }
+}
+
+TEMPLATE_LIST_TEST_CASE("split K: inside a region that cannot fork, the same shares on one thread", "[PackedGemm][ThreadGrid][SplitK]",
+                        testing::RealScalarTypes) {
+    // A contraction called from inside a parallel region runs on its caller's thread alone. It cuts
+    // K as it would outside, and works through every share itself.
+    using T = TestType;
+    Ladder<T> const      ladder{false, T{0}, T{1}};
+    Tensor<T, 3> const   outside = ladder.run(4);
+    int const            shares  = packed_gemm::last_k_split();
+    int                  seen[2] = {0, 0};
+    bool                 same[2] = {false, false};
+#    pragma omp parallel num_threads(2)
+    {
+        int const t = omp_get_thread_num();
+        if (omp_get_max_active_levels() <= omp_get_active_level()) {
+            Tensor<T, 3> C       = ladder.C0;
+            bool const   handled = tensor_algebra::detail::try_packed_gemm_indices<false, false>(
+                T{0}, Indices{i, j, b}, &C, T{1}, Indices{d, e, i, j}, ladder.A, Indices{d, b, e}, ladder.B);
+            seen[t] = packed_gemm::last_k_split();
+            same[t] = handled;
+            for (size_t e = 0; e < C.size() && same[t]; ++e) {
+                same[t] = C.data()[e] == outside.data()[e];
+            }
+        } else {
+            seen[t] = shares;
+            same[t] = true;
+        }
+    }
+    for (int t = 0; t < 2; ++t) {
+        CAPTURE(t);
+        CHECK(seen[t] == shares);
+        CHECK(same[t]);
     }
 }
 
