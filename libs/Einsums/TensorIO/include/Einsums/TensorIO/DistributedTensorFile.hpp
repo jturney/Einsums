@@ -120,6 +120,18 @@ class EINSUMS_EXPORT DistributedTensorFile {
         detail::read_elements([this](uint64_t off, void *data, size_t bytes) { read_at(off, data, bytes); }, offset,
                               reinterpret_cast<char *>(tensor.data()), detail::memory_layout<T>(tensor, Rank), 0, tensor.size());
     }
+
+    /// Read every element of @p entry into @p tensor, already sized to it, in the entry's declared
+    /// axis order whatever order it is stored in.
+    template <typename T, size_t Rank>
+    void read_entry(TensorEntry const &entry, Tensor<T, Rank> &tensor) const {
+        auto const box = detail::stored_box(entry, detail::whole_box(entry), detail::memory_layout<T>(tensor, Rank));
+        char      *dst = reinterpret_cast<char *>(tensor.data());
+        detail::walk_slab<T>(entry.data_offset, box.dims, box.ranges, [&](uint64_t file_off, size_t dst_off, size_t bytes) {
+            detail::read_elements([this](uint64_t off, void *data, size_t count) { read_at(off, data, count); }, file_off, dst, box.layout,
+                                  dst_off / sizeof(T), bytes / sizeof(T));
+        });
+    }
     void write_metadata();
     void read_metadata();
 
@@ -199,7 +211,7 @@ void DistributedTensorFile::read(std::string_view name, Tensor<T, Rank> &tensor)
             for (size_t d = 0; d < Rank; d++)
                 dims[d] = entry.dims[d];
             tensor.resize(dims);
-            read_elements<T>(entry.data_offset, tensor);
+            read_entry<T>(entry, tensor);
             return;
         }
     }
@@ -217,7 +229,7 @@ void DistributedTensorFile::read_local(std::string_view name, Tensor<T, Rank> &t
             for (size_t d = 0; d < Rank; d++)
                 dims[d] = entry.dims[d];
             tensor.resize(dims);
-            read_elements<T>(entry.data_offset, tensor);
+            read_entry<T>(entry, tensor);
             return;
         }
     }

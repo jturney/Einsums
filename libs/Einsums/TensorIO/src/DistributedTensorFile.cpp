@@ -15,10 +15,17 @@
 #    include <mpi.h>
 #endif
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 
 EINSUMS_NAMESPACE_BEGIN(tensor_io)
+
+namespace {
+/// The most one pread or pwrite is asked to move; see TensorFile.cpp, which has the same limit for
+/// the same two platforms.
+constexpr size_t kMaxIoBytes = size_t{1} << 30;
+} // namespace
 
 DistributedTensorFile::DistributedTensorFile(std::string path, Mode mode)
     : _path(std::move(path)), _mode(mode), _my_rank(comm::world_rank()), _num_ranks(comm::world_size()) {
@@ -92,7 +99,7 @@ void DistributedTensorFile::write_at(uint64_t offset, void const *data, size_t b
     size_t total = 0;
     while (total < bytes) {
         detail::io_result_t const written =
-            detail::pwrite_file(_fd, ptr + total, bytes - total, static_cast<detail::file_offset_t>(offset + total));
+            detail::pwrite_file(_fd, ptr + total, std::min(bytes - total, kMaxIoBytes), static_cast<detail::file_offset_t>(offset + total));
         if (written < 0) {
             if (errno == EINTR)
                 continue;
@@ -110,7 +117,7 @@ void DistributedTensorFile::read_at(uint64_t offset, void *data, size_t bytes) c
     size_t total = 0;
     while (total < bytes) {
         detail::io_result_t const nread =
-            detail::pread_file(_fd, ptr + total, bytes - total, static_cast<detail::file_offset_t>(offset + total));
+            detail::pread_file(_fd, ptr + total, std::min(bytes - total, kMaxIoBytes), static_cast<detail::file_offset_t>(offset + total));
         if (nread < 0) {
             if (errno == EINTR)
                 continue;

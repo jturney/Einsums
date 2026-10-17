@@ -89,7 +89,9 @@ TEST_CASE("Format - header init and validate", "[TensorIO][Format]") {
     FileHeader h;
     h.init();
     CHECK(h.is_valid());
-    CHECK(h.version == ETN_VERSION);
+    // A new file starts at the version every release reads; an entry stored in another order is
+    // what moves it to ETN_VERSION.
+    CHECK(h.version == ETN_VERSION_DECLARED_ORDER);
     CHECK(h.num_tensors == 0);
 }
 
@@ -958,4 +960,122 @@ TEST_CASE("TensorFile - a tensor above the maximum rank is refused and leaves no
     TensorFile in(tmp.path, TensorFile::Mode::Read);
     CHECK_FALSE(in.contains("A"));
     CHECK_FALSE(in.contains("R"));
+}
+
+// ── Stored order ─────────────────────────────────────────────────────────────
+
+TEST_CASE("TensorFile - an entry stored in another axis order reads and writes in its declared order", "[TensorIO][Order]") {
+    // An entry declared [Q,a,b] and stored [a,b,Q]. Every read and write takes the declared order,
+    // so a program never states the stored one; only which boxes are long runs of the file changes.
+    TempFile const            tmp("stored_order.etn");
+    std::vector<size_t> const dims{4, 3, 5};
+    std::vector<size_t> const stored{1, 2, 0};
+
+    RuntimeTensor<double> source("Bvv", dims);
+    for (size_t n = 0; n < source.size(); ++n) {
+        source.data()[n] = static_cast<double>(n) + 0.5;
+    }
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.reserve<double>("Bvv", dims, stored);
+        // Written in two boxes, a block of Q each, through the runtime slice path.
+        for (auto const &[lo, hi] : std::vector<std::pair<size_t, size_t>>{{0, 3}, {3, 4}}) {
+            RuntimeTensor<double> block("block", std::vector<size_t>{hi - lo, dims[1], dims[2]});
+            for (size_t q = lo; q < hi; ++q) {
+                for (size_t a = 0; a < dims[1]; ++a) {
+                    for (size_t b = 0; b < dims[2]; ++b) {
+                        block(q - lo, a, b) = source(q, a, b);
+                    }
+                }
+            }
+            out.write_slice("Bvv", block, {{lo, hi}, {0, dims[1]}, {0, dims[2]}});
+        }
+    }
+
+    TensorFile in(tmp.path, TensorFile::Mode::Read);
+    SECTION("the whole entry") {
+        RuntimeTensor<double> whole("whole", std::vector<size_t>{1});
+        in.read("Bvv", whole);
+        REQUIRE(whole.rank() == 3);
+        for (size_t n = 0; n < source.size(); ++n) {
+            CHECK(whole.data()[n] == source.data()[n]);
+        }
+    }
+    SECTION("a box on every axis, through the raw slab path") {
+        std::vector<std::pair<size_t, size_t>> const ranges{{1, 3}, {0, 2}, {2, 5}};
+        std::vector<double>                          slab(2 * 2 * 3);
+        in.read_slab("Bvv", slab.data(), ranges);
+        size_t n = 0;
+        for (size_t b = 2; b < 5; ++b) {
+            for (size_t a = 0; a < 2; ++a) {
+                for (size_t q = 1; q < 3; ++q) {
+                    CHECK(slab[n++] == source(q, a, b));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("TensorFile - a block of the axis stored last is one run", "[TensorIO][Order]") {
+    // Stored [a,b,Q], a block of Q covers the two leading stored axes whole, so the walk is one run.
+    // Stored as declared, the same block is one run per (a,b) pair.
+    TensorEntry entry;
+    entry.init();
+    entry.rank    = 3;
+    entry.dims[0] = 4;
+    entry.dims[1] = 3;
+    entry.dims[2] = 5;
+    std::vector<std::pair<size_t, size_t>> const q_block{{1, 3}, {0, 3}, {0, 5}};
+    auto const                                   runs = [&](TensorEntry const &e) {
+        auto const  box   = tensor_io::detail::stored_box(e, q_block, tensor_io::detail::dense_layout({2, 3, 5}, sizeof(double)));
+        std::size_t count = 0;
+        tensor_io::detail::walk_slab<double>(0, box.dims, box.ranges, [&](uint64_t, size_t, size_t) { ++count; });
+        return count;
+    };
+    CHECK(runs(entry) == 15);
+    entry.set_stored_order({1, 2, 0});
+    CHECK(runs(entry) == 1);
+}
+
+TEST_CASE("TensorFile - the stored order is part of the format", "[TensorIO][Order]") {
+    TensorEntry entry;
+    entry.init();
+    entry.rank = 3;
+
+    // The declared order is recorded as nothing at all, which is what every older entry holds.
+    entry.set_stored_order({0, 1, 2});
+    CHECK_FALSE(entry.permuted());
+    CHECK(entry.stored_order() == std::vector<size_t>{0, 1, 2});
+    entry.set_stored_order({2, 0, 1});
+    CHECK(entry.permuted());
+    CHECK(entry.stored_order() == std::vector<size_t>{2, 0, 1});
+    CHECK_THROWS(entry.set_stored_order({0, 0, 1}));
+    CHECK_THROWS(entry.set_stored_order({0, 1}));
+
+    // A file is written at the version every release reads unless an entry is permuted.
+    TempFile const tmp("stored_order_version.etn");
+    auto const     version = [&]() {
+        FileHeader    header{};
+        std::ifstream f(tmp.path, std::ios::binary);
+        f.read(reinterpret_cast<char *>(&header), sizeof(header));
+        return header.version;
+    };
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.reserve<double>("plain", {2, 3});
+    }
+    CHECK(version() == ETN_VERSION_DECLARED_ORDER);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::ReadWrite);
+        out.reserve<double>("permuted", {2, 3}, {1, 0});
+    }
+    CHECK(version() == ETN_VERSION);
+
+    FileHeader header;
+    header.init();
+    CHECK(header.is_valid());
+    header.version = ETN_VERSION;
+    CHECK(header.is_valid());
+    header.version = ETN_VERSION + 1;
+    CHECK_FALSE(header.is_valid());
 }

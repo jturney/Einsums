@@ -87,6 +87,48 @@ void check_slab_ranges(std::string_view path, std::string_view operation, Tensor
     }
 }
 
+MemoryLayout dense_layout(std::vector<size_t> const &dims, size_t elem_size) {
+    MemoryLayout layout;
+    layout.dims      = dims;
+    layout.elem_size = elem_size;
+    layout.strides.resize(dims.size());
+    size_t stride = 1;
+    for (size_t d = 0; d < dims.size(); ++d) {
+        layout.strides[d] = stride;
+        stride *= dims[d];
+    }
+    layout.file_order = true;
+    return layout;
+}
+
+StoredBox stored_box(TensorEntry const &entry, std::vector<std::pair<size_t, size_t>> const &ranges, MemoryLayout const &memory) {
+    StoredBox box;
+    if (!entry.permuted()) {
+        box.dims.assign(entry.dims, entry.dims + entry.rank);
+        box.ranges = ranges;
+        box.layout = memory;
+        return box;
+    }
+    std::vector<size_t> const order = entry.stored_order();
+    box.layout.elem_size            = memory.elem_size;
+    for (size_t const declared : order) {
+        box.dims.push_back(entry.dims[declared]);
+        box.ranges.push_back(ranges[declared]);
+        box.layout.dims.push_back(memory.dims[declared]);
+        box.layout.strides.push_back(memory.strides[declared]);
+    }
+    box.layout.file_order = is_file_order(box.layout.dims, box.layout.strides);
+    return box;
+}
+
+std::vector<std::pair<size_t, size_t>> whole_box(TensorEntry const &entry) {
+    std::vector<std::pair<size_t, size_t>> ranges;
+    for (size_t d = 0; d < entry.rank; ++d) {
+        ranges.emplace_back(0, entry.dims[d]);
+    }
+    return ranges;
+}
+
 bool is_file_order(std::vector<size_t> const &dims, std::vector<size_t> const &strides) {
     size_t expected = 1;
     for (size_t d = 0; d < dims.size(); ++d) {
@@ -246,8 +288,60 @@ void TensorFile::read_at(uint64_t offset, void *data, size_t bytes) const {
     }
 }
 
+std::vector<size_t> TensorEntry::stored_order() const {
+    std::vector<size_t> out(rank);
+    if (!permuted()) {
+        for (size_t s = 0; s < rank; ++s) {
+            out[s] = s;
+        }
+        return out;
+    }
+    uint32_t const bits =
+        static_cast<uint32_t>(order[0]) | (static_cast<uint32_t>(order[1]) << 8U) | (static_cast<uint32_t>(order[2]) << 16U);
+    std::vector<bool> seen(rank, false);
+    for (size_t s = 0; s < rank; ++s) {
+        size_t const declared = (bits >> (3U * s)) & 0x7U;
+        if (declared >= rank || seen[declared]) {
+            EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                    "TensorFile: entry '{}' records a stored order that is not a permutation of its {} axes", get_name(),
+                                    rank);
+        }
+        seen[declared] = true;
+        out[s]         = declared;
+    }
+    return out;
+}
+
+void TensorEntry::set_stored_order(std::vector<size_t> const &stored) {
+    std::vector<bool> seen(rank, false);
+    bool              identity = true;
+    uint32_t          bits     = 0;
+    if (stored.size() != rank) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "TensorFile: a stored order for entry '{}' names {} axes, not its {}", get_name(),
+                                stored.size(), rank);
+    }
+    for (size_t s = 0; s < stored.size(); ++s) {
+        if (stored[s] >= rank || seen[stored[s]]) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "TensorFile: the stored order given for entry '{}' is not a permutation of its {} axes", get_name(),
+                                    rank);
+        }
+        seen[stored[s]] = true;
+        identity        = identity && stored[s] == s;
+        bits |= static_cast<uint32_t>(stored[s]) << (3U * s);
+    }
+    if (identity) {
+        bits = 0;
+    }
+    order[0] = static_cast<uint8_t>(bits & 0xFFU);
+    order[1] = static_cast<uint8_t>((bits >> 8U) & 0xFFU);
+    order[2] = static_cast<uint8_t>((bits >> 16U) & 0xFFU);
+}
+
 void TensorFile::write_metadata() {
-    // Update header
+    // Update header. A file stays at the version every release reads unless an entry needs more.
+    _header.version =
+        std::ranges::any_of(_entries, [](TensorEntry const &e) { return e.permuted(); }) ? ETN_VERSION : ETN_VERSION_DECLARED_ORDER;
     _header.num_tensors        = static_cast<uint32_t>(_entries.size());
     _header.entry_table_offset = align_up(_next_data_offset, ETN_DATA_ALIGNMENT);
     _header.total_size         = _header.entry_table_offset + _entries.size() * sizeof(TensorEntry);
@@ -328,22 +422,28 @@ void TensorFile::read_slab(std::string_view name, void *destination, std::vector
     auto const &entry = find_entry(name);
     detail::check_slab_ranges(_path, "TensorFile::read_slab", entry, ranges);
 
-    std::vector<size_t> entry_dims(entry.rank);
-    for (size_t d = 0; d < entry.rank; ++d) {
-        entry_dims[d] = entry.dims[d];
+    // The destination holds the slab densely in the entry's declared order, which the walk restates
+    // in its stored order; an entry stored as declared is read straight into it.
+    size_t const        size = dtype_size(static_cast<DType>(entry.dtype));
+    std::vector<size_t> extents;
+    for (auto const &[first, last] : ranges) {
+        extents.push_back(last - first);
     }
+    auto const  box   = detail::stored_box(entry, ranges, detail::dense_layout(extents, size));
     auto *const dst   = static_cast<char *>(destination);
-    auto const  visit = [&](uint64_t file_off, size_t dst_off, size_t bytes) { read_at(file_off, dst + dst_off, bytes); };
+    auto const  visit = [&](uint64_t file_off, size_t dst_off, size_t bytes) {
+        detail::read_elements(reader(), file_off, dst, box.layout, dst_off / size, bytes / size);
+    };
 
-    switch (size_t const size = dtype_size(static_cast<DType>(entry.dtype))) {
+    switch (size) {
     case 4:
-        detail::walk_slab<RawElement<4>>(entry.data_offset, entry_dims, ranges, visit);
+        detail::walk_slab<RawElement<4>>(entry.data_offset, box.dims, box.ranges, visit);
         break;
     case 8:
-        detail::walk_slab<RawElement<8>>(entry.data_offset, entry_dims, ranges, visit);
+        detail::walk_slab<RawElement<8>>(entry.data_offset, box.dims, box.ranges, visit);
         break;
     case 16:
-        detail::walk_slab<RawElement<16>>(entry.data_offset, entry_dims, ranges, visit);
+        detail::walk_slab<RawElement<16>>(entry.data_offset, box.dims, box.ranges, visit);
         break;
     default:
         EINSUMS_THROW_EXCEPTION(std::runtime_error,
@@ -357,22 +457,26 @@ void TensorFile::write_slab(std::string_view name, void const *source, std::vect
     auto const &entry = find_entry(name);
     detail::check_slab_ranges(_path, "TensorFile::write_slab", entry, ranges);
 
-    std::vector<size_t> entry_dims(entry.rank);
-    for (size_t d = 0; d < entry.rank; ++d) {
-        entry_dims[d] = entry.dims[d];
+    size_t const        size = dtype_size(static_cast<DType>(entry.dtype));
+    std::vector<size_t> extents;
+    for (auto const &[first, last] : ranges) {
+        extents.push_back(last - first);
     }
+    auto const        box   = detail::stored_box(entry, ranges, detail::dense_layout(extents, size));
     auto const *const src   = static_cast<char const *>(source);
-    auto const        visit = [&](uint64_t file_off, size_t src_off, size_t bytes) { write_at(file_off, src + src_off, bytes); };
+    auto const        visit = [&](uint64_t file_off, size_t src_off, size_t bytes) {
+        detail::write_elements(writer(), file_off, src, box.layout, src_off / size, bytes / size);
+    };
 
-    switch (size_t const size = dtype_size(static_cast<DType>(entry.dtype))) {
+    switch (size) {
     case 4:
-        detail::walk_slab<RawElement<4>>(entry.data_offset, entry_dims, ranges, visit);
+        detail::walk_slab<RawElement<4>>(entry.data_offset, box.dims, box.ranges, visit);
         break;
     case 8:
-        detail::walk_slab<RawElement<8>>(entry.data_offset, entry_dims, ranges, visit);
+        detail::walk_slab<RawElement<8>>(entry.data_offset, box.dims, box.ranges, visit);
         break;
     case 16:
-        detail::walk_slab<RawElement<16>>(entry.data_offset, entry_dims, ranges, visit);
+        detail::walk_slab<RawElement<16>>(entry.data_offset, box.dims, box.ranges, visit);
         break;
     default:
         EINSUMS_THROW_EXCEPTION(std::runtime_error,

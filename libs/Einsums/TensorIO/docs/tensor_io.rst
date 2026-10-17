@@ -46,6 +46,22 @@ Putting the entry table at the end lets you append tensors without shifting
 existing data. Files written through the distributed path are standard binary,
 so serial programs can read them.
 
+Each entry's data is dense and column-major. By default its axes are stored in
+the order they are declared; an entry can instead be stored with its axes in
+another order, which makes a different set of boxes contiguous runs of the
+file. The entry records that order, and every read and write takes and returns
+the declared order whatever it is, so a program never states it to read the
+data back:
+
+.. code-block:: cpp
+
+   // Declared [Q, a, b], stored [a, b, Q]: a block of Q is one contiguous run.
+   out.reserve<double>("Bvv", {naux, nvir, nvir}, {1, 2, 0});
+
+A file holding an entry stored in another order is written at format version 2;
+one holding none stays at version 1. A release that reads only version 1
+refuses a version 2 file rather than reading its elements in the wrong order.
+
 TensorFile
 ===========
 

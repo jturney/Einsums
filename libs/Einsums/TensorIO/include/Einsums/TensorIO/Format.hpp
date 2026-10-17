@@ -45,8 +45,16 @@ EINSUMS_NAMESPACE_BEGIN(tensor_io)
 /// Magic bytes identifying an .etn file.
 inline constexpr char ETN_MAGIC[8] = {'E', 'I', 'N', 'S', 'U', 'M', 'S', '\0'}; // NOLINT(modernize-avoid-c-arrays)
 
-/// Current format version.
-inline constexpr uint32_t ETN_VERSION = 1;
+/// Newest format version this library reads and writes. Version 2 adds an entry stored in an axis
+/// order other than the one it is declared in (@ref TensorEntry::stored_order). A file is written at
+/// version 2 only when it holds such an entry; one that holds none stays at
+/// @ref ETN_VERSION_DECLARED_ORDER, which every release reads.
+inline constexpr uint32_t ETN_VERSION = 2;
+
+/// The version of a file whose every entry is stored in its declared axis order, and the oldest this
+/// library reads. A release that reads only this version refuses a file with a permuted entry rather
+/// than reading its elements in the wrong order.
+inline constexpr uint32_t ETN_VERSION_DECLARED_ORDER = 1;
 
 /// Alignment for data regions (64 bytes for SIMD/cache-line compatibility).
 inline constexpr size_t ETN_DATA_ALIGNMENT = 64;
@@ -78,7 +86,7 @@ struct FileHeader {
     /// Initialize with default values.
     void init() {
         std::memcpy(magic, ETN_MAGIC, 8);
-        version            = ETN_VERSION;
+        version            = ETN_VERSION_DECLARED_ORDER;
         num_tensors        = 0;
         entry_table_offset = 0;
         data_offset        = ETN_DATA_ALIGNMENT; // First data region after aligned header
@@ -89,7 +97,9 @@ struct FileHeader {
     }
 
     /// Validate magic and version.
-    [[nodiscard]] bool is_valid() const { return std::memcmp(magic, ETN_MAGIC, 8) == 0 && version == ETN_VERSION; }
+    [[nodiscard]] bool is_valid() const {
+        return std::memcmp(magic, ETN_MAGIC, 8) == 0 && version >= ETN_VERSION_DECLARED_ORDER && version <= ETN_VERSION;
+    }
 };
 
 static_assert(sizeof(FileHeader) == 64, "FileHeader must be exactly 64 bytes");
@@ -109,8 +119,12 @@ struct TensorEntry {
     char    name[ETN_MAX_NAME]; ///< Null-terminated tensor name
     uint8_t dtype;              ///< DType enum value
     uint8_t rank;               ///< Number of dimensions (1-8)
+    /// The stored order, three bits per stored axis naming the declared axis held there; all zero
+    /// for the declared order. Read and written through @ref stored_order and @ref set_stored_order.
     // NOLINTNEXTLINE(modernize-avoid-c-arrays)
-    uint8_t reserved1[6]; ///< Padding
+    uint8_t order[3];
+    // NOLINTNEXTLINE(modernize-avoid-c-arrays)
+    uint8_t reserved1[3]; ///< Padding
     // NOLINTNEXTLINE(modernize-avoid-c-arrays)
     uint64_t dims[ETN_MAX_RANK]; ///< Dimension sizes (unused dims = 0)
     uint64_t data_offset;        ///< Byte offset from file start to data
@@ -123,6 +137,19 @@ struct TensorEntry {
         std::memset(this, 0, sizeof(*this));
         owning_rank = ETN_ALL_RANKS;
     }
+
+    /// Whether the entry is stored in an axis order other than its declared one.
+    [[nodiscard]] bool permuted() const { return (order[0] | order[1] | order[2]) != 0; }
+
+    /// The declared axis held at each stored position: element @c s names the declared axis stored
+    /// @c s-th, so the declared order is ``0, 1, ..., rank - 1``. Throws when the bytes do not name a
+    /// permutation of the entry's axes, which only a damaged file holds.
+    [[nodiscard]] EINSUMS_EXPORT std::vector<size_t> stored_order() const;
+
+    /// Record @p stored, a permutation of the entry's axes in the form @ref stored_order returns.
+    /// The declared order is recorded as all zero. Throws when @p stored is not a permutation of
+    /// ``0, ..., rank - 1``.
+    EINSUMS_EXPORT void set_stored_order(std::vector<size_t> const &stored);
 
     /// Set the tensor name (truncates if too long).
     void set_name(std::string_view n) {
@@ -280,6 +307,90 @@ template <typename T, typename TensorType>
     layout.file_order = is_file_order(layout.dims, layout.strides);
     return layout;
 }
+
+/// Call @p visit(file_offset, dst_offset, bytes) for each contiguous run of a hyperslab of a
+/// column-major tensor, in the order the slab holds its elements densely in column-major order.
+///
+/// A run is as long as the slab's shape allows: every leading axis the slab covers whole, and the
+/// first axis it does not, read as one range, since the file holds those elements back to back and
+/// so does the slab. A block of the last axis is one run, and a slab is never split more finely
+/// than its first partial axis requires. The caller checks that the sizes match the rank.
+template <typename T, typename Visit>
+void walk_slab(uint64_t entry_data_offset, std::vector<size_t> const &entry_dims, std::vector<std::pair<size_t, size_t>> const &ranges,
+               Visit &&visit) {
+    size_t const rank = entry_dims.size();
+    if (rank == 0) {
+        // A scalar entry has exactly one slab, the empty one, and it holds the scalar.
+        visit(entry_data_offset, std::size_t{0}, sizeof(T));
+        return;
+    }
+    // A slab empty along any axis holds no element. The walk below visits its first run before it
+    // asks whether there is a next one, so without this it would read a whole inner run into a
+    // destination sized for nothing, from an offset that may lie past the entry.
+    if (std::ranges::any_of(ranges, [](auto const &range) { return range.first == range.second; })) {
+        return;
+    }
+
+    // Column-major strides for the stored tensor: stride[0]=1, stride[d]=prod dims[0..d-1].
+    std::vector<size_t> strides(rank);
+    strides[0] = 1;
+    for (size_t d = 1; d < rank; ++d) {
+        strides[d] = strides[d - 1] * entry_dims[d - 1];
+    }
+
+    // The run: the leading axes the slab covers whole, then the first one it covers in part.
+    size_t inner = 0;
+    while (inner + 1 < rank && ranges[inner].first == 0 && ranges[inner].second == entry_dims[inner]) {
+        ++inner;
+    }
+    size_t const run_bytes = strides[inner] * (ranges[inner].second - ranges[inner].first) * sizeof(T);
+
+    // The axes after the run, walked as an odometer.
+    std::vector<size_t> idx(rank);
+    for (size_t d = 0; d < rank; ++d) {
+        idx[d] = ranges[d].first;
+    }
+    auto advance_outer = [&]() -> bool {
+        for (size_t d = inner + 1; d < rank; ++d) {
+            idx[d]++;
+            if (idx[d] < ranges[d].second) {
+                return true;
+            }
+            idx[d] = ranges[d].first;
+        }
+        return false;
+    };
+
+    size_t dst_offset = 0;
+    do {
+        uint64_t file_offset = entry_data_offset;
+        for (size_t d = inner; d < rank; ++d) {
+            file_offset += idx[d] * strides[d] * sizeof(T);
+        }
+        visit(file_offset, dst_offset, run_bytes);
+        dst_offset += run_bytes;
+    } while (advance_outer());
+}
+
+/// The memory of a dense column-major tensor of extents @p dims and element size @p elem_size.
+[[nodiscard]] EINSUMS_EXPORT MemoryLayout dense_layout(std::vector<size_t> const &dims, size_t elem_size);
+
+/// A box of an entry and the memory that holds it, both in the entry's STORED axis order, which is
+/// the order @ref walk_slab and the element transfers below walk them in.
+struct StoredBox {
+    std::vector<size_t>                    dims;   ///< The entry's extents.
+    std::vector<std::pair<size_t, size_t>> ranges; ///< The box.
+    MemoryLayout                           layout; ///< The memory holding the box.
+};
+
+/// The box @p ranges of @p entry, held in memory described by @p memory, both given in the entry's
+/// declared axis order, restated in its stored order. An entry stored in its declared order is
+/// returned as given.
+[[nodiscard]] EINSUMS_EXPORT StoredBox stored_box(TensorEntry const &entry, std::vector<std::pair<size_t, size_t>> const &ranges,
+                                                  MemoryLayout const &memory);
+
+/// Every element of @p entry, as a box in its declared axis order.
+[[nodiscard]] EINSUMS_EXPORT std::vector<std::pair<size_t, size_t>> whole_box(TensorEntry const &entry);
 
 /// Copy @p count elements, starting at column-major linear index @p first, out of a strided
 /// tensor into @p dst, which receives them in column-major order.

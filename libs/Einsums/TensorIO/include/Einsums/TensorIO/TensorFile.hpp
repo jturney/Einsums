@@ -76,8 +76,15 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     void write_slice(std::string_view name, Tensor<T, Rank> const &tensor, std::array<std::pair<size_t, size_t>, Rank> const &ranges);
 
     /// Create an entry and its data region without writing data, to fill with @ref write_slice.
+    /// @param[in] name The entry's name.
+    /// @param[in] dims Its extents, in its declared axis order.
+    /// @param[in] stored_order The declared axis to store at each position (see
+    ///            @ref TensorEntry::stored_order); empty, or the declared order, stores it as declared.
+    ///            Every read and write of the entry takes and returns its declared order whichever
+    ///            order it is stored in; the stored order only decides which boxes of it are long
+    ///            contiguous runs of the file.
     template <typename T>
-    void reserve(std::string_view name, std::vector<size_t> const &dims);
+    void reserve(std::string_view name, std::vector<size_t> const &dims, std::vector<size_t> const &stored_order = {});
 
     // ── Read ─────────────────────────────────────────────────────────────
 
@@ -207,11 +214,25 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
                                tensor.size());
     }
 
-    /// Read every element of @p tensor, already sized to the entry, from @p offset.
+    /// Read the box @p ranges of @p entry into @p tensor, already sized to it. The box is in the
+    /// entry's declared axis order, as @p tensor is, whatever order the entry is stored in.
     template <typename T, typename TensorType>
-    void read_elements(uint64_t offset, TensorType &tensor, size_t rank) const {
-        detail::read_elements(reader(), offset, reinterpret_cast<char *>(tensor.data()), detail::memory_layout<T>(tensor, rank), 0,
-                              tensor.size());
+    void read_box(TensorEntry const &entry, TensorType &tensor, size_t rank, std::vector<std::pair<size_t, size_t>> const &ranges) const {
+        auto const box = detail::stored_box(entry, ranges, detail::memory_layout<T>(tensor, rank));
+        char      *dst = reinterpret_cast<char *>(tensor.data());
+        detail::walk_slab<T>(entry.data_offset, box.dims, box.ranges, [&](uint64_t file_off, size_t dst_off, size_t bytes) {
+            detail::read_elements(reader(), file_off, dst, box.layout, dst_off / sizeof(T), bytes / sizeof(T));
+        });
+    }
+
+    /// Write @p tensor, sized to it, to the box @p ranges of @p entry; the mirror of @ref read_box.
+    template <typename T, typename TensorType>
+    void write_box(TensorEntry const &entry, TensorType const &tensor, size_t rank, std::vector<std::pair<size_t, size_t>> const &ranges) {
+        auto const  box = detail::stored_box(entry, ranges, detail::memory_layout<T>(tensor, rank));
+        char const *src = reinterpret_cast<char const *>(tensor.data());
+        detail::walk_slab<T>(entry.data_offset, box.dims, box.ranges, [&](uint64_t file_off, size_t src_off, size_t bytes) {
+            detail::write_elements(writer(), file_off, src, box.layout, src_off / sizeof(T), bytes / sizeof(T));
+        });
     }
 
     /// Write the header and entry table to disk.
@@ -223,78 +244,6 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     /// Add a new entry and return its index.
     size_t add_entry(TensorEntry entry);
 };
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Slab walker, shared between read_slice and write_slice (static + runtime).
-// ═══════════════════════════════════════════════════════════════════════════════
-
-namespace detail {
-
-/// Call @p visit(file_offset, dst_offset, bytes) for each contiguous run of a hyperslab of a
-/// column-major tensor, in the order the slab holds its elements densely in column-major order.
-///
-/// A run is as long as the slab's shape allows: every leading axis the slab covers whole, and the
-/// first axis it does not, read as one range, since the file holds those elements back to back and
-/// so does the slab. A block of the last axis is one run, and a slab is never split more finely
-/// than its first partial axis requires. The caller checks that the sizes match the rank.
-template <typename T, typename Visit>
-void walk_slab(uint64_t entry_data_offset, std::vector<size_t> const &entry_dims, std::vector<std::pair<size_t, size_t>> const &ranges,
-               Visit &&visit) {
-    size_t const rank = entry_dims.size();
-    if (rank == 0) {
-        // A scalar entry has exactly one slab, the empty one, and it holds the scalar.
-        visit(entry_data_offset, std::size_t{0}, sizeof(T));
-        return;
-    }
-    // A slab empty along any axis holds no element. The walk below visits its first run before it
-    // asks whether there is a next one, so without this it would read a whole inner run into a
-    // destination sized for nothing, from an offset that may lie past the entry.
-    if (std::ranges::any_of(ranges, [](auto const &range) { return range.first == range.second; })) {
-        return;
-    }
-
-    // Column-major strides for the stored tensor: stride[0]=1, stride[d]=prod dims[0..d-1].
-    std::vector<size_t> strides(rank);
-    strides[0] = 1;
-    for (size_t d = 1; d < rank; ++d) {
-        strides[d] = strides[d - 1] * entry_dims[d - 1];
-    }
-
-    // The run: the leading axes the slab covers whole, then the first one it covers in part.
-    size_t inner = 0;
-    while (inner + 1 < rank && ranges[inner].first == 0 && ranges[inner].second == entry_dims[inner]) {
-        ++inner;
-    }
-    size_t const run_bytes = strides[inner] * (ranges[inner].second - ranges[inner].first) * sizeof(T);
-
-    // The axes after the run, walked as an odometer.
-    std::vector<size_t> idx(rank);
-    for (size_t d = 0; d < rank; ++d) {
-        idx[d] = ranges[d].first;
-    }
-    auto advance_outer = [&]() -> bool {
-        for (size_t d = inner + 1; d < rank; ++d) {
-            idx[d]++;
-            if (idx[d] < ranges[d].second) {
-                return true;
-            }
-            idx[d] = ranges[d].first;
-        }
-        return false;
-    };
-
-    size_t dst_offset = 0;
-    do {
-        uint64_t file_offset = entry_data_offset;
-        for (size_t d = inner; d < rank; ++d) {
-            file_offset += idx[d] * strides[d] * sizeof(T);
-        }
-        visit(file_offset, dst_offset, run_bytes);
-        dst_offset += run_bytes;
-    } while (advance_outer());
-}
-
-} // namespace detail
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Template implementations
@@ -359,7 +308,7 @@ void TensorFile::read(std::string_view name, Tensor<T, Rank> &tensor) {
         dims[d] = entry.dims[d];
     tensor.resize(dims);
 
-    read_elements<T>(entry.data_offset, tensor, Rank);
+    read_box<T>(entry, tensor, Rank, detail::whole_box(entry));
 }
 
 template <typename T, size_t Rank>
@@ -374,17 +323,7 @@ void TensorFile::read_slice(std::string_view name, Tensor<T, Rank> &tensor, std:
         slice_dims[d] = ranges[d].second - ranges[d].first;
     }
     tensor.resize(slice_dims);
-
-    std::vector<size_t> entry_dims(Rank);
-    for (size_t d = 0; d < Rank; ++d) {
-        entry_dims[d] = entry.dims[d];
-    }
-
-    auto const layout = detail::memory_layout<T>(tensor, Rank);
-    char      *dst    = reinterpret_cast<char *>(tensor.data());
-    detail::walk_slab<T>(entry.data_offset, entry_dims, rng, [&](uint64_t file_off, size_t dst_off, size_t bytes) {
-        detail::read_elements(reader(), file_off, dst, layout, dst_off / sizeof(T), bytes / sizeof(T));
-    });
+    read_box<T>(entry, tensor, Rank, rng);
 }
 
 template <typename T, size_t Rank>
@@ -404,20 +343,11 @@ void TensorFile::write_slice(std::string_view name, Tensor<T, Rank> const &tenso
         }
     }
 
-    std::vector<size_t> entry_dims(Rank);
-    for (size_t d = 0; d < Rank; ++d) {
-        entry_dims[d] = entry.dims[d];
-    }
-
-    auto const  layout = detail::memory_layout<T>(tensor, Rank);
-    char const *src    = reinterpret_cast<char const *>(tensor.data());
-    detail::walk_slab<T>(entry.data_offset, entry_dims, rng, [&](uint64_t file_off, size_t src_off, size_t bytes) {
-        detail::write_elements(writer(), file_off, src, layout, src_off / sizeof(T), bytes / sizeof(T));
-    });
+    write_box<T>(entry, tensor, Rank, rng);
 }
 
 template <typename T>
-void TensorFile::reserve(std::string_view name, std::vector<size_t> const &dims) {
+void TensorFile::reserve(std::string_view name, std::vector<size_t> const &dims, std::vector<size_t> const &stored_order) {
     detail::check_writable_rank(_path, "TensorFile::reserve", name, dims.size());
 
     TensorEntry entry;
@@ -427,6 +357,9 @@ void TensorFile::reserve(std::string_view name, std::vector<size_t> const &dims)
     entry.rank  = static_cast<uint8_t>(dims.size());
     for (size_t d = 0; d < dims.size(); ++d) {
         entry.dims[d] = dims[d];
+    }
+    if (!stored_order.empty()) {
+        entry.set_stored_order(stored_order);
     }
 
     size_t total = 1;
@@ -456,7 +389,7 @@ void TensorFile::read(std::string_view name, GeneralRuntimeTensor<T, Alloc> &ten
     }
     tensor.resize(dims);
 
-    read_elements<T>(entry.data_offset, tensor, tensor.rank());
+    read_box<T>(entry, tensor, tensor.rank(), detail::whole_box(entry));
 }
 
 template <typename T, typename Alloc>
@@ -494,17 +427,7 @@ void TensorFile::read_slice(std::string_view name, GeneralRuntimeTensor<T, Alloc
         slab_dims[d] = ranges[d].second - ranges[d].first;
     }
     tensor.resize(slab_dims);
-
-    std::vector<size_t> entry_dims(entry.rank);
-    for (size_t d = 0; d < entry.rank; ++d) {
-        entry_dims[d] = entry.dims[d];
-    }
-
-    auto const layout = detail::memory_layout<T>(tensor, tensor.rank());
-    char      *dst    = reinterpret_cast<char *>(tensor.data());
-    detail::walk_slab<T>(entry.data_offset, entry_dims, ranges, [&](uint64_t file_off, size_t dst_off, size_t bytes) {
-        detail::read_elements(reader(), file_off, dst, layout, dst_off / sizeof(T), bytes / sizeof(T));
-    });
+    read_box<T>(entry, tensor, tensor.rank(), ranges);
 }
 
 template <typename T, typename Alloc>
@@ -524,16 +447,7 @@ void TensorFile::write_slice(std::string_view name, GeneralRuntimeTensor<T, Allo
         }
     }
 
-    std::vector<size_t> entry_dims(entry.rank);
-    for (size_t d = 0; d < entry.rank; ++d) {
-        entry_dims[d] = entry.dims[d];
-    }
-
-    auto const  layout = detail::memory_layout<T>(tensor, tensor.rank());
-    char const *src    = reinterpret_cast<char const *>(tensor.data());
-    detail::walk_slab<T>(entry.data_offset, entry_dims, ranges, [&](uint64_t file_off, size_t src_off, size_t bytes) {
-        detail::write_elements(writer(), file_off, src, layout, src_off / sizeof(T), bytes / sizeof(T));
-    });
+    write_box<T>(entry, tensor, tensor.rank(), ranges);
 }
 
 template <typename T, size_t Rank>
@@ -547,7 +461,7 @@ void TensorFile::read_local(std::string_view name, Tensor<T, Rank> &tensor, int 
             for (size_t d = 0; d < Rank; d++)
                 dims[d] = entry.dims[d];
             tensor.resize(dims);
-            read_elements<T>(entry.data_offset, tensor, Rank);
+            read_box<T>(entry, tensor, Rank, detail::whole_box(entry));
             return;
         }
     }
