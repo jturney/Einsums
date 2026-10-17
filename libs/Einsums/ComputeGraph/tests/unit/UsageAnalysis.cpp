@@ -25,7 +25,7 @@ namespace {
 template <typename T>
 cg::TensorId tid_of(cg::Graph const &g, T const &t) {
     for (auto const &[id, h] : g.tensors_map()) {
-        if (h.tensor_ptr == static_cast<void const *>(&t)) {
+        if (h.lookup_ptr() == static_cast<void const *>(&t)) {
             return id;
         }
     }

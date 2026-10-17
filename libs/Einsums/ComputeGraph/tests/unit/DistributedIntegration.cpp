@@ -357,7 +357,7 @@ TEST_CASE("Distributed - embarrassingly parallel GEMM", "[ComputeGraph][Distribu
     // Custom init for A: after materialization (which allocates local partition),
     // copy this rank's slice from A_full.
     for (auto &[tid, handle] : graph.tensors_map()) {
-        if (handle.tensor_ptr == &A) {
+        if (handle.lookup_ptr() == &A) {
             handle.init_kind = cg::InitKind::Zero; // Triggers an Initialize node
             handle.zero_fn   = [&A, &A_full, M, K]() {
                 // A is distributed along Row (dim 0), use grid coordinates
@@ -468,7 +468,7 @@ TEST_CASE("Distributed - SUMMA GEMM on 2D grid", "[ComputeGraph][Distributed]") 
     // Custom init for A and B: fill each rank's local partition from full data
     // After SUMMA distribution: A is [Row,Col] = (M/Pr, K/Pc), B is [Row,Col] = (K/Pr, N/Pc)
     for (auto &[tid, handle] : graph.tensors_map()) {
-        if (handle.tensor_ptr == &A) {
+        if (handle.lookup_ptr() == &A) {
             handle.init_kind = cg::InitKind::Zero;
             handle.zero_fn   = [&A, &A_full, M, K]() {
                 auto        &grid = comm::ProcessGrid::default_grid();
@@ -481,7 +481,7 @@ TEST_CASE("Distributed - SUMMA GEMM on 2D grid", "[ComputeGraph][Distributed]") 
                     for (size_t jj = 0; jj < A.dim(1); jj++)
                         A(ii, jj) = A_full(row_start + ii, col_start + jj);
             };
-        } else if (handle.tensor_ptr == &B) {
+        } else if (handle.lookup_ptr() == &B) {
             handle.init_kind = cg::InitKind::Zero;
             handle.zero_fn   = [&B, &B_full, K, N]() {
                 auto        &grid = comm::ProcessGrid::default_grid();

@@ -249,7 +249,7 @@ TensorId Graph::register_tensor(TensorHandle handle) {
     // declaring Workspace/Pipeline published are what recover its ownership.
     // An intermediate is graph-owned by construction and is never looked up.
     if (!handle.is_intermediate && !_scope_maps.empty()) {
-        handle.ownership = scope_for_ptr(handle.tensor_ptr);
+        handle.ownership = scope_for_ptr(handle.lookup_ptr());
     }
     auto const &stored = _tensors.emplace(id, std::move(handle)).first->second;
     if (stored.tensor_ptr != nullptr) {
@@ -260,8 +260,13 @@ TensorId Graph::register_tensor(TensorHandle handle) {
         // what routes a recycled address here for re-registration.
         _ptr_index.insert_or_assign(stored.tensor_ptr, id);
     }
-    if (stored.owner != nullptr) {
-        _stand_in_index.emplace(stored.owner.get(), id);
+    // The caller's address only while the caller lives: once it is gone the address may already
+    // belong to a tensor this graph indexed since, and that entry is the one that is right now.
+    if (stored.caller_ptr != nullptr && stored.caller_ptr != stored.tensor_ptr && !stored.caller_token.expired()) {
+        _ptr_index.insert_or_assign(stored.caller_ptr, id);
+    }
+    if (stored.owner != nullptr && stored.owner.get() != stored.tensor_ptr) {
+        _ptr_index.insert_or_assign(stored.owner.get(), id);
     }
     // Deliberately not linked here: containment is resolved in one amortized
     // pass (see link_alias_storage), because doing it per registration is
@@ -540,7 +545,14 @@ TensorId Graph::live_tensor_id_by_ptr(void const *ptr, std::weak_ptr<void> const
         return 0;
     }
     TensorHandle const *handle = find_tensor(id);
-    if (handle == nullptr || !detail::same_tensor(handle->caller_token, token)) {
+    if (handle == nullptr) {
+        return 0;
+    }
+    // The handle's stand-in lives as long as the handle, so its address cannot name anything else.
+    if (handle->owner != nullptr && handle->owner.get() == ptr) {
+        return id;
+    }
+    if (!detail::same_tensor(handle->caller_token, token)) {
         return 0;
     }
     return id;

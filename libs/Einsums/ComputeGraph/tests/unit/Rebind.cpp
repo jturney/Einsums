@@ -11,6 +11,7 @@
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cmath>
+#include <optional>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -306,4 +307,62 @@ TEST_CASE("Rebind - a rebound tensor answers the liveness-checked lookup", "[Com
 
     CHECK(graph.live_tensor_id_by_ptr(&A2, A2.liveness_token()) == a_id);
     CHECK(graph.live_tensor_id_by_ptr(&A1, A1.liveness_token()) == cg::TensorId{0});
+}
+
+namespace {
+
+RuntimeTensor<double> filled(char const *name, std::size_t rows, std::size_t cols, double base) {
+    RuntimeTensor<double> out(name, std::vector<size_t>{rows, cols});
+    for (std::size_t n = 0; n < out.size(); ++n) {
+        out.data()[n] = base + 0.25 * static_cast<double>(n % 7);
+    }
+    return out;
+}
+
+void check_against(RuntimeTensor<double> const &got, RuntimeTensor<double> const &a, RuntimeTensor<double> const &b) {
+    RuntimeTensor<double> want("want", std::vector<size_t>{got.dim(0), got.dim(1)});
+    want.zero();
+    reference_einsum("ik;kj->ij", &want, a, b);
+    for (std::size_t n = 0; n < want.size(); ++n) {
+        INFO("element " << n);
+        CHECK_THAT(got.data()[n], Catch::Matchers::WithinAbs(want.data()[n], 1e-12));
+    }
+}
+
+} // namespace
+
+TEST_CASE("Rebind - a tensor allocated over a dropped operand's address leaves the operand alone", "[ComputeGraph][Rebind]") {
+    // A graph keeps an operand's storage alive after the caller drops its tensor, and the
+    // caller's address is free from then on. A loop body captured the dropped operand; the
+    // caller then captured a new tensor that landed at the same address, and rebound it. Handles
+    // were identified by the caller's address, so the rebind matched the body's handle for the
+    // dropped operand as well, and the body computed with the rebound tensor.
+    std::optional<RuntimeTensor<double>> a{filled("A", 4, 3, 1.0)};
+    auto const                           kept = *a; // the dropped operand's values, for the check
+    auto const                           b    = filled("B", 3, 5, -0.5);
+    RuntimeTensor<double>                e("E", std::vector<size_t>{4, 5});
+    RuntimeTensor<double>                f("F", std::vector<size_t>{4, 5});
+    e.zero();
+    f.zero();
+
+    cg::Graph graph("dropped operand");
+    {
+        auto                  &body = graph.add_loop("once", 1, [](size_t) { return false; });
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", &e, *a, b);
+    }
+
+    // The same address, a different tensor.
+    a.reset();
+    a.emplace(filled("A2", 4, 3, 7.0));
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &f, *a, b);
+    }
+    auto const a3 = filled("A3", 4, 3, -2.0);
+    graph.rebind(*a, const_cast<RuntimeTensor<double> &>(a3));
+
+    graph.execute();
+    check_against(e, kept, b);
+    check_against(f, a3, b);
 }

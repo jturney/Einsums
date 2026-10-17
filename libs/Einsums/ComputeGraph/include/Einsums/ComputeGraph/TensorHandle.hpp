@@ -269,7 +269,34 @@ concept GraphCapturableTensor =
  * @see Graph::create_tensor() for graph-owned tensor creation
  */
 struct TensorHandle {
-    void                   *tensor_ptr{nullptr};                     ///< Pointer to the Tensor object (not its data() pointer)
+    /**
+     * @brief The tensor object this handle names, and the handle's identity.
+     *
+     * Two handles name the same tensor exactly when this is equal, in one graph or across a
+     * graph and its loop bodies, which is what every pass that compares tensors compares. It is
+     * also the object it is legal to DEREFERENCE: it lives at least as long as the handle.
+     *
+     * For an operand capture adopted (see ``Graph::adopt_operand``) this is the graph's STAND-IN,
+     * not the caller's tensor. The caller may destroy its tensor before the graph runs, and from
+     * then on the caller's address can hold any later allocation; the stand-in's cannot while a
+     * handle holds it. The caller's address is kept in @ref caller_ptr for lookups by the
+     * caller's object. Two exceptions keep the caller's address here, both because it cannot be
+     * reused while the handle could be confused with another: a tensor some graph owns (it lives as
+     * long as that graph and its loop bodies), and a tensor type that publishes no liveness token
+     * (nothing could tell a reuse apart).
+     *
+     * Not the tensor's ``data()`` pointer; that is @ref data_ptr.
+     */
+    void *tensor_ptr{nullptr};
+    /**
+     * @brief The caller's tensor, when it differs from @ref tensor_ptr; null otherwise.
+     *
+     * A lookup key, never an identity and never dereferenced: the caller may have destroyed it.
+     * The graph's pointer index files the handle under it as well, checked against
+     * @ref caller_token, so asking the graph about the caller's own object still finds the
+     * handle while that object lives. @see lookup_ptr
+     */
+    void                   *caller_ptr{nullptr};
     void                   *data_ptr{nullptr};                       ///< Pointer to the raw data buffer (tensor.data())
     TensorId                id{0};                                   ///< Unique identifier assigned by Graph::register_tensor()
     std::string             name;                                    ///< Human-readable tensor name (copied from tensor at registration)
@@ -622,30 +649,28 @@ struct TensorHandle {
      * deferred tensor it will relocate, or a type with no storage block to
      * share. Those keep the older "operands must outlive the graph" contract.
      *
-     * @ref tensor_ptr still names the CALLER's tensor either way; it is the
-     * handle's identity, not its lifetime.
+     * Cleared by a rebind: the handle then names the tensor it was rebound to,
+     * and the slot's own reference keeps the stand-in alive for whatever was
+     * built over it before.
      */
     std::shared_ptr<void> owner;
 
     /**
      * @brief The tensor object it is legal to DEREFERENCE at execute time.
      *
-     * @ref tensor_ptr is the handle's IDENTITY, which is the caller's wrapper
-     * address, and identity is deliberately not lifetime: capture adopts the
-     * operand's storage into a stand-in the graph keeps alive through @ref
-     * owner, precisely so the caller's wrapper may be destroyed before
-     * ``execute()``. Dereferencing @ref tensor_ptr after that reads freed
-     * memory.
-     *
-     * So anything that casts a handle to a tensor and USES it goes through
-     * here, and anything that identifies or compares tensors uses @ref
-     * tensor_ptr. ``Graph::live_tensor_ptr`` is the by-id spelling of this and
+     * Usually @ref tensor_ptr itself. It differs where the identity stays the
+     * caller's address although capture adopted the operand (a tensor another
+     * graph owns, a type with no liveness token): the stand-in in @ref owner is
+     * then the object the graph keeps alive, and the one to reach the storage
+     * through. ``Graph::live_tensor_ptr`` is the by-id spelling of this and
      * defers to it.
      *
-     * @return The stand-in when capture adopted one, otherwise the registered
-     *         pointer.
+     * @return The stand-in when the handle holds one, otherwise @ref tensor_ptr.
      */
     [[nodiscard]] void *live_ptr() const noexcept { return owner ? owner.get() : tensor_ptr; }
+
+    /// @brief The address the caller knows this tensor by: @ref caller_ptr when set, else @ref tensor_ptr.
+    [[nodiscard]] void *lookup_ptr() const noexcept { return caller_ptr != nullptr ? caller_ptr : tensor_ptr; }
 
     /**
      * @brief Optional validation function to check if the tensor is still alive.

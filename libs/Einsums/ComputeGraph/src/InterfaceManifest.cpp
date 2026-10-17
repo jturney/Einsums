@@ -149,7 +149,7 @@ void Graph::add_scope_map(TensorScopeMapPtr map) {
     // default scope forever; capture order is not something a caller controls.
     for (auto &[id, handle] : _tensors) {
         if (handle.tensor_ptr != nullptr && !handle.is_intermediate) {
-            handle.ownership = scope_for_ptr(handle.tensor_ptr);
+            handle.ownership = scope_for_ptr(handle.lookup_ptr());
         }
     }
 }

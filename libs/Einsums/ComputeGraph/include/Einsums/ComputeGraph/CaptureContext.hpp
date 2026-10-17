@@ -300,7 +300,7 @@ TensorId CaptureContext::get_or_register(TensorType const &tensor) {
     // or conditional branch a parent-registered tensor also takes the "new" path: it gets a fresh
     // default handle, deliberately dropping the parent's metadata. See the contract note above
     // before "fixing" this. The handle is bound to the graph's stand-in for the operand, not the
-    // caller's wrapper; ``tensor_ptr`` still names the caller's tensor, the handle's identity.
+    // caller's wrapper, and is identified by it (see TensorHandle::tensor_ptr).
     TensorId const id = _graph->register_operand(tensor);
     _ptr_to_id[ptr]   = {.id = id, .token = token};
     return id;

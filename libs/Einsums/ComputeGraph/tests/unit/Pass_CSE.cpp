@@ -877,7 +877,7 @@ TEMPLATE_LIST_TEST_CASE("CSE - deduplicates rank-3 batched einsum nodes (row-maj
     // no row-major variant; this test exercises the row_mode dedup machinery,
     // not the user-visibility guard - that has its own test above).
     for (auto &[tid, handle] : graph.tensors_map()) {
-        if (handle.tensor_ptr == &D) {
+        if (handle.lookup_ptr() == &D) {
             handle.is_intermediate = true;
         }
     }

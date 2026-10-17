@@ -212,7 +212,7 @@ TEMPLATE_LIST_TEST_CASE("Graph declare_zero_tensor - sets init kind", "[ComputeG
     // Check handle has correct init_kind
     bool found = false;
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (handle.tensor_ptr == &D) {
+        if (handle.lookup_ptr() == &D) {
             CHECK(handle.init_kind == cg::InitKind::Zero);
             CHECK(handle.alloc_state == cg::AllocState::Deferred);
             CHECK_FALSE(handle.is_intermediate); // declare_tensor is user-visible
@@ -717,7 +717,7 @@ TEMPLATE_LIST_TEST_CASE("Workspace declare_zero_tensor propagates pending_init t
     // workspace's init policy, that's what make_handle now propagates.
     bool body_handle_has_init = false;
     for (auto const &[tid, h] : body.tensors_map()) {
-        if (h.tensor_ptr == static_cast<void *>(&A)) {
+        if (h.lookup_ptr() == static_cast<void *>(&A)) {
             body_handle_has_init = (h.init_kind == cg::InitKind::Zero) && static_cast<bool>(h.zero_fn);
             break;
         }

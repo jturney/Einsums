@@ -44,7 +44,7 @@ namespace {
 /// Find the handle registered for a given tensor object, or nullptr.
 cg::TensorHandle const *handle_for(cg::Graph const &g, void const *tensor_ptr) {
     for (auto const &[tid, handle] : g.tensors_map()) {
-        if (handle.tensor_ptr == tensor_ptr) {
+        if (handle.lookup_ptr() == tensor_ptr) {
             return &handle;
         }
     }

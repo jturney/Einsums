@@ -475,8 +475,9 @@ struct GraphState {
     /// False once a tensor has been registered since the last link pass.
     bool _aliases_linked{true};
 
-    /// ``TensorHandle::tensor_ptr`` to id. Capture asks "is this object already
-    /// registered?" for every operand, which was a linear scan of the tensor
+    /// ``TensorHandle::tensor_ptr`` to id, and the handle's ``caller_ptr`` and stand-in to the same
+    /// id where they differ from it. Capture asks "is this object already registered?" for every
+    /// operand, which was a linear scan of the tensor
     /// table and so quadratic over a capture; a DLPNO-MP2 graph registers ~13k
     /// tensors.
     ///
@@ -486,15 +487,6 @@ struct GraphState {
     ///
     /// ``rebind_impl`` keeps it in step when a repoint moves a handle's ``tensor_ptr``.
     std::unordered_map<void const *, TensorId> _ptr_index;
-
-    /// Stand-in object to the id of the handle that holds it (``TensorHandle::owner``).
-    ///
-    /// A pass that rewrites a graph captures over the stand-in, because the caller's tensor may
-    /// already be gone, and capture has to find the operand's handle from that object.
-    /// @ref _ptr_index cannot answer: it is keyed on the caller's address, which a later
-    /// registration may have reclaimed. A stand-in lives as long as its handle, so nothing here
-    /// goes stale.
-    std::unordered_map<void const *, TensorId> _stand_in_index;
 
     bool _sorted{false};
 
@@ -968,9 +960,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * The lookup for a tensor this graph has just allocated or declared and needs the
      * handle of. It goes through the pointer index rather than a first-match scan of the
      * tensor table, because an address does not identify a tensor across a destruction:
-     * capture lets a caller's wrapper die while its handle, whose @ref TensorHandle::tensor_ptr
-     * is that wrapper's address, stays registered, and the next allocation of the same size
-     * can land on the freed address. A scan then finds two handles at one address and returns
+     * capture lets a caller's wrapper die while its handle stays registered, filed under that
+     * wrapper's address among others (@ref TensorHandle::caller_ptr, or the identity itself for a
+     * type with no liveness token), and the next allocation of the same size can land on the
+     * freed address. A scan then finds two handles at one address and returns
      * whichever the table happens to iterate first, which under the MSVC STL is the STALE
      * one. The index has no such ambiguity: @ref register_tensor reassigns it to the tensor
      * that lives there now.
@@ -1081,7 +1074,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * The by-object form of ``annotate_spaces(TensorId, std::vector<SpaceId>)``, mirroring
      * @ref rebind's pair of overloads. A tensor the graph has not seen yet is registered here,
      * exactly the way capture would register it (storage adopted into a graph-owned stand-in,
-     * identity kept on the caller's wrapper), so annotating before the first capture that uses
+     * filed under the caller's object as well), so annotating before the first capture that uses
      * the tensor costs it none of the ownership guarantees capture would have given it.
      */
     template <GraphCapturableTensor TensorType>
@@ -1540,15 +1533,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Use this, never ``tensor(id).tensor_ptr``, in any lambda a pass bakes
      * into ``Node::execute``.
      *
-     * ``TensorHandle::tensor_ptr`` names the CALLER's wrapper. That is the
-     * handle's identity and it is deliberately not its lifetime: capture adopts
-     * the operand's storage into a stand-in the graph keeps alive
-     * (``TensorHandle::owner``), precisely so the caller's wrapper may be
-     * destroyed before ``execute()``. Every built-in node reaches its operands
-     * through the stand-in via ``TensorSlot::ptr``; a pass that rewrites a node
-     * into an ``OpKind::Custom`` closure over ``tensor_ptr`` opts back out of
-     * that guarantee and reads freed memory, silently, with a zeroed
-     * intermediate as the usual symptom.
+     * ``TensorHandle::tensor_ptr`` is the handle's identity, and for an adopted
+     * operand it is usually the stand-in the graph keeps alive, but not always:
+     * an adopted tensor some graph owns, or one whose type has no liveness
+     * token, keeps the caller's address as its identity while the graph reads
+     * it through the stand-in (``TensorHandle::owner``). Every built-in node
+     * reaches its operands through ``TensorSlot::ptr``; a pass that rewrites a
+     * node into an ``OpKind::Custom`` closure over ``tensor_ptr`` can read a
+     * tensor the caller has destroyed, silently, with a zeroed intermediate as
+     * the usual symptom.
      *
      * @param[in] id The tensor identifier.
      * A redirected id (see @ref redirect_slot) answers with the tensor its slot
@@ -3821,9 +3814,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *         The caller stores it in the operand's TensorHandle and TensorSlot,
      *         so adoption costs one allocation and nothing per node afterwards.
      *
-     * The stand-in is recorded as standing in for @p tensor for as long as it lives
-     * (Detail/StandIns.hpp), which is how a pass that captures over it later, in this
-     * graph or in a loop body it builds, reaches the same handle.
+     * One stand-in per caller tensor: while one another graph adopted for @p tensor
+     * lives, it is shared rather than a second one made, so every graph that names the
+     * tensor agrees on its identity (@ref TensorHandle::tensor_ptr). Each stand-in is
+     * recorded with what it stands in for for as long as it lives (Detail/StandIns.hpp),
+     * which is how a pass that captures over it later, in this graph or in a loop body it
+     * builds, reaches the same operand.
      */
     template <GraphCapturableTensor TensorType>
     std::shared_ptr<void> adopt_operand(TensorType const &tensor);
@@ -3836,10 +3832,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * The out-of-capture counterpart of ``CaptureContext::get_or_register``, and deliberately
      * the same registration: storage adopted into a graph-owned stand-in via
-     * @ref adopt_operand, the handle's lambdas baked over that stand-in, and
-     * @ref TensorHandle::tensor_ptr left naming the caller's wrapper so every identity
-     * comparison against a user-held tensor still works. Capture then finds this handle by
-     * pointer and reuses it rather than registering a second one.
+     * @ref adopt_operand, the handle's lambdas baked over that stand-in, and the handle filed
+     * under the caller's own address too (@ref TensorHandle::caller_ptr) so a lookup by the
+     * user-held tensor still finds it. Capture then finds this handle by pointer and reuses it
+     * rather than registering a second one.
      *
      * For callers that need a handle to exist before any operation is captured. Metadata set on
      * a tensor (its index spaces) has to have somewhere to live, and the graph's handle is that
@@ -4472,11 +4468,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// The three steps every graph-owned tensor needs - the allocation, the type-erased
     /// deleter that gives the graph the destruction back, and the address set that tells
     /// ``adopt_operand`` this buffer is already the graph's own - written once.
+    ///
+    /// Recorded as graph-owned (Detail/StandIns.hpp) for exactly its life, forgotten before the
+    /// delete so no later allocation at the address is mistaken for it.
     template <typename TensorType, typename... Args>
     TensorType *own_tensor(Args &&...args) {
         auto *ptr = new TensorType(std::forward<Args>(args)...);
-        _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
+        _owned_tensors.emplace_back(ptr, [](void *p) {
+            detail::forget_graph_owned(p);
+            delete static_cast<TensorType *>(p);
+        });
         _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
+        detail::note_graph_owned(ptr);
         return ptr;
     }
 
@@ -4810,6 +4813,10 @@ auto Graph::adopt_operand(TensorType const &tensor) -> std::shared_ptr<void> {
                 return {};
             }
         }
+        std::weak_ptr<void> const token = detail::liveness_token_of(tensor);
+        if (auto shared = detail::stand_in_for(static_cast<void const *>(&tensor), token)) {
+            return shared;
+        }
         // make_shared, not shared_ptr(new ...): one allocation for the
         // object, its record and the control block rather than several.
         // Capture allocates one of these per distinct operand, so the
@@ -4828,7 +4835,12 @@ auto Graph::adopt_operand(TensorType const &tensor) -> std::shared_ptr<void> {
             block = std::make_shared<detail::AdoptedOperand<Clean>>(tensor);
         }
         std::shared_ptr<void> stand_in(block, &block->tensor);
-        block->mark.mark(&block->tensor, const_cast<Clean *>(&tensor), detail::liveness_token_of(tensor), stand_in);
+        // The caller's address stays the identity only where it cannot be reused while a handle
+        // names it: a tensor some graph owns, or one whose type cannot tell a reuse apart anyway.
+        auto *const caller = const_cast<Clean *>(&tensor);
+        void *const identity =
+            detail::untracked(token) || detail::is_graph_owned(caller) ? static_cast<void *>(caller) : static_cast<void *>(&block->tensor);
+        block->mark.mark(&block->tensor, identity, caller, token, stand_in);
         return stand_in;
     }
 }
@@ -4842,39 +4854,45 @@ auto Graph::register_operand(TensorType const &tensor) -> TensorId {
         return existing;
     }
 
-    // A stand-in, which a pass captures over because the caller's tensor may be gone. It names
-    // the caller's tensor: this graph's own stand-in is that operand's handle, and another graph's
-    // is the operand its parent names, registered here under the same identity and kept alive by
-    // the same stand-in rather than adopted a second time.
-    if (auto const own = _stand_in_index.find(ptr); own != _stand_in_index.end()) {
-        return own->second;
+    // An operand adopted here gets a stand-in, shared with every other graph that adopted the same
+    // tensor, and an operand that already IS a stand-in (a pass captures over the stand-in, since
+    // the caller's tensor may be gone) is that stand-in's operand. Either way the record says what
+    // the handle is identified by and what the caller knew it as.
+    std::shared_ptr<void>          owner;
+    std::optional<detail::StandIn> adopted = detail::stand_in_of(ptr);
+    if (adopted) {
+        owner = adopted->owner;
+    } else if ((owner = adopt_operand(tensor))) {
+        adopted = detail::stand_in_of(owner.get());
     }
-    if (auto adopted = detail::stand_in_of(ptr)) {
-        // Only a handle that provably IS this operand: one holding the same stand-in, or one whose
-        // caller's token is this one. The caller may be gone, and its address with it: a tensor
-        // allocated there since registers under the same pointer with an untracked token, which
-        // the ordinary by-address match would take for this operand.
-        if (TensorId const existing = find_tensor_id_by_ptr(adopted->identity); existing != 0) {
+
+    void               *identity     = ptr;
+    void               *caller       = nullptr;
+    std::weak_ptr<void> caller_token = token;
+    if (adopted) {
+        identity     = adopted->identity;
+        caller       = adopted->caller != identity ? adopted->caller : nullptr;
+        caller_token = adopted->caller_token;
+        // Registered here already under that identity, through the caller's object or another
+        // capture over the stand-in. Only a handle that provably IS this operand: the address may
+        // be the caller's, and a tensor allocated there since registers with an untracked token,
+        // which the ordinary by-address match would take for this one.
+        if (TensorId const existing = find_tensor_id_by_ptr(identity); existing != 0) {
             TensorHandle const *held = find_tensor(existing);
-            if (held != nullptr &&
-                (held->owner == adopted->owner || (!detail::untracked(held->caller_token) && !detail::untracked(adopted->caller_token) &&
-                                                   detail::same_tensor(held->caller_token, adopted->caller_token)))) {
+            if (held != nullptr && (held->owner == owner || (!detail::untracked(held->caller_token) && !detail::untracked(caller_token) &&
+                                                             detail::same_tensor(held->caller_token, caller_token)))) {
                 return existing;
             }
         }
-        auto handle         = make_handle(tensor, 0, adopted->identity);
-        handle.owner        = std::move(adopted->owner);
-        handle.caller_token = std::move(adopted->caller_token);
-        return register_tensor(std::move(handle));
     }
 
     using Clean = std::remove_cvref_t<TensorType>;
-    auto  owner = adopt_operand(tensor);
     auto &bound = owner ? *static_cast<Clean *>(owner.get()) : const_cast<Clean &>(tensor);
 
-    auto handle         = make_handle(bound, 0, ptr);
+    auto handle         = make_handle(bound, 0, identity);
     handle.owner        = std::move(owner);
-    handle.caller_token = token;
+    handle.caller_ptr   = caller;
+    handle.caller_token = std::move(caller_token);
     return register_tensor(std::move(handle));
 }
 template <GraphCapturableTensor TensorType>
@@ -4962,9 +4980,9 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
     // What this slot named BEFORE the repoint, which is how a sub-graph's slot for the
     // same operand is recognised.
     //
-    // The HANDLE's address, not the slot's: capture ADOPTS an operand, so a parent and a
-    // body that captured the same operand hold two different stand-ins for it. The handle
-    // records the caller's own address, which both sides agree on.
+    // The HANDLE's identity, not the slot's pointer: the identity is what a parent and every
+    // body that names the operand agree on, and the slot points at the object it reads, which
+    // for an adopted tensor some graph owns is the stand-in rather than the identity.
     void *const old_ptr = [&]() -> void * {
         TensorHandle const *handle = find_tensor(id);
         return handle != nullptr && handle->tensor_ptr != nullptr ? handle->tensor_ptr : slot->ptr;
@@ -5030,11 +5048,22 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
         // register_tensor's last-registration-wins rule (see @ref _ptr_index) means an
         // address freed during a capture may already have been reassigned to another
         // tensor, and that later registration is the one that must survive.
-        if (void *const previous_ptr = th_it->second.tensor_ptr; previous_ptr != nullptr) {
-            if (auto const stale = _ptr_index.find(previous_ptr); stale != _ptr_index.end() && stale->second == id) {
+        //
+        // Every key the handle was filed under goes, its caller's address and its stand-in's
+        // included: the handle names the new tensor from here on, under the new tensor's address
+        // alone. Its stand-in stays alive through the slot for whatever was built over it.
+        for (void const *const previous :
+             {static_cast<void const *>(th_it->second.tensor_ptr), static_cast<void const *>(th_it->second.caller_ptr),
+              static_cast<void const *>(th_it->second.owner.get())}) {
+            if (previous == nullptr) {
+                continue;
+            }
+            if (auto const stale = _ptr_index.find(previous); stale != _ptr_index.end() && stale->second == id) {
                 _ptr_index.erase(stale);
             }
         }
+        th_it->second.caller_ptr = nullptr;
+        th_it->second.owner.reset();
         th_it->second.tensor_ptr = slot->ptr;
         if (th_it->second.tensor_ptr != nullptr) {
             _ptr_index.insert_or_assign(th_it->second.tensor_ptr, id);
@@ -5102,8 +5131,8 @@ auto Graph::rebind_subgraphs(void *old_ptr, TensorType &new_tensor, bool allow_e
             if (slot == nullptr) {
                 continue;
             }
-            // Identity is the caller's address, held by the handle; see the note in
-            // rebind_impl for why the slot's own pointer is the wrong thing to compare.
+            // Identity is the handle's; see the note in rebind_impl for why the slot's own
+            // pointer is the wrong thing to compare.
             TensorHandle const *handle = sub.find_tensor(id);
             void const         *ident  = handle != nullptr && handle->tensor_ptr != nullptr ? handle->tensor_ptr : slot->ptr;
             if (ident == old_ptr) {

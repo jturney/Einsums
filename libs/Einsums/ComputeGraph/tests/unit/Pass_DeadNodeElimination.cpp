@@ -178,7 +178,7 @@ TEST_CASE("DeadNodeElimination - keeps a producer feeding only a nested loop", "
     bool found_shared_producer = false;
     for (auto const &nd : outer.nodes()) {
         for (auto tid : nd.outputs) {
-            if (outer.tensor(tid).tensor_ptr == static_cast<void *>(&shared)) {
+            if (outer.tensor(tid).lookup_ptr() == static_cast<void *>(&shared)) {
                 found_shared_producer = true;
             }
         }

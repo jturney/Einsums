@@ -1022,7 +1022,7 @@ TEST_CASE("Materialization - respects distribution_info on handle", "[ComputeGra
 
     // Manually annotate the handle as distributed
     for (auto &[tid, handle] : graph.tensors_map()) {
-        if (handle.tensor_ptr == &T) {
+        if (handle.lookup_ptr() == &T) {
             handle.is_distributed    = true;
             handle.is_replicated     = false;
             handle.distribution_info = std::make_shared<size_t>(0); // Block along dim 0
