@@ -667,9 +667,11 @@ destination accumulated into rather than overwritten. A box over an axis that
 is not the last is many short runs of the file, and the report gives the count
 for each box.
 
-``out_of_core.py`` in the ComputeGraph examples produces ``Bvv`` for water in
-cc-pVTZ into a file from one graph and runs the particle ladder on it from a
-second, under a 16 MB budget.
+``out_of_core.py`` in the ComputeGraph examples builds one program as a CC code
+is built, for water in cc-pVTZ under a 16 MB budget: a setup body produces
+``Bvv`` into a file, every iteration of the loop runs the particle ladder on it,
+and the file is stored so the blocks the loop reads are contiguous. A second
+part reuses the file from another graph, as a later run would.
 
 Driving the pass manager
 ========================

@@ -3,26 +3,28 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 # ----------------------------------------------------------------------------------------------
 
-"""A tensor that lives in a file: one graph writes it a slab at a time, another reads it back.
+"""A tensor that lives in a file: written once, read a block at a time, never held whole.
 
 The virtual-virtual block of the density-fitted integrals, Bvv[Q,a,b], is the
 largest tensor a DF-CCSD program holds, and the particle ladder reads it
 twice per iteration. Annotated with a backing, it never has to be held whole.
 
-The first graph produces it. Annotated with ``einsums.io.etn(path, entry,
-write=True)``, Bvv is stored to that entry of an ``.etn`` file. The
-contraction that produces it runs in a loop, and each iteration writes the
-block of Bvv it computed: AxisTiling's loop over the half-transformed tensor
-when that one is too large as well, as here, or a loop of SlabStreaming's own
-over Bvv's last axis.
+The first part is one program, built as a CC code is: a setup body produces
+Bvv once, into the entry of an ``.etn`` file ``einsums.io.etn(path, entry,
+write=True)`` names, and every iteration of the loop runs the ladder on it.
+The passes see the writer and every reader together. AxisTiling loops both
+over blocks of the auxiliary index Q, the second contraction of the ladder
+summing its blocks into the residual; SlabStreaming writes and reads exactly
+the block of Bvv each iteration names; and since this program creates the
+entry, it stores it with Q last, so each of those blocks is one contiguous run
+of the file.
 
-The second graph reads it. Annotated with ``einsums.io.etn(path, entry)``,
-Bvv is filled from the file at every replay. Each contraction that reads it
-reads one block at a time: the box AxisTiling's loop names, or a block of
-Bvv's last axis in a loop of SlabStreaming's own.
+The second part is a later run that reuses the file. Annotated with
+``einsums.io.etn(path, entry)``, Bvv is read in the order the entry records,
+and the ladder reads it a block at a time as before.
 
-Neither graph asks for any of this beyond the annotation. The default pipeline
-streams a backed tensor when it is larger than its share of
+Neither program asks for any of this beyond the annotation. The default
+pipeline streams a backed tensor when it is larger than its share of
 ``--einsums:max-memory``, set small below so that a cc-pVTZ water is enough to
 show it. A backed tensor that fits is loaded or stored whole, once per replay.
 
@@ -82,27 +84,41 @@ def load():
     return {"fitted": fitted, "cv": np.ascontiguousarray(cv), "tau": tau}
 
 
-def produce(path, problem):
-    """Bvv[Q,a,b] = sum_mn (Q|mn) C[m,a] C[n,b], stored to the file and never held whole."""
-    fitted, cv = problem["fitted"], problem["cv"]
-    naux, nbf, nvir = fitted.shape[0], fitted.shape[1], cv.shape[1]
+def program(path, problem, iterations):
+    """Bvv produced once into the file by a setup body, and the DF particle ladder run on it per iteration.
 
-    graph = cg.Graph("produce_bvv")
+    Bvv[Q,a,b] = sum_mn (Q|mn) C[m,a] C[n,b]; r2[i,j,a,b] = sum_ef (ae|bf) tau[i,j,e,f].
+    """
+    fitted, cv, tau = problem["fitted"], problem["cv"], problem["tau"]
+    naux, nbf, nvir, nocc = fitted.shape[0], fitted.shape[1], cv.shape[1], tau.shape[0]
+
+    graph = cg.Graph("ladder_program")
     bvv = graph.declare_tensor("Bvv", [naux, nvir, nvir])
     cg.annotate(bvv, backing=einsums.io.etn(path, "Bvv", write=True), graph=graph)
-    # Like H in the ladder, only this graph reads the half-transformed tensor, so it is an
-    # intermediate and the graph may build it a block at a time.
+    # Only this program reads the half-transformed tensors, so both are intermediates and the
+    # graph may build them a block at a time. H is the largest tensor here, 25 times Bvv; declared
+    # without, it would be a result the caller could read after execute(), held whole over the
+    # budget, and the AxisTiling line of the report would say so.
     half = graph.declare_tensor("half", [naux, nvir, nbf], intermediate=True)
+    H = graph.declare_tensor("H", [naux, nvir, nvir, nocc, nocc], intermediate=True)
     P = _tensor("P", fitted)
     C = _tensor("Cv", cv)
-    with cg.capture(graph):
+    T = _tensor("tau", tau)
+    r2 = einsums.create_zero_tensor("r2", [nocc, nocc, nvir, nvir])
+
+    setup = graph.add_setup("integrals")
+    with cg.capture(setup):
         einsums.einsum("Q,a,n <- Q,m,n ; m,a", half, P, C)
         einsums.einsum("Q,a,b <- Q,a,n ; n,b", bvv, half, C)
-    return graph
+    body = graph.add_loop("iterations", iterations, lambda it: it + 1 < iterations)
+    with cg.capture(body):
+        einsums.einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", H, bvv, T)
+        einsums.einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", r2, H, bvv)
+    return graph, r2
 
 
-def ladder(path, problem):
-    """The DF particle ladder, r2[i,j,a,b] = sum_ef (ae|bf) tau[i,j,e,f], reading Bvv from the file."""
+def later_run(path, problem):
+    """The ladder alone, in a run that reuses the file the program wrote."""
     tau = problem["tau"]
     nocc, nvir = tau.shape[0], tau.shape[2]
     naux = problem["fitted"].shape[0]
@@ -110,16 +126,12 @@ def ladder(path, problem):
     graph = cg.Graph("ladder")
     bvv = graph.declare_tensor("Bvv", [naux, nvir, nvir])
     cg.annotate(bvv, backing=einsums.io.etn(path, "Bvv"), graph=graph)
-    # H is the largest tensor here, 25 times Bvv, and only this graph reads it. Declared as an
-    # intermediate, the graph may build it a block at a time; declared without, it is a result the
-    # caller could read after execute(), so it would be held whole, over the budget, and the
-    # AxisTiling line of the report would say so.
-    half = graph.declare_tensor("H", [naux, nvir, nvir, nocc, nocc], intermediate=True)
+    H = graph.declare_tensor("H", [naux, nvir, nvir, nocc, nocc], intermediate=True)
     T = _tensor("tau", tau)
     r2 = einsums.create_zero_tensor("r2", [nocc, nocc, nvir, nvir])
     with cg.capture(graph):
-        einsums.einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", half, bvv, T)
-        einsums.einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", r2, half, bvv)
+        einsums.einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", H, bvv, T)
+        einsums.einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", r2, H, bvv)
     return graph, r2
 
 
@@ -132,37 +144,40 @@ def print_explanation(manager):
             print(f"    | {entry}")
 
 
+def check(label, got, want, tolerance):
+    error = float(np.max(np.abs(np.asarray(got) - want)))
+    print(f"    {label} against numpy, largest difference {error:.2e}")
+    assert error < tolerance
+
+
 def main():
     problem = load()
+    bvv = np.einsum("Qmn,ma,nb->Qab", problem["fitted"], problem["cv"], problem["cv"])
+    expected = np.einsum("Qae,Qbf,ijef->ijab", bvv, bvv, problem["tau"], optimize=True)
+
     fd, path = tempfile.mkstemp(suffix=".etn", prefix="einsums_out_of_core_")
     os.close(fd)
     os.remove(path)
     try:
-        print("Producing Bvv into", os.path.basename(path))
-        producer = produce(path, problem)
+        print("One program: Bvv produced into", os.path.basename(path), "by a setup body, read by every iteration")
+        graph, r2 = program(path, problem, iterations=3)
         manager = cg.default_pass_manager()
-        producer.apply(manager)
+        graph.apply(manager)
         print_explanation(manager)
-        producer.execute()
+        graph.execute()
 
-        bvv = np.einsum("Qmn,ma,nb->Qab", problem["fitted"], problem["cv"], problem["cv"])
         stored = einsums.create_zero_tensor("Bvv", list(bvv.shape))
         einsums.io.read(path, "Bvv", stored)
-        error = float(np.max(np.abs(np.asarray(stored) - bvv)))
-        print(f"    stored Bvv against numpy, largest difference {error:.2e}")
-        assert error < 1e-12
+        check("stored Bvv", stored, bvv, 1e-12)
+        check("ladder", r2, expected, 1e-10)
 
-        print("\nReading Bvv back for the particle ladder")
-        reader, r2 = ladder(path, problem)
+        print("\nA later run reusing the file")
+        graph, r2 = later_run(path, problem)
         manager = cg.default_pass_manager()
-        reader.apply(manager)
+        graph.apply(manager)
         print_explanation(manager)
-        reader.execute()
-
-        expected = np.einsum("Qae,Qbf,ijef->ijab", bvv, bvv, problem["tau"], optimize=True)
-        error = float(np.max(np.abs(np.asarray(r2) - expected)))
-        print(f"    ladder against numpy, largest difference {error:.2e}")
-        assert error < 1e-10
+        graph.execute()
+        check("ladder", r2, expected, 1e-10)
     finally:
         if os.path.exists(path):
             os.remove(path)
