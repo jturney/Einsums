@@ -37,6 +37,7 @@
 
 #include "BackingFill.hpp"
 #include "LoopEmission.hpp"
+#include "StorageCost.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -44,7 +45,9 @@ namespace {
 
 using detail::AxisWalk;
 using detail::declare_walk_bounds;
+using detail::declared_order;
 using detail::einsum_spec_text;
+using detail::runs_in;
 using detail::slice_bound;
 using detail::TileCursor;
 using detail::walk_iterations;
@@ -376,15 +379,6 @@ void drop_view_if_unused(Graph &graph, std::vector<bool> &remove, std::size_t no
     }
 }
 
-/// The declared order of @p rank axes.
-std::vector<std::size_t> declared_order(std::size_t rank) {
-    std::vector<std::size_t> out(rank);
-    for (std::size_t p = 0; p < rank; ++p) {
-        out[p] = p;
-    }
-    return out;
-}
-
 /// The extents of a block of @p block along the last of @p dims, every other axis whole.
 std::vector<std::size_t> last_axis_block(std::vector<std::size_t> dims, std::size_t block) {
     dims.back() = block;
@@ -396,20 +390,6 @@ std::vector<bool> last_axis_whole(std::vector<std::size_t> const &dims, std::siz
     std::vector<bool> out(dims.size(), true);
     out.back() = block == dims.back();
     return out;
-}
-
-/// The contiguous runs of a column-major file a box of @p extents costs when its axes are stored in
-/// @p order: every leading stored axis the box covers whole is one run with the next.
-std::size_t runs_in(std::vector<std::size_t> const &order, std::vector<std::size_t> const &extents, std::vector<bool> const &whole_axis) {
-    std::size_t inner = 0;
-    while (inner + 1 < order.size() && whole_axis[order[inner]]) {
-        ++inner;
-    }
-    std::size_t runs = 1;
-    for (std::size_t s = inner + 1; s < order.size(); ++s) {
-        runs *= extents[order[s]];
-    }
-    return runs;
 }
 
 } // namespace

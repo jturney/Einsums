@@ -13,6 +13,7 @@
 
 #include <Einsums/ComputeGraph.hpp>
 // Not reached through the umbrella header, which does not carry these passes.
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/SlabStreaming.hpp>
@@ -216,6 +217,18 @@ std::shared_ptr<cg::passes::SlabStreaming> stream(cg::Graph &graph, std::int64_t
     graph.apply(manager);
     return pass;
 }
+
+/// Storage runs cost nothing while this lives, so AxisTiling chooses its loop on memory traffic
+/// alone. For the cases that test how a box is moved rather than which loop is chosen: with a run
+/// costed, a loop over tensors this small re-reads them whole, which is right for them and moves
+/// no box.
+struct FreeRuns {
+    std::int64_t previous{config::get(option::GraphStorageRunBytes)};
+    FreeRuns() { config::set(option::GraphStorageRunBytes, std::int64_t{0}); }
+    ~FreeRuns() { config::set(option::GraphStorageRunBytes, previous); }
+    FreeRuns(FreeRuns const &)            = delete;
+    FreeRuns &operator=(FreeRuns const &) = delete;
+};
 
 bool declined_because(cg::passes::SlabStreaming const &pass, std::string_view fragment) {
     for (auto const &[reason, count] : pass.skip_reasons()) {
@@ -546,6 +559,7 @@ TEST_CASE("SlabStreaming streams the shared integrals inside AxisTiling's block 
 }
 
 TEST_CASE("SlabStreaming reads the box AxisTiling's view names, at every iteration of its loop", "[ComputeGraph][Pass][SlabStreaming]") {
+    FreeRuns const free_runs;
     //   H[Q,a,f] = sum_e Bvv[Q,a,e] X[e,f]
     //   out[a]   = sum_Qf H[Q,a,f] Y[Q,f]
     // AxisTiling loops over an axis of H, and every iteration views the box of Bvv that block
@@ -611,6 +625,7 @@ TEST_CASE("SlabStreaming reads the box AxisTiling's view names, at every iterati
 }
 
 TEST_CASE("SlabStreaming writes the box AxisTiling's view names, at every iteration of its loop", "[ComputeGraph][Pass][SlabStreaming]") {
+    FreeRuns const free_runs;
     //   H[Q,a,n] = sum_m P[Q,m,n] C[m,a]
     //   W[Q,a,b] = sum_n H[Q,a,n] C[n,b]
     // H is an intermediate over the cap, so AxisTiling loops over one of its axes and the second

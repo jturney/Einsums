@@ -297,7 +297,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("accumulator") [[nodiscard]] std::string accumulator() const { return _accumulator; }
 
-    /// @brief The tensors a contraction of the tiled region sums one of the sliced axes into.
+    /// @brief The tensors a contraction of any tiled region sums one of its sliced axes into.
     /// @return Their names. Each is scaled by its contraction's destination prefactor once, before
     ///         the loop, and added to at every iteration; empty when no contraction sums a sliced axis.
     /// @versionadded{2.0.0}

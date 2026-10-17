@@ -101,6 +101,11 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") TensorBacking {
     /// backing whose kind can store another order.
     std::function<bool(std::vector<std::size_t> const &order)> reorder;
 
+    /// Whether @ref reorder would change the order now: what a pass choosing how to move the tensor
+    /// asks, to know whether the order it has to work with is the one stored or the one it wants.
+    /// Unset reads as false.
+    std::function<bool()> order_open;
+
     /// Completes a write backing for the tensor it is annotated on: given the tensor's extents
     /// and element type, makes the storage hold a tensor of that shape and returns the backing
     /// with @ref dims, @ref dtype, @ref read_slab and @ref write_slab filled in. Throws when the

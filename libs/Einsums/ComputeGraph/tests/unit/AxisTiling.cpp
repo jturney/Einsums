@@ -382,6 +382,46 @@ TEST_CASE("AxisTiling does not report a backed tensor a loop body writes as a he
     CHECK(std::ranges::none_of(lines, [](std::string const &line) { return line.find("held 'W'") != std::string::npos; }));
 }
 
+TEST_CASE("AxisTiling slices a backed operand where its blocks are the fewest runs of its storage", "[ComputeGraph][Pass][AxisTiling]") {
+    //   H[i,j]  = sum_k Bk[i,j,k] v[k]          Bk backed, stored as declared
+    //   out[m]  = sum_ij H[i,j] W[i,j,m]
+    // Slicing i or j moves the same bytes, since the two have one extent. A block of j is one run of
+    // Bk's storage per k; a block of i, the first stored axis, is one per (j, k). With a run costed
+    // the pass takes j; with runs free it has no reason to prefer either and keeps the first, i.
+    std::size_t const n  = 6;
+    std::size_t const nk = 4;
+    auto const        v  = filled("v", {nk}, 3U);
+    auto const        w  = filled("W", {n, n, 2}, 5U);
+
+    cg::TensorBacking backing;
+    backing.kind      = "test.memory";
+    backing.location  = {{"name", "Bk"}};
+    backing.dims      = {n, n, nk};
+    backing.dtype     = packed_gemm::ScalarType::Float64;
+    backing.read_slab = [](void *, std::vector<std::pair<std::size_t, std::size_t>> const &) {};
+
+    auto const chosen = [&](std::int64_t run_bytes) {
+        std::int64_t const previous = config::get(option::GraphStorageRunBytes);
+        config::set(option::GraphStorageRunBytes, run_bytes);
+        RuntimeTensor<double> out("out", std::vector<std::size_t>{2});
+        cg::Graph             graph("backed operand");
+        auto                 &bk = graph.declare_runtime_tensor<double>("Bk", std::vector<std::size_t>{n, n, nk});
+        graph.annotate_backing(bk, backing);
+        auto &half = graph.declare_runtime_tensor<double>("H", std::vector<std::size_t>{n, n}, /*intermediate=*/true);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("i,j <- i,j,k ; k", &half, bk, v);
+            cg::einsum("m <- i,j ; i,j,m", &out, half, w);
+        }
+        auto const tiling = decide(graph, static_cast<std::int64_t>(n * sizeof(double)));
+        config::set(option::GraphStorageRunBytes, previous);
+        REQUIRE(tiling->num_tiled() == 1);
+        return tiling->axis_letters();
+    };
+    CHECK(chosen(0) == std::vector<std::string>{"i"});
+    CHECK(chosen(65536) == std::vector<std::string>{"j"});
+}
+
 TEST_CASE("AxisTiling is off when the cap is zero", "[ComputeGraph][Pass][AxisTiling]") {
     Problem   problem;
     cg::Graph graph("mp2 full axis");
@@ -1762,4 +1802,46 @@ TEST_CASE("AxisTiling holds a loop's buffers to their share together, remainders
     auto const   expected = mp2_reference(p);
     double const energy   = replay_mp2(graph, p);
     CHECK(std::abs(energy - expected.value) <= sum_tolerance<double>() * expected.magnitude);
+}
+
+TEST_CASE("AxisTiling does not count a body's tensors against a sibling that runs before it", "[ComputeGraph][Pass][AxisTiling]") {
+    // A setup body builds H1 and contracts it into R; the loop after it reads R and builds X, which
+    // only the loop names. The setup has finished before the loop starts, so X is not live beside
+    // H1. Counted as if it were, X left the setup no room under the budget and H1 was held whole.
+    auto const a  = filled("A", {8, 3}, 3U);
+    auto const b  = filled("B", {3, 8}, 5U);
+    auto const c  = filled("C2", {8, 4}, 7U);
+    auto const u  = filled("u", {64}, 11U);
+    auto const u2 = filled("u2", {64}, 13U);
+    auto const z  = filled("z", {64}, 17U);
+    auto const wm = filled("w", {4, 64}, 19U);
+
+    cg::Graph graph("setup then loop");
+    auto     &r  = graph.declare_runtime_tensor<double>("R", std::vector<std::size_t>{8, 4});
+    auto     &h1 = graph.declare_runtime_tensor<double>("H1", std::vector<std::size_t>{8, 8}, /*intermediate=*/true);
+    auto     &x  = graph.declare_runtime_tensor<double>("X", std::vector<std::size_t>{64, 64}, /*intermediate=*/true);
+    auto     &y  = graph.declare_runtime_tensor<double>("y", std::vector<std::size_t>{64});
+    auto     &q  = graph.declare_runtime_tensor<double>("q", std::vector<std::size_t>{8, 64});
+    {
+        auto                  &setup = graph.add_setup("build R");
+        cg::CaptureGuard const guard(setup);
+        cg::einsum("i,j <- i,k ; k,j", &h1, a, b);
+        cg::einsum("i,m <- i,j ; j,m", &r, h1, c);
+    }
+    {
+        auto                  &body = graph.add_loop("iterate", 2, [](std::size_t it) { return it + 1 < 2; });
+        cg::CaptureGuard const guard(body);
+        cg::einsum("a,b <- a ; b", &x, u, u2);
+        cg::einsum("a <- a,b ; b", &y, x, z);
+        cg::einsum("i,a <- i,m ; m,a", &q, r, wm);
+    }
+
+    // The setup alone, H1 held at half: room enough only once H1 is cut, and none at all with the
+    // loop's tensors counted beside it.
+    std::size_t const              element = sizeof(double);
+    std::size_t const              setup   = element * (a.size() + b.size() + c.size() + r.size());
+    Budget const                   budget(setup + (h1.size() * element / 2));
+    auto const                     tiling   = decide_by_default(graph);
+    std::vector<std::string> const streamed = tiling->streamed();
+    CHECK(std::ranges::find(streamed, std::string{"H1"}) != streamed.end());
 }

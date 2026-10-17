@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "LoopEmission.hpp"
+#include "StorageCost.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -415,7 +416,10 @@ struct Scope {
 
     /// Whether the tensor is backed, read off the declaration: a body's handle for a parent's backed
     /// tensor carries no backing of its own.
-    [[nodiscard]] bool backed(TensorId tid) const {
+    [[nodiscard]] bool backed(TensorId tid) const { return backing_of(tid) != nullptr; }
+
+    /// The tensor's backing, read off the declaration; null for a tensor memory holds.
+    [[nodiscard]] std::shared_ptr<TensorBacking const> backing_of(TensorId tid) const {
         Graph const        *level  = &graph;
         TensorHandle const *handle = graph.find_tensor(tid);
         while (handle != nullptr && !handle->backing && handle->tensor_ptr != nullptr) {
@@ -427,7 +431,7 @@ struct Scope {
             handle       = outer->find_tensor_by_ptr(handle->tensor_ptr);
             level        = outer;
         }
-        return handle != nullptr && handle->backing != nullptr;
+        return handle != nullptr ? handle->backing : nullptr;
     }
 
     /// Whether a node outside this graph, in any graph that holds it, reads or writes the tensor.
@@ -502,6 +506,13 @@ class RegionAnalysis {
     /// writes is either its reduction target or purely internal.
     [[nodiscard]] bool closes(Labelling const &labelling, std::string &accumulator, TensorId &accumulator_id,
                               std::vector<std::pair<TensorId, PrefactorScalar>> &summed_into, std::string &reason) const;
+
+    /// What moving a box of the backed tensor @p tid costs beyond the memory traffic already counted
+    /// for its bytes, @p transfers times per replay: the storage weighs each of the box's
+    /// @p box_bytes more, and each of its runs adds a fixed cost. Zero for a tensor memory holds.
+    /// @p extents and @p whole_axis describe the box on each declared axis.
+    [[nodiscard]] long double storage_surcharge(TensorId tid, std::vector<std::size_t> const &extents, std::vector<bool> const &whole_axis,
+                                                long double box_bytes, long double transfers) const;
 
     /// Whether node @p index is a contraction that sums one of the sliced axes: an input carries
     /// it and the destination does not.
@@ -907,6 +918,30 @@ bool node_accumulates(Node const &node) {
 
 } // namespace
 
+long double RegionAnalysis::storage_surcharge(TensorId tid, std::vector<std::size_t> const &extents, std::vector<bool> const &whole_axis,
+                                              long double box_bytes, long double transfers) const {
+    auto const backing = _scope.backing_of(tid);
+    if (backing == nullptr || transfers <= 0.0L) {
+        return 0.0L;
+    }
+    // The runs in the order the tensor will be stored in: the one SlabStreaming chooses when it
+    // still may, which makes this box as few runs as it can be, and the stored one otherwise.
+    std::size_t runs = 0;
+    if (backing->order_open && backing->order_open()) {
+        runs = detail::fewest_runs(extents, whole_axis);
+    } else {
+        std::vector<std::size_t> order = detail::declared_order(extents.size());
+        if (backing->stored_order) {
+            if (auto stored = backing->stored_order(); stored.size() == extents.size()) {
+                order = std::move(stored);
+            }
+        }
+        runs = detail::runs_in(order, extents, whole_axis);
+    }
+    long double const weight = detail::storage_byte_weight();
+    return transfers * ((weight - 1.0L) * box_bytes + static_cast<long double>(runs) * detail::storage_run_bytes());
+}
+
 bool RegionAnalysis::sums_sliced(Labelling const &labelling, std::size_t index) const {
     auto const &node = _graph.nodes()[index];
     if (node.kind != OpKind::Einsum) {
@@ -1007,6 +1042,13 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
             if (writers != 1 || readers != 0 || desc == nullptr) {
                 reason = "a contraction sums over one of the candidate's sliced axes, which would cut it in half, into a tensor the "
                          "region also reads or writes";
+                return false;
+            }
+            // A backed destination would have to be held whole in memory to collect the sum, which
+            // is what backing it exists to avoid.
+            if (_scope.backed(tid)) {
+                reason = "a contraction sums over one of the candidate's sliced axes, which would cut it in half, into a backed tensor, "
+                         "which would be held whole to collect the sum";
                 return false;
             }
             summed_into.emplace_back(tid, live_c_prefactor(*desc));
@@ -1122,7 +1164,31 @@ void RegionAnalysis::cost(Labelling const &labelling, std::vector<std::size_t> c
     for (std::size_t const extent : extents) {
         slices *= static_cast<long double>(extent);
     }
-    traffic = per_iteration * (slices / static_cast<long double>(depth));
+    long double const iterations = slices / static_cast<long double>(depth);
+    traffic                      = per_iteration * iterations;
+
+    // A backed operand is moved to or from its storage, one slice of it per member of a chunk: a
+    // point of every sliced axis it carries, the whole of every other.
+    for (std::size_t const i : _members) {
+        auto const &slots = slots_at(i);
+        for (std::size_t s = 0; s < slots.size(); ++s) {
+            auto const *handle = _graph.find_tensor(slots[s].tid);
+            if (handle == nullptr) {
+                continue;
+            }
+            std::vector<int> const  *labels = slot_labels(labelling, i, s);
+            std::vector<std::size_t> box;
+            std::vector<bool>        whole;
+            long double              bytes = static_cast<long double>(handle->element_size);
+            for (std::size_t p = 0; p < handle->dims.size(); ++p) {
+                bool const sliced = labels != nullptr && p < labels->size() && (*labels)[p] != kFree;
+                box.push_back(sliced ? 1 : handle->dims[p]);
+                whole.push_back(!sliced || handle->dims[p] == 1);
+                bytes *= static_cast<long double>(box.back());
+            }
+            traffic += storage_surcharge(slots[s].tid, box, whole, bytes, iterations * static_cast<long double>(depth));
+        }
+    }
 }
 
 void RegionAnalysis::describe(std::vector<std::size_t> const &seed_positions, std::vector<std::string> &names,
@@ -1315,7 +1381,25 @@ void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::siz
         bool const  inside = node_is_sliced(labelling, i);
         auto const &slots  = slots_at(i);
         for (std::size_t s = 0; s < slots.size(); ++s) {
-            traffic += inside ? measure(slots[s].tid, slot_labels(labelling, i, s)).streamed : measure(slots[s].tid, nullptr).block;
+            std::vector<int> const *labels = inside ? slot_labels(labelling, i, s) : nullptr;
+            Measure const           m      = measure(slots[s].tid, labels);
+            traffic += inside ? m.streamed : m.block;
+
+            // A backed operand is moved to or from its storage a block at a time: the block of
+            // every sliced axis it carries, the whole of every other, as many times as the
+            // streamed bytes are blocks.
+            auto const *handle = _graph.find_tensor(slots[s].tid);
+            if (handle == nullptr || m.block <= 0.0L) {
+                continue;
+            }
+            std::vector<std::size_t> box;
+            std::vector<bool>        whole;
+            for (std::size_t p = 0; p < handle->dims.size(); ++p) {
+                int const label = (labels != nullptr && p < labels->size()) ? (*labels)[p] : kFree;
+                box.push_back(label == kFree ? handle->dims[p] : blocks[static_cast<std::size_t>(label)]);
+                whole.push_back(box.back() == handle->dims[p]);
+            }
+            traffic += storage_surcharge(slots[s].tid, box, whole, m.block, inside ? m.streamed / m.block : 1.0L);
         }
     }
 }
@@ -2127,9 +2211,56 @@ bool AxisTiling::run(Graph &graph) {
 }
 
 std::size_t AxisTiling::footprint(Graph const &graph) const {
-    Graph const *root = &graph;
+    // The root, and on the way to it each level's node whose body holds the graph being tiled.
+    std::vector<std::pair<Graph *, std::size_t>> chain;
+    Graph const                                 *root = &graph;
     for (auto hit = _enclosing.find(root); hit != _enclosing.end(); hit = _enclosing.find(root)) {
+        chain.push_back(hit->second);
         root = hit->second.first;
+    }
+
+    // A body that a dependency orders before or after the branch holding this graph is not running
+    // while this one is, so what only it names is not live beside it. Ordered here by a direct
+    // conflict between the two nodes' effective reads and writes, which is what puts an edge between
+    // them; an order through other nodes is not seen, which keeps the count conservative.
+    std::set<Graph const *> apart;
+    Graph const            *below = &graph;
+    for (auto const &[outer, own] : chain) {
+        auto &nodes = outer->nodes();
+        bool  holds = false;
+        if (own < nodes.size()) {
+            for_each_child_graph(nodes[own], [&](Graph const &child) { holds = holds || &child == below; });
+        }
+        below = outer;
+        if (!holds) {
+            continue;
+        }
+        auto const buffers = [&](std::vector<TensorId> const &ids) {
+            std::set<TensorId> out;
+            for (TensorId const tid : ids) {
+                out.insert(outer->buffer_of(tid));
+            }
+            return out;
+        };
+        auto const meets = [](std::set<TensorId> const &lhs, std::set<TensorId> const &rhs) {
+            return std::ranges::any_of(lhs, [&](TensorId tid) { return rhs.contains(tid); });
+        };
+        auto const [own_reads, own_writes] = outer->effective_io(nodes[own]);
+        auto const reads_here              = buffers(own_reads);
+        auto const writes_here             = buffers(own_writes);
+        for (std::size_t j = 0; j < nodes.size(); ++j) {
+            bool has_body = false;
+            for_each_child_graph(nodes[j], [&](Graph const &) { has_body = true; });
+            if (j == own || !has_body) {
+                continue;
+            }
+            auto const [reads, writes] = outer->effective_io(nodes[j]);
+            auto const reads_there     = buffers(reads);
+            auto const writes_there    = buffers(writes);
+            if (meets(writes_there, reads_here) || meets(writes_there, writes_here) || meets(writes_here, reads_there)) {
+                for_each_child_graph(nodes[j], [&](Graph const &child) { apart.insert(&child); });
+            }
+        }
     }
 
     // A body names its parent's tensors through handles of its own over the same tensor object,
@@ -2137,11 +2268,19 @@ std::size_t AxisTiling::footprint(Graph const &graph) const {
     std::set<void const *>                       objects;
     std::set<std::pair<Graph const *, TensorId>> unbacked;
     std::size_t                                  total = 0;
-    auto const                                   count = [&](Graph const &g) {
+    // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
+    std::function<void(Graph const &)> count = [&](Graph const &g) {
         // Only what a node reads or writes is ever allocated: a rewrite leaves the handles of the
         // tensors it replaced registered, and a deferred one nobody names is never materialized.
+        // A node with a body is counted through the body, whose own nodes name what it uses, so a
+        // body set apart above is not brought back by the lists its node restates.
         std::set<TensorId> named;
         for (auto const &node : g.nodes()) {
+            bool has_body = false;
+            for_each_child_graph(node, [&](Graph const &) { has_body = true; });
+            if (has_body) {
+                continue;
+            }
             for (auto const *ids : {&node.inputs, &node.outputs}) {
                 for (TensorId const tid : *ids) {
                     named.insert(g.buffer_of(tid));
@@ -2163,9 +2302,15 @@ std::size_t AxisTiling::footprint(Graph const &graph) const {
                 total += handle.total_bytes();
             }
         }
+        for (auto const &node : g.nodes()) {
+            for_each_child_graph(node, [&](Graph const &child) {
+                if (!apart.contains(&child)) {
+                    count(child);
+                }
+            });
+        }
     };
     count(*root);
-    root->for_each_descendant([&](Graph const &g) { count(g); });
     return total;
 }
 
@@ -2549,6 +2694,9 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         return false;
     }
 
+    // Every region's: each names a destination of its own.
+    _summed_into.insert(_summed_into.end(), best->summed_names.begin(), best->summed_names.end());
+
     // The getters describe the first region, which is the one around the largest seed.
     if (_num_tiled == 0) {
         _slice_count   = best->slices;
@@ -2561,8 +2709,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         _streamed    = best->streamed;
         _whole       = best->whole;
         _accumulator = best->accumulator;
-        _summed_into.insert(_summed_into.end(), best->summed_names.begin(), best->summed_names.end());
-        _emission = best->range ? "range" : "grouped";
+        _emission    = best->range ? "range" : "grouped";
         _block_extents.assign(best->blocks.begin(), best->blocks.end());
         _loops = loop_walks(*best).size();
     }

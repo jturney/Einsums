@@ -19,6 +19,7 @@
 #include <Einsums/ComputeGraph/GraphIR.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/SlabStreaming.hpp>
@@ -539,6 +540,14 @@ struct BoxWrite {
     std::shared_ptr<cg::passes::SlabStreaming> stream{std::make_shared<cg::passes::SlabStreaming>()};
 
     explicit BoxWrite(cg::TensorBacking backing) {
+        // Runs cost nothing while the passes choose, so the loop is the one memory traffic picks and
+        // it writes W a box at a time; tensors this small would otherwise be written whole.
+        std::int64_t const previous = config::get(option::GraphStorageRunBytes);
+        config::set(option::GraphStorageRunBytes, std::int64_t{0});
+        struct Restore {
+            std::int64_t previous;
+            ~Restore() { config::set(option::GraphStorageRunBytes, previous); }
+        } const restore{previous};
         auto &w = graph.declare_runtime_tensor<double>("W", {naux, v, v});
         graph.annotate_backing(w, std::move(backing));
         auto &half = graph.declare_runtime_tensor<double>("H", std::vector<std::size_t>{naux, v, nbf}, /*intermediate=*/true);

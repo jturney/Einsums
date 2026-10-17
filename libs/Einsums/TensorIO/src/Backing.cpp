@@ -100,7 +100,8 @@ compute_graph::TensorBacking complete(std::string const &path, std::string const
             check(file);
             file.write_slab(entry, source, ranges);
         };
-        out.reorder = [path, entry, order_state](std::vector<size_t> const &order) {
+        out.order_open = [order_state]() { return order_state && order_state->may_choose && !order_state->written; };
+        out.reorder    = [path, entry, order_state](std::vector<size_t> const &order) {
             if (!order_state || !order_state->may_choose || order_state->written) {
                 return false;
             }

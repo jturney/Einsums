@@ -248,6 +248,28 @@ inline constinit cl::ConfigOption<double> GraphTilingBudgetShare = cl::config_op
     "together, and so is each slab. AxisTiling reads it only when the tiling cap is derived; zero or one turns it off",
     "ComputeGraph Passes", 0.16, "FRACTION", cl::RangeBetween(0.0, 1.0));
 
+/// How many bytes of memory traffic one byte read from or written to storage costs, in AxisTiling's
+/// choice of loop.
+///
+/// A provisional figure: a solid-state drive moves 5 to 7 GB/s where memory moves 50 to 100, which
+/// puts a byte of storage at roughly ten bytes of memory. A machine's own figure is einsums-tune's
+/// to measure.
+inline constinit cl::ConfigOption<double> GraphStorageByteWeight = cl::config_opt<double>(
+    "einsums:graph:storage-byte-weight",
+    "Bytes of memory traffic one byte moved to or from storage counts as when AxisTiling chooses a loop over a region that reads or "
+    "writes a backed tensor",
+    "ComputeGraph Passes", 8.0, "WEIGHT", cl::RangeBetween(1.0, 1.0e6));
+
+/// What one contiguous run of storage costs beyond its bytes, in bytes of memory traffic.
+///
+/// A provisional figure for one system call and its seek, about 20 microseconds at a few GB/s. A
+/// machine's own figure is einsums-tune's to measure.
+inline constinit cl::ConfigOption<std::int64_t> GraphStorageRunBytes = cl::config_opt<std::int64_t>(
+    "einsums:graph:storage-run-bytes",
+    "Bytes of memory traffic one contiguous run of storage costs beyond the bytes it moves, when AxisTiling chooses a loop over a "
+    "region that reads or writes a backed tensor",
+    "ComputeGraph Passes", 65536, "BYTES");
+
 /// How long a search pass may run, in milliseconds. Zero means unlimited.
 ///
 /// The number is a starting point rather than a measurement, which is what an option is for. What

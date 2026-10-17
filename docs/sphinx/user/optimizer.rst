@@ -520,7 +520,8 @@ captured schedule.
 
 By default the cap is derived from the machine. An intermediate may take what
 :option:`--einsums:max-memory` leaves after every other tensor the graph names,
-counted as if all of them were live at once, and no more than
+counted as if all of them were live at once except those that only a body
+running before or after this one uses, and no more than
 :option:`--einsums:graph:tiling-budget-share` of the budget. The share is there
 because fitting is not the only reason to stream: an intermediate that takes a
 large part of the machine costs the kernels that write and read it, and a
@@ -649,6 +650,14 @@ also how a graph with the pass switched off runs, so the pass changes the
 footprint and never the answer: a block that writes a slice of the result gives
 the captured result exactly, and a block over a summed letter adds its partial
 sum in a different order, within the re-association tolerance.
+
+``AxisTiling`` counts what moving a backed tensor costs when it chooses its
+loop: a byte of storage weighs :option:`--einsums:graph:storage-byte-weight`
+bytes of memory traffic, and each contiguous run of the storage a block takes
+another :option:`--einsums:graph:storage-run-bytes`. A loop that slices a backed
+operand on the axis its storage can serve as long runs is preferred over one
+that cuts it into many short ones, and over one that re-reads it whole on every
+iteration once the tensor is large enough for that to cost more.
 
 How the file lays the tensor out is chosen as well. An entry a write backing
 creates is stored with its axes in the order that makes the boxes the program
