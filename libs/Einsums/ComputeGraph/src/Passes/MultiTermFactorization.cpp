@@ -653,6 +653,25 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     LetterTable                     table;
     std::unordered_set<std::size_t> consumed; // statements folded into a consumer
     std::size_t                     fresh_letter = 0;
+    // Every letter the region spells. A renamed letter is a name none of these has, and an ordinary
+    // index name, since a re-bracketing can keep a renamed letter on a partial product and the
+    // einsum it emits spells it: an internal mark such as '~0' is not a letter a spec may hold.
+    std::unordered_set<std::string> region_letters;
+    for (auto const &term : expr.terms) {
+        for (auto const &index : term.indices) {
+            region_letters.insert(index.letter);
+        }
+        for (auto const &operand : term.operand_indices) {
+            for (auto const &index : operand) {
+                region_letters.insert(index.letter);
+            }
+        }
+    }
+    for (auto const &statement : expr.statements) {
+        for (auto const &index : statement.target_indices) {
+            region_letters.insert(index.letter);
+        }
+    }
     // Which letter each alpha-renamed one stands for. A renamed axis is the same axis, and a cost
     // model that did not know it would rank every re-bracketing below the form it came from: the
     // searched side would mention a variable the captured side never heard of, and the dominance
@@ -773,7 +792,9 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             for (auto const &index : indices) {
                 auto const [it, fresh] = substitution.try_emplace(index.letter, index);
                 if (fresh) {
-                    it->second.letter    = fmt::format("~{}", fresh_letter++);
+                    do {
+                        it->second.letter = fmt::format("x{}", fresh_letter++);
+                    } while (region_letters.contains(it->second.letter));
                     auto const inherited = renamed_from.find(index.letter);
                     renamed_from.emplace(it->second.letter, inherited == renamed_from.end() ? index.letter : inherited->second);
                 }

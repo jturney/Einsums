@@ -27,6 +27,8 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -217,6 +219,61 @@ TEST_CASE("MultiTermFactorization - the answer does not change", "[ComputeGraph]
     // drift apart.
     CHECK(norm_relative_gap(search1, plain1) <= re_associating_bound());
     CHECK(norm_relative_gap(search2, plain2) <= re_associating_bound());
+}
+
+TEST_CASE("MultiTermFactorization - a renamed letter a partial product keeps is a letter a spec may hold",
+          "[ComputeGraph][MultiTermFactorization]") {
+    // The DF particle ladder captured as (ae|bf) first:
+    //   W[a,e,b,f] = sum_Q B[Q,a,e] B[Q,b,f]
+    //   r[i,j,a,b] = sum_ef W[a,e,b,f] t[i,j,e,f]
+    // Dissolving W renames its summed Q so it cannot collide with the consumer's letters. At these
+    // extents B t first is cheaper (2 Q o^2 v^3 = 6912 against v^4 (Q + o^2) = 10368), and that
+    // partial product keeps Q. The rename used to be spelled '~0', which the emitted einsum then
+    // carried and its parser refused: "output index '~0' has a non-letter character".
+    constexpr size_t naux = 4, nocc = 2, nvir = 6;
+    einsums::seed_random(29);
+    auto B = create_random_tensor<double>("B", naux, nvir, nvir);
+    auto t = create_random_tensor<double>("t", nocc, nocc, nvir, nvir);
+    auto r = create_zero_tensor<double>("r", nocc, nocc, nvir, nvir);
+
+    cg::Graph graph("ladder");
+    {
+        auto                  &W = graph.declare_runtime_tensor<double>("W", {nvir, nvir, nvir, nvir}, /*intermediate=*/true);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("a,e,b,f <- Q,a,e ; Q,b,f", 0.0, &W, 1.0, B, B);
+        cg::einsum("i,j,a,b <- a,e,b,f ; i,j,e,f", 0.0, &r, 1.0, W, t);
+    }
+
+    auto            pass = searching_pass();
+    cg::PassManager pm;
+    pm.add(pass);
+    pm.add<cg::passes::Materialization>();
+    graph.apply(pm);
+    REQUIRE(pass->num_rebracketed() >= 1);
+
+    // Every letter an emitted einsum spells is one a spec may hold.
+    for (auto const &node : graph.nodes()) {
+        if (auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr) {
+            for (auto const *list : {&desc->spec.c_indices, &desc->spec.a_indices, &desc->spec.b_indices}) {
+                for (auto const &letter : *list) {
+                    CAPTURE(node.label, letter);
+                    CHECK(std::ranges::all_of(letter, [](unsigned char ch) { return std::isalnum(ch) != 0; }));
+                }
+            }
+        }
+    }
+
+    REQUIRE_NOTHROW(graph.execute());
+    Tensor<double, 4> W_ref = create_zero_tensor<double>("Wref", nvir, nvir, nvir, nvir);
+    reference_einsum("a,e,b,f <- Q,a,e ; Q,b,f", 0.0, &W_ref, 1.0, B, B);
+    Tensor<double, 4> r_ref = create_zero_tensor<double>("rref", nocc, nocc, nvir, nvir);
+    reference_einsum("i,j,a,b <- a,e,b,f ; i,j,e,f", 0.0, &r_ref, 1.0, W_ref, t);
+    double error = 0.0, norm = 0.0;
+    for (size_t e = 0; e < r_ref.size(); ++e) {
+        error += (r.data()[e] - r_ref.data()[e]) * (r.data()[e] - r_ref.data()[e]);
+        norm += r_ref.data()[e] * r_ref.data()[e];
+    }
+    CHECK(std::sqrt(error) <= re_associating_bound() * std::sqrt(norm));
 }
 
 TEST_CASE("MultiTermFactorization - the search is off unless it is asked for", "[ComputeGraph][MultiTermFactorization]") {
