@@ -22,7 +22,11 @@ bool written_in_memory(Graph const &graph, void const *object, Graph const *skip
         return false;
     }
     for (auto const &node : graph.nodes()) {
-        if (&node != skip_node && !is_lifecycle(node.kind) && node.kind != OpKind::View && !moves_storage(node.kind)) {
+        // A control-flow node's own outputs restate what its body writes, which the walk into the
+        // body below finds; counted here as well, a body that is skipped would count anyway.
+        bool has_body = false;
+        for_each_child_graph(node, [&](Graph const &) { has_body = true; });
+        if (!has_body && &node != skip_node && !is_lifecycle(node.kind) && node.kind != OpKind::View && !moves_storage(node.kind)) {
             for (TensorId const out : node.outputs) {
                 TensorHandle const *handle = graph.find_tensor(graph.buffer_of(out));
                 if (handle != nullptr && handle->tensor_ptr == object) {

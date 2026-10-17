@@ -413,6 +413,23 @@ struct Scope {
         return handle != nullptr && handle->is_intermediate;
     }
 
+    /// Whether the tensor is backed, read off the declaration: a body's handle for a parent's backed
+    /// tensor carries no backing of its own.
+    [[nodiscard]] bool backed(TensorId tid) const {
+        Graph const        *level  = &graph;
+        TensorHandle const *handle = graph.find_tensor(tid);
+        while (handle != nullptr && !handle->backing && handle->tensor_ptr != nullptr) {
+            auto const hit = enclosing.find(level);
+            if (hit == enclosing.end()) {
+                break;
+            }
+            Graph *outer = hit->second.first;
+            handle       = outer->find_tensor_by_ptr(handle->tensor_ptr);
+            level        = outer;
+        }
+        return handle != nullptr && handle->backing != nullptr;
+    }
+
     /// Whether a node outside this graph, in any graph that holds it, reads or writes the tensor.
     [[nodiscard]] bool touched_beyond(TensorId tid) const {
         Graph const        *level  = &graph;
@@ -2220,7 +2237,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 if (!scope.intermediate(tid)) {
                     std::size_t const bytes = handle->total_bytes();
                     // A backed tensor is not one: its storage holds it, and SlabStreaming moves it.
-                    if (sliceable && handle->alloc_state == AllocState::Deferred && !handle->backing && bytes > limit_for(bytes) &&
+                    if (sliceable && handle->alloc_state == AllocState::Deferred && !scope.backed(tid) && bytes > limit_for(bytes) &&
                         (held == nullptr || bytes > held->total_bytes())) {
                         held = handle;
                     }

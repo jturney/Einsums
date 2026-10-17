@@ -187,7 +187,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         std::string                          name;
         std::vector<std::size_t>             extents;
         std::vector<bool>                    whole_axis;
-        double                               count{1.0};
+        double                               count{1.0}; ///< Transfers of it per replay of the root.
     };
 
     /// What a graph knows about one backed tensor object.
@@ -207,8 +207,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::size_t budget() const;
 
     /// Stream @p graph's contractions, then each body below it, handing each what it inherits.
-    bool walk(Graph &graph, Backed backed);
-    /// Note a box shape @p backing is moved in, @p count of them per replay.
+    /// @p replays is how many times @p graph runs per replay of the root.
+    bool walk(Graph &graph, Backed backed, double replays);
+    /// Note a box shape @p backing is moved in, @p count times per replay of the root.
     void note_box(std::shared_ptr<TensorBacking const> const &backing, std::string const &name, std::vector<std::size_t> extents,
                   std::vector<bool> whole_axis, double count);
     /// Store each written tensor in the order that makes the boxes moved of it the fewest runs, where
@@ -226,6 +227,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::int64_t                                    _budget_override{-1};
     Graph const                                    *_root{nullptr};
     std::vector<BoxUse>                             _box_uses;
+    double                                          _replays{1.0}; ///< How often the graph being streamed runs per replay of the root.
     std::map<std::string, std::vector<std::size_t>> _orders;
     std::vector<std::string>                        _order_lines;
     std::vector<std::pair<NodeId, TensorId>>        _compensated;

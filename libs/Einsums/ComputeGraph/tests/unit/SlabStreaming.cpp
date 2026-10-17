@@ -786,6 +786,37 @@ TEST_CASE("SlabStreaming builds its loops over the graph's operands, not the cal
     check_close(d, want_d, static_cast<double>(nk * nj));
 }
 
+TEST_CASE("SlabStreaming produces a write-backed tensor its setup body computes", "[ComputeGraph][Pass][SlabStreaming]") {
+    // A setup node lists what its body writes as outputs of its own, so the check for a writer
+    // OUTSIDE the body counted the setup node, which is the body itself, and declined. The tensor
+    // was computed whole in memory and stored after.
+    constexpr std::size_t ni = 5;
+    constexpr std::size_t nk = 3;
+    constexpr std::size_t nj = 7;
+    WriteStore            store("T");
+    auto const            a = filled("A", {ni, nk}, 3U);
+    auto const            b = filled("B", {nk, nj}, 7U);
+
+    cg::Graph graph("setup");
+    auto     &t = graph.declare_runtime_tensor<double>("T", {ni, nj});
+    graph.annotate_backing(t, store.backing());
+    {
+        auto                  &setup = graph.add_setup("produce");
+        cg::CaptureGuard const guard(setup);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &t, 2.0, a, b);
+    }
+    auto const pass = stream(graph, static_cast<std::int64_t>(2 * ni * sizeof(double)));
+    REQUIRE(pass->num_written() == 1);
+    CHECK(graph.verify().empty());
+
+    graph.execute();
+    CHECK_FALSE(t.is_materialized());
+    auto want = RuntimeTensor<double>("T", std::vector<std::size_t>{ni, nj});
+    want.zero();
+    testing::reference_einsum("i,j <- i,k ; k,j", 0.0, &want, 2.0, a, b);
+    check_close(store.stored(), want, static_cast<double>(nk));
+}
+
 TEST_CASE("SlabStreaming loads a streamed-out tensor whole for a reader it cannot stream, after the writes",
           "[ComputeGraph][Pass][SlabStreaming]") {
     // D[i,l] = T[i,j] T[l,j] reads T twice, which this pass declines, so T is filled whole from its

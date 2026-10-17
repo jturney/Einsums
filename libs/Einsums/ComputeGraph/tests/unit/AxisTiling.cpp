@@ -342,6 +342,46 @@ TEST_CASE("AxisTiling slices an axis a contraction sums, when its destination co
     }
 }
 
+TEST_CASE("AxisTiling does not report a backed tensor a loop body writes as a held result", "[ComputeGraph][Pass][AxisTiling]") {
+    // A backed tensor is its storage's to hold, not memory's, so it is never the declared result
+    // the report asks the caller to redeclare. A body's handle for a tensor its parent declared
+    // carries no backing of its own, and the check read the body's handle, so inside a loop it
+    // reported the tensor anyway.
+    std::size_t const v = 5;
+    auto const        a = filled("A", {v, 4}, 3U);
+    auto const        g = filled("G", {4, v, 6}, 5U);
+
+    cg::TensorBacking backing;
+    backing.kind     = "test.memory";
+    backing.location = {{"name", "W"}};
+    backing.write    = true;
+    backing.prepare  = [](std::vector<std::size_t> const &dims, packed_gemm::ScalarType dtype) {
+        cg::TensorBacking ready;
+        ready.kind       = "test.memory";
+        ready.location   = {{"name", "W"}};
+        ready.write      = true;
+        ready.dims       = dims;
+        ready.dtype      = dtype;
+        ready.read_slab  = [](void *, std::vector<std::pair<std::size_t, std::size_t>> const &) {};
+        ready.write_slab = [](void const *, std::vector<std::pair<std::size_t, std::size_t>> const &) {};
+        return ready;
+    };
+
+    cg::Graph graph("backed in a loop");
+    auto     &w = graph.declare_runtime_tensor<double>("W", std::vector<std::size_t>{v, v, 6});
+    graph.annotate_backing(w, backing);
+    {
+        auto                  &body = graph.add_loop("iterate", 2, [](std::size_t it) { return it + 1 < 2; });
+        cg::CaptureGuard const guard(body);
+        cg::einsum("i,j,k <- i,m ; m,j,k", &w, a, g);
+    }
+    REQUIRE(v * v * 6 * sizeof(double) > 100);
+    auto const tiling = decide(graph, 100);
+    CHECK_FALSE(declined_because(*tiling, "declared as a result"));
+    auto const lines = tiling->explain();
+    CHECK(std::ranges::none_of(lines, [](std::string const &line) { return line.find("held 'W'") != std::string::npos; }));
+}
+
 TEST_CASE("AxisTiling is off when the cap is zero", "[ComputeGraph][Pass][AxisTiling]") {
     Problem   problem;
     cg::Graph graph("mp2 full axis");

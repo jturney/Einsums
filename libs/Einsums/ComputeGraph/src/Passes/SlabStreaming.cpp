@@ -23,6 +23,7 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -30,6 +31,7 @@
 #include <optional>
 #include <ranges>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -426,13 +428,13 @@ std::size_t SlabStreaming::budget() const {
 
 bool SlabStreaming::run(Graph &graph) {
     _root            = &graph;
-    bool const moved = walk(graph, Backed{});
+    bool const moved = walk(graph, Backed{}, 1.0);
     choose_orders();
     return moved;
 }
 
 // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
-bool SlabStreaming::walk(Graph &graph, Backed backed) {
+bool SlabStreaming::walk(Graph &graph, Backed backed, double replays) {
     // What the enclosing graph saw, then this graph's own backed tensors: a body's handle for a
     // parent's backed tensor carries no backing, so the object is what identifies it.
     for (auto const &[tid, handle] : graph.tensors_map()) {
@@ -441,26 +443,30 @@ bool SlabStreaming::walk(Graph &graph, Backed backed) {
         }
     }
 
+    _replays   = replays;
     bool moved = !backed.empty() && stream_graph(graph, backed);
 
     // Each body learns whether a write-backed tensor is written in memory anywhere OUTSIDE it:
-    // above it, or in a sibling body it cannot see. Decided for every body before any is walked,
-    // so a writer left in this graph's own nodes, or in a body walked later, counts, which keeps the
-    // answer conservative and the program correct.
-    std::vector<std::pair<Graph *, Backed>> bodies;
+    // above it, or in a sibling body it cannot see. Decided for each body just before it is walked:
+    // a sibling walked earlier is seen as it ends up, so one that now writes the tensor only to its
+    // storage no longer counts, and the disk keys order this body's reads after those writes; one
+    // walked later is seen as captured, which keeps the answer conservative.
+    std::vector<std::pair<Graph *, double>> bodies;
     for (auto &node : graph.nodes()) {
-        for_each_child_graph(node, [&](Graph &sub) {
-            Backed inherited = backed;
-            for (auto &[object, entry] : inherited) {
-                if (entry.backing->write) {
-                    entry.written_outside = entry.written_outside || compute_graph::detail::written_in_memory(graph, object, &sub);
-                }
-            }
-            bodies.emplace_back(&sub, std::move(inherited));
-        });
+        // How often a body runs per replay of the root: a loop's runs up to its bound once for each
+        // time the graph holding it does, and a setup or a branch at most once.
+        auto const  *loop         = node.op_data.get_if<LoopDescriptor>();
+        double const body_replays = loop != nullptr ? replays * static_cast<double>(loop->max_iterations) : replays;
+        for_each_child_graph(node, [&](Graph &sub) { bodies.emplace_back(&sub, body_replays); });
     }
-    for (auto &[body, inherited] : bodies) {
-        moved = walk(*body, std::move(inherited)) || moved;
+    for (auto const &[body, body_replays] : bodies) {
+        Backed inherited = backed;
+        for (auto &[object, entry] : inherited) {
+            if (entry.backing->write) {
+                entry.written_outside = entry.written_outside || compute_graph::detail::written_in_memory(graph, object, body);
+            }
+        }
+        moved = walk(*body, std::move(inherited), body_replays) || moved;
     }
     return moved;
 }
@@ -715,7 +721,7 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                                       .flops  = flops,
                                       .summed = rw.summed});
             note_box(use.backing, use.name, last_axis_block(backing.dims, rw.block), last_axis_whole(backing.dims, rw.block),
-                     static_cast<double>(backing.dims.back()) / static_cast<double>(rw.block));
+                     _replays * std::ceil(static_cast<double>(backing.dims.back()) / static_cast<double>(rw.block)));
             _streamed.push_back(use.name);
             _blocks.push_back(static_cast<std::int64_t>(rw.block));
             ++_num_streamed;
@@ -883,7 +889,7 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
         }
     }
     note_box(out->backing, out->name, last_axis_block(backing.dims, rw.block), last_axis_whole(backing.dims, rw.block),
-             static_cast<double>(backing.dims.back()) / static_cast<double>(rw.block));
+             _replays * std::ceil(static_cast<double>(backing.dims.back()) / static_cast<double>(rw.block)));
     _streamed.push_back(out->name);
     _blocks.push_back(static_cast<std::int64_t>(rw.block));
     ++_num_streamed;
@@ -946,12 +952,8 @@ bool SlabStreaming::stream_box(Graph &graph, std::size_t view_node, std::string 
         extents.push_back(axis.kind == ViewAxis::Kind::Drop ? 1 : slice->dims[kept++]);
     }
     std::vector<bool> whole_axis;
-    std::size_t       box_elements   = 1;
-    std::size_t       whole_elements = 1;
     for (std::size_t p = 0; p < extents.size(); ++p) {
         whole_axis.push_back(extents[p] == backing->dims[p]);
-        box_elements *= extents[p];
-        whole_elements *= backing->dims[p];
     }
     std::vector<std::string> bound_params;
     for (auto const &axis : view->axes) {
@@ -1047,9 +1049,8 @@ bool SlabStreaming::stream_box(Graph &graph, std::size_t view_node, std::string 
                               .box        = true,
                               .extents    = extents,
                               .whole_axis = whole_axis});
-    // As many boxes as cover the tensor, which is how many a loop that slices it moves per replay.
-    note_box(backing, name, extents, whole_axis,
-             static_cast<double>(whole_elements) / static_cast<double>(std::max<std::size_t>(box_elements, 1)));
+    // Once each time this graph runs, which for a loop's body is once per iteration.
+    note_box(backing, name, extents, whole_axis, _replays);
     ++_num_boxes;
     report(1, fmt::format("{} '{}' for '{}' a box at a time, {} bytes", writer ? "wrote" : "read", name, label, bytes));
     return true;

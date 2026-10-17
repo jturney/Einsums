@@ -754,6 +754,17 @@ bool Materialization::run(Graph &graph) {
             if ((handle.tensor_ptr != nullptr && placed.contains(handle.tensor_ptr)) || already_materialized_in(body, handle.name)) {
                 continue;
             }
+            // Nothing in the body uses it any more, as when a rewrite moved its writes into
+            // storage: never allocated, here or anywhere.
+            bool used = false;
+            if (auto const *use = body.usage().find_owner(tid)) {
+                used = use->first_use() != TensorUsage::npos;
+            }
+            if (!used) {
+                _num_unused++;
+                report(2, fmt::format("setup-body tensor '{}' inside '{}' is used by no node; left unallocated", handle.name, setup_label));
+                continue;
+            }
             for (auto &node : lifecycle_for(handle, tid)) {
                 body_lifecycle.push_back(std::move(node));
             }
