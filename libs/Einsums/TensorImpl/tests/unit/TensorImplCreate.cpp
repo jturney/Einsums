@@ -277,3 +277,31 @@ TEMPLATE_TEST_CASE("TensorImpl rank-0 tensors take BLAS level-1 operations", "[t
     einsums::detail::impl_scal(TestType{2}, scalar);
     CHECK(data[0] == TestType{6});
 }
+
+// A layout whose extreme strides agree with its size is not therefore one run. Folding the repeated
+// letter of 'kkji' out of a view permuted by (0, 2, 1, 3) gives dims (2, 2, 2) and strides (5, 2, 8):
+// largest extent times largest stride is size times smallest stride, so the check accepted it, and a
+// dot of two such operands, which share strides, walked eight elements at increment 2 and summed the
+// wrong ones (" <- kkji ; kkji" gave 70 where numpy gives 38; found by the einsum fuzzer).
+TEST_CASE("is_totally_vectorable needs one increment to reach every element", "[tensor]") {
+    std::vector<double> data(16, 0.0);
+    std::vector<size_t> dims{2, 2, 2};
+
+    einsums::detail::TensorImpl<double> const folded(data.data(), dims, std::vector<size_t>{5, 2, 8});
+    CHECK_FALSE(folded.is_totally_vectorable());
+
+    // Overlapping itself: two axes share a stride.
+    einsums::detail::TensorImpl<double> const overlapping(data.data(), std::vector<size_t>{2, 2}, std::vector<size_t>{2, 2});
+    CHECK_FALSE(overlapping.is_totally_vectorable());
+
+    // A strided run in any axis order is one, and reports its increment.
+    size_t                                    incx = 0;
+    einsums::detail::TensorImpl<double> const permuted(data.data(), dims, std::vector<size_t>{8, 2, 4});
+    CHECK(permuted.is_totally_vectorable(&incx));
+    CHECK(incx == 2);
+
+    // Extent-1 axes carry any stride.
+    einsums::detail::TensorImpl<double> const unit(data.data(), std::vector<size_t>{2, 1, 4}, std::vector<size_t>{1, 99, 2});
+    CHECK(unit.is_totally_vectorable(&incx));
+    CHECK(incx == 1);
+}

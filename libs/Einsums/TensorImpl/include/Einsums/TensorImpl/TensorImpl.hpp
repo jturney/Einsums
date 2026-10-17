@@ -697,7 +697,33 @@ struct TensorImpl final {
         if (incx != nullptr) {
             *incx = min_s;
         }
-        return max_dim * max_s == _size * min_s;
+        if (max_dim * max_s != _size * min_s) {
+            return false;
+        }
+        // The extents agree, which does not make the layout one run: a diagonal folded out of a
+        // permuted view has dims (2, 2, 2) and strides (5, 2, 8), which passes the test above but
+        // holds offsets 0, 2, 5, 7, ... rather than every second one. Walk the strides from the
+        // smallest instead: each must be the one before it times that axis's extent. A stride two
+        // axes share is found once, so a layout that overlaps itself fails the walk too.
+        size_t axes = 0;
+        for (size_t i = 0; i < _rank; ++i) {
+            axes += _dims[i] > 1 ? 1 : 0;
+        }
+        size_t next = min_s;
+        for (size_t step = 0; step < axes; ++step) {
+            bool advanced = false;
+            for (size_t i = 0; i < _rank; ++i) {
+                if (_dims[i] > 1 && _strides[i] == next) {
+                    next *= _dims[i];
+                    advanced = true;
+                    break;
+                }
+            }
+            if (!advanced) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
