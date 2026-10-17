@@ -86,6 +86,7 @@ if(EINSUMS_BUILD_PYTHON
       ccsd_tiled.py
       mp2_simulation.py
       optimizer_tour.py
+      out_of_core.py
       scf_simulation.py
   )
   foreach(_script ${python_example_scripts})

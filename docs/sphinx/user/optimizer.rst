@@ -563,6 +563,71 @@ algebra, a load rebinds it to fresh buffers, and the loop is emitted again on
 the other side against whatever cap is in force there. That is the phase rule
 read back rather than a limitation met halfway.
 
+.. _optimizer-backed-tensors:
+
+Tensors that live in a file
+---------------------------
+
+Tiling slices the intermediates a program builds. A tensor the program reads in
+full at every use, the virtual-virtual block of the fitted integrals in a
+DF-CCSD ladder for instance, is not an intermediate, and no slicing of the
+program makes it smaller. A **backing** says where such a tensor lives instead
+of memory: an entry of an ``.etn`` file, declared on the graph the way a tag is.
+
+.. code-block:: python
+
+    bvv = g.declare_tensor("Bvv", [naux, nvir, nvir])
+    cg.annotate(bvv, backing=einsums.io.etn("ints.etn", "Bvv"), graph=g)
+
+A tensor backed for reading is filled from its entry at every replay, so a file
+rewritten between replays is picked up by the next one. A tensor declared by
+the program and handed in, rather than declared on the graph, cannot be backed:
+the caller already holds it. A node that writes a read-backed tensor is an error
+``Graph.verify()`` names.
+
+With ``write=True`` the direction is the other one. The graph produces the
+tensor, and the entry receives it.
+
+.. code-block:: python
+
+    cg.annotate(bvv, backing=einsums.io.etn("ints.etn", "Bvv", write=True), graph=g)
+
+Annotating creates the file when it does not exist and reserves the entry at
+the tensor's shape and type, leaving the file's other entries alone. An entry
+of the same shape and type is reused; an entry of any other is refused at the
+annotation rather than at the end of a long replay. A write-backed tensor that
+nothing writes is the other error ``verify()`` names.
+
+What a backing changes is where the tensor lives; when it is held whole is the
+``SlabStreaming`` pass's decision, which runs after ``AxisTiling`` in the
+default pipeline. A backed tensor larger than its share of
+:option:`--einsums:max-memory` (the same
+:option:`--einsums:graph:tiling-budget-share` tiling reads) is never held whole:
+
+* Each contraction that reads it becomes a loop over blocks of its **last**
+  axis, reading one slab per block. The last axis because the file keeps
+  elements column-major, so a block of it is one contiguous read.
+* The contraction that produces a write-backed tensor becomes a loop that
+  computes one block and writes that slab. It must overwrite the tensor (a
+  destination prefactor of zero), be its only writer, and read no backed
+  tensor.
+
+A backed tensor that fits, or one the pass declines, is loaded whole before its
+first reader or stored whole after its last writer, once per replay. That is
+also how a graph with the pass switched off runs, so the pass changes the
+footprint and never the answer: a block that writes a slice of the result gives
+the captured result exactly, and a block over a summed letter adds its partial
+sum in a different order, within the re-association tolerance.
+
+The report says which tensors were streamed and why the others were not. A
+decline names its reason: the last-axis letter repeated in an operand, a view
+that is not the whole tensor, two backed operands in one contraction, a
+destination accumulated into rather than overwritten.
+
+``out_of_core.py`` in the ComputeGraph examples produces ``Bvv`` for water in
+cc-pVTZ into a file from one graph and runs the particle ladder on it from a
+second, under a 16 MB budget.
+
 Driving the pass manager
 ========================
 
