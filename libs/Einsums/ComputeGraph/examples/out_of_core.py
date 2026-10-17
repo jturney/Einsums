@@ -21,12 +21,31 @@ of the file.
 
 The second part is a later run that reuses the file. Annotated with
 ``einsums.io.etn(path, entry)``, Bvv is read in the order the entry records,
-and the ladder reads it a block at a time as before.
+and the ladder reads it a block at a time as before. A file another program
+wrote keeps the order it was written in; the report says so when another
+order would at least halve the runs its blocks cost.
 
 Neither program asks for any of this beyond the annotation. The default
 pipeline streams a backed tensor when it is larger than its share of
 ``--einsums:max-memory``, set small below so that a cc-pVTZ water is enough to
 show it. A backed tensor that fits is loaded or stored whole, once per replay.
+
+The half-transformed tensor and H are declared ``intermediate=True``. A tensor
+declared on the graph without it is a result the caller may read after
+``execute()``, so the graph has to hold all of it; H is 25 times the size of
+Bvv, and held whole it would be over the budget by itself. AxisTiling's line
+of the report names such a tensor when it meets one.
+
+What to read in the report the example prints:
+
+* ``SlabStreaming: stores 'Bvv' with its axes in the order [1,2,0]``: the
+  entry keeps Q last, and the blocks the program moves are 144 runs of the
+  file per replay rather than 404496 in the declared order.
+* ``writes 'Bvv' a box at a time`` and ``reads 'Bvv' a box at a time``: each
+  iteration of a loop moves the block its view names, one run of the file,
+  in place of the whole tensor.
+* ``MemoryPlanning: peak``: 5.75 MB for the program and 2.74 MB for the later
+  run, under a budget of 16 MB; Bvv alone is 3.2 MB, and H 79 MB.
 
 Run with::
 

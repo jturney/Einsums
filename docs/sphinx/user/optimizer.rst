@@ -680,7 +680,18 @@ for each box.
 is built, for water in cc-pVTZ under a 16 MB budget: a setup body produces
 ``Bvv`` into a file, every iteration of the loop runs the particle ladder on it,
 and the file is stored so the blocks the loop reads are contiguous. A second
-part reuses the file from another graph, as a later run would.
+part reuses the file from another graph, as a later run would. Its docstring
+says which lines of the report to read; the program's peak is 5.75 MB, with
+``Bvv`` at 3.2 MB and the ladder's four-index intermediate at 79 MB.
+
+At a size where a backing matters, the same ladder for benzene in cc-pVDZ
+(``Bvv`` 29 MB, the intermediate 12.8 GB) runs under a 128 MB budget at 1.46
+times the time of a resident ``Bvv`` on one thread and 1.33 times on four, for
+26% less peak memory. Under a 4 GB budget a backing costs 9 to 15%.
+A file another program wrote with ``Q`` first, the order in which a ``Q`` block
+is thousands of short runs, makes ``AxisTiling`` slice other axes and read
+``Bvv`` whole at each iteration; that ran in 4.56 seconds on one thread and
+3.70 on four, against 5.01 and 3.50 for the order the program chooses.
 
 Driving the pass manager
 ========================
