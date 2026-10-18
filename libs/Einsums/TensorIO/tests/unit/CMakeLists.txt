@@ -9,6 +9,7 @@ set(TensorIOTests
     TensorFileSliceWrite.cpp
     TensorFileLayout.cpp
     GraphSlab.cpp
+    Entries.cpp
 )
 
 foreach(test ${TensorIOTests})
@@ -38,4 +39,9 @@ einsums_add_python_unit_test(
 einsums_add_python_unit_test(
   "Modules.TensorIO" BackingPython
   SCRIPT test_backing_python.py
+)
+
+einsums_add_python_unit_test(
+  "Modules.TensorIO" EntriesPython
+  SCRIPT test_entries_python.py
 )

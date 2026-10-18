@@ -9,6 +9,7 @@ set(TensorIOHeaders
     Einsums/TensorIO/TensorFile.hpp
     Einsums/TensorIO/DistributedTensorFile.hpp
     Einsums/TensorIO/Checkpoint.hpp
+    Einsums/TensorIO/Entries.hpp
     Einsums/TensorIO/GraphIO.hpp
 )
 
@@ -17,6 +18,7 @@ set(TensorIOSources
     TensorFile.cpp
     DistributedTensorFile.cpp
     Checkpoint.cpp
+    Entries.cpp
     InitModule.cpp
 )
 
@@ -27,6 +29,7 @@ einsums_add_module(
   SOURCES ${TensorIOSources}
   HEADERS ${TensorIOHeaders}
   MODULE_DEPENDENCIES
+    Einsums_BufferAllocator
     Einsums_Comm
     Einsums_ComputeGraph
     Einsums_Config

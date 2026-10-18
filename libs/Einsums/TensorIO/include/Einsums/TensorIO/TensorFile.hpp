@@ -157,6 +157,53 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     /// @param ranges Per-dimension [start, end) ranges into the stored tensor.
     void write_slab(std::string_view name, void const *source, std::vector<std::pair<size_t, size_t>> const &ranges);
 
+    // ── Entries ──────────────────────────────────────────────────────────
+
+    /**
+     * @brief Give the entry @p old_name the name @p new_name.
+     *
+     * Only the entry table changes, so a rename costs the same whatever the entry holds. The table
+     * is written before this returns. Renaming an entry to its own name does nothing.
+     *
+     * Another TensorFile open on the same path in a writable mode writes the table it read when it
+     * closes, over this one, so rename through the handle that is open, or close it first.
+     * @throws std::runtime_error when there is no entry @p old_name, or the file is open for reading.
+     * @throws std::invalid_argument when an entry is already named @p new_name, or no entry can hold
+     *         that name.
+     */
+    APIARY_EXPOSE void rename(std::string_view old_name, std::string_view new_name);
+
+    /**
+     * @brief Exchange the names of the entries @p first and @p second.
+     *
+     * Only the entry table changes, as for @ref rename. Afterwards @p first names what @p second
+     * held and the other way round, which is the step a program that writes the next value of a
+     * tensor beside the current one takes to make the next value current. Swapping an entry with
+     * itself does nothing.
+     * @throws std::runtime_error when either entry is missing, or the file is open for reading.
+     */
+    APIARY_EXPOSE void swap(std::string_view first, std::string_view second);
+
+    /**
+     * @brief Copy the entry @p source_name of @p source into the entry @p name of this file.
+     *
+     * The entry @p name is created with the source's extents, element type and stored order when
+     * it does not exist. When it does, it must have the same extents and element type, and keeps
+     * its own stored order. The elements pass through a buffer of at most @p buffer_bytes, so
+     * neither entry is ever held whole: entries stored in the same order are copied as runs of the
+     * file, and otherwise a box at a time, in runs of the source's order. @p source may be this
+     * file, and copying an entry of this file onto itself does nothing.
+     * @param source The file holding the entry to copy.
+     * @param source_name The entry to copy.
+     * @param name The entry to copy it into.
+     * @param buffer_bytes The most the copy holds in memory at once; zero takes
+     *        ``--einsums:work-buffer-size``. A buffer smaller than one element holds one element.
+     * @throws std::runtime_error when the source entry is missing or damaged, or this file is open for reading.
+     * @throws std::invalid_argument when the entry @p name exists with other extents or another
+     *         element type, or no entry can hold the name.
+     */
+    void copy(TensorFile const &source, std::string_view source_name, std::string_view name, size_t buffer_bytes = 0);
+
     // ── Query ────────────────────────────────────────────────────────────
 
     /// Check if a tensor exists in the file.
@@ -251,6 +298,9 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
 
     /// Map each entry's name to its record, the last of the name when several ranks hold one.
     void index_entries();
+
+    /// Refuse to change a file open for reading, before anything changes.
+    void require_writable(std::string_view operation) const;
 
     /**
      * @brief The entry a write of @p name fills, with its name, type, extents and data region set.

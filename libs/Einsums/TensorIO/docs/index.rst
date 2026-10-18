@@ -90,13 +90,58 @@ example from a prior ``write_etn`` or ``TensorFile::reserve``. The in-memory
 tensor must match the slab shape; the bound ``TensorFile`` methods throw at
 execute time if the dimensions disagree.
 
+Copying, renaming and swapping entries
+======================================
+
+Three functions change which entry a name reaches, or fill one entry from
+another, without the caller holding either entry in memory:
+
+- ``copy_entry(src_path, src_entry, dst_path, dst_entry)`` copies an entry into
+  another, in the same file or another, creating the destination with the
+  source's extents, element type and stored order when it does not exist. The
+  elements pass through a buffer of at most ``--einsums:work-buffer-size``.
+- ``rename_entry(path, old_name, new_name)`` renames an entry. It refuses a
+  name the file already holds.
+- ``swap_entries(path, first, second)`` exchanges the names of two entries.
+
+A rename or a swap rewrites only the file's entry table, so it costs the same
+whatever the entries hold.
+
+Each runs at once outside a capture. Inside one it records a node that runs at
+every replay, after every read and write of the file that comes before it in
+the graph and before every one after it, including the loads and stores of
+tensors backed by the file. That makes the usual way to update a tensor too
+large for memory one graph: each replay reads the current value from one entry,
+writes the next into another, and swaps the two, so the same name always holds
+the current value.
+
+.. code-block:: cpp
+
+    #include <Einsums/TensorIO/Backing.hpp>
+    #include <Einsums/TensorIO/Entries.hpp>
+
+    auto &t2     = graph.declare_runtime_tensor<double>("t2", {o, o, v, v});
+    auto &new_t2 = graph.declare_runtime_tensor<double>("t2_next", {o, o, v, v});
+    graph.annotate_backing(t2, tensor_io::etn_backing("amps.etn", "t2"));
+    graph.annotate_backing(new_t2, tensor_io::etn_backing("amps.etn", "t2_next", true));
+    {
+        cg::CaptureGuard guard(graph);
+        // ... compute new_t2 from t2 ...
+        tensor_io::swap_entries("amps.etn", "t2", "t2_next");
+    }
+    for (int iter = 0; iter < max_iter; ++iter) {
+        graph.execute();  // "t2" holds the newest amplitudes after every replay
+    }
+
 Python surface
 ==============
 
 The graph wrappers are exposed in Python under ``einsums.io``. Each C++
 ``read_slice_etn`` / ``write_slice_etn`` is bound as ``einsums.io.read_slice``
 / ``einsums.io.write_slice``, and ``read_etn`` / ``write_etn`` as
-``einsums.io.read`` / ``einsums.io.write``. The slab-by-reference pattern
+``einsums.io.read`` / ``einsums.io.write``, and ``copy_entry``,
+``rename_entry`` and ``swap_entries`` as ``einsums.io.copy``,
+``einsums.io.rename`` and ``einsums.io.swap``. The slab-by-reference pattern
 carries over: a Python ``Slab`` object can be advanced between graph
 executions the same way.
 

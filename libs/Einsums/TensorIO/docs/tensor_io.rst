@@ -24,7 +24,9 @@ Features
 - **Type-checked**: reads and slice writes never convert element types. A dtype or rank mismatch
   throws ``std::invalid_argument``, and a slab past the stored extents throws ``std::out_of_range``.
 - **Slice reads**: read a hyperslab without loading the full tensor.
-- **Multi-tensor files**: store many tensors in one file.
+- **Multi-tensor files**: store many tensors in one file. Writing a name the file holds replaces its entry.
+- **Entry operations**: copy an entry through a bounded buffer, or rename or swap entries by rewriting
+  only the entry table, at once or as nodes of a graph.
 - **Distributed I/O**: MPI-coordinated writes to a single file using ``MPI_Exscan``.
 - **ComputeGraph integration**: ``read_etn``/``write_etn`` create DiskRead/DiskWrite nodes.
 - **Checkpointing**: save and restore Graph or Workspace state with one call.
@@ -93,6 +95,12 @@ Basic read/write for serial programs:
    // Append in ReadWrite mode
    TensorFile rw("data.etn", TensorFile::Mode::ReadWrite);
    rw.write("C", C);  // Appends without overwriting A, B
+   rw.write("A", A2); // Replaces A, in place when A2 has A's extents and type
+
+   // Entries
+   rw.rename("C", "D");              // only the entry table changes
+   rw.swap("A", "B");                // "A" now reaches what "B" did, and the other way round
+   rw.copy(rw, "A", "A_saved");      // through a bounded buffer
 
 DistributedTensorFile
 ======================

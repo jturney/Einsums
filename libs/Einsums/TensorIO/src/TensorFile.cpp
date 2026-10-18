@@ -3,9 +3,13 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/BufferAllocator/ModuleVars.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/TensorIO/TensorFile.hpp>
+
+#include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <algorithm>
 #include <array>
@@ -436,6 +440,141 @@ void TensorFile::index_entries() {
     for (size_t i = 0; i < _entries.size(); i++) {
         _name_to_index[_entries[i].get_name()] = i;
     }
+}
+
+void TensorFile::require_writable(std::string_view operation) const {
+    if (_mode == Mode::Read) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "{}: '{}' is open for reading only", operation, _path);
+    }
+}
+
+void TensorFile::rename(std::string_view old_name, std::string_view new_name) {
+    require_writable("TensorFile::rename");
+    (void)find_entry(old_name);
+    detail::check_entry_name(_path, "TensorFile::rename", new_name);
+    if (old_name == new_name) {
+        return;
+    }
+    if (contains(new_name)) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "TensorFile::rename: '{}' already holds an entry named '{}'; swap the two instead",
+                                _path, new_name);
+    }
+    for (auto &entry : _entries) {
+        if (entry.get_name() == old_name) {
+            entry.set_name(new_name);
+        }
+    }
+    index_entries();
+    write_metadata();
+}
+
+void TensorFile::swap(std::string_view first, std::string_view second) {
+    require_writable("TensorFile::swap");
+    (void)find_entry(first);
+    (void)find_entry(second);
+    if (first == second) {
+        return;
+    }
+    std::string const first_name(first);
+    std::string const second_name(second);
+    for (auto &entry : _entries) {
+        if (std::string const name = entry.get_name(); name == first_name) {
+            entry.set_name(second_name);
+        } else if (name == second_name) {
+            entry.set_name(first_name);
+        }
+    }
+    index_entries();
+    write_metadata();
+}
+
+namespace {
+
+/// The buffer a copy moves elements through: @p asked bytes, or the work buffer when zero.
+size_t copy_buffer_bytes(size_t asked) {
+    return asked != 0 ? asked : einsums::detail::Einsums_BufferAllocator_vars::get_singleton().get_work_buffer_size();
+}
+
+} // namespace
+
+void TensorFile::copy(TensorFile const &source, std::string_view source_name, std::string_view name, size_t buffer_bytes) {
+    require_writable("TensorFile::copy");
+    // By value: placing the destination may move the records of this file, which may be the source.
+    TensorEntry const from  = source.find_entry(source_name);
+    auto const        dtype = static_cast<DType>(from.dtype);
+    detail::check_entry_type(source._path, "TensorFile::copy", from, dtype, std::nullopt);
+    if (&source == this && source_name == name) {
+        return;
+    }
+
+    std::vector<size_t> const dims(from.dims, from.dims + from.rank);
+    if (contains(name)) {
+        TensorEntry const &existing = find_entry(name);
+        if (existing.dtype != from.dtype || existing.rank != from.rank || !std::equal(dims.begin(), dims.end(), existing.dims)) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "TensorFile::copy: entry '{}' of '{}' holds {} elements of extents {}, and entry '{}' of '{}' holds {} "
+                                    "elements of extents {}; a copy never changes an entry's shape or type",
+                                    source_name, source._path, dtype_name(dtype), dims, name, _path,
+                                    dtype_name(static_cast<DType>(existing.dtype)),
+                                    std::vector<size_t>(existing.dims, existing.dims + existing.rank));
+        }
+    } else {
+        place_entry("TensorFile::copy", name, dtype, dims, ETN_ALL_RANKS).set_stored_order(from.stored_order());
+    }
+    TensorEntry const to = find_entry(name);
+
+    size_t const elem   = dtype_size(dtype);
+    size_t const budget = std::max(copy_buffer_bytes(buffer_bytes), elem);
+    if (from.data_size != 0) {
+        std::vector<size_t> const order = from.stored_order();
+        if (order == to.stored_order()) {
+            // The same layout: the data regions are the same bytes, moved as runs of the file.
+            std::vector<std::byte> buffer(static_cast<size_t>(std::min<uint64_t>(budget, from.data_size)));
+            for (uint64_t done = 0; done < from.data_size; done += buffer.size()) {
+                size_t const bytes = static_cast<size_t>(std::min<uint64_t>(buffer.size(), from.data_size - done));
+                source.read_at(from.data_offset + done, buffer.data(), bytes);
+                write_at(to.data_offset + done, buffer.data(), bytes);
+            }
+        } else {
+            // Boxes cut along the source's order: the axes it stores fastest whole while they fit,
+            // the next in blocks, and the rest one index at a time, so each read is long runs.
+            size_t const rank  = dims.size();
+            size_t const limit = budget / elem;
+            size_t       run   = 1;
+            size_t       whole = 0;
+            while (whole < rank && run * dims[order[whole]] <= limit) {
+                run *= dims[order[whole]];
+                ++whole;
+            }
+            size_t const block = whole < rank ? limit / run : 1;
+
+            std::vector<std::pair<size_t, size_t>> ranges(rank);
+            std::vector<size_t>                    at(rank, 0);
+            for (size_t s = 0; s < whole; ++s) {
+                ranges[order[s]] = {0, dims[order[s]]};
+            }
+            std::vector<std::byte> buffer(run * block * elem);
+            for (bool more = true; more;) {
+                for (size_t s = whole; s < rank; ++s) {
+                    size_t const step = s == whole ? block : 1;
+                    ranges[order[s]]  = {at[s], std::min(at[s] + step, dims[order[s]])};
+                }
+                source.read_slab(source_name, buffer.data(), ranges);
+                write_slab(name, buffer.data(), ranges);
+
+                more = false;
+                for (size_t s = whole; s < rank; ++s) {
+                    at[s] += s == whole ? block : 1;
+                    if (at[s] < dims[order[s]]) {
+                        more = true;
+                        break;
+                    }
+                    at[s] = 0;
+                }
+            }
+        }
+    }
+    write_metadata();
 }
 
 TensorEntry &TensorFile::place_entry(std::string_view operation, std::string_view name, DType dtype, std::vector<size_t> const &dims,
