@@ -931,4 +931,3 @@
   added: "2.0.0"
   body: |
     Directory for crash minidumps, on Windows. Empty, the default, means the working directory.
-

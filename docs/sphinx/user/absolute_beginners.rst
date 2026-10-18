@@ -247,7 +247,7 @@ Einsums intends to provide tensors that are compatible with GPU and CPU operatio
 These are intended to be drop-in replacements, though there may be some variability in the interfaces for these tensors.
 The disk tensor class is :cpp:any:`~einsums::DiskTensor`, which can be viewed by a :cpp:any:`~einsums::DiskView`.
 GPU storage is selected through the allocator: the :cpp:any:`~einsums::GPUTensor` and
-:cpp:any:`~einsums::RuntimeGPUTensor` aliases store their data on the device. 
+:cpp:any:`~einsums::RuntimeGPUTensor` aliases store their data on the device.
 
 Basic Tensor operations
 =======================

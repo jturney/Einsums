@@ -64,7 +64,7 @@ def main() :
 
     parser.add_argument("-n", help = "The number of orbitals.", default = 20, type = int)
     parser.add_argument("-t", help = "The number of trials.", default = 20, type = int)
-    
+
     args = vars(parser.parse_args())
 
     profile_einsums(**args)

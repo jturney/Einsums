@@ -27,7 +27,7 @@ zdirprod_kernel_avx2:
     // Save some more registers that we may use.
     movq    %rbx, -40(%rbp)
     movq    %rax, -48(%rbp)
-    
+
     // Now for the floating point ones.
     movupd  %xmm0, -64(%rbp)
     movupd  %xmm1, -96(%rbp)
@@ -39,7 +39,7 @@ zdirprod_kernel_avx2:
     vmovupd %ymm5, -224(%rbp)
     vmovupd %ymm6, -256(%rbp)
     vmovupd %ymm7, -288(%rbp)
-    
+
     // Calculate the number of vectorizable elements.
     movq    -8(%rbp), %rax
     shrq    $1, %rax

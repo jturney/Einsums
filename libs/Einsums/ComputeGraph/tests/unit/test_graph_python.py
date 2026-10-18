@@ -382,4 +382,3 @@ def test_graph_add_loop_respects_max_iterations():
     g.execute()
 
     assert len(seen) == 4
-

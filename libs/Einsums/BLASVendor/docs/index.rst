@@ -13,4 +13,3 @@ internal and are used by higher level calls.
 
 See the :ref:`API reference <modules_Einsums_BLASVendor_api>` of this module for more
 details.
-

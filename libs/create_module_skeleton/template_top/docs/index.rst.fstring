@@ -9,7 +9,7 @@
 {docs_head}
 
 .. todo::
-    
+
     High-level description of the module.
 
 See the :ref:`API reference <modules_{lib_name}_{module_name}_api>` of this module for more

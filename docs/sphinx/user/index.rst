@@ -69,8 +69,8 @@ Another example for a more general contraction is the coupled-cluster singles an
 The governing equation is this.
 
 .. math::
-    
-    E_{CCSD} = E_{HF} + \sum_{i}^{occ}\sum_{a}^{virt} F_{ia} t_{i}^{a} + 
+
+    E_{CCSD} = E_{HF} + \sum_{i}^{occ}\sum_{a}^{virt} F_{ia} t_{i}^{a} +
     \frac{1}{4}\sum_{ij}^{occ} \sum_{ab}^{virt} \left<ij\middle|\middle| ab\right> \tau_{ij}^{ab}
 
     \tau_{ij}^{ab} = t_{ij}^{ab} + 2t_{i}^{a}t_{j}^{b}
@@ -85,7 +85,7 @@ This becomes the following code.
     namespace cg = einsums::compute_graph;
 
     double E_hf;
-    int n_occ; // The number of occupied orbitals. 
+    int n_occ; // The number of occupied orbitals.
     int n_orbs; // The number of orbitals.
     int n_virt = n_orbs - n_occ; // The number of virtual orbitals.
     Tensor F{"F", n_orbs, n_orbs}; // The Fock matrix.

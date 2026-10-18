@@ -25,7 +25,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Einsums.TaskPool
       HEADERS ${TaskPoolHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES Einsums_TaskPool 
+      DEPENDENCIES Einsums_TaskPool
     )
   endif()
 endif()

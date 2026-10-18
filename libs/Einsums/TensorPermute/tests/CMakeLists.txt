@@ -25,7 +25,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Einsums.TensorPermute
       HEADERS ${TensorPermuteHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES Einsums_TensorPermute 
+      DEPENDENCIES Einsums_TensorPermute
     )
   endif()
 endif()

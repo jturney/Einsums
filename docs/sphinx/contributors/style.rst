@@ -89,7 +89,7 @@ Order of Things
 ^^^^^^^^^^^^^^^
 
 * ``cv`` keywords should never come before the pointer or reference type they modify. As an example,
-  
+
   * :code:`std::string const &name`, not :code:`const std::string &name`.
   * The same goes for values: write :code:`size_t const size`. ``.clang-format`` sets
     ``QualifierAlignment: Right``, so the formatter rewrites :code:`const size_t size` to that form.
@@ -113,14 +113,14 @@ Miscellaneous
 * Lines should be at most 140 columns long.
 * Avoid using the function call operator on a tensor inside a large loop. This is slow. Here are some options, in order of what should be tried.
 
-  * Using :code:`tensor.data()[index]` to directly index a tensor. 
+  * Using :code:`tensor.data()[index]` to directly index a tensor.
     This is fast, but can only be used on certain kinds of tensors, so be careful. It can be used when iterating over
     a tensor's elements in order. If you are skipping around, it is better to use something else for better readability.
   * Using :cpp:func:`~einsums::sentinel_to_sentinels` and :code:`tensor.data()[index]`. This should be faster than subscripting tensors,
     but be careful, since it can only be used on certain kinds of tensors. As with the previous method, it can be used when iterating
     over a tensor's elements in order. It is still readable even when skipping around, but it will only work on :cpp:any:`~einsums::Tensor`\ s
     and :cpp:any:`~einsums::TensorView`\ s.
-  * Using :cpp:func:`~einsums::sentinel_to_indices` and :cpp:func:`subscript_tensor`. This will make the choice between 
+  * Using :cpp:func:`~einsums::sentinel_to_indices` and :cpp:func:`subscript_tensor`. This will make the choice between
     the :code:`subscript` method and the function call syntax, using the :code:`subscript` method as the primary
     and the function call syntax as a fallback. This is the most general way, and it should be preferred unless
     you can ensure specificity in the kinds of tensors you are being passed.
@@ -131,7 +131,7 @@ with these constructions is accepted, their use will need to be justified.
 * :code:`goto` statements.
 * :code:`do { } while(false);` blocks outside of macros. They are fine within macros,
   since their use is considered idiomatic to C/C++ for making a macro require a
-  semicolon after the closing parenthesis. 
+  semicolon after the closing parenthesis.
 * Inline assembly. One of the goals of Einsums is portability, and this goes against that goal. The
   few existing uses (a ``cpuid`` probe in ``ComputeGraph/src/CostModel.cpp`` and a ``yield`` hint in
   ``PackedGemm/PackedGemm.hpp``) are guarded to the architectures they target.
@@ -149,7 +149,7 @@ Python Style
 The approach to Python style is to generally follow the standard Python style guidelines. Some things to keep in mind.
 
 * Try to use type annotations when writing Python code. Some examples.
-  
+
   * :code:`def set_name(name)`: Bad.
   * :code:`def set_name(name: str)`: Good.
   * :code:`def iterate_elements(param)`: Fine. ``param`` can be pretty much any type. :code:`def iterate_elements(param: Any)` would be preferred,
@@ -160,7 +160,7 @@ The approach to Python style is to generally follow the standard Python style gu
 * However, the same considerations for tensor variables apply as in C++. Tensor varaibles are in ``UPPER_CASE``,
   and any reference to a tensor variable in a non-tensor variable should match the case of the tensor.
 
-  * :code:`A`: Tensor variable. 
+  * :code:`A`: Tensor variable.
   * :code:`A_indices`: References a tensor variable, but is not a tensor variable.
 
 CMake Style

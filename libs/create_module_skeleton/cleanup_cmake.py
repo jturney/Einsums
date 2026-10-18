@@ -34,7 +34,7 @@ def cleanup_cmake(file_string, indent = 2) :
                 first_ident += ch
             else :
                 break
-        
+
         depth = block_depth + paren_depth
         if first_ident in __block_mids :
             depth -= 1
@@ -63,7 +63,7 @@ def cleanup_cmake(file_string, indent = 2) :
                 paren_depth -= 1
         if paren_before > paren_depth :
             arg_depth = 0
-        
+
         # Indent.
         out += " " * depth * indent
 
@@ -90,13 +90,8 @@ def cleanup_cmake(file_string, indent = 2) :
                 spaces = 0
                 out += ch
         out += '\n'
-    
+
     # Make sure the file ends in a new line.
     if len(out) == 0 or out[-1] != '\n' :
         out += '\n'
     return out
-
-
-
-
-

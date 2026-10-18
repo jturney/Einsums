@@ -12,4 +12,3 @@ This module contains some things to help with debugging, including handling back
 
 See the :ref:`API reference <modules_Einsums_Debugging_api>` of this module for more
 details.
-

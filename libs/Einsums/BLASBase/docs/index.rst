@@ -12,4 +12,3 @@ This module contains some compatiblity definitions to make switching BLAS librar
 
 See the :ref:`API reference <modules_Einsums_BLASBase_api>` of this module for more
 details.
-

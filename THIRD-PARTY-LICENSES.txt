@@ -83,4 +83,3 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  CSV: examples/csv/csv.h
  Copyright (c) 2015, ben-strasser
  see: LICENSE.CSV
-

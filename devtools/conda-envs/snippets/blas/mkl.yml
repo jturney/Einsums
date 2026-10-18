@@ -13,4 +13,3 @@ dependencies:
   # settles, then re-test with a bumped upper bound.
   - mkl <2026
   - tbb-devel
-

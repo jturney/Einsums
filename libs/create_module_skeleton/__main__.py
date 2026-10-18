@@ -49,7 +49,7 @@ def main():
         prog="create_module_skeleton",
         description="Creates a module skeleton for developing in Einsums. All of the template files are treated as Python f strings, so be careful with braces.",
         usage="""
-        
+
 %(prog)s --reindex [LIBRARIES, ...]
 %(prog)s [OPTIONS] LIBRARY_NAME MODULE_NAME""",
     )

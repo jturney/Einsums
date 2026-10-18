@@ -22,7 +22,7 @@ Interacting with the Allocator
 To modify the allocator's maximum size, write a memory string to the ``einsums::option::BufferSize`` option, either
 with ``einsums::config::set`` or on the command line. A memory string is a number, possibly a decimal, followed by an optional prefix and unit.
 The understood prefixes are `k`, `M`, `G`, and `T`, all case insensitive. The units can either be `B`, `W`, or `o`,
-also case insensitive. The `B` and `o` units represent bytes, with the `o` provided for people who use the 
+also case insensitive. The `B` and `o` units represent bytes, with the `o` provided for people who use the
 octet convention. The `W` unit currently divides the byte count by the size of `size_t` rather than multiplying,
 so on a 64-bit system `6kW` is 768 bytes, not 6 kilowords; use `B` to be safe. The command-line spelling is
 `--einsums:buffer-size`. The limit applies per process and is shared by all threads in it.

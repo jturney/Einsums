@@ -27,7 +27,7 @@ cdirprod_kernel_avx2:
     // Save some more registers that we may use.
     movq    %rbx, -40(%rbp)
     movq    %rax, -48(%rbp)
-    
+
     // Now for the floating point ones.
     movups  %xmm0, -64(%rbp)
 
@@ -39,7 +39,7 @@ cdirprod_kernel_avx2:
     vmovups %ymm5, -224(%rbp)
     vmovups %ymm6, -256(%rbp)
     vmovups %ymm7, -288(%rbp)
-    
+
     // Calculate the number of vectorizable elements.
     movq    -8(%rbp), %rax
     shrq    $2, %rax
@@ -180,4 +180,3 @@ cdirprod_kernel_avx2:
     retq
 
     .cfi_endproc
-    

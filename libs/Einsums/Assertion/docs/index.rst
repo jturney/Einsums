@@ -35,7 +35,7 @@ make sure that it is correct.
     // If it is, we are in an invalid state, so we should probably exit.
     EINSUMS_ASSERT_MSG(out >= 0, "The dot product can not be negative! What happened!?");
 
-The :c:macro:`EINSUMS_ASSERT` macro is similar, but it doesn't take any debug info. 
+The :c:macro:`EINSUMS_ASSERT` macro is similar, but it doesn't take any debug info.
 
 .. code:: C++
 

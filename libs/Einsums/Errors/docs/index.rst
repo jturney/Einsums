@@ -9,7 +9,7 @@ Errors
 ======
 
 This module contains symbols used for error handling. This includes exception classes, and macros for throwing
-exceptions with location information. 
+exceptions with location information.
 
 See the :ref:`API reference <modules_Einsums_Errors_api>` of this module for more
 details.

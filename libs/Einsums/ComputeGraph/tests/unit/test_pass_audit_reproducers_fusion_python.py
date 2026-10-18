@@ -812,4 +812,3 @@ def test_inplace_optimization_sees_a_consumer_read_its_destination_through_a_red
         ops = operands()
         _run_file(edited, ops, pass_name)
         np.testing.assert_allclose(np.asarray(ops["R"]), np.zeros((n, n)), rtol=RTOL, atol=ATOL)
-

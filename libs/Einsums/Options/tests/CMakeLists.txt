@@ -25,7 +25,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Einsums.Options
       HEADERS ${OptionsHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES Einsums_Options 
+      DEPENDENCIES Einsums_Options
     )
   endif()
 endif()

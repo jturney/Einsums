@@ -12,4 +12,3 @@ This module contains several utilities for metaprogramming with types.
 
 See the :ref:`API reference <modules_Einsums_TypeSupport_api>` of this module for more
 details.
-

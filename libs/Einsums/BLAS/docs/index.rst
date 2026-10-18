@@ -13,4 +13,3 @@ These are considered to be internal functions used behind tensor operations.
 
 See the :ref:`API reference <modules_Einsums_BLAS_api>` of this module for more
 details.
-

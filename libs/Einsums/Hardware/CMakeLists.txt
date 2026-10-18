@@ -25,10 +25,8 @@ einsums_add_module(
   PYBIND
   SOURCES ${HardwareSources}
   HEADERS ${HardwareHeaders}
-  DEPENDENCIES 
+  DEPENDENCIES
   MODULE_DEPENDENCIES Einsums_Config Einsums_Json Einsums_Logging Einsums_Options Einsums_SIMD
   CMAKE_SUBDIRS examples tests
   BASE_LIBNAME Einsums
 )
-
-

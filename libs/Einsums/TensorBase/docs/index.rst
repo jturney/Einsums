@@ -13,4 +13,3 @@ to specify properties on tensors.
 
 See the :ref:`API reference <modules_Einsums_TensorBase_api>` of this module for more
 details.
-

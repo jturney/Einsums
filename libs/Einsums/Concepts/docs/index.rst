@@ -157,4 +157,3 @@ Represents a tensor that can be indexed using function call syntax. The tensor m
     TensorType tensor;
     // The following must be valid.
     tensor(int, int, ...); // The number of indices must match the rank of the tensor.
-

@@ -12,4 +12,3 @@ This module contains several useful tensor utilities.
 
 See the :ref:`API reference <modules_Einsums_TensorUtilities_api>` of this module for more
 details.
-

@@ -25,7 +25,7 @@ if(EINSUMS_WITH_TESTS)
       Modules.Json
       HEADERS ${JsonHeaders}
       HEADER_ROOT ${PROJECT_SOURCE_DIR}/include
-      DEPENDENCIES Einsums_Json 
+      DEPENDENCIES Einsums_Json
     )
   endif()
 endif()

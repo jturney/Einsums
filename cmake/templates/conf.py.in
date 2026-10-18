@@ -421,4 +421,3 @@ bibtex_bibfiles = ['references.bib']
 # registering them as id-attributes makes the parser accept and skip them.
 c_id_attributes = ['__restrict', '__restrict__', '__forceinline', 'EINSUMS_EXPORT']
 cpp_id_attributes = ['__restrict', '__restrict__', '__forceinline', 'EINSUMS_EXPORT']
-
