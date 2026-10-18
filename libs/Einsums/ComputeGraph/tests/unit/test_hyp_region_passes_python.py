@@ -32,8 +32,10 @@ shows up: no arithmetic moves when a dissolved intermediate is still allocated.
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import json
+import os
 from typing import NamedTuple
 
 import numpy as np
@@ -49,7 +51,7 @@ from einsums.testing import ALL_DTYPES
 
 from _permutation_operators import P_SHAPES, apply_operator, operator_prefix, operator_size, shaped_operator
 from _region_invariants import assert_materialization_invariants
-from _sanitizer_scaling import sanitizer_examples
+from _sanitizer_scaling import sanitizer_examples, thread_sanitizer_active
 
 _ctr = itertools.count()
 
@@ -1820,6 +1822,37 @@ def _largest_intermediate_bytes(prog, dtype):
     return max(sizes) if sizes else 0
 
 
+@contextlib.contextmanager
+def _draw_in_flight(**draw):
+    """Record the draw being run in a file that only a killed process leaves behind.
+
+    The Linux ThreadSanitizer leg has segfaulted twice in this arm, inside
+    OpenBLAS's cscal under the complex64 direct product, asked to scale by a NaN
+    beta through an unreadable C. No local build reproduces it. A segfault takes
+    pytest's captured output and Hypothesis's falsifying example with it, so the
+    draw goes to the directory CI collects (``EINSUMS_TEST_STACKDUMP_DIR``, set
+    on every leg) and is removed once the draw returns or raises: a file left
+    there names the program that killed the run, and its repr reproduces it.
+    """
+    directory = os.environ.get("EINSUMS_TEST_STACKDUMP_DIR")
+    path = None
+    if directory:
+        path = os.path.join(directory, f"einsums-tiled-draw-{os.getpid()}.txt")
+        try:
+            os.makedirs(directory, exist_ok=True)
+            with open(path, "w") as record:
+                record.write("".join(f"{key}={value!r}\n" for key, value in draw.items()))
+        except OSError:
+            # A diagnostic, not a subject: a directory that cannot be written fails nothing.
+            path = None
+    try:
+        yield
+    finally:
+        if path is not None:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+
 def _check_tiled(prog, divisor, dtype, seed=0):
     """The tiled replay against the untiled one and against numpy."""
     arrays = _arrays(prog, dtype, seed)
@@ -1832,8 +1865,9 @@ def _check_tiled(prog, divisor, dtype, seed=0):
         pytest.skip("the program declares no intermediate to stream")
     cap = max(1, largest // divisor)
 
-    plain, _plain_graph, _plain_pm, _plain_passes = _run(prog, arrays, dtype, region=False)
-    tiled, graph, _pm, passes = _run(prog, arrays, dtype, region=False, tiling_cap=cap)
+    with _draw_in_flight(dtype=dtype, divisor=divisor, cap=cap, seed=seed, prog=prog):
+        plain, _plain_graph, _plain_pm, _plain_passes = _run(prog, arrays, dtype, region=False)
+        tiled, graph, _pm, passes = _run(prog, arrays, dtype, region=False, tiling_cap=cap)
     tiling = passes[0]
 
     assert_materialization_invariants(graph, f"axis tiling, dtype={dtype}, cap={cap}")
@@ -1904,7 +1938,21 @@ def _accumulation_after_tiled_writer_program() -> Program:
     )
 
 
-@pytest.mark.parametrize("dtype", ALL_DTYPES)
+#: complex64 is skipped on the ThreadSanitizer leg alone, and only while its crash is open. That leg
+#: segfaulted here on 2026-10-09 and 2026-10-17 (2 of 8 nightlies on one commit), both times at the
+#: same instruction of OpenBLAS's cscal_k_COOPERLAKE, handed beta = (NaN, 0) and a C it could not
+#: read by the direct product of a tiled loop. A segfault kills pytest, so no flaky marker can retry
+#: it. The other dtypes still run there, and every other leg runs all four, under _draw_in_flight.
+_TILED_DTYPES = [
+    pytest.param(dtype, marks=pytest.mark.skipif(
+        thread_sanitizer_active(),
+        reason="open: the TSan leg segfaults in cscal under a tiled complex64 direct product"))
+    if dtype == "complex64" else dtype
+    for dtype in ALL_DTYPES
+]
+
+
+@pytest.mark.parametrize("dtype", _TILED_DTYPES)
 @given(drawn=_tiling_programs())
 @settings(max_examples=sanitizer_examples(50), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])

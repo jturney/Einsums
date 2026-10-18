@@ -44,7 +44,7 @@ _SANITIZER_SEED_CAP = 4     # seeds per range()-based fuzz test under a sanitize
 _SANITIZER_EXAMPLE_CAP = 8  # Hypothesis max_examples under a sanitizer
 
 
-def _sanitizer_runtime_active() -> bool:
+def _runtime_exports(*symbols: str) -> bool:
     # CDLL(None) is dlopen(NULL), a POSIX-only way to reach the global symbol
     # table; on Windows it is a TypeError rather than an OSError, and there is
     # no sanitizer leg there to detect anyway.
@@ -54,7 +54,16 @@ def _sanitizer_runtime_active() -> bool:
         main = ctypes.CDLL(None)
     except OSError:
         return False
-    return any(hasattr(main, sym) for sym in ("__tsan_init", "__asan_init"))
+    return any(hasattr(main, sym) for sym in symbols)
+
+
+def _sanitizer_runtime_active() -> bool:
+    return _runtime_exports("__tsan_init", "__asan_init")
+
+
+def thread_sanitizer_active() -> bool:
+    """Whether the ThreadSanitizer runtime is loaded, for a case that is skipped on that leg alone."""
+    return _runtime_exports("__tsan_init")
 
 
 _ENV = os.environ.get("EINSUMS_FUZZ_MAX_SEEDS")
