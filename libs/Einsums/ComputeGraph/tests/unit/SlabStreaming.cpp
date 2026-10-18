@@ -230,6 +230,15 @@ struct FreeRuns {
     FreeRuns &operator=(FreeRuns const &) = delete;
 };
 
+/// Sets --einsums:max-memory for one case, so both passes derive their caps from it.
+struct MemoryBudget {
+    std::string previous{config::get(option::MaxMemory)};
+    explicit MemoryBudget(std::size_t bytes) { config::set(option::MaxMemory, std::to_string(bytes) + "b"); }
+    ~MemoryBudget() { config::set(option::MaxMemory, previous); }
+    MemoryBudget(MemoryBudget const &)            = delete;
+    MemoryBudget &operator=(MemoryBudget const &) = delete;
+};
+
 bool declined_because(cg::passes::SlabStreaming const &pass, std::string_view fragment) {
     for (auto const &[reason, count] : pass.skip_reasons()) {
         if (reason.find(fragment) != std::string::npos) {
@@ -660,6 +669,11 @@ TEST_CASE("SlabStreaming writes the box AxisTiling's view names, at every iterat
     manager.add(materialize);
     graph.apply(manager);
 
+    std::string said;
+    for (auto const &[reason, count] : slabs->skip_reasons()) {
+        said += fmt::format("{} x {}; ", count, reason);
+    }
+    INFO(fmt::format("tiling: {}; slabs: {}", fmt::join(tiling->explain(), " | "), said));
     REQUIRE(tiling->num_tiled() == 1);
     CHECK(slabs->num_boxes() >= 1);
     CHECK(graph.verify().empty());
@@ -810,6 +824,110 @@ TEST_CASE("SlabStreaming writes a box a contraction computes from a box it reads
     want.zero();
     testing::reference_einsum("Q,a,b <- Q,a,f ; Q,b,f", &want, half, source.source);
     check_close(store.stored(), want, static_cast<double>(e * e));
+}
+
+TEST_CASE("SlabStreaming writes a box several statements write in turn, once after the last of them",
+          "[ComputeGraph][Pass][SlabStreaming]") {
+    FreeRuns const free_runs;
+    //   W[i,b]  = A[i,k] B[k,b]
+    //   W[i,b] += C[i,k] D[k,b]
+    //   W[i,b] += F[i,b] g[b]                   W write-backed, over its share of the budget
+    // Every statement writing W used to keep it whole: the first because the others write it in
+    // memory, the rest because they add into it. AxisTiling now loops over W's own axes with all
+    // three inside, and each box is written once, after the third, so W is never held whole.
+    constexpr std::size_t ni = 4;
+    constexpr std::size_t nk = 1;
+    constexpr std::size_t nb = 12;
+    WriteStore            store("W");
+    auto const            a = filled("A", {ni, nk}, 3U);
+    auto const            b = filled("B", {nk, nb}, 5U);
+    auto const            c = filled("C", {ni, nk}, 7U);
+    auto const            d = filled("D", {nk, nb}, 11U);
+    auto const            f = filled("F", {ni, nb}, 13U);
+    auto const            g = filled("g", {nb}, 17U);
+
+    // W is 384 bytes and its share 320; everything else fits beside a slice of it.
+    MemoryBudget const budget(2000);
+    cg::Graph          graph("three writers");
+    {
+        auto &w = graph.declare_runtime_tensor<double>("W", {ni, nb});
+        graph.annotate_backing(w, store.backing());
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,b <- i,k ; k,b", &w, a, b);
+        cg::einsum("i,b <- i,k ; k,b", 1.0, &w, 1.0, c, d);
+        cg::einsum("i,b <- i,b ; b", 1.0, &w, 1.0, f, g);
+    }
+    auto            tiling      = std::make_shared<cg::passes::AxisTiling>();
+    auto            slabs       = std::make_shared<cg::passes::SlabStreaming>();
+    auto            materialize = std::make_shared<cg::passes::Materialization>();
+    cg::PassManager manager;
+    manager.add(tiling);
+    manager.add(slabs);
+    manager.add(materialize);
+    graph.apply(manager);
+
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK_FALSE(declined_because(*slabs, "adds into the write-backed tensor"));
+    CHECK_FALSE(declined_because(*slabs, "another operation writes the write-backed tensor"));
+    CHECK(graph.verify().empty());
+
+    std::string said;
+    for (auto const &[reason, count] : slabs->skip_reasons()) {
+        said += fmt::format("{} x {}; ", count, reason);
+    }
+    INFO(fmt::format("tiling: {}; slabs: {}", fmt::join(tiling->explain(), " | "), said));
+    graph.execute();
+    // Every element stored exactly once, in boxes smaller than W.
+    REQUIRE(store.writes.size() > 1);
+    std::vector<int> covered(ni * nb, 0);
+    for (auto const &ranges : store.writes) {
+        REQUIRE(ranges.size() == 2);
+        for (std::size_t i = ranges[0].first; i < ranges[0].second; ++i) {
+            for (std::size_t k = ranges[1].first; k < ranges[1].second; ++k) {
+                ++covered[i + (k * ni)];
+            }
+        }
+    }
+    CHECK(std::ranges::all_of(covered, [](int count) { return count == 1; }));
+
+    RuntimeTensor<double> want("W_ref", std::vector<std::size_t>{ni, nb});
+    want.zero();
+    testing::reference_einsum("i,b <- i,k ; k,b", &want, a, b);
+    testing::reference_einsum("i,b <- i,k ; k,b", 1.0, &want, 1.0, c, d);
+    testing::reference_einsum("i,b <- i,b ; b", 1.0, &want, 1.0, f, g);
+    check_close(store.stored(), want, 3.0);
+}
+
+TEST_CASE("SlabStreaming keeps a box whole in memory when its first writer adds into it", "[ComputeGraph][Pass][SlabStreaming]") {
+    // The first statement adds into W, so the box would start from W's value before any of them
+    // wrote it. Memory holds that value; the storage, only ever written, does not. So the writes
+    // stay in memory and W is stored after its last writer.
+    constexpr std::size_t ni = 4;
+    constexpr std::size_t nk = 1;
+    constexpr std::size_t nb = 12;
+    WriteStore            store("W");
+    auto const            a = filled("A", {ni, nk}, 3U);
+    auto const            b = filled("B", {nk, nb}, 5U);
+
+    MemoryBudget const budget(2000);
+    cg::Graph          graph("adds first");
+    {
+        auto &w = graph.declare_runtime_tensor<double>("W", {ni, nb});
+        graph.annotate_backing(w, store.backing());
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,b <- i,k ; k,b", 1.0, &w, 1.0, a, b);
+        cg::einsum("i,b <- i,k ; k,b", 1.0, &w, 1.0, a, b);
+    }
+    auto            tiling      = std::make_shared<cg::passes::AxisTiling>();
+    auto            slabs       = std::make_shared<cg::passes::SlabStreaming>();
+    auto            materialize = std::make_shared<cg::passes::Materialization>();
+    cg::PassManager manager;
+    manager.add(tiling);
+    manager.add(slabs);
+    manager.add(materialize);
+    graph.apply(manager);
+
+    CHECK(declined_because(*slabs, "the first statement that writes the box adds into it"));
 }
 
 TEST_CASE("SlabStreaming produces a write-backed tensor a slab per block, straight into its storage",

@@ -540,6 +540,13 @@ class RegionAnalysis {
                     std::size_t &largest, std::size_t &held, long double &traffic) const;
 
     /// The bytes the intermediates the loop re-declares hold whole, before tiling.
+    /// Whether a slice of @p tid is held in memory for each iteration: an intermediate the body
+    /// declares, or a write-backed tensor whose box the body fills before SlabStreaming stores it.
+    [[nodiscard]] bool held_per_slice(TensorId tid) const {
+        auto const backing = _scope.backing_of(tid);
+        return _scope.intermediate(tid) || (backing != nullptr && backing->write);
+    }
+
     [[nodiscard]] std::size_t streamed_whole_bytes(Labelling const &labelling) const;
 
     /// The sliced axes a block would reward: those some contraction of the loop carries while one
@@ -1144,7 +1151,7 @@ void RegionAnalysis::cost(Labelling const &labelling, std::vector<std::size_t> c
     held    = 0;
     for (auto const &[tid, labels] : labelling.store.tensor) {
         auto const *handle = _graph.find_tensor(tid);
-        if (handle == nullptr || !_scope.intermediate(tid)) {
+        if (handle == nullptr || !held_per_slice(tid)) {
             continue;
         }
         auto const bytes = static_cast<std::size_t>(sliced_bytes(tid, labels));
@@ -1373,7 +1380,7 @@ void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::siz
     held    = 0;
     for (auto const &[tid, labels] : labelling.store.tensor) {
         auto const *handle = _graph.find_tensor(tid);
-        if (handle == nullptr || !_scope.intermediate(tid)) {
+        if (handle == nullptr || !held_per_slice(tid)) {
             continue;
         }
         Measure const m = measure(tid, &labels);
@@ -2387,8 +2394,20 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 }
                 if (!scope.intermediate(tid)) {
                     std::size_t const bytes = handle->total_bytes();
-                    // A backed tensor is not one: its storage holds it, and SlabStreaming moves it.
-                    if (sliceable && handle->alloc_state == AllocState::Deferred && !scope.backed(tid) && bytes > limit_for(bytes) &&
+                    // A tensor the program writes to storage, over its cap, is a seed too: no one
+                    // holds it whole afterwards, and a loop over its own axes lets every statement
+                    // that writes it finish one box of it before SlabStreaming stores the box, where
+                    // otherwise each writer but a lone overwriting one keeps it whole in memory.
+                    if (auto const backing = scope.backing_of(tid); backing != nullptr) {
+                        if (derived && backing->write && sliceable && bytes > limit_for(bytes) && !declined.contains(tid) &&
+                            std::ranges::find(seeds, std::pair{bytes, tid}) == seeds.end()) {
+                            largest = std::max(largest, bytes);
+                            seeds.emplace_back(bytes, tid);
+                        }
+                        continue;
+                    }
+                    // A read-backed tensor is not one: its storage holds it, and SlabStreaming moves it.
+                    if (sliceable && handle->alloc_state == AllocState::Deferred && bytes > limit_for(bytes) &&
                         (held == nullptr || bytes > held->total_bytes())) {
                         held = handle;
                     }
@@ -2441,7 +2460,15 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 return tiled.moved();
             }
         }
-        std::ranges::sort(seeds, [](auto const &lhs, auto const &rhs) {
+        // A destination the program writes to storage first, then largest first. Its region takes in
+        // every statement that writes it and, through the labelling, the intermediates they read, so
+        // those are cut along the destination's own axes inside its loop; tiled after them, the
+        // destination would find one of its writers already inside a loop it cannot take in.
+        auto const backed_first = [&](TensorId tid) { return scope.backed(tid) ? 0 : 1; };
+        std::ranges::sort(seeds, [&](auto const &lhs, auto const &rhs) {
+            if (backed_first(lhs.second) != backed_first(rhs.second)) {
+                return backed_first(lhs.second) < backed_first(rhs.second);
+            }
             return lhs.first != rhs.first ? lhs.first > rhs.first : lhs.second < rhs.second;
         });
 
@@ -2637,6 +2664,22 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                                   [&](std::vector<std::size_t> const &b, std::size_t &largest, std::size_t &held, long double &streamed) {
                                       analysis->range_cost(labelling, extents, b, largest, held, streamed);
                                   });
+            }
+        }
+        // A region that writes a tensor to storage is one loop. Blocks that leave a remainder add a
+        // loop per remainder, and SlabStreaming streams each loop's writes only when no other loop
+        // writes the tensor in memory, which two loops writing it never satisfy; the grouped plan's
+        // chunks divide the slices, so it is always one loop.
+        bool const writes_backed = std::ranges::any_of(labelling.store.tensor, [&](auto const &entry) {
+            auto const backing = scope.backing_of(entry.first);
+            return backing != nullptr && backing->write;
+        });
+        if (blocks.has_value() && writes_backed) {
+            for (std::size_t k = 0; k < extents.size(); ++k) {
+                if (extents[k] % blocks->blocks[k] != 0) {
+                    blocks.reset();
+                    break;
+                }
             }
         }
         if (!blocks.has_value() && !labelling.fully_sliced.empty()) {

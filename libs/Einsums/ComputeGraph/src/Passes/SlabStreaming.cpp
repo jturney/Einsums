@@ -758,16 +758,6 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
     auto const       &backing = *out->backing;
     std::string const decline = "so it is computed in memory and stored after its last writer";
 
-    // The storage then holds the tensor only if this contraction is all that produces it: it
-    // overwrites every element, and nothing else writes the tensor in memory.
-    if (!is_zero(live_c_prefactor(*desc))) {
-        note_skip(fmt::format("the contraction adds into the write-backed tensor rather than overwriting it, {}", decline), where);
-        return false;
-    }
-    if (out->written_outside || compute_graph::detail::written_in_memory(graph, out->object, nullptr, &node)) {
-        note_skip(fmt::format("another operation writes the write-backed tensor in memory, {}", decline), where);
-        return false;
-    }
     std::size_t const element = compute_graph::detail::dispatch_scalar_type(backing.dtype, []<typename T>(T) { return sizeof(T); });
     std::size_t       whole   = element;
     for (std::size_t const extent : backing.dims) {
@@ -778,14 +768,29 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
                   fmt::format("{}: '{}' is {} bytes against {}", where, out->name, whole, cap));
         return false;
     }
+    if (out->written_outside) {
+        note_skip(fmt::format("another operation writes the write-backed tensor in memory, {}", decline), where);
+        return false;
+    }
     // A view that slices the tensor names the box this contraction produces, and a loop around it
-    // has chosen that box: the contraction computes it into a buffer of its size, which is written.
+    // has chosen that box: every statement here that writes the view writes into a buffer of its
+    // size, which is stored once after the last of them, and read first when the first one adds.
     if (!out->full) {
         if (!out->view_node) {
             note_skip(fmt::format("the contraction writes a view this pass cannot see, {}", decline), where);
             return false;
         }
         return stream_box(graph, *out->view_node, out->name, out->backing, describe(node, *desc), index);
+    }
+    // The storage then holds the tensor only if this contraction is all that produces it: it
+    // overwrites every element, and nothing else writes the tensor in memory.
+    if (!is_zero(live_c_prefactor(*desc))) {
+        note_skip(fmt::format("the contraction adds into the write-backed tensor rather than overwriting it, {}", decline), where);
+        return false;
+    }
+    if (compute_graph::detail::written_in_memory(graph, out->object, nullptr, &node)) {
+        note_skip(fmt::format("another operation writes the write-backed tensor in memory, {}", decline), where);
+        return false;
     }
     // The pass's own loop over the last axis reads its operands whole or a slab of that axis at a
     // time, and has no place for a second tensor read from storage. A box a loop's view names is
@@ -939,22 +944,52 @@ bool SlabStreaming::stream_box(Graph &graph, std::size_t view_node, std::string 
         return false;
     }
     // The box replaces the view for this graph's own nodes. A body below that names the view is
-    // beyond what a redirect here reaches, and so is any write through it but the one producing a
-    // written box: the storage would never see it.
+    // beyond what a redirect here reaches. A read box is only read. A written box is written by
+    // every statement here that writes the view, each into the same buffer in program order, and
+    // by nothing else: a write of the tensor around the view, or a read of the box by a statement
+    // that does not write it, would see memory the storage never reaches.
+    std::vector<std::size_t> writers;
+    TensorId const           parent_buffer = graph.buffer_of(view->parent_id);
     for (std::size_t j = 0; j < nodes.size(); ++j) {
-        if (j == view_node || (writer && j == *writer)) {
+        if (j == view_node) {
             continue;
         }
         auto const [reads, writes] = graph.effective_io(nodes[j]);
-        bool const read_below =
-            std::ranges::find(reads, sliced) != reads.end() && std::ranges::find(nodes[j].inputs, sliced) == nodes[j].inputs.end();
-        bool const written = std::ranges::find(writes, sliced) != writes.end();
-        if (read_below || written) {
-            note_skip(
-                fmt::format("the view of the backed tensor is written by another operation or used inside a nested graph, {}", decline),
-                where);
+        bool const reads_view      = std::ranges::find(reads, sliced) != reads.end();
+        bool const writes_view     = std::ranges::find(writes, sliced) != writes.end();
+        if (reads_view && std::ranges::find(nodes[j].inputs, sliced) == nodes[j].inputs.end()) {
+            note_skip(fmt::format("the view of the backed tensor is used inside a nested graph, {}", decline), where);
             return false;
         }
+        if (!writer) {
+            if (writes_view) {
+                note_skip(fmt::format("the view of the backed tensor is written by another operation, {}", decline), where);
+                return false;
+            }
+            continue;
+        }
+        if (writes_view) {
+            writers.push_back(j);
+            continue;
+        }
+        bool const writes_around = std::ranges::any_of(writes, [&](TensorId out) { return graph.buffer_of(out) == parent_buffer; });
+        if (reads_view || writes_around) {
+            note_skip(fmt::format("the box of the backed tensor is read by an operation that does not write it, or the tensor is written "
+                                  "around the view, {}",
+                                  decline),
+                      where);
+            return false;
+        }
+    }
+    // The first writer has to overwrite the box. One that adds into it adds to the tensor's value
+    // before any statement here wrote it, which memory holds and the storage never did: a write
+    // backing is only ever written.
+    if (writer && !writers.empty() && std::ranges::find(nodes[writers.front()].inputs, sliced) != nodes[writers.front()].inputs.end()) {
+        note_skip(
+            fmt::format("the first statement that writes the box adds into it, so it starts from a value the storage does not hold, {}",
+                        decline),
+            where);
+        return false;
     }
 
     // The box over the stored tensor's axes: a dropped axis is one index, which the buffer leaves out
@@ -988,60 +1023,64 @@ bool SlabStreaming::stream_box(Graph &graph, std::size_t view_node, std::string 
     });
     TensorHandle const &box = graph.tensor(box_id);
 
-    Node io_node;
-    io_node.kind  = writer ? OpKind::DiskWrite : OpKind::DiskRead;
-    io_node.label = fmt::format("{}_box({})", writer ? "write" : "read", name);
-    if (writer) {
-        io_node.inputs = {box_id};
-    } else {
-        io_node.outputs = {box_id};
-    }
-    auto io         = compute_graph::detail::backing_io(*backing, box_id, bytes);
-    io.bound_params = bound_params;
-    io_node.op_data = std::move(io);
-    // The box is resolved when the transfer runs, from the parameters the view would have read, and
-    // the buffer is reached through its accessor, since the memory planner may place it anywhere.
-    io_node.execute = [backing, impl_fn = box.impl_fn, axes = view->axes, params = graph.params_ptr(), name, store = writer.has_value()]() {
-        if (!params) {
-            EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' has no parameter table", name);
+    // A transfer of the box: a store after its last writer, or a fill before its readers.
+    auto const make_io = [&](bool store) {
+        Node io_node;
+        io_node.kind  = store ? OpKind::DiskWrite : OpKind::DiskRead;
+        io_node.label = fmt::format("{}_box({})", store ? "write" : "read", name);
+        if (store) {
+            io_node.inputs = {box_id};
+        } else {
+            io_node.outputs = {box_id};
         }
-        compute_graph::detail::dispatch_scalar_type(backing->dtype, [&]<typename T>(T) {
-            auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(impl_fn());
-            if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
-                EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' has no storage", name);
+        auto io         = compute_graph::detail::backing_io(*backing, box_id, bytes);
+        io.bound_params = bound_params;
+        io_node.op_data = std::move(io);
+        // The box is resolved when the transfer runs, from the parameters the view would have read, and
+        // the buffer is reached through its accessor, since the memory planner may place it anywhere.
+        io_node.execute = [backing, impl_fn = box.impl_fn, axes = view->axes, params = graph.params_ptr(), name, store]() {
+            if (!params) {
+                EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' has no parameter table", name);
             }
-            std::vector<std::pair<std::size_t, std::size_t>> ranges;
-            ranges.reserve(axes.size());
-            std::size_t kept_axis = 0;
-            for (std::size_t p = 0; p < axes.size(); ++p) {
-                auto const        &axis   = axes[p];
-                std::int64_t const extent = static_cast<std::int64_t>(backing->dims[p]);
-                std::int64_t       lo     = 0;
-                std::int64_t       hi     = extent;
-                if (axis.kind == ViewAxis::Kind::Drop) {
-                    lo = axis.lo.resolve(*params);
-                    hi = lo + 1;
-                } else if (axis.kind == ViewAxis::Kind::Range) {
-                    lo = axis.lo.resolve(*params);
-                    hi = axis.hi.resolve(*params);
+            compute_graph::detail::dispatch_scalar_type(backing->dtype, [&]<typename T>(T) {
+                auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(impl_fn());
+                if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
+                    EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' has no storage", name);
                 }
-                bool const fits_buffer =
-                    axis.kind == ViewAxis::Kind::Drop || static_cast<std::size_t>(hi - lo) == impl->dim(static_cast<int>(kept_axis));
-                if (lo < 0 || hi < lo || hi > extent || !fits_buffer) {
-                    EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' on axis {} is [{}, {}), which does not fit",
-                                            name, p, lo, hi);
+                std::vector<std::pair<std::size_t, std::size_t>> ranges;
+                ranges.reserve(axes.size());
+                std::size_t kept_axis = 0;
+                for (std::size_t p = 0; p < axes.size(); ++p) {
+                    auto const        &axis   = axes[p];
+                    std::int64_t const extent = static_cast<std::int64_t>(backing->dims[p]);
+                    std::int64_t       lo     = 0;
+                    std::int64_t       hi     = extent;
+                    if (axis.kind == ViewAxis::Kind::Drop) {
+                        lo = axis.lo.resolve(*params);
+                        hi = lo + 1;
+                    } else if (axis.kind == ViewAxis::Kind::Range) {
+                        lo = axis.lo.resolve(*params);
+                        hi = axis.hi.resolve(*params);
+                    }
+                    bool const fits_buffer =
+                        axis.kind == ViewAxis::Kind::Drop || static_cast<std::size_t>(hi - lo) == impl->dim(static_cast<int>(kept_axis));
+                    if (lo < 0 || hi < lo || hi > extent || !fits_buffer) {
+                        EINSUMS_THROW_EXCEPTION(
+                            std::logic_error, "SlabStreaming: the box of '{}' on axis {} is [{}, {}), which does not fit", name, p, lo, hi);
+                    }
+                    if (axis.kind != ViewAxis::Kind::Drop) {
+                        ++kept_axis;
+                    }
+                    ranges.emplace_back(static_cast<std::size_t>(lo), static_cast<std::size_t>(hi));
                 }
-                if (axis.kind != ViewAxis::Kind::Drop) {
-                    ++kept_axis;
+                if (store) {
+                    detail::store_to_backing(*backing, impl->data(), *impl, ranges);
+                } else {
+                    detail::fill_from_backing(*backing, impl->data(), *impl, ranges);
                 }
-                ranges.emplace_back(static_cast<std::size_t>(lo), static_cast<std::size_t>(hi));
-            }
-            if (store) {
-                detail::store_to_backing(*backing, impl->data(), *impl, ranges);
-            } else {
-                detail::fill_from_backing(*backing, impl->data(), *impl, ranges);
-            }
-        });
+            });
+        };
+        return io_node;
     };
 
     // Every executor built over the view now uses the box, and every node that names the view names
@@ -1053,7 +1092,13 @@ bool SlabStreaming::stream_box(Graph &graph, std::size_t view_node, std::string 
     }
     std::vector<bool> remove(nodes.size(), false);
     remove[view_node] = true;
-    graph.replace_nodes(remove, {{writer ? *writer + 1 : view_node, {std::move(io_node)}}});
+    std::vector<std::pair<std::size_t, std::vector<Node>>> inserts;
+    if (writer) {
+        inserts.emplace_back(writers.back() + 1, std::vector<Node>{make_io(true)});
+    } else {
+        inserts.emplace_back(view_node, std::vector<Node>{make_io(false)});
+    }
+    graph.replace_nodes(remove, std::move(inserts));
 
     _records.push_back(Record{.tensor     = name,
                               .label      = label,

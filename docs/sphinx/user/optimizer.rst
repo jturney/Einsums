@@ -647,9 +647,15 @@ default pipeline. A backed tensor larger than its share of
   **last** axis, reading one slab per block. The last axis because the file
   keeps elements column-major, so a block of it is one contiguous read.
 * The contraction that produces a write-backed tensor computes one block at a
-  time and writes it, in either kind of loop. It must overwrite the tensor (a
-  destination prefactor of zero) and be its only writer, and in a loop of the
-  pass's own it must also read no backed tensor.
+  time and writes it, in either kind of loop. In a loop of the pass's own it
+  must overwrite the tensor (a destination prefactor of zero), be its only
+  writer, and read no backed tensor.
+* A write-backed tensor that several statements write, as a residual is written
+  by every term that adds into it, is a loop of ``AxisTiling``'s own: the pass
+  loops over the tensor's axes with every one of those statements inside, so
+  each box is finished in memory and stored once, after the last of them. The
+  first of them must overwrite the box, since the storage, only ever written,
+  does not hold the value the tensor had before.
 
 A backed tensor that fits, or one the pass declines, is loaded whole before its
 first reader or stored whole after its last writer, once per replay. That is
@@ -679,8 +685,7 @@ the order of a new entry, for a caller who knows how a later run will read it.
 The report says which tensors were streamed and why the others were not. A
 decline names its reason: the last-axis letter repeated in an operand, a view
 that permutes the tensor, a second backed tensor in a contraction the pass
-would loop over itself, a destination accumulated into rather than
-overwritten. Boxes are read and written independently, so a contraction in a
+would loop over itself, a destination whose first writer adds into it. Boxes are read and written independently, so a contraction in a
 loop may read a box of each of two backed operands, two views of one tensor
 among them, and write a box of a third. A box over an axis that is not the last
 is many short runs of the file, and the report gives the count for each box.
