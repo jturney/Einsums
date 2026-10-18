@@ -297,7 +297,10 @@ density-fitted coupled-cluster program is one call,
 auxiliary, occupied and virtual spaces, which is why it is chosen for you.
 
 Captured, the call records one contraction per step, and each partial product is an intermediate
-the graph owns. The optimizer may then build one a block at a time when it does not fit in memory
+the graph owns. The order is then ranked by the index spaces the operands are annotated with
+(see :ref:`optimizer-index-spaces`), so a program that says which axes are occupied, virtual or
+auxiliary gets the order that scales best, not only the one cheapest at the extents it was
+captured with. The optimizer may then build one a block at a time when it does not fit in memory
 (see :ref:`optimizer-backed-tensors`). Run eagerly, a partial product is a temporary that stays
 within :option:`--einsums:max-memory` when some order allows it.
 

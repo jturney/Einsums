@@ -5,6 +5,8 @@
 
 #include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/ComputeGraph/NaryEinsum.hpp>
+#include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/SymbolicCost.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Options/Get.hpp>
@@ -13,11 +15,14 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include <algorithm>
 #include <bit>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "Passes/ContractionTreeSearch.hpp"
@@ -39,8 +44,14 @@ std::string spell_operand(std::vector<std::string> const &letters, bool conj) {
 
 } // namespace
 
-std::vector<NaryEinsumStep> plan_nary_einsum(std::string spec, std::vector<std::vector<std::size_t>> dims,
-                                             std::size_t max_intermediate_elements) {
+namespace {
+
+/// The plan, with each letter's index space where @p spaces gives one: operands in order, then C,
+/// each one space per axis or empty where the tensor is not annotated. @p registry orders the spaces;
+/// without it every letter is anonymous and the extents alone decide.
+std::vector<NaryEinsumStep> plan(std::string const &spec, std::vector<std::vector<std::size_t>> const &dims,
+                                 std::size_t max_intermediate_elements, std::vector<std::vector<SpaceId>> const &spaces,
+                                 SpaceRegistry const *registry) {
     auto parsed = parse_nary_einsum_spec(spec);
     if (!parsed) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parsed.error().message);
@@ -53,6 +64,29 @@ std::vector<NaryEinsumStep> plan_nary_einsum(std::string spec, std::vector<std::
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "einsum spec '{}' names {} operands; at most {} are planned", spec, count,
                                 kMaxOperands);
     }
+    if (!spaces.empty() && spaces.size() != count + 1) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "einsum spec '{}' names {} operand(s) and C, but spaces were given for {}", spec,
+                                count, spaces.size());
+    }
+
+    // Each letter's space, by the rules a two-operand einsum binds its letters with at capture: an
+    // annotated axis names it, an unannotated one leaves it to the others, and two that disagree
+    // are an error.
+    std::vector<std::pair<std::string, SpaceId>> letter_spaces;
+    if (!spaces.empty()) {
+        std::vector<std::string>                labels(count + 1);
+        std::vector<detail::LetterSpaceOperand> operands(count + 1);
+        for (std::size_t op = 0; op <= count; ++op) {
+            labels[op]   = op < count ? fmt::format("operand {}", op + 1) : std::string{"C"};
+            operands[op] = detail::LetterSpaceOperand{
+                .label = labels[op].c_str(), .indices = op < count ? &parsed->operands[op] : &parsed->c_indices, .spaces = &spaces[op]};
+        }
+        letter_spaces = detail::build_letter_spaces(std::span<detail::LetterSpaceOperand const>{operands}, registry, "einsum");
+    }
+    auto const space_of = [&](std::string const &letter) {
+        auto const it = std::ranges::find(letter_spaces, letter, &std::pair<std::string, SpaceId>::first);
+        return it == letter_spaces.end() ? SpaceId{} : it->second;
+    };
 
     // Every letter's extent, checked across the operands that carry it.
     search::LetterTable                          table;
@@ -71,7 +105,7 @@ std::vector<NaryEinsumStep> plan_nary_einsum(std::string spec, std::vector<std::
                                         "einsum spec '{}': index '{}' has extent {} in one operand and {} in another", spec, letters[axis],
                                         it->second, dims[op][axis]);
             }
-            ExprIndex const index{.letter = letters[axis], .space = {}};
+            ExprIndex const index{.letter = letters[axis], .space = space_of(letters[axis])};
             table.observe(index, dims[op][axis]);
             factors[op].indices.push_back(index);
         }
@@ -79,10 +113,11 @@ std::vector<NaryEinsumStep> plan_nary_einsum(std::string spec, std::vector<std::
     }
     std::vector<ExprIndex> output;
     for (auto const &letter : parsed->c_indices) {
-        output.push_back(ExprIndex{.letter = letter, .space = {}});
+        output.push_back(ExprIndex{.letter = letter, .space = space_of(letter)});
     }
 
     ComparisonContext ctx;
+    ctx.registry          = registry;
     ctx.bound_extent      = table.lookup();
     search::TreePlan plan = search::solve_tree(factors, output, table, ctx, static_cast<double>(max_intermediate_elements));
     if (!plan.ok && max_intermediate_elements > 0) {
@@ -170,6 +205,18 @@ std::vector<NaryEinsumStep> plan_nary_einsum(std::string spec, std::vector<std::
     };
     emit(emit, full);
     return steps;
+}
+
+} // namespace
+
+std::vector<NaryEinsumStep> plan_nary_einsum(std::string spec, std::vector<std::vector<std::size_t>> dims,
+                                             std::size_t max_intermediate_elements) {
+    return plan(spec, dims, max_intermediate_elements, {}, nullptr);
+}
+
+std::vector<NaryEinsumStep> plan_nary_einsum_with_spaces(Graph const &graph, std::string spec, std::vector<std::vector<std::size_t>> dims,
+                                                         std::vector<std::vector<SpaceId>> spaces, std::size_t max_intermediate_elements) {
+    return plan(spec, dims, max_intermediate_elements, spaces, &graph.space_registry());
 }
 
 std::size_t eager_einsum_intermediate_limit(std::size_t element_size) {

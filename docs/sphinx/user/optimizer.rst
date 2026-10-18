@@ -60,6 +60,8 @@ that have been proven exact. **No lossy pass is ever in it.** A factorization, a
 quadrature or a basis truncation is something a program asks for by name, and
 until it does, the answer the graph computes is the answer the program wrote.
 
+.. _optimizer-index-spaces:
+
 Saying what the axes are
 ========================
 
@@ -96,6 +98,11 @@ annotation through the intermediates, ``CrossSpaceValidation`` reports a
 contraction letter that binds two different spaces, and ``ScalingAnalysis``
 reports what the program costs as a polynomial in the scale symbols. Those three
 are described in the :ref:`compute graph tutorial <tutorial-compute-graph>`.
+
+An einsum over three or more operands captured after the annotation is planned
+by it as well: of the orders it can contract the operands in, it takes the one
+that scales best by the declared spaces, as ``MultiTermFactorization`` ranks a
+product, and the extents decide only what the spaces leave open.
 
 Why the family annotation decides rewrites
 ------------------------------------------

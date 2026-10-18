@@ -1350,8 +1350,20 @@ def _nary_einsum(spec, C, operands, c_pf=None, ab_pf=None):
     graph_module = _importlib.import_module("einsums.graph")
     graph = graph_module.current_graph()
     dtype = _dtype_for_class(type(C))
-    limit = 0 if graph is not None else graph_module.eager_einsum_intermediate_limit(dtype.itemsize)
-    steps = graph_module.plan_nary_einsum(spec, [[int(s) for s in op.shape] for op in operands], limit)
+    dims = [[int(s) for s in op.shape] for op in operands]
+    if graph is not None:
+        # Captured, the plan ranks orders by the spaces the operands are annotated with, as the
+        # graph's own factorization would. A tensor the graph has not seen carries none.
+        def spaces_of(tensor):
+            try:
+                return list(graph.tensor_spaces(tensor))
+            except IndexError:
+                return []
+
+        spaces = [spaces_of(op) for op in operands] + [spaces_of(C)]
+        steps = graph_module.plan_nary_einsum_with_spaces(graph, spec, dims, spaces, 0)
+    else:
+        steps = graph_module.plan_nary_einsum(spec, dims, graph_module.eager_einsum_intermediate_limit(dtype.itemsize))
 
     prefactors = {}
     if c_pf is not None:

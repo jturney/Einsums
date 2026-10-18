@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -68,6 +69,30 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") NaryEinsumStep {
  */
 APIARY_EXPOSE APIARY_MODULE("graph") [[nodiscard]] EINSUMS_EXPORT std::vector<NaryEinsumStep>
 plan_nary_einsum(std::string spec, std::vector<std::vector<std::size_t>> dims, std::size_t max_intermediate_elements = 0);
+
+/**
+ * @brief The cheapest order to contract an einsum's operands, ranked by the index spaces they are annotated with.
+ *
+ * @ref plan_nary_einsum with each letter bound to the space its axes are annotated with, by the rules a
+ * two-operand einsum binds its letters at capture, and ranked by the scaling @p graph's registry
+ * declares: an order that is cheaper asymptotically wins even where these extents would favour
+ * another, as ``MultiTermFactorization`` ranks it. A letter no annotated axis carries is
+ * anonymous and ranked by its extent.
+ *
+ * @param[in] graph The graph whose space registry the annotations belong to.
+ * @param[in] spec The spec, three or more operands; two are planned too, as one step.
+ * @param[in] dims Each operand's extents, in the spec's order.
+ * @param[in] spaces Each operand's per-axis spaces in the spec's order, then C's, each empty where the
+ *            tensor is not annotated; or empty altogether.
+ * @param[in] max_intermediate_elements As for @ref plan_nary_einsum.
+ * @return The steps, in the order to run them.
+ * @throws std::invalid_argument as @ref plan_nary_einsum does, when @p spaces does not hold one entry per
+ *         operand and one for C, or when one letter is annotated with two different spaces.
+ * @versionadded{2.0.0}
+ */
+APIARY_EXPOSE APIARY_MODULE("graph") [[nodiscard]] EINSUMS_EXPORT std::vector<NaryEinsumStep>
+plan_nary_einsum_with_spaces(Graph const &graph, std::string spec, std::vector<std::vector<std::size_t>> dims,
+                             std::vector<std::vector<SpaceId>> spaces, std::size_t max_intermediate_elements = 0);
 
 /**
  * @brief The most elements an eager einsum over several operands lets a partial product hold.
@@ -119,6 +144,16 @@ std::vector<std::size_t> nary_dims_of(TensorType const &tensor) {
         out.push_back(static_cast<std::size_t>(tensor.dim(axis)));
     }
     return out;
+}
+
+/// The spaces @p tensor is annotated with in @p graph, or none when the graph has not seen it.
+template <typename TensorType>
+std::vector<SpaceId> nary_spaces_of(Graph const &graph, TensorType const &tensor) {
+    try {
+        return graph.tensor_spaces(tensor);
+    } catch (std::out_of_range const &) {
+        return {};
+    }
 }
 
 /// The name a partial product is spelled with: the tensor's own, or "view" for one that has none.
@@ -176,9 +211,14 @@ void einsum(NaryEinsumFormatString spec, typename CType::ValueType c_pf, CType *
 
     auto const &ctx       = CaptureContext::current();
     bool const  capturing = ctx.is_capturing();
-    auto const  steps     = plan_nary_einsum(std::string(spec.str), {detail::nary_dims_of(operands)...},
-                                             capturing ? 0 : eager_einsum_intermediate_limit(sizeof(T)));
-    auto const  tuple     = std::forward_as_tuple(operands...);
+    // Captured, the plan ranks orders by the spaces the operands are annotated with, as the graph's
+    // own factorization would; eager, there is no registry and the extents decide.
+    auto const steps =
+        capturing
+            ? plan_nary_einsum_with_spaces(*ctx.graph(), std::string(spec.str), {detail::nary_dims_of(operands)...},
+                                           {detail::nary_spaces_of(*ctx.graph(), operands)..., detail::nary_spaces_of(*ctx.graph(), *C)})
+            : plan_nary_einsum(std::string(spec.str), {detail::nary_dims_of(operands)...}, eager_einsum_intermediate_limit(sizeof(T)));
+    auto const tuple = std::forward_as_tuple(operands...);
 
     // Each partial product is named for what it multiplies, as "Bvv*tau", so a report that slices
     // one says which.

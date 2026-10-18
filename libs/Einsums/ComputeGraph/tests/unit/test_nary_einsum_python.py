@@ -121,6 +121,63 @@ def test_plan_picks_the_cheaper_order():
     assert large_v[0].right == 2
 
 
+def _chain_over_spaces():
+    """D(i,j) = A(i,a) B(a,k) C(k,j): i and j occupied, a virtual, k over a space declared below the virtuals.
+
+    A with B first costs o v s + o^2 s and B with C first o v s + o^2 v, so the
+    first is cheaper term for term; these extents, three occupied, two virtual
+    and six over s, make the second cheaper, 54 against 90.
+    """
+    graph = cg.Graph("spaces")
+    registry = graph.space_registry
+    occ = registry.register_space(cg.index_space("occ", "o"))
+    virt = registry.register_space(cg.index_space("virt", "v"))
+    small = registry.register_space(cg.index_space("small", "s"))
+    registry.declare_less(small, virt)
+    return graph, occ, virt, small
+
+
+def test_declared_spaces_decide_the_order_where_the_extents_would_not():
+    spec, dims = "i,j <- i,a ; a,k ; k,j", [[3, 2], [2, 6], [6, 3]]
+    graph, o, v, s = _chain_over_spaces()
+    by_extent = cg.plan_nary_einsum(spec, dims)
+    assert (by_extent[0].left, by_extent[0].right) == (1, 2)
+    by_space = cg.plan_nary_einsum_with_spaces(graph, spec, dims, [[o, v], [v, s], [s, o], [o, o]])
+    assert (by_space[0].left, by_space[0].right) == (0, 1)
+    with pytest.raises(ValueError):
+        cg.plan_nary_einsum_with_spaces(graph, spec, dims, [[o, o], [v, s], [s, o], [o, o]])
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_a_captured_einsum_is_planned_by_its_operands_annotations(dtype, monkeypatch):
+    graph, o, v, s = _chain_over_spaces()
+    rng = np.random.default_rng(8)
+    A, B, C = _tensor("A", (3, 2), dtype, rng), _tensor("B", (2, 6), dtype, rng), _tensor("C", (6, 3), dtype, rng)
+    D = einsums.create_zero_tensor("D", [3, 3], dtype=dtype)
+    # Annotated before capture, as capture reads the annotations.
+    cg.annotate(A, (o, v), graph=graph)
+    cg.annotate(B, (v, s), graph=graph)
+    cg.annotate(C, (s, o), graph=graph)
+
+    plans = []
+    planner = cg.plan_nary_einsum_with_spaces
+
+    def recorded(*args):
+        plans.append((args[3], planner(*args)))
+        return plans[-1][1]
+
+    monkeypatch.setattr(cg, "plan_nary_einsum_with_spaces", recorded)
+    with cg.capture(graph):
+        einsums.einsum("i,j <- i,a ; a,k ; k,j", D, A, B, C)
+    graph.execute()
+
+    assert len(plans) == 1
+    spaces, steps = plans[0]
+    assert [list(x) for x in spaces] == [[o, v], [v, s], [s, o], []]
+    assert (steps[0].left, steps[0].right) == (0, 1)
+    assert_close(np.asarray(D), np.einsum("ia,ak,kj->ij", np.asarray(A), np.asarray(B), np.asarray(C)))
+
+
 def test_mismatched_extents_are_refused():
     rng = np.random.default_rng(6)
     A, B = _tensor("A", (3, 4), "float64", rng), _tensor("B", (5, 2), "float64", rng)

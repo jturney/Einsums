@@ -10,10 +10,12 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -157,6 +159,90 @@ TEST_CASE("nary einsum: a cap on the partial products changes the order", "[Comp
     auto const impossible = cg::plan_nary_einsum("a,b,d <- b,e,d ; e ; a", dims, 1);
     CHECK(impossible.front().left == 0);
     CHECK(impossible.front().right == 1);
+}
+
+namespace {
+
+/// D(i,j) = A(i,a) B(a,k) C(k,j), with i and j occupied, a virtual, and k over a third space s
+/// declared smaller than the virtuals. Contracting A with B first costs o v s + o^2 s and B with C
+/// first o v s + o^2 v, so the first is cheaper term for term. Three occupied, two virtual and six
+/// over s make the second cheaper at these extents, 54 against 90, which is the order an unannotated
+/// plan takes. (With k occupied the two would cost o^2 v + o^3 and 2 o^2 v, which the scale-order
+/// rung cannot rank, since it matches terms one to one and does not split a coefficient.)
+struct ChainOverSpaces {
+    cg::Graph                                   graph{"spaces"};
+    cg::SpaceId                                 occ{graph.space_registry().register_space(cg::make_index_space("occ", "o"))};
+    cg::SpaceId                                 virt{graph.space_registry().register_space(cg::make_index_space("virt", "v"))};
+    cg::SpaceId                                 small{graph.space_registry().register_space(cg::make_index_space("small", "s"))};
+    std::string                                 spec = "i,j <- i,a ; a,k ; k,j";
+    std::vector<std::vector<std::size_t>> const dims{{3, 2}, {2, 6}, {6, 3}};
+
+    ChainOverSpaces() { graph.space_registry().declare_less(small, virt); }
+};
+
+/// The operands of a plan's first step.
+std::pair<std::size_t, std::size_t> first_pair(std::vector<cg::NaryEinsumStep> const &steps) {
+    REQUIRE_FALSE(steps.empty());
+    return {steps.front().left, steps.front().right};
+}
+
+} // namespace
+
+TEST_CASE("nary einsum: declared index spaces decide the order where the extents would not", "[ComputeGraph][NaryEinsum]") {
+    ChainOverSpaces chain;
+    using Pair = std::pair<std::size_t, std::size_t>;
+
+    // By extent alone, B with C first.
+    CHECK(first_pair(cg::plan_nary_einsum(chain.spec, chain.dims)) == Pair{1, 2});
+    // By the declared scaling, A with B first, as the graph's own factorization ranks it.
+    auto const o  = chain.occ;
+    auto const v  = chain.virt;
+    auto const sm = chain.small;
+    CHECK(first_pair(cg::plan_nary_einsum_with_spaces(chain.graph, chain.spec, chain.dims, {{o, v}, {v, sm}, {sm, o}, {o, o}})) ==
+          Pair{0, 1});
+    // An operand left unannotated does not stop the others binding the letters it shares.
+    CHECK(first_pair(cg::plan_nary_einsum_with_spaces(chain.graph, chain.spec, chain.dims, {{o, v}, {}, {sm, o}, {}})) == Pair{0, 1});
+    // With no annotation at all the extents decide, as without the graph.
+    CHECK(first_pair(cg::plan_nary_einsum_with_spaces(chain.graph, chain.spec, chain.dims, {{}, {}, {}, {}})) == Pair{1, 2});
+    CHECK(first_pair(cg::plan_nary_einsum_with_spaces(chain.graph, chain.spec, chain.dims, {})) == Pair{1, 2});
+
+    // One letter annotated with two spaces, and a list that is not one entry per operand and C.
+    CHECK_THROWS_AS(cg::plan_nary_einsum_with_spaces(chain.graph, chain.spec, chain.dims, {{o, o}, {v, sm}, {sm, o}, {o, o}}),
+                    std::invalid_argument);
+    CHECK_THROWS_AS(cg::plan_nary_einsum_with_spaces(chain.graph, chain.spec, chain.dims, {{o, v}, {v, sm}, {sm, o}}),
+                    std::invalid_argument);
+}
+
+TEMPLATE_LIST_TEST_CASE("nary einsum: a captured einsum is planned by its operands' annotations", "[ComputeGraph][NaryEinsum]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    ChainOverSpaces chain;
+    auto const      A        = filled<T>("A", {3, 2}, 0.4);
+    auto const      B        = filled<T>("B", {2, 6}, 1.3);
+    auto const      C        = filled<T>("C", {6, 3}, 2.2);
+    auto            want     = filled<T>("D", {3, 3}, 3.5);
+    auto            captured = want;
+    T const         c_pf     = testing::prefactor<T>(0.3, -0.7);
+    T const         ab_pf    = testing::prefactor<T>(1.1, 0.4);
+    brute_force<T>({"i", "j"}, c_pf, want, ab_pf, {{"i", "a"}, {"a", "k"}, {"k", "j"}}, {&A, &B, &C}, {false, false, false});
+
+    // Annotated before capture, as capture reads the annotations.
+    chain.graph.annotate_spaces(A, {chain.occ, chain.virt});
+    chain.graph.annotate_spaces(B, {chain.virt, chain.small});
+    chain.graph.annotate_spaces(C, {chain.small, chain.occ});
+    {
+        cg::CaptureGuard const guard(chain.graph);
+        cg::einsum("i,j <- i,a ; a,k ; k,j", c_pf, &captured, ab_pf, A, B, C);
+    }
+    std::vector<std::string> names;
+    for (auto const &[id, handle] : chain.graph.tensors_map()) {
+        names.push_back(handle.name);
+    }
+    CHECK(std::ranges::find(names, "A*B") != names.end());
+    CHECK(std::ranges::find(names, "B*C") == names.end());
+
+    chain.graph.execute();
+    require_close(captured, want);
 }
 
 TEST_CASE("nary einsum: malformed specs and operands are refused", "[ComputeGraph][NaryEinsum]") {
