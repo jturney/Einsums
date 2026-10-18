@@ -83,6 +83,7 @@ if(EINSUMS_BUILD_PYTHON
 
   set(python_example_scripts
       annotate_and_rebind.py
+      ccsd_out_of_core.py
       ccsd_tiled.py
       mp2_simulation.py
       optimizer_tour.py
