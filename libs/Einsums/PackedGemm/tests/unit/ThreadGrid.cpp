@@ -409,10 +409,11 @@ packed_gemm::PackingPlan ladder_plan() {
     packed_gemm::PackingPlan plan;
     plan.valid       = true;
     plan.k_dims_in_a = {{.tensor_pos = 0, .size = 600, .tensor_stride = 1}, {.tensor_pos = 1, .size = 20, .tensor_stride = 600}};
-    plan.k_dims_in_b = {{.tensor_pos = 0, .size = 600, .tensor_stride = 1}, {.tensor_pos = 2, .size = 20, .tensor_stride = 600 * 93}};
-    plan.M_total     = 3 * 7;
+    plan.k_dims_in_b = {{.tensor_pos = 0, .size = 600, .tensor_stride = 1},
+                        {.tensor_pos = 2, .size = 20, .tensor_stride = int64_t{600} * 93}};
+    plan.M_total     = int64_t{3} * 7;
     plan.N_total     = 93;
-    plan.K_total     = 600 * 20;
+    plan.K_total     = int64_t{600} * 20;
     return plan;
 }
 
@@ -459,7 +460,7 @@ TEST_CASE("split K: the decision for a fixed width", "[PackedGemm][ThreadGrid][S
         auto shallow           = plan;
         shallow.k_dims_in_a[0] = {.tensor_pos = 0, .size = 20, .tensor_stride = 1};
         shallow.k_dims_in_b[0] = {.tensor_pos = 0, .size = 20, .tensor_stride = 1};
-        shallow.K_total        = 20 * 20;
+        shallow.K_total        = int64_t{20} * 20;
         CHECK(packed_gemm::choose_k_split<double>(shallow, 8, MR, NR, NC, KC).shares == 1);
     }
     SECTION("an output large enough to divide is divided") {
