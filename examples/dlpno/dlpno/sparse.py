@@ -17,7 +17,6 @@ so a domain extraction can be captured into a ComputeGraph instead of running
 eagerly on the host.
 """
 
-import numpy as np
 
 from einsums import linalg as la
 

@@ -23,7 +23,7 @@ port automatically. If it doesn't work try running:
 
     vtune-backend --no-https --reset-passphrase
 
-Open the given web addres and create a new password for the VTune web interface. Once this is done you can
+Open the given web address and create a new password for the VTune web interface. Once this is done you can
 Ctrl+C `vtune-backend` and run the first `vtune-backend` command above.
 
 When running an executable in VTune be sure to use the full path of the executable. For example, when running `test-all`

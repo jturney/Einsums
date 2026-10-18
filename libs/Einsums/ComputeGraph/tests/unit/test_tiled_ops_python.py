@@ -557,7 +557,6 @@ def test_dense_syev(dtype):
 
 @pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
 def test_dense_heev(dtype):
-    rdtype = np.float32 if dtype == np.complex64 else np.float64
     M = np.array([[2, 1j], [-1j, 2]], dtype=dtype)
     A = _RT[np.dtype(dtype).type]("A", [2, 2])
     np.asarray(A)[...] = M

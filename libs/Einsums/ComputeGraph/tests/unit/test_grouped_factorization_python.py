@@ -170,7 +170,7 @@ def test_the_shared_intermediate_is_priced_by_the_families_typical_extents():
     assert lines, f"no priced statement in the dump:\n{mtf.dump_text}"
     for line in lines:
         cost = line.split("#", 1)[1] if line.count("#") else ""
-        assert "gm4" in line, f"the member letter is not priced by its family's space: {line}"
+        assert "gm4" in cost, f"the member letter is not priced by its family's space: {line}"
         assert "?#" in line or "?~" in line, (
             f"a ragged letter should be anonymous, so the bound-extent rung is what decides: {line}")
 

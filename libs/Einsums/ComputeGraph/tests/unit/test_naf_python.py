@@ -207,7 +207,6 @@ def test_the_correlation_energy_stays_inside_the_composed_bound(water):
     equations; the untruncated arm is checked against psi4 first so the quantity
     being compared is the right one.
     """
-    nocc, nvir = water["nocc"], water["nvir"]
     exact = np.einsum("Qia,Qjb->iajb", water["B_ov"], water["B_ov"])
     exchange = exact.transpose(0, 3, 2, 1)
     reference = float(np.einsum("iajb,iajb->", 2.0 * exact - exchange, exact * water["gaps"]))

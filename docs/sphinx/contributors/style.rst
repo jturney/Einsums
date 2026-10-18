@@ -157,7 +157,7 @@ The approach to Python style is to generally follow the standard Python style gu
 
 * Prefer ``PascalCase`` for type names.
 * Prefer ``snake_case`` for functions, methods, and variables.
-* However, the same considerations for tensor variables apply as in C++. Tensor varaibles are in ``UPPER_CASE``,
+* However, the same considerations for tensor variables apply as in C++. Tensor variables are in ``UPPER_CASE``,
   and any reference to a tensor variable in a non-tensor variable should match the case of the tensor.
 
   * :code:`A`: Tensor variable.

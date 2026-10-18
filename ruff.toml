@@ -1,0 +1,13 @@
+# Pyflakes only: unused imports and variables, undefined names, and redefinitions. Formatting and
+# import order are not checked.
+[lint]
+select = ["F"]
+
+[lint.per-file-ignores]
+# cmake-format's loader defines `section` for the config file it executes.
+".cmake-format.py" = ["F821"]
+# A pytest fixture is named again as the parameter of each test that uses it.
+"**/test_*.py" = ["F811"]
+# The differential fuzzers and the tier tests share one harness, _fuzz_diff_common, and import it whole.
+"**/test_fuzz_*.py" = ["F403", "F405"]
+"**/test_tier_*.py" = ["F403", "F405"]

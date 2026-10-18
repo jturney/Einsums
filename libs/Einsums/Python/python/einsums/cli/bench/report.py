@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import sys
 
-from .compare import ComparisonReport, ComparisonResult, EnvironmentWarning
+from .compare import ComparisonResult, EnvironmentWarning
 
 
 def print_report(

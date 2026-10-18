@@ -25,7 +25,6 @@ the parent tensor as expected.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 import einsums
 from einsums.testing import assert_close

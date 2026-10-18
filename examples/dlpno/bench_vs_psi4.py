@@ -455,7 +455,7 @@ else:
         ours["DLPNO-CCSD(T)"] = ours.pop("DLPNO-CCSD")
 
 # ---- report ------------------------------------------------------------------
-print(f"\n  problem size")
+print("\n  problem size")
 print(f"    {'':22} {'psi4':>12} {'this port':>12}")
 # For ccsd psi4 prints both of these partway through its cascade - the pair
 # count before the crude pass eliminates any, the PNO count at MP2-level
@@ -556,7 +556,7 @@ ROWS += [(key, key, key) for key in ours
          if key != TOTAL and key not in BUILD_KEYS
          and key not in {r[1] for r in ROWS}]
 
-print(f"\n  wall time (seconds)")
+print("\n  wall time (seconds)")
 print(f"    {'phase':22} {'psi4':>12} {'this port':>12} {'ratio':>10}")
 
 
@@ -631,15 +631,15 @@ if args.method != "mp2":
         print(f"\n    {'LCCSD per iteration':22} {p_it:>12.4f} {o_it:>12.4f} "
               f"{o_it / p_it:>9.1f}x")
     nodes = stats_cc["nodes"]
-    print(f"\n  where the LCCSD time goes")
+    print("\n  where the LCCSD time goes")
     print(f"    {nodes} captured nodes, {o_it * 1e6 / max(nodes, 1):.2f} us per "
           f"node per iteration")
     print(f"    graph build {ours['LCCSD build']:.3f} s, paid once and "
           f"excluded from the compared total above")
-    print(f"    the correctness cut emits one operation per plan record. The "
-          f"campaign's first\n    lever is grouping records by shape class into "
-          f"batched calls, which is what took\n    LMP2 from 754 dispatches an "
-          f"iteration to 13.")
+    print("    the correctness cut emits one operation per plan record. The "
+          "campaign's first\n    lever is grouping records by shape class into "
+          "batched calls, which is what took\n    LMP2 from 754 dispatches an "
+          "iteration to 13.")
     if triples:
         # The (T) row deserves its own per-iteration figure, because the two
         # sides do not take the same NUMBER of iterations and the row total
@@ -696,7 +696,7 @@ for ij, q in zip(mp2.plan.pair, mp2.plan.partner):
     exact_flops += n_ij * n_p * n_p
 padding_overhead = padded_flops / max(exact_flops, 1)
 if p_it > 1e-9:
-    print(f"\n  where the LMP2 gap comes from (estimate)")
+    print("\n  where the LMP2 gap comes from (estimate)")
     print(f"    padding overhead   bucket dims vs true PNO counts"
           f" = {padding_overhead:>5.2f}x extra coupling flops")
     print(f"    measured slowdown                    = {o_it / p_it:>5.2f}x")

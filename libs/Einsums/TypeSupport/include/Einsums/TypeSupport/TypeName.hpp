@@ -43,7 +43,7 @@ consteval auto get_type_name_string_view() {
     return split;
 #else
     static_assert(false, "You are using an unsupported compiler. Please use GCC, Clang "
-                         "or MSVC or explicity tag your structs using 'Tag' or 'Name'.");
+                         "or MSVC or explicitly tag your structs using 'Tag' or 'Name'.");
 #endif
 }
 

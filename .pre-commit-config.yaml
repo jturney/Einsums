@@ -55,6 +55,42 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # File hygiene. The whitespace fixers leave alone what must keep its bytes: changelogs, which are
+  # edited only through the changelog tooling, the license header the insert-license hooks read
+  # verbatim, and test data and saved-graph goldens.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-yaml
+        # .clang-format holds one document per language.
+        args: [ --allow-multiple-documents ]
+      - id: check-toml
+      - id: check-json
+        # VS Code reads these as JSON with comments.
+        exclude: ^\.devcontainer/(devcontainer|vscode/launch)\.json$
+      - id: check-added-large-files
+        # The DLPNO fixtures reach 3 MB; anything past 4 MB is more likely a stray .etn or build artifact.
+        args: [ --maxkb=4096 ]
+      - id: trailing-whitespace
+        exclude: &verbatim ^(docs/sphinx/changelogs/|devtools/LicenseHeader\.txt$|.*/tests/unit/data/|.*/tests/unit/goldens/)
+      - id: end-of-file-fixer
+        exclude: *verbatim
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
+    hooks:
+      - id: codespell
+        name: Check spelling
+        # Settings, including the words that are not misspellings here, are in .codespellrc.
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - id: ruff-check
+        name: Check Python with pyflakes (ruff)
+        # Rules and per-file exceptions are in ruff.toml.
+
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v22.1.8
     hooks:

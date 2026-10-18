@@ -87,7 +87,7 @@ concept Container = requires(T a, T b, T const ca, T const cb, T &ra, T &rb, T c
 /**
  * @concept ContainerOrInitializer
  *
- * Checks that a type satisfies the Container requirement or is an inizializer list.
+ * Checks that a type satisfies the Container requirement or is an initializer list.
  *
  * @tparam T The type to check
  *

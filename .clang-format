@@ -8,10 +8,19 @@ ColumnLimit: 140
 IncludeBlocks: Regroup
 AlwaysBreakTemplateDeclarations: Yes
 AllowShortFunctionsOnASingleLine: InlineOnly
-AlignConsecutiveMacros: true
+AlignConsecutiveMacros:
+  Enabled: true
+  AlignFunctionDeclarations: true
+  PadOperators: true
 IndentPPDirectives: AfterHash
-AlignConsecutiveAssignments: true
-AlignConsecutiveDeclarations: true
+AlignConsecutiveAssignments:
+  Enabled: true
+  AlignFunctionDeclarations: true
+  PadOperators: true
+AlignConsecutiveDeclarations:
+  Enabled: true
+  AlignFunctionDeclarations: true
+  PadOperators: true
 QualifierAlignment: Right
 AttributeMacros:
   # Apiary binding annotations (<apiary/Annotations.hpp>).

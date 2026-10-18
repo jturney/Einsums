@@ -79,7 +79,7 @@ def main():
     psi4.core.set_output_file("/tmp/psi4_ht_bench.out", False)
     psi4.set_num_threads(args.threads)
     psi4.set_options({"basis": args.basis, "scf_type": "pk", "ints_tolerance": args.tol})
-    mol = psi4.geometry(GEOMETRIES[args.mol])
+    psi4.geometry(GEOMETRIES[args.mol])
     e_scf, wfn = psi4.energy("scf", return_wfn=True)
 
     mints = psi4.core.MintsHelper(wfn.basisset())

@@ -27,7 +27,7 @@ EINSUMS_NAMESPACE_BEGIN()
  * @brief Create a tensor and zero its  data.
  *
  * @tparam T The type to be stored by the tensor.
- * @tparam MultiIndex The types fo the indices.
+ * @tparam MultiIndex The types of the indices.
  * @param[in] name The name of the new tensor.
  * @param[in] index The dimensions for the new tensor.
  * @return A new tensor whose elements have been zeroed.

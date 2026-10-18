@@ -407,7 +407,7 @@ def _mp2_arms(water, epsilon=None):
 
 def test_the_three_arms_agree_with_the_exact_energy(water):
     """Density fitting alone, the grid fit, and the grid fit with a quadrature."""
-    nocc, nvir = water["nocc"], water["nvir"]
+    nocc = water["nocc"]
     dense = _dense(water)[:nocc, nocc:, :nocc, nocc:]
     energies = water["orbital_energies"]
     gaps = 1.0 / (energies[:nocc, None, None, None] - energies[None, nocc:, None, None]

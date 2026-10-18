@@ -1882,12 +1882,12 @@ def _build(prog, m, v, t, name):
 def _assert_pools(got, oracle, prog, label, extra="", dtype=None):
     rtol, atol = _DTYPE_TOL[dtype] if dtype is not None else (RTOL, ATOL)
     atol = _term_atol(prog, dtype, atol)
-    for kind, gs, os in zip("mvt", got, oracle):
-        for idx in range(len(os)):
-            if not np.allclose(gs[idx], os[idx], rtol=rtol, atol=atol):
+    for kind, got_pool, oracle_pool in zip("mvt", got, oracle):
+        for idx in range(len(oracle_pool)):
+            if not np.allclose(got_pool[idx], oracle_pool[idx], rtol=rtol, atol=atol):
                 raise AssertionError(
                     f"{label} disagrees with oracle on {kind}{idx}{extra}{f' (dtype={dtype})' if dtype else ''}\n"
-                    f"program={prog!r}\ngot=\n{gs[idx]}\noracle=\n{os[idx]}"
+                    f"program={prog!r}\ngot=\n{got_pool[idx]}\noracle=\n{oracle_pool[idx]}"
                 )
 
 

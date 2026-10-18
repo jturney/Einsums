@@ -12,7 +12,6 @@ bottom runs the analysis over the DLPNO example, which is where the tool's
 numbers have to agree with the ones the design document records.
 """
 
-import textwrap
 import pathlib
 
 import pytest

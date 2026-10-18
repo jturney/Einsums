@@ -1973,7 +1973,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorViewZ", RuntimeTensorView<std::complex<doubl
     [[nodiscard]] virtual auto strides() const noexcept -> ShapeVector<size_t> { return _impl.strides(); }
 
     /**
-     * @brief Gets the rank-1 veiw of the tensor.
+     * @brief Gets the rank-1 view of the tensor.
      *
      * This does not work well for tensor views due to the variation in strides.
      */

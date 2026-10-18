@@ -137,7 +137,7 @@ TensorComparison compare_tensors(einsums::detail::TensorImpl<TG> const &got, ein
 }
 
 /**
- * @brief Require @p got to have @p want's extents and every element within @p tol of it.
+ * @brief Require @p got to have @p wants extents and every element within @p tol of it.
  *
  * One assertion for the whole tensor, whose message names the first element out of tolerance and
  * how many missed, rather than one assertion per element.

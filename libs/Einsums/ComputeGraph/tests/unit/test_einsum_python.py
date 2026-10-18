@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 import einsums
-from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close
+from einsums.testing import ALL_DTYPES, assert_close
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)

@@ -277,7 +277,7 @@ def main():
     # -- the bridge --------------------------------------------------------
     bridge = Bridge(cc, oracle.basis)
     print("\n=== the rotation between the two virtual bases ===")
-    print(f"    route: U(ij) = C_vir^T S C_pno(ij), with S from the Reference")
+    print("    route: U(ij) = C_vir^T S C_pno(ij), with S from the Reference")
     print(f"    worst |U U^T - 1| over {cc.n_lmo_pairs} pairs = {bridge.check():.3e}")
 
     t1_port, t2_port = bridge.to_oracle(solver)

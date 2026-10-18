@@ -257,7 +257,7 @@ EINSUMS_EXPORT auto dsyev(char job, char uplo, int_t n, double *a, int_t lda, do
  * @param[inout] d The diagonal. On exit, it contains the eigenvalues.
  * @param[inout] e The subdiagonal.
  *
- * @return 0 on successs. If positive, then the eigenvalue algorithm failed to converge. If negative, then
+ * @return 0 on success. If positive, then the eigenvalue algorithm failed to converge. If negative, then
  * one of the inputs had a bad value. The absolute value indicates which parameter it was.
  *
  * @versionadded{2.0.0}
@@ -273,7 +273,7 @@ EINSUMS_EXPORT auto dsterf(int_t n, double *d, double *e) -> int_t;
  * @param[in] jobvr Indicates whetherh to compute the right eigenvectors. Case insensitive. Can be 'n' or 'v'.
  * @param[in] n The number of rows and columns in the matrix.
  * @param[inout] a The matrix to diagonalize. On exit, it will be overwritten with data used in the computation.
- * @param[in] lda The leading dimenson of the matrix.
+ * @param[in] lda The leading dimension of the matrix.
  * @param[out] w The output for the eigenvalues.
  * @param[out] vl The left eigenvectors. For real inputs, this will have a special storage format.
  * @param[in] ldvl The leading dimension of the left eigenvectors. Must be at least 1, even if not referenced.
@@ -305,7 +305,7 @@ EINSUMS_EXPORT auto zgeev(char jobvl, char jobvr, int_t n, std::complex<double> 
  * data is stored in the lower triangle.
  * @param[in] n The number of rows and columns in the matrix.
  * @param[inout] a The input matrix. On exit, it will be overwritten. If the eigenvectors are computed, then they will be stored in the
- * columns of this paramter.
+ * columns of this parameter.
  * @param[in] lda The leading dimension of the matrix.
  * @param[out] w The output for the eigenvalues.
  * @param[inout] work A work array. If @p lwork is -1, then the optimal work array size will be placed in the first element of the work

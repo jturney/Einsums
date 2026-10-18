@@ -17,7 +17,7 @@ EINSUMS_NAMESPACE_BEGIN(hashes)
 /**
  * @struct container_hash
  *
- * Hashses an arbitrary container object. Containers need to be iterable.
+ * Hashes an arbitrary container object. Containers need to be iterable.
  *
  * Examples of allowed containers include std::array, std::vector, std::queue, etc.
  *

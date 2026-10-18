@@ -615,7 +615,7 @@ concept RankTensorConcept = IsRankTensorV<D, Rank>;
 /**
  * \concept BasicLockableConcept
  *
- * @brief Tests whether the given type statisfies the C++ BasicLockable requirement.
+ * @brief Tests whether the given type satisfies the C++ BasicLockable requirement.
  *
  * @tparam D The tensor type to check.
  *

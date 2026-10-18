@@ -29,8 +29,6 @@ which is what a caller would replay under their own convergence control anyway.
 from __future__ import annotations
 
 
-import os
-import tempfile
 
 import numpy as np
 

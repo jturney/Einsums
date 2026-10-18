@@ -1022,7 +1022,7 @@ class LCCSDT:
                 if g is not None:
                     self.moldable[name] = plan_widths(g, dataflow=dataflow)
 
-        self._print(f"\n  ==> Local CCSD(T) <==\n")
+        self._print("\n  ==> Local CCSD(T) <==\n")
         self._print(f"    plan:     {len(self._plan)} triplets, "
                     f"{sum(len(r['couplings']) for r in self._plan)} couplings, "
                     f"{self.n_nodes} captured nodes "

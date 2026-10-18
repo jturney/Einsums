@@ -29,7 +29,7 @@ number or the dimension that the backward error bound carries.
 
 import itertools, numpy as np
 import einsums
-from hypothesis import HealthCheck, assume, given, settings, strategies as st
+from hypothesis import HealthCheck, given, settings, strategies as st
 from _sanitizer_scaling import sanitizer_examples
 from _dtype_draws import COMPLEX, DTYPES, assert_rounding_close, is_complex, random_array, real_of, rounded, wide
 _c = itertools.count()

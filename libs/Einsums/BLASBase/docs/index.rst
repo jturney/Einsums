@@ -8,7 +8,7 @@
 BLASBase
 ========
 
-This module contains some compatiblity definitions to make switching BLAS libraries easier.
+This module contains some compatibility definitions to make switching BLAS libraries easier.
 
 See the :ref:`API reference <modules_Einsums_BLASBase_api>` of this module for more
 details.

@@ -251,7 +251,7 @@ def test_the_energy_vector_is_replaced_rather_than_projected(water):
     produces, and checks the vector it is replacing against the Fock block it
     holds before believing it is the energies at all.
     """
-    nocc, nvir = water["nocc"], water["nvir"]
+    nocc = water["nocc"]
     weights = _tensor("X_ov", water["B_ov"][0])
     energies = _tensor("eps_vir", water["eps_vir"])
     out = einsums.create_zero_tensor("weighted", [nocc])

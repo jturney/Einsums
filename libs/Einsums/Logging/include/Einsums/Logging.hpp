@@ -68,7 +68,7 @@ EINSUMS_NAMESPACE_BEGIN(detail)
  * Checks to see if the logger can handle the given log level.
  *
  * @param name The name of the logger.
- * @param loglevel The leve to check.
+ * @param loglevel The level to check.
  *
  * @versionadded{1.0.0}
  */

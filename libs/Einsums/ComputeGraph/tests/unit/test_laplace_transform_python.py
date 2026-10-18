@@ -55,7 +55,7 @@ def _program(dtype, seed):
 
 
 def _capture(graph, A, B, D, P, dtype):
-    numerator = graph.scratch(f"numerator", [_NOCC, _NVIR], dtype)
+    numerator = graph.scratch("numerator", [_NOCC, _NVIR], dtype)
     with cg.capture(graph):
         einsums.einsum("i,k ; k,a -> i,a", numerator, A, B)
         einsums.linalg.direct_product(1.0, numerator, D, 0.0, P)

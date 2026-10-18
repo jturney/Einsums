@@ -2517,7 +2517,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         } else {
             // In different Ranks, source dimensions can be deduced from the strides.
             // In decreasing strides when matching the correct dimension is reached (dim[i] = 1 is neglected)
-            // Where dimenions less than the outermost are skipped these are incorporated into the dimension inner to it
+            // Where dimensions less than the outermost are skipped these are incorporated into the dimension inner to it
             // If there are no further inner strides, the inner stride is non-zero to account for missing dimensionality.
 
             if (other.impl().is_column_major()) {

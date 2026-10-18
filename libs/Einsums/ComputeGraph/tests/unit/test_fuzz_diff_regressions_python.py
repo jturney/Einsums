@@ -11,7 +11,6 @@ shared harness lives in _fuzz_diff_common.py."""
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from _fuzz_diff_common import *  # shared fuzz/differential harness
 

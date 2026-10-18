@@ -496,9 +496,9 @@ def validate_signature(fn) -> None:
             # author wrote and lands here claiming they were never there. The
             # error is correct and the cause is not remotely obvious, so say it.
             wrapped = "" if getattr(fn, "__wrapped__", None) is None else (
-                f" This function is wrapped (functools.wraps sets __wrapped__), and wraps copies "
-                f"__annotations__ from the wrapped function: that silently replaces the "
-                f"annotations you wrote here. Drop the wraps, or annotate the wrapped function."
+                " This function is wrapped (functools.wraps sets __wrapped__), and wraps copies "
+                "__annotations__ from the wrapped function: that silently replaces the "
+                "annotations you wrote here. Drop the wraps, or annotate the wrapped function."
             )
             raise ContractError(
                 f"{qual}: parameter '{pname}' has no annotation, so the stage cannot state its "

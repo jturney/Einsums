@@ -92,8 +92,8 @@ void sum_square(AType const &a, RemoveComplexT<typename AType::ValueType> *scale
  * - `TiledTensor * TiledTensor = TiledTensor`
  * - `OtherTensor * OtherTensor = OtherTensor`
  *
- * @tparam TransA Tranpose A? true or false
- * @tparam TransB Tranpose B? true or false
+ * @tparam TransA Transpose A? true or false
+ * @tparam TransB Transpose B? true or false
  * @tparam AType The tensor type of A.
  * @tparam BType The tensor type of B.
  * @tparam CType The tensor type of C.
@@ -217,8 +217,8 @@ void gemm(char transA, char transB, U const alpha, AType const &A, BType const &
  * auto C = einsums::linear_algebra::gemm<false, false>(1.0, A, B);
  * @endcode
  *
- * @tparam TransA Tranpose A?
- * @tparam TransB Tranpose B?
+ * @tparam TransA Transpose A?
+ * @tparam TransB Transpose B?
  * @tparam AType The tensor type of A.
  * @tparam BType The tensor type of B.
  * @tparam U The type for the scale factors.
@@ -577,7 +577,7 @@ void syev(AType *A, WType *W) {
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
- *      Eigenvector output is no longer handled by a template paramter. Now, it is decided by whether the outputs are null pointers.
+ *      Eigenvector output is no longer handled by a template parameter. Now, it is decided by whether the outputs are null pointers.
  *      When one of the eigenvector outputs is null, that output will not be calculated. It can now handle non-unit inner strides,
  *      though this is done by copying data. It can also handle row- and column-major order without a copy.
  * @endversion
@@ -1171,7 +1171,7 @@ void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType
  *      The pivots can now be any contiguous container of blas::int_t , such as vectors and arrays.
  *      It can also be spans.
  *      Can also handle non-unit strides and row- and column-major layouts.
- *      The BlockTensor implementation no longe creates temporary buffers for the pivots at each step. Instead, it uses spans to process
+ *      The BlockTensor implementation no longer creates temporary buffers for the pivots at each step. Instead, it uses spans to process
  *      sections of the pivots.
  * @endversion
  */
@@ -1281,7 +1281,7 @@ template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, typename P
  * @versionchangeddesc{2.0.0}
  *      The pivots can now be any contiguous container of blas::int_t , such as vectors and arrays. It can also be spans.
  *      Can also handle non-unit strides and row- and column-major layouts. Raises exceptions as opposed to returning a status code.
- *      The BlockTensor implementation no longe creates temporary buffers for the pivots at each step. Instead, it uses spans to process
+ *      The BlockTensor implementation no longer creates temporary buffers for the pivots at each step. Instead, it uses spans to process
  *      sections of the pivots.
  * @endversion
  */
@@ -1563,7 +1563,7 @@ auto svd_nullspace(AType const &_A) -> Tensor<typename AType::ValueType, 2> {
     auto Vview     = Vt(Range{rank, Vt.dim(0)}, All);
     auto nullspace = Tensor<T, 2>(Vview.impl().transpose_view());
 
-    // Normalize nullspace. LAPACK does not guarentee them to be orthonormal
+    // Normalize nullspace. LAPACK does not guarantee them to be orthonormal
     for (int i = 0; i < nullspace.dim(1); i++) {
         RemoveComplexT<T> norm = vec_norm(nullspace(All, i));
         if (norm > std::numeric_limits<RemoveComplexT<T>>::epsilon()) {

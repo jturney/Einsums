@@ -18,7 +18,7 @@ it the reference the others are checked against.
 """
 
 from dataclasses import dataclass, field
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import einsums
 

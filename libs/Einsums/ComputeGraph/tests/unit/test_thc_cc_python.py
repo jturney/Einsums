@@ -32,7 +32,6 @@ thing against a number computed somewhere else.
 
 from __future__ import annotations
 
-import json
 import os
 
 import numpy as np

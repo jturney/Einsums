@@ -23,7 +23,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import ALL_DTYPES, tolerance_for
+from einsums.testing import ALL_DTYPES
 
 
 def _tensor(name, array, dtype):

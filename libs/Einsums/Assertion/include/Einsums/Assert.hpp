@@ -60,7 +60,7 @@ using assertion_handler_type = void (*)(std::source_location const &loc, char co
 [[noreturn]] EINSUMS_EXPORT void default_assertion_handler(std::source_location const &loc, char const *expr, std::string const &msg);
 
 /**
- * @brief Sets the assertion hanlder to a user-defined handler.
+ * @brief Sets the assertion handler to a user-defined handler.
  *
  * @param[in] handler The new handler to use.
  *

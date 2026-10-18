@@ -204,7 +204,7 @@ compile_permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, 
 }
 
 /**
- * Perform a permuation using the provided plan.
+ * Perform a permutation using the provided plan.
  *
  * @param C The output tensor.
  * @param A The input tensor.

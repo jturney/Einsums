@@ -106,7 +106,7 @@ def test_direct_division_B_is_view(dtype):
 def test_direct_division_reciprocal_denominator(dtype):
     """The motivating use: amplitude T = K / D where D is an MP2/CC-style
     denominator built with outer_sum. Exercises divide inside an optimized graph."""
-    no, nv = 3, 5
+    nv = 5
     eo = np.array([-0.7, -0.5, -0.3])
     ev = np.array([0.2, 0.4, 0.6, 0.9, 1.3])
 

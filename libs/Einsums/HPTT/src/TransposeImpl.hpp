@@ -176,7 +176,7 @@ class TransposeImpl final : public hptt::Transpose<floatType> {
 
     /**
      * \brief Clears the array that stores the OpenMP threadIds. This function
-     *        should only be used in conjuction with addThreadId().
+     *        should only be used in conjunction with addThreadId().
      */
     void reset_thread_ids() noexcept { _threadIds.clear(); }
 
@@ -299,7 +299,7 @@ class TransposeImpl final : public hptt::Transpose<floatType> {
     size_t                             _innerStrideB; //!< innerStride of B
     std::vector<size_t>                _lda;          //!< strides for all dimensions of A (first dimension has a stride of 1)
     std::vector<size_t>                _ldb;          //!< strides for all dimensions of B (first dimension has a stride of 1)
-    std::vector<int>                   _threadIds;    //!< OpenMP threadIds of the threads involed in the transposition
+    std::vector<int>                   _threadIds;    //!< OpenMP threadIds of the threads involved in the transposition
     int                                _numThreads;
     /// Whether the CALLER declared which OpenMP threads take part (the
     /// caller spawns the team and calls from inside it). When it

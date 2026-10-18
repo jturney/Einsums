@@ -710,7 +710,7 @@ void TransposeImpl<floatType>::skip_indices(size_t const *sizeA, int const *perm
         _offsetA.resize(_dim);
         _offsetB.resize(_dim);
 
-        // remove gaps in the perm, if requried (e.g., perm=3,1,0 -> 2,1,0)
+        // remove gaps in the perm, if required (e.g., perm=3,1,0 -> 2,1,0)
         int currentValue = 0;
         for (int i = 0; i < _dim; ++i) {
             // find smallest element in perm_ and rename it to currentValue
@@ -774,7 +774,7 @@ void TransposeImpl<floatType>::fuse_indices() {
 
     if (fusedIndices.size() > 0) {
         _perm = perm;
-        // remove gaps in the perm, if requried (e.g., perm=3,1,0 -> 2,1,0)
+        // remove gaps in the perm, if required (e.g., perm=3,1,0 -> 2,1,0)
         int currentValue = 0;
         for (int i = 0; i < _perm.size(); ++i) {
             // find smallest element in perm_ and rename it to currentValue
@@ -1126,7 +1126,7 @@ float TransposeImpl<floatType>::estimate_execution_time(std::shared_ptr<Plan> co
 
     // execute just a few iterations and exterpolate the result
     startTime = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < nRepeat; ++i) // ATTENTION: we are not clearing the caches inbetween runs
+    for (int i = 0; i < nRepeat; ++i) // ATTENTION: we are not clearing the caches between runs
         this->execute_estimate(plan.get());
     elapsedTime =
         std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(std::chrono::high_resolution_clock::now() - startTime)

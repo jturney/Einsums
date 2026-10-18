@@ -30,7 +30,7 @@ Containers and Initializer Lists
 C++ containers have a standard set of operations that they need to be able to perform. Initializer lists
 also have some standard operations, but they are a subset of the operations for containers. To write
 container-agnostic code, you can use the :cpp:concept:`Container`, which will match all standard C++
-containers, including ``std::vector``, ``std::list``, and more. To include intializer lists in this
+containers, including ``std::vector``, ``std::list``, and more. To include initializer lists in this
 definition, use the concept :cpp:concept:`ContainerOrInitializer`.
 
 
@@ -123,7 +123,7 @@ Represents a tensor that sees another tensor's data. It must define the followin
 BasicTensor
 ^^^^^^^^^^^
 
-Represents a tensor that holds its data in a way that is useable by BLAS or LAPACK. It must define the following.
+Represents a tensor that holds its data in a way that is usable by BLAS or LAPACK. It must define the following.
 
 .. code:: C++
 

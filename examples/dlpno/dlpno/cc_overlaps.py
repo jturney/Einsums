@@ -37,7 +37,6 @@ by keeping the two pair-side halves across calls.
 
 import numpy as np
 
-from einsums import linalg as la
 import einsums.graph as cg
 
 from . import sparse

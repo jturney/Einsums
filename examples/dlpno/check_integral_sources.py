@@ -189,7 +189,7 @@ q_scr, e_scr, t_scr = run(reference, screened, cut, "ScreenedQiaSource (NORMAL)"
 
 scale = np.abs(q_dense).max()
 mask = screened.declared_mask()
-print(f"\n  DFHelper vs dense")
+print("\n  DFHelper vs dense")
 print(f"    integrals:  max abs {np.abs(q_dfh - q_dense).max():.3e}"
       f"   relative {np.abs(q_dfh - q_dense).max() / scale:.3e}")
 print(f"    energy:     {abs(e_dfh - e_dense):.3e} Hartree")
@@ -201,7 +201,7 @@ print(f"    energy:     {abs(e_scr - e_dense):.3e} Hartree, "
 print(f"    {screened.describe()}")
 
 fair_dense = t_dense + t_build
-print(f"\n  integrals available:")
+print("\n  integrals available:")
 print(f"    dense      {fair_dense:.3f} s (build {t_build:.3f} + transform {t_dense:.3f})")
 print(f"    DFHelper   {t_dfh:.3f} s   {fair_dense / t_dfh:.2f}x the dense path")
 print(f"    screened   {t_scr:.3f} s   {fair_dense / t_scr:.2f}x the dense path, "

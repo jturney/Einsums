@@ -16,7 +16,7 @@ import logging as _logging
 import os as _os
 import threading as _threading
 
-from ._contract import ContractError, DeferredHints, validate_signature
+from ._contract import DeferredHints, validate_signature
 
 __all__ = [
     "stage",

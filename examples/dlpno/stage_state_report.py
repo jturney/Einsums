@@ -35,7 +35,6 @@ import argparse
 import ast
 import os
 import pathlib
-import sys
 
 DEFAULT_SOURCES = ["dlpno/base.py", "dlpno/mp2.py"]
 DEFAULT_PHASES = [

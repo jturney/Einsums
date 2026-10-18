@@ -1094,7 +1094,7 @@ auto EINSUMS_EXPORT zgetrf(int_t, int_t, std::complex<double> *, int_t, int_t *)
  * @tparam T The type this function handles.
  * @param[in] m The number of rows in the input.
  * @param[in] n The number of columns in the input.
- * @param[inout] a The input matrix. On exit, it contains the upper and lower triangular matrices. The elemnts of the lower
+ * @param[inout] a The input matrix. On exit, it contains the upper and lower triangular matrices. The elements of the lower
  * triangular matrix are not stored since they are all 1.
  * @param[in] lda The leading dimension of the matrix.
  * @param[out] ipiv The list of pivots.
@@ -1444,7 +1444,7 @@ auto EINSUMS_EXPORT zgees(char jobvs, int_t n, std::complex<double> *a, int_t ld
  * @tparam T The type this function handles.
  * @param[in] jobvs Whether to compute the unitary matrix for the decomposition.
  * @param[in] n The number of rows and columns of the input matrix.
- * @param[inout] a The iput matrix. On exit, it contains the pseudotriangular matrix from the decomposition.
+ * @param[inout] a The input matrix. On exit, it contains the pseudotriangular matrix from the decomposition.
  * @param[in] lda The leading dimension of A.
  * @param[in] sdim The number of selected eigenvalues.
  * @param[out] wr The real components of the eigenvalues.
@@ -1478,7 +1478,7 @@ inline auto gees<double>(char jobvs, int_t n, double *a, int_t lda, int_t *sdim,
  * @tparam T The type this function handles.
  * @param[in] jobvs Whether to compute the unitary matrix for the decomposition.
  * @param[in] n The number of rows and columns of the input matrix.
- * @param[inout] a The iput matrix. On exit, it contains the pseudotriangular matrix from the decomposition.
+ * @param[inout] a The input matrix. On exit, it contains the pseudotriangular matrix from the decomposition.
  * @param[in] lda The leading dimension of A.
  * @param[in] sdim The number of selected eigenvalues.
  * @param[out] w The  eigenvalues.

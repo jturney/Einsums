@@ -1,0 +1,9 @@
+[codespell]
+# Words that are not misspellings here. Einsum index lists (nd, ot, te, abd, abl), operand and
+# variable names (inout, couter, wit, mata, matc, strat, fo, and the MSVC flag /Fo), domain terms (ket for bra-ket, als for
+# alternating least squares, fro for the Frobenius norm, sme for the Arm matrix extension, seh for
+# Windows structured exceptions, dne for DeadNodeElimination, disjointness), C++ (statics) and
+# enumerators (atmost, atleast), a deliberately malformed JSON token (tru), and standard spellings
+# codespell prefers otherwise (unparseable, the hyphenated re- forms).
+ignore-words-list = nd,ot,te,abd,abl,fo,inout,couter,wit,mata,matc,strat,ket,als,fro,sme,seh,dne,disjointness,statics,atmost,atleast,tru,unparseable,re-declare,re-declared,re-declares,re-declaring,re-using,re-uses
+skip = ./build*,./.git,*.svg,*.json,*.npz,*.png,*.dat,*.S,./docs/sphinx/changelogs,./devtools/LicenseHeader.txt
