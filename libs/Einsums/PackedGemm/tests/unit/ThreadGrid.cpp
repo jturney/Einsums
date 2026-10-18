@@ -326,10 +326,15 @@ TEMPLATE_LIST_TEST_CASE("split K: a small output over a long K, the same at ever
     // Dividing a small output gave four threads no more speed than one, since each packed its rows
     // and columns across all of K: the ladder's 63 x 93 output over K = 28560 took 1.40 ms on one
     // thread and 1.37 ms on four. K is now summed in shares, cut for the machine's cores whatever
-    // the thread count, so every count, including ones that do not divide the shares, gives the
-    // same bits: a graph node whose width changes between replays must not change its result.
-    using T            = TestType;
-    bool const machine = packed_gemm::k_split_width() > 1;
+    // the thread count, so the cut is the same at every count and, where the machine cuts it, so
+    // are the bits, including at counts that do not divide the shares: a graph node whose width
+    // changes between replays must not change its result.
+    //
+    // Whether this machine cuts the ladder is its cost model's call, and the two-core x86 runners
+    // do not, so the decision is pinned for fixed widths in the case below rather than here.
+    // Uncut, the output-dividing engine or a vendor GEMM may sum an element in an order the width
+    // moves, and every count is held to the reference instead, as run() always does.
+    using T = TestType;
     for (bool const scattered : {false, true}) {
         CAPTURE(scattered);
         for (auto const &[c_pf, ab_pf] : {std::pair{T{0}, testing::prefactor<T>(1.1, 0.4)},
@@ -337,7 +342,7 @@ TEMPLATE_LIST_TEST_CASE("split K: a small output over a long K, the same at ever
             Ladder<T> const    ladder{scattered, c_pf, ab_pf};
             Tensor<T, 3> const first  = ladder.run(1);
             int const          shares = packed_gemm::last_k_split();
-            CHECK((shares > 1) == machine);
+            CAPTURE(shares);
             // Cut along e, the K dim outermost in both operands, each share is a loop of GEMMs over d
             // like the whole contraction; cut along d, the longest, each share was a gather.
             if (shares > 1) {
@@ -347,8 +352,10 @@ TEMPLATE_LIST_TEST_CASE("split K: a small output over a long K, the same at ever
                 CAPTURE(threads);
                 Tensor<T, 3> const C = ladder.run(threads);
                 CHECK(packed_gemm::last_k_split() == shares);
-                for (size_t e = 0; e < C.size(); ++e) {
-                    REQUIRE(C.data()[e] == first.data()[e]);
+                if (shares > 1) {
+                    for (size_t e = 0; e < C.size(); ++e) {
+                        REQUIRE(C.data()[e] == first.data()[e]);
+                    }
                 }
             }
         }
@@ -360,9 +367,14 @@ TEMPLATE_LIST_TEST_CASE("split K: inside a region that cannot fork, the same sha
     // A contraction called from inside a parallel region runs on its caller's thread alone. It cuts
     // K as it would outside, and works through every share itself.
     using T = TestType;
-    Ladder<T> const      ladder{false, T{0}, T{1}};
-    Tensor<T, 3> const   outside = ladder.run(4);
-    int const            shares  = packed_gemm::last_k_split();
+    Ladder<T> const    ladder{false, T{0}, T{1}};
+    Tensor<T, 3> const outside = ladder.run(4);
+    int const          shares  = packed_gemm::last_k_split();
+    if (shares < 2) {
+        // Uncut, the bits outside need not match one thread's, and the fixed-width case below
+        // covers the decision this machine's cost model declined.
+        SKIP("this machine does not cut the ladder's K");
+    }
     int                  seen[2] = {0, 0};
     bool                 same[2] = {false, false};
 #    pragma omp parallel num_threads(2)
@@ -386,6 +398,75 @@ TEMPLATE_LIST_TEST_CASE("split K: inside a region that cannot fork, the same sha
         CAPTURE(t);
         CHECK(seen[t] == shares);
         CHECK(same[t]);
+    }
+}
+
+namespace {
+
+/// The ladder's plan as the engine lays it out: C(i,j,b) = A(d,e,i,j) B(d,b,e), M = (i,j), N = b,
+/// K = (d,e), column-major, so e is the K dim outermost in both operands.
+packed_gemm::PackingPlan ladder_plan() {
+    packed_gemm::PackingPlan plan;
+    plan.valid       = true;
+    plan.k_dims_in_a = {{.tensor_pos = 0, .size = 600, .tensor_stride = 1}, {.tensor_pos = 1, .size = 20, .tensor_stride = 600}};
+    plan.k_dims_in_b = {{.tensor_pos = 0, .size = 600, .tensor_stride = 1}, {.tensor_pos = 2, .size = 20, .tensor_stride = 600 * 93}};
+    plan.M_total     = 3 * 7;
+    plan.N_total     = 93;
+    plan.K_total     = 600 * 20;
+    return plan;
+}
+
+/// Holds min_parallel_flops at zero, the machine's value being a calibration the decision under
+/// test should not depend on.
+struct AnyFlopsParallel {
+    AnyFlopsParallel() { packed_gemm::set_min_parallel_flops_for_tuning(0); }
+    ~AnyFlopsParallel() { packed_gemm::set_min_parallel_flops_for_tuning(-1); }
+    AnyFlopsParallel(AnyFlopsParallel const &)            = delete;
+    AnyFlopsParallel &operator=(AnyFlopsParallel const &) = delete;
+};
+
+} // namespace
+
+TEST_CASE("split K: the decision for a fixed width", "[PackedGemm][ThreadGrid][SplitK]") {
+    // The decision as a function of the width it is made for, with the x86 kernel's 8 x 6 tile and a
+    // K block of 256, so it reads the same on every machine; which width a machine supplies is
+    // k_split_width's, and whether that width cuts the ladder is the machine's to find out.
+    AnyFlopsParallel const any;
+    int constexpr MR     = 8;
+    int constexpr NR     = 6;
+    int64_t constexpr NC = 4080;
+    int64_t constexpr KC = 256;
+    auto const plan      = ladder_plan();
+
+    SECTION("one thread never cuts") {
+        CHECK(packed_gemm::choose_k_split<double>(plan, 1, MR, NR, NC, KC).shares == 1);
+    }
+    SECTION("a small output over a long K is cut along the outermost K dim, into no more shares than threads") {
+        for (int const width : {4, 8, 10}) {
+            CAPTURE(width);
+            auto const split = packed_gemm::choose_k_split<double>(plan, width, MR, NR, NC, KC);
+            CHECK(split.shares > 1);
+            CHECK(split.shares <= width);
+            CHECK(split.dim == 1);
+        }
+    }
+    SECTION("a batched contraction keeps its batch as its parallelism") {
+        auto batched        = plan;
+        batched.batch_total = 2;
+        CHECK(packed_gemm::choose_k_split<double>(batched, 8, MR, NR, NC, KC).shares == 1);
+    }
+    SECTION("a K shorter than two K blocks is not cut") {
+        auto shallow           = plan;
+        shallow.k_dims_in_a[0] = {.tensor_pos = 0, .size = 20, .tensor_stride = 1};
+        shallow.k_dims_in_b[0] = {.tensor_pos = 0, .size = 20, .tensor_stride = 1};
+        shallow.K_total        = 20 * 20;
+        CHECK(packed_gemm::choose_k_split<double>(shallow, 8, MR, NR, NC, KC).shares == 1);
+    }
+    SECTION("an output large enough to divide is divided") {
+        auto wide    = plan;
+        wide.M_total = 2000;
+        wide.N_total = 2000;
+        CHECK(packed_gemm::choose_k_split<double>(wide, 8, MR, NR, NC, KC).shares == 1);
     }
 }
 

@@ -1727,7 +1727,8 @@ TEST_CASE("AxisTiling holds every loop's buffers to the memory budget, remainder
     Budget const      budget(limit);
     auto const        tiling = decide_by_default(graph);
     REQUIRE(tiling->num_tiled() >= 1);
-    INFO("blocks " << tiling->block_extents()[0] << " x " << tiling->block_extents()[1] << ", " << tiling->loops() << " loops");
+    INFO("sliced " << fmt::format("{}", fmt::join(tiling->axis_letters(), ",")) << " in blocks of "
+                   << fmt::format("{}", fmt::join(tiling->block_extents(), ",")) << ", " << tiling->loops() << " loops");
     CHECK(tree_bytes(graph) <= limit);
 
     auto manager = cg::PassManager::create_default();
@@ -1791,7 +1792,8 @@ TEST_CASE("AxisTiling holds a loop's buffers to their share together, remainders
     Share const       share(static_cast<double>(share_bytes) / static_cast<double>(budget_bytes));
     auto const        tiling = decide_by_default(graph);
     REQUIRE(tiling->num_tiled() >= 1);
-    INFO("blocks " << tiling->block_extents()[0] << " x " << tiling->block_extents()[1] << ", " << tiling->loops() << " loops");
+    INFO("sliced " << fmt::format("{}", fmt::join(tiling->axis_letters(), ",")) << " in blocks of "
+                   << fmt::format("{}", fmt::join(tiling->block_extents(), ",")) << ", " << tiling->loops() << " loops");
     CHECK(tiling->largest_after() <= share_bytes);
     // The four-index seed left the tree and every loop's buffers came in, together within the
     // share.

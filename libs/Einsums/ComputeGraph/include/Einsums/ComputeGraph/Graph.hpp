@@ -3729,6 +3729,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     Node make_node(OpKind kind, packed_gemm::ScalarType dtype, OpData descriptor, std::vector<TensorId> inputs,
                    std::vector<TensorId> outputs, std::string label);
 
+    /// Give storage to every internal tensor (@ref declare_internal_tensor) here or below that a node
+    /// still reads or writes and no Materialize node brings to life. Run before the first replay validates.
+    void materialize_internal_tensors();
+
     /**
      * @brief Validate that all registered tensors are still alive.
      *
@@ -3740,9 +3744,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * @return Error if any tensor appears to have been destroyed.
      */
-    /// Give storage to every internal tensor (@ref declare_internal_tensor) here or below that a node
-    /// still reads or writes and no Materialize node brings to life. Run before the first replay validates.
-    void                                     materialize_internal_tensors();
     [[nodiscard]] expected<void, GraphError> validate_tensors() const;
 
     /**

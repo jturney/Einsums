@@ -78,9 +78,11 @@ void write_entry(std::string const &path, std::string const &name, RuntimeTensor
     file.write(name, tensor);
 }
 
+/// The tensor's bytes, as unsigned char: Catch2's prebuilt library exports no printer for std::byte
+/// on Windows, so a failed comparison of std::byte vectors does not link there.
 template <typename T>
-std::vector<std::byte> bytes_of(RuntimeTensor<T> const &tensor) {
-    std::vector<std::byte> out(tensor.size() * sizeof(T));
+std::vector<unsigned char> bytes_of(RuntimeTensor<T> const &tensor) {
+    std::vector<unsigned char> out(tensor.size() * sizeof(T));
     if (!out.empty()) {
         std::memcpy(out.data(), tensor.data(), out.size());
     }
