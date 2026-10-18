@@ -16,6 +16,7 @@
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
+#include <Einsums/ComputeGraph/Passes/Reorder.hpp>
 #include <Einsums/ComputeGraph/Passes/SlabStreaming.hpp>
 #include <Einsums/ComputeGraph/TensorBacking.hpp>
 #include <Einsums/Options/Get.hpp>
@@ -1128,6 +1129,70 @@ TEST_CASE("SlabStreaming loads a streamed-out tensor whole for a reader it canno
     REQUIRE(store.reads.size() == 1);
     CHECK(store.reads[0] == Ranges{{0, ni}, {0, nj}});
 
+    auto want_t = RuntimeTensor<double>("T", std::vector<std::size_t>{ni, nj});
+    want_t.zero();
+    testing::reference_einsum("i,j <- i,k ; k,j", &want_t, a, b);
+    auto want_d = RuntimeTensor<double>("D", std::vector<std::size_t>{ni, ni});
+    want_d.zero();
+    testing::reference_einsum("i,l <- i,j ; l,j", &want_d, want_t, want_t);
+    check_close(d, want_d, static_cast<double>(nk * nj));
+}
+
+TEST_CASE("Reorder keeps a reader of a streamed-out tensor after the loops that write its storage", "[ComputeGraph][Pass][SlabStreaming]") {
+    // The case above with Reorder between this pass and Materialization, the order the default
+    // pipeline runs them in. Until Materialization adds the fill, the reader of T reads a tensor
+    // no node writes in memory: only the block loops write T, and they write its storage. Reorder
+    // used to see no edge between them and could run the reader first, so the fill that
+    // Materialization then put before it read storage nothing had written yet.
+    constexpr std::size_t ni = 4;
+    constexpr std::size_t nk = 3;
+    constexpr std::size_t nj = 5;
+    WriteStore            store("T");
+    auto const            a = filled("A", {ni, nk}, 3U);
+    auto const            b = filled("B", {nk, nj}, 7U);
+    auto                  d = RuntimeTensor<double>("D", std::vector<std::size_t>{ni, ni});
+    d.zero();
+
+    cg::Graph graph("reordered_whole_reader");
+    auto     &t = graph.declare_runtime_tensor<double>("T", {ni, nj});
+    graph.annotate_backing(t, store.backing());
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &t, a, b);
+        cg::einsum("i,l <- i,j ; l,j", &d, t, t);
+    }
+    auto slabs = std::make_shared<cg::passes::SlabStreaming>();
+    slabs->set_slab_budget(static_cast<std::int64_t>(2 * ni * sizeof(double)));
+    cg::PassManager manager;
+    manager.add(slabs);
+    manager.add(std::make_shared<cg::passes::Reorder>());
+    manager.add(std::make_shared<cg::passes::Materialization>());
+    graph.apply(manager);
+    REQUIRE(slabs->num_written() == 1);
+
+    // In the order the graph replays: every block loop, then the fill, then the reader.
+    std::optional<std::size_t> fill;
+    std::optional<std::size_t> reader;
+    std::vector<std::size_t>   loops;
+    for (std::size_t n = 0; n < graph.nodes().size(); ++n) {
+        auto const &node = graph.nodes()[n];
+        if (node.kind == cg::OpKind::Initialize) {
+            fill = n;
+        } else if (node.kind == cg::OpKind::Loop) {
+            loops.push_back(n);
+        } else if (node.kind == cg::OpKind::Einsum) {
+            reader = n;
+        }
+    }
+    REQUIRE(fill.has_value());
+    REQUIRE(reader.has_value());
+    REQUIRE(loops.size() == 2);
+    for (std::size_t const loop : loops) {
+        CHECK(loop < *fill);
+    }
+    CHECK(*fill < *reader);
+
+    graph.execute();
     auto want_t = RuntimeTensor<double>("T", std::vector<std::size_t>{ni, nj});
     want_t.zero();
     testing::reference_einsum("i,j <- i,k ; k,j", &want_t, a, b);

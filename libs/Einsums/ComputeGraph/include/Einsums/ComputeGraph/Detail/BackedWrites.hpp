@@ -21,6 +21,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
+#include <string>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -54,6 +55,9 @@ namespace detail {
  * read of the storage after every write to it, across loops, through the named-resource hazards.
  */
 [[nodiscard]] EINSUMS_EXPORT DiskIODescriptor backing_io(TensorBacking const &backing, TensorId tensor, std::size_t bytes);
+
+/// @brief The named-resource key of @p backing's storage: the one every node carrying backing_io's descriptor reads or writes.
+[[nodiscard]] EINSUMS_EXPORT std::string storage_key(TensorBacking const &backing);
 
 } // namespace detail
 

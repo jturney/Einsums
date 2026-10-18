@@ -8,6 +8,10 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <fmt/format.h>
+
+#include <string>
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 namespace {
@@ -67,6 +71,11 @@ DiskIODescriptor backing_io(TensorBacking const &backing, TensorId tensor, std::
     io.tensor_id  = tensor;
     io.size_bytes = bytes;
     return io;
+}
+
+std::string storage_key(TensorBacking const &backing) {
+    // What disk_key makes of backing_io's descriptor: the storage, and no dataset within it.
+    return fmt::format("disk:{}#", backing.describe());
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/Detail/BackedWrites.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
@@ -10,6 +11,7 @@
 
 #include <cstddef>
 #include <queue>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -56,30 +58,46 @@ bool Reorder::run(Graph &graph) {
     // write of that dataset. See named_writes / named_reads in Node.hpp.
     detail::NamedHazards named;
 
+    // A write-backed tensor that no operation writes in memory is produced into its storage by
+    // SlabStreaming's block loops. Until Materialization puts a fill from that storage before its
+    // first reader, nothing links a node that reads it in memory to those loops, so the reader
+    // reads the storage's key as well and follows every write of it.
+    std::unordered_map<TensorId, std::string> written_to_storage_only;
+    for (auto const &[tid, handle] : graph.tensors_map()) {
+        if (handle.backing && handle.backing->write && handle.tensor_ptr != nullptr &&
+            !compute_graph::detail::written_in_memory(graph, handle.tensor_ptr)) {
+            written_to_storage_only.emplace(tid, compute_graph::detail::storage_key(*handle.backing));
+        }
+    }
+
     for (size_t i = 0; i < n; i++) {
+        std::vector<std::string> reads = named_reads(nodes[i]);
         // Use effective I/O so Loop/Conditional nodes (whose own input/output
         // lists are empty) carry dependency edges for the tensors their bodies
         // touch: otherwise the memory-aware reorder below can float a loop
         // past a producer or consumer of one of those tensors.
         auto [eff_in, eff_out] = graph.effective_io(nodes[i]);
-        for (auto raw_tid : eff_in) {
+        for (auto const raw_tid : eff_in) {
             // Resolve view aliases to the owning buffer, or a write through a
             // view of T looks unrelated to a read of T and gets reordered past it.
             TensorId const tid = graph.buffer_of(raw_tid);
-            auto           it  = last_writer.find(tid);
+            auto const     it  = last_writer.find(tid);
             if (it != last_writer.end() && it->second != i) {
                 adj_set[it->second].insert(i); // RAW: writer → reader
             }
             readers_since_write[tid].push_back(i); // remember for a later WAR edge
+            if (auto const stored = written_to_storage_only.find(tid); stored != written_to_storage_only.end()) {
+                reads.push_back(stored->second);
+            }
         }
-        for (auto raw_tid : eff_out) {
+        for (auto const raw_tid : eff_out) {
             TensorId const tid = graph.buffer_of(raw_tid);
-            auto           it  = last_writer.find(tid);
+            auto const     it  = last_writer.find(tid);
             if (it != last_writer.end() && it->second != i) {
                 adj_set[it->second].insert(i); // WAW: previous writer → this writer
             }
             // WAR: every node that read the old value must precede this write.
-            auto rit = readers_since_write.find(tid);
+            auto const rit = readers_since_write.find(tid);
             if (rit != readers_since_write.end()) {
                 for (size_t const r : rit->second) {
                     if (r != i) {
@@ -90,8 +108,7 @@ bool Reorder::run(Graph &graph) {
             }
             last_writer[tid] = i;
         }
-        named.visit(i, named_reads(nodes[i]), named_writes(nodes[i]),
-                    [&adj_set](size_t producer, size_t consumer) { adj_set[producer].insert(consumer); });
+        named.visit(i, reads, named_writes(nodes[i]), [&adj_set](size_t producer, size_t consumer) { adj_set[producer].insert(consumer); });
     }
 
     // Convert to vector adjacency and compute in-degree
@@ -114,10 +131,10 @@ bool Reorder::run(Graph &graph) {
     std::unordered_map<TensorId, size_t> last_consumer;
     for (size_t i = 0; i < n; i++) {
         auto [eff_in, eff_out] = graph.effective_io(nodes[i]);
-        for (auto raw_tid : eff_in) {
+        for (auto const raw_tid : eff_in) {
             last_consumer[graph.buffer_of(raw_tid)] = i;
         }
-        for (auto raw_tid : eff_out) {
+        for (auto const raw_tid : eff_out) {
             last_consumer[graph.buffer_of(raw_tid)] = i; // Also counts as "using" it
         }
     }
@@ -126,7 +143,7 @@ bool Reorder::run(Graph &graph) {
     std::vector<size_t> bytes_freed(n, 0);
     for (auto const &[tid, last_idx] : last_consumer) {
         auto const &tensors = graph.tensors_map();
-        auto        it      = tensors.find(tid);
+        auto const  it      = tensors.find(tid);
         if (it != tensors.end()) {
             bytes_freed[last_idx] += it->second.total_bytes();
         }
@@ -134,7 +151,7 @@ bool Reorder::run(Graph &graph) {
 
     // Memory-aware Kahn's algorithm:
     // Among ready nodes, prefer the one that frees the most memory.
-    auto cmp = [&bytes_freed](size_t a, size_t b) {
+    auto const cmp = [&bytes_freed](size_t a, size_t b) {
         return bytes_freed[a] < bytes_freed[b]; // max-heap: largest freed first
     };
     std::priority_queue<size_t, std::vector<size_t>, decltype(cmp)> ready(cmp);
