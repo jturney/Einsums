@@ -926,17 +926,11 @@ template <bool TransA, bool TransB, CoreBasicTensorConcept AType, CoreBasicTenso
         requires MatrixConcept<AType>;
     }
 void symm_gemm(AType const &A, BType const &B, CType *C) {
-    int  temp_rows, temp_cols;
-    bool shape_test = true;
-    if constexpr (TransA && TransB) {
-        shape_test = B.dim(0) == A.dim(0) && A.dim(1) == B.dim(0) && C->dim(0) == B.dim(1) && C->dim(1) == B.dim(1);
-    } else if constexpr (TransA && !TransB) {
-        shape_test = B.dim(1) == A.dim(0) && A.dim(1) == B.dim(1) && C->dim(0) == B.dim(0) && C->dim(1) == B.dim(0);
-    } else if constexpr (!TransA && TransB) {
-        shape_test = B.dim(0) == A.dim(1) && A.dim(0) == B.dim(0) && C->dim(0) == B.dim(1) && C->dim(1) == B.dim(1);
-    } else {
-        shape_test = B.dim(1) == A.dim(1) && A.dim(0) == B.dim(1) && C->dim(0) == B.dim(0) && C->dim(1) == B.dim(0);
-    }
+    int temp_rows, temp_cols;
+    // op(A) is n x n and op(B) is n x m, so C is m x m. Square A makes its transpose irrelevant here.
+    size_t const n          = TransB ? B.dim(1) : B.dim(0);
+    size_t const m          = TransB ? B.dim(0) : B.dim(1);
+    bool const   shape_test = A.dim(0) == n && A.dim(1) == n && C->dim(0) == m && C->dim(1) == m;
 
     if (!shape_test) {
         EINSUMS_THROW_EXCEPTION(TensorCompatError, "The shapes of the input and output tensors are incompatible!");
@@ -971,17 +965,11 @@ template <bool TransA, bool TransB, CoreBasicTensorConcept AType, CoreBasicTenso
         requires MatrixConcept<AType>;
     }
 void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
-    int  temp_rows, temp_cols;
-    bool shape_test = true;
-    if constexpr (TransA && TransB) {
-        shape_test = B.dim(0) == A.dim(0) && A.dim(1) == B.dim(0) && C->dim(0) == B.dim(1) && C->dim(1) == B.dim(1);
-    } else if constexpr (TransA && !TransB) {
-        shape_test = B.dim(1) == A.dim(0) && A.dim(1) == B.dim(1) && C->dim(0) == B.dim(0) && C->dim(1) == B.dim(0);
-    } else if constexpr (!TransA && TransB) {
-        shape_test = B.dim(0) == A.dim(1) && A.dim(0) == B.dim(0) && C->dim(0) == B.dim(1) && C->dim(1) == B.dim(1);
-    } else {
-        shape_test = B.dim(1) == A.dim(1) && A.dim(0) == B.dim(1) && C->dim(0) == B.dim(0) && C->dim(1) == B.dim(0);
-    }
+    int temp_rows, temp_cols;
+    // op(A) is n x n and op(B) is n x m, so C is m x m. Square A makes its transpose irrelevant here.
+    size_t const n          = TransB ? B.dim(1) : B.dim(0);
+    size_t const m          = TransB ? B.dim(0) : B.dim(1);
+    bool const   shape_test = A.dim(0) == n && A.dim(1) == n && C->dim(0) == m && C->dim(1) == m;
     if (!shape_test) {
         EINSUMS_THROW_EXCEPTION(TensorCompatError, "The shapes of the input and output tensors are incompatible!");
     }

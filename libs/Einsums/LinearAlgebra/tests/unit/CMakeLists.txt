@@ -33,6 +33,7 @@ set(linear_algebra_tests
     syrk.cpp
     symm.cpp
     symm_dispatch.cpp
+    symm_gemm.cpp
     sygv.cpp
     syevd.cpp
     getrs.cpp

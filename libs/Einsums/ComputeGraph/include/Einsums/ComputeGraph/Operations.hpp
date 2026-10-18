@@ -4472,7 +4472,9 @@ void trace_python(ResultType *result, AType const &A) {
 // symm_gemm: C = op(B)^T * op(A) * op(B)
 // ─────────────────────────────────────────────────────────────────────────────
 
-template <bool TransA, bool TransB, RuntimeRankTensorConcept AType, RuntimeRankTensorConcept BType, RuntimeRankTensorConcept CType>
+/// Graph-aware ``C = op(B)^T op(A) op(B)``, or ``op(B)^H op(A) op(B)`` with @p conjugate. A, B and C
+/// may be compile-time-rank matrices or runtime-rank tensors, as in @ref gemm.
+template <bool TransA, bool TransB, MatrixOperand AType, MatrixOperand BType, MatrixOperand CType>
     requires InSamePlace<AType, BType, CType> && SameUnderlying<AType, BType, CType>
 // clang-format off
 APIARY_EXPOSE
@@ -4520,8 +4522,10 @@ APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<do
 APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
 // clang-format on
 void symm_gemm(AType const &A, BType const &B, CType *C, bool conjugate = false) {
-    if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
+    // Folds away for an operand whose type fixes rank 2, as in gemm.
+    if (detail::tensor_rank(A) != 2 || detail::tensor_rank(B) != 2 || detail::tensor_rank(*C) != 2) {
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", detail::tensor_rank(A),
+                                detail::tensor_rank(B), detail::tensor_rank(*C));
     }
     // conjugate=true computes the Hermitian congruence op(B)^H op(A) op(B); the
     // default is the bilinear op(B)^T op(A) op(B). For real dtypes they coincide.
@@ -4546,36 +4550,6 @@ void symm_gemm(AType const &A, BType const &B, CType *C, bool conjugate = false)
         WAGGLE_ZONE("symm_gemm execute");
         run(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), static_cast<CType *>(c_slot->ptr));
     };
-    ctx.record(OpKind::SymmGemm, "symm_gemm", {a_id, b_id}, {c_id}, std::move(executor));
-}
-
-// Original compile-time-rank symm_gemm, kept under a different signature
-// for legacy C++ callers; the runtime-rank form above is what the Python
-// bindings target.
-template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, MatrixConcept CType>
-    requires InSamePlace<AType, BType, CType> && SameUnderlying<AType, BType, CType>
-void symm_gemm(AType const &A, BType const &B, CType *C) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        WAGGLE_ZONE("symm_gemm eager");
-        linear_algebra::symm_gemm<TransA, TransB>(A, B, C);
-        return;
-    }
-
-    WAGGLE_ZONE("symm_gemm capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    auto [c_id, c_slot] = ctx.get_slot(*C);
-
-    auto executor = [a_slot, b_slot, c_slot]() {
-        WAGGLE_ZONE("symm_gemm execute");
-        WAGGLE_ANNOTATE("a_n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
-        WAGGLE_ANNOTATE("b_m", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(0)));
-        WAGGLE_ANNOTATE("b_n", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->dim(1)));
-        linear_algebra::symm_gemm<TransA, TransB>(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
-                                                  static_cast<CType *>(c_slot->ptr));
-    };
-
     ctx.record(OpKind::SymmGemm, "symm_gemm", {a_id, b_id}, {c_id}, std::move(executor));
 }
 

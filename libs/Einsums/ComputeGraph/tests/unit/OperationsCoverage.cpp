@@ -93,6 +93,56 @@ TEMPLATE_LIST_TEST_CASE("Operation - direct product in graph", "[ComputeGraph][O
     }
 }
 
+TEMPLATE_LIST_TEST_CASE("Operation - symm_gemm on compile-time-rank matrices, eager and in graph", "[ComputeGraph][Operations]",
+                        testing::AllScalarTypes) {
+    // One template serves both tensor families, as gemm's does; this is the compile-time-rank half,
+    // which the Python tests never reach. B is not square, so a transposed operand changes C's shape.
+    using T          = TestType;
+    auto const A     = create_random_tensor<T>("A", 4, 4);
+    auto const B     = create_random_tensor<T>("B", 4, 3);
+    bool const conjs = IsComplexV<T>;
+
+    for (bool const conjugate : {false, conjs}) {
+        CAPTURE(conjugate);
+        // C(i,j) = sum_kl op(B(k,i)) A(k,l) B(l,j), with op the conjugate when asked.
+        auto C_ref = create_zero_tensor<T>("C_ref", 3, 3);
+        for (size_t ii = 0; ii < 3; ii++) {
+            for (size_t jj = 0; jj < 3; jj++) {
+                T sum{0};
+                for (size_t kk = 0; kk < 4; kk++) {
+                    T bki = B(kk, ii);
+                    if constexpr (IsComplexV<T>) {
+                        bki = conjugate ? std::conj(bki) : bki;
+                    }
+                    for (size_t ll = 0; ll < 4; ll++) {
+                        sum += bki * A(kk, ll) * B(ll, jj);
+                    }
+                }
+                C_ref(ii, jj) = sum;
+            }
+        }
+
+        auto eager = create_zero_tensor<T>("eager", 3, 3);
+        cg::symm_gemm<false, false>(A, B, &eager, conjugate);
+
+        auto      captured = create_zero_tensor<T>("captured", 3, 3);
+        cg::Graph graph("symm_gemm");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::symm_gemm<false, false>(A, B, &captured, conjugate);
+        }
+        REQUIRE(graph.num_nodes() == 1);
+        graph.execute();
+
+        for (size_t ii = 0; ii < 3; ii++) {
+            for (size_t jj = 0; jj < 3; jj++) {
+                REQUIRE(close_to<T>(eager(ii, jj), C_ref(ii, jj), 1e-12));
+                REQUIRE(close_to<T>(captured(ii, jj), C_ref(ii, jj), 1e-12));
+            }
+        }
+    }
+}
+
 TEMPLATE_LIST_TEST_CASE("Operation - transpose in graph", "[ComputeGraph][Operations]", testing::AllScalarTypes) {
     using T = TestType;
     auto A  = create_random_tensor<T>("A", 4, 6);
