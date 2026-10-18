@@ -1,0 +1,9 @@
+# Commits that changed only formatting, which git blame skips so a line is attributed to the change
+# that last meant something by it. GitHub reads this file on its own; a local clone needs, once:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Each entry is a full commit hash, under a comment naming it.
+
+# style: trim trailing whitespace and end every file with one newline
+d8f254b99e70a96e2e090b9ed67631732fa15d52
