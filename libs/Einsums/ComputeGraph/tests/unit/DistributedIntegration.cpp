@@ -1100,7 +1100,7 @@ TEST_CASE("Distributed - declare_tensor_filled with range/global", "[ComputeGrap
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test 20: Simulated batch ERI fill + contraction
-// Demonstrates the chemistry blueprint pattern: fill ERIs in shell batches
+// The pattern an integral code follows: fill ERIs in shell batches
 // using range(), then contract with MO coefficients.
 // ═══════════════════════════════════════════════════════════════════════════════
 

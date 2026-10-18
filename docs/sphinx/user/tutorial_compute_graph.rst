@@ -364,26 +364,6 @@ Swap a tensor for a different one without re-capturing:
     graph.rebind(A1, A2);
     graph.execute();  // Now uses A2 (same graph structure)
 
-Blueprints
-==========
-
-Pre-built operation sequences for common patterns:
-
-.. code-block:: cpp
-
-    namespace bp = cg::blueprints;
-
-    // Symmetrize: A = 0.5 * (A + A^T)
-    bp::symmetrize(&A);
-
-    // Orthogonalization: X = S^{-1/2}
-    bp::orthogonalize(&X, S);
-
-    // Matrix exponential via Taylor series
-    bp::matrix_exponential(&expA, A, 10);
-
-Blueprints work both inside and outside captured blocks.
-
 TaskPool Integration
 ====================
 

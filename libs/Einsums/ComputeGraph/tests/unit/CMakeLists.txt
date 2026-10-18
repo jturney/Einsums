@@ -33,7 +33,6 @@ set(ComputeGraphTests
     AxisTiling.cpp
     SlabStreaming.cpp
     BisectDriver.cpp
-    Blueprints.cpp
     Factorization.cpp
     MetricFit.cpp
     ThcFit.cpp

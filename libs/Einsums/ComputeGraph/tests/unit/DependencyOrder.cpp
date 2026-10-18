@@ -4,7 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 // Regression tests for topological sort and dependency ordering.
-// These test the bugs found during blueprint development:
+// The cases each pin an ordering bug the sort once had:
 // - write-after-read dependencies
 // - scale/element_transform as both input AND output
 // - diamond DAGs

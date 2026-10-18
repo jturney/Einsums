@@ -83,7 +83,6 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/BisectDriver.hpp>
-#include <Einsums/ComputeGraph/Blueprints.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
 #include <Einsums/ComputeGraph/Diis.hpp>

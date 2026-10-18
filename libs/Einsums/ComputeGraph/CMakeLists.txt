@@ -7,7 +7,6 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph.hpp
     Einsums/ComputeGraph/Approximation.hpp
     Einsums/ComputeGraph/BisectDriver.hpp
-    Einsums/ComputeGraph/Blueprints.hpp
     Einsums/ComputeGraph/Factorization.hpp
     Einsums/ComputeGraph/MetricFitFactorization.hpp
     Einsums/ComputeGraph/ThcFactorization.hpp
@@ -22,8 +21,6 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/AxisTiling.hpp
     Einsums/ComputeGraph/LaplaceQuadrature.hpp
     Einsums/ComputeGraph/Passes/LaplaceTransform.hpp
-    Einsums/ComputeGraph/Blueprints/Orthogonalization.hpp
-    Einsums/ComputeGraph/Blueprints/TensorAlgebra.hpp
     Einsums/ComputeGraph/BoundExpr.hpp
     Einsums/ComputeGraph/CaptureContext.hpp
     Einsums/ComputeGraph/Options.hpp
