@@ -310,6 +310,12 @@ struct Plan {
     std::vector<std::size_t> blocks;
     std::size_t              largest_before{0};
     std::size_t              largest_after{0};
+    /// Built because nothing fit: the finest slicing of a candidate whose single slice is over the
+    /// budget, kept in case no candidate fits it.
+    bool best_effort{false};
+    /// A best-effort plan whose slices fit the tensor's share of the budget, which is as far as
+    /// cutting still lowers the peak.
+    bool                     fits_share{false};
     long double              traffic{0.0L};
     std::vector<std::string> axis_names;
     std::vector<std::string> axis_letters;
@@ -2491,8 +2497,13 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
     };
 
     std::optional<Plan> best;
-    std::size_t         infeasible = 0;
-    std::size_t         over_cap   = 0;
+    // The finest slicing of a candidate no slice of which fits, taken when no candidate fits at all
+    // and the seed outweighs everything the loop leaves outside it, the case where cutting it
+    // still brings the peak down from the seed to a slice.
+    std::optional<Plan> fallback;
+    std::size_t         outside_bytes = 0;
+    std::size_t         infeasible    = 0;
+    std::size_t         over_cap      = 0;
     for (auto const &positions : candidate_sets(seed_handle->rank)) {
         auto const detail = fmt::format("seed '{}', candidate axes {}", seed_handle->name, fmt::join(positions, ","));
 
@@ -2583,17 +2594,23 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         // Against a fixed cap every intermediate is held to it alone. Against the memory budget
         // the loop's buffers are held to it together, beside every tensor the loop does not
         // re-declare, and to their share of it.
-        bool const  joint = allowance.budget != 0;
-        std::size_t room  = limit;
+        bool const  joint       = allowance.budget != 0;
+        std::size_t room        = limit;
+        bool        best_effort = false;
         if (joint) {
             std::size_t const outside = allowance.total - std::min(allowance.total, analysis->streamed_whole_bytes(labelling));
+            outside_bytes             = std::max(outside_bytes, outside);
             if (outside >= allowance.budget) {
                 note_skip(
                     "the program's other tensors alone exceed the memory budget, so no slice of the region fits beside them",
                     fmt::format("{}; {} bytes outside the loop against --einsums:max-memory of {}", detail, outside, allowance.budget));
-                continue;
+                // Nothing can meet the budget; a slice within the tensor's share is as far as cutting
+                // the seed still lowers the peak, and finer slices only add iterations.
+                best_effort = true;
+                room        = allowance.share;
+            } else {
+                room = std::min(allowance.budget - outside, allowance.share);
             }
-            room = std::min(allowance.budget - outside, allowance.share);
         }
         auto const fits = [joint, room](std::size_t largest, std::size_t held) { return (joint ? held : largest) <= room; };
 
@@ -2601,15 +2618,17 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         std::size_t unit_held = 0;
         long double traffic   = 0.0L;
         analysis->cost(labelling, extents, 1, unit, unit_held, traffic);
-        if (!fits(unit, unit_held)) {
+        bool const slice_fits = fits(unit, unit_held);
+        if (!slice_fits) {
             ++over_cap;
-            continue;
+            best_effort = true;
         }
 
         // Blocks where a contraction of the loop rewards them, a grouped chunk of points
         // otherwise.
+        // A slice that fits nothing is cut as finely as it goes: blocks are chosen to fit, and none would.
         std::optional<BlockChoice> blocks;
-        if (auto const reusable = analysis->reusable_labels(labelling); !reusable.empty()) {
+        if (auto const reusable = analysis->reusable_labels(labelling); slice_fits && !reusable.empty()) {
             if (std::string_view const blocker = analysis->range_blocker(labelling); !blocker.empty()) {
                 note_skip(blocker, detail);
             } else {
@@ -2643,7 +2662,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
             plan.largest_after = blocks->largest;
             plan.traffic       = blocks->traffic;
         } else {
-            std::size_t const depth   = chunk_depth(slices, joint ? unit_held : unit, room);
+            std::size_t const depth   = slice_fits ? chunk_depth(slices, joint ? unit_held : unit, room) : 1;
             std::size_t       largest = 0;
             std::size_t       held    = 0;
             analysis->cost(labelling, extents, depth, largest, held, traffic);
@@ -2652,6 +2671,8 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
             plan.largest_after = largest;
             plan.traffic       = traffic;
         }
+        plan.best_effort    = best_effort;
+        plan.fits_share     = slice_fits;
         plan.accumulator    = accumulator;
         plan.accumulator_id = accumulator_id;
         plan.summed_into    = summed_into;
@@ -2677,9 +2698,32 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         report(3, fmt::format("candidate {} streams {:.0f} bytes {}", fmt::join(plan.axis_names, " x "), static_cast<double>(plan.traffic),
                               plan.range ? fmt::format("in blocks of {}", fmt::join(plan.blocks, " x "))
                                          : fmt::format("at depth {}", plan.depth)));
-        if (!best.has_value() || plan.traffic < best->traffic) {
+        if (best_effort) {
+            // One whose slices fit the share, by traffic as any plan; failing that the smallest slice.
+            bool const better = !fallback.has_value() || (plan.fits_share && !fallback->fits_share) ||
+                                (plan.fits_share == fallback->fits_share &&
+                                 (plan.fits_share ? plan.traffic < fallback->traffic
+                                                  : (plan.largest_after < fallback->largest_after ||
+                                                     (plan.largest_after == fallback->largest_after && plan.traffic < fallback->traffic))));
+            if (better) {
+                fallback = std::move(plan);
+            }
+        } else if (!best.has_value() || plan.traffic < best->traffic) {
             best = std::move(plan);
         }
+    }
+
+    // Nothing fits the budget. Where the seed outweighs everything outside the loop it is what
+    // makes the peak, and its smallest slices still bring that down by the seed's size; where the
+    // tensors outside outweigh it, cutting it would shrink nothing that matters, and it is left.
+    // Only against the memory budget: a cap the caller set is a bound to meet, and one that cannot
+    // be met is declined, as it always was.
+    if (!best.has_value() && fallback.has_value() && allowance.budget != 0 && fallback->largest_before > outside_bytes &&
+        fallback->largest_after < fallback->largest_before) {
+        note_skip("no slicing fits the memory budget, so the seed is cut into slices that fit its share of it, or its smallest slices",
+                  fmt::format("seed '{}': {} bytes, {} outside the loop, {} per slice", seed_handle->name, fallback->largest_before,
+                              outside_bytes, fallback->largest_after));
+        best = std::move(fallback);
     }
 
     if (!best.has_value()) {
@@ -2717,8 +2761,9 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
     graph.note_structural_change();
 
     std::string const line =
-        fmt::format("slicing {} into {} slice(s), {}, seed {} bytes -> largest intermediate {} bytes", fmt::join(best->axis_names, " x "),
-                    best->slices, describe_chunks(*best), best->largest_before, best->largest_after);
+        fmt::format("slicing {} into {} slice(s), {}, seed {} bytes -> largest intermediate {} bytes{}", fmt::join(best->axis_names, " x "),
+                    best->slices, describe_chunks(*best), best->largest_before, best->largest_after,
+                    best->best_effort ? " (none fits the budget beside the tensors outside the loop)" : "");
     _regions.push_back(line);
     report(1, line);
     return true;

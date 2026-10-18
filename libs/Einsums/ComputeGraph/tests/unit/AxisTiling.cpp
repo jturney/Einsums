@@ -1612,6 +1612,50 @@ TEST_CASE("AxisTiling says when the tensors besides an intermediate already exce
     CHECK(declined_because(*tiling, "other tensors alone exceed the memory budget"));
 }
 
+TEST_CASE("AxisTiling cuts a seed that outweighs the rest into its smallest slices when nothing fits the budget",
+          "[ComputeGraph][Pass][AxisTiling]") {
+    // H(Q,a,b) = A(Q,a) B(Q,b), then r(a,b) = sum_Q H(Q,a,b) w(Q): the intermediate is 1920 bytes and
+    // everything outside the loop about a kilobyte. A budget below the inputs admits no slice, and
+    // the pass used to leave H whole, which on the water ladder held a 79 MB intermediate against a
+    // 2 MB budget. Cutting the seed that outweighs the rest still brings the peak down to a slice.
+    constexpr std::size_t Q  = 8;
+    constexpr std::size_t A_ = 6;
+    constexpr std::size_t B_ = 5;
+    auto const            a  = filled_as<double>("A", {Q, A_}, 3U);
+    auto const            b  = filled_as<double>("B", {Q, B_}, 5U);
+    auto const            w  = filled_as<double>("w", {Q}, 11U);
+    RuntimeTensor<double> r("r", std::vector<std::size_t>{A_, B_});
+
+    cg::Graph graph("best effort");
+    auto     &h = graph.scratch_runtime<double>("H", std::vector<std::size_t>{Q, A_, B_});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("Q,a,b <- Q,a ; Q,b", 0.0, &h, 1.0, a, b);
+        cg::einsum("a,b <- Q,a,b ; Q", 0.0, &r, 1.0, h, w);
+    }
+
+    Budget const budget(std::size_t{512});
+    auto const   tiling = decide_by_default(graph);
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(declined_because(*tiling, "no slicing fits the memory budget"));
+    CHECK(tiling->largest_before() == Q * A_ * B_ * sizeof(double));
+    CHECK(tiling->largest_after() < tiling->largest_before());
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    graph.execute();
+
+    RuntimeTensor<double> whole("H_ref", std::vector<std::size_t>{Q, A_, B_});
+    RuntimeTensor<double> want("r_ref", std::vector<std::size_t>{A_, B_});
+    testing::reference_einsum("Q,a,b <- Q,a ; Q,b", &whole, a, b);
+    testing::reference_einsum("a,b <- Q,a,b ; Q", &want, whole, w);
+    for (std::size_t i = 0; i < A_; ++i) {
+        for (std::size_t j = 0; j < B_; ++j) {
+            CHECK_THAT(r(i, j), Catch::Matchers::WithinRel(want(i, j), 1e-12));
+        }
+    }
+}
+
 TEST_CASE("AxisTiling has no budget to derive a cap from when the memory ceiling is off", "[ComputeGraph][Pass][AxisTiling]") {
     Problem   problem;
     cg::Graph graph("mp2 full axis");
