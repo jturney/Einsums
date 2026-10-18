@@ -27,6 +27,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -218,13 +219,6 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
         return [this](uint64_t offset, void const *data, size_t bytes) { write_at(offset, data, bytes); };
     }
 
-    /// Write every element of @p tensor at @p offset, in the file's column-major order.
-    template <typename T, typename TensorType>
-    void write_elements(uint64_t offset, TensorType const &tensor, size_t rank) {
-        detail::write_elements(writer(), offset, reinterpret_cast<char const *>(tensor.data()), detail::memory_layout<T>(tensor, rank), 0,
-                               tensor.size());
-    }
-
     /// Read the box @p ranges of @p entry into @p tensor, already sized to it. The box is in the
     /// entry's declared axis order, as @p tensor is, whatever order the entry is stored in.
     template <typename T, typename TensorType>
@@ -254,6 +248,21 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
 
     /// Add a new entry and return its index.
     size_t add_entry(TensorEntry entry);
+
+    /// Map each entry's name to its record, the last of the name when several ranks hold one.
+    void index_entries();
+
+    /**
+     * @brief The entry a write of @p name fills, with its name, type, extents and data region set.
+     *
+     * An entry of that name and owning rank already in the file is replaced, never kept beside the
+     * new one: when it holds the same type and extents its data region and stored order are reused,
+     * so rewriting an entry does not grow the file, and otherwise its record is given a new region
+     * at the end of the data. A new entry is stored in its declared order.
+     * @throws std::invalid_argument when @p name is empty or longer than an entry holds.
+     */
+    TensorEntry &place_entry(std::string_view operation, std::string_view name, DType dtype, std::vector<size_t> const &dims,
+                             uint32_t owning_rank);
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -263,45 +272,21 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
 template <typename T, size_t Rank>
 void TensorFile::write(std::string_view name, Tensor<T, Rank> const &tensor) {
     static_assert(Rank <= ETN_MAX_RANK, "an .etn entry holds at most ETN_MAX_RANK extents");
-    TensorEntry entry;
-    entry.init();
-    entry.set_name(name);
-    entry.dtype = static_cast<uint8_t>(dtype_for<T>());
-    entry.rank  = static_cast<uint8_t>(Rank);
+    std::vector<size_t> dims(Rank);
     for (size_t d = 0; d < Rank; d++)
-        entry.dims[d] = tensor.dim(d);
-
-    size_t data_bytes = tensor.size() * sizeof(T);
-    entry.data_offset = align_up(_next_data_offset, ETN_DATA_ALIGNMENT);
-    entry.data_size   = data_bytes;
-    entry.owning_rank = ETN_ALL_RANKS;
-
-    write_elements<T>(entry.data_offset, tensor, Rank);
-    _next_data_offset = entry.data_offset + data_bytes;
-
-    add_entry(entry);
+        dims[d] = tensor.dim(d);
+    auto const &entry = place_entry("TensorFile::write", name, dtype_for<T>(), dims, ETN_ALL_RANKS);
+    write_box<T>(entry, tensor, Rank, detail::whole_box(entry));
 }
 
 template <typename T, size_t Rank>
 void TensorFile::write_local(std::string_view name, Tensor<T, Rank> const &tensor, int rank, int num_ranks) {
     static_assert(Rank <= ETN_MAX_RANK, "an .etn entry holds at most ETN_MAX_RANK extents");
-    TensorEntry entry;
-    entry.init();
-    entry.set_name(name);
-    entry.dtype = static_cast<uint8_t>(dtype_for<T>());
-    entry.rank  = static_cast<uint8_t>(Rank);
+    std::vector<size_t> dims(Rank);
     for (size_t d = 0; d < Rank; d++)
-        entry.dims[d] = tensor.dim(d);
-
-    size_t data_bytes = tensor.size() * sizeof(T);
-    entry.data_offset = align_up(_next_data_offset, ETN_DATA_ALIGNMENT);
-    entry.data_size   = data_bytes;
-    entry.owning_rank = static_cast<uint32_t>(rank);
-
-    write_elements<T>(entry.data_offset, tensor, Rank);
-    _next_data_offset = entry.data_offset + data_bytes;
-
-    add_entry(entry);
+        dims[d] = tensor.dim(d);
+    auto const &entry = place_entry("TensorFile::write_local", name, dtype_for<T>(), dims, static_cast<uint32_t>(rank));
+    write_box<T>(entry, tensor, Rank, detail::whole_box(entry));
 
     // Update header flags
     _header.flags |= 0x1; // has distributed tensors
@@ -360,31 +345,23 @@ void TensorFile::write_slice(std::string_view name, Tensor<T, Rank> const &tenso
 template <typename T>
 void TensorFile::reserve(std::string_view name, std::vector<size_t> const &dims, std::vector<size_t> const &stored_order) {
     detail::check_writable_rank(_path, "TensorFile::reserve", name, dims.size());
-
-    TensorEntry entry;
-    entry.init();
-    entry.set_name(name);
-    entry.dtype = static_cast<uint8_t>(dtype_for<T>());
-    entry.rank  = static_cast<uint8_t>(dims.size());
-    for (size_t d = 0; d < dims.size(); ++d) {
-        entry.dims[d] = dims[d];
+    if (!stored_order.empty() && stored_order.size() != dims.size()) {
+        // Checked before the entry is placed, so a refused order leaves the file as it was.
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "TensorFile::reserve: a stored order for '{}' names {} axes, not its {}", name,
+                                stored_order.size(), dims.size());
     }
-    if (!stored_order.empty()) {
+
+    // A reserved entry holds nothing yet, so a reused one takes the order asked for.
+    auto &entry = place_entry("TensorFile::reserve", name, dtype_for<T>(), dims, ETN_ALL_RANKS);
+    if (stored_order.empty()) {
+        std::vector<size_t> declared(dims.size());
+        for (size_t d = 0; d < declared.size(); ++d) {
+            declared[d] = d;
+        }
+        entry.set_stored_order(declared);
+    } else {
         entry.set_stored_order(stored_order);
     }
-
-    size_t total = 1;
-    for (size_t const d : dims) {
-        total *= d;
-    }
-    size_t const data_bytes = total * sizeof(T);
-
-    entry.data_offset = align_up(_next_data_offset, ETN_DATA_ALIGNMENT);
-    entry.data_size   = data_bytes;
-    entry.owning_rank = ETN_ALL_RANKS;
-    _next_data_offset = entry.data_offset + data_bytes;
-
-    add_entry(entry);
 }
 
 // ── RuntimeTensor overloads ──────────────────────────────────────────
@@ -406,24 +383,12 @@ void TensorFile::read(std::string_view name, GeneralRuntimeTensor<T, Alloc> &ten
 template <typename T, typename Alloc>
 void TensorFile::write(std::string_view name, GeneralRuntimeTensor<T, Alloc> const &tensor) {
     detail::check_writable_rank(_path, "TensorFile::write", name, tensor.rank());
-    TensorEntry entry;
-    entry.init();
-    entry.set_name(name);
-    entry.dtype = static_cast<uint8_t>(dtype_for<T>());
-    entry.rank  = static_cast<uint8_t>(tensor.rank());
+    std::vector<size_t> dims(tensor.rank());
     for (size_t d = 0; d < tensor.rank(); ++d) {
-        entry.dims[d] = tensor.dim(d);
+        dims[d] = tensor.dim(d);
     }
-
-    size_t const data_bytes = tensor.size() * sizeof(T);
-    entry.data_offset       = align_up(_next_data_offset, ETN_DATA_ALIGNMENT);
-    entry.data_size         = data_bytes;
-    entry.owning_rank       = ETN_ALL_RANKS;
-
-    write_elements<T>(entry.data_offset, tensor, tensor.rank());
-    _next_data_offset = entry.data_offset + data_bytes;
-
-    add_entry(entry);
+    auto const &entry = place_entry("TensorFile::write", name, dtype_for<T>(), dims, ETN_ALL_RANKS);
+    write_box<T>(entry, tensor, tensor.rank(), detail::whole_box(entry));
 }
 
 template <typename T, typename Alloc>

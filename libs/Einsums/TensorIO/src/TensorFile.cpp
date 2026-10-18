@@ -13,7 +13,11 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <set>
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "PosixFileCompat.hpp"
 
@@ -64,6 +68,17 @@ void check_writable_rank(std::string_view path, std::string_view operation, std:
     if (rank > ETN_MAX_RANK) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: '{}' in '{}' has rank {}, and an .etn entry holds at most {} extents",
                                 operation, name, path, rank, ETN_MAX_RANK);
+    }
+}
+
+void check_entry_name(std::string_view path, std::string_view operation, std::string_view name) {
+    if (name.empty()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: an entry of '{}' needs a name", operation, path);
+    }
+    if (name.size() >= ETN_MAX_NAME || name.find('\0') != std::string_view::npos) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "{}: '{}' cannot name an entry of '{}': an entry holds a name of at most {} bytes, with no NUL byte",
+                                operation, name, path, ETN_MAX_NAME - 1);
     }
 }
 
@@ -385,11 +400,20 @@ void TensorFile::read_metadata() {
         read_at(_header.entry_table_offset, _entries.data(), _header.num_tensors * sizeof(TensorEntry));
     }
 
-    // Build name index
-    _name_to_index.clear();
-    for (size_t i = 0; i < _entries.size(); i++) {
-        _name_to_index[_entries[i].get_name()] = i;
+    // A writer before entries were replaced in place appended a rewritten entry beside the old
+    // one. Keep only the last record of each name and owning rank, which is the one lookups
+    // already found; the next write of the table drops the rest.
+    std::vector<TensorEntry>                   kept;
+    std::set<std::pair<std::string, uint32_t>> seen;
+    for (auto it = _entries.rbegin(); it != _entries.rend(); ++it) {
+        if (seen.emplace(it->get_name(), it->owning_rank).second) {
+            kept.push_back(*it);
+        }
     }
+    std::ranges::reverse(kept);
+    _entries = std::move(kept);
+
+    index_entries();
 
     // Compute next available data offset (after last data region)
     _next_data_offset = _header.data_offset;
@@ -405,6 +429,47 @@ size_t TensorFile::add_entry(TensorEntry entry) {
     _name_to_index[entry.get_name()] = idx;
     _entries.push_back(entry);
     return idx;
+}
+
+void TensorFile::index_entries() {
+    _name_to_index.clear();
+    for (size_t i = 0; i < _entries.size(); i++) {
+        _name_to_index[_entries[i].get_name()] = i;
+    }
+}
+
+TensorEntry &TensorFile::place_entry(std::string_view operation, std::string_view name, DType dtype, std::vector<size_t> const &dims,
+                                     uint32_t owning_rank) {
+    detail::check_entry_name(_path, operation, name);
+
+    auto const same = std::ranges::find_if(
+        _entries, [&](TensorEntry const &entry) { return entry.get_name() == name && entry.owning_rank == owning_rank; });
+    if (same != _entries.end() && static_cast<DType>(same->dtype) == dtype && same->rank == dims.size() &&
+        std::equal(dims.begin(), dims.end(), same->dims)) {
+        return *same;
+    }
+
+    TensorEntry entry;
+    entry.init();
+    entry.set_name(name);
+    entry.dtype       = static_cast<uint8_t>(dtype);
+    entry.rank        = static_cast<uint8_t>(dims.size());
+    uint64_t elements = 1;
+    for (size_t d = 0; d < dims.size(); ++d) {
+        entry.dims[d] = dims[d];
+        elements *= dims[d];
+    }
+    entry.data_offset = align_up(_next_data_offset, ETN_DATA_ALIGNMENT);
+    entry.data_size   = elements * dtype_size(dtype);
+    entry.owning_rank = owning_rank;
+    _next_data_offset = entry.data_offset + entry.data_size;
+
+    if (same != _entries.end()) {
+        // The old data region is left unused: only the record says where an entry's data is.
+        *same = entry;
+        return *same;
+    }
+    return _entries[add_entry(entry)];
 }
 
 TensorEntry const &TensorFile::find_entry(std::string_view name) const {

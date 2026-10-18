@@ -20,7 +20,10 @@ TensorFile
 
 ``TensorFile`` is the serial entry point: it reads and writes whole tensors,
 or hyperslabs of them, in the ``.etn`` format. A file holds many named
-tensors. New tensors append to the end without rewriting existing data.
+tensors. New tensors append to the end without rewriting existing data, and
+writing a name the file already holds replaces that entry: in place when the
+new tensor has the same extents and element type, so storing a tensor again at
+every iteration does not grow the file.
 
 .. code-block:: cpp
 

@@ -13,11 +13,13 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -960,6 +962,118 @@ TEST_CASE("TensorFile - a tensor above the maximum rank is refused and leaves no
     TensorFile in(tmp.path, TensorFile::Mode::Read);
     CHECK_FALSE(in.contains("A"));
     CHECK_FALSE(in.contains("R"));
+}
+
+// Writing an entry that already existed used to append a second record of the same name and a
+// second data region, leaving the first in place: a program storing its amplitudes each iteration
+// grew the file by one copy per iteration, and read_local, which takes the first record it finds,
+// went on reading the oldest write.
+TEMPLATE_LIST_TEST_CASE("TensorFile - writing an entry again replaces it", "[TensorIO][ReadWrite]", testing::AllScalarTypes) {
+    TempFile const tmp("rewrite.etn");
+    auto const     first  = create_random_tensor<TestType>("first", 4, 3);
+    auto const     second = create_random_tensor<TestType>("second", 4, 3);
+    auto const     other  = create_random_tensor<TestType>("other", 2, 5);
+
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("T", first);
+        out.write("U", first);
+    }
+    auto const size_once = std::filesystem::file_size(tmp.path);
+    {
+        TensorFile rw(tmp.path, TensorFile::Mode::ReadWrite);
+        rw.write("T", second);
+    }
+
+    // The same shape and type: the entry's own region is written again, and the file keeps its size.
+    CHECK(std::filesystem::file_size(tmp.path) == size_once);
+    {
+        TensorFile in(tmp.path, TensorFile::Mode::Read);
+        CHECK(in.tensor_names() == std::vector<std::string>{"T", "U"});
+        auto back = create_zero_tensor<TestType>("back", 4, 3);
+        in.read("T", back);
+        for (size_t i = 0; i < back.size(); ++i) {
+            CHECK(back.data()[i] == second.data()[i]);
+        }
+    }
+
+    // Another shape: the record is replaced, still once.
+    {
+        TensorFile rw(tmp.path, TensorFile::Mode::ReadWrite);
+        rw.write("T", other);
+    }
+    TensorFile in(tmp.path, TensorFile::Mode::Read);
+    CHECK(in.tensor_names() == std::vector<std::string>{"T", "U"});
+    CHECK(in.dims("T") == std::vector<size_t>{2, 5});
+    auto back = create_zero_tensor<TestType>("back", 2, 5);
+    in.read("T", back);
+    for (size_t i = 0; i < back.size(); ++i) {
+        CHECK(back.data()[i] == other.data()[i]);
+    }
+}
+
+TEST_CASE("TensorFile - read_local reads the latest write of an entry", "[TensorIO][ReadWrite]") {
+    TempFile const tmp("rewrite_local.etn");
+    auto const     first  = create_random_tensor<double>("first", 3, 2);
+    auto const     second = create_random_tensor<double>("second", 3, 2);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write_local("L", first, 0, 1);
+        out.write_local("L", second, 0, 1);
+    }
+    TensorFile in(tmp.path, TensorFile::Mode::Read);
+    CHECK(in.num_tensors() == 1);
+    auto back = create_zero_tensor<double>("back", 3, 2);
+    in.read_local("L", back, 0);
+    for (size_t i = 0; i < back.size(); ++i) {
+        CHECK(back.data()[i] == second.data()[i]);
+    }
+}
+
+// A file a writer of an earlier release left with two records of one name opens with the later,
+// which is the one lookups always found, and loses the other at its next write.
+TEST_CASE("TensorFile - a file holding two records of one name keeps the later", "[TensorIO][ReadWrite]") {
+    TempFile const tmp("duplicate.etn");
+    auto const     older = create_random_tensor<double>("older", 3);
+    auto const     newer = create_random_tensor<double>("newer", 3);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("A", older);
+        out.write("B", newer);
+    }
+    std::array<char, ETN_MAX_NAME> name{};
+    name[0] = 'A';
+    patch_entry_field(tmp.path, "B", offsetof(TensorEntry, name), name);
+
+    {
+        TensorFile rw(tmp.path, TensorFile::Mode::ReadWrite);
+        CHECK(rw.tensor_names() == std::vector<std::string>{"A"});
+        auto back = create_zero_tensor<double>("back", 3);
+        rw.read("A", back);
+        for (size_t i = 0; i < back.size(); ++i) {
+            CHECK(back.data()[i] == newer.data()[i]);
+        }
+    }
+    TensorFile in(tmp.path, TensorFile::Mode::Read);
+    CHECK(in.num_tensors() == 1);
+}
+
+// A name longer than an entry holds used to be cut short when written, so the entry could not be
+// found again by the name it was written under.
+TEST_CASE("TensorFile - a name an entry cannot hold is refused", "[TensorIO][Error]") {
+    TempFile const    tmp("long_name.etn");
+    auto const        tensor = create_random_tensor<double>("t", 2);
+    std::string const longest(ETN_MAX_NAME - 1, 'n');
+    std::string const too_long(ETN_MAX_NAME, 'n');
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        CHECK_THROWS_AS(out.write(too_long, tensor), std::invalid_argument);
+        CHECK_THROWS_AS(out.reserve<double>(too_long, {2}), std::invalid_argument);
+        CHECK_THROWS_AS(out.write("", tensor), std::invalid_argument);
+        out.write(longest, tensor);
+    }
+    TensorFile in(tmp.path, TensorFile::Mode::Read);
+    CHECK(in.tensor_names() == std::vector<std::string>{longest});
 }
 
 // ── Stored order ─────────────────────────────────────────────────────────────

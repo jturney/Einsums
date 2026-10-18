@@ -266,12 +266,16 @@ namespace detail {
 ///        destination takes the stored rank.
 /// @throws std::invalid_argument if the stored dtype or rank differs from the requested one.
 /// @throws std::runtime_error if the entry's rank, dtype, or data size is inconsistent with its dims.
+EINSUMS_EXPORT void check_entry_type(std::string_view path, std::string_view operation, TensorEntry const &entry, DType want,
+                                     std::optional<size_t> want_rank);
+
 /// Refuse a tensor of rank above @ref ETN_MAX_RANK before an entry is filled from it: the entry
 /// stores that many extents, and a further one would be written over the fields after them.
 EINSUMS_EXPORT void check_writable_rank(std::string_view path, std::string_view operation, std::string_view name, size_t rank);
 
-EINSUMS_EXPORT void check_entry_type(std::string_view path, std::string_view operation, TensorEntry const &entry, DType want,
-                                     std::optional<size_t> want_rank);
+/// Refuse a name an entry cannot hold: an empty one, or one longer than @ref ETN_MAX_NAME less its
+/// terminator, which the entry would cut short so that a later lookup by the full name misses.
+EINSUMS_EXPORT void check_entry_name(std::string_view path, std::string_view operation, std::string_view name);
 
 /// Check that @p ranges names a hyperslab inside the stored entry: one half-open range per stored
 /// dimension, each with start <= end <= dim.
