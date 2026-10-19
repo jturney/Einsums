@@ -145,6 +145,36 @@ def _producer_graph(path, dtype, A, B, name="produce"):
 
 
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_a_backing_can_be_given_at_declaration(etn_path, dtype):
+    b = _filled("B", (4, 3), dtype, 0.5)
+    einsums.io.write(etn_path, "B", b)
+    A = _filled("A", (5, 4), dtype, 0.25)
+
+    g = cg.Graph("declared_backings")
+    B = g.declare_tensor("B", [4, 3], dtype=dtype, backing=einsums.io.etn(etn_path, "B"))
+    T = g.declare_tensor("T", [5, 3], dtype=dtype, backing=einsums.io.etn(etn_path, "T", write=True))
+    assert not g.tensor_backing(B).write
+    assert g.tensor_backing(T).write
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", T, A, B)
+
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    expected = np.asarray(A, copy=False) @ np.asarray(b, copy=False)
+    assert_close(_read_back(etn_path, "T", (5, 3), dtype), expected, dtype=dtype)
+
+
+def test_a_backing_refused_at_declaration_declares_nothing(etn_path):
+    einsums.io.write(etn_path, "B", _filled("B", (4, 3), "float64", 0.5))
+    g = cg.Graph("refused")
+    with pytest.raises(ValueError, match=r"the tensor is \[3,4\] and the storage holds \[4,3\]"):
+        g.declare_tensor("B", [3, 4], dtype="float64", backing=einsums.io.etn(etn_path, "B"))
+    with pytest.raises(ValueError, match="declared as an intermediate"):
+        g.declare_tensor("B", [4, 3], True, dtype="float64", backing=einsums.io.etn(etn_path, "B"))
+    assert g.num_tensors() == 0
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
 def test_a_write_backed_tensor_is_stored_to_its_entry(etn_path, dtype):
     A = _filled("A", (5, 4), dtype, 0.25)
     B = _filled("B", (4, 3), dtype, 0.5)

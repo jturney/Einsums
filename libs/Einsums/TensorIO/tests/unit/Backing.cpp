@@ -257,9 +257,43 @@ TEST_CASE("annotate_backing refuses a tensor it could not fill correctly", "[Ten
         graph.annotate_backing(b, backing);
         refused(b, "already backed by tensor_io.etn");
     }
+    SECTION("a refused backing at declaration leaves nothing declared") {
+        CHECK_THROWS_WITH(graph.declare_runtime_tensor<double>("B", {3, 4}, false, backing),
+                          Catch::Matchers::ContainsSubstring("the tensor is [3,4] and the storage holds [4,3]"));
+        CHECK_THROWS_WITH(graph.declare_runtime_tensor<double>("B", {4, 3}, /*intermediate=*/true, backing),
+                          Catch::Matchers::ContainsSubstring("declared as an intermediate"));
+        CHECK(graph.num_tensors() == 0);
+    }
     SECTION("a missing entry or file is refused when the backing is built") {
         CHECK_THROWS_WITH(tensor_io::etn_backing(tmp.path, "nope"), Catch::Matchers::ContainsSubstring("'nope' not found"));
         CHECK_THROWS(tensor_io::etn_backing(tmp.path + ".missing", "B"));
+    }
+}
+
+TEST_CASE("A backing given at declaration is the same as one annotated after", "[TensorIO][Backing]") {
+    TempFile const tmp("declared.etn");
+    auto const     stored = filled<double>("B", {4, 3}, 0.5);
+    write_entry(tmp.path, "B", stored);
+
+    cg::Graph   graph("declared");
+    auto const &b = graph.declare_runtime_tensor<double>("B", {4, 3}, false, tensor_io::etn_backing(tmp.path, "B"));
+    REQUIRE(graph.tensor_backing(b).has_value());
+    CHECK(graph.tensor_backing(b)->describe() == "tensor_io.etn (entry=B, path=" + tmp.path + ")");
+
+    auto c = RuntimeTensor<double>("C", std::vector<size_t>{3});
+    auto v = filled<double>("v", {4}, 1.0);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("j <- k ; k,j", &c, v, b);
+    }
+    materialize(graph);
+    graph.execute();
+    for (size_t j = 0; j < 3; ++j) {
+        double expected = 0.0;
+        for (size_t k = 0; k < 4; ++k) {
+            expected += v(k) * stored(k, j);
+        }
+        CHECK(c(j) == expected);
     }
 }
 

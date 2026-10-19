@@ -283,6 +283,9 @@ def annotate(tensor, spaces=None, tag=None, backing=None, graph=None):
         B = g.declare_tensor("B_vv", [naux, nvir, nvir], dtype="float64")
         cg.annotate(B, tag="eri", backing=einsums.io.etn("ints.etn", "B_vv"), graph=g)
 
+    A backing alone can be given when the tensor is declared, as
+    ``g.declare_tensor("B_vv", dims, backing=einsums.io.etn("ints.etn", "B_vv"))``.
+
     A backing built with ``write=True`` is the other direction: the graph
     PRODUCES the tensor and the storage receives it. Annotating it creates the
     file if needed and reserves the entry at the tensor's shape and dtype; an

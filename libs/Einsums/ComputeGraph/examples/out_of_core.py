@@ -119,8 +119,7 @@ def program(path, problem, iterations):
     naux, nvir, nocc = fitted.shape[0], cv.shape[1], tau.shape[0]
 
     graph = cg.Graph("ladder_program")
-    bvv = graph.declare_tensor("Bvv", [naux, nvir, nvir])
-    cg.annotate(bvv, backing=einsums.io.etn(path, "Bvv", write=True), graph=graph)
+    bvv = graph.declare_tensor("Bvv", [naux, nvir, nvir], backing=einsums.io.etn(path, "Bvv", write=True))
     P = _tensor("P", fitted)
     C = _tensor("Cv", cv)
     T = _tensor("tau", tau)
@@ -142,8 +141,7 @@ def later_run(path, problem):
     naux = problem["fitted"].shape[0]
 
     graph = cg.Graph("ladder")
-    bvv = graph.declare_tensor("Bvv", [naux, nvir, nvir])
-    cg.annotate(bvv, backing=einsums.io.etn(path, "Bvv"), graph=graph)
+    bvv = graph.declare_tensor("Bvv", [naux, nvir, nvir], backing=einsums.io.etn(path, "Bvv"))
     T = _tensor("tau", tau)
     r2 = einsums.create_zero_tensor("r2", [nocc, nocc, nvir, nvir])
     with cg.capture(graph):

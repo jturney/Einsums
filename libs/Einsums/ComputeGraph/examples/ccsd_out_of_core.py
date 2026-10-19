@@ -126,14 +126,12 @@ def transform(ints_path, amps_path, three_index, d2):
     blocks = {}
     for name in BLOCKS:
         extents = [three_index[name[i] + name[i]].shape[1] for i in range(4)]
-        blocks[name] = graph.declare_tensor(name, extents)
         # Left to itself, the transform stores each entry in the order that suits its own writes.
         # The iterations read every block many times over, in slabs of its last axis, so the
         # entries are stored in the declared order, in which such a slab is one run of the file.
         backing = einsums.io.etn(ints_path, name, write=True, order=[0, 1, 2, 3])
-        cg.annotate(blocks[name], backing=backing, graph=graph)
-    t2 = graph.declare_tensor("t2", list(d2.shape))
-    cg.annotate(t2, backing=einsums.io.etn(amps_path, "t2", write=True), graph=graph)
+        blocks[name] = graph.declare_tensor(name, extents, backing=backing)
+    t2 = graph.declare_tensor("t2", list(d2.shape), backing=einsums.io.etn(amps_path, "t2", write=True))
     with cg.capture(graph):
         for name, block in blocks.items():
             p, q, r, s = name
@@ -154,12 +152,10 @@ def iteration(ints_path, amps_path, t1, energy, d1, d2):
     graph = cg.Graph("ccsd_iteration")
     G = {}
     for name in BLOCKS:
-        G[name] = graph.declare_tensor(name, [nocc if c == "o" else nvir for c in name])
-        cg.annotate(G[name], backing=einsums.io.etn(ints_path, name), graph=graph)
-    t2 = graph.declare_tensor("t2", list(d2.shape))
-    cg.annotate(t2, backing=einsums.io.etn(amps_path, "t2"), graph=graph)
-    r2 = graph.declare_tensor("t2_new", list(d2.shape))
-    cg.annotate(r2, backing=einsums.io.etn(amps_path, "t2_next", write=True), graph=graph)
+        G[name] = graph.declare_tensor(name, [nocc if c == "o" else nvir for c in name],
+                                       backing=einsums.io.etn(ints_path, name))
+    t2 = graph.declare_tensor("t2", list(d2.shape), backing=einsums.io.etn(amps_path, "t2"))
+    r2 = graph.declare_tensor("t2_new", list(d2.shape), backing=einsums.io.etn(amps_path, "t2_next", write=True))
     D1, D2 = _tensor("D1", d1), _tensor("D2", d2)
 
     shapes = {"Tau": "oovv", "Taut": "oovv", "Fae": "vv", "Fmi": "oo", "Fme": "ov", "Wmnij": "oooo", "Wmbej": "ovvo",

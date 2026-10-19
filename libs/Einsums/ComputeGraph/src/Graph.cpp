@@ -349,10 +349,12 @@ ProvenanceTag const &Graph::tensor_tag(TensorId id) const {
 }
 
 void Graph::annotate_backing(TensorId id, TensorBacking backing) {
-    auto &handle = tensor(id);
+    attach_backing(tensor(id), std::move(backing));
+}
 
+void Graph::attach_backing(TensorHandle &handle, TensorBacking backing) {
     auto const refuse = [&](std::string const &why) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': annotate_backing tensor '{}' with {}: {}", _name, handle.name,
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': backing tensor '{}' with {}: {}", _name, handle.name,
                                 backing.describe(), why);
     };
     if (backing.write ? !backing.prepare : !backing.read_slab) {

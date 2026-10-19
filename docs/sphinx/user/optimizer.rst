@@ -607,12 +607,15 @@ Tiling slices the intermediates a program builds. A tensor the program reads in
 full at every use, the virtual-virtual block of the fitted integrals in a
 DF-CCSD ladder for instance, is not an intermediate, and no slicing of the
 program makes it smaller. A **backing** says where such a tensor lives instead
-of memory: an entry of an ``.etn`` file, declared on the graph the way a tag is.
+of memory: an entry of an ``.etn`` file, given when the tensor is declared on
+the graph.
 
 .. code-block:: python
 
-    bvv = g.declare_tensor("Bvv", [naux, nvir, nvir])
-    cg.annotate(bvv, backing=einsums.io.etn("ints.etn", "Bvv"), graph=g)
+    bvv = g.declare_tensor("Bvv", [naux, nvir, nvir], backing=einsums.io.etn("ints.etn", "Bvv"))
+
+``cg.annotate(bvv, backing=..., graph=g)`` attaches the same backing to a tensor
+already declared.
 
 A tensor backed for reading is filled from its entry at every replay, so a file
 rewritten between replays is picked up by the next one. A tensor declared by
@@ -625,12 +628,12 @@ tensor, and the entry receives it.
 
 .. code-block:: python
 
-    cg.annotate(bvv, backing=einsums.io.etn("ints.etn", "Bvv", write=True), graph=g)
+    bvv = g.declare_tensor("Bvv", [naux, nvir, nvir], backing=einsums.io.etn("ints.etn", "Bvv", write=True))
 
-Annotating creates the file when it does not exist and reserves the entry at
+Declaring it creates the file when it does not exist and reserves the entry at
 the tensor's shape and type, leaving the file's other entries alone. An entry
 of the same shape and type is reused; an entry of any other is refused at the
-annotation rather than at the end of a long replay. A write-backed tensor that
+declaration rather than at the end of a long replay. A write-backed tensor that
 nothing writes is the other error ``verify()`` names.
 
 What a backing changes is where the tensor lives; when it is held whole is the
