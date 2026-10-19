@@ -208,9 +208,26 @@ compute_graph::TensorBacking update_backing(std::string const &path, std::string
             }
             file.write_slab(next, source, ranges);
         };
-        prepared.publish = [path, entry, next]() {
+        // Every update backing of one file publishes in one call, as one commit of the file: a crash
+        // leaves all of the graph's entries at the values the replay started from, or all at the new.
+        prepared.publish_scope = fmt::format("{}:{}", etn_backing_kind, path);
+        prepared.publish       = [path](std::vector<compute_graph::TensorBacking const *> const &group) {
+            std::vector<std::pair<std::string, std::string>> moves;
+            moves.reserve(group.size());
+            for (compute_graph::TensorBacking const *member : group) {
+                std::string member_entry;
+                std::string member_next;
+                for (auto const &[key, value] : member->location) {
+                    if (key == "entry") {
+                        member_entry = value;
+                    } else if (key == "next") {
+                        member_next = value;
+                    }
+                }
+                moves.emplace_back(std::move(member_next), std::move(member_entry));
+            }
             TensorFile file(path, TensorFile::Mode::ReadWrite);
-            file.replace(next, entry);
+            file.replace(moves);
         };
         return prepared;
     };

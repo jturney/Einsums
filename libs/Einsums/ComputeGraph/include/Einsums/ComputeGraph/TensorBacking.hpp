@@ -62,7 +62,8 @@ using SlabWriter = std::function<void(void const *source, std::vector<std::pair<
  * on, through @ref prepare, since the storage may not exist yet to describe it. An UPDATE backing
  * is a write backing whose storage also holds the value each replay starts from: the graph reads
  * the tensor, writes its next value, and the storage is switched to that value at the end of the
- * replay (@ref update, @ref publish).
+ * replay (@ref update, @ref publish), together with every other update backing of the graph that
+ * shares its @ref publish_scope.
  *
  * Built by the module that knows the storage, as ``tensor_io::etn_backing`` builds one for a
  * ``.etn`` entry, and handed to @ref Graph::annotate_backing.
@@ -94,9 +95,17 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") TensorBacking {
     APIARY_EXPOSE APIARY_READONLY bool update{false};
 
     /// Makes what @ref write_slab wrote the value @ref read_slab reads, in one step that survives a
-    /// crash. Run by the graph once per replay, after every access of the storage. Set on an
+    /// crash, for every backing in @p group at once: the update backings of one graph that share
+    /// this one's @ref publish_scope, this one among them, or this one alone when it has none. Run
+    /// by the graph once per replay, after every access of every storage the graph names. Set on an
     /// update backing only.
-    std::function<void()> publish;
+    std::function<void(std::vector<TensorBacking const *> const &group)> publish;
+
+    /// Which update backings publish together: those of one graph with the same non-empty scope
+    /// are published by one call, so a crash leaves all of them at the values the replay started
+    /// from or all at the values it wrote. A kind sets it to what one atomic step can cover, as
+    /// ``tensor_io.etn`` sets the file's path. Empty: published alone.
+    APIARY_EXPOSE APIARY_READONLY std::string publish_scope;
 
     /// Reads a slab of the stored tensor; see @ref SlabReader.
     SlabReader read_slab;

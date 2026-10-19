@@ -889,19 +889,42 @@ void TensorFile::copy(TensorFile const &source, std::string_view source_name, st
 }
 
 void TensorFile::replace(std::string_view source, std::string_view target) {
+    replace(std::vector<std::pair<std::string, std::string>>{{std::string(source), std::string(target)}});
+}
+
+void TensorFile::replace(std::vector<std::pair<std::string, std::string>> const &moves) {
     require_writable("TensorFile::replace");
-    (void)find_entry(source);
-    detail::check_entry_name(_path, "TensorFile::replace", target);
-    if (source == target) {
+    std::vector<std::pair<std::string, std::string>> changes;
+    std::set<std::string>                            named;
+    for (auto const &[source, target] : moves) {
+        (void)find_entry(source);
+        detail::check_entry_name(_path, "TensorFile::replace", target);
+        if (source == target) {
+            continue;
+        }
+        for (std::string const &name : {source, target}) {
+            if (!named.insert(name).second) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                        "TensorFile::replace: '{}': '{}' is named by more than one replacement, whose outcome would then "
+                                        "depend on the order they were made in",
+                                        _path, name);
+            }
+        }
+        changes.emplace_back(source, target);
+    }
+    if (changes.empty()) {
         return;
     }
-    std::string const source_name(source);
-    std::string const target_name(target);
     commit_change([&] {
-        std::erase_if(_entries, [&](TensorEntry const &entry) { return entry.get_name() == target_name; });
+        std::erase_if(_entries, [&](TensorEntry const &entry) {
+            return std::ranges::any_of(changes, [&](auto const &change) { return entry.get_name() == change.second; });
+        });
         for (auto &entry : _entries) {
-            if (entry.get_name() == source_name) {
-                entry.set_name(target_name);
+            for (auto const &[source, target] : changes) {
+                if (entry.get_name() == source) {
+                    entry.set_name(target);
+                    break;
+                }
             }
         }
     });

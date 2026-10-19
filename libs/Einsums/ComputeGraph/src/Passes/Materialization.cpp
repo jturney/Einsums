@@ -13,6 +13,8 @@
 #include <Einsums/Logging.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
+#include <fmt/ranges.h>
+
 #include <algorithm>
 #include <functional>
 #include <map>
@@ -364,33 +366,70 @@ bool Materialization::store_written_backings(Graph &graph) {
 }
 
 bool Materialization::publish_updates(Graph &graph) {
-    // The publish switches the storage to the value this replay wrote, so it waits for every node
-    // that reads or writes the storage: it carries the storage's key, as a write, and comes last.
-    // Re-runnable: a tensor that already has its publish is left alone.
-    std::vector<Node> appended;
+    // The publish switches each storage to the value this replay wrote, so it waits for every node
+    // that reads or writes any storage: it has external effects, which orders it after every named
+    // access, and it comes last. Backings that share a publish scope are switched by one node, in
+    // one step, so a crash cannot leave some of them at the old values and some at the new.
+    // Re-runnable: a group that already has its publish is left alone.
+    struct Group {
+        std::vector<TensorHandle const *> handles;
+    };
+    std::vector<Group>                              groups;
+    std::map<std::string, std::size_t, std::less<>> by_scope;
     for (auto const &[tid, handle] : graph.tensors_map()) {
         if (!handle.backing || !handle.backing->update || !handle.backing->publish || handle.tensor_ptr == nullptr) {
             continue;
         }
-        std::string const label = fmt::format("publish_backing({})", handle.name);
+        std::string const &scope = handle.backing->publish_scope;
+        if (scope.empty()) {
+            groups.push_back(Group{.handles = {&handle}});
+        } else if (auto const [at, added] = by_scope.try_emplace(scope, groups.size()); added) {
+            groups.push_back(Group{.handles = {&handle}});
+        } else {
+            groups[at->second].handles.push_back(&handle);
+        }
+    }
+
+    std::vector<Node> appended;
+    for (auto &group : groups) {
+        // Named in a fixed order, so the label is the same whatever order the tensors map holds.
+        std::ranges::sort(group.handles, {}, [](TensorHandle const *handle) { return handle->name; });
+        std::vector<std::string> names;
+        for (TensorHandle const *handle : group.handles) {
+            names.push_back(handle->name);
+        }
+        std::string const label = fmt::format("publish_backing({})", fmt::join(names, ", "));
         if (std::ranges::any_of(graph.nodes(), [&](Node const &node) { return node.kind == OpKind::DiskWrite && node.label == label; })) {
             continue;
         }
+        std::vector<std::shared_ptr<TensorBacking const>> backings;
+        for (TensorHandle const *handle : group.handles) {
+            backings.push_back(handle->backing);
+        }
         Node node;
-        node.kind    = OpKind::DiskWrite;
-        node.label   = label;
-        node.op_data = compute_graph::detail::backing_io(*handle.backing, tid, 0);
-        node.execute = [backing = handle.backing]() { backing->publish(); };
+        node.kind  = OpKind::DiskWrite;
+        node.label = label;
+        node.op_data =
+            compute_graph::detail::backing_io(*backings.front(), graph.find_tensor_id_by_ptr(group.handles.front()->tensor_ptr), 0);
+        node.effects = NodeEffects{.deterministic = true, .external_effects = true};
+        node.execute = [backings = std::move(backings)]() {
+            std::vector<TensorBacking const *> members;
+            members.reserve(backings.size());
+            for (auto const &backing : backings) {
+                members.push_back(backing.get());
+            }
+            members.front()->publish(members);
+        };
         appended.push_back(std::move(node));
-        ++_num_published;
-        report(2, fmt::format("publish update-backed tensor '{}' to {} at the end of the replay", handle.name, handle.backing->describe()));
+        _num_published += group.handles.size();
+        report(2, fmt::format("publish update-backed tensor(s) {} at the end of the replay, in one step", fmt::join(names, ", ")));
     }
     if (appended.empty()) {
         return false;
     }
-    std::vector<std::pair<std::size_t, std::vector<Node>>> groups;
-    groups.emplace_back(graph.nodes().size(), std::move(appended));
-    graph.insert_node_groups(std::move(groups));
+    std::vector<std::pair<std::size_t, std::vector<Node>>> inserted;
+    inserted.emplace_back(graph.nodes().size(), std::move(appended));
+    graph.insert_node_groups(std::move(inserted));
     return true;
 }
 

@@ -31,11 +31,10 @@ The program has three parts.
   then leaves ``t2`` holding the previous iteration's amplitudes. The graph is
   captured once and replayed until the energy settles.
 
-T1 is updated the same way, in memory, and stored next to T2.
-``einsums.io.write`` captured into a graph records a node that writes the
-tensor when the graph replays, so every iteration stores T1 beside the T2 it
-is about to publish. The file holds one iteration's amplitudes in ``t1`` and
-``t2`` whichever iteration the program stopped after, for a later run to
+T1 lives in the same file through an update backing of its own. The two
+update backings of one file are published together, in one commit, so the
+file holds one iteration's amplitudes in ``t1`` and ``t2`` whichever
+iteration the program stopped after, or was killed in, for a later run to
 start from.
 
 The default pipeline decides what to hold whole. A backed tensor larger than
@@ -140,8 +139,8 @@ def transform(ints_path, amps_path, three_index, d2):
     return graph
 
 
-def iteration(ints_path, amps_path, t1, energy, d1, d2):
-    """One CCSD iteration: T2 read from entry ``t2`` and its new value left there, T1 updated in memory and stored.
+def iteration(ints_path, amps_path, energy, d1, d2):
+    """One CCSD iteration: T1 and T2 read from their entries and their new values left there, together.
 
     The equations are the closed-shell ones of Crawford's ccenergy, with the
     diagonal Fock moved into the denominators: Fae and Fmi hold only the
@@ -152,7 +151,8 @@ def iteration(ints_path, amps_path, t1, energy, d1, d2):
     ints, amps = einsums.io.EtnFile(ints_path), einsums.io.EtnFile(amps_path)
     # Each entry says how large it is and what it holds, so the inputs are declared from the file alone.
     G = {name: graph.declare_tensor(name, backing=ints.entry(name)) for name in BLOCKS}
-    # Read at the start of each replay, written once by the update, and published when the replay ends.
+    # Read at the start of each replay, written once by the update, and published together when the replay ends.
+    t1 = graph.declare_tensor("t1", backing=amps.entry("t1", update=True))
     t2 = graph.declare_tensor("t2", backing=amps.entry("t2", update=True))
     r2 = graph.declare_tensor("r2", list(d2.shape), intermediate=True)
     D1, D2 = _tensor("D1", d1), _tensor("D2", d2)
@@ -253,10 +253,9 @@ def iteration(ints_path, amps_path, t1, energy, d1, d2):
         symmetrized("ijab <- ie ; abej", t1, G["vvvo"], 1.0)
         symmetrized("ijab <- ma ; mbij", t1, G["ovoo"], 1.0, -1.0)
 
-        # The new amplitudes, and T1 stored beside the T2 this iteration publishes.
+        # The new amplitudes.
         la.direct_division(1.0, r2, D2, 0.0, t2)
         la.direct_division(1.0, r1, D1, 0.0, t1)
-        einsums.io.write(amps_path, "t1", t1)
 
         # E = sum_ijab tau_ijab (2 <ij|ab> - <ij|ba>), from the new amplitudes.
         ein("i,j,a,b <- i,a ; j,b", Tau, t1, t1)
@@ -334,11 +333,12 @@ def main():
         graph.apply(manager)
         print_explanation(manager)
         graph.execute()
+        # The guess for T1 is zero.
+        einsums.io.write(amps_path, "t1", einsums.create_zero_tensor("t1", list(d1.shape)))
 
-        t1 = einsums.create_zero_tensor("t1", list(d1.shape))
         energy = einsums.create_zero_tensor("energy", [1])
-        graph = iteration(ints_path, amps_path, t1, energy, d1, d2)
-        print("\nOne iteration, T2 read from 't2' and its new value published there")
+        graph = iteration(ints_path, amps_path, energy, d1, d2)
+        print("\nOne iteration, T1 and T2 read from 't1' and 't2' and their new values published there together")
         manager = cg.default_pass_manager()
         graph.apply(manager)
         print_explanation(manager)

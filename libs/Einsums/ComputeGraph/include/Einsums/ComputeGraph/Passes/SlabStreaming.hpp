@@ -59,7 +59,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *
  * Declined, with the reason in the skip tally, and left to the whole load: a backed tensor whose
  * last-axis letter is repeated in any operand or the destination; one read through a view other
- * than a full one; a contraction both of whose operands are backed; one with permutation
+ * than a full one; a contraction both of whose operands are read from storage (a backed operand
+ * held in memory anyway, one that fits or that the graph wrote, is an ordinary operand); one with permutation
  * operators; any node but a contraction; operands that are not rank-erased tensors.
  *
  * The slab reads run in order with the contraction: a block's read finishes before its

@@ -183,6 +183,34 @@ TEST_CASE("Replacing an entry gives its name another entry's elements and frees 
     CHECK_THROWS_AS(TensorFile(tmp.path, TensorFile::Mode::Read).replace("other", "x"), std::runtime_error);
 }
 
+TEST_CASE("Several replacements are made together, and refused when they overlap", "[TensorIO][Entries]") {
+    TempFile const tmp("replace_all.etn");
+    auto const     t1      = filled<double>("t1", {2, 3}, 1.0);
+    auto const     t2      = filled<double>("t2", {3, 4}, 10.0);
+    auto const     t1_next = filled<double>("t1.next", {2, 3}, 100.0);
+    auto const     t2_next = filled<double>("t2.next", {3, 4}, 1000.0);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        for (auto const *tensor : {&t1, &t2, &t1_next, &t2_next}) {
+            out.write(tensor->name(), *tensor);
+        }
+    }
+
+    TensorFile file(tmp.path, TensorFile::Mode::ReadWrite);
+    // Overlapping pairs are refused before anything changes.
+    CHECK_THROWS_AS(file.replace({{"t1.next", "t1"}, {"t2.next", "t1"}}), std::invalid_argument);
+    CHECK_THROWS_AS(file.replace({{"t1.next", "t1"}, {"t1", "t2"}}), std::invalid_argument);
+    CHECK_THROWS_AS(file.replace({{"t1.next", "t1"}, {"gone", "t2"}}), std::runtime_error);
+    CHECK(file.tensor_names().size() == 4);
+
+    file.replace({{"t1.next", "t1"}, {"t2.next", "t2"}});
+    auto names = file.tensor_names();
+    std::ranges::sort(names);
+    CHECK(names == std::vector<std::string>{"t1", "t2"});
+    CHECK(same_elements(read_entry<double>(tmp.path, "t1"), t1_next));
+    CHECK(same_elements(read_entry<double>(tmp.path, "t2"), t2_next));
+}
+
 // ── Copy ─────────────────────────────────────────────────────────────────────
 
 TEMPLATE_LIST_TEST_CASE("A copy moves every element through a buffer smaller than the entry", "[TensorIO][Entries]",

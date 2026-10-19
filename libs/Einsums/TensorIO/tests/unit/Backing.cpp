@@ -987,3 +987,85 @@ TEST_CASE("An update backing refuses what it cannot honour", "[TensorIO][Backing
     REQUIRE(problems.size() == 1);
     CHECK_THAT(problems[0], Catch::Matchers::ContainsSubstring("no node writes it"));
 }
+
+TEST_CASE("The update backings of one file are published by one node", "[TensorIO][Backing]") {
+    TempFile const tmp("update_two.etn");
+    auto const     t0 = filled<double>("t", {4, 3}, 0.5);
+    auto const     u0 = filled<double>("u", {2, 2}, 0.25);
+    auto const     a  = filled<double>("A", {4, 4}, 0.125);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("t", t0);
+        out.write("u", u0);
+    }
+
+    tensor_io::EtnFile const file(tmp.path);
+    cg::Graph                graph("update_two");
+    auto                    &t = graph.declare_runtime_tensor<double>("t", file.entry("t", false, {}, true));
+    auto                    &u = graph.declare_runtime_tensor<double>("u", file.entry("u", false, {}, true));
+    auto                    &r = graph.declare_zero_runtime_tensor<double>("r", {4, 3});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &r, 1.0, a, t);
+        cg::permute("i,j <- i,j", 0.0, &t, 0.5, r);
+        cg::permute("i,j <- i,j", 0.0, &u, 2.0, u);
+    }
+    CHECK(graph.tensor_backing(t)->publish_scope == graph.tensor_backing(u)->publish_scope);
+    auto const pass = materialize(graph);
+    CHECK(pass->num_published() == 2);
+    auto const publishes =
+        std::ranges::count_if(graph.nodes(), [](cg::Node const &node) { return node.label.starts_with("publish_backing("); });
+    CHECK(publishes == 1);
+    CHECK(graph.nodes().back().label == "publish_backing(t, u)");
+
+    RuntimeTensor<double> expected_t = t0;
+    RuntimeTensor<double> expected_u = u0;
+    for (int replay = 0; replay < 2; ++replay) {
+        graph.execute();
+        expected_t = step_of(a, expected_t);
+        RuntimeTensor<double> doubled("u", std::vector<size_t>{2, 2});
+        cg::permute("i,j <- i,j", 0.0, &doubled, 2.0, expected_u);
+        expected_u = doubled;
+        CHECK(bytes_of(read_entry<double>(tmp.path, "t", {4, 3})) == bytes_of(expected_t));
+        CHECK(bytes_of(read_entry<double>(tmp.path, "u", {2, 2})) == bytes_of(expected_u));
+        CHECK(entries_of(tmp.path) == std::vector<std::string>{"t", "u"});
+    }
+}
+
+// Two backed operands used to make SlabStreaming load both whole, even when one fits its share and is
+// loaded whole anyway: a small backed tensor beside a large one cost the large one's streaming.
+TEST_CASE("A contraction streams its large backed operand beside a small backed one held in memory", "[TensorIO][Backing]") {
+    TempFile const tmp("two_backed.etn");
+    auto const     small = filled<double>("S", {4, 4}, 0.25);
+    auto const     large = filled<double>("L", {4, 16}, 0.5);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("S", small);
+        out.write("L", large);
+    }
+
+    tensor_io::EtnFile const file(tmp.path);
+    cg::Graph                graph("two_backed");
+    auto const              &s = graph.declare_runtime_tensor<double>("S", file.entry("S"));
+    auto const              &l = graph.declare_runtime_tensor<double>("L", file.entry("L"));
+    auto                     c = RuntimeTensor<double>("C", std::vector<size_t>{4, 16});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &c, 1.0, s, l);
+    }
+
+    auto stream = std::make_shared<cg::passes::SlabStreaming>();
+    stream->set_slab_budget(static_cast<std::int64_t>(4 * 4 * sizeof(double)));
+    cg::PassManager manager;
+    manager.add(stream);
+    manager.add(std::make_shared<cg::passes::Materialization>());
+    graph.apply(manager);
+    CHECK(stream->num_streamed() == 1);
+    CHECK(stream->streamed() == std::vector<std::string>{"L"});
+    graph.execute();
+
+    auto expected = RuntimeTensor<double>("E", std::vector<size_t>{4, 16});
+    expected.zero();
+    cg::einsum("i,j <- i,k ; k,j", 0.0, &expected, 1.0, small, large);
+    CHECK(bytes_of(c) == bytes_of(expected));
+}

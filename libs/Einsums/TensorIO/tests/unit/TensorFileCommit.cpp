@@ -188,6 +188,23 @@ std::vector<Operation> operations() {
                  graph.execute();
              },
          .watched = {"cur"}},
+        // Two entries the graph updates, watched together: they are published in one commit, so a
+        // crash leaves both at the values the replay started from or both at the new ones.
+        {.name = "replay a graph that updates two entries of one file",
+         .run =
+             [](std::string const &path) {
+                 cg::Graph graph("update_two");
+                 auto     &cur = graph.declare_runtime_tensor<double>("cur", etn_backing(path, "cur", false, {}, true));
+                 auto     &a   = graph.declare_runtime_tensor<double>("a", etn_backing(path, "a", false, {}, true));
+                 {
+                     cg::CaptureGuard const guard(graph);
+                     cg::permute("i,j <- i,j", 0.0, &cur, 2.0, cur);
+                     cg::permute("i,j <- i,j", 0.0, &a, 3.0, a);
+                 }
+                 graph.optimize();
+                 graph.execute();
+             },
+         .watched = {"cur", "a"}},
     };
 }
 

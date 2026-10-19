@@ -668,7 +668,8 @@ the replay ends. The amplitudes of an iterative method are the case it is for.
         la.direct_division(1.0, r2, D, 0.0, t2)    # the new t2
 
 The new value is written beside the old one and replaces it in one commit of
-the file at the end of the replay, so a crash leaves the previous value. A read
+the file at the end of the replay, so a crash leaves the previous value. Every
+update backing a graph has on one file is published in that same commit. A read
 before the first write of the tensor sees the value the replay started from and
 may be streamed from the file; a read after it sees the new value, in memory.
 

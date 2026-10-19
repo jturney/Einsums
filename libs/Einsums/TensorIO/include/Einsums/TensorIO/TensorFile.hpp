@@ -213,6 +213,21 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     APIARY_EXPOSE void replace(std::string_view source, std::string_view target);
 
     /**
+     * @brief Make each entry @c source the entry @c target, for every pair of @p moves at once.
+     *
+     * Every pair is applied as by the overload for one pair, and all of them
+     * in one commit: a crash leaves either every entry as it was or every replacement made. This is
+     * the step that makes the values written beside several current ones current together.
+     * @param moves The (source, target) pairs. A pair whose source is its target does nothing.
+     * @throws std::runtime_error when a source is missing, or the file is open for reading.
+     * @throws std::invalid_argument when no entry can hold a target's name, or a name is the source
+     *         or the target of more than one pair, or both a source and a target, which would make
+     *         the outcome depend on the order the pairs were applied in.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE APIARY_RENAME("replace_all") void replace(std::vector<std::pair<std::string, std::string>> const &moves);
+
+    /**
      * @brief Copy the entry @p source_name of @p source into the entry @p name of this file.
      *
      * The entry @p name is created with the source's extents, element type and stored order when

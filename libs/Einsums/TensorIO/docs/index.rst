@@ -134,7 +134,9 @@ backing. Each replay starts with the tensor holding what the entry holds. The
 graph reads and writes it as any tensor, its writes go to the scratch entry
 ``<entry>.next``, and when the replay ends that entry replaces the entry in one
 commit (``TensorFile::replace``). A crash before then leaves the entry holding
-the previous replay's value.
+the previous replay's value. The update backings a graph has on one file are
+published by one commit together, so the amplitudes of an iteration, T1 and T2
+for instance, are either all the previous replay's or all the new ones.
 
 .. code-block:: cpp
 

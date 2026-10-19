@@ -607,25 +607,32 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                 }
                 return bytes;
             };
-            // Whether a backed operand is read from its storage here at all, noting why not when not.
-            auto const readable = [&](BackedOperand const &use) {
+            // Whether a backed operand is read from its storage here at all, noting why not when not
+            // unless @p quiet. One that is not is held in memory here, as any operand is.
+            auto const readable = [&](BackedOperand const &use, bool quiet = false) {
                 // An update-backed tensor's storage holds the value the replay started from until the
                 // replay ends, so it is read from there exactly by the readers before its first write.
                 if (use.backing->update) {
                     if (use.update_after || i >= first_writer(graph, use.object)) {
-                        note_skip("the update-backed tensor is read after a write of it, so it is read from memory", where);
+                        if (!quiet) {
+                            note_skip("the update-backed tensor is read after a write of it, so it is read from memory", where);
+                        }
                         return false;
                     }
                 } else if (use.backing->write && (use.written_outside || compute_graph::detail::written_in_memory(graph, use.object))) {
                     // A write-backed tensor's storage holds it only once it has been produced there.
                     // Produced in memory anywhere, it is read from memory, and stored after its last writer.
-                    note_skip("the tensor is produced in memory, so its readers read it there and it is stored after its last writer",
-                              where);
+                    if (!quiet) {
+                        note_skip("the tensor is produced in memory, so its readers read it there and it is stored after its last writer",
+                                  where);
+                    }
                     return false;
                 }
                 if (std::size_t const bytes = whole_of(*use.backing); bytes <= cap) {
-                    note_skip("the backed tensor fits its share of the budget, so it is loaded once rather than read per contraction",
-                              fmt::format("{}: '{}' is {} bytes against {}", where, use.name, bytes, cap));
+                    if (!quiet) {
+                        note_skip("the backed tensor fits its share of the budget, so it is loaded once rather than read per contraction",
+                                  fmt::format("{}: '{}' is {} bytes against {}", where, use.name, bytes, cap));
+                    }
                     return false;
                 }
                 return true;
@@ -635,7 +642,11 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
             // inside a loop over Q is. One is rewritten now, and the next round sees it as a buffer
             // and takes the other. Only the pass's own loop over a last axis reads one backed
             // operand at a time.
-            if (in_a && in_b) {
+            // Both operands backed, but one held in memory anyway (it fits, or it was written there):
+            // that one is an ordinary operand, and the other is read from storage on its own below.
+            bool const a_read = in_a && readable(*in_a, true);
+            bool const b_read = in_b && readable(*in_b, true);
+            if (in_a && in_b && a_read && b_read) {
                 bool streamed = false;
                 for (BackedOperand const *box : {&*in_a, &*in_b}) {
                     if (!box->full && box->view_node && readable(*box) &&
@@ -653,7 +664,7 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                 }
                 continue;
             }
-            BackedOperand const &use     = in_a ? *in_a : *in_b;
+            BackedOperand const &use     = in_a && (!in_b || a_read || !b_read) ? *in_a : *in_b;
             auto const          &backing = *use.backing;
             if (!readable(use)) {
                 continue;
