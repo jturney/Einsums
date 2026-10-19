@@ -198,32 +198,28 @@ ArenaPlan plan_arena(Graph &graph, NoteSkip const &note) {
     auto const &nodes   = graph.nodes();
     auto const &tensors = graph.tensors_map();
 
-    // Same conservatism as InplaceOptimization: control flow at this level
-    // references tensors invisibly to plain node lists, and GPU placement
-    // swaps buffers behind the slots.
+    // GPU placement swaps buffers behind the slots, so device work declines the level.
     //
-    // Bodies are safe by construction (read before "optimizing"): a
-    // Loop/Conditional at THIS level bails here, and Materialization +
-    // FreeInsertion hoist every body intermediate's lifecycle into this parent,
-    // so a body is never arena-planned. That keeps the interval test sound: it
-    // uses body-LOCAL positions and is blind to cross-iteration liveness, so a
-    // value written in iteration i and read in i+1 would look dead in between.
-    // The Pass_MemoryPlanning wraparound canary fires if FreeInsertion ever
-    // places an in-body Free; then treat iteration-crossing tensors as
-    // always-live, or refuse to plan inside Loop bodies.
+    // A loop or a branch at this level is one position in it. Materialization and FreeInsertion
+    // bracket every tensor a body uses around the node that holds the body, never inside it, so
+    // each such tensor's [Materialize, Free] interval here contains that position: it is live for
+    // every iteration, and a tensor whose interval does not reach the position is not used in the
+    // body. The interval test is sound at this level as it is on a flat graph. It is not inside a
+    // loop body, where positions are local to one iteration and a value written in one and read in
+    // the next would look dead between them; plan_tree never plans there.
     //
-    // A Setup node is deliberately NOT in that bail, though is_control_flow
-    // counts it. Only the tensors a Setup body touches may live ACROSS replays,
-    // so they alone are excluded below; declining the whole level would cost
-    // the arena on every fitting graph and every guarded antisymmetrizer fold.
-    bool has_setup = false;
+    // A Setup node is not a bail either. Only the tensors a Setup body touches may live ACROSS
+    // replays, so they alone are excluded below; declining the whole level would cost the arena on
+    // every fitting graph and every guarded antisymmetrizer fold.
+    bool has_setup        = false;
+    bool has_control_flow = false;
     for (auto const &node : nodes) {
-        if (node.kind == OpKind::Loop || node.kind == OpKind::Conditional || node.target == Target::GPU ||
-            node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
-            note("graph holds control flow or device work at this level", graph.name());
+        if (node.target == Target::GPU || node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
+            note("graph holds device work at this level", graph.name());
             return plan;
         }
-        has_setup = has_setup || node.kind == OpKind::Setup;
+        has_setup        = has_setup || node.kind == OpKind::Setup;
+        has_control_flow = has_control_flow || node.kind == OpKind::Loop || node.kind == OpKind::Conditional;
     }
 
     // Built only when a Setup is present, since it walks the whole sub-graph
@@ -260,12 +256,27 @@ ArenaPlan plan_arena(Graph &graph, NoteSkip const &note) {
         }
     }
 
-    // Tensors somebody views must keep their own storage.
-    std::unordered_set<TensorId> view_targets;
+    // Tensors somebody views must keep their own storage: here, and in every body below, where a
+    // view of this level's tensor names it through a handle of the body's own.
+    std::unordered_set<TensorId>     view_targets;
+    std::unordered_set<void const *> viewed_below;
     for (auto const &[tid, handle] : tensors) {
         if (handle.aliases != 0) {
             view_targets.insert(handle.aliases);
         }
+    }
+    if (has_control_flow) {
+        graph.for_each_descendant(std::function<void(Graph &)>{[&](Graph &sub) {
+            for (auto const &[tid, handle] : sub.tensors_map()) {
+                if (handle.aliases == 0) {
+                    continue;
+                }
+                if (auto const *parent = sub.find_tensor(sub.buffer_of(handle.aliases));
+                    parent != nullptr && parent->tensor_ptr != nullptr) {
+                    viewed_below.insert(parent->tensor_ptr);
+                }
+            }
+        }});
     }
 
     for (auto const &[tid, br] : bracket) {
@@ -280,6 +291,10 @@ ArenaPlan plan_arena(Graph &graph, NoteSkip const &note) {
         auto const &handle = it->second;
         if (!handle.is_intermediate || handle.aliases != 0 || view_targets.contains(tid) || !handle.materialize_into_fn ||
             !handle.release_fn || handle.total_bytes() == 0) {
+            continue;
+        }
+        // A tensor viewed in a body, or one with no object to compare against the views there.
+        if (has_control_flow && (handle.tensor_ptr == nullptr || viewed_below.contains(handle.tensor_ptr))) {
             continue;
         }
         // A Setup body may hold this buffer across replays. touched_by_subtree
@@ -398,17 +413,32 @@ void apply_arena_plan(Graph &graph, ArenaPlan const &plan) {
                      }());
 }
 
-void plan_tree(Graph &graph, NoteSkip const &note, bool apply, size_t &arena_bytes, size_t &num_planned, size_t &tensor_bytes) {
-    ArenaPlan const plan = plan_arena(graph, note);
-    arena_bytes += plan.arena_bytes;
-    num_planned += plan.tensors.size();
-    for (auto const &t : plan.tensors) {
-        tensor_bytes += t.bytes;
+/// @p repeats: @p graph runs inside a loop, at this depth or above, so a tensor's liveness can cross
+/// from one iteration to the next and the interval test does not hold. Nothing there is planned.
+void plan_tree(Graph &graph, NoteSkip const &note, bool apply, bool repeats, size_t &arena_bytes, size_t &num_planned,
+               size_t &tensor_bytes) {
+    if (repeats) {
+        // Said only where something would have been planned: a body holds no lifecycle node of its
+        // own unless a pass left one there.
+        if (std::ranges::any_of(graph.nodes(), [](Node const &node) { return node.kind == OpKind::Materialize; })) {
+            note("the graph runs inside a loop, where a tensor's liveness crosses iterations", graph.name());
+        }
+    } else {
+        ArenaPlan const plan = plan_arena(graph, note);
+        arena_bytes += plan.arena_bytes;
+        num_planned += plan.tensors.size();
+        for (auto const &t : plan.tensors) {
+            tensor_bytes += t.bytes;
+        }
+        if (apply) {
+            apply_arena_plan(graph, plan);
+        }
     }
-    if (apply) {
-        apply_arena_plan(graph, plan);
+    for (auto &node : graph.nodes()) {
+        bool const loop = node.kind == OpKind::Loop;
+        for_each_child_graph(node,
+                             [&](Graph &sub) { plan_tree(sub, note, apply, repeats || loop, arena_bytes, num_planned, tensor_bytes); });
     }
-    graph.for_each_subgraph([&](Graph &sub) { plan_tree(sub, note, apply, arena_bytes, num_planned, tensor_bytes); });
 }
 
 } // namespace
@@ -434,8 +464,8 @@ bool MemoryPlanning::run(Graph &graph) {
     _device_peak_memory  = acc.device_peak;
 
     plan_tree(
-        graph, [this](std::string_view reason, std::string_view detail) { note_skip(reason, detail); }, _apply_arena, _planned_arena_bytes,
-        _num_planned, _planned_tensor_bytes);
+        graph, [this](std::string_view reason, std::string_view detail) { note_skip(reason, detail); }, _apply_arena, /*repeats=*/false,
+        _planned_arena_bytes, _num_planned, _planned_tensor_bytes);
 
     note(Peak,
          fmt::format("peak host memory {} bytes (of {} total allocated){}", _peak_memory, _total_memory,

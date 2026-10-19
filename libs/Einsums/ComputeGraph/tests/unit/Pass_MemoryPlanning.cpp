@@ -7,6 +7,7 @@
 /// @brief Unit tests for the MemoryPlanning analysis pass.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -474,66 +475,78 @@ TEMPLATE_LIST_TEST_CASE("MemoryPlanning - analysis-only mode plans without apply
 
 // ── Body-resident intermediates: arena status quo (analysis mode) ────────
 
-TEMPLATE_LIST_TEST_CASE("MemoryPlanning - body-resident intermediates are never arena-planned", "[ComputeGraph][Passes][Arena][Loop]",
-                        testing::AllScalarTypes) {
+TEMPLATE_LIST_TEST_CASE("MemoryPlanning - a body intermediate is planned by the graph holding the loop, live across it",
+                        "[ComputeGraph][Passes][Arena][Loop]", testing::AllScalarTypes) {
     using T = TestType;
-    // Status quo (see plan_arena's control-flow bail): a loop body's own
-    // intermediate is never arena-planned from EITHER side. Its whole
-    // lifecycle (Materialize/Initialize/Free) is hoisted to the parent by
-    // Materialization + FreeInsertion, so the body holds no Materialize/Free
-    // bracket to plan; and the parent then carries a Loop node, which makes
-    // parent-level plan_arena bail. Net: num_planned == 0. Both the deferred
-    // (scratch_zero) and eager (create_zero_tensor) body-declared variants.
-    constexpr size_t N   = 96;
-    auto             A   = create_random_tensor<T>("A", N, N);
-    auto             acc = create_zero_tensor<T>("acc", N, N);
+    // A loop body's own intermediate has its whole lifecycle (Materialize, Initialize, Free)
+    // hoisted to the parent by Materialization and FreeInsertion, around the Loop node. The parent
+    // plans it there: its interval contains the loop's position, so it holds its slot for every
+    // iteration. The planner used to decline any level holding a Loop, which left every CC
+    // iteration's intermediates off the arena.
+    constexpr size_t N = 96;
+    auto             A = create_random_tensor<T>("A", N, N);
 
-    SECTION("deferred scratch declared in the body") {
-        cg::Graph g("mp_body_scratch");
+    // acc after the loop, with or without the arena, from the same graph.
+    auto const run = [&](bool deferred, bool arena) {
+        auto      acc = create_zero_tensor<T>("acc", N, N);
+        cg::Graph g(deferred ? "mp_body_scratch" : "mp_body_eager");
         auto     &body = g.add_loop("iter", 2, [](size_t it) { return it < 2; });
         {
             cg::CaptureGuard const guard(body);
-            auto                  &W = body.template scratch_zero<T, 2>("W", N, N); // deferred + intermediate + zero
-            cg::einsum("ik;kj->ij", T{0}, &W, T{1}, A, A);                          // W = A*A, recomputed per iteration
-            cg::einsum("ik;kj->ij", T{1}, &acc, T{1}, W, A);                        // acc += W*A
+            auto &W = deferred ? body.template scratch_zero<T, 2>("W", N, N) : body.template create_zero_tensor<T, 2>("W", N, N);
+            cg::einsum("ik;kj->ij", T{0}, &W, T{1}, A, A);   // W = A*A, recomputed per iteration
+            cg::einsum("ik;kj->ij", T{1}, &acc, T{1}, W, A); // acc += W*A
         }
-
         cg::PassManager pm;
         pm.add<cg::passes::Materialization>();
         pm.add<cg::passes::FreeInsertion>(size_t{0});
         g.apply(pm);
-
-        // Lifecycle hoisted out of the body: no in-body bracket to plan.
+        // Lifecycle hoisted out of the body: no in-body bracket.
         CHECK(count_nodes(body, cg::OpKind::Materialize) == 0);
         CHECK(count_nodes(body, cg::OpKind::Free) == 0);
 
-        cg::passes::MemoryPlanning mp(/*apply_arena=*/false);
-        bool const                 modified = mp.run(g);
-        CHECK_FALSE(modified);
-        CHECK(mp.num_planned() == 0); // body: no bracket; parent: Loop node bails
+        cg::passes::MemoryPlanning mp(arena);
+        mp.run(g);
+        CHECK(mp.num_planned() == 1);
+        g.execute();
+        return acc;
+    };
+    for (bool const deferred : {true, false}) {
+        INFO((deferred ? "deferred scratch" : "eager create_zero_tensor") << " declared in the body");
+        auto const without = run(deferred, false);
+        auto const with    = run(deferred, true);
+        REQUIRE(scaled_error(with, without) < scaled_tol<T>());
     }
+}
 
-    SECTION("eager create_zero_tensor declared in the body") {
-        cg::Graph g("mp_body_eager");
-        auto     &body = g.add_loop("iter", 2, [](size_t it) { return it < 2; });
-        {
-            cg::CaptureGuard const guard(body);
-            auto                  &body_tmp = body.template create_zero_tensor<T, 2>("body_tmp", N, N);
-            cg::einsum("ik;kj->ij", T{0}, &body_tmp, T{1}, A, A);   // body_tmp = A*A
-            cg::einsum("ik;kj->ij", T{1}, &acc, T{1}, body_tmp, A); // acc += body_tmp*A
-        }
+// A tensor viewed in a loop body keeps its own storage, as one viewed at the planned level does:
+// the body names it through a handle of its own, which the level's table does not hold.
+TEMPLATE_LIST_TEST_CASE("MemoryPlanning - a tensor a loop body views keeps its own storage", "[ComputeGraph][Passes][Arena][Loop]",
+                        testing::AllScalarTypes) {
+    using T              = TestType;
+    constexpr size_t N   = 32;
+    auto             A   = create_random_tensor<T>("A", N, N);
+    auto             acc = create_zero_tensor<T>("acc", N / 2, N);
 
-        // FreeInsertion hoists the Free (and a paired Materialize) to the parent.
-        cg::passes::FreeInsertion fi(/*min_bytes=*/0);
-        REQUIRE(fi.run(g));
-        CHECK(count_nodes(body, cg::OpKind::Materialize) == 0);
-        CHECK(count_nodes(body, cg::OpKind::Free) == 0);
-
-        cg::passes::MemoryPlanning mp(/*apply_arena=*/false);
-        bool const                 modified = mp.run(g);
-        CHECK_FALSE(modified);
-        CHECK(mp.num_planned() == 0); // body: no bracket; parent: Loop node bails
+    cg::Graph graph("mp_viewed_in_body");
+    auto     &X = graph.create_tensor<T, 2>("X", N, N);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &X, A, A);
     }
+    auto &body = graph.add_loop("iter", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        auto const            &top = cg::view<T, 2>(X, cg::ViewAxis::range(0, N / 2), cg::ViewAxis::full());
+        cg::einsum("ik;kj->ij", T{1}, &acc, T{1}, top, A);
+    }
+    cg::passes::FreeInsertion fi(/*min_bytes=*/0);
+    REQUIRE(fi.run(graph));
+    REQUIRE(count_nodes(graph, cg::OpKind::Free) == 1);
+
+    cg::passes::MemoryPlanning mp(/*apply_arena=*/false);
+    mp.run(graph);
+    CHECK(mp.num_planned() == 0);
 }
 
 // ── Wraparound canary: prove the in-body bracket is unreachable ───────────
@@ -550,11 +563,11 @@ TEMPLATE_LIST_TEST_CASE("MemoryPlanning - in-body arena bracket is unreachable (
     // the whole lifecycle to the parent.
     //
     // CANARY: a scratch created AND fully consumed inside a single body is the
-    // exact candidate for an in-body bracket. If this ever leaves a Materialize
-    // or Free INSIDE the body (e.g. someone teaches FreeInsertion to place
-    // in-body Frees), this fails - and plan_arena's iteration-wraparound
-    // blindness must be revisited (treat iteration-crossing tensors as
-    // always-live, or refuse to plan inside Loop bodies).
+    // exact candidate for an in-body bracket. plan_tree refuses to plan any graph
+    // that runs inside a loop, so such a bracket would not be mis-planned; it would
+    // be an allocation the arena no longer serves. If this ever leaves a
+    // Materialize or Free INSIDE the body (e.g. someone teaches FreeInsertion to
+    // place in-body Frees), this fails, and the bracket should move back out.
     constexpr size_t n   = 8;
     auto             A   = create_random_tensor<T>("A", n, n);
     auto             acc = create_zero_tensor<T>("acc", n, n);
@@ -754,15 +767,13 @@ TEMPLATE_LIST_TEST_CASE("MemoryPlanning - an intermediate a setup body reads is 
     check();
 }
 
-TEMPLATE_LIST_TEST_CASE("MemoryPlanning - a loop at graph level suppresses the flat-prefix arena", "[ComputeGraph][Passes][Arena][Loop]",
+TEMPLATE_LIST_TEST_CASE("MemoryPlanning - a loop at graph level leaves the flat-prefix arena on", "[ComputeGraph][Passes][Arena][Loop]",
                         testing::AllScalarTypes) {
     using T = TestType;
-    // Known conservatism: X and Y are flat, disjoint-lifetime intermediates
-    // BEFORE a loop - on their own they would share one arena slot. But
-    // plan_arena bails the WHOLE graph level the instant it sees a Loop node
-    // (control flow references tensors invisibly to the flat node list), so the
-    // arena-shareable prefix is left on its own allocations. num_planned == 0
-    // even though FreeInsertion bracketed X and Y. Execution stays correct.
+    // X and Y are flat, disjoint-lifetime intermediates BEFORE a loop, which share one arena slot
+    // whatever follows them. The planner used to decline the whole level the instant it saw a Loop
+    // node, leaving them on their own allocations; the loop is one position of the level, and
+    // neither tensor's interval reaches it.
     constexpr size_t N    = 128;
     auto             A    = create_random_tensor<T>("A", N, N);
     auto             B    = create_random_tensor<T>("B", N, N);
@@ -805,8 +816,8 @@ TEMPLATE_LIST_TEST_CASE("MemoryPlanning - a loop at graph level suppresses the f
         REQUIRE(fi.run(graph));
     }
     auto [mp_mod, mp] = graph.apply<cg::passes::MemoryPlanning>();
-    CHECK_FALSE(mp_mod);          // control-flow bail: nothing applied
-    CHECK(mp.num_planned() == 0); // flat prefix left unplanned despite being shareable
+    CHECK(mp_mod);
+    CHECK(mp.num_planned() == 2);
 
     auto check_against_refs = [&]() {
         REQUIRE(scaled_error(out2, OUT2_ref) < scaled_tol<T>());
