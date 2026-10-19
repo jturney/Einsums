@@ -36,7 +36,7 @@ int einsums_main() {
     using namespace einsums;
 
     // Sized so every half-transformed intermediate (1.28 MB) crosses
-    // FreeInsertion's 1 MiB floor: the deferred scratch then gets the full
+    // FreeInsertion's 64 KiB floor: the deferred scratch then gets the full
     // [Materialize, Free] lifecycle and MemoryPlanning can arena-pack it.
     constexpr size_t nao = 20; // AO basis size
     constexpr size_t nmo = 20; // MO basis size (nmo <= nao)

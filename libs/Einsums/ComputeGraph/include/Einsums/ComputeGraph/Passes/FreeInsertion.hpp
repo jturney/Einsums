@@ -36,7 +36,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @par Example (C++)
  * @code
  * cg::Graph graph("free_insertion");
- * auto     &big = graph.scratch<double, 2>("big", n, n);    // graph-owned intermediate (> 1 MiB)
+ * auto     &big = graph.scratch<double, 2>("big", n, n);    // graph-owned intermediate (>= 64 KiB)
  * {
  *     cg::CaptureGuard const capture(graph);
  *     cg::einsum("ij <- ik ; kj", 0.0, &big, 1.0, A, B);    // big produced
@@ -48,7 +48,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *
  * @par Example (Python)
  * Pipeline-internal: not exposed for standalone construction in Python. The default manager inserts the
- * Free (and any paired Materialize) once intermediates exceed the ~1 MiB floor.
+ * Free (and any paired Materialize) for intermediates of at least 64 KiB.
  * @code{.py}
  * import einsums, einsums.graph as cg
  * g  = cg.Graph("free_insertion")
@@ -61,25 +61,32 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @endcode
  *
  * @par Limitations
- * - Only frees intermediates whose byte size is >= min_bytes (default 1 MiB); smaller tensors are kept
- *   alive to avoid alloc/free churn in re-executed graphs (loops, Pipeline stages).
- * - Only graph-owned is_intermediate tensors with a release_fn and no aliases are freed; user-provided
- *   inputs/outputs of the whole computation, and views, are never freed.
+ * - Only frees tensors whose byte size is >= min_bytes (default 64 KiB). Below that the peak a Free
+ *   saves is noise beside the two lifecycle nodes it costs every replay. Allocation itself is not the
+ *   reason: storage comes from mimalloc, which hands a freed block of the same size straight back.
+ * - Frees graph-owned is_intermediate tensors, and graph-scoped tensors with a read backing: those
+ *   are filled from their storage by an Initialize node on every replay, so holding them past their
+ *   last use keeps a copy the next replay reads again anyway. After execute() such a tensor holds no
+ *   storage; its value is the one in the backing. User-provided inputs and outputs of the whole
+ *   computation, write and update backed tensors, workspace and pipeline tensors, and views are
+ *   never freed.
  * - A body-resident intermediate's single Free is hoisted to AFTER the outermost enclosing loop, so it
  *   stays live across all iterations rather than being freed and reallocated per iteration.
  * - Idempotency across repeated runs is label-based (a hoisted Free does not carry the foreign child
  *   TensorId as an input), matching on "free(<name>)" / "materialize(<name>)".
  *
  * @par Future improvements
- * - The min_bytes floor is a fixed heuristic; a profitability model (allocation cost vs. peak-memory
- *   saved, replay count) could decide per tensor instead of a single global threshold.
+ * - The min_bytes floor is a fixed heuristic; a model of peak-memory saved against per-replay node
+ *   cost could decide per tensor instead of a single global threshold.
  */
 class EINSUMS_EXPORT FreeInsertion : public OptimizerPass {
   public:
-    /// @param min_bytes Only free intermediates larger than this (default 1MB).
-    ///                  Small tensors are kept alive to avoid alloc/free overhead
-    ///                  in re-executed graphs (loops, Pipeline stages).
-    explicit FreeInsertion(size_t min_bytes = static_cast<size_t>(1024 * 1024)) : _min_bytes(min_bytes) {}
+    /// The default @p min_bytes: 64 KiB.
+    static constexpr size_t default_min_bytes = static_cast<size_t>(64) * 1024;
+
+    /// @param min_bytes Only free tensors of at least this many bytes (default 64 KiB). Below
+    ///                  that the peak a Free saves is noise beside the nodes it costs per replay.
+    explicit FreeInsertion(size_t min_bytes = default_min_bytes) : _min_bytes(min_bytes) {}
 
     [[nodiscard]] std::string name() const override { return "FreeInsertion"; }
     /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.

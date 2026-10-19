@@ -46,6 +46,15 @@ struct FreePlan {
     size_t materialize_before{SIZE_MAX};
 };
 
+// A graph-scoped tensor with a read backing: deferred, never written by the graph, and filled from
+// its storage by the Initialize node Materialization emits, which runs on every replay. Holding it
+// past its last use keeps a copy the next replay reads again regardless, so it is as freeable as an
+// intermediate. A write or update backing is excluded: the graph produces that tensor, and its Store
+// or publish is what the replay is for. Workspace and pipeline tensors outlive the graph.
+bool rereadable(TensorHandle const &handle) {
+    return handle.backing != nullptr && !handle.backing->write && handle.ownership == TensorOwnership::Graph && handle.materialize_fn;
+}
+
 // Is `name` already freed by an existing Free node anywhere in `nodes`?
 // Used for idempotency across repeated pass runs. Label-based because a
 // hoisted Free doesn't carry the (foreign) child tid as an input.
@@ -171,7 +180,7 @@ bool FreeInsertion::run(Graph &graph) {
 
         auto const &handle = it->second;
 
-        if (!handle.is_intermediate || !handle.release_fn)
+        if (!(handle.is_intermediate || rereadable(handle)) || !handle.release_fn)
             continue;
         if (setup_outputs.contains(tid))
             continue;

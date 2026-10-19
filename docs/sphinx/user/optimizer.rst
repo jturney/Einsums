@@ -966,7 +966,8 @@ tensors it allocates and frees, plus MemoryPlanning's arena when there is one;
 the caller's own tensors and library scratch are outside it. It is the number to
 set beside ``MemoryPlanning.peak_memory``, which estimates the same peak with
 every tensor freed after its last use; FreeInsertion leaves intermediates under
-1 MiB allocated, so a graph of small intermediates holds more than the estimate.
+64 KiB allocated, so a graph of many tiny intermediates holds a little more than
+the estimate.
 
 To hear a replay as it runs, attach an observer. ``cg.EventLog`` keeps every
 event: each node's start and end with its duration and thread, each read, write

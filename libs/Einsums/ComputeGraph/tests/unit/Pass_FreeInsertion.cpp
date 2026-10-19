@@ -61,6 +61,38 @@ TEST_CASE("FreeInsertion - frees a flat-graph intermediate after last use", "[Co
     REQUIRE_NOTHROW(g.execute());
 }
 
+// The default floor was 1 MiB, which kept every T2-shaped intermediate of a small CCSD (o^2 v^2 of
+// about 0.56 MB) allocated for the whole replay and held the measured peak at three times the plan.
+TEST_CASE("FreeInsertion - the default floor frees a mid-sized intermediate and keeps a tiny one", "[ComputeGraph][FreeInsertion]") {
+    constexpr size_t mid  = 96; // 72 KiB of doubles: above the floor
+    constexpr size_t tiny = 8;  // 512 bytes: below it
+    static_assert(mid * mid * sizeof(double) >= cg::passes::FreeInsertion::default_min_bytes);
+    static_assert(tiny * tiny * sizeof(double) < cg::passes::FreeInsertion::default_min_bytes);
+
+    auto A = create_random_tensor<double>("A", mid, mid);
+    auto a = create_random_tensor<double>("a", tiny, tiny);
+    auto C = create_zero_tensor<double>("C", mid, mid);
+    auto c = create_zero_tensor<double>("c", tiny, tiny);
+
+    cg::Graph g("floor");
+    {
+        cg::CaptureGuard const guard(g);
+        auto                  &big   = g.create_zero_tensor<double, 2>("big", mid, mid);
+        auto                  &small = g.create_zero_tensor<double, 2>("small", tiny, tiny);
+        cg::einsum("ik;kj->ij", 0.0, &big, 1.0, A, A);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, big, A);
+        cg::einsum("ik;kj->ij", 0.0, &small, 1.0, a, a);
+        cg::einsum("ik;kj->ij", 0.0, &c, 1.0, small, a);
+    }
+
+    cg::passes::FreeInsertion fi;
+    REQUIRE(fi.run(g));
+    CHECK(fi.num_freed() == 1);
+    auto const freed = std::ranges::find_if(g.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::Free; });
+    REQUIRE(freed != g.nodes().end());
+    CHECK(freed->label == "free(big)");
+}
+
 TEST_CASE("FreeInsertion - is idempotent across runs", "[ComputeGraph][FreeInsertion]") {
     auto A = create_random_tensor<double>("A", 6, 6);
     auto C = create_zero_tensor<double>("C", 6, 6);

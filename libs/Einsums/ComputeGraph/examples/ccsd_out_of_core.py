@@ -52,16 +52,16 @@ What to read in the report the example prints:
 * ``SlabStreaming: ... writes 'vvvv' a box at a time``: the transform stores
   the v^4 block one (a, b) pair at a time, each box one run of the file.
 * ``MemoryPlanning: peak``: the plan's estimate of what one iteration holds
-  at once, 11.4 MB, with every tensor freed after its last use. The new T2
+  at once, 11.9 MB, with every tensor freed after its last use. The new T2
   is summed in memory and stored once per iteration, the statements that
   write it being more than one loop over its axes can hold; so are the
   o^2 v^2 intermediates. A contraction of T2 with o v^3 reads both from
   files, and loads them whole.
 * ``last iteration``, printed after the energy, is what the last iteration
   measured as it ran (``graph.last_run()``): the bytes read and written, and
-  the most the graph held at once, 34.9 MB. It holds more than the plan
-  because FreeInsertion leaves intermediates under 1 MiB allocated, and every
-  o^2 v^2 intermediate here is 0.56 MB.
+  the most the graph held at once, 14.0 MB, within about 2 MB of the plan.
+  FreeInsertion frees every o^2 v^2 intermediate after its last use, and the
+  o v^3 block after the one statement that loads it whole.
 
 Run with::
 
@@ -280,8 +280,8 @@ def print_explanation(manager):
             text = d.text if d.text.startswith(d.pass_name) else f"{d.pass_name}: {d.text}"
             print(f"    | {text}")
         elif d.code == "memory-planning.peak":
-            # MiB, as the pass's own report prints it.
-            print(f"    | MemoryPlanning: peak {d.fact('peak') / 2**20:.2f} MB of {d.fact('total') / 2**20:.2f} MB total")
+            # In MB, as every other figure the example prints.
+            print(f"    | MemoryPlanning: peak {d.fact('peak') / 1e6:.2f} MB of {d.fact('total') / 1e6:.2f} MB total")
 
 
 def print_measured(run):

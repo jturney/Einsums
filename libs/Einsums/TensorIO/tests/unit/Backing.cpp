@@ -21,6 +21,7 @@
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
+#include <Einsums/ComputeGraph/Passes/FreeInsertion.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/SlabStreaming.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
@@ -30,6 +31,7 @@
 #include <Einsums/TensorIO/Backing.hpp>
 #include <Einsums/TensorIO/TensorFile.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -150,6 +152,42 @@ TEMPLATE_LIST_TEST_CASE("A backed tensor replays equal to the same values held i
     backed.c.zero();
     backed.graph.execute();
     CHECK(bytes_of(backed.c) == bytes_of(resident.c));
+}
+
+// FreeInsertion freed only intermediates, so a read-backed tensor some contraction loaded whole was
+// held for the rest of the replay. Its Initialize reads it again on every replay regardless, so the
+// copy held past its last use bought nothing (the CCSD example held the whole 6 MB ovvv block while
+// four other contractions streamed it from the file).
+TEST_CASE("A read-backed tensor is freed after its last use and read again at the next replay", "[TensorIO][Backing]") {
+    TempFile const            tmp("freed.etn");
+    std::vector<size_t> const dims{96, 96}; // 72 KiB: above FreeInsertion's floor
+    auto const                stored = filled<double>("B", dims, 0.5);
+    write_entry(tmp.path, "B", stored);
+
+    auto const      a = filled<double>("A", {5, 96}, 0.25);
+    Product<double> backed(a, dims, tensor_io::etn_backing(tmp.path, "B"), nullptr);
+    {
+        cg::PassManager manager;
+        manager.add(std::make_shared<cg::passes::Materialization>());
+        manager.add(std::make_shared<cg::passes::FreeInsertion>());
+        backed.graph.apply(manager);
+    }
+    auto const frees = std::ranges::count_if(backed.graph.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::Free; });
+    CHECK(frees == 1);
+
+    auto            copy = stored;
+    Product<double> expected(a, dims, std::nullopt, &copy);
+    expected.graph.execute();
+    for (int replay = 0; replay < 2; ++replay) {
+        INFO("replay " << replay);
+        backed.c.zero();
+        backed.graph.execute();
+        CHECK(bytes_of(backed.c) == bytes_of(expected.c));
+        CHECK_FALSE(backed.b->is_materialized());
+        auto const &run = backed.graph.last_run();
+        REQUIRE(run.backings.size() == 1);
+        CHECK(run.backings[0].reads == 1);
+    }
 }
 
 TEST_CASE("A file rewritten between replays is read afresh", "[TensorIO][Backing]") {
