@@ -9,7 +9,11 @@
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <fmt/format.h>
+
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -139,20 +143,46 @@ bool Reorder::run(Graph &graph) {
         }
     }
 
-    // For each node, compute bytes freed when it completes
-    std::vector<size_t> bytes_freed(n, 0);
+    // Each node's score is the bytes the graph frees after it, less the bytes it first touches.
+    // Only tensors the graph frees count: a caller's tensor or a write-backed one stays allocated
+    // whatever the order, and counting it pulled the last reader of a large caller input ahead of
+    // a consumer that frees an intermediate. Charging a producer for what it allocates keeps a
+    // ready producer behind a ready consumer.
+    std::unordered_map<TensorId, size_t>              first_use;
+    std::unordered_map<TensorId, std::vector<size_t>> uses;
+    for (size_t i = 0; i < n; i++) {
+        auto [eff_in, eff_out] = graph.effective_io(nodes[i]);
+        for (auto const raw_tid : eff_in) {
+            first_use.try_emplace(graph.buffer_of(raw_tid), i);
+            uses[graph.buffer_of(raw_tid)].push_back(i);
+        }
+        for (auto const raw_tid : eff_out) {
+            first_use.try_emplace(graph.buffer_of(raw_tid), i);
+            uses[graph.buffer_of(raw_tid)].push_back(i);
+        }
+    }
+    auto const freed_by_graph = [](TensorHandle const &h) {
+        return h.is_intermediate || (h.backing != nullptr && !h.backing->write && h.ownership == TensorOwnership::Graph);
+    };
+    std::vector<std::int64_t> bytes_freed(n, 0);
     for (auto const &[tid, last_idx] : last_consumer) {
         auto const &tensors = graph.tensors_map();
         auto const  it      = tensors.find(tid);
-        if (it != tensors.end()) {
-            bytes_freed[last_idx] += it->second.total_bytes();
+        if (it != tensors.end() && freed_by_graph(it->second)) {
+            bytes_freed[last_idx] += static_cast<std::int64_t>(it->second.total_bytes());
+            bytes_freed[first_use.at(tid)] -= static_cast<std::int64_t>(it->second.total_bytes());
         }
     }
 
-    // Memory-aware Kahn's algorithm:
-    // Among ready nodes, prefer the one that frees the most memory.
+    // Memory-aware Kahn's algorithm: among ready nodes, prefer the highest score, and among equal
+    // scores the earliest in program order. Most nodes score the same, and without the program
+    // order the heap returned them in whatever order its layout gave, which reshuffled
+    // producers ahead of the consumers that free memory.
     auto const cmp = [&bytes_freed](size_t a, size_t b) {
-        return bytes_freed[a] < bytes_freed[b]; // max-heap: largest freed first
+        if (bytes_freed[a] != bytes_freed[b]) {
+            return bytes_freed[a] < bytes_freed[b]; // max-heap: largest freed first
+        }
+        return a > b; // then program order
     };
     std::priority_queue<size_t, std::vector<size_t>, decltype(cmp)> ready(cmp);
 
@@ -181,6 +211,45 @@ bool Reorder::run(Graph &graph) {
     if (order.size() != n) {
         // Cycle or stuck nodes, don't modify (nodes vector is untouched)
         return false;
+    }
+
+    // Never worse than the order given. The greedy choice is local and can raise the peak, so the
+    // reschedule is kept only when its peak is lower. An order's peak is the most bytes live at
+    // once, with each tensor the graph frees live from its first use to its last in that order.
+    auto const peak_of = [&](std::vector<size_t> const &seq) {
+        std::vector<size_t> position(n);
+        for (size_t p = 0; p < n; ++p) {
+            position[seq[p]] = p;
+        }
+        std::vector<std::int64_t> delta(n + 1, 0);
+        for (auto const &[tid, node_uses] : uses) {
+            auto const &tensors = graph.tensors_map();
+            auto const  it      = tensors.find(tid);
+            if (it == tensors.end() || !freed_by_graph(it->second)) {
+                continue;
+            }
+            size_t lo = n, hi = 0;
+            for (size_t const node : node_uses) {
+                lo = std::min(lo, position[node]);
+                hi = std::max(hi, position[node]);
+            }
+            delta[lo] += static_cast<std::int64_t>(it->second.total_bytes());
+            delta[hi + 1] -= static_cast<std::int64_t>(it->second.total_bytes());
+        }
+        std::int64_t live = 0, peak = 0;
+        for (size_t p = 0; p < n; ++p) {
+            live += delta[p];
+            peak = std::max(peak, live);
+        }
+        return peak;
+    };
+    std::vector<size_t> given(n);
+    for (size_t i = 0; i < n; ++i) {
+        given[i] = i;
+    }
+    if (std::int64_t const given_peak = peak_of(given), new_peak = peak_of(order); new_peak >= given_peak) {
+        report(2, fmt::format("kept the given order: its peak of {} bytes is no higher than the reschedule's {}", given_peak, new_peak));
+        order = std::move(given);
     }
 
     // Check if the order actually changed

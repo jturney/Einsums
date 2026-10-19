@@ -727,8 +727,9 @@ TEMPLATE_LIST_TEST_CASE("Materialization - a factor's lifecycle follows the setu
                         "[ComputeGraph][Passes][Materialization][Reorder]", testing::AllScalarTypes) {
     using T = TestType;
     // Two setups that share no tensor have no dependency between them, so Reorder is free to
-    // put either first, and its memory heuristic does exactly that: the one whose body frees
-    // the most is scheduled first whichever order the program declared them in. Every rule that
+    // put either first, and its memory heuristic does exactly that: the one whose factor is
+    // smaller runs first, with its consumer, so only one factor is live at a time, whichever
+    // order the program declared them in. Every rule that
     // asked "which node produces this buffer" by looking at a POSITION got a different answer
     // per platform out of that, and two CI failures this week were the same shape.
     //
@@ -737,14 +738,16 @@ TEMPLATE_LIST_TEST_CASE("Materialization - a factor's lifecycle follows the setu
     // setup that writes a factor carries it in node.outputs, and the factor's lifecycle lands
     // in that setup's body and nowhere else.
     //
-    // Both orders are reached by moving the LARGE workspace from the first-declared setup to
-    // the second: whichever body frees more is scheduled first, so one arm reorders and the
-    // other does not, and between them both final orders are exercised.
+    // Both orders are reached by moving the LARGE factor from the first-declared setup to the
+    // second: the smaller is scheduled first, so one arm reorders the setups and the other does
+    // not, and between them both final orders are exercised. The small one is more than half
+    // the large one, so holding both factors costs more than the large setup's factor and
+    // workspace together, and the reschedule lowers the peak in both arms.
     auto const run_arm = [](bool first_setup_is_large) {
         CAPTURE(first_setup_is_large);
 
         std::size_t const large = 48;
-        std::size_t const small = 2;
+        std::size_t const small = 40;
         std::size_t const dim_a = first_setup_is_large ? large : small;
         std::size_t const dim_b = first_setup_is_large ? small : large;
 
@@ -806,9 +809,9 @@ TEMPLATE_LIST_TEST_CASE("Materialization - a factor's lifecycle follows the setu
         std::size_t const pos_a = setup_at("fit_a");
         std::size_t const pos_b = setup_at("fit_b");
 
-        // The larger body is scheduled first, so the two arms put the setups in opposite
+        // The smaller setup is scheduled first, so the two arms put the setups in opposite
         // orders and neither assertion below is reading a fixed schedule.
-        CHECK((first_setup_is_large ? pos_a < pos_b : pos_b < pos_a));
+        CHECK((first_setup_is_large ? pos_b < pos_a : pos_a < pos_b));
 
         // The mechanism: each setup names what its body produces, and nothing else's.
         auto const writes = [&](std::size_t pos, cg::TensorId tid) {

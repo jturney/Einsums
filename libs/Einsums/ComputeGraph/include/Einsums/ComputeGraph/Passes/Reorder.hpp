@@ -16,9 +16,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * Re-sorts the node list with a priority-based Kahn's algorithm. The dependency graph encodes all three hazard classes -- RAW
  * (writer->reader), WAW (writer->writer), and WAR (reader->writer) -- over each node's *effective* I/O (so a Loop/Conditional
  * carries edges for the tensors its body touches) with view aliases resolved to the owning buffer, so only genuinely independent
- * nodes may swap. Among the ready set, a max-heap picks the node whose completion frees the most bytes (it is the last consumer
- * of the largest total tensor storage), releasing big intermediates as early as data dependencies allow and lowering peak
- * memory. The pass moves nodes only; it never adds, removes, or rewrites them.
+ * nodes may swap. Among the ready set, a max-heap picks the node with the highest net score: the bytes of the tensors it is the
+ * last user of, less the bytes of those it is the first user of, counting only tensors the graph frees (intermediates and
+ * graph-owned read-backed tensors). Equal scores keep program order. The reschedule is kept only if its peak, with each such
+ * tensor live from its first use to its last, is lower than the given order's. The pass moves nodes only; it never adds,
+ * removes, or rewrites them.
  *
  * In the default pipeline (populate_default, after GEMMBatching so the scheduler sees a batched node as one unit). Not in the
  * O1 cleanup cluster of PassManager::create_for.
@@ -53,8 +55,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @par Limitations
  * - It **reschedules only**: it never fuses, splits, or eliminates nodes, and it cannot lower peak memory below what the fixed
  *   node set and its true dependencies allow.
- * - The "bytes freed" ranking is a **greedy local heuristic** (largest last-consumer tensor first), not a globally optimal
- *   peak-memory schedule.
+ * - The net-score ranking is a **greedy local heuristic**, not a globally optimal peak-memory schedule. The peak check
+ *   only guarantees it is never worse than the order given.
+ * - The peak it compares is a model: it ignores FreeInsertion's size floor, so a tensor below it counts as freed here but
+ *   stays allocated at run time.
  * - If the dependency graph is cyclic or otherwise leaves nodes unscheduled (`order.size() != n`), the pass bails and leaves the
  *   node order untouched.
  * - Tensor sizes come from `TensorHandle::total_bytes()`; the pass runs before Materialization, so sizes are taken from declared

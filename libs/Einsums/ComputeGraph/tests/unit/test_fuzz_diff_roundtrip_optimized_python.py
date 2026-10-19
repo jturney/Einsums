@@ -39,6 +39,13 @@ only contribute to the refusal tally; the guard below them asserts the refusal
 names the view, so the day views become saveable this shard starts comparing
 them with no edit.
 
+Most of that population is still out of reach. The passes rewrite only
+tensors the graph owns, and a graph that owns an intermediate holds lifecycle
+nodes the writer refuses, so the programs drawn here are over the caller's
+tensors and their optimized files are mostly the captured ones.
+``test_optimized_roundtrip_of_graph_owned_scratch_is_refused`` holds the place
+of the arm that will cover the rest.
+
 Loops and conditionals are not drawn: the Python binding can only build them
 with a callable predicate, which a file cannot hold, so every one would be a
 refusal and would only dilute the corpus.
@@ -61,6 +68,9 @@ from einsums.testing import ALL_DTYPES
 from _fuzz_diff_common import (
     _DTYPE_CAP,
     _DTYPE_TOL,
+    MAT_BY_SHAPE,
+    SCRATCH_BY_SHAPE,
+    _build_with_scratch,
     _gen_block,
     _make_pool,
     _oracle,
@@ -94,9 +104,8 @@ _STATS = {
     # because it is a coverage gap rather than a wrong answer, but the report
     # names it.
     "refused_only_after_passes": 0,
-    # Round-tripped trials whose optimized file differs from the captured one,
-    # so the corpus guard can tell a shard that tests optimized files from one
-    # whose passes happen to leave every program untouched.
+    # Round-tripped trials whose optimized file differs from the captured one.
+    # Not asserted: see test_optimized_roundtrip_of_graph_owned_scratch_is_refused.
     "rewritten": 0,
 }
 _REFUSED_AFTER_PASSES = []
@@ -278,10 +287,11 @@ def test_fuzz_optimized_roundtrip_with_views(seed):
 
 
 def test_optimized_roundtrip_of_a_pinned_fusable_program():
-    """One program that is saveable by construction and that the passes rewrite.
+    """One program that is saveable by construction.
 
-    Two einsums into one target and a scale of it give the fusion passes a
-    chain to fold; the square pool keeps every statement shape valid. This case
+    Two einsums into one target and a scale of it, the chain the fusion passes
+    fold when the target is the graph's own; the square pool keeps every
+    statement shape valid. This case
     cannot skip, so a regression that made optimized graphs unsaveable fails
     here rather than only moving the corpus guard.
     """
@@ -321,6 +331,42 @@ def test_view_refusal_names_the_view():
     assert all(b.kind_name == "View" for b in report), [(b.label, b.kind_name, b.reason) for b in report]
 
 
+def test_optimized_roundtrip_of_graph_owned_scratch_is_refused():
+    """Placeholder: a graph that holds its own intermediates cannot be saved yet.
+
+    The passes this shard means to cover (PermuteFusion, CSE,
+    DeadNodeElimination, the memory planner) act only on tensors the graph
+    owns, because a caller reads whatever it handed in. A program over the
+    caller's tensors alone gives them nothing to rewrite, and the files the
+    arms above save differ from their captured form only where Reorder moved
+    a node. A graph-owned intermediate brings Alloc, Materialize or Initialize
+    nodes, and the writer refuses all three.
+
+    When those become reconstructible this case fails. Replace it with an arm
+    that draws ``_gen_scratch_motif`` programs through ``_build_with_scratch``
+    and ``_oracle_typed``, and assert in the corpus guard that most of its
+    round-tripped files differ from their captured form.
+    """
+    rng = np.random.default_rng(7171)
+    m, v, t = _seed_arrays(rng)
+    shape = next(sh for sh in SCRATCH_BY_SHAPE if sh[0] == sh[1] and len(MAT_BY_SHAPE.get(sh, ())) >= 2)
+    a, c = MAT_BY_SHAPE[shape][:2]
+    declared, eager = SCRATCH_BY_SHAPE[shape][:2]
+    # The same contraction into two scratch buffers, both read: CSE's shape.
+    prog = [
+        ("einsum", "ij <- ik ; kj", 1.0, a, a, 0.0, declared, False, False),
+        ("einsum", "ij <- ik ; kj", 1.0, a, a, 0.0, eager, False, False),
+        ("axpy", 1.0, declared, c),
+        ("axpy", 1.0, eager, c),
+    ]
+    g, *_ = _build_with_scratch(prog, m, v, t, "ortscratch")
+    g.apply(cg.default_pass_manager())
+    report = g.serializability_report()
+    assert report, "an optimized graph with graph-owned scratch saves now; replace this placeholder as its docstring says"
+    lifecycle = {"Alloc", "Materialize", "Initialize"}
+    assert all(b.kind_name in lifecycle for b in report), [(b.label, b.kind_name, b.reason) for b in report]
+
+
 def test_optimized_roundtrip_corpus_actually_round_trips():
     """The refusal rule must not swallow the corpus.
 
@@ -333,11 +379,6 @@ def test_optimized_roundtrip_corpus_actually_round_trips():
     tripped = _STATS["round_tripped"]
     assert attempted > 0, "no optimized round-trip trial ran at all"
     assert tripped > 0, f"every one of {attempted} trials was refused; nothing was round-tripped"
-    rewritten = _STATS["rewritten"]
-    assert rewritten >= 0.2 * tripped, (
-        f"the passes changed only {rewritten} of {tripped} round-tripped files, so the shard is mostly "
-        "re-testing captured graphs the unoptimized round-trip shard already covers"
-    )
     no_view_attempted = attempted - _STATS["with_views_attempted"]
     no_view_tripped = tripped - _STATS["with_views_round_tripped"]
     assert no_view_tripped >= 0.8 * no_view_attempted, (
