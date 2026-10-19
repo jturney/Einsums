@@ -81,6 +81,18 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT Materialization : public OptimizerPass {
   public:
+    /// @name Reasons
+    /// The codes this pass records its decisions under (@ref Decision::code).
+    /// @{
+    static constexpr Reason Materialized{"materialization.materialized", "materialize a deferred tensor before its first use"};
+    static constexpr Reason Stored{"materialization.stored", "store a write-backed tensor after its last writer"};
+    static constexpr Reason Published{"materialization.published", "publish update-backed tensors at the end of the replay"};
+    static constexpr Reason Unused{"materialization.unused", "a deferred tensor no node uses is left unallocated"};
+    static constexpr Reason AlreadyMaterialized{"materialization.already-materialized",
+                                                "a deferred tensor that already has a Materialize node is left to it"};
+    static constexpr Reason Summary{"materialization.summary", "what the pass allocated, initialized and left unallocated"};
+    /// @}
+
     /// @brief Default-construct.
     ///
     /// Reachable from Python, which every other phase-enabling pass already was. This one is

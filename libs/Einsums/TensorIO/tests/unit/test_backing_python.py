@@ -362,3 +362,31 @@ def test_last_run_counts_what_an_update_backing_moved(etn_path):
     assert (run.reads, run.writes, run.publishes) == (1, 1, 1)
     assert run.bytes_read == run.bytes_written == 4 * 3 * 8
     assert run.storage.startswith("tensor_io.etn (entry=t")
+
+
+def test_decisions_name_what_slab_streaming_did_by_code(etn_path):
+    einsums.io.write(etn_path, "L", _filled("L", (4, 16), "float64", 0.5))
+    S = _filled("S", (4, 4), "float64", 0.25)
+    C = einsums.create_zero_tensor("C", [4, 16], dtype="float64")
+    g = cg.Graph("coded")
+    L = g.declare_tensor("L", backing=einsums.io.etn(etn_path, "L"))
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", C, S, L)
+    stream = cg.SlabStreaming()
+    stream.set_slab_budget(4 * 4 * 8)
+    pm = cg.PassManager()
+    pm.add(stream)
+    pm.add(cg.Materialization())
+    g.apply(pm)
+
+    (read,) = [d for d in stream.decisions if d.code == "slab-streaming.streamed-read"]
+    assert read.kind == cg.DecisionKind.Applied
+    assert read.pass_name == "SlabStreaming"
+    assert read.graph == "coded"
+    assert list(read.tensors) == ["L"]
+    assert (read.fact("block"), read.fact("extent"), read.fact("bytes")) == (4, 16, 4 * 16 * 8)
+    assert read.text.startswith("SlabStreaming: '")
+    # The manager hands back every pass's decisions, Materialization's among them.
+    codes = {d.code for d in pm.decisions}
+    assert "slab-streaming.streamed-read" in codes
+    assert "materialization.summary" in codes

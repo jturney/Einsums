@@ -437,11 +437,26 @@ bool MemoryPlanning::run(Graph &graph) {
         graph, [this](std::string_view reason, std::string_view detail) { note_skip(reason, detail); }, _apply_arena, _planned_arena_bytes,
         _num_planned, _planned_tensor_bytes);
 
-    report(1, fmt::format("peak host memory {} bytes (of {} total allocated){}", _peak_memory, _total_memory,
-                          _device_peak_memory > 0 ? fmt::format(", device peak {} bytes", _device_peak_memory) : std::string{}));
+    note(Peak,
+         fmt::format("peak host memory {} bytes (of {} total allocated){}", _peak_memory, _total_memory,
+                     _device_peak_memory > 0 ? fmt::format(", device peak {} bytes", _device_peak_memory) : std::string{}),
+         Decision{.graph = graph.name(),
+                  .facts = {Fact{.name = "peak", .value = static_cast<double>(_peak_memory), .unit = "B"},
+                            Fact{.name = "total", .value = static_cast<double>(_total_memory), .unit = "B"},
+                            Fact{.name = "device_peak", .value = static_cast<double>(_device_peak_memory), .unit = "B"}}},
+         1);
     if (planned.moved()) {
-        report(1, fmt::format("{} arena of {} bytes for {} intermediate(s) ({} bytes of buffers shared into it)",
-                              _apply_arena ? "applied" : "planned", _planned_arena_bytes, _num_planned, _planned_tensor_bytes));
+        Decision    about{.graph = graph.name(),
+                          .facts = {Fact{.name = "arena", .value = static_cast<double>(_planned_arena_bytes), .unit = "B"},
+                                    Fact{.name = "intermediates", .value = static_cast<double>(_num_planned)},
+                                    Fact{.name = "shared", .value = static_cast<double>(_planned_tensor_bytes), .unit = "B"}}};
+        std::string text = fmt::format("{} arena of {} bytes for {} intermediate(s) ({} bytes of buffers shared into it)",
+                                       _apply_arena ? "applied" : "planned", _planned_arena_bytes, _num_planned, _planned_tensor_bytes);
+        if (_apply_arena) {
+            applied(Arena, std::move(text), std::move(about), 1);
+        } else {
+            note(Arena, std::move(text), std::move(about), 1);
+        }
     }
 
     return _apply_arena && planned.moved();

@@ -111,6 +111,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/KhatriRao.hpp
     Einsums/ComputeGraph/Executor.hpp
     Einsums/ComputeGraph/StringDispatch.hpp
+    Einsums/ComputeGraph/Decision.hpp
     Einsums/ComputeGraph/RunMetrics.hpp
     Einsums/ComputeGraph/TensorBacking.hpp
     Einsums/ComputeGraph/TensorHandle.hpp

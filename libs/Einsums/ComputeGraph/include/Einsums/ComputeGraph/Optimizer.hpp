@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph/Approximation.hpp>
+#include <Einsums/ComputeGraph/Decision.hpp>
 #include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -481,8 +482,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      */
     void reset_all_stats() {
         _skips.clear();
+        _decisions.clear();
         reset_stats();
     }
+
+    /**
+     * @brief Everything this pass did, declined and reported on its last apply, as records.
+     * @return The decisions in the order they were made, each with the graph it was made in.
+     *
+     * The reader's counterpart of @ref explain and @ref skip_reasons, which print from the same
+     * calls: match a decision's @ref Decision::code rather than its words.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE APIARY_GETTER("decisions") [[nodiscard]] std::vector<Decision> decisions() const { return _decisions; }
+
+    /// @brief How many decisions this pass holds: where a driver starts stamping a graph's name.
+    /// @return The count.
+    [[nodiscard]] std::size_t num_decisions() const noexcept { return _decisions.size(); }
+
+    /// @brief Name @p graph on every decision from @p from on that names none, for a driver that
+    ///        has just run the pass on that graph.
+    /// @param[in] from The first decision the run made.
+    /// @param[in] graph The graph's name.
+    EINSUMS_EXPORT void name_graph(std::size_t from, std::string_view graph);
 
     /**
      * @brief Why this pass declined the candidates it looked at.
@@ -521,7 +543,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * inside the manager: a pass that grows a statistic updates one file, and a
      * pass defined outside this library gets summarized like any other.
      */
-    [[nodiscard]] virtual std::vector<std::string> explain() const { return {}; }
+    ///
+    /// The default prints the text of every decision recorded with @ref applied at level 1, so a
+    /// pass that records its work that way says it here with no override; one that records
+    /// nothing says nothing.
+    ///
+    /// Inline, as every virtual here is: an out-of-line one would be the class's key function,
+    /// putting its vtable in the library, where hidden visibility keeps it from the programs that
+    /// derive their own passes.
+    [[nodiscard]] virtual std::vector<std::string> explain() const {
+        std::vector<std::string> lines;
+        for (auto const &decision : _decisions) {
+            if (decision.kind == DecisionKind::Applied && decision.level <= 1) {
+                lines.push_back(decision.text);
+            }
+        }
+        return lines;
+    }
 
     /**
      * @brief Reads this pass intentionally redirected to a tensor's INITIAL
@@ -590,6 +628,36 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
     EINSUMS_EXPORT void report(int level, std::string_view message) const;
 
     /**
+     * @brief Record that the pass applied something, and report @p text at @p level.
+     * @param[in] reason What it applied, by code.
+     * @param[in] text The line a person reads.
+     * @param[in] about The node, tensors and facts it is about; its other fields are filled here.
+     * @param[in] level The verbosity at which @p text is printed and shown.
+     * @versionadded{2.0.0}
+     */
+    EINSUMS_EXPORT void applied(Reason const &reason, std::string text, Decision about = {}, int level = 1) const;
+
+    /**
+     * @brief The coded form of @ref report: record something the pass says that is neither a change
+     *        nor a decline of a candidate, as a decision under @p reason, and print @p text at @p level.
+     * @param[in] reason What it is about, by code.
+     * @param[in] text The line a person reads.
+     * @param[in] about The node, tensors and facts it is about.
+     * @param[in] level The verbosity at which @p text is printed.
+     * @versionadded{2.0.0}
+     */
+    EINSUMS_EXPORT void note(Reason const &reason, std::string text, Decision about = {}, int level = 2) const;
+
+    /**
+     * @brief The coded form of @ref note_skip: record a decline under @p reason.
+     * @param[in] reason Why, by code; its words are what the skip tally counts.
+     * @param[in] detail The specifics, printed at verbosity 3.
+     * @param[in] about The node, tensors and facts it is about.
+     * @versionadded{2.0.0}
+     */
+    EINSUMS_EXPORT void note_skip(Reason const &reason, std::string_view detail = {}, Decision about = {}) const;
+
+    /**
      * @brief Record that a candidate was examined and declined, and why.
      *
      * ``reason`` must be a short, *shape-independent* phrase so repeated hits
@@ -645,6 +713,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
     /// record from a const analysis helper; cleared per apply() by
     /// reset_all_stats().
     mutable std::vector<std::pair<std::string, std::size_t>> _skips;
+
+    /// Everything the pass did, declined and reported, in order; cleared per apply() with the
+    /// skip tally.
+    mutable std::vector<Decision> _decisions;
+
+    /// Print @p message at @p level without recording it, for a line a decision already records.
+    void print_line(int level, std::string_view message) const;
+
+    /// Count a decline in the tally and record it, coded or not.
+    void record_skip(std::string_view reason, std::string_view detail, Decision about) const;
 };
 
 /**
@@ -1035,6 +1113,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * turns out to be wrong on one machine and right on another.
      */
     APIARY_EXPOSE [[nodiscard]] std::string explain() const;
+
+    /**
+     * @brief Every decision of every pass in this pipeline, from its last run, in pipeline order.
+     * @return The records @ref explain prints from, each naming its pass and graph.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE APIARY_GETTER("decisions") [[nodiscard]] EINSUMS_EXPORT std::vector<Decision> decisions() const;
 
     /**
      * @brief Populate this PassManager with the default pass list (in place).

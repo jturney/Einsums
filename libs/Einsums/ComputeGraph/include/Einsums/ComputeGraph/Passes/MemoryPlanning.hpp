@@ -88,6 +88,14 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT MemoryPlanning : public OptimizerPass {
   public:
+    /// @name Reasons
+    /// The codes this pass records its decisions under (@ref Decision::code).
+    /// @{
+    static constexpr Reason Peak{"memory-planning.peak",
+                                 "the most host memory the plan holds at once, with every tensor freed after its last use"};
+    static constexpr Reason Arena{"memory-planning.arena", "place intermediates at offsets of one arena whose buffers they share"};
+    /// @}
+
     APIARY_EXPOSE MemoryPlanning() = default;
 
     /// @param apply_arena When false, the pass is analysis-only (statistics

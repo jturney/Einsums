@@ -636,6 +636,7 @@ bool Graph::optimize(OptLevel level) {
 
     _last_optimize_report =
         fmt::format("optimize(O{}) on '{}': {} -> {} node(s)\n{}", static_cast<int>(level), _name, before, _nodes.size(), pm.explain());
+    _last_decisions = pm.decisions();
     return modified;
 }
 

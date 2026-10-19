@@ -2335,7 +2335,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
 
     std::int64_t const cap = memory_cap();
     if (cap == 0) {
-        note_skip("the memory cap is zero, which is how a caller asks for the captured schedule");
+        note_skip(ZeroCap);
         return tiled.moved();
     }
 
@@ -2349,7 +2349,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
     if (derived) {
         budget = string_util::memory_string(config::get(option::MaxMemory));
         if (budget == 0) {
-            note_skip("the cap is derived from --einsums:max-memory, which is zero, so there is no budget to tile against");
+            note_skip(NoBudget);
             return tiled.moved();
         }
         double const fraction = config::get(option::GraphTilingBudgetShare);
@@ -2425,13 +2425,12 @@ bool AxisTiling::tile_graph(Graph &graph) {
         }
         if (first && held != nullptr) {
             std::size_t const bytes = held->total_bytes();
-            note_skip("a tensor over the cap is declared as a result, which the caller may read after execute(), so it is held whole; "
-                      "declare it as an intermediate if nothing reads it afterwards",
-                      fmt::format("'{}', {} bytes against a cap of {}", held->name, bytes, limit_for(bytes)));
+            note_skip(ResultHeld, fmt::format("'{}', {} bytes against a cap of {}", held->name, bytes, limit_for(bytes)));
             _held_results.push_back(fmt::format("held '{}' whole, {} bytes against a cap of {}, because it is declared as a result the "
                                                 "caller may read after execute(); declare it as an intermediate if nothing does",
                                                 held->name, bytes, limit_for(bytes)));
-            report(1, _held_results.back());
+            note(ResultHeld, _held_results.back(),
+                 Decision{.tensors = {held->name}, .facts = {Fact{.name = "bytes", .value = static_cast<double>(bytes), .unit = "B"}}}, 1);
         }
         if (first) {
             // A running maximum: the manager runs this pass once per graph of the tree, and the
@@ -2443,22 +2442,25 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 return tiled.moved();
             }
             if (derived && total <= budget && largest <= share) {
-                note_skip("the program's tensors fit the memory budget together and no intermediate holds more than its share, so there "
-                          "is nothing to stream",
+                note_skip(FitsBudget,
                           fmt::format("{} bytes against --einsums:max-memory of {}, the largest intermediate {} against a share of {}",
                                       total, budget, largest, share));
-                report(1, fmt::format("declined: the program's tensors hold {} bytes and the memory budget is {}", total, budget));
+                note(FitsBudget, fmt::format("declined: the program's tensors hold {} bytes and the memory budget is {}", total, budget),
+                     Decision{.facts = {Fact{.name = "total", .value = static_cast<double>(total), .unit = "B"},
+                                        Fact{.name = "budget", .value = static_cast<double>(budget), .unit = "B"}}},
+                     1);
                 return tiled.moved();
             }
             if (!derived && largest <= static_cast<std::size_t>(cap)) {
-                note_skip("the largest intermediate already fits the cap, so there is nothing to stream",
-                          fmt::format("{} bytes against a cap of {}", largest, cap));
-                report(1, fmt::format("declined: the largest intermediate is {} bytes and the cap is {}", largest, cap));
+                note_skip(FitsCap, fmt::format("{} bytes against a cap of {}", largest, cap));
+                note(FitsCap, fmt::format("declined: the largest intermediate is {} bytes and the cap is {}", largest, cap),
+                     Decision{.facts = {Fact{.name = "largest", .value = static_cast<double>(largest), .unit = "B"},
+                                        Fact{.name = "cap", .value = static_cast<double>(cap), .unit = "B"}}},
+                     1);
                 return tiled.moved();
             }
             if (seeds.empty()) {
-                note_skip("every intermediate over the cap is written by a statement this pass cannot slice",
-                          fmt::format("{} bytes against a cap of {}", largest, limit_for(largest)));
+                note_skip(NoSliceableWriter, fmt::format("{} bytes against a cap of {}", largest, limit_for(largest)));
                 return tiled.moved();
             }
         }
@@ -2518,8 +2520,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
             return false;
         }
         if (!understands(graph, nodes[i])) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", nodes[i].label, describe_features(features_of(graph, nodes[i]))));
+            note_skip(UnknownFeature, fmt::format("node '{}': {}", nodes[i].label, describe_features(features_of(graph, nodes[i]))));
             return false;
         }
         return true;
@@ -2685,7 +2686,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
             }
         }
         if (!blocks.has_value() && !labelling.fully_sliced.empty()) {
-            note_skip("every axis of one operand is sliced, so the body would name an operand with no axes left", detail);
+            note_skip(OperandWithoutAxes, detail);
             continue;
         }
 
@@ -2732,9 +2733,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         if (auto const site = gather_site(io, plan.replaced); site.has_value()) {
             plan.site = *site;
         } else {
-            note_skip("a statement outside the region sits between two of its statements, depending on one while the other depends on "
-                      "it, so they cannot be gathered into one loop",
-                      detail);
+            note_skip(StatementBetween, detail);
             continue;
         }
         analysis->describe(positions, plan.axis_names, plan.axis_letters);
@@ -2765,21 +2764,19 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
     // be met is declined, as it always was.
     if (!best.has_value() && fallback.has_value() && allowance.budget != 0 && fallback->largest_before > outside_bytes &&
         fallback->largest_after < fallback->largest_before) {
-        note_skip("no slicing fits the memory budget, so the seed is cut into slices that fit its share of it, or its smallest slices",
-                  fmt::format("seed '{}': {} bytes, {} outside the loop, {} per slice", seed_handle->name, fallback->largest_before,
-                              outside_bytes, fallback->largest_after));
+        note_skip(BestEffort, fmt::format("seed '{}': {} bytes, {} outside the loop, {} per slice", seed_handle->name,
+                                          fallback->largest_before, outside_bytes, fallback->largest_after));
         best = std::move(fallback);
     }
 
     if (!best.has_value()) {
-        note_skip("no candidate axis set brings the seed under the cap",
-                  fmt::format("seed '{}': {} set(s) the program cannot carry a slice labelling for, {} above the cap", seed_handle->name,
-                              infeasible, over_cap));
+        note_skip(NoAxisSet, fmt::format("seed '{}': {} set(s) the program cannot carry a slice labelling for, {} above the cap",
+                                         seed_handle->name, infeasible, over_cap));
         return false;
     }
 
     if (!emit_tiled_loop(graph, *best)) {
-        note_skip("the region's element type is not one the emitted body can name", fmt::format("dtype {}", static_cast<int>(best->dtype)));
+        note_skip(ElementType, fmt::format("dtype {}", static_cast<int>(best->dtype)));
         return false;
     }
 
@@ -2810,7 +2807,14 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                     best->slices, describe_chunks(*best), best->largest_before, best->largest_after,
                     best->best_effort ? " (none fits the budget beside the tensors outside the loop)" : "");
     _regions.push_back(line);
-    report(1, line);
+    applied(Sliced, line,
+            Decision{.graph   = graph.name(),
+                     .detail  = fmt::format("axes {}", fmt::join(best->axis_names, " x ")),
+                     .tensors = {seed_handle->name},
+                     .facts   = {Fact{.name = "slices", .value = static_cast<double>(best->slices)},
+                                 Fact{.name = "largest_before", .value = static_cast<double>(best->largest_before), .unit = "B"},
+                                 Fact{.name = "largest_after", .value = static_cast<double>(best->largest_after), .unit = "B"}}},
+            1);
     return true;
 }
 

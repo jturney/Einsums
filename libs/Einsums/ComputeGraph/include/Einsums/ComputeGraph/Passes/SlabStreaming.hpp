@@ -71,6 +71,96 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT SlabStreaming : public OptimizerPass {
   public:
+    /// @name Reasons
+    /// The codes this pass records its decisions under (@ref Decision::code). The box reasons
+    /// end in ``so it is loaded whole`` or in the write-backed decline when a pass reports them.
+    /// @{
+    static constexpr Reason NoBudget{
+        "slab-streaming.no-budget",
+        "no slab budget: --einsums:max-memory is zero or the pass was set off, so backed tensors are loaded whole"};
+    static constexpr Reason ReadAfterUpdate{"slab-streaming.read-after-update",
+                                            "the update-backed tensor is read after a write of it, so it is read from memory"};
+    static constexpr Reason ProducedInMemory{
+        "slab-streaming.produced-in-memory",
+        "the tensor is produced in memory, so its readers read it there and it is stored after its last writer"};
+    static constexpr Reason FitsBudget{
+        "slab-streaming.fits-budget",
+        "the backed tensor fits its share of the budget, so it is loaded once rather than read per contraction"};
+    static constexpr Reason BothBacked{
+        "slab-streaming.both-backed",
+        "both operands of the contraction are backed and neither is a box a loop's view names, so it is loaded whole"};
+    static constexpr Reason UnseenView{"slab-streaming.unseen-view",
+                                       "the backed tensor is read through a view this pass cannot see, so it is loaded whole"};
+    static constexpr Reason PermutationOperators{"slab-streaming.permutation-operators",
+                                                 "the contraction applies permutation operators, so its backed operand is loaded whole"};
+    static constexpr Reason NoLastAxis{"slab-streaming.no-last-axis", "the backed tensor has no last axis to read in blocks"};
+    static constexpr Reason RepeatedLetter{"slab-streaming.repeated-letter",
+                                           "the letter of the backed tensor's last axis repeats, which a block of it cannot express"};
+    static constexpr Reason ElementType{"slab-streaming.element-type", "an operand is not of the backed tensor's element type"};
+    static constexpr Reason EmptyOperand{"slab-streaming.empty-operand", "an operand has no elements, so there is nothing to stream"};
+    static constexpr Reason OperandNotViewable{"slab-streaming.operand-not-viewable",
+                                               "an operand cannot be viewed a block at a time, so the backed operand is loaded whole"};
+    static constexpr Reason WriteUpdateBacked{"slab-streaming.write-update-backed",
+                                              "the tensor is update-backed, so it is computed in memory and stored after its last writer, "
+                                              "then published at the end of the replay"};
+    static constexpr Reason WriteFitsBudget{
+        "slab-streaming.write-fits-budget",
+        "the write-backed tensor fits its share of the budget, so it is computed in memory and stored after its last writer"};
+    static constexpr Reason WrittenElsewhere{
+        "slab-streaming.written-elsewhere",
+        "another operation writes the write-backed tensor in memory, so it is computed in memory and stored after its last writer"};
+    static constexpr Reason WriteUnseenView{
+        "slab-streaming.write-unseen-view",
+        "the contraction writes a view this pass cannot see, so it is computed in memory and stored after its last writer"};
+    static constexpr Reason WriteAddsInto{"slab-streaming.write-adds-into",
+                                          "the contraction adds into the write-backed tensor rather than overwriting it, so it is computed "
+                                          "in memory and stored after its last writer"};
+    static constexpr Reason WriteReadsBacked{
+        "slab-streaming.write-reads-backed",
+        "the contraction also reads a backed tensor, so it is computed in memory and stored after its last writer"};
+    static constexpr Reason WritePermutationOperators{
+        "slab-streaming.write-permutation-operators",
+        "the contraction applies permutation operators, so it is computed in memory and stored after its last writer"};
+    static constexpr Reason WriteNoLastAxis{
+        "slab-streaming.write-no-last-axis",
+        "the write-backed tensor has no last axis to write in blocks, so it is computed in memory and stored after its last writer"};
+    static constexpr Reason WriteRepeatedLetter{"slab-streaming.write-repeated-letter",
+                                                "the letter of the write-backed tensor's last axis repeats, which a block of it cannot "
+                                                "express, so it is computed in memory and stored after its last writer"};
+    static constexpr Reason WriteElementType{
+        "slab-streaming.write-element-type",
+        "an operand is not of the write-backed tensor's element type, so it is computed in memory and stored after its last writer"};
+    static constexpr Reason WriteEmptyOperand{"slab-streaming.write-empty-operand",
+                                              "an operand has no elements, so it is computed in memory and stored after its last writer"};
+    static constexpr Reason WriteOperandNotViewable{
+        "slab-streaming.write-operand-not-viewable",
+        "an operand cannot be viewed a block at a time, so it is computed in memory and stored after its last writer"};
+    static constexpr Reason BoxUnseenView{"slab-streaming.box-unseen-view",
+                                          "the backed tensor is used through a view this pass cannot see"};
+    static constexpr Reason BoxPermutingView{"slab-streaming.box-permuting-view",
+                                             "the backed tensor is used through a view that permutes it"};
+    static constexpr Reason BoxViewOfView{"slab-streaming.box-view-of-view", "the backed tensor is used through a view of a view"};
+    static constexpr Reason BoxUnredirectableView{"slab-streaming.box-unredirectable-view",
+                                                  "the backed tensor is used through a view this pass cannot redirect"};
+    static constexpr Reason BoxNestedGraph{"slab-streaming.box-nested-graph",
+                                           "the view of the backed tensor is used inside a nested graph"};
+    static constexpr Reason BoxWrittenElsewhere{"slab-streaming.box-written-elsewhere",
+                                                "the view of the backed tensor is written by another operation"};
+    static constexpr Reason BoxReadElsewhere{
+        "slab-streaming.box-read-elsewhere",
+        "the box of the backed tensor is read by an operation that does not write it, or the tensor is written around the view"};
+    static constexpr Reason BoxFirstWriterAdds{
+        "slab-streaming.box-first-writer-adds",
+        "the first statement that writes the box adds into it, so it starts from a value the storage does not hold"};
+    static constexpr Reason StreamedRead{"slab-streaming.streamed-read", "reads a backed tensor a block of its last axis at a time"};
+    static constexpr Reason StreamedWrite{"slab-streaming.streamed-write", "writes a backed tensor a block of its last axis at a time"};
+    static constexpr Reason StreamedBox{"slab-streaming.streamed-box", "moves the box a loop's view names in place of the whole tensor"};
+    static constexpr Reason OrderChosen{"slab-streaming.order-chosen",
+                                        "stores a new entry in the order that makes the boxes moved of it fewest runs"};
+    static constexpr Reason OrderAdvised{"slab-streaming.order-advised",
+                                         "an entry's order is not this program's to choose, and another would cut its runs"};
+    /// @}
+
     /// @brief Default-construct, reading the budget from the options.
     APIARY_EXPOSE SlabStreaming() = default;
 
@@ -113,7 +203,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     void reset_stats() override;
 
     /// @copydoc OptimizerPass::explain
-    [[nodiscard]] std::vector<std::string> explain() const override;
 
     /// @copydoc OptimizerPass::compensated_reads
     ///
@@ -219,6 +308,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Store each written tensor in the order that makes the boxes moved of it the fewest runs, where
     /// it may still be chosen, and advise where it may not; after the walk.
     void choose_orders();
+    /// Record the report's lines as decisions, once the walk and the orders are done.
+    void record_decisions();
 
     bool stream_graph(Graph &graph, Backed const &backed);
     bool stream_write(Graph &graph, Backed const &backed, std::size_t index, std::size_t cap);
@@ -233,7 +324,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::vector<BoxUse>                             _box_uses;
     double                                          _replays{1.0}; ///< How often the graph being streamed runs per replay of the root.
     std::map<std::string, std::vector<std::size_t>> _orders;
-    std::vector<std::string>                        _order_lines;
+    std::vector<Decision>                           _order_lines;
     std::vector<std::pair<NodeId, TensorId>>        _compensated;
     std::vector<Record>                             _records;
     std::size_t                                     _num_streamed{0};

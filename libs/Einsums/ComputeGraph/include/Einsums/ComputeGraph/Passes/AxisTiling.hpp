@@ -152,6 +152,34 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT AxisTiling : public OptimizerPass {
   public:
+    /// @name Reasons
+    /// The codes this pass records its decisions under (@ref Decision::code).
+    /// @{
+    static constexpr Reason ZeroCap{"axis-tiling.zero-cap", "the memory cap is zero, which is how a caller asks for the captured schedule"};
+    static constexpr Reason NoBudget{"axis-tiling.no-budget",
+                                     "the cap is derived from --einsums:max-memory, which is zero, so there is no budget to tile against"};
+    static constexpr Reason ResultHeld{"axis-tiling.result-held",
+                                       "a tensor over the cap is declared as a result, which the caller may read after execute(), so it is "
+                                       "held whole; declare it as an intermediate if nothing reads it afterwards"};
+    static constexpr Reason FitsBudget{"axis-tiling.fits-budget", "the program's tensors fit the memory budget together and no "
+                                                                  "intermediate holds more than its share, so there is nothing to stream"};
+    static constexpr Reason FitsCap{"axis-tiling.fits-cap", "the largest intermediate already fits the cap, so there is nothing to stream"};
+    static constexpr Reason NoSliceableWriter{"axis-tiling.no-sliceable-writer",
+                                              "every intermediate over the cap is written by a statement this pass cannot slice"};
+    static constexpr Reason UnknownFeature{"axis-tiling.unknown-feature", "the node carries a feature this pass does not understand"};
+    static constexpr Reason OperandWithoutAxes{"axis-tiling.operand-without-axes",
+                                               "every axis of one operand is sliced, so the body would name an operand with no axes left"};
+    static constexpr Reason StatementBetween{"axis-tiling.statement-between",
+                                             "a statement outside the region sits between two of its statements, depending on one while "
+                                             "the other depends on it, so they cannot be gathered into one loop"};
+    static constexpr Reason BestEffort{
+        "axis-tiling.best-effort",
+        "no slicing fits the memory budget, so the seed is cut into slices that fit its share of it, or its smallest slices"};
+    static constexpr Reason NoAxisSet{"axis-tiling.no-axis-set", "no candidate axis set brings the seed under the cap"};
+    static constexpr Reason ElementType{"axis-tiling.element-type", "the region's element type is not one the emitted body can name"};
+    static constexpr Reason Sliced{"axis-tiling.sliced", "slice a region into a loop over blocks of its axes"};
+    /// @}
+
     /// @brief Default-construct, reading the cap from @ref option::GraphTilingMemoryCap.
     APIARY_EXPOSE AxisTiling() = default;
 

@@ -912,6 +912,23 @@ that the structural search is switched off, that a tagged tensor is read by no
 two-operand contraction, that the decomposed form is not symbolically cheaper,
 that no candidate axis set brings the largest intermediate under the cap.
 
+The same report is there as records a program can read. Every pass keeps a
+``Decision`` for each thing it applied, declined or noted: a stable ``code``
+such as ``"slab-streaming.streamed-read"``, the ``text`` the report prints, the
+``tensors`` and node it is about, and named ``facts`` with units.
+
+.. code-block:: python
+
+    for d in pm.decisions:                    # every pass's, in pipeline order
+        if d.code == "slab-streaming.streamed-read":
+            print(d.tensors, d.fact("block"), d.fact("bytes"))
+    declined = [d for d in some_pass.decisions if d.kind == cg.DecisionKind.Declined]
+
+Match the code, not the words: the words can improve, the codes do not change.
+``g.decisions`` holds what the last ``optimize()`` decided. A decline a pass has
+not yet given a code is still a record, with an empty ``code`` and its words in
+``reason``.
+
 :option:`--einsums:pass:verbosity` supplies a level only where a program has not
 chosen its own with ``set_verbosity``. Level 1 is a summary line per pass, 2 is
 each modification and each declined candidate, 3 is the per-candidate detail

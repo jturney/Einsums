@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -896,11 +897,18 @@ TEST_CASE("SlabStreaming reads an update-backed tensor from its entry only befor
     manager.add(std::make_shared<cg::passes::Materialization>());
     graph.apply(manager);
     CHECK(stream->num_streamed() == 1);
-    auto const declined = [&](std::string_view words) {
-        return std::ranges::any_of(stream->skip_reasons(), [&](auto const &skip) { return skip.first.find(words) != std::string::npos; });
+    auto const decided = [&](cg::Reason const &reason) {
+        std::vector<cg::Decision> out;
+        std::ranges::copy_if(stream->decisions(), std::back_inserter(out), [&](cg::Decision const &d) { return d.code == reason.code; });
+        return out;
     };
-    CHECK(declined("read after a write of it"));
-    CHECK(declined("update-backed"));
+    CHECK(decided(cg::passes::SlabStreaming::ReadAfterUpdate).size() == 1);
+    // The one read before the write is streamed, from the entry, in blocks of four columns.
+    auto const streamed = decided(cg::passes::SlabStreaming::StreamedRead);
+    REQUIRE(streamed.size() == 1);
+    CHECK(streamed.at(0).tensors == std::vector<std::string>{"t"});
+    CHECK(streamed.at(0).fact("block") == 4);
+    CHECK(streamed.at(0).fact("extent") == 16);
 
     RuntimeTensor<double> expected = t0;
     for (int replay = 0; replay < 2; ++replay) {
@@ -1195,4 +1203,30 @@ TEST_CASE("last_run counts every read and write of a backing, however a pass mov
             CHECK(run.bytes_read == 4 * 3 * sizeof(double));
         }
     }
+}
+
+// A contraction that writes an update-backed tensor is never streamed: the storage holds the value the
+// replay started from until the publish, and later readers want the new one in memory.
+TEST_CASE("SlabStreaming declines to stream the contraction that writes an update-backed tensor", "[TensorIO][Backing]") {
+    TempFile const tmp("update_writer.etn");
+    write_entry(tmp.path, "t", filled<double>("t", {4, 16}, 0.5));
+    auto const a = filled<double>("A", {4, 4}, 0.125);
+    auto const r = filled<double>("R", {4, 16}, 0.25);
+
+    cg::Graph graph("update_writer");
+    auto     &t = graph.declare_runtime_tensor<double>("t", tensor_io::etn_backing(tmp.path, "t", false, {}, true));
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &t, 1.0, a, r);
+    }
+    auto stream = std::make_shared<cg::passes::SlabStreaming>();
+    stream->set_slab_budget(static_cast<std::int64_t>(4 * 4 * sizeof(double)));
+    cg::PassManager manager;
+    manager.add(stream);
+    graph.apply(manager);
+    CHECK(stream->num_written() == 0);
+    auto const decisions = stream->decisions();
+    CHECK(std::ranges::count_if(decisions, [](cg::Decision const &d) {
+              return d.code == cg::passes::SlabStreaming::WriteUpdateBacked.code && d.kind == cg::DecisionKind::Declined;
+          }) == 1);
 }

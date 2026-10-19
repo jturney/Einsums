@@ -9,6 +9,7 @@
 #include <Einsums/Comm/Collectives.hpp>
 #include <Einsums/ComputeGraph/Approximation.hpp>
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
+#include <Einsums/ComputeGraph/Decision.hpp>
 #include <Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp>
 #include <Einsums/ComputeGraph/Detail/MaintainedViews.hpp>
 #include <Einsums/ComputeGraph/Detail/RunContext.hpp>
@@ -611,6 +612,9 @@ struct GraphState {
 
     /// Summary of the last optimize() run (see explain()).
     std::string _last_optimize_report;
+
+    /// The decisions behind _last_optimize_report.
+    std::vector<Decision> _last_decisions;
 
     /// Durable slot redirects recorded by redirect_slot(): key resolves to
     /// value's buffer. Chains are collapsed at insert, so values are always
@@ -1678,6 +1682,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * profitability-gate skips). Empty until optimize() has run.
      */
     APIARY_EXPOSE APIARY_GETTER("explain") [[nodiscard]] std::string const &explain() const { return _last_optimize_report; }
+
+    /// @brief What the last optimize() decided, as records: the ones @ref explain prints from.
+    /// @return Every pass's decisions, in pipeline order. Empty until optimize() has run.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("decisions") [[nodiscard]] std::vector<Decision> const &decisions() const { return _last_decisions; }
 
     /**
      * @brief Apply a single pass by type (convenience).

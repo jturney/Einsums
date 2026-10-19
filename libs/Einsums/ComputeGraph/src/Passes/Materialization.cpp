@@ -357,7 +357,9 @@ bool Materialization::store_written_backings(Graph &graph) {
         }
         groups.emplace_back(use->last_writer() + 1, std::vector<Node>{store_node(handle, tid)});
         ++_num_stored;
-        report(2, fmt::format("store write-backed tensor '{}' into {} after its last writer", handle.name, handle.backing->describe()));
+        applied(Stored,
+                fmt::format("store write-backed tensor '{}' into {} after its last writer", handle.name, handle.backing->describe()),
+                Decision{.tensors = {handle.name}}, 2);
     }
     if (groups.empty()) {
         return false;
@@ -428,7 +430,8 @@ bool Materialization::publish_updates(Graph &graph) {
         };
         appended.push_back(std::move(node));
         _num_published += group.handles.size();
-        report(2, fmt::format("publish update-backed tensor(s) {} at the end of the replay, in one step", fmt::join(names, ", ")));
+        applied(Published, fmt::format("publish update-backed tensor(s) {} at the end of the replay, in one step", fmt::join(names, ", ")),
+                Decision{.tensors = names}, 2);
     }
     if (appended.empty()) {
         return false;
@@ -579,7 +582,8 @@ bool Materialization::run(Graph &graph) {
         // saved.
         if (!used && (handle.is_intermediate || handle.backing)) {
             _num_unused++;
-            report(2, fmt::format("deferred tensor '{}' is used by no node; left unallocated", handle.name));
+            note(Unused, fmt::format("deferred tensor '{}' is used by no node; left unallocated", handle.name),
+                 Decision{.tensors = {handle.name}});
             continue;
         }
         // A tensor another pass already gave a lifecycle to is not this pass's to give a second
@@ -591,7 +595,8 @@ bool Materialization::run(Graph &graph) {
         // the chain against itself for nothing. Name-keyed, matching what the setup-body arm above
         // already does through already_materialized_in and for the same reason.
         if (already_materialized_in(graph, handle.name)) {
-            report(2, fmt::format("deferred tensor '{}' already has a Materialize node; left to it", handle.name));
+            note(AlreadyMaterialized, fmt::format("deferred tensor '{}' already has a Materialize node; left to it", handle.name),
+                 Decision{.tensors = {handle.name}});
             continue;
         }
         add_req(handle.tensor_ptr, insert_pos, /*owns_tid=*/true, &graph, tid);
@@ -624,8 +629,9 @@ bool Materialization::run(Graph &graph) {
         }
         if (!used && (intermediate || backed)) {
             _num_unused++;
-            report(2,
-                   fmt::format("deferred tensor '{}' is used by no node of '{}'; left unallocated", handle.name, h.handle_owner->name()));
+            note(Unused,
+                 fmt::format("deferred tensor '{}' is used by no node of '{}'; left unallocated", handle.name, h.handle_owner->name()),
+                 Decision{.tensors = {handle.name}});
             continue;
         }
         add_req(handle.tensor_ptr, h.owning_node_index, /*owns_tid=*/false, h.handle_owner, h.tid);
@@ -789,7 +795,8 @@ bool Materialization::run(Graph &graph) {
             if (auto const body_tid = body_tid_for(*body, handle.tensor_ptr); body_tid.has_value()) {
                 auto body_nodes = lifecycle_for(handle, *body_tid);
                 // Named after the body the search FOUND, not the node at the request's position.
-                report(2, fmt::format("materialize deferred tensor '{}' inside setup body '{}'", handle.name, body->name()));
+                applied(Materialized, fmt::format("materialize deferred tensor '{}' inside setup body '{}'", handle.name, body->name()),
+                        Decision{.graph = body->name(), .tensors = {handle.name}}, 2);
                 insert_at_front(*body, std::move(body_nodes));
                 continue;
             }
@@ -802,8 +809,10 @@ bool Materialization::run(Graph &graph) {
         TensorId const emit_tid  = r.owns_tid ? r.tid : graph.find_or_register_tensor_ptr(handle);
         auto           new_nodes = lifecycle_for(handle, emit_tid);
         EINSUMS_LOG_INFO("Materialization: materialize({}) at position {} (owns_tid={})", handle.name, r.position, r.owns_tid);
-        report(2, fmt::format("materialize deferred tensor '{}' at position {}{}", handle.name, r.position,
-                              init_of(handle) != InitKind::None ? " (+initialize)" : ""));
+        applied(Materialized,
+                fmt::format("materialize deferred tensor '{}' at position {}{}", handle.name, r.position,
+                            init_of(handle) != InitKind::None ? " (+initialize)" : ""),
+                Decision{.tensors = {handle.name}, .facts = {Fact{.name = "position", .value = static_cast<double>(r.position)}}}, 2);
         insertions.push_back({.position = r.position, .new_nodes = std::move(new_nodes)});
     }
 
@@ -858,13 +867,16 @@ bool Materialization::run(Graph &graph) {
             }
             if (!used) {
                 _num_unused++;
-                report(2, fmt::format("setup-body tensor '{}' inside '{}' is used by no node; left unallocated", handle.name, setup_label));
+                note(Unused,
+                     fmt::format("setup-body tensor '{}' inside '{}' is used by no node; left unallocated", handle.name, setup_label),
+                     Decision{.tensors = {handle.name}});
                 continue;
             }
             for (auto &node : lifecycle_for(handle, tid)) {
                 body_lifecycle.push_back(std::move(node));
             }
-            report(2, fmt::format("materialize setup-body scratch '{}' inside '{}'", handle.name, setup_label));
+            applied(Materialized, fmt::format("materialize setup-body scratch '{}' inside '{}'", handle.name, setup_label),
+                    Decision{.graph = body.name(), .tensors = {handle.name}}, 2);
         }
         if (!body_lifecycle.empty()) {
             insert_at_front(body, std::move(body_lifecycle));
@@ -886,8 +898,14 @@ bool Materialization::run(Graph &graph) {
     modified = store_written_backings(graph) || modified;
     modified = publish_updates(graph) || modified;
 
-    report(1, fmt::format("materialized {} deferred tensor(s) ({} initialized, {} of them from a backing, {} unused and left unallocated)",
-                          _num_materialized, _num_initialized, _num_loaded, _num_unused));
+    note(Summary,
+         fmt::format("materialized {} deferred tensor(s) ({} initialized, {} of them from a backing, {} unused and left unallocated)",
+                     _num_materialized, _num_initialized, _num_loaded, _num_unused),
+         Decision{.facts = {Fact{.name = "materialized", .value = static_cast<double>(_num_materialized)},
+                            Fact{.name = "initialized", .value = static_cast<double>(_num_initialized)},
+                            Fact{.name = "loaded", .value = static_cast<double>(_num_loaded)},
+                            Fact{.name = "unused", .value = static_cast<double>(_num_unused)}}},
+         1);
     return modified;
 }
 

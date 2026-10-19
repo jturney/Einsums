@@ -112,13 +112,49 @@ std::string_view pass_tier_name(PassTier tier) {
     return "unknown";
 }
 
-void OptimizerPass::report(int level, std::string_view message) const {
+void OptimizerPass::print_line(int level, std::string_view message) const {
     if (_verbosity >= level) {
         fmt::print(stderr, "[{}] {}\n", name(), message);
     }
 }
 
+void OptimizerPass::report(int level, std::string_view message) const {
+    _decisions.push_back(Decision{.kind = DecisionKind::Note, .pass_name = name(), .text = std::string{message}, .level = level});
+    print_line(level, message);
+}
+
+void OptimizerPass::applied(Reason const &reason, std::string text, Decision about, int level) const {
+    about.kind      = DecisionKind::Applied;
+    about.pass_name = name();
+    about.code      = std::string{reason.code};
+    about.reason    = std::string{reason.text};
+    about.text      = std::move(text);
+    about.level     = level;
+    print_line(level, about.text);
+    _decisions.push_back(std::move(about));
+}
+
+void OptimizerPass::note(Reason const &reason, std::string text, Decision about, int level) const {
+    about.kind      = DecisionKind::Note;
+    about.pass_name = name();
+    about.code      = std::string{reason.code};
+    about.reason    = std::string{reason.text};
+    about.text      = std::move(text);
+    about.level     = level;
+    print_line(level, about.text);
+    _decisions.push_back(std::move(about));
+}
+
+void OptimizerPass::note_skip(Reason const &reason, std::string_view detail, Decision about) const {
+    about.code = std::string{reason.code};
+    record_skip(reason.text, detail, std::move(about));
+}
+
 void OptimizerPass::note_skip(std::string_view reason, std::string_view detail) const {
+    record_skip(reason, detail, Decision{});
+}
+
+void OptimizerPass::record_skip(std::string_view reason, std::string_view detail, Decision about) const {
     auto hit = std::ranges::find_if(_skips, [&](auto const &e) { return e.first == reason; });
     if (hit == _skips.end()) {
         _skips.emplace_back(std::string(reason), 1);
@@ -126,11 +162,19 @@ void OptimizerPass::note_skip(std::string_view reason, std::string_view detail) 
         hit->second++;
     }
 
+    about.kind      = DecisionKind::Declined;
+    about.pass_name = name();
+    about.reason    = std::string{reason};
+    about.detail    = std::string{detail};
+    about.text      = about.reason;
+    about.level     = 3;
+    _decisions.push_back(std::move(about));
+
     if (_verbosity >= 3) {
         if (detail.empty()) {
-            report(3, fmt::format("declined: {}", reason));
+            print_line(3, fmt::format("declined: {}", reason));
         } else {
-            report(3, fmt::format("declined: {} ({})", reason, detail));
+            print_line(3, fmt::format("declined: {} ({})", reason, detail));
         }
     }
 }
@@ -146,6 +190,23 @@ bool OptimizerPass::approximate(Graph &graph, ApproximationRecord record) const 
     }
     graph.note_approximation(std::move(record));
     return true;
+}
+
+void OptimizerPass::name_graph(std::size_t from, std::string_view graph) {
+    for (std::size_t i = from; i < _decisions.size(); ++i) {
+        if (_decisions[i].graph.empty()) {
+            _decisions[i].graph = std::string{graph};
+        }
+    }
+}
+
+std::vector<Decision> PassManager::decisions() const {
+    std::vector<Decision> out;
+    for (auto const &pass : _passes) {
+        auto const mine = pass->decisions();
+        out.insert(out.end(), mine.begin(), mine.end());
+    }
+    return out;
 }
 
 std::vector<std::pair<std::string, std::size_t>> OptimizerPass::skip_reasons() const {
@@ -460,7 +521,9 @@ bool apply_single_pass(OptimizerPass &pass, Graph &graph) {
 }
 
 bool run_pass_tree(OptimizerPass &pass, Graph &graph) {
-    bool modified = pass.run(graph);
+    std::size_t const from     = pass.num_decisions();
+    bool              modified = pass.run(graph);
+    pass.name_graph(from, graph.name());
     if (pass.recurse_into_subgraphs()) {
         // The children are COLLECTED before any of them is run, and that is load-bearing rather
         // than tidy. A pass whose effect on a body lands in the parent -- a region rewrite
@@ -570,9 +633,11 @@ bool PassManager::run(Graph &graph) {
             // descendants (we don't snapshot them).
             auto saved_nodes = graph.nodes();
 
-            bool const modified = pass->run(graph);
-            auto       t1       = std::chrono::high_resolution_clock::now();
-            double     ms       = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            std::size_t const from     = pass->num_decisions();
+            bool const        modified = pass->run(graph);
+            pass->name_graph(from, graph.name());
+            auto   t1 = std::chrono::high_resolution_clock::now();
+            double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
             EINSUMS_LOG_INFO("PassManager [analyze]: pass '{}' {} the graph ({} -> {} nodes, {:.2f} ms)", pass->name(),
                              modified ? "would modify" : "did not modify", nodes_before, graph.num_nodes(), ms);

@@ -274,11 +274,14 @@ def iteration(ints_path, amps_path, energy, d1, d2):
 
 
 def print_explanation(manager):
-    """What SlabStreaming did and the peak MemoryPlanning found, from the pass report."""
-    for line in manager.explain().splitlines():
-        _, _, entry = line.partition("] ")
-        if entry.startswith(("SlabStreaming:", "MemoryPlanning: peak")):
-            print(f"    | {entry}")
+    """What SlabStreaming did, and the peak MemoryPlanning planned, from the passes' decisions."""
+    for d in manager.decisions:
+        if d.kind == cg.DecisionKind.Applied and d.pass_name == "SlabStreaming":
+            text = d.text if d.text.startswith(d.pass_name) else f"{d.pass_name}: {d.text}"
+            print(f"    | {text}")
+        elif d.code == "memory-planning.peak":
+            # MiB, as the pass's own report prints it.
+            print(f"    | MemoryPlanning: peak {d.fact('peak') / 2**20:.2f} MB of {d.fact('total') / 2**20:.2f} MB total")
 
 
 def print_measured(run):
