@@ -128,8 +128,11 @@ def _chain_over_spaces():
     first is cheaper term for term; these extents, three occupied, two virtual
     and six over s, make the second cheaper, 54 against 90.
     """
+    # A registry of its own: the process-wide one may already hold an "occ" another test declared
+    # differently, and then this registration fails depending on which tests ran first.
     graph = cg.Graph("spaces")
-    registry = graph.space_registry
+    registry = cg.SpaceRegistry()
+    graph.set_space_registry(registry)
     occ = registry.register_space(cg.index_space("occ", "o"))
     virt = registry.register_space(cg.index_space("virt", "v"))
     small = registry.register_space(cg.index_space("small", "s"))
