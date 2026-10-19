@@ -11,18 +11,27 @@
 
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class Graph;
+class ExecutionObserver;
+struct Node;
+struct RunMetrics;
+struct TensorBacking;
+enum class EventKind : std::uint8_t;
 
 namespace detail {
 
@@ -59,6 +68,7 @@ class RunContext {
     /// before the first replay) from being freed without ever having been counted. The samples of
     /// the previous replay are dropped.
     void begin_replay(std::uint64_t held) {
+        _start = std::chrono::steady_clock::now();
         _live.store(static_cast<std::int64_t>(held), std::memory_order_relaxed);
         _peak.store(static_cast<std::int64_t>(held), std::memory_order_relaxed);
         std::scoped_lock const lock(_mutex);
@@ -100,6 +110,24 @@ class RunContext {
         return std::exchange(_samples, {});
     }
 
+    /// Attach @p observer to every replay of the tree; null detaches. Between replays only.
+    void set_observer(std::shared_ptr<ExecutionObserver> observer) {
+        std::scoped_lock const lock(_mutex);
+        _observer = std::move(observer);
+        _active.store(_observer.get(), std::memory_order_release);
+    }
+
+    /// The observer to tell, or null: one atomic load, which is all an unobserved replay pays.
+    [[nodiscard]] ExecutionObserver *observer() const noexcept { return _active.load(std::memory_order_acquire); }
+
+    /// Stop telling the observer anything, after it threw; it stays held until replaced.
+    void detach_observer() noexcept { _active.store(nullptr, std::memory_order_release); }
+
+    /// Milliseconds since the outermost replay began.
+    [[nodiscard]] double elapsed_ms() const noexcept {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _start).count();
+    }
+
   private:
     std::atomic<int>           _depth{0};
     std::atomic<std::int64_t>  _live{0};
@@ -107,6 +135,39 @@ class RunContext {
     std::atomic<std::uint64_t> _arena{0};
     std::mutex                 _mutex;
     std::vector<RunSample>     _samples;
+
+    std::shared_ptr<ExecutionObserver>    _observer;
+    std::atomic<ExecutionObserver *>      _active{nullptr};
+    std::chrono::steady_clock::time_point _start{std::chrono::steady_clock::now()};
+};
+
+/// @name Telling the observer
+/// Each does nothing when no observer is attached, and detaches one that throws.
+/// @{
+/// The outermost replay of @p graph began, or ended with @p run measured.
+EINSUMS_EXPORT void notify_replay(RunContext &context, EventKind kind, Graph const &graph, RunMetrics const *run);
+/// @p node of @p graph began, or ended after @p ms.
+EINSUMS_EXPORT void notify_node(RunContext &context, EventKind kind, Graph const &graph, Node const &node, double ms);
+/// @p bytes of @p tensor's storage were read, written or published.
+EINSUMS_EXPORT void notify_io(RunContext &context, EventKind kind, std::string_view tensor, TensorBacking const &backing,
+                              std::uint64_t bytes);
+/// @}
+
+/// Tells the observer a node began when made, and that it ended, however it ends, when destroyed.
+class EINSUMS_EXPORT NodeObservation {
+  public:
+    NodeObservation(RunContext &context, Graph const &graph, Node const &node);
+    ~NodeObservation();
+    NodeObservation(NodeObservation const &)            = delete;
+    NodeObservation &operator=(NodeObservation const &) = delete;
+    NodeObservation(NodeObservation &&)                 = delete;
+    NodeObservation &operator=(NodeObservation &&)      = delete;
+
+  private:
+    RunContext                           *_context{nullptr}; ///< Null when nothing observes.
+    Graph const                          &_graph;
+    Node const                           &_node;
+    std::chrono::steady_clock::time_point _start;
 };
 
 } // namespace detail

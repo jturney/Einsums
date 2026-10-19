@@ -22,6 +22,7 @@
 #include <Einsums/ComputeGraph/GateFlags.hpp>
 #include <Einsums/ComputeGraph/InterfaceManifest.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Observer.hpp>
 #include <Einsums/ComputeGraph/RunMetrics.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
@@ -1769,6 +1770,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     void share_run_context(Graph &child);
+
+    /**
+     * @brief Attach @p observer to every replay of this graph and of every body under it.
+     * @param[in] observer What hears the replays; null detaches the one attached.
+     *
+     * The observer belongs to the graph's tree, so attaching it to a body attaches it to the
+     * graph that holds the body too. Attach between replays, not during one.
+     * @see ExecutionObserver
+     * @see EventLog
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void set_observer(std::shared_ptr<ExecutionObserver> observer) { _run_context->set_observer(std::move(observer)); }
 
     /// @brief The run context this graph and its bodies share.
     /// @return The context, never null.

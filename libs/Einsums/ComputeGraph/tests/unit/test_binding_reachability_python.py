@@ -44,6 +44,8 @@ import einsums._core.graph as core
 #: fail, so the table cannot rot in any direction.
 EXPECTED_UNCONSTRUCTIBLE = {
     "Executor": "abstract base; exposed so a concrete executor's binding has a bound direct base",
+    "ExecutionObserver": "base of EventLog, exposed so Graph.set_observer can take one; Python observes through the log, "
+    "not a subclass, since a call into Python per node would serialize the executors",
     "OptimizerPass": "abstract base; exposed so a concrete pass's binding has a bound direct base, "
                      "without which PassManager.add refuses the pass as an unrelated type",
     "RegionRewrite": "abstract base between OptimizerPass and its region-rewriting clients, for the same reason",

@@ -141,6 +141,7 @@ void Graph::execute() {
     LeaveReplay const leave{*_run_context};
     if (outermost) {
         begin_run_metrics();
+        detail::notify_replay(*_run_context, EventKind::ReplayStart, *this, nullptr);
     }
 
     // Rebuild when the order is unknown OR a pass vouched for the order via
@@ -249,7 +250,9 @@ void Graph::execute() {
             }
         }
 
-        auto t_start = std::chrono::steady_clock::now();
+        // An attached observer hears the node begin here and end however this iteration ends.
+        detail::NodeObservation const observed(*_run_context, *this, node);
+        auto                          t_start = std::chrono::steady_clock::now();
 
         if (node.kind == OpKind::HostToDevice) {
             // H2D transfer.
@@ -535,6 +538,9 @@ void Graph::execute() {
     contribute_run_samples(outermost);
     if (outermost) {
         end_run_metrics(replay_ms);
+        if (_run_context->observer() != nullptr) {
+            detail::notify_replay(*_run_context, EventKind::ReplayEnd, *this, &last_run());
+        }
     }
     finish_replay_thread_plan(replay_ms);
 }
@@ -545,6 +551,7 @@ void Graph::execute(Executor &executor) {
     LeaveReplay const leave{*_run_context};
     if (outermost) {
         begin_run_metrics();
+        detail::notify_replay(*_run_context, EventKind::ReplayStart, *this, nullptr);
     }
     // As the argument-less overload: a caller reaching a parallel backend
     // directly gets the same guarantee about its operands' current buffers.
@@ -594,6 +601,9 @@ void Graph::execute(Executor &executor) {
     contribute_run_samples(outermost);
     if (outermost) {
         end_run_metrics(replay_ms);
+        if (_run_context->observer() != nullptr) {
+            detail::notify_replay(*_run_context, EventKind::ReplayEnd, *this, &last_run());
+        }
     }
     finish_replay_thread_plan(replay_ms);
 }

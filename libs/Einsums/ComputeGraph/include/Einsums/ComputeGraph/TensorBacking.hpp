@@ -31,6 +31,10 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
+namespace detail {
+class RunContext;
+} // namespace detail
+
 /**
  * @brief Read one slab of a backed tensor.
  *
@@ -59,6 +63,12 @@ using SlabWriter = std::function<void(void const *source, std::vector<std::pair<
  * @versionadded{2.0.0}
  */
 struct BackingCounters {
+    /// The run context of the graph that accepted the backing, which tells an attached observer
+    /// (@ref ExecutionObserver) what the storage moves.
+    std::shared_ptr<detail::RunContext> context;
+    /// The backed tensor's name, for those events.
+    std::string tensor;
+
     std::atomic<std::uint64_t> bytes_read{0};    ///< Bytes read from the storage.
     std::atomic<std::uint64_t> bytes_written{0}; ///< Bytes written to it.
     std::atomic<std::uint64_t> reads{0};         ///< Slab reads, a whole load counting as one.

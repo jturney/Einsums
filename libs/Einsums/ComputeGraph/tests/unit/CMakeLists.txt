@@ -73,6 +73,7 @@ set(ComputeGraphTests
     MultiTermFactorization.cpp
     Pass_ScratchPrivatization.cpp
     Decisions.cpp
+    ExecutionObserver.cpp
     RunMetrics.cpp
     SaveLoad.cpp
     SetupSubgraph.cpp

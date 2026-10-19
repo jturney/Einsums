@@ -112,6 +112,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Executor.hpp
     Einsums/ComputeGraph/StringDispatch.hpp
     Einsums/ComputeGraph/Decision.hpp
+    Einsums/ComputeGraph/Observer.hpp
     Einsums/ComputeGraph/RunMetrics.hpp
     Einsums/ComputeGraph/TensorBacking.hpp
     Einsums/ComputeGraph/TensorHandle.hpp
@@ -168,6 +169,7 @@ set(ComputeGraphSources
     MaintainedViews.cpp
     StandIns.cpp
     BackedWrites.cpp
+    Observer.cpp
     TensorBacking.cpp
     SymbolicExtents.cpp
     GroupedBatchedGemm.cpp

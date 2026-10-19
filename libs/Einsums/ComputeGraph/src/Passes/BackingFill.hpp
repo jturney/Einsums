@@ -16,6 +16,8 @@
  * every element lands where the tensor indexes it.
  */
 
+#include <Einsums/ComputeGraph/Detail/RunContext.hpp>
+#include <Einsums/ComputeGraph/Observer.hpp>
 #include <Einsums/ComputeGraph/TensorBacking.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
@@ -27,19 +29,25 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes::detail)
 
-/// Count a read of @p bytes from @p backing, for Graph::last_run.
+/// Count a read of @p bytes from @p backing, for Graph::last_run, and tell an attached observer.
 inline void count_read(TensorBacking const &backing, std::size_t bytes) noexcept {
     if (backing.counters) {
         backing.counters->reads.fetch_add(1, std::memory_order_relaxed);
         backing.counters->bytes_read.fetch_add(bytes, std::memory_order_relaxed);
+        if (backing.counters->context) {
+            compute_graph::detail::notify_io(*backing.counters->context, EventKind::Read, backing.counters->tensor, backing, bytes);
+        }
     }
 }
 
-/// Count a write of @p bytes to @p backing, for Graph::last_run.
+/// Count a write of @p bytes to @p backing, for Graph::last_run, and tell an attached observer.
 inline void count_write(TensorBacking const &backing, std::size_t bytes) noexcept {
     if (backing.counters) {
         backing.counters->writes.fetch_add(1, std::memory_order_relaxed);
         backing.counters->bytes_written.fetch_add(bytes, std::memory_order_relaxed);
+        if (backing.counters->context) {
+            compute_graph::detail::notify_io(*backing.counters->context, EventKind::Write, backing.counters->tensor, backing, bytes);
+        }
     }
 }
 

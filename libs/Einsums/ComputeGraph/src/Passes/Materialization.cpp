@@ -425,6 +425,10 @@ bool Materialization::publish_updates(Graph &graph) {
             for (TensorBacking const *member : members) {
                 if (member->counters) {
                     member->counters->publishes.fetch_add(1, std::memory_order_relaxed);
+                    if (member->counters->context) {
+                        compute_graph::detail::notify_io(*member->counters->context, EventKind::Publish, member->counters->tensor, *member,
+                                                         0);
+                    }
                 }
             }
         };

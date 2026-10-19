@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Detail/WidthGuard.hpp>
 #include <Einsums/ComputeGraph/Executor.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/ComputeGraph/Observer.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
@@ -34,7 +35,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 namespace {
 
 /// Execute a single node with timing, recording results in the graph.
-void execute_node(Node &node) {
+void execute_node(Graph const &graph, Node &node) {
+    // Tells an attached observer the node began here and ended however it ends; with none
+    // attached, one atomic load.
+    detail::NodeObservation const observed(*graph.run_context(), graph, node);
     if (node.execute) {
         // Prefer the synchronous executor when available.
         node.execute();
@@ -72,7 +76,7 @@ void execute_all_timed(Graph &graph) {
     std::vector<NodeTimingSample> samples;
     samples.reserve(nodes.size());
     for (auto &node : nodes) {
-        samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = timed_ms([&node] { execute_node(node); })});
+        samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = timed_ms([&graph, &node] { execute_node(graph, node); })});
     }
     graph.record_node_timings(std::move(samples));
 }
@@ -137,13 +141,13 @@ void OpenMPExecutor::execute(Graph &graph) {
     for (auto const &group : levels) {
         if (group.size() == 1) {
             size_t const i = group[0];
-            node_ms[i]     = timed_ms([&nodes, i] { execute_node(nodes[i]); });
+            node_ms[i]     = timed_ms([&graph, &nodes, i] { execute_node(graph, nodes[i]); });
         } else {
 #    pragma omp parallel for schedule(dynamic)
             for (size_t g = 0; g < group.size(); g++) { // NOLINT(modernize-loop-convert)
                 size_t const i = group[g];
                 try {
-                    node_ms[i] = timed_ms([&nodes, i] { execute_node(nodes[i]); });
+                    node_ms[i] = timed_ms([&graph, &nodes, i] { execute_node(graph, nodes[i]); });
                 } catch (...) {
                     std::scoped_lock const lock(exc_mutex);
                     if (!first_exc) {
@@ -252,7 +256,10 @@ struct DataflowExecutor::Scaffold {
     /// confusing.
     std::vector<uint32_t> zone_ids;
     Graph const          *zone_graph{nullptr};
-    std::uint64_t         zone_version{0};
+
+    /// The graph being run, for the observer.
+    Graph const  *graph{nullptr};
+    std::uint64_t zone_version{0};
 
     /// Size the reused buffers for an n-node run and clear the per-run state.
     void reset(Graph &graph, size_t node_count);
@@ -310,10 +317,11 @@ waggle::ZoneSite const &dataflow_task_site() {
 } // namespace
 
 void DataflowExecutor::Scaffold::reset(Graph &graph, size_t node_count) {
-    nodes = &graph.nodes();
-    deps  = &graph.dependencies();
-    pool  = &task_pool::TaskPool::get_singleton();
-    n     = node_count;
+    this->graph = &graph;
+    nodes       = &graph.nodes();
+    deps        = &graph.dependencies();
+    pool        = &task_pool::TaskPool::get_singleton();
+    n           = node_count;
 
     // atomic<int> is neither movable nor copyable, so the counter vector can
     // only be resized by rebuilding it; same-size replays skip that.
@@ -530,9 +538,9 @@ void DataflowExecutor::Scaffold::run_node(size_t i) {
                 // false) takes the plain path: no thread count read or written.
                 if (widths_active && node.thread_width > 0) {
                     detail::WidthGuard const width(node.thread_width);
-                    execute_node(node);
+                    execute_node(*graph, node);
                 } else {
-                    execute_node(node);
+                    execute_node(*graph, node);
                 }
             });
         } catch (...) {
@@ -558,6 +566,9 @@ void DataflowExecutor::Scaffold::run_async_start(size_t i) {
         if (recording) {
             zone.emplace(dataflow_task_site(), zone_ids[i]);
         }
+        // An async node's two halves are separate tasks: the observer hears it begin here and end
+        // where the finish half completes.
+        detail::notify_node(*graph->run_context(), EventKind::NodeStart, *graph, node, 0.0);
         try {
             node.async_start();
         } catch (...) {
@@ -586,6 +597,7 @@ void DataflowExecutor::Scaffold::run_async_finish(size_t i) {
         } catch (...) {
             fail(std::current_exception());
         }
+        detail::notify_node(*graph->run_context(), EventKind::NodeEnd, *graph, node, node_ms[i].ms);
     }
     complete(i);
 }

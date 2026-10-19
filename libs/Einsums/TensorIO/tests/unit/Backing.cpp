@@ -1230,3 +1230,36 @@ TEST_CASE("SlabStreaming declines to stream the contraction that writes an updat
               return d.code == cg::passes::SlabStreaming::WriteUpdateBacked.code && d.kind == cg::DecisionKind::Declined;
           }) == 1);
 }
+
+TEST_CASE("An observer hears every read, write and publish of a backing", "[TensorIO][Backing][Observer]") {
+    TempFile const tmp("observed_update.etn");
+    write_entry(tmp.path, "t", filled<double>("t", {4, 3}, 0.5));
+    auto const a = filled<double>("A", {4, 4}, 0.125);
+    cg::Graph  graph("observed_update");
+    auto      &t = graph.declare_runtime_tensor<double>("t", tensor_io::etn_backing(tmp.path, "t", false, {}, true));
+    auto      &r = graph.declare_zero_runtime_tensor<double>("r", {4, 3});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &r, 1.0, a, t);
+        cg::permute("i,j <- i,j", 0.0, &t, 0.5, r);
+    }
+    materialize(graph);
+    auto log = std::make_shared<cg::EventLog>();
+    graph.set_observer(log);
+    graph.execute();
+
+    std::vector<cg::ExecutionEvent> io;
+    std::ranges::copy_if(log->events(), std::back_inserter(io), [](cg::ExecutionEvent const &e) {
+        return e.kind == cg::EventKind::Read || e.kind == cg::EventKind::Write || e.kind == cg::EventKind::Publish;
+    });
+    REQUIRE(io.size() == 3);
+    CHECK(io.at(0).kind == cg::EventKind::Read);
+    CHECK(io.at(1).kind == cg::EventKind::Write);
+    CHECK(io.at(2).kind == cg::EventKind::Publish);
+    CHECK(std::ranges::all_of(io, [](cg::ExecutionEvent const &e) { return e.tensor == "t"; }));
+    CHECK(io.at(0).bytes == 4 * 3 * sizeof(double));
+    CHECK(io.at(0).storage.starts_with("tensor_io.etn (entry=t"));
+    // In the order they happened, on one clock.
+    CHECK(io.at(0).at_ms <= io.at(1).at_ms);
+    CHECK(io.at(1).at_ms <= io.at(2).at_ms);
+}

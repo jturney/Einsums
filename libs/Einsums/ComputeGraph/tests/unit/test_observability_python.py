@@ -98,3 +98,32 @@ def test_last_run_counts_the_intermediates_the_graph_holds():
     for _ in range(2):
         g.execute()
         assert g.last_run().peak_bytes == 8 * 8 * 8
+
+
+def test_an_event_log_hears_the_replay_and_writes_a_chrome_trace(tmp_path):
+    import json
+
+    g = _product()
+    log = cg.EventLog()
+    g.set_observer(log)
+    g.execute()
+    events = log.events
+    kinds = [e.kind for e in events]
+    assert kinds[0] == cg.EventKind.ReplayStart
+    assert kinds[-1] == cg.EventKind.ReplayEnd
+    ends = [e for e in events if e.kind == cg.EventKind.NodeEnd]
+    assert len(ends) == g.num_nodes()
+    assert all(e.graph == "observed" and e.ms >= 0.0 and e.label for e in ends)
+    assert kinds.count(cg.EventKind.NodeStart) == len(ends)
+
+    path = tmp_path / "replay.json"
+    log.write_chrome_trace(str(path))
+    trace = json.loads(path.read_text())
+    spans = [t for t in trace["traceEvents"] if t["ph"] == "X"]
+    assert len(spans) == len(ends)
+    assert {t["name"] for t in spans} == {e.label for e in ends}
+
+    g.set_observer(None)
+    log.clear()
+    g.execute()
+    assert log.events == []

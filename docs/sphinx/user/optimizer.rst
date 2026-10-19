@@ -965,6 +965,25 @@ set beside ``MemoryPlanning.peak_memory``, which estimates the same peak with
 every tensor freed after its last use; FreeInsertion leaves intermediates under
 1 MiB allocated, so a graph of small intermediates holds more than the estimate.
 
+To hear a replay as it runs, attach an observer. ``cg.EventLog`` keeps every
+event: each node's start and end with its duration and thread, each read, write
+and publish of a backing with its bytes, and the replay's start and end.
+
+.. code-block:: python
+
+    log = cg.EventLog()
+    g.set_observer(log)
+    g.execute()
+    ends = [e for e in log.events if e.kind == cg.EventKind.NodeEnd]
+    log.write_chrome_trace("replay.json")   # open in ui.perfetto.dev
+
+An observer belongs to the graph and every body under it, and costs one pointer
+test per node while none is attached. In C++ a class derived from
+``ExecutionObserver`` hears the events as they happen, on the thread they happen
+on, so it has to be thread-safe; one that throws is detached and the replay goes
+on. Python has the log rather than a callback, because a call into Python per
+node would hold the parallel executors to one thread.
+
 What's next
 ===========
 
