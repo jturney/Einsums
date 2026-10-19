@@ -203,7 +203,7 @@ def test_the_ladder_iteration_agrees_with_numpy(water):
     assert abs(energies[0] - mp2) < 1e-12
 
 
-def _thc_arm(water_problem, iterations=_ITERATIONS, bound=1e-2, verbose=False):
+def _thc_arm(water_problem, iterations=_ITERATIONS, bound=1e-2):
     """The same iteration with the amplitude tagged and fitted on the grid."""
     graph, body, amplitude, energy = _capture_ladder(water_problem, "ladder_thc", iterations)
     graph.annotate_tag(amplitude, _G.ProvenanceTag.make("amplitude"))
@@ -226,8 +226,6 @@ def _thc_arm(water_problem, iterations=_ITERATIONS, bound=1e-2, verbose=False):
     # body's handle for the same buffer through the analysis phase rather than by itself.
     manager.add(cg.ProvenancePropagation())
     manager.add(factorization)
-    if verbose:
-        manager.set_verbosity(3)  # the cost line behind a decline
     fired = graph.apply(manager)
     return {
         "graph": graph, "body": body, "energy": energy, "fired": fired,
@@ -262,7 +260,7 @@ def test_the_amplitude_is_offered_and_the_pass_costs_the_whole_substitution(wate
     assert arm["graph"].approximations() == []
 
 
-def test_fitting_the_amplitude_alone_does_not_make_the_ladder_cheaper(water, capfd):
+def test_fitting_the_amplitude_alone_does_not_make_the_ladder_cheaper(water):
     """WHY it declines, as the cost line rather than as prose.
 
     The four-external ladder contracts a ``v^4`` integral against the amplitude.
@@ -279,12 +277,12 @@ def test_fitting_the_amplitude_alone_does_not_make_the_ladder_cheaper(water, cap
     from its own chain and contracting as written is cheaper than carrying the
     grid indices through a ``v^4`` integral.
     """
-    _arm = _thc_arm(water, verbose=True)
-    err = capfd.readouterr().err
-    assert "not symbolically cheaper" in err, err
+    arm = _thc_arm(water)
+    declines = [d for d in arm["pass"].decisions if d.code == "factorization.not-symbolically-cheaper"]
+    assert declines, [(d.code, d.detail) for d in arm["pass"].decisions]
     # The captured cost is on both sides of the comparison: the decomposed form is
     # the captured contraction PLUS the arithmetic that rebuilds the amplitude.
-    line = next(l for l in err.splitlines() if "not symbolically cheaper" in l)
+    line = declines[0].detail
     before, after = line.split(" vs ")
     # The detail names the rung that decided as well as the two costs, so the captured cost is
     # what stands between " vs " and that clause.

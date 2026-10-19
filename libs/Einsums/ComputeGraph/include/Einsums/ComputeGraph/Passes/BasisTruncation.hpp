@@ -83,6 +83,13 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT BasisTruncation : public OptimizerPass {
   public:
+    /// @name Reasons
+    /// The codes this pass records its decisions under (@ref Decision::code).
+    /// @{
+    static constexpr Reason RecipeRenamed{"basis-truncation.recipe-renamed",
+                                          "a denominator recipe now names the semicanonical orbital energies"};
+    /// @}
+
     /// @brief Default-construct. Explicit so the binding codegen has a constructor to annotate.
     APIARY_EXPOSE BasisTruncation() = default;
 

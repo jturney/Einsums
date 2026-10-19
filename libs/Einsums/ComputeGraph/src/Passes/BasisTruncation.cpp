@@ -942,7 +942,8 @@ bool BasisTruncation::run(Graph &graph) {
             }
             if (moved) {
                 graph.annotate_tag(tid, std::move(renamed));
-                report(2, fmt::format("the denominator recipe on '{}' now names '{}'", handle.name, energies_name()));
+                note(RecipeRenamed, fmt::format("the denominator recipe on '{}' now names '{}'", handle.name, energies_name()),
+                     Decision{.tensors = {handle.name, energies_name()}});
             }
         }
     }

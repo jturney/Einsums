@@ -584,15 +584,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      *
      * Levels: 0 = silent (default), 1 = summary (aggregate effect),
      * 2 = detail (each modification applied), 3 = trace (each candidate
-     * examined, including why it was rejected). Output goes to stderr,
-     * prefixed with the pass name. Usually set in bulk via
+     * examined, including why it was rejected). Output goes to the passes
+     * logger, prefixed with the pass name: standard error unless
+     * ``--einsums:log:destination`` says otherwise, at any log level. Usually set in bulk via
      * ``PassManager::set_verbosity`` rather than per pass.
      *
      * From level 2 up, ``PassManager::explain()`` also grows a "not applied"
      * section built from @ref skip_reasons - the aggregated form of what
      * level 3 narrates per candidate. Reach for that first when a pipeline
      * looks inert: the tally names the gate, and is a returned string rather
-     * than stderr noise you have to read past.
+     * than narration you have to read past.
      */
     APIARY_EXPOSE void set_verbosity(int level) { _verbosity = level; }
 
@@ -616,7 +617,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
 
   protected:
     /**
-     * @brief Emit ``[PassName] message`` to stderr when ``_verbosity >= level``.
+     * @brief Emit ``[PassName] message`` to the passes logger when ``_verbosity >= level``.
      *
      * Passes call this to narrate what they see and the rewrites they make:
      * @code
@@ -663,7 +664,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * ``reason`` must be a short, *shape-independent* phrase so repeated hits
      * aggregate into one counted line - "operands are not runtime tensors",
      * not "tensor 'Wmbej' (id=17) is not a runtime tensor". Put the specifics
-     * in ``detail``, which is emitted to stderr at verbosity 3 but never
+     * in ``detail``, which is printed at verbosity 3 but never
      * aggregated:
      *
      * @code
@@ -672,7 +673,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * @endcode
      *
      * Cheap enough to call on every rejected candidate: the aggregate is a
-     * small map keyed by reason, and the stderr line is formatted only when
+     * small map keyed by reason, and the printed line is formatted only when
      * verbosity warrants it.
      */
     EINSUMS_EXPORT void note_skip(std::string_view reason, std::string_view detail = {}) const;
@@ -903,7 +904,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * Propagates @p level to all currently-registered passes and to any added
      * afterward, and makes ``run()`` print a per-pass summary line
-     * (``name: MODIFIED N -> M nodes (T ms)``) to stderr. See
+     * (``name: MODIFIED N -> M nodes (T ms)``) to the passes logger. See
      * ``OptimizerPass::set_verbosity`` for the level meanings.
      *
      * @code

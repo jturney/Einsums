@@ -169,7 +169,7 @@ def test_the_truncation_and_the_quadrature_compose_on_one_energy(water):
     assert error != pytest.approx(abs(truncation.correction), rel=1e-9)
 
 
-def test_the_denominator_recipe_is_rewritten_to_name_the_semicanonical_energies(water, capfd):
+def test_the_denominator_recipe_is_rewritten_to_name_the_semicanonical_energies(water):
     """The one link between the two passes, and the pass that owns it says so.
 
     A recipe names its energy vectors by NAME. The truncation points the outer
@@ -182,10 +182,10 @@ def test_the_denominator_recipe_is_rewritten_to_name_the_semicanonical_energies(
 
     truncation = _truncation(water)
     manager = cg.PassManager()
-    manager.set_verbosity(2)
     manager.add(truncation)
     assert graph.apply(manager)
-    assert "the denominator recipe on 'D' now names 'fno_energies'" in capfd.readouterr().err
+    renamed = [d for d in truncation.decisions if d.code == "basis-truncation.recipe-renamed"]
+    assert [list(d.tensors) for d in renamed] == [["D", "fno_energies"]], [(d.code, d.text) for d in truncation.decisions]
 
     # Registered under the OLD name, which is what a caller who did not notice
     # would do: the recipe names a vector the quadrature was never given.

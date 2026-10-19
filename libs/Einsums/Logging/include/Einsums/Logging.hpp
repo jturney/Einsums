@@ -193,6 +193,12 @@ EINSUMS_EXPORT std::shared_ptr<spdlog::sinks::sink> get_spdlog_sink(std::string 
 
 EINSUMS_EXPORT EINSUMS_DETAIL_DECLARE_SPDLOG(einsums)
 
+/// The optimizer passes' narration: what a pass prints at the verbosity a caller set with
+/// ``set_verbosity`` or ``--einsums:pass:verbosity``. It writes wherever ``--einsums:log:destination``
+/// says, and only the pass verbosity decides what it prints: ``--einsums:log:level`` governs the
+/// library's log, and a caller who asked a pass to explain itself is not also asked to lower it.
+EINSUMS_EXPORT EINSUMS_DETAIL_DECLARE_SPDLOG(passes)
+
 EINSUMS_NAMESPACE_END(detail)
 
 EINSUMS_NAMESPACE_BEGIN()

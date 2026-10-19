@@ -114,7 +114,7 @@ std::string_view pass_tier_name(PassTier tier) {
 
 void OptimizerPass::print_line(int level, std::string_view message) const {
     if (_verbosity >= level) {
-        fmt::print(stderr, "[{}] {}\n", name(), message);
+        einsums::detail::get_passes_logger().info("[{}] {}", name(), message);
     }
 }
 
@@ -601,7 +601,7 @@ bool PassManager::run(Graph &graph) {
             _last_skipped.push_back(pass->name());
             EINSUMS_LOG_INFO("PassManager: skipping disabled pass '{}'", pass->name());
             if (_verbosity >= 1) {
-                fmt::print(stderr, "[PassManager] {}: DISABLED\n", pass->name());
+                einsums::detail::get_passes_logger().info("[PassManager] {}: DISABLED", pass->name());
             }
             continue;
         }
@@ -696,11 +696,11 @@ bool PassManager::run(Graph &graph) {
                 EINSUMS_LOG_INFO("PassManager: pass '{}' {} ({} -> {} nodes, {:.2f} ms)", pass->name(), modified ? "MODIFIED" : "no change",
                                  nodes_before, graph.num_nodes(), ms);
             }
-            // Per-pass summary to stderr when verbosity is enabled (independent of
-            // the logger's level so `pm.set_verbosity(1)` always shows it).
+            // Per-pass summary when verbosity is enabled. The passes logger is independent of
+            // the library's log level, so `pm.set_verbosity(1)` always shows it.
             if (_verbosity >= 1) {
-                fmt::print(stderr, "[PassManager] {}: {} ({} -> {} nodes, {:.2f} ms)\n", pass->name(), modified ? "MODIFIED" : "no change",
-                           nodes_before, graph.num_nodes(), ms);
+                einsums::detail::get_passes_logger().info("[PassManager] {}: {} ({} -> {} nodes, {:.2f} ms)", pass->name(),
+                                                          modified ? "MODIFIED" : "no change", nodes_before, graph.num_nodes(), ms);
             }
         }
     }
@@ -730,7 +730,8 @@ bool PassManager::run(Graph &graph) {
             check_read_only_phase(graph, *pass, structure_before);
             EINSUMS_LOG_INFO("PassManager: re-ran analysis pass '{}' after a structural change", pass->name());
             if (_verbosity >= 1) {
-                fmt::print(stderr, "[PassManager] {}: re-run (structure changed after the analysis phase)\n", pass->name());
+                einsums::detail::get_passes_logger().info("[PassManager] {}: re-run (structure changed after the analysis phase)",
+                                                          pass->name());
             }
         }
     }

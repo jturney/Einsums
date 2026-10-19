@@ -118,6 +118,28 @@ void init_logging(RuntimeConfiguration & /*config*/) {
     }
 #endif
 
+    // Pass narration: the same destination, at every level, since the pass verbosity alone decides
+    // what is printed. On the console it gets a sink of its own with a short pattern (spdlog's
+    // console sinks share one lock per stream, so lines never interleave); a file is opened once and
+    // shared, which gives its lines the log's pattern. The pattern is set before any shared sink is
+    // added, because a logger's pattern is applied to every sink it holds.
+    {
+        auto      &passes      = get_passes_logger();
+        auto const destination = config::get(option::LogDestination);
+        bool const console     = destination.empty() || destination == "cerr" || destination == "cout";
+        passes.sinks().clear();
+        if (console) {
+            passes.sinks().push_back(get_spdlog_sink(destination.empty() ? "cerr" : destination));
+            passes.set_pattern("[%H:%M:%S.%e] [%t] %v");
+        } else {
+            passes.sinks().push_back(sinks.front());
+        }
+#if defined(EINSUMS_HAVE_PROFILER)
+        passes.sinks().push_back(sinks.back());
+#endif
+        passes.set_level(spdlog::level::trace);
+    }
+
     EINSUMS_LOG_INFO("logging submodule has been initialized");
     EINSUMS_LOG_INFO("log level: {} (0=TRACE,1=DEBUG,2=INFO,3=WARN,4=ERROR,5=CRITICAL)", config::get(option::LogLevel));
 }

@@ -399,7 +399,7 @@ def _synthetic_program(name, naux=6, rows=4, cols=5, seed=7):
     return {"graph": graph, "three": three, "integrals": result}
 
 
-def test_a_threshold_that_drops_nothing_is_declined(capfd):
+def test_a_threshold_that_drops_nothing_is_declined():
     """A truncation that truncates nothing is a rename, and says so.
 
     Below every singular value of a full-rank spectrum every direction survives,
@@ -415,15 +415,13 @@ def test_a_threshold_that_drops_nothing_is_declined(capfd):
     manager = cg.PassManager()
     manager.add(cg.ProvenancePropagation())
     manager.add(factorization)
-    manager.set_verbosity(3)  # the reason is the detail behind the decline
 
     assert not program["graph"].apply(manager)
-    assert any("provider declined" in reason for reason, _count in factorization.skip_reasons), (
-        factorization.skip_reasons)
-    assert "rename rather than a truncation" in capfd.readouterr().err
+    declines = [d.detail for d in factorization.decisions if d.code == "factorization.provider-declined"]
+    assert any("rename rather than a truncation" in detail for detail in declines), factorization.skip_reasons
 
 
-def test_a_tensor_this_provider_was_not_given_is_declined(water, capfd):
+def test_a_tensor_this_provider_was_not_given_is_declined(water):
     """The claim that the provider holds the tensor it truncates is CHECKED.
 
     A truncation is only sound if the spectrum it read is the spectrum of the
@@ -439,10 +437,10 @@ def test_a_tensor_this_provider_was_not_given_is_declined(water, capfd):
     manager = cg.PassManager()
     manager.add(cg.ProvenancePropagation())
     manager.add(factorization)
-    manager.set_verbosity(3)
 
     assert not program["graph"].apply(manager)
-    assert "not the one this provider was given to truncate" in capfd.readouterr().err
+    declines = [d.detail for d in factorization.decisions if d.code == "factorization.provider-declined"]
+    assert any("not the one this provider was given to truncate" in detail for detail in declines), factorization.skip_reasons
 
 
 def test_a_threshold_outside_the_unit_interval_is_refused(water):

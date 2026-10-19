@@ -933,6 +933,9 @@ not yet given a code is still a record, with an empty ``code`` and its words in
 chosen its own with ``set_verbosity``. Level 1 is a summary line per pass, 2 is
 each modification and each declined candidate, 3 is the per-candidate detail
 behind a decline, including which rung of the cost comparison decided it.
+The narration goes where :option:`--einsums:log:destination` says, standard
+error by default, whatever the log level. It is for reading; a program or a test
+reads the same decisions from ``decisions``.
 
 When a rewrite produces a wrong number, :option:`--einsums:graph:dump-regions`
 prints the algebra each region rewrite raised, before and after, in the

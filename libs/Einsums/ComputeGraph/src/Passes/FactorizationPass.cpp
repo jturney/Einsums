@@ -705,7 +705,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             for (auto const &provider : registry().for_tag(entry.tag)) {
                 auto offer = provider->propose(graph, entry.tensor);
                 if (!offer) {
-                    note_skip("a provider declined", fmt::format("'{}': {}", provider->name(), offer.error()));
+                    note_skip(ProviderDeclined, fmt::format("'{}': {}", provider->name(), offer.error()));
                     continue;
                 }
                 FactorizationPlan plan = std::move(*offer);
@@ -1070,7 +1070,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             if (verdict.order >= 0) {
                 // The rung goes in the DETAIL and not in the reason: the reason is the tally's
                 // key, and a key that carried the rung would count one refusal as four.
-                note_skip("the decomposed form is not symbolically cheaper",
+                note_skip(NotSymbolicallyCheaper,
                           fmt::format("on '{}': {} vs {}, decided by {}", tagged_name, after.flops.to_string(ctx.registry),
                                       before.flops.to_string(ctx.registry), verdict.rung));
                 continue;
@@ -1448,7 +1448,7 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
     for (auto const &provider : registry().for_tag(tag)) {
         auto offer = provider->propose(graph, tagged_id);
         if (!offer) {
-            note_skip("a provider declined", fmt::format("'{}': {}", provider->name(), offer.error()));
+            note_skip(ProviderDeclined, fmt::format("'{}': {}", provider->name(), offer.error()));
             continue;
         }
         FactorizationPlan plan = std::move(*offer);
@@ -1617,7 +1617,7 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
         }
         auto const verdict = compare_explain(after, before, accept_ctx);
         if (verdict.order >= 0) {
-            note_skip("the fit and the quadrature together are not symbolically cheaper than the region they replace",
+            note_skip(PairNotSymbolicallyCheaper,
                       fmt::format("'{}' on '{}': {} vs {}, decided by {}", provider->name(), tagged_name,
                                   after.flops.to_string(ctx.registry), before.flops.to_string(ctx.registry), verdict.rung));
             continue;

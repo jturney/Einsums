@@ -24,6 +24,7 @@
 EINSUMS_NAMESPACE_BEGIN(detail)
 
 EINSUMS_DETAIL_DEFINE_SPDLOG(einsums, warn)
+EINSUMS_DETAIL_DEFINE_SPDLOG(passes, trace)
 
 spdlog::level::level_enum get_spdlog_level(std::string const &env) {
     try {
@@ -41,9 +42,12 @@ std::shared_ptr<spdlog::sinks::sink> get_spdlog_sink(std::string const &env) {
     // A TCP sink could be useful for MPI runs.
     if (env.empty()) {
         fmt::print(std::cerr, "Einsums given empty log destination. Using default instead (cerr).\n");
-    } else if (env == "cout") {
+        return std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
+    }
+    if (env == "cout") {
         return std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    } else if (env == "cerr") {
+    }
+    if (env == "cerr") {
         return std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
     }
     return std::make_shared<spdlog::sinks::basic_file_sink_mt>(env);

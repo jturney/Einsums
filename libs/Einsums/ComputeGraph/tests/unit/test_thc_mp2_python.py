@@ -298,7 +298,7 @@ def test_the_occupied_virtual_block_gets_a_proposal_from_per_axis_collocation(wa
     assert relative < 1e-3, f"the block fit is off by {relative:.3e}"
 
 
-def test_a_layout_whose_pairs_run_over_different_blocks_is_declined(water, capfd):
+def test_a_layout_whose_pairs_run_over_different_blocks_is_declined(water):
     """``[i,j,a,b]`` pairs occupied with occupied, which is a different fit.
 
     The chain writes axes 0 and 1 against one grid letter and axes 2 and 3
@@ -326,12 +326,10 @@ def test_a_layout_whose_pairs_run_over_different_blocks_is_declined(water, capfd
     factorization = _G.FactorizationPass(registry)
     manager = cg.PassManager()
     manager.add(factorization)
-    manager.set_verbosity(3)  # the reason is the detail behind the decline
 
     assert not graph.apply(manager)
-    assert any("provider declined" in reason for reason, _count in factorization.skip_reasons), (
-        factorization.skip_reasons)
-    assert "run over different blocks" in capfd.readouterr().err
+    declines = [d.detail for d in factorization.decisions if d.code == "factorization.provider-declined"]
+    assert any("run over different blocks" in detail for detail in declines), factorization.skip_reasons
 
 
 def test_the_grid_fit_reproduces_the_density_fitted_integrals(water):

@@ -35,6 +35,7 @@
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
+#include <Einsums/Logging.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TaskPool/WidthBudget.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -881,8 +882,9 @@ void Graph::finish_replay_thread_plan(double replay_ms) {
             apply_thread_plan(*this, _plan_candidate, pos);
         }
         if (config::get(option::PassVerbosity) >= 1) {
-            fmt::print(stderr, "[ThreadPlanning] trial on '{}': candidate replay {:.1f} ms vs incumbent replay {:.1f} ms; keeping the {}\n",
-                       _name, _plan_candidate_ms, replay_ms, candidate ? "re-planned widths" : "cold plan");
+            einsums::detail::get_passes_logger().info(
+                "[ThreadPlanning] trial on '{}': candidate replay {:.1f} ms vs incumbent replay {:.1f} ms; keeping the {}", _name,
+                _plan_candidate_ms, replay_ms, candidate ? "re-planned widths" : "cold plan");
         }
         _plan_incumbent.clear();
         _plan_incumbent.shrink_to_fit();

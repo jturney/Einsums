@@ -98,6 +98,17 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT FactorizationPass : public RegionRewrite {
   public:
+    /// @name Reasons
+    /// The codes this pass records its decisions under (@ref Decision::code).
+    /// @{
+    static constexpr Reason ProviderDeclined{"factorization.provider-declined", "a provider declined"};
+    static constexpr Reason NotSymbolicallyCheaper{"factorization.not-symbolically-cheaper",
+                                                   "the decomposed form is not symbolically cheaper"};
+    static constexpr Reason PairNotSymbolicallyCheaper{
+        "factorization.pair-not-symbolically-cheaper",
+        "the fit and the quadrature together are not symbolically cheaper than the region they replace"};
+    /// @}
+
     /// @brief Use the process-wide provider registry.
     APIARY_EXPOSE FactorizationPass() = default;
 

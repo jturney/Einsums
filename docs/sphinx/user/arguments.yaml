@@ -103,6 +103,10 @@
     Where log records go: ``cerr`` (the default), ``cout``, or any other value, which is taken as
     the name of a file to log to.
 
+    The optimization passes' narration (:option:`--einsums:pass:verbosity`) goes to the same place.
+    On the console it carries a time and thread prefix of its own; in a file it shares the log's
+    format.
+
 "einsums:log:format":
   added: "1.0.0"
   changed:
@@ -688,6 +692,10 @@
 
     A program that calls ``PassManager.set_verbosity`` chooses its own level and this leaves it alone;
     the option supplies a level only where nothing else did.
+
+    The narration goes where :option:`--einsums:log:destination` says, and is printed whatever
+    :option:`--einsums:log:level` is: that level governs the library's log, and a program that asked
+    the passes to explain themselves is not also asked to lower it.
 
     This is the only way to observe a **thread plan**. ``Graph.plan_threads()`` builds its planner
     directly rather than through a pass manager, so at level ``0`` it reports nothing and whether it

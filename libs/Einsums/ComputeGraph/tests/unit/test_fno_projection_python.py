@@ -185,7 +185,7 @@ def _replay(program, verbosity=1):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_a_tensor_with_two_virtual_axes_is_projected_through_a_two_step_chain(water, capfd):
+def test_a_tensor_with_two_virtual_axes_is_projected_through_a_two_step_chain(water):
     """The mechanism, named part by part rather than inferred from a right answer.
 
     A new graph-owned entry at the truncated extents, spaces that say the axes
@@ -206,10 +206,10 @@ def test_a_tensor_with_two_virtual_axes_is_projected_through_a_two_step_chain(wa
     assert "K@fno" not in names, "a projected tensor is graph-owned, not something a bind supplies"
 
     manager = cg.default_pass_manager()
-    manager.set_verbosity(2)
     program["graph"].apply(manager)
-    captured = capfd.readouterr()
-    assert "'BasisTruncation(vir)/setup_fno_project_0' inside setup body 'BasisTruncation(vir)/setup'" in captured.err, captured.err
+    materialized = [d for d in manager.decisions if d.code == "materialization.materialized"]
+    chain = [d for d in materialized if "BasisTruncation(vir)/setup_fno_project_0" in d.tensors]
+    assert [d.graph for d in chain] == ["BasisTruncation(vir)/setup"], [(d.graph, list(d.tensors)) for d in materialized]
     assert not cg.duplicate_materializations(program["graph"])
     assert not cg.stranded_materializations(program["graph"])
 
