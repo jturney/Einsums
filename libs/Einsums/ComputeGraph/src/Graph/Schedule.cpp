@@ -169,6 +169,12 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::subtree_io(Node c
             for (auto tid : nd.inputs) {
                 note(tid, read_ptrs);
             }
+            // A view's output is an alias of its parent, which making the view writes nothing of: a
+            // loop that only reads through one is not a writer of the parent. What writes through the
+            // view names it among its own outputs, and is counted there.
+            if (nd.kind == OpKind::View) {
+                continue;
+            }
             for (auto tid : nd.outputs) {
                 note(tid, write_ptrs);
             }

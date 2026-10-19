@@ -7,7 +7,10 @@
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+#include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <algorithm>
 #include <array>
 #include <complex>
 #include <limits>
@@ -351,6 +354,44 @@ TEMPLATE_LIST_TEST_CASE("View - param bounds across multiple executes", "[Comput
     pipe.execute();
     for (size_t k = 0; k < 6; ++k)
         REQUIRE(A(k) == val<T>(9.0));
+}
+
+// A View node in a loop body made the loop a writer of the tensor it viewed: the body's effective
+// writes counted every node's outputs, and a view's output is an alias of its parent. A read of the
+// parent after the loop then read "from an in-graph writer", and a pass that replaced the view
+// (SlabStreaming reading the box from storage instead) tripped the pass manager's program-order
+// check, which an out-of-core fuzzer found in 17 of 2000 programs.
+TEST_CASE("View - a loop that reads a tensor through a view does not write it", "[ComputeGraph][View][aliasing]") {
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto C = create_zero_tensor<double>("C", 2, 4);
+
+    auto const has = [](std::vector<cg::TensorId> const &ids, cg::TensorId id) { return std::ranges::find(ids, id) != ids.end(); };
+
+    SECTION("reading through the view") {
+        cg::Graph graph("view_read");
+        auto     &body = graph.add_loop("once", 1, cg::PredExpr::always(false));
+        {
+            cg::CaptureGuard const guard(body);
+            auto const            &rows = cg::view<double, 2>(A, cg::ViewAxis::range(0, 2), cg::ViewAxis::full());
+            cg::einsum("i,j <- i,k ; k,j", &C, rows, B);
+        }
+        auto const [reads, writes] = graph.effective_io(graph.nodes().back());
+        CHECK(has(reads, graph.find_tensor_id_by_ptr(&A)));
+        CHECK_FALSE(has(writes, graph.find_tensor_id_by_ptr(&A)));
+        CHECK(has(writes, graph.find_tensor_id_by_ptr(&C)));
+    }
+    SECTION("writing through the view still writes the tensor") {
+        cg::Graph graph("view_write");
+        auto     &body = graph.add_loop("once", 1, cg::PredExpr::always(false));
+        {
+            cg::CaptureGuard const guard(body);
+            auto                  &rows = cg::view<double, 2>(A, cg::ViewAxis::range(0, 2), cg::ViewAxis::full());
+            cg::einsum("i,j <- i,k ; k,j", &rows, C, B);
+        }
+        auto const [reads, writes] = graph.effective_io(graph.nodes().back());
+        CHECK(has(writes, graph.find_tensor_id_by_ptr(&A)));
+    }
 }
 
 TEST_CASE("View - capture-time errors", "[ComputeGraph][View][Errors]") {
