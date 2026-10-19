@@ -320,3 +320,54 @@ TEST_CASE("Reorder - runs a consumer before the next producer when that lowers t
         }
     }
 }
+
+// The greedy choice is local, so Reorder keeps its reschedule only when the reschedule's peak is
+// lower than the given order's. In units of one n-by-n block the intermediates are X (10), W (1),
+// Y (1) and Z (9). The captured order holds at most 11: X and W while the first chain runs, then W,
+// Y and Z. The greedy order starts the second chain, whose first steps score -1 and -8 against the
+// first chain's -10, so it holds Z while X is allocated and peaks at 20. The captured order stays.
+TEST_CASE("Reorder - keeps the given order when the reschedule would raise the peak", "[ComputeGraph][Passes]") {
+    constexpr size_t n = 4;
+    auto             A = create_random_tensor<double>("A", n, n);
+    auto             B = create_random_tensor<double>("B", n, 10 * n);
+    auto             C = create_random_tensor<double>("C", 10 * n, n);
+    auto             D = create_random_tensor<double>("D", n, n);
+    auto             F = create_random_tensor<double>("F", n, 9 * n);
+    auto             R = create_zero_tensor<double>("R", n, 9 * n);
+
+    cg::Graph graph("reorder_guard");
+    auto     &X = graph.scratch<double, 2>("X", n, 10 * n);
+    auto     &W = graph.scratch<double, 2>("W", n, n);
+    auto     &Y = graph.scratch<double, 2>("Y", n, n);
+    auto     &Z = graph.scratch<double, 2>("Z", n, 9 * n);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", 0.0, &X, 1.0, A, B); // a1
+        cg::einsum("ij <- ik ; kj", 0.0, &W, 1.0, X, C); // a2
+        cg::einsum("ij <- ik ; kj", 0.0, &Y, 1.0, D, A); // b1
+        cg::einsum("ij <- ik ; kj", 0.0, &Z, 1.0, Y, F); // b2
+        cg::einsum("ij <- ik ; kj", 0.0, &R, 1.0, W, Z); // b3
+    }
+    REQUIRE(graph.num_nodes() == 5);
+
+    auto [modified, pass] = graph.apply<cg::passes::Reorder>();
+    CHECK_FALSE(modified);
+
+    graph.apply<cg::passes::Materialization>(); // the scratch is deferred until something places it
+    graph.execute();
+    auto X_ref = create_zero_tensor<double>("Xref", n, 10 * n);
+    auto W_ref = create_zero_tensor<double>("Wref", n, n);
+    auto Y_ref = create_zero_tensor<double>("Yref", n, n);
+    auto Z_ref = create_zero_tensor<double>("Zref", n, 9 * n);
+    auto R_ref = create_zero_tensor<double>("Rref", n, 9 * n);
+    reference_einsum("ij <- ik ; kj", &X_ref, A, B);
+    reference_einsum("ij <- ik ; kj", &W_ref, X_ref, C);
+    reference_einsum("ij <- ik ; kj", &Y_ref, D, A);
+    reference_einsum("ij <- ik ; kj", &Z_ref, Y_ref, F);
+    reference_einsum("ij <- ik ; kj", &R_ref, W_ref, Z_ref);
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < 9 * n; ++j) {
+            CHECK(R(i, j) == Catch::Approx(R_ref(i, j)).margin(1e-9));
+        }
+    }
+}
