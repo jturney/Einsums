@@ -299,8 +299,12 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // L is built whole from the folded operand. One SlabStreaming would read a slab at a time
         // in each member is held whole by the build, with an L as large: the members are left to
         // be streamed. One held whole anyway, beside a larger backed operand, folds as usual.
-        if (auto const backing = backing_of(graph, vg.key.non_shared_id);
-            backing != nullptr && streamed_beside(*backing, backing_of(graph, vg.key.shared_id).get())) {
+        auto const folded_backing = backing_of(graph, vg.key.non_shared_id);
+        auto const shared_backing = backing_of(graph, vg.key.shared_id);
+        // By value: the fold registers L, which may move the handles in the table.
+        std::string const folded_name = b_handle->name;
+        std::string const shared_name = graph.find_tensor(vg.key.shared_id) != nullptr ? graph.find_tensor(vg.key.shared_id)->name : "";
+        if (auto const &backing = folded_backing; backing != nullptr && streamed_beside(*backing, shared_backing.get())) {
             note_skip(BackedOverShare, fmt::format("'{}' is {} bytes stored", b_handle->name, passes::detail::stored_bytes(*backing)),
                       Decision{.tensors = {b_handle->name},
                                .facts   = {Fact{
@@ -473,6 +477,12 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         }
         _num_groups++;
         modified = true;
+        // Held whole beside a larger backed operand: the build reads it whole, which is said so a
+        // reader of the decisions finds why a tensor over its share was loaded.
+        if (folded_backing != nullptr && exceeds_streaming_share(*folded_backing)) {
+            note(HeldBeside, fmt::format("folds '{}', held whole beside '{}', which SlabStreaming streams", folded_name, shared_name),
+                 Decision{.tensors = {folded_name, shared_name}});
+        }
 
         if (_verbosity >= 2) {
             auto        on = tensors.find(out_id);

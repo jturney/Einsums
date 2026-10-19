@@ -114,6 +114,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     static constexpr Reason BackedOverShare{"lccf.backed-over-share",
                                             "the folded operand is a backed tensor SlabStreaming would read a slab at a time, which "
                                             "building L would hold whole"};
+    static constexpr Reason HeldBeside{"lccf.held-beside",
+                                       "the folded operand is a backed tensor held whole beside a larger one SlabStreaming streams, so "
+                                       "building L from it holds nothing that would have been streamed"};
     /// @}
 
     APIARY_EXPOSE LinearCombinationContractionFolding() = default;

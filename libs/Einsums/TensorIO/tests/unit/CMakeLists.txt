@@ -5,6 +5,7 @@
 
 set(TensorIOTests
     Backing.cpp
+    OutOfCore.cpp
     TensorFileBasic.cpp
     TensorFileCommit.cpp
     TensorFileSliceWrite.cpp
