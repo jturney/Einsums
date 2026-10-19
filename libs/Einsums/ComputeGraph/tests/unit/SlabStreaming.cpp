@@ -424,6 +424,47 @@ TEST_CASE("SlabStreaming reads slabs into row-major buffers in their own layout"
     }
 }
 
+// A contraction of two backed operands, both over their share, loaded both whole. On the CCSD
+// example that held the 6 MB ovvv block beside T2 for the two r1 terms once their fold was declined;
+// streaming the larger holds only the smaller.
+TEST_CASE("SlabStreaming streams the larger of two backed operands over their share and holds the smaller",
+          "[ComputeGraph][Pass][SlabStreaming]") {
+    constexpr std::size_t ni = 5;
+    constexpr std::size_t nk = 4;
+    constexpr std::size_t nj = 7;
+    MemoryStore           store_a(filled("A", {ni, nk}, 3U));  // 160 bytes
+    MemoryStore           store_b(filled("B", {nk, nj}, 11U)); // 224 bytes: the larger
+    auto                  c = RuntimeTensor<double>("C", std::vector<std::size_t>{ni, nj});
+    c.zero();
+
+    cg::Graph graph("larger");
+    auto     &a = graph.declare_runtime_tensor<double>("A", {ni, nk});
+    auto     &b = graph.declare_runtime_tensor<double>("B", {nk, nj});
+    graph.annotate_backing(a, store_a.backing());
+    graph.annotate_backing(b, store_b.backing());
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &c, a, b);
+    }
+
+    // Two columns of B fit, and neither tensor does.
+    auto const pass = stream(graph, static_cast<std::int64_t>(2 * nk * sizeof(double)));
+    REQUIRE(pass->num_streamed() == 1);
+    CHECK(pass->streamed() == std::vector<std::string>{"B"});
+    CHECK_FALSE(declined_because(*pass, "both operands of the contraction are backed"));
+
+    graph.execute();
+    CHECK(store_a.read_whole());
+    CHECK(store_a.reads.size() == 1);
+    CHECK_FALSE(store_b.read_whole());
+    CHECK(store_b.reads.size() == 4);
+
+    auto expected = RuntimeTensor<double>("C", std::vector<std::size_t>{ni, nj});
+    expected.zero();
+    testing::reference_einsum("i,j <- i,k ; k,j", 0.0, &expected, 1.0, store_a.source, store_b.source);
+    check_close(c, expected, static_cast<double>(nk));
+}
+
 TEST_CASE("SlabStreaming leaves a backed tensor that fits its share to the whole load", "[ComputeGraph][Pass][SlabStreaming]") {
     MemoryStore store(filled("B", {4, 3}, 11U));
     auto const  a = filled("A", {5, 4}, 3U);
@@ -461,15 +502,13 @@ TEST_CASE("SlabStreaming declines what a block of the last axis cannot express, 
     c.zero();
     std::int64_t const small = static_cast<std::int64_t>(4 * sizeof(double));
 
-    SECTION("both operands backed") {
+    SECTION("one backed tensor on both sides") {
         cg::Graph graph("both");
         auto     &b = graph.declare_runtime_tensor<double>("B", {4, 4});
-        auto     &x = graph.declare_runtime_tensor<double>("X", {4, 4});
         graph.annotate_backing(b, store.backing());
-        graph.annotate_backing(x, other.backing());
         {
             cg::CaptureGuard const guard(graph);
-            cg::einsum("i,j <- i,k ; k,j", &c, x, b);
+            cg::einsum("i,j <- i,k ; k,j", &c, b, b);
         }
         auto const pass = stream(graph, small);
         CHECK(pass->num_streamed() == 0);

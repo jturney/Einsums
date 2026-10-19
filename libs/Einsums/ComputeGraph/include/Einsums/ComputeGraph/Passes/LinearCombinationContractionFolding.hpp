@@ -97,6 +97,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - Interference guard: between the first and last member, no other node may
  *   read/write the output or write the shared / non-shared operand; the fused node
  *   occupies node-0's slot (never appended) to stay scan-before its consumer.
+ * - The operand folded into @f$L@f$ must not be a backed tensor SlabStreaming would read a slab
+ *   at a time (@ref OptimizerPass::streamed_beside). Building @f$L@f$ holds it whole, and an
+ *   @f$L@f$ the same size beside it; the members are left for SlabStreaming to stream instead.
  *
  * @par Future improvements
  * - Make the fold conj-aware (thread `conj_a`/`conj_b` through the @f$L@f$ build) if
@@ -105,6 +108,14 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT LinearCombinationContractionFolding
     : public OptimizerPass {
   public:
+    /// @name Reasons
+    /// The codes this pass records its decisions under (@ref Decision::code).
+    /// @{
+    static constexpr Reason BackedOverShare{"lccf.backed-over-share",
+                                            "the folded operand is a backed tensor SlabStreaming would read a slab at a time, which "
+                                            "building L would hold whole"};
+    /// @}
+
     APIARY_EXPOSE LinearCombinationContractionFolding() = default;
 
     [[nodiscard]] std::string name() const override { return "LinearCombinationContractionFolding"; }

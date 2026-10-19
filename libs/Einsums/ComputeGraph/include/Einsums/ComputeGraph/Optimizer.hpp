@@ -30,6 +30,7 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class Graph;
+struct TensorBacking;
 
 /**
  * @brief Which phase of the pipeline a pass belongs to, and therefore whether a
@@ -706,10 +707,68 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      */
     EINSUMS_EXPORT bool approximate(Graph &graph, ApproximationRecord record) const;
 
+    /**
+     * @brief The backing of the tensor @p tid names in @p graph, read off its declaration.
+     *
+     * A view resolves to the tensor underneath it, and a loop body's or a branch's handle for a
+     * tensor an enclosing graph declared, which carries no backing of its own, resolves through the
+     * graphs enclosing @p graph when @ref run_pass_tree handed it to this pass.
+     * @param[in] graph The graph @p tid belongs to.
+     * @param[in] tid The tensor.
+     * @return The backing, or null for a tensor memory holds.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] EINSUMS_EXPORT std::shared_ptr<TensorBacking const> backing_of(Graph const &graph, TensorId tid) const;
+
+    /**
+     * @brief Whether a backed tensor is larger than its share of the memory budget.
+     *
+     * Such a tensor is read a slab at a time by the contractions that use it, and a rewrite that
+     * would hold a whole copy of it, or of something the same size derived from it, defeats that
+     * and the budget the caller set. A pass that copies an operand whole declines for one of these.
+     * @param[in] backing The tensor's backing.
+     * @return True when there is a budget and the stored tensor exceeds its share.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] EINSUMS_EXPORT static bool exceeds_streaming_share(TensorBacking const &backing);
+
+    /**
+     * @brief Whether SlabStreaming reads a backed operand a slab at a time beside another operand.
+     *
+     * It does when the operand exceeds its share (@ref exceeds_streaming_share), unless the other
+     * operand is a larger backed tensor over its share too: of two, the larger is streamed and the
+     * smaller held whole. A rewrite that would hold whole an operand this says is streamed defeats
+     * the budget; one that holds an operand held whole anyway costs nothing more.
+     * @param[in] mine The operand's backing.
+     * @param[in] other The other operand's backing, or null when memory holds it.
+     * @return True when @p mine is the operand streamed. Of two the same size, both are reported
+     *         streamed, the answer that holds less.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] EINSUMS_EXPORT static bool streamed_beside(TensorBacking const &mine, TensorBacking const *other);
+
+    /**
+     * @brief Withdraw the declines recorded since @p from, and their counts in the skip tally.
+     *
+     * For a pass that rewrites one candidate at a time and then examines the graph afresh: what it
+     * declined before a rewrite it declines again, or not, in the next round, and only the round
+     * that ends with no rewrite describes the graph the pass leaves. What the pass applied or noted
+     * is kept.
+     * @param[in] from A @ref num_decisions taken when the round began.
+     * @versionadded{2.0.0}
+     */
+    EINSUMS_EXPORT void retract_declines(std::size_t from) const;
+
     int          _verbosity{0};
     SearchBudget _budget;
 
   private:
+    friend EINSUMS_EXPORT bool run_pass_tree(OptimizerPass &pass, Graph &graph);
+
+    /// The graphs enclosing the one @ref run was handed, outermost first; empty at the root and
+    /// for a pass run directly. Kept by @ref run_pass_tree as it descends.
+    std::vector<Graph const *> _enclosing;
+
     /// Reason -> number of candidates declined for it. Mutable so a pass can
     /// record from a const analysis helper; cleared per apply() by
     /// reset_all_stats().

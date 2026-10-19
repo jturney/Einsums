@@ -14,6 +14,7 @@
 /// A WRITE backing is the other direction: the graph produces the tensor and the entry receives
 /// it, whole after its last writer or a slab per block when SlabStreaming produces it there.
 
+#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/GraphIR.hpp>
@@ -22,6 +23,7 @@
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
 #include <Einsums/ComputeGraph/Passes/FreeInsertion.hpp>
+#include <Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/SlabStreaming.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
@@ -125,6 +127,20 @@ struct Product {
         cg::einsum("i,j <- i,k ; k,j", &c, a, *b);
     }
 };
+
+/// Sets --einsums:max-memory for one case, so every pass derives its share from it.
+struct MemoryBudget {
+    std::string previous{config::get(option::MaxMemory)};
+    explicit MemoryBudget(std::size_t bytes) { config::set(option::MaxMemory, std::to_string(bytes) + "b"); }
+    ~MemoryBudget() { config::set(option::MaxMemory, previous); }
+    MemoryBudget(MemoryBudget const &)            = delete;
+    MemoryBudget &operator=(MemoryBudget const &) = delete;
+};
+
+/// How many of the pass's decisions carry @p code.
+std::size_t decisions_coded(cg::OptimizerPass const &pass, std::string_view code) {
+    return static_cast<std::size_t>(std::ranges::count_if(pass.decisions(), [&](cg::Decision const &d) { return d.code == code; }));
+}
 
 } // namespace
 
@@ -1300,4 +1316,117 @@ TEST_CASE("An observer hears every read, write and publish of a backing", "[Tens
     // In the order they happened, on one clock.
     CHECK(io.at(0).at_ms <= io.at(1).at_ms);
     CHECK(io.at(1).at_ms <= io.at(2).at_ms);
+}
+
+// LinearCombinationContractionFolding built L = 2 B[k,j] - B[j,k] whole from a backed B, holding B and
+// an L as large where SlabStreaming would have read each term's B a slab at a time: the CCSD
+// example's Fae held the 6 MB ovvv block and a 6 MB L under a 3 MB budget. A loop body's handle for
+// B carries no backing, so the pass resolves it through the graphs enclosing the body.
+TEST_CASE("LCCF leaves a backed operand over its share to be streamed, at any depth", "[TensorIO][Backing][LCCF]") {
+    TempFile const tmp("lccf.etn");
+    write_entry(tmp.path, "B", filled<double>("B", {8, 8}, 0.5)); // 512 bytes
+    tensor_io::EtnFile const file(tmp.path);
+
+    bool const in_body = GENERATE(false, true);
+    INFO((in_body ? "inside a loop body" : "at the root"));
+    auto const            a = filled<double>("A", {8, 8}, 0.25);
+    RuntimeTensor<double> c("C", std::vector<size_t>{8, 8});
+    cg::Graph             graph("lccf_backed");
+    auto const           &b = graph.declare_runtime_tensor<double>("B", file.entry("B"));
+    {
+        cg::Graph             &target = in_body ? graph.add_loop("once", 1, cg::PredExpr::always(false)) : graph;
+        cg::CaptureGuard const guard(target);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &c, 2.0, a, b);
+        cg::einsum("i,j <- i,k ; j,k", 1.0, &c, -1.0, a, b);
+    }
+    auto const fold = [&] {
+        auto            lccf = std::make_shared<cg::passes::LinearCombinationContractionFolding>();
+        cg::PassManager manager;
+        manager.add(lccf);
+        graph.apply(manager);
+        return lccf;
+    };
+
+    SECTION("over its share, the terms are left as they are") {
+        MemoryBudget const budget(1024); // a share of 163 bytes
+        auto const         lccf = fold();
+        CHECK(lccf->num_groups() == 0);
+        CHECK(decisions_coded(*lccf, cg::passes::LinearCombinationContractionFolding::BackedOverShare.code) == 1);
+    }
+    SECTION("within its share, they fold as an operand in memory does") {
+        MemoryBudget const budget(std::size_t{1} << 20);
+        auto const         lccf = fold();
+        CHECK(lccf->num_groups() == 1);
+        CHECK(decisions_coded(*lccf, cg::passes::LinearCombinationContractionFolding::BackedOverShare.code) == 0);
+    }
+}
+
+// Declining every fold of an over-share backed operand was too blunt: the CCSD example's r1 terms fold
+// T2 beside the far larger ovvv, and once the fold was declined each term read both whole. Beside a
+// larger backed operand the folded one is held whole anyway, and the fold costs nothing more.
+TEST_CASE("LCCF folds a backed operand held whole beside a larger backed one", "[TensorIO][Backing][LCCF]") {
+    TempFile const tmp("lccf_beside.etn");
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("A", filled<double>("A", {16, 8}, 0.25)); // 1024 bytes: the larger
+        out.write("B", filled<double>("B", {8, 8}, 0.5));   // 512 bytes
+    }
+    tensor_io::EtnFile const file(tmp.path);
+    MemoryBudget const       budget(1024); // a share of 163 bytes: both over it
+
+    RuntimeTensor<double> c("C", std::vector<size_t>{16, 8});
+    cg::Graph             graph("lccf_beside");
+    auto const           &a = graph.declare_runtime_tensor<double>("A", file.entry("A"));
+    auto const           &b = graph.declare_runtime_tensor<double>("B", file.entry("B"));
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &c, 2.0, a, b);
+        cg::einsum("i,j <- i,k ; j,k", 1.0, &c, -1.0, a, b);
+    }
+    auto            lccf = std::make_shared<cg::passes::LinearCombinationContractionFolding>();
+    cg::PassManager manager;
+    manager.add(lccf);
+    graph.apply(manager);
+    CHECK(lccf->num_groups() == 1);
+    CHECK(decisions_coded(*lccf, cg::passes::LinearCombinationContractionFolding::BackedOverShare.code) == 0);
+}
+
+// SlabStreaming rewrites one contraction at a time and examines the graph afresh after each, and
+// every round recorded its declines again: on the CCSD example one node's "t1 fits its share" was
+// recorded 56 times, and skip_reasons() counted every one.
+TEST_CASE("SlabStreaming records each decline once, however many rewrites follow it", "[TensorIO][Backing]") {
+    TempFile const tmp("declines.etn");
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("S", filled<double>("S", {4, 4}, 0.25));
+        out.write("L1", filled<double>("L1", {4, 16}, 0.5));
+        out.write("L2", filled<double>("L2", {4, 16}, -0.5));
+    }
+    tensor_io::EtnFile const file(tmp.path);
+    cg::Graph                graph("declines");
+    auto const              &s  = graph.declare_runtime_tensor<double>("S", file.entry("S"));
+    auto const              &l1 = graph.declare_runtime_tensor<double>("L1", file.entry("L1"));
+    auto const              &l2 = graph.declare_runtime_tensor<double>("L2", file.entry("L2"));
+    auto const               a  = filled<double>("A", {4, 4}, 1.0);
+    RuntimeTensor<double>    d("D", std::vector<size_t>{4, 4});
+    RuntimeTensor<double>    c1("C1", std::vector<size_t>{4, 16});
+    RuntimeTensor<double>    c2("C2", std::vector<size_t>{4, 16});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &d, 1.0, a, s); // S fits: declined, before both rewrites
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &c1, 1.0, a, l1);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &c2, 1.0, a, l2);
+    }
+
+    auto stream = std::make_shared<cg::passes::SlabStreaming>();
+    stream->set_slab_budget(static_cast<std::int64_t>(4 * 4 * sizeof(double)));
+    cg::PassManager manager;
+    manager.add(stream);
+    graph.apply(manager);
+    REQUIRE(stream->num_streamed() == 2);
+    CHECK(decisions_coded(*stream, cg::passes::SlabStreaming::FitsBudget.code) == 1);
+    auto const reasons = stream->skip_reasons();
+    auto const tally   = std::ranges::find_if(reasons, [](auto const &e) { return e.first == cg::passes::SlabStreaming::FitsBudget.text; });
+    REQUIRE(tally != reasons.end());
+    CHECK(tally->second == 1);
 }

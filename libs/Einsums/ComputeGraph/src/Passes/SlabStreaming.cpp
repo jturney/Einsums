@@ -3,7 +3,6 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Detail/BackedWrites.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
@@ -16,7 +15,6 @@
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Options/Get.hpp>
-#include <Einsums/StringUtil/MemoryString.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <fmt/format.h>
@@ -36,6 +34,7 @@
 #include <vector>
 
 #include "BackingFill.hpp"
+#include "BudgetShare.hpp"
 #include "LoopEmission.hpp"
 #include "StorageCost.hpp"
 
@@ -63,6 +62,7 @@ struct BackedOperand {
     void const                          *object{nullptr};        ///< The backed tensor object.
     bool                                 written_outside{false}; ///< See SlabStreaming::BackedEntry.
     bool                                 update_after{false};    ///< See SlabStreaming::BackedEntry.
+    bool                                 held{false};            ///< See SlabStreaming::BackedEntry.
     bool                                 full{true};             ///< False for a view that slices or permutes.
 };
 
@@ -124,7 +124,8 @@ std::optional<BackedOperand> backed_operand(Graph const &graph, Backed const &ba
                       .backing         = hit->second.backing,
                       .object          = owner->tensor_ptr,
                       .written_outside = hit->second.written_outside,
-                      .update_after    = hit->second.update_after};
+                      .update_after    = hit->second.update_after,
+                      .held            = hit->second.held};
     if (handle->is_tensor_view) {
         out.view_node    = producing_view(graph, tid);
         auto const *view = out.view_node ? graph.nodes()[*out.view_node].op_data.get_if<ViewDescriptor>() : nullptr;
@@ -426,16 +427,12 @@ std::size_t SlabStreaming::budget() const {
     if (_budget_override >= 0) {
         return static_cast<std::size_t>(_budget_override);
     }
-    std::size_t const budget = string_util::memory_string(config::get(option::MaxMemory));
-    if (budget == 0) {
-        return 0;
-    }
-    double const fraction = config::get(option::GraphTilingBudgetShare);
-    return fraction > 0.0 && fraction < 1.0 ? static_cast<std::size_t>(fraction * static_cast<double>(budget)) : budget;
+    return detail::budget_share();
 }
 
 bool SlabStreaming::run(Graph &graph) {
-    _root            = &graph;
+    _root = &graph;
+    _held_in.clear();
     bool const moved = walk(graph, Backed{}, 1.0);
     choose_orders();
     record_decisions();
@@ -476,6 +473,13 @@ bool SlabStreaming::walk(Graph &graph, Backed backed, double replays) {
     }
     for (auto const &[body, body_replays, position] : bodies) {
         Backed inherited = backed;
+        if (auto const held = _held_in.find(body); held != _held_in.end()) {
+            for (void const *object : held->second) {
+                if (auto const entry = inherited.find(object); entry != inherited.end()) {
+                    entry->second.held = true;
+                }
+            }
+        }
         for (auto &[object, entry] : inherited) {
             if (entry.backing->write) {
                 entry.written_outside = entry.written_outside || compute_graph::detail::written_in_memory(graph, object, body);
@@ -577,10 +581,13 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
 
     bool moved = false;
     // One rewrite at a time: each renumbers the nodes, and a rewritten contraction's loop reads a
-    // slab, not a backed tensor, so it is never a candidate again.
+    // slab, not a backed tensor, so it is never a candidate again. Every round examines the graph
+    // from the start, so what a round declined before its rewrite is withdrawn: the round that
+    // rewrites nothing says it again of the graph the pass leaves.
     for (bool again = true; again;) {
-        again       = false;
-        auto &nodes = graph.nodes();
+        again                   = false;
+        std::size_t const mark  = num_decisions();
+        auto             &nodes = graph.nodes();
         for (std::size_t i = 0; i < nodes.size() && !again; ++i) {
             Node const &node = nodes[i];
             if (node.kind != OpKind::Einsum || node.outputs.size() != 1 || node.inputs.size() < 2) {
@@ -606,17 +613,15 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                 continue;
             }
             auto const where = fmt::format("node '{}'", node.label);
-            // The bytes of a backed tensor whole.
-            auto const whole_of = [](TensorBacking const &backing) {
-                std::size_t bytes = compute_graph::detail::dispatch_scalar_type(backing.dtype, []<typename T>(T) { return sizeof(T); });
-                for (std::size_t const extent : backing.dims) {
-                    bytes *= extent;
-                }
-                return bytes;
-            };
             // Whether a backed operand is read from its storage here at all, noting why not when not
             // unless @p quiet. One that is not is held in memory here, as any operand is.
             auto const readable = [&](BackedOperand const &use, bool quiet = false) {
+                if (use.held) {
+                    if (!quiet) {
+                        note_skip(HeldBeside, where);
+                    }
+                    return false;
+                }
                 // An update-backed tensor's storage holds the value the replay started from until the
                 // replay ends, so it is read from there exactly by the readers before its first write.
                 if (use.backing->update) {
@@ -634,7 +639,7 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                     }
                     return false;
                 }
-                if (std::size_t const bytes = whole_of(*use.backing); bytes <= cap) {
+                if (std::size_t const bytes = detail::stored_bytes(*use.backing); bytes <= cap) {
                     if (!quiet) {
                         note_skip(FitsBudget, fmt::format("{}: '{}' is {} bytes against {}", where, use.name, bytes, cap));
                     }
@@ -649,8 +654,9 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
             // operand at a time.
             // Both operands backed, but one held in memory anyway (it fits, or it was written there):
             // that one is an ordinary operand, and the other is read from storage on its own below.
-            bool const a_read = in_a && readable(*in_a, true);
-            bool const b_read = in_b && readable(*in_b, true);
+            bool const           a_read = in_a && readable(*in_a, true);
+            bool const           b_read = in_b && readable(*in_b, true);
+            BackedOperand const *larger = nullptr;
             if (in_a && in_b && a_read && b_read) {
                 bool streamed = false;
                 for (BackedOperand const *box : {&*in_a, &*in_b}) {
@@ -663,17 +669,23 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                 if (streamed) {
                     moved = true;
                     again = true;
-                } else {
-                    note_skip(BothBacked, where);
+                    continue;
                 }
-                continue;
+                // Both read whole and both over their share: the larger is read a slab at a time and
+                // the smaller held, which holds less than both. One tensor on both sides is held for
+                // one side anyway, and a slab of it read beside that would read it twice.
+                if (!in_a->full || !in_b->full || in_a->object == in_b->object) {
+                    note_skip(BothBacked, where);
+                    continue;
+                }
+                larger = detail::stored_bytes(*in_b->backing) > detail::stored_bytes(*in_a->backing) ? &*in_b : &*in_a;
             }
-            BackedOperand const &use     = in_a && (!in_b || a_read || !b_read) ? *in_a : *in_b;
+            BackedOperand const &use     = larger != nullptr ? *larger : in_a && (!in_b || a_read || !b_read) ? *in_a : *in_b;
             auto const          &backing = *use.backing;
             if (!readable(use)) {
                 continue;
             }
-            std::size_t const whole = whole_of(backing);
+            std::size_t const whole = detail::stored_bytes(backing);
             // A view that slices the tensor names the box this contraction needs, and a loop around
             // it (AxisTiling's, typically) has already chosen that box. It is read as it stands,
             // every time the view would have been made, rather than a loop of this pass's own.
@@ -774,6 +786,8 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                 }
             }
 
+            // The smaller of two backed operands, which the loops read from memory.
+            void const *const held = larger == nullptr ? nullptr : larger == &*in_a ? in_b->object : in_a->object;
             graph.replace_nodes(remove, {});
             std::size_t const position = i - below;
             auto const        walks    = streamed_walks(backing.dims.back(), rw.block, rw.summed);
@@ -784,6 +798,9 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                                                     PredExpr::iteration(CmpOp::Lt, BoundExpr(static_cast<std::int64_t>(iterations) - 1)),
                                                     position + l);
                     emit_body<T>(body, rw, walks[l], l);
+                    if (held != nullptr) {
+                        _held_in[&body].push_back(held);
+                    }
                 }
             });
 
@@ -804,6 +821,9 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                                   walks.size() == 1 ? "one loop" : fmt::format("{} loops", walks.size())));
             moved = true;
             again = true;
+        }
+        if (again) {
+            retract_declines(mark);
         }
     }
     return moved;
@@ -1233,24 +1253,27 @@ void SlabStreaming::record_decisions() {
                     std::move(about));
             continue;
         }
+        // A whole number of flops per byte reads as zero below one, which a contraction streamed for
+        // its memory rather than its arithmetic often is.
+        std::string const intensity = per_byte < 10.0 ? fmt::format("{:.1f}", per_byte) : fmt::format("{:.0f}", per_byte);
         about.facts.push_back(Fact{.name = "block", .value = static_cast<double>(record.block)});
         about.facts.push_back(Fact{.name = "extent", .value = static_cast<double>(record.extent)});
         if (record.writes) {
             applied(StreamedWrite,
                     fmt::format("SlabStreaming: '{}' writes '{}' in blocks of {} of {} along its last axis; {} bytes written per "
-                                "execution, about {:.0f} flop per byte written",
-                                record.label, record.tensor, record.block, record.extent, record.bytes, per_byte),
+                                "execution, about {} flop per byte written",
+                                record.label, record.tensor, record.block, record.extent, record.bytes, intensity),
                     std::move(about));
             continue;
         }
         applied(StreamedRead,
                 fmt::format("SlabStreaming: '{}' reads '{}' in blocks of {} of {} along its last axis ({}); {} bytes read per "
-                            "execution, about {:.0f} flop per byte read",
+                            "execution, about {} flop per byte read",
                             record.label, record.tensor, record.block, record.extent,
                             record.summed ? "a summed letter, so the blocks add"
                                           : "a letter the output keeps, so each block writes "
                                             "its own slice",
-                            record.bytes, per_byte),
+                            record.bytes, intensity),
                 std::move(about));
     }
 }

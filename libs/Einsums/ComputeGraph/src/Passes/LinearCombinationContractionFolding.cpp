@@ -19,6 +19,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "BudgetShare.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
@@ -294,6 +296,18 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
             continue;
         }
 
+        // L is built whole from the folded operand. One SlabStreaming would read a slab at a time
+        // in each member is held whole by the build, with an L as large: the members are left to
+        // be streamed. One held whole anyway, beside a larger backed operand, folds as usual.
+        if (auto const backing = backing_of(graph, vg.key.non_shared_id);
+            backing != nullptr && streamed_beside(*backing, backing_of(graph, vg.key.shared_id).get())) {
+            note_skip(BackedOverShare, fmt::format("'{}' is {} bytes stored", b_handle->name, passes::detail::stored_bytes(*backing)),
+                      Decision{.tensors = {b_handle->name},
+                               .facts   = {Fact{
+                                   .name = "bytes", .value = static_cast<double>(passes::detail::stored_bytes(*backing)), .unit = "B"}}});
+            continue;
+        }
+
         // L takes the folded operand's element type, and the fused contraction
         // reads it in that operand's place, so all three must share it. Any
         // tensor with a rank-erased geometry qualifies: the L build and the fused
@@ -399,7 +413,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         OperandAccessor const b_access = resolve_operand(graph, nonshared_id, "LinearCombinationContractionFolding", "B");
         OperandAccessor const l_access = resolve_operand(graph, l_id, "LinearCombinationContractionFolding", "L");
         auto                  build_l  = [contribs = std::move(contribs), ab0, b_access, l_access, dtype]() {
-            detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
+            compute_graph::detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
                 auto   *L     = l_access.impl<T>();
                 auto   *B     = b_access.impl<T>();
                 T const ab0_t = as<T>(ab0);

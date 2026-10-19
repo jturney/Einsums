@@ -59,9 +59,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *
  * Declined, with the reason in the skip tally, and left to the whole load: a backed tensor whose
  * last-axis letter is repeated in any operand or the destination; one read through a view other
- * than a full one; a contraction both of whose operands are read from storage (a backed operand
- * held in memory anyway, one that fits or that the graph wrote, is an ordinary operand); one with permutation
- * operators; any node but a contraction; operands that are not rank-erased tensors.
+ * than a full one; a contraction that reads one backed tensor on both sides; one with permutation
+ * operators; any node but a contraction; operands that are not rank-erased tensors. A backed
+ * operand held in memory anyway, one that fits or that the graph wrote, is an ordinary operand,
+ * and of two backed operands both over their share the larger is streamed and the smaller held.
  *
  * The slab reads run in order with the contraction: a block's read finishes before its
  * contraction starts. A graph this pass has rewritten cannot be saved, like one AxisTiling has
@@ -78,6 +79,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     static constexpr Reason NoBudget{
         "slab-streaming.no-budget",
         "no slab budget: --einsums:max-memory is zero or the pass was set off, so backed tensors are loaded whole"};
+    static constexpr Reason HeldBeside{"slab-streaming.held-beside",
+                                       "the backed tensor is held whole beside a larger one this pass streams around it"};
     static constexpr Reason ReadAfterUpdate{"slab-streaming.read-after-update",
                                             "the update-backed tensor is read after a write of it, so it is read from memory"};
     static constexpr Reason ProducedInMemory{
@@ -88,7 +91,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         "the backed tensor fits its share of the budget, so it is loaded once rather than read per contraction"};
     static constexpr Reason BothBacked{
         "slab-streaming.both-backed",
-        "both operands of the contraction are backed and neither is a box a loop's view names, so it is loaded whole"};
+        "both operands of the contraction are backed, one tensor or a view this pass cannot read a slab of, so it is loaded whole"};
     static constexpr Reason UnseenView{"slab-streaming.unseen-view",
                                        "the backed tensor is read through a view this pass cannot see, so it is loaded whole"};
     static constexpr Reason PermutationOperators{"slab-streaming.permutation-operators",
@@ -290,6 +293,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         /// For an update-backed tensor: this graph runs at or after the first write of it in the
         /// graph that declares it, so its storage no longer holds the value this graph reads.
         bool update_after{false};
+        /// Held whole by a loop this pass built to stream a larger backed operand beside it: read
+        /// from memory in that loop's body, never a slab at a time there.
+        bool held{false};
     };
 
     /// The backed tensor objects visible from a graph, which the enclosing graph hands each body it
@@ -319,9 +325,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool stream_box(Graph &graph, std::size_t view_node, std::string const &name, std::shared_ptr<TensorBacking const> const &backing,
                     std::string const &label, std::optional<std::size_t> writer);
 
-    std::int64_t                                    _budget_override{-1};
-    Graph const                                    *_root{nullptr};
-    std::vector<BoxUse>                             _box_uses;
+    std::int64_t _budget_override{-1};
+    Graph const *_root{nullptr};
+    /// The backed tensors each loop body this pass built holds whole, by the body.
+    std::unordered_map<Graph const *, std::vector<void const *>> _held_in;
+    std::vector<BoxUse>                                          _box_uses;
     double                                          _replays{1.0}; ///< How often the graph being streamed runs per replay of the root.
     std::map<std::string, std::vector<std::size_t>> _orders;
     std::vector<Decision>                           _order_lines;

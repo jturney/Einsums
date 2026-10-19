@@ -79,6 +79,7 @@
 #include <vector>
 
 #include "GraphIR/Common.hpp"
+#include "Passes/BudgetShare.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -110,6 +111,31 @@ std::string_view pass_tier_name(PassTier tier) {
         return "lossy";
     }
     return "unknown";
+}
+
+std::shared_ptr<TensorBacking const> OptimizerPass::backing_of(Graph const &graph, TensorId tid) const {
+    TensorHandle const *handle = graph.find_tensor(graph.buffer_of(tid));
+    // Out through the enclosing graphs, innermost first, by the storage the handles share.
+    for (auto outer = _enclosing.rbegin(); handle != nullptr && !handle->backing && handle->tensor_ptr != nullptr; ++outer) {
+        if (outer == _enclosing.rend()) {
+            break;
+        }
+        handle = (*outer)->find_tensor((*outer)->find_tensor_id_by_ptr(handle->tensor_ptr));
+    }
+    return handle != nullptr ? handle->backing : nullptr;
+}
+
+bool OptimizerPass::exceeds_streaming_share(TensorBacking const &backing) {
+    std::size_t const share = passes::detail::budget_share();
+    return share > 0 && passes::detail::stored_bytes(backing) > share;
+}
+
+bool OptimizerPass::streamed_beside(TensorBacking const &mine, TensorBacking const *other) {
+    if (!exceeds_streaming_share(mine)) {
+        return false;
+    }
+    return other == nullptr || !exceeds_streaming_share(*other) ||
+           passes::detail::stored_bytes(*other) <= passes::detail::stored_bytes(mine);
 }
 
 void OptimizerPass::print_line(int level, std::string_view message) const {
@@ -177,6 +203,24 @@ void OptimizerPass::record_skip(std::string_view reason, std::string_view detail
             print_line(3, fmt::format("declined: {} ({})", reason, detail));
         }
     }
+}
+
+void OptimizerPass::retract_declines(std::size_t from) const {
+    if (from >= _decisions.size()) {
+        return;
+    }
+    auto const first = _decisions.begin() + static_cast<std::ptrdiff_t>(from);
+    for (auto it = first; it != _decisions.end(); ++it) {
+        if (it->kind != DecisionKind::Declined) {
+            continue;
+        }
+        auto hit = std::ranges::find_if(_skips, [&](auto const &e) { return e.first == it->reason; });
+        if (hit != _skips.end() && --hit->second == 0) {
+            _skips.erase(hit);
+        }
+    }
+    _decisions.erase(std::remove_if(first, _decisions.end(), [](Decision const &d) { return d.kind == DecisionKind::Declined; }),
+                     _decisions.end());
 }
 
 bool OptimizerPass::approximate(Graph &graph, ApproximationRecord record) const {
@@ -525,6 +569,13 @@ bool run_pass_tree(OptimizerPass &pass, Graph &graph) {
     bool              modified = pass.run(graph);
     pass.name_graph(from, graph.name());
     if (pass.recurse_into_subgraphs()) {
+        // The children see this graph as their innermost enclosing one, for as long as they run.
+        struct Enclosed {
+            std::vector<Graph const *> &chain;
+            ~Enclosed() { chain.pop_back(); }
+        };
+        pass._enclosing.push_back(&graph);
+        Enclosed const enclosed{pass._enclosing};
         // The children are COLLECTED before any of them is run, and that is load-bearing rather
         // than tidy. A pass whose effect on a body lands in the parent -- a region rewrite
         // hoisting a setup out of a loop is the case that forced this -- inserts a node into the

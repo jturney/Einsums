@@ -3,7 +3,6 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
@@ -18,7 +17,6 @@
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Options/Get.hpp>
-#include <Einsums/StringUtil/MemoryString.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <fmt/format.h>
@@ -40,6 +38,7 @@
 #include <utility>
 #include <vector>
 
+#include "BudgetShare.hpp"
 #include "LoopEmission.hpp"
 #include "StorageCost.hpp"
 
@@ -2347,13 +2346,12 @@ bool AxisTiling::tile_graph(Graph &graph) {
     std::size_t budget  = 0;
     std::size_t share   = 0;
     if (derived) {
-        budget = string_util::memory_string(config::get(option::MaxMemory));
+        budget = detail::memory_budget();
         if (budget == 0) {
             note_skip(NoBudget);
             return tiled.moved();
         }
-        double const fraction = config::get(option::GraphTilingBudgetShare);
-        share = fraction > 0.0 && fraction < 1.0 ? static_cast<std::size_t>(fraction * static_cast<double>(budget)) : budget;
+        share = detail::budget_share();
     }
 
     // One region at a time. Every rewrite renumbers the nodes and replaces a region with a loop,

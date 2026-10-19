@@ -51,17 +51,20 @@ What to read in the report the example prints:
   amplitudes read them from the file.
 * ``SlabStreaming: ... writes 'vvvv' a box at a time``: the transform stores
   the v^4 block one (a, b) pair at a time, each box one run of the file.
+* ``LinearCombinationContractionFolding: does not fold 1 pair(s) over 'ovvv'``: the pair
+  2 t1 ovvv(mafe) - t1 ovvv(maef) is usually folded into one contraction with
+  L = 2 ovvv(mafe) - ovvv(maef), but building L holds o v^3 whole, and an L as
+  large. The two terms are left as they are, and each reads o v^3 a slab at
+  a time.
 * ``MemoryPlanning: peak``: the plan's estimate of what one iteration holds
-  at once, 11.9 MB, with every tensor freed after its last use. The new T2
+  at once, 5.7 MB, with every tensor freed after its last use. The new T2
   is summed in memory and stored once per iteration, the statements that
   write it being more than one loop over its axes can hold; so are the
-  o^2 v^2 intermediates. A contraction of T2 with o v^3 reads both from
-  files, and loads them whole.
+  o^2 v^2 intermediates. A contraction of T2 with o v^3 reads o v^3 a slab
+  at a time and holds T2, the smaller, whole.
 * ``last iteration``, printed after the energy, is what the last iteration
   measured as it ran (``graph.last_run()``): the bytes read and written, and
-  the most the graph held at once, 14.0 MB, within about 2 MB of the plan.
-  FreeInsertion frees every o^2 v^2 intermediate after its last use, and the
-  o v^3 block after the one statement that loads it whole.
+  the most the graph held at once, 7.7 MB, within about 2 MB of the plan.
 
 Run with::
 
@@ -274,7 +277,15 @@ def iteration(ints_path, amps_path, energy, d1, d2):
 
 
 def print_explanation(manager):
-    """What SlabStreaming did, and the peak MemoryPlanning planned, from the passes' decisions."""
+    """What SlabStreaming did, the folds left to it, and the peak MemoryPlanning planned, from the
+    passes' decisions."""
+    unfolded = {}
+    for d in manager.decisions:
+        if d.code == "lccf.backed-over-share":
+            unfolded[d.tensors[0]] = unfolded.get(d.tensors[0], 0) + 1
+    for name, pairs in unfolded.items():
+        print(f"    | LinearCombinationContractionFolding: does not fold {pairs} pair(s) over '{name}', "
+              "which is read a slab at a time")
     for d in manager.decisions:
         if d.kind == cg.DecisionKind.Applied and d.pass_name == "SlabStreaming":
             text = d.text if d.text.startswith(d.pass_name) else f"{d.pass_name}: {d.text}"
