@@ -133,10 +133,9 @@ the current value.
     #include <Einsums/TensorIO/Backing.hpp>
     #include <Einsums/TensorIO/Entries.hpp>
 
-    auto &t2     = graph.declare_runtime_tensor<double>("t2", {o, o, v, v});
-    auto &new_t2 = graph.declare_runtime_tensor<double>("t2_next", {o, o, v, v});
-    graph.annotate_backing(t2, tensor_io::etn_backing("amps.etn", "t2"));
-    graph.annotate_backing(new_t2, tensor_io::etn_backing("amps.etn", "t2_next", true));
+    tensor_io::EtnFile const amps("amps.etn");
+    auto &t2     = graph.declare_runtime_tensor<double>("t2", amps.entry("t2"));  // shaped like the entry
+    auto &new_t2 = graph.declare_runtime_tensor<double>("t2_next", {o, o, v, v}, false, amps.entry("t2_next", true));
     {
         cg::CaptureGuard guard(graph);
         // ... compute new_t2 from t2 ...
@@ -156,7 +155,8 @@ The graph wrappers are exposed in Python under ``einsums.io``. Each C++
 ``rename_entry``, ``swap_entries``, ``remove_entry``, ``restage_entry`` and
 ``compact_file`` as ``einsums.io.copy``, ``einsums.io.rename``,
 ``einsums.io.swap``, ``einsums.io.remove``, ``einsums.io.restage`` and
-``einsums.io.compact``. The slab-by-reference pattern
+``einsums.io.compact``. ``tensor_io::EtnFile`` is ``einsums.io.EtnFile``, and
+``etn_backing`` is ``einsums.io.etn``. The slab-by-reference pattern
 carries over: a Python ``Slab`` object can be advanced between graph
 executions the same way.
 

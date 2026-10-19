@@ -138,10 +138,10 @@ def later_run(path, problem):
     """The ladder alone, in a run that reuses the file the program wrote."""
     tau = problem["tau"]
     nocc, nvir = tau.shape[0], tau.shape[2]
-    naux = problem["fitted"].shape[0]
 
     graph = cg.Graph("ladder")
-    bvv = graph.declare_tensor("Bvv", [naux, nvir, nvir], backing=einsums.io.etn(path, "Bvv"))
+    # The entry says how large Bvv is and what it holds, so the declaration names only the entry.
+    bvv = graph.declare_tensor("Bvv", backing=einsums.io.etn(path, "Bvv"))
     T = _tensor("tau", tau)
     r2 = einsums.create_zero_tensor("r2", [nocc, nocc, nvir, nvir])
     with cg.capture(graph):

@@ -267,9 +267,12 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         } catch (std::exception const &error) {
             throw BuildFailure(fmt::format("tensor '{}': {}", spec.name, error.what()));
         }
-        // The record's "init" is what annotating sets, and annotating refuses a tensor already
-        // initialized some other way, so the one it is about to set is cleared first.
-        graph.tensor(loaded[spec.id].id).init_kind = InitKind::None;
+        // A read backing's record says "from disk", which is what annotating sets and refuses to
+        // find already set, so it is cleared first. A write backing's record says how the tensor
+        // starts (empty, or zero for one its writers add into), which annotating keeps.
+        if (spec.init == InitKind::FromDisk) {
+            graph.tensor(loaded[spec.id].id).init_kind = InitKind::None;
+        }
         try {
             graph.annotate_backing(loaded[spec.id].id, std::move(backing));
         } catch (std::exception const &error) {

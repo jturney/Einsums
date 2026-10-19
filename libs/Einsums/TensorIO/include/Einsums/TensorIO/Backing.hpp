@@ -15,6 +15,8 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN()
 namespace APIARY_MODULE("io") tensor_io {
@@ -59,6 +61,48 @@ inline constexpr std::string_view etn_backing_kind = "tensor_io.etn";
  */
 APIARY_EXPOSE APIARY_RENAME("etn") [[nodiscard]] EINSUMS_EXPORT compute_graph::TensorBacking
 etn_backing(std::string path, std::string entry, bool write = false, std::vector<std::size_t> order = std::vector<std::size_t>{});
+
+/**
+ * @brief A ``.etn`` file named once, for the backings of its entries.
+ *
+ * Holds only the path: nothing is opened until a backing is built, and each backing reopens the
+ * file by path at every slab as @ref etn_backing's do. A program that keeps several tensors in one
+ * file names it here rather than in every backing.
+ *
+ * @code
+ * ints = einsums.io.EtnFile("ints.etn")
+ * B = graph.declare_tensor("Bvv", backing=ints.entry("Bvv"))
+ * T = graph.declare_tensor("T2", dims, backing=ints.entry("T2", write=True))
+ * @endcode
+ * @versionadded{2.0.0}
+ */
+class APIARY_EXPOSE EtnFile {
+  public:
+    /// @brief Name the file.
+    /// @param[in] path The file, stored as given; see @ref etn_backing.
+    APIARY_EXPOSE explicit EtnFile(std::string path) : _path(std::move(path)) {}
+
+    /// @brief The file's path.
+    /// @return The path, as given.
+    APIARY_EXPOSE APIARY_GETTER("path") [[nodiscard]] std::string const &path() const noexcept { return _path; }
+
+    /**
+     * @brief The backing for one entry of this file: @ref etn_backing with this file's path.
+     * @param[in] entry The entry's name within the file.
+     * @param[in] write False for an input the graph reads, true for a tensor it produces and stores.
+     * @param[in] order For a write backing, the order to store a new entry's axes in.
+     * @return The backing.
+     * @throws std::runtime_error As @ref etn_backing.
+     * @throws std::invalid_argument As @ref etn_backing.
+     */
+    APIARY_EXPOSE [[nodiscard]] compute_graph::TensorBacking entry(std::string entry, bool write = false,
+                                                                   std::vector<std::size_t> order = std::vector<std::size_t>{}) const {
+        return etn_backing(_path, std::move(entry), write, std::move(order));
+    }
+
+  private:
+    std::string _path;
+};
 
 } // namespace tensor_io
 EINSUMS_NAMESPACE_END()

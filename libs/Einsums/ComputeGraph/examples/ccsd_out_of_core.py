@@ -150,12 +150,11 @@ def iteration(ints_path, amps_path, t1, energy, d1, d2):
     """
     nocc, nvir = d1.shape
     graph = cg.Graph("ccsd_iteration")
-    G = {}
-    for name in BLOCKS:
-        G[name] = graph.declare_tensor(name, [nocc if c == "o" else nvir for c in name],
-                                       backing=einsums.io.etn(ints_path, name))
-    t2 = graph.declare_tensor("t2", list(d2.shape), backing=einsums.io.etn(amps_path, "t2"))
-    r2 = graph.declare_tensor("t2_new", list(d2.shape), backing=einsums.io.etn(amps_path, "t2_next", write=True))
+    ints, amps = einsums.io.EtnFile(ints_path), einsums.io.EtnFile(amps_path)
+    # Each entry says how large it is and what it holds, so the inputs are declared from the file alone.
+    G = {name: graph.declare_tensor(name, backing=ints.entry(name)) for name in BLOCKS}
+    t2 = graph.declare_tensor("t2", backing=amps.entry("t2"))
+    r2 = graph.declare_tensor("t2_new", list(d2.shape), backing=amps.entry("t2_next", write=True))
     D1, D2 = _tensor("D1", d1), _tensor("D2", d2)
 
     shapes = {"Tau": "oovv", "Taut": "oovv", "Fae": "vv", "Fmi": "oo", "Fme": "ov", "Wmnij": "oooo", "Wmbej": "ovvo",

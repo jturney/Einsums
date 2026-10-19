@@ -3188,6 +3188,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] shape One entry per axis: an index space, or a number for an axis that is
      *            genuinely a fixed size. @ref SpaceDim converts from both.
      * @param[in] intermediate Whether the tensor is graph-internal scratch.
+     * @param[in] backing A write backing; see the dims overload.
      * @return Reference to the deferred tensor.
      *
      * @throws std::invalid_argument If a named space has no extent this graph has learned (see
@@ -3215,7 +3216,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor_over", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
     // clang-format on
     GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
-                                                                bool intermediate = false);
+                                                                bool                         intermediate = false,
+                                                                std::optional<TensorBacking> backing      = std::nullopt);
 
     /**
      * @brief The un-zeroed counterpart of the space-shaped @ref declare_zero_runtime_tensor.
@@ -3240,15 +3242,58 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape, bool intermediate = false,
                                                            std::optional<TensorBacking> backing = std::nullopt);
 
-    /// Runtime-rank analog of declare_zero_tensor() (graph-owned, deferred, zeroed
-    /// at materialize time).
+    /**
+     * @brief Declare a deferred tensor shaped like the storage a read backing names.
+     * @tparam T Element type, which has to be the one the storage holds.
+     * @tparam Alloc Allocator.
+     * @param[in] name The tensor's name.
+     * @param[in] backing A read backing; the tensor takes its extents.
+     * @param[in] intermediate Whether nothing reads the tensor after ``execute()``.
+     * @return The declared tensor, owned by this graph and backed by @p backing.
+     * @throws std::invalid_argument for a write backing, whose storage takes its shape from the
+     *         tensor and so has none to give, or as @ref annotate_backing.
+     *
+     * In Python the element type is taken from the backing as well, so an input kept in a file is
+     * declared from the file alone:
+     *
+     * @code
+     * B = graph.declare_tensor("Bvv", backing=einsums.io.etn("ints.etn", "Bvv"))
+     * @endcode
+     * @versionadded{2.0.0}
+     */
+    template <typename T, typename Alloc = std::allocator<T>>
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = float, Alloc = std::allocator<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
+    // clang-format on
+    GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, TensorBacking backing, bool intermediate = false);
+
+    /**
+     * @brief Runtime-rank analog of declare_zero_tensor(): graph-owned, deferred, and zeroed when
+     *        it is materialized.
+     * @tparam T Element type.
+     * @tparam Alloc Allocator.
+     * @param[in] name The tensor's name.
+     * @param[in] dims Its extents.
+     * @param[in] intermediate Whether nothing reads the tensor after ``execute()``.
+     * @param[in] backing A WRITE backing for a tensor the graph builds up from zero, as a residual
+     *            whose terms each add into it is: it is zeroed before its first writer at every
+     *            replay and stored after its last. A read backing is refused, since the storage and
+     *            the zeros would both fill it.
+     * @return The declared tensor, owned by this graph.
+     * @throws std::invalid_argument As @ref annotate_backing, when @p backing is refused.
+     */
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = float, Alloc = std::allocator<float>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = double, Alloc = std::allocator<double>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<double>,
                                  Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
-    declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = false);
+    declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = false,
+                                std::optional<TensorBacking> backing = std::nullopt);
 
     /**
      * @brief Declare a deferred, zeroed runtime-rank tensor from a braced list of extents.
@@ -3258,6 +3303,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] name Human-readable name.
      * @param[in] dims One extent per axis.
      * @param[in] intermediate Whether the tensor is graph-internal scratch.
+     * @param[in] backing A write backing; see the @c std::vector overload.
      * @return What the @c std::vector overload returns, which is what this forwards to.
      *
      * @par Why this exists, since it looks redundant
@@ -3279,7 +3325,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     template <typename T, typename Alloc = std::allocator<T>>
     GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims,
-                                                                bool intermediate = false);
+                                                                bool                         intermediate = false,
+                                                                std::optional<TensorBacking> backing      = std::nullopt);
 
     /// Tiled analog of declare_zero_runtime_tensor(): a graph-owned
     /// TiledRuntimeTensor shell over @p tile_sizes with DEFERRED lifecycle.
@@ -4541,6 +4588,20 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// @throws std::invalid_argument As @ref annotate_backing; @p handle is then unchanged.
     void attach_backing(TensorHandle &handle, TensorBacking backing);
 
+    /// @brief What every runtime-rank declaration does: own a deferred tensor, zeroed at
+    ///        materialization when @p zero, attach @p backing, and register it.
+    /// @tparam T Element type.
+    /// @tparam Alloc Allocator.
+    /// @param[in] name The tensor's name.
+    /// @param[in] dims Its extents.
+    /// @param[in] intermediate Whether nothing reads the tensor after ``execute()``.
+    /// @param[in] zero Whether it starts at zero.
+    /// @param[in] backing Its storage, if any; refused, nothing is declared.
+    /// @return The declared tensor.
+    template <typename T, typename Alloc>
+    GeneralRuntimeTensor<T, Alloc> &declare_deferred_runtime(std::string name, std::vector<size_t> dims, bool intermediate, bool zero,
+                                                             std::optional<TensorBacking> backing);
+
     /// @brief Append the Alloc node that marks an eagerly allocated tensor's lifetime start.
     /// @param[in] id The registered tensor.
     /// @param[in] name The tensor's name, which labels the node.
@@ -4696,11 +4757,31 @@ auto Graph::create_zero_runtime_tensor(std::string name, std::vector<SpaceDim> c
 template <typename T, typename Alloc>
 auto Graph::declare_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate, std::optional<TensorBacking> backing)
     -> GeneralRuntimeTensor<T, Alloc> & {
+    return declare_deferred_runtime<T, Alloc>(std::move(name), std::move(dims), intermediate, false, std::move(backing));
+}
+template <typename T, typename Alloc>
+auto Graph::declare_runtime_tensor(std::string name, TensorBacking backing, bool intermediate) -> GeneralRuntimeTensor<T, Alloc> & {
+    if (backing.write) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "Graph '{}': declare tensor '{}' from {}: a write backing takes its shape from the tensor, so give the "
+                                "tensor's extents",
+                                _name, name, backing.describe());
+    }
+    auto dims = backing.dims;
+    return declare_deferred_runtime<T, Alloc>(std::move(name), std::move(dims), intermediate, false, std::move(backing));
+}
+template <typename T, typename Alloc>
+auto Graph::declare_deferred_runtime(std::string name, std::vector<size_t> dims, bool intermediate, bool zero,
+                                     std::optional<TensorBacking> backing) -> GeneralRuntimeTensor<T, Alloc> & {
     using TensorType = GeneralRuntimeTensor<T, Alloc>;
     auto *ptr        = own_tensor<TensorType>(typename TensorType::DeferredAlloc{}, name, std::move(dims));
 
     auto handle            = make_deferred_handle(ptr);
     handle.is_intermediate = intermediate;
+    if (zero) {
+        handle.init_kind = InitKind::Zero;
+        ptr->set_pending_init(PendingInit::Zero);
+    }
     // Without this a bind CANNOT move this tensor's extents, whatever its dim symbols
     // say: resize_derived_extent requires the hook as well as the deferred state, so a
     // runtime-rank intermediate that lacked it was refused with a message blaming the
@@ -4724,10 +4805,10 @@ auto Graph::declare_runtime_tensor(std::string name, std::initializer_list<std::
     return declare_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate, std::move(backing));
 }
 template <typename T, typename Alloc>
-auto Graph::declare_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape, bool intermediate)
-    -> GeneralRuntimeTensor<T, Alloc> & {
+auto Graph::declare_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape, bool intermediate,
+                                        std::optional<TensorBacking> backing) -> GeneralRuntimeTensor<T, Alloc> & {
     auto const resolved = resolve_space_shape(shape, name);
-    auto      &t        = declare_zero_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
+    auto      &t        = declare_zero_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate, std::move(backing));
     apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
     return t;
 }
@@ -4740,18 +4821,14 @@ auto Graph::declare_runtime_tensor(std::string name, std::vector<SpaceDim> const
     return t;
 }
 template <typename T, typename Alloc>
-auto Graph::declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate) -> GeneralRuntimeTensor<T, Alloc> & {
-    auto &t = declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);
-    if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
-        handle->init_kind = InitKind::Zero;
-    }
-    t.set_pending_init(PendingInit::Zero);
-    return t;
+auto Graph::declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate, std::optional<TensorBacking> backing)
+    -> GeneralRuntimeTensor<T, Alloc> & {
+    return declare_deferred_runtime<T, Alloc>(std::move(name), std::move(dims), intermediate, true, std::move(backing));
 }
 template <typename T, typename Alloc>
-auto Graph::declare_zero_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims, bool intermediate)
-    -> GeneralRuntimeTensor<T, Alloc> & {
-    return declare_zero_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate);
+auto Graph::declare_zero_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims, bool intermediate,
+                                        std::optional<TensorBacking> backing) -> GeneralRuntimeTensor<T, Alloc> & {
+    return declare_zero_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate, std::move(backing));
 }
 template <typename T>
 auto Graph::declare_zero_tiled_tensor(std::string name, std::vector<std::vector<int>> tile_sizes, bool intermediate)
@@ -4812,15 +4889,23 @@ auto Graph::declare_internal_tensor(std::string name, std::vector<size_t> dims) 
     PREFIX auto Graph::declare_runtime_tensor<T, std::allocator<T>>(std::string name, std::initializer_list<std::size_t> dims,             \
                                                                     bool intermediate, std::optional<TensorBacking> backing)               \
         -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
-    PREFIX auto Graph::declare_zero_runtime_tensor<T, std::allocator<T>>(                                                                  \
-        std::string name, std::vector<SpaceDim> const &shape, bool intermediate) -> GeneralRuntimeTensor<T, std::allocator<T>> &;          \
+    PREFIX auto Graph::declare_zero_runtime_tensor<T, std::allocator<T>>(std::string name, std::vector<SpaceDim> const &shape,             \
+                                                                         bool intermediate, std::optional<TensorBacking> backing)          \
+        -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
+    PREFIX auto Graph::declare_runtime_tensor<T, std::allocator<T>>(std::string name, TensorBacking backing, bool intermediate)            \
+        -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
     PREFIX auto Graph::declare_runtime_tensor<T, std::allocator<T>>(std::string name, std::vector<SpaceDim> const &shape,                  \
                                                                     bool intermediate, std::optional<TensorBacking> backing)               \
         -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
-    PREFIX auto Graph::declare_zero_runtime_tensor<T, std::allocator<T>>(std::string name, std::vector<size_t> dims, bool intermediate)    \
+    PREFIX auto Graph::declare_zero_runtime_tensor<T, std::allocator<T>>(std::string name, std::vector<size_t> dims, bool intermediate,    \
+                                                                         std::optional<TensorBacking> backing)                             \
         -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
-    PREFIX auto Graph::declare_zero_runtime_tensor<T, std::allocator<T>>(                                                                  \
-        std::string name, std::initializer_list<std::size_t> dims, bool intermediate) -> GeneralRuntimeTensor<T, std::allocator<T>> &;     \
+    PREFIX auto Graph::declare_zero_runtime_tensor<T, std::allocator<T>>(std::string name, std::initializer_list<std::size_t> dims,        \
+                                                                         bool intermediate, std::optional<TensorBacking> backing)          \
+        -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
+    PREFIX auto Graph::declare_deferred_runtime<T, std::allocator<T>>(std::string name, std::vector<size_t> dims, bool intermediate,       \
+                                                                      bool zero, std::optional<TensorBacking> backing)                     \
+        -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
     PREFIX auto Graph::declare_zero_tiled_tensor<T>(std::string name, std::vector<std::vector<int>> tile_sizes, bool intermediate)         \
         -> TiledRuntimeTensor<T> &;                                                                                                        \
     PREFIX auto Graph::declare_zero_tiled_tensor<T>(std::string name, std::vector<SpaceTiling> const &shape, bool intermediate)            \

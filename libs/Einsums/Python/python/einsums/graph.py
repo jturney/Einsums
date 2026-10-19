@@ -26,7 +26,44 @@ wrote. The user guide's optimizer page is the narrative.
 """
 
 import contextlib as _contextlib
+import functools as _functools
 import importlib as _importlib
+
+_graph_patched = False
+
+
+def _dtype_from_backing(declare):
+    """Wrap a ``Graph.declare_tensor*`` method so a read backing supplies the default ``dtype``.
+
+    The generated method picks its element type from ``dtype=``, which defaults to float64. A
+    tensor declared with a read backing has to hold what the storage holds, so the backing knows
+    the answer: without this, a float32 entry declared without ``dtype=`` would be refused as a
+    float64 tensor over float32 storage. An explicit ``dtype=`` is passed through unchanged, and
+    refused as before when it disagrees with the storage.
+    """
+
+    @_functools.wraps(declare)
+    def wrapper(self, *args, **kwargs):
+        if "dtype" not in kwargs:
+            backing = kwargs.get("backing")
+            if backing is None:
+                backing = next((a for a in args if isinstance(a, _core().TensorBacking)), None)
+            dtype = backing.dtype if backing is not None else None
+            if dtype is not None:
+                kwargs["dtype"] = dtype
+        return declare(self, *args, **kwargs)
+
+    return wrapper
+
+
+def _patch_graph(core):
+    """Install the Python-side conveniences on ``Graph`` once. Idempotent."""
+    global _graph_patched
+    if _graph_patched:
+        return
+    _graph_patched = True
+    for method in ("declare_tensor", "declare_tensor_over"):
+        setattr(core.Graph, method, _dtype_from_backing(getattr(core.Graph, method)))
 
 
 def _core():
@@ -40,7 +77,9 @@ def _core():
     something. So helpers reach the C extension through this small
     accessor instead.
     """
-    return _importlib.import_module("._core.graph", "einsums")
+    core = _importlib.import_module("._core.graph", "einsums")
+    _patch_graph(core)
+    return core
 
 
 def __getattr__(name):

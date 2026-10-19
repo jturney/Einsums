@@ -1166,6 +1166,9 @@ def _bootstrap():
     _patch_tiled_tensor_getitem(_core)
     _patch_numpy_ergonomics(_core)
     _patch_memory_pool(_core)
+    # Graph's conveniences live with the rest of the graph shell, and patch the class itself, so a
+    # Graph reached through the compiled module has them too.
+    _importlib.import_module("einsums.graph")._core()
 
 
 # ----------------------------------------------------------------------

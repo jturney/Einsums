@@ -239,3 +239,73 @@ def test_slab_streaming_produces_the_entry_a_block_at_a_time(etn_path):
     a, b, e = (np.asarray(x, copy=False) for x in (A, B, E))
     assert_close(_read_back(etn_path, "T", (5, 7), "float64"), a @ b, dtype="float64")
     assert_close(np.asarray(D, copy=False), (a @ b) @ e, dtype="float64")
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_a_tensor_is_declared_from_its_read_backing_alone(etn_path, dtype):
+    b = _filled("B", (4, 3), dtype, 0.5)
+    einsums.io.write(etn_path, "B", b)
+    A = _filled("A", (5, 4), dtype, 0.25)
+    C = einsums.create_zero_tensor("C", [5, 3], dtype=dtype)
+
+    g = cg.Graph("from_backing")
+    backing = einsums.io.etn(etn_path, "B")
+    assert backing.dtype == np.dtype(dtype).name
+    B = g.declare_tensor("B", backing=backing)
+    assert list(B.shape) == [4, 3]
+    suffix = {"float32": "F", "float64": "D", "complex64": "C", "complex128": "Z"}[np.dtype(dtype).name]
+    assert type(B).__name__ == "RuntimeTensor" + suffix
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", C, A, B)
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    expected = np.asarray(A, copy=False) @ np.asarray(b, copy=False)
+    assert_close(np.asarray(C, copy=False), expected, dtype=dtype)
+
+    # With the extents given, the element type still comes from the backing.
+    g2 = cg.Graph("dims_given")
+    B2 = g2.declare_tensor("B", [4, 3], backing=einsums.io.etn(etn_path, "B"))
+    assert g2.tensor_backing(B2).dtype == np.dtype(dtype).name
+
+
+def test_a_declaration_from_a_backing_refuses_what_it_cannot_honour(etn_path):
+    einsums.io.write(etn_path, "B", _filled("B", (4, 3), "float64", 0.5))
+    g = cg.Graph("refused")
+    with pytest.raises(ValueError, match="the tensor holds float32 and the storage holds float64"):
+        g.declare_tensor("B", backing=einsums.io.etn(etn_path, "B"), dtype="float32")
+    with pytest.raises(ValueError, match="a write backing takes its shape from the tensor"):
+        g.declare_tensor("T", backing=einsums.io.etn(etn_path, "T", write=True))
+    assert einsums.io.etn(etn_path, "T", write=True).dtype is None
+    assert g.num_tensors() == 0
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_a_write_backed_tensor_declared_at_zero_sums_its_writers(etn_path, dtype):
+    A = _filled("A", (5, 4), dtype, 0.25)
+    B = _filled("B", (4, 3), dtype, 0.5)
+    B2 = _filled("B2", (4, 3), dtype, 0.75)
+
+    g = cg.Graph("summed")
+    T = g.declare_zero_tensor("T", [5, 3], dtype=dtype, backing=einsums.io.etn(etn_path, "T", write=True))
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", T, A, B, c_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", T, A, B2, c_pf=1.0)
+    assert g.verify() == []
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    g.execute()
+    a = np.asarray(A, copy=False)
+    expected = a @ np.asarray(B, copy=False) + a @ np.asarray(B2, copy=False)
+    assert_close(_read_back(etn_path, "T", (5, 3), dtype), expected, dtype=dtype)
+
+
+def test_etn_file_names_the_path_once(etn_path):
+    einsums.io.write(etn_path, "B", _filled("B", (4, 3), "float64", 0.5))
+    ints = einsums.io.EtnFile(etn_path)
+    assert ints.path == etn_path
+    assert ints.entry("B").describe() == einsums.io.etn(etn_path, "B").describe()
+    assert ints.entry("T", write=True).write
+
+    g = cg.Graph("named_once")
+    B = g.declare_tensor("B", backing=ints.entry("B"))
+    assert list(B.shape) == [4, 3]

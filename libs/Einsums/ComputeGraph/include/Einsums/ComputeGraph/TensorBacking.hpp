@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -111,6 +112,12 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") TensorBacking {
     /// with @ref dims, @ref dtype, @ref read_slab and @ref write_slab filled in. Throws when the
     /// storage already holds something of another shape or type. Set on a write backing only.
     std::function<TensorBacking(std::vector<std::size_t> const &dims, packed_gemm::ScalarType dtype)> prepare;
+
+    /// @brief The stored tensor's element type by name, as a ``dtype=`` argument spells it.
+    /// @return ``"float32"``, ``"float64"``, ``"complex64"`` or ``"complex128"``; nothing for a write
+    ///         backing not yet completed by its tensor, whose storage has no type to give.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("dtype") [[nodiscard]] EINSUMS_EXPORT std::optional<std::string> dtype_name() const;
 
     /// @brief The kind and location in one phrase, for diagnostics.
     /// @return Text such as ``tensor_io.etn (entry=B_vv, path=ints.etn)``.

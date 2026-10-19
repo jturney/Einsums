@@ -708,3 +708,97 @@ TEST_CASE("A saved graph keeps a write backing's access", "[TensorIO][Backing][S
         CHECK_THAT(*read_saved, !Catch::Matchers::ContainsSubstring(R"("access")"));
     }
 }
+
+TEST_CASE("A tensor declared from a read backing takes the storage's extents", "[TensorIO][Backing]") {
+    TempFile const tmp("from_backing.etn");
+    auto const     stored = filled<double>("B", {4, 3}, 0.5);
+    write_entry(tmp.path, "B", stored);
+
+    cg::Graph   graph("from_backing");
+    auto const &b = graph.declare_runtime_tensor<double>("B", tensor_io::etn_backing(tmp.path, "B"));
+    CHECK(b.rank() == 2);
+    CHECK(b.dim(0) == 4);
+    CHECK(b.dim(1) == 3);
+    REQUIRE(graph.tensor_backing(b).has_value());
+    CHECK(graph.tensor_backing(b)->dtype_name() == std::optional<std::string>{"float64"});
+
+    CHECK_THROWS_WITH(graph.declare_runtime_tensor<float>("B32", tensor_io::etn_backing(tmp.path, "B")),
+                      Catch::Matchers::ContainsSubstring("the tensor holds float32 and the storage holds float64"));
+    CHECK_THROWS_WITH(graph.declare_runtime_tensor<double>("T", tensor_io::etn_backing(tmp.path, "T", true)),
+                      Catch::Matchers::ContainsSubstring("a write backing takes its shape from the tensor"));
+    CHECK(graph.num_tensors() == 1);
+    // A write backing has no element type until its tensor completes it.
+    CHECK_FALSE(tensor_io::etn_backing(tmp.path, "T", true).dtype_name().has_value());
+}
+
+TEST_CASE("EtnFile builds the backings of its entries", "[TensorIO][Backing]") {
+    TempFile const tmp("named_once.etn");
+    write_entry(tmp.path, "B", filled<double>("B", {4, 3}, 0.5));
+
+    tensor_io::EtnFile const file(tmp.path);
+    CHECK(file.path() == tmp.path);
+    auto const read = file.entry("B");
+    CHECK(read.describe() == tensor_io::etn_backing(tmp.path, "B").describe());
+    CHECK(read.dims == std::vector<size_t>{4, 3});
+    CHECK_FALSE(read.write);
+    CHECK(file.entry("T", true).write);
+    CHECK_THROWS_WITH(file.entry("nope"), Catch::Matchers::ContainsSubstring("'nope' not found"));
+}
+
+// Every term of a residual adds into it, so its storage has to start each replay at zero. A write
+// backing used to refuse a tensor declared at zero, and a saved graph cleared the zero start of
+// every backed tensor at load.
+TEST_CASE("A write-backed tensor declared at zero sums its writers at every replay", "[TensorIO][Backing]") {
+    TempFile const tmp("summed.etn");
+    // Not const: a loaded graph binds them.
+    auto a  = filled<double>("A", {5, 4}, 0.25);
+    auto b  = filled<double>("B", {4, 3}, 0.5);
+    auto b2 = filled<double>("B2", {4, 3}, 0.75);
+
+    RuntimeTensor<double> expected("T", std::vector<size_t>{5, 3});
+    expected.zero();
+    cg::einsum("i,j <- i,k ; k,j", 1.0, &expected, 1.0, a, b);
+    cg::einsum("i,j <- i,k ; k,j", 1.0, &expected, 1.0, a, b2);
+
+    cg::Graph graph("summed");
+    auto     &t = graph.declare_zero_runtime_tensor<double>("T", {5, 3}, false, tensor_io::etn_backing(tmp.path, "T", true));
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &t, 1.0, a, b);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &t, 1.0, a, b2);
+    }
+    CHECK(graph.verify().empty());
+
+    SECTION("replayed twice, the storage holds one sum") {
+        materialize(graph);
+        graph.execute();
+        graph.execute();
+        CHECK(bytes_of(read_entry<double>(tmp.path, "T", {5, 3})) == bytes_of(expected));
+    }
+    SECTION("a saved graph keeps the zero start") {
+        auto const saved = cg::save_graph_string(graph);
+        REQUIRE(saved.has_value());
+        auto loaded = cg::load_graph_string(*saved);
+        INFO((loaded ? std::string{} : loaded.error().message));
+        REQUIRE(loaded.has_value());
+        bool found = false;
+        for (auto const &[id, handle] : loaded->tensors_map()) {
+            if (handle.name == "T") {
+                found = true;
+                CHECK(handle.init_kind == cg::InitKind::Zero);
+                REQUIRE(handle.backing != nullptr);
+                CHECK(handle.backing->write);
+            }
+        }
+        CHECK(found);
+        loaded->bind("A", a, "B", b, "B2", b2);
+        materialize(*loaded);
+        loaded->execute();
+        loaded->execute();
+        CHECK(bytes_of(read_entry<double>(tmp.path, "T", {5, 3})) == bytes_of(expected));
+    }
+    SECTION("a read backing is still refused at zero") {
+        CHECK_THROWS_WITH(graph.declare_zero_runtime_tensor<double>("R", {5, 3}, false, tensor_io::etn_backing(tmp.path, "T")),
+                          Catch::Matchers::ContainsSubstring("already initialized by 'zero'"));
+    }
+}

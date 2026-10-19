@@ -383,9 +383,12 @@ void Graph::attach_backing(TensorHandle &handle, TensorBacking backing) {
     if (materialized && !empty) {
         refuse("the tensor is already allocated; declare it on the graph (declare_tensor) so it stays deferred");
     }
-    if (handle.init_kind != InitKind::None) {
-        refuse(fmt::format("the tensor is already initialized by '{}' after allocation, and a backing fills it instead",
-                           init_kind_name(handle.init_kind)));
+    // A read backing fills the tensor, so nothing else may. A write backing's tensor is the graph's
+    // to produce, and one that starts at zero is what a sum of terms adds into.
+    bool const zero_for_writes = backing.write && handle.init_kind == InitKind::Zero;
+    if (handle.init_kind != InitKind::None && !zero_for_writes) {
+        refuse(fmt::format("the tensor is already initialized by '{}' after allocation, and a {} fills it instead",
+                           init_kind_name(handle.init_kind), backing.write ? "write backing other than from zero" : "backing"));
     }
     // A write backing describes storage that may not exist yet, so the tensor completes it: the
     // storage is made to hold a tensor of this shape, reusing what is there when it already does.

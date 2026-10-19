@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/InterfaceManifest.hpp>
 #include <Einsums/ComputeGraph/TensorBacking.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
@@ -12,6 +13,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
@@ -29,6 +31,13 @@ Registry &registry() {
     return instance;
 }
 } // namespace
+
+std::optional<std::string> TensorBacking::dtype_name() const {
+    if (dtype == packed_gemm::ScalarType::Unknown) {
+        return std::nullopt;
+    }
+    return std::string{scalar_type_name(dtype)};
+}
 
 std::string TensorBacking::describe() const {
     std::string where;

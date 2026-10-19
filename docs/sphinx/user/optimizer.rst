@@ -612,10 +612,19 @@ the graph.
 
 .. code-block:: python
 
-    bvv = g.declare_tensor("Bvv", [naux, nvir, nvir], backing=einsums.io.etn("ints.etn", "Bvv"))
+    bvv = g.declare_tensor("Bvv", backing=einsums.io.etn("ints.etn", "Bvv"))
 
-``cg.annotate(bvv, backing=..., graph=g)`` attaches the same backing to a tensor
-already declared.
+The entry records the tensor's extents and element type, so a tensor backed for
+reading takes both from it. Extents or a ``dtype`` given as well have to match
+the entry's. ``cg.annotate(bvv, backing=..., graph=g)`` attaches the same
+backing to a tensor already declared, and ``einsums.io.EtnFile`` names a file
+once for all its entries:
+
+.. code-block:: python
+
+    ints = einsums.io.EtnFile("ints.etn")
+    bvv = g.declare_tensor("Bvv", backing=ints.entry("Bvv"))
+    bov = g.declare_tensor("Bov", backing=ints.entry("Bov"))
 
 A tensor backed for reading is filled from its entry at every replay, so a file
 rewritten between replays is picked up by the next one. A tensor declared by
@@ -635,6 +644,17 @@ the tensor's shape and type, leaving the file's other entries alone. An entry
 of the same shape and type is reused; an entry of any other is refused at the
 declaration rather than at the end of a long replay. A write-backed tensor that
 nothing writes is the other error ``verify()`` names.
+
+A tensor the graph builds by adding terms into it, a residual for instance, is
+declared at zero. It starts at zero at every replay and is stored after its
+last term.
+
+.. code-block:: python
+
+    r2 = g.declare_zero_tensor("r2", [nocc, nocc, nvir, nvir], backing=einsums.io.etn("amps.etn", "r2", write=True))
+
+``SlabStreaming`` streams a write-backed tensor only from a writer that
+overwrites it, so such a tensor is held whole while its terms add into it.
 
 What a backing changes is where the tensor lives; when it is held whole is the
 ``SlabStreaming`` pass's decision, which runs after ``AxisTiling`` in the

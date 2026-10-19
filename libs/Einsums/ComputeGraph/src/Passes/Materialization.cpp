@@ -633,12 +633,12 @@ bool Materialization::run(Graph &graph) {
     };
 
     // What a tensor is filled with once allocated. Its declaration says, except for a tensor with a
-    // WRITE backing, which the graph produces: produced in memory, it needs no fill, and produced
-    // a slab at a time straight into its storage (by SlabStreaming), a reader that still wants it
-    // whole has it read back from that storage.
+    // WRITE backing, which the graph produces: produced in memory, it starts as declared (empty, or
+    // zero for one its writers add into), and produced a slab at a time straight into its storage
+    // (by SlabStreaming), a reader that still wants it whole has it read back from that storage.
     auto const init_of = [&graph](TensorHandle const &handle) {
         if (handle.backing && handle.backing->write) {
-            return handle.tensor_ptr != nullptr && compute_graph::detail::written_in_memory(graph, handle.tensor_ptr) ? InitKind::None
+            return handle.tensor_ptr != nullptr && compute_graph::detail::written_in_memory(graph, handle.tensor_ptr) ? handle.init_kind
                                                                                                                       : InitKind::FromDisk;
         }
         return handle.init_kind;
