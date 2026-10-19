@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
@@ -114,6 +115,10 @@ bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t ei
     dst_slot->name = src_slot->name;
 
     nodes[einsum_idx].inputs[slot] = perm_input_tid;
+
+    // The GEMM hint was derived from the permuted copy, so it names the copy and its transpose
+    // flag; the einsum now reads the source through a rewritten index list.
+    refresh_gemm_hint(graph, nodes[einsum_idx]);
 
     nodes[einsum_idx].label = fmt::format("[fused permute {} -> {}] {}", fmt::join(perm_desc->a_indices, ","),
                                           fmt::join(perm_desc->c_indices, ","), nodes[einsum_idx].label);

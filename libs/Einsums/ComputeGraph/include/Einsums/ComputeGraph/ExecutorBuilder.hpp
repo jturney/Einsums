@@ -307,6 +307,23 @@ class ScalarAccessor {
                                                                         TensorId a_id, TensorId b_id, TensorId c_id);
 
 /**
+ * @brief Derive an einsum node's GEMM hint again, from its index lists and the operands it lists now.
+ *
+ * The hint is derived data, so a pass that rewrites an einsum in place (its index lists, which
+ * tensor it reads, or the layout of one it reads) calls this afterwards. GEMMBatching keys its
+ * groups and runs its batched call on the hint, so a stale one multiplies the wrong matrices, and
+ * the loader re-derives every saved hint and refuses a file whose hint its operands contradict.
+ *
+ * The operands are read as GEMMBatching reads them: the first two inputs and the one output, with
+ * the element type of that output, which is how a saved node records it. A node not shaped that way
+ * is left with no hint. Does nothing to a node that is not an einsum.
+ *
+ * @param[in,out] graph Graph the node belongs to.
+ * @param[in,out] node  The rewritten node.
+ */
+EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
+
+/**
  * @brief Whether nodes of @p kind can have their executor rebuilt from data alone.
  *
  * True exactly when @ref build_executor has an entry for the kind, which is

@@ -1212,6 +1212,22 @@ std::shared_ptr<GemmHint> derive_gemm_hint(packed_gemm::ScalarType dtype, packed
     });
 }
 
+void refresh_gemm_hint(Graph &graph, Node &node) {
+    auto *desc = node.op_data.get_if<EinsumDescriptor>();
+    if (node.kind != OpKind::Einsum || desc == nullptr) {
+        return;
+    }
+    desc->gemm_hint = nullptr;
+    if (node.inputs.size() < 2 || node.outputs.size() != 1) {
+        return;
+    }
+    TensorHandle const *destination = graph.find_tensor(node.outputs[0]);
+    if (destination == nullptr || destination->dtype == packed_gemm::ScalarType::Unknown) {
+        return;
+    }
+    desc->gemm_hint = derive_gemm_hint(destination->dtype, desc->spec, graph, node.inputs[0], node.inputs[1], node.outputs[0]);
+}
+
 std::string reconstruction_blocker(Node const &node) {
     // A Custom node carrying a registered descriptor is rebuilt by its codec.
     if (node.kind == OpKind::Custom && find_descriptor_codec(node.op_data.name()) != nullptr) {

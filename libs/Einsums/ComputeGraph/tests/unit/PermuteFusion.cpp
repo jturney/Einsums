@@ -648,3 +648,50 @@ TEMPLATE_LIST_TEST_CASE("PermuteFusion: a reader merged in by CSE still counts",
     require_close(C, C_ref);
     require_close(R, R_ref);
 }
+
+TEMPLATE_LIST_TEST_CASE("PermuteFusion: a fused einsum's GEMM hint follows its new operand", "[ComputeGraph][Optimizer][PermuteFusion]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    // The fusion rewrote the einsum's index list and operand but kept the GEMM hint derived from
+    // the transposed scratch: trans_a 'N' where the einsum now reads A as its transpose. GEMMBatching
+    // keys its groups and its batched call on that hint, so it put the einsum in one batch with a
+    // plain product of the same shape and multiplied by A instead of A^T. A saved graph carried the
+    // same stale hint, and loading it refused the file.
+    constexpr size_t n = 6;
+    auto             A = create_random_tensor<T>("A", n, n);
+    auto             B = create_random_tensor<T>("B", n, n);
+    auto             D = create_random_tensor<T>("D", n, n);
+    auto             E = create_random_tensor<T>("E", n, n);
+
+    auto C1_ref = create_zero_tensor<T>("C1_ref", n, n);
+    auto C2_ref = create_zero_tensor<T>("C2_ref", n, n);
+    reference_einsum("ij <- ki ; kj", &C1_ref, A, B);
+    reference_einsum("ij <- ik ; kj", &C2_ref, D, E);
+
+    auto      C1 = create_zero_tensor<T>("C1", n, n);
+    auto      C2 = create_zero_tensor<T>("C2", n, n);
+    cg::Graph graph("fused_hint");
+    auto     &A_T = graph.scratch<T, 2>("A_T", n, n);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("ji <- ij", &A_T, A);
+        cg::einsum("ij <- ik ; kj", &C1, A_T, B);
+        cg::einsum("ij <- ik ; kj", &C2, D, E);
+    }
+
+    auto [fused, fusion] = graph.apply<cg::passes::PermuteFusion>();
+    REQUIRE(fusion.num_rewrites() == 1);
+
+    // The hint is the one a fresh capture of the fused einsum would derive.
+    auto const *desc = graph.nodes()[0].op_data.get_if<cg::EinsumDescriptor>();
+    REQUIRE(desc != nullptr);
+    REQUIRE(desc->gemm_hint != nullptr);
+    CHECK(desc->gemm_hint->trans_a == 'T');
+    CHECK(desc->gemm_hint->trans_b == 'N');
+    CHECK(desc->gemm_hint->a.id == graph.nodes()[0].inputs[0]);
+
+    graph.apply<cg::passes::GEMMBatching>();
+    graph.execute();
+    require_close(C1, C1_ref);
+    require_close(C2, C2_ref);
+}
