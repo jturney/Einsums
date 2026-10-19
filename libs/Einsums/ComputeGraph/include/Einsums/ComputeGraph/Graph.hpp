@@ -984,7 +984,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     TensorId find_or_register_tensor_ptr(TensorHandle const &handle);
 
-    /// The id registered for @p ptr, or 0 if there is none.
+    /// The id registered for @p ptr, or 0 if there is none. A caller's address whose object has
+    /// been destroyed names nothing: the handle filed under it is not returned.
     [[nodiscard]] TensorId find_tensor_id_by_ptr(void const *ptr) const noexcept;
 
     /**

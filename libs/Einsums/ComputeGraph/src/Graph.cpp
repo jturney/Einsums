@@ -549,7 +549,18 @@ SpaceTiling tiles(std::vector<int> sizes) {
 
 TensorId Graph::find_tensor_id_by_ptr(void const *ptr) const noexcept {
     auto const it = _ptr_index.find(ptr);
-    return it == _ptr_index.end() ? TensorId{0} : it->second;
+    if (it == _ptr_index.end()) {
+        return 0;
+    }
+    // An entry filed under a caller's address is a lookup key for that caller's object while it
+    // lives. Once its token has expired the address is free, and whatever lives there now is a
+    // different tensor: a loop body's buffer allocated on it would otherwise resolve to the dead
+    // operand's id in the enclosing graph, and every pass mapping it outward would rewire it.
+    if (TensorHandle const *handle = find_tensor(it->second); handle != nullptr && handle->caller_ptr == ptr && handle->tensor_ptr != ptr &&
+                                                              !detail::untracked(handle->caller_token) && handle->caller_token.expired()) {
+        return 0;
+    }
+    return it->second;
 }
 
 TensorId Graph::live_tensor_id_by_ptr(void const *ptr, std::weak_ptr<void> const &token) const noexcept {

@@ -170,6 +170,41 @@ TEST_CASE("Operand ownership: a recycled address is not mistaken for its predece
     std::destroy_at(slot_ptr);
 }
 
+TEST_CASE("Operand ownership: a dead operand's address names nothing once it is reused", "[ComputeGraph][Ownership]") {
+    // Capture keeps a stand-in for an operand whose wrapper dies and files the wrapper's address
+    // in the pointer index as a lookup key. The plain lookup kept answering for that address after
+    // the wrapper was gone, so a tensor a pass allocated there later was taken for the dead operand.
+    // The out-of-core CCSD example showed it: its denominator D2 is a local the graph outlives, a
+    // slab buffer SlabStreaming allocated on D2's address was mapped to D2 in the enclosing graph,
+    // and the iteration's tensors and measured peak changed in about one run in nine.
+    constexpr size_t M = 6, N = 4;
+
+    alignas(RuntimeTensor<double>) std::byte slot_storage[sizeof(RuntimeTensor<double>)];
+    auto                                    *slot_ptr = reinterpret_cast<RuntimeTensor<double> *>(slot_storage);
+
+    cg::Graph    graph("reused_address");
+    cg::TensorId dead = 0;
+    {
+        cg::CaptureGuard const guard(graph);
+        std::construct_at(slot_ptr, "operand", std::vector<size_t>{M, N});
+        slot_ptr->zero();
+        cg::scale(2.0, slot_ptr);
+        dead = graph.find_tensor_id_by_ptr(slot_ptr);
+        std::destroy_at(slot_ptr);
+    }
+    REQUIRE(dead != 0);
+    REQUIRE(graph.find_tensor(dead) != nullptr);
+
+    // A different tensor on the same address, the way a pass's allocation lands on it.
+    std::construct_at(slot_ptr, "newcomer", std::vector<size_t>{N, M});
+    CHECK(graph.find_tensor_id_by_ptr(slot_ptr) == 0);
+    CHECK(graph.find_tensor_by_ptr(slot_ptr) == nullptr);
+
+    // The operand itself is still the graph's, through its stand-in.
+    graph.execute();
+    std::destroy_at(slot_ptr);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 3. Per-slice writes ordered against a whole-parent read
 // ═══════════════════════════════════════════════════════════════════════════
