@@ -1,0 +1,84 @@
+{
+  "einsums_graph_ir": "1.13.0",
+  "provenance": {"library_version":"2.0.0","config_fingerprint":"0xa2b35bda3e940d68","structural_passes":[]},
+  "name": "zero_result",
+  "manifest": [
+    {
+      "id": 0,
+      "name": "A",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "init": "none",
+      "alloc": "materialized",
+      "aliases_input": null
+    },
+    {
+      "id": 1,
+      "name": "R",
+      "direction": "inout",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,2],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "init": "zero",
+      "alloc": "deferred",
+      "aliases_input": null
+    },
+    {
+      "id": 2,
+      "name": "X",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,2],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "init": "none",
+      "alloc": "materialized",
+      "aliases_input": null
+    }
+  ],
+  "spaces": {"names":[],"symbol_ties":[]},
+  "approximations": [],
+  "params": [],
+  "gate_flags": [],
+  "tensors": [],
+  "slot_redirects": [],
+  "nodes": [
+    {
+      "id": 0,
+      "kind": "Einsum",
+      "label": "einsum: C[i,j] = A[i,k] * B[k,j]",
+      "inputs": [0,2,1],
+      "outputs": [1],
+      "dtype": "float64",
+      "rank": 2,
+      "descriptor": {
+        "c_indices": ["i","j"],
+        "a_indices": ["i","k"],
+        "b_indices": ["k","j"],
+        "link_indices": ["k"],
+        "target_indices": ["i","j"],
+        "all_indices": ["i","j","k"],
+        "scalar_output": false,
+        "conj_a": false,
+        "conj_b": false,
+        "c_prefactor": {"dtype":"float64","re":1.0},
+        "ab_prefactor": {"dtype":"float64","re":1.0},
+        "letter_spaces": [],
+        "gemm_hint": {"m":3,"n":2,"k":3,"trans_a":"N","trans_b":"N","a":{"id":0,"leading_dim":3},"b":{"id":2,"leading_dim":3},"c":{"id":1,"leading_dim":3}}
+      }
+    }
+  ]
+}

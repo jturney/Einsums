@@ -131,6 +131,12 @@
  * the loaded tensor prepares it again, which reuses storage of the same shape. An absent key
  * reads as a read backing, which is what every earlier backing was.
  *
+ * Since 1.13.0 a manifest entry carries ``init`` and ``alloc`` as a tensor record does: how a
+ * graph-owned slot is filled once allocated, and whether it has storage yet. A result declared
+ * at zero is then zeroed at every replay of the loaded graph, where it was allocated at load and
+ * zeroed once. Absent keys read as allocated and uninitialized, which is what every earlier
+ * entry was loaded as.
+ *
  * @par The hash domain
  * @ref Graph::content_hash digests the canonical bytes of that object with
  * ``provenance`` REMOVED and nothing else changed. Provenance is therefore
@@ -264,7 +270,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.12.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.13.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

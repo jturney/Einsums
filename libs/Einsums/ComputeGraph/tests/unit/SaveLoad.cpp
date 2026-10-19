@@ -50,6 +50,7 @@
 #include <limits>
 #include <map>
 #include <ranges>
+#include <regex>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -1605,6 +1606,52 @@ TEST_CASE("SaveLoad - a write backing keeps its access and is reopened for writi
         REQUIRE(at != std::string::npos);
         text.replace(at, std::string_view{R"("access":"write")"}.size(), R"("access":"read")");
         CHECK_THAT(load_refusal(text), Catch::Matchers::ContainsSubstring("a sink is written, never read"));
+    }
+}
+
+// A result declared at zero is a manifest slot, and before 1.13.0 its entry said neither how it
+// starts nor that it had no storage yet: the loaded graph allocated it at load, zeroed it once, and
+// every replay after the first added into the previous one's value.
+TEST_CASE("SaveLoad - a result declared at zero is zeroed at every replay of the loaded graph", "[ComputeGraph][SaveLoad]") {
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto X = create_random_tensor<double>("X", 3, 2);
+
+    cg::Graph graph("zero_result");
+    graph.declare_zero_runtime_tensor<double>("R", {3, 2});
+    auto &R = *static_cast<RuntimeTensor<double> *>(const_cast<void *>(
+        std::ranges::find_if(graph.tensors_map(), [](auto const &entry) { return entry.second.name == "R"; })->second.tensor_ptr));
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &R, 1.0, A, X);
+    }
+
+    std::string const saved = must_save(graph);
+    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+        std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_13_0_zero_result.eig.json", std::ios::binary);
+        out << saved;
+    }
+    CHECK(std::regex_search(saved, std::regex(R"("init": ?"zero")")));
+
+    cg::Graph  loaded = must_load(saved);
+    auto const slot   = std::ranges::find_if(loaded.tensors_map(), [](auto const &entry) { return entry.second.name == "R"; });
+    REQUIRE(slot != loaded.tensors_map().end());
+    CHECK(slot->second.init_kind == cg::InitKind::Zero);
+    CHECK(slot->second.alloc_state == cg::AllocState::Deferred);
+    auto const &result = *static_cast<RuntimeTensor<double> const *>(slot->second.tensor_ptr);
+
+    loaded.bind("A", A, "X", X);
+    auto manager = cg::PassManager::create_default();
+    loaded.apply(manager);
+    auto expected = create_zero_tensor<double>("E", 3, 2);
+    reference_einsum("i,j <- i,k ; k,j", &expected, A, X);
+    for (int replay = 0; replay < 2; ++replay) {
+        INFO("replay " << replay);
+        loaded.execute();
+        for (size_t i = 0; i < 3; ++i) {
+            for (size_t j = 0; j < 2; ++j) {
+                CHECK_THAT(result(i, j), Catch::Matchers::WithinRel(expected(i, j), 1e-13));
+            }
+        }
     }
 }
 

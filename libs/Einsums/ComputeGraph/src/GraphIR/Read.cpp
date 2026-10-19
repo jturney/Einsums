@@ -656,6 +656,11 @@ IrTensor read_tensor(Fields const &record, bool manifest_entry) {
                 record.note("aliases_input", alias->position, "expected a manifest name or null");
             }
         }
+        // Optional: before 1.13.0 a manifest entry said neither, and was loaded allocated and
+        // uninitialized, which is what an absent key still means.
+        out.init  = record.named<InitKind>("init", init_kind_from_name, "initialization kind", InitKind::None, /*optional=*/true);
+        out.alloc = record.named<AllocState>("alloc", alloc_state_from_name, "allocation state", AllocState::Materialized,
+                                             /*optional=*/true);
     } else {
         out.intermediate = record.flag("intermediate");
         out.init         = record.named<InitKind>("init", init_kind_from_name, "initialization kind", InitKind::None);

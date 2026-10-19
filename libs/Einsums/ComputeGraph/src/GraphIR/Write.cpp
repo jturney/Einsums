@@ -805,6 +805,13 @@ Object write_structure(Graph const &graph) {
                     handle != nullptr ? &handle->tag : nullptr);
         write_rank0_kind(record, entry.rank, handle);
         record.set("scope", Value{tensor_ownership_name(entry.scope)});
+        // How a graph-owned slot starts and whether it has storage yet, as a tensor record says:
+        // without them a result declared at zero came back allocated, zeroed once at load, and
+        // added into its previous replay's value from the second replay on.
+        if (handle != nullptr) {
+            record.set("init", Value{init_kind_name(handle->init_kind)});
+            record.set("alloc", Value{alloc_state_name(handle->alloc_state)});
+        }
 
         // By NAME, never by id: an alias declaration is part of the interface
         // contract and a caller binds by name.
