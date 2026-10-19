@@ -1783,6 +1783,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     APIARY_EXPOSE void set_observer(std::shared_ptr<ExecutionObserver> observer) { _run_context->set_observer(std::move(observer)); }
 
+    /**
+     * @brief The interned profiler zone name of every node, in node order, for an executor that
+     *        opens a zone per node while the profiler records.
+     * @return One id per node: what the built-in loop names its node zones with, built once per
+     *         change of the node list rather than interned per node per replay.
+     */
+    [[nodiscard]] EINSUMS_EXPORT std::vector<std::uint32_t> node_zone_ids();
+
     /// @brief The run context this graph and its bodies share.
     /// @return The context, never null.
     [[nodiscard]] std::shared_ptr<detail::RunContext> const &run_context() const noexcept { return _run_context; }

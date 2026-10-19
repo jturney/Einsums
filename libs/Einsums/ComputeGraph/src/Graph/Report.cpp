@@ -235,6 +235,18 @@ void Graph::print_timing_report(std::ostream &os) const {
     }
 }
 
+std::vector<std::uint32_t> Graph::node_zone_ids() {
+    if (!_profile_strings_valid || _profile_strings.size() != _nodes.size()) {
+        rebuild_profile_strings();
+    }
+    std::vector<std::uint32_t> ids;
+    ids.reserve(_profile_strings.size());
+    for (auto const &entry : _profile_strings) {
+        ids.push_back(entry.zone_id);
+    }
+    return ids;
+}
+
 void Graph::rebuild_profile_strings() {
     _exec_zone_id = waggle::intern_string(fmt::format("ComputeGraph::execute({})", _name));
     _profile_strings.clear();

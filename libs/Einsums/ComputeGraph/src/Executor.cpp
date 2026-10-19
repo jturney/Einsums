@@ -50,15 +50,31 @@ void execute_node(Graph const &graph, Node &node) {
     }
 }
 
-/// Run @p node, in a profiler zone of its own when @p zoned: the built-in loop and the dataflow
-/// executor open one around every node while the profiler records, and so do these, so an
-/// observer's annotations (WaggleBridge) land on the node under every executor.
-void execute_node_in_zone(Graph const &graph, Node &node, bool zoned) {
+/// The site the Sequential and OpenMP executors' node zones are recorded under.
+waggle::ZoneSite const &executor_node_site() {
+    static waggle::ZoneSite const site{"ComputeGraph::node", __FILE__, __LINE__, "execute", WAGGLE_CURRENT_DOMAIN};
+    return site;
+}
+
+/// Run @p node in a profiler zone named @p zone_id when it is not 0: the built-in loop and the
+/// dataflow executor open one around every node while the profiler records, and so do these, so
+/// an observer's annotations (WaggleBridge) land on the node under every executor. The id is
+/// interned once per change of the node list (Graph::node_zone_ids), never per node per replay.
+void execute_node_in_zone(Graph const &graph, Node &node, std::uint32_t zone_id) {
     std::optional<waggle::ScopedZone> zone;
-    if (zoned) {
-        zone.emplace(std::string_view{node.label});
+    if (zone_id != 0) {
+        zone.emplace(executor_node_site(), zone_id);
     }
     execute_node(graph, node);
+}
+
+/// The zone ids @p graph's nodes run under, or none while the profiler does not record.
+std::vector<std::uint32_t> zone_ids_for(Graph &graph) {
+    return profile::recording() ? graph.node_zone_ids() : std::vector<std::uint32_t>{};
+}
+
+std::uint32_t zone_of(std::vector<std::uint32_t> const &ids, std::size_t index) noexcept {
+    return index < ids.size() ? ids[index] : 0;
 }
 
 /// Run @p work and return how long it took, in milliseconds.
@@ -86,10 +102,11 @@ void execute_all_timed(Graph &graph) {
 
     std::vector<NodeTimingSample> samples;
     samples.reserve(nodes.size());
-    bool const zoned = profile::recording();
-    for (auto &node : nodes) {
-        samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = timed_ms([&graph, &node, zoned] {
-                                                                 execute_node_in_zone(graph, node, zoned);
+    auto const zones = zone_ids_for(graph);
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        Node &node = nodes[i];
+        samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = timed_ms([&graph, &node, zone = zone_of(zones, i)] {
+                                                                 execute_node_in_zone(graph, node, zone);
                                                              })});
     }
     graph.record_node_timings(std::move(samples));
@@ -152,17 +169,17 @@ void OpenMPExecutor::execute(Graph &graph) {
     std::exception_ptr first_exc;
     std::mutex         exc_mutex;
 
-    bool const zoned = profile::recording();
+    auto const zones = zone_ids_for(graph);
     for (auto const &group : levels) {
         if (group.size() == 1) {
             size_t const i = group[0];
-            node_ms[i]     = timed_ms([&graph, &nodes, i, zoned] { execute_node_in_zone(graph, nodes[i], zoned); });
+            node_ms[i]     = timed_ms([&graph, &nodes, i, &zones] { execute_node_in_zone(graph, nodes[i], zone_of(zones, i)); });
         } else {
 #    pragma omp parallel for schedule(dynamic)
             for (size_t g = 0; g < group.size(); g++) { // NOLINT(modernize-loop-convert)
                 size_t const i = group[g];
                 try {
-                    node_ms[i] = timed_ms([&graph, &nodes, i, zoned] { execute_node_in_zone(graph, nodes[i], zoned); });
+                    node_ms[i] = timed_ms([&graph, &nodes, i, &zones] { execute_node_in_zone(graph, nodes[i], zone_of(zones, i)); });
                 } catch (...) {
                     std::scoped_lock const lock(exc_mutex);
                     if (!first_exc) {
