@@ -345,3 +345,20 @@ def test_an_update_backing_refuses_write_and_order(etn_path):
         einsums.io.etn(etn_path, "t", order=[1, 0], update=True)
     update = einsums.io.etn(etn_path, "t", update=True)
     assert update.write and update.update and update.dtype == "float64"
+
+
+def test_last_run_counts_what_an_update_backing_moved(etn_path):
+    einsums.io.write(etn_path, "t", _filled("t", (4, 3), "float64", 0.5))
+    A = _filled("A", (4, 4), "float64", 0.125)
+    g = cg.Graph("counted")
+    t = g.declare_tensor("t", backing=einsums.io.etn(etn_path, "t", update=True))
+    r = g.declare_zero_tensor("r", [4, 3], dtype="float64")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", r, A, t, c_pf=1.0)
+        einsums.einsum("ij <- ik ; kj", t, A, r)
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    (run,) = [b for b in g.last_run().backings if b.tensor == "t"]
+    assert (run.reads, run.writes, run.publishes) == (1, 1, 1)
+    assert run.bytes_read == run.bytes_written == 4 * 3 * 8
+    assert run.storage.startswith("tensor_io.etn (entry=t")

@@ -43,6 +43,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Detail/ErasedEinsum.hpp
     Einsums/ComputeGraph/Detail/ErasedOperations.hpp
     Einsums/ComputeGraph/Detail/BackedWrites.hpp
+    Einsums/ComputeGraph/Detail/RunContext.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/Detail/MaintainedViews.hpp
     Einsums/ComputeGraph/Detail/StandIns.hpp
@@ -110,6 +111,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/KhatriRao.hpp
     Einsums/ComputeGraph/Executor.hpp
     Einsums/ComputeGraph/StringDispatch.hpp
+    Einsums/ComputeGraph/RunMetrics.hpp
     Einsums/ComputeGraph/TensorBacking.hpp
     Einsums/ComputeGraph/TensorHandle.hpp
     Einsums/ComputeGraph/TensorSlot.hpp

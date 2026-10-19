@@ -164,6 +164,7 @@ std::shared_ptr<Graph> build_fragment(Graph &root, IrFragment const &fragment, s
                                       GateFlagTable const &gates, SpaceRegistry const &registry) {
     auto body = std::make_shared<Graph>(fragment.name);
     body->set_params_ptr(root.params_ptr());
+    root.share_run_context(*body);
     build_frame(root, *body, fragment.tensors, fragment.nodes, &parent, gates, registry);
     return body;
 }
@@ -366,6 +367,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
             } else {
                 conditional->else_branch = std::make_shared<Graph>("else");
                 conditional->else_branch->set_params_ptr(root.params_ptr());
+                root.share_run_context(*conditional->else_branch);
             }
         }
         if (auto *loop = node.op_data.get_if<LoopDescriptor>()) {

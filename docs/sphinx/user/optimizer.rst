@@ -923,6 +923,31 @@ algebraic form rather than as a node list. A diff of two node-list dumps says
 which nodes changed; a diff of the algebra says what the rewrite *claimed*,
 which is where the mistake actually is.
 
+What a replay did
+=================
+
+The report says what the passes planned; ``graph.last_run()`` says what the last
+replay did, measured as it ran.
+
+.. code-block:: python
+
+    g.execute()
+    run = g.last_run()
+    print(run.wall_ms, "ms,", run.peak_bytes, "bytes held at most")
+    for b in run.backings:
+        print(b.tensor, b.bytes_read, "read in", b.reads, "reads,", b.bytes_written, "written")
+    slowest = max(run.nodes, key=lambda node: node.ms)
+
+``nodes`` holds every node the replay ran, a loop body's summed over its
+iterations with ``runs`` counting them. ``backings`` holds what each file entry
+moved, counted wherever a pass moved it: a whole load or store, a streamed slab,
+a box, a publish. ``peak_bytes`` is the most the graph held at once of the
+tensors it allocates and frees, plus MemoryPlanning's arena when there is one;
+the caller's own tensors and library scratch are outside it. It is the number to
+set beside ``MemoryPlanning.peak_memory``, which estimates the same peak with
+every tensor freed after its last use; FreeInsertion leaves intermediates under
+1 MiB allocated, so a graph of small intermediates holds more than the estimate.
+
 What's next
 ===========
 

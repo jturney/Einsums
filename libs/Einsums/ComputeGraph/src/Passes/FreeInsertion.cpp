@@ -282,14 +282,14 @@ bool FreeInsertion::run(Graph &graph) {
         // the Free / Materialize are ordered against the Loop.
         TensorId const emit_tid = plan.owns_tid ? plan.tid : graph.find_or_register_tensor_ptr(handle);
 
-        Node free_node = lifecycle::make_free_node(handle, emit_tid);
+        Node free_node = lifecycle::make_free_node(handle, emit_tid, graph.run_context());
 
         report(2, fmt::format("insert Free for '{}' ({} bytes) after its last consumer at position {}", handle.name, bytes, plan.position));
         insertions.push_back({.index = plan.position + 1, .node = std::move(free_node)});
         _num_freed++;
 
         if (plan.materialize_before != SIZE_MAX) {
-            Node mat_node = lifecycle::make_materialize_node(handle, emit_tid);
+            Node mat_node = lifecycle::make_materialize_node(handle, emit_tid, graph.run_context());
 
             report(2, fmt::format("pair Materialize for eager '{}' before its first writer at position {}", handle.name,
                                   plan.materialize_before));

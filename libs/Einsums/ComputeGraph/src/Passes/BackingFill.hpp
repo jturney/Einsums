@@ -20,11 +20,28 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes::detail)
+
+/// Count a read of @p bytes from @p backing, for Graph::last_run.
+inline void count_read(TensorBacking const &backing, std::size_t bytes) noexcept {
+    if (backing.counters) {
+        backing.counters->reads.fetch_add(1, std::memory_order_relaxed);
+        backing.counters->bytes_read.fetch_add(bytes, std::memory_order_relaxed);
+    }
+}
+
+/// Count a write of @p bytes to @p backing, for Graph::last_run.
+inline void count_write(TensorBacking const &backing, std::size_t bytes) noexcept {
+    if (backing.counters) {
+        backing.counters->writes.fetch_add(1, std::memory_order_relaxed);
+        backing.counters->bytes_written.fetch_add(bytes, std::memory_order_relaxed);
+    }
+}
 
 /**
  * @brief Read the slab @p ranges of @p backing into a tensor's storage.
@@ -42,10 +59,12 @@ void fill_from_backing(TensorBacking const &backing, T *data, einsums::detail::T
     }
     if (layout.is_contiguous() && layout.is_column_major()) {
         backing.read_slab(data, ranges);
+        count_read(backing, count * sizeof(T));
         return;
     }
     std::vector<T> scratch(count);
     backing.read_slab(scratch.data(), ranges);
+    count_read(backing, count * sizeof(T));
     std::size_t const        rank = layout.rank();
     std::vector<std::size_t> index(rank, 0);
     for (std::size_t n = 0; n < count; ++n) {
@@ -84,6 +103,7 @@ void store_to_backing(TensorBacking const &backing, T const *data, einsums::deta
     }
     if (layout.is_contiguous() && layout.is_column_major()) {
         backing.write_slab(data, ranges);
+        count_write(backing, count * sizeof(T));
         return;
     }
     std::vector<T>           scratch(count);
@@ -103,6 +123,7 @@ void store_to_backing(TensorBacking const &backing, T const *data, einsums::deta
         }
     }
     backing.write_slab(scratch.data(), ranges);
+    count_write(backing, count * sizeof(T));
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes::detail)

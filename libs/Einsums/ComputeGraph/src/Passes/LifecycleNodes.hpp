@@ -5,10 +5,12 @@
 
 #pragma once
 
+#include <Einsums/ComputeGraph/Detail/RunContext.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <memory>
 #include <span>
 #include <string_view>
 
@@ -23,8 +25,12 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes::lifecycle)
  * lands in.
  * @param[in] handle   The tensor's handle.
  * @param[in] emit_tid The id the node writes: the handle's own, or a parent id for a hoisted body tensor.
+ * @param[in] context  The run context of the graph the node lands in, which counts the bytes the
+ *            node allocates for @ref Graph::last_run. Counted only when the node allocates: on a
+ *            replay that finds the tensor still held, it does nothing and counts nothing.
  */
-[[nodiscard]] Node make_materialize_node(TensorHandle const &handle, TensorId emit_tid);
+[[nodiscard]] Node make_materialize_node(TensorHandle const &handle, TensorId emit_tid,
+                                         std::shared_ptr<compute_graph::detail::RunContext> context);
 
 /**
  * @brief A Free node for @p handle, releasing it through its handle.
@@ -32,8 +38,12 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes::lifecycle)
  * The tensor is both an input and an output: the input orders the Free after the last writer, and
  * the output makes it a writer itself, so the dependency builder orders it after every prior reader
  * too. With only the input a concurrent executor could release the buffer under a reader.
+ * @param[in] handle   The tensor's handle.
+ * @param[in] emit_tid The id the node writes.
+ * @param[in] context  The run context that counts the bytes it releases; see make_materialize_node.
  */
-[[nodiscard]] Node make_free_node(TensorHandle const &handle, TensorId emit_tid);
+[[nodiscard]] Node make_free_node(TensorHandle const &handle, TensorId emit_tid,
+                                  std::shared_ptr<compute_graph::detail::RunContext> context);
 
 /// The tensor a lifecycle node (Alloc, Materialize, Free) allocates or releases, or empty for any other node.
 [[nodiscard]] std::string_view lifecycle_tensor_name(Node const &node) noexcept;

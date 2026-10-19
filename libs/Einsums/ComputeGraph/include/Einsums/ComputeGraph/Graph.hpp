@@ -11,6 +11,7 @@
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
 #include <Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp>
 #include <Einsums/ComputeGraph/Detail/MaintainedViews.hpp>
+#include <Einsums/ComputeGraph/Detail/RunContext.hpp>
 #include <Einsums/ComputeGraph/Detail/StandIns.hpp>
 #include <Einsums/ComputeGraph/DeviceShadowMap.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
@@ -20,6 +21,7 @@
 #include <Einsums/ComputeGraph/GateFlags.hpp>
 #include <Einsums/ComputeGraph/InterfaceManifest.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/RunMetrics.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/ComputeGraph/TensorSlot.hpp>
@@ -626,6 +628,32 @@ struct GraphState {
     /// timing_report(). Mutable so the const accessor can fill it.
     mutable std::vector<NodeTiming> _timing_report;
     mutable bool                    _timing_report_valid{true};
+
+    /// What this graph and every body under it share while a replay runs. A body takes its
+    /// parent's when attached (Graph::share_run_context).
+    std::shared_ptr<detail::RunContext> _run_context{std::make_shared<detail::RunContext>()};
+
+    /// A backing's counts when the outermost replay started, to report the replay's share.
+    struct ReplayBacking {
+        std::string                          tensor;
+        std::shared_ptr<TensorBacking const> backing;
+        std::uint64_t                        bytes_read{0};
+        std::uint64_t                        bytes_written{0};
+        std::uint64_t                        reads{0};
+        std::uint64_t                        writes{0};
+        std::uint64_t                        publishes{0};
+    };
+    std::vector<ReplayBacking> _replay_backings;
+
+    /// The last outermost replay, as recorded; Graph::last_run assembles it on demand. A sample
+    /// whose graph is null is this graph's own, so a moved graph still finds it.
+    std::vector<detail::RunSample> _last_samples;
+    std::vector<BackingRun>        _last_backings;
+    double                         _last_wall_ms{0.0};
+    std::uint64_t                  _last_peak_bytes{0};
+    std::uint64_t                  _last_arena_bytes{0};
+    mutable RunMetrics             _last_run;
+    mutable bool                   _last_run_valid{true};
 
     /// Executor plain execute() delegates to (see set_executor); nullptr means
     /// the built-in sequential path. Loop bodies replay through this.
@@ -1708,6 +1736,34 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// replay path.
     /// @return One entry per node the last replay ran, in run order.
     APIARY_EXPOSE [[nodiscard]] std::vector<NodeTiming> const &timing_report() const;
+
+    /**
+     * @brief What the last completed replay did, measured as it ran.
+     * @return Time per node (this graph's and every body's, a loop body's summed over its
+     *         iterations), bytes and calls per backing, and the most graph-managed memory held at
+     *         once. Empty before the first replay; a replay that threw leaves the one before.
+     *
+     * Assembled when asked for, from counts the replay kept: nodes add their times as every
+     * executor already records them, a backing counts its own reads and writes on whichever
+     * thread runs them, and lifecycle nodes count what they allocate and free.
+     * @see RunMetrics
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] RunMetrics const &last_run() const;
+
+    /**
+     * @brief Make @p child, and every graph under it, share this graph's run context.
+     * @param[in,out] child A body this graph holds.
+     *
+     * Called where a body is attached, so its lifecycle nodes and its replays count into the
+     * replay of the graph that holds it.
+     * @versionadded{2.0.0}
+     */
+    void share_run_context(Graph &child);
+
+    /// @brief The run context this graph and its bodies share.
+    /// @return The context, never null.
+    [[nodiscard]] std::shared_ptr<detail::RunContext> const &run_context() const noexcept { return _run_context; }
 
     /// Record a run's per-node timings, under a single lock acquisition. A custom Executor calls
     /// this after running the graph so that print_timing_report() reports its run.
@@ -4579,6 +4635,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     ///
     /// Recorded as graph-owned (Detail/StandIns.hpp) for exactly its life, forgotten before the
     /// delete so no later allocation at the address is mistaken for it.
+    /// Start the run metrics of an outermost replay: the context's high-water mark and the counts
+    /// of every backing in the tree.
+    void begin_run_metrics();
+
+    /// Hand this graph's node times for the replay that just ran to the run context; @p outermost
+    /// marks the root's own, recorded with a null graph.
+    void contribute_run_samples(bool outermost);
+
+    /// Finish the run metrics of the outermost replay, which took @p wall_ms.
+    void end_run_metrics(double wall_ms);
+
     template <typename TensorType, typename... Args>
     TensorType *own_tensor(Args &&...args) {
         auto *ptr = new TensorType(std::forward<Args>(args)...);

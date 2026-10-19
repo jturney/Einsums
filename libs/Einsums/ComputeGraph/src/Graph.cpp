@@ -417,7 +417,9 @@ void Graph::attach_backing(TensorHandle &handle, TensorBacking backing) {
     if (!backing.write) {
         handle.init_kind = InitKind::FromDisk;
     }
-    handle.backing = std::make_shared<TensorBacking const>(std::move(backing));
+    // Counted from here on, by the reads and writes of every pass that moves it (last_run).
+    backing.counters = std::make_shared<BackingCounters>();
+    handle.backing   = std::make_shared<TensorBacking const>(std::move(backing));
 }
 
 std::optional<TensorBacking> Graph::tensor_backing(TensorId id) const {

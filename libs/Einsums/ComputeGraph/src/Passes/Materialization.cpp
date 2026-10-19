@@ -78,11 +78,12 @@ std::function<void()> load_whole(TensorHandle const &handle) {
 //                       For a hoisted body tensor this is a parent id
 //                       minted via Graph::find_or_register_tensor_ptr,
 //                       not the body's own id.
-std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid, InitKind init) {
+std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid, InitKind init,
+                                        std::shared_ptr<compute_graph::detail::RunContext> const &context) {
     std::vector<Node> out;
 
     // ── Materialize ────────────────────────────────────────────────────
-    out.push_back(lifecycle::make_materialize_node(handle, emit_tid));
+    out.push_back(lifecycle::make_materialize_node(handle, emit_tid, context));
 
     // ── Initialize (optional) ──────────────────────────────────────────
     if (init != InitKind::None) {
@@ -419,6 +420,11 @@ bool Materialization::publish_updates(Graph &graph) {
                 members.push_back(backing.get());
             }
             members.front()->publish(members);
+            for (TensorBacking const *member : members) {
+                if (member->counters) {
+                    member->counters->publishes.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
         };
         appended.push_back(std::move(node));
         _num_published += group.handles.size();
@@ -737,9 +743,9 @@ bool Materialization::run(Graph &graph) {
     // build_lifecycle_nodes plus the two counters that always move with it: every
     // lifecycle this pass emits materializes one tensor, and initializes it as well
     // when the handle asks for it. Kept together so the three cannot drift.
-    auto lifecycle_for = [this, &init_of](TensorHandle &handle, TensorId emit_tid) {
+    auto lifecycle_for = [this, &init_of, &graph](TensorHandle &handle, TensorId emit_tid) {
         InitKind const init  = init_of(handle);
-        auto           built = build_lifecycle_nodes(handle, emit_tid, init);
+        auto           built = build_lifecycle_nodes(handle, emit_tid, init, graph.run_context());
         _num_materialized++;
         if (init != InitKind::None) {
             _num_initialized++;

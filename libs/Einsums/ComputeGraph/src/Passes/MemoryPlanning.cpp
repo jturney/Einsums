@@ -332,6 +332,9 @@ ArenaPlan plan_arena(Graph &graph, NoteSkip const &note) {
 /// Rewrite the planned tensors' Materialize/Free executors to attach/detach
 /// arena slices instead of allocating/freeing.
 void apply_arena_plan(Graph &graph, ArenaPlan const &plan) {
+    // The arena is held for every replay, so Graph::last_run counts it once, beside the tensors
+    // the graph allocates and frees.
+    graph.run_context()->set_arena(plan.tensors.empty() ? 0 : plan.arena_bytes);
     if (plan.tensors.empty()) {
         return;
     }

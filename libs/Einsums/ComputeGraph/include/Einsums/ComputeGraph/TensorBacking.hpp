@@ -19,8 +19,11 @@
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -46,6 +49,22 @@ using SlabReader = std::function<void(void *destination, std::vector<std::pair<s
  * failure to write.
  */
 using SlabWriter = std::function<void(void const *source, std::vector<std::pair<std::size_t, std::size_t>> const &ranges)>;
+
+/**
+ * @brief What a backing's storage has moved, counted as it happens.
+ *
+ * Relaxed atomics: slabs are read and written on whichever thread runs the node, and the counts
+ * are read only between replays. @ref Graph::annotate_backing attaches a fresh set to each backing
+ * it accepts, and @ref RunMetrics reports one replay's share as the difference of two readings.
+ * @versionadded{2.0.0}
+ */
+struct BackingCounters {
+    std::atomic<std::uint64_t> bytes_read{0};    ///< Bytes read from the storage.
+    std::atomic<std::uint64_t> bytes_written{0}; ///< Bytes written to it.
+    std::atomic<std::uint64_t> reads{0};         ///< Slab reads, a whole load counting as one.
+    std::atomic<std::uint64_t> writes{0};        ///< Slab writes, a whole store counting as one.
+    std::atomic<std::uint64_t> publishes{0};     ///< Publishes of an update backing.
+};
 
 /**
  * @brief The storage behind a tensor the graph reads, or writes, but never holds whole.
@@ -106,6 +125,10 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") TensorBacking {
     /// from or all at the values it wrote. A kind sets it to what one atomic step can cover, as
     /// ``tensor_io.etn`` sets the file's path. Empty: published alone.
     APIARY_EXPOSE APIARY_READONLY std::string publish_scope;
+
+    /// What the storage has moved, attached by @ref Graph::annotate_backing; null on a backing
+    /// no graph has accepted. See @ref RunMetrics.
+    std::shared_ptr<BackingCounters> counters;
 
     /// Reads a slab of the stored tensor; see @ref SlabReader.
     SlabReader read_slab;

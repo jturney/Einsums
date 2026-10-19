@@ -39,6 +39,7 @@
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <ostream>
@@ -48,10 +49,142 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
+
+void Graph::share_run_context(Graph &child) {
+    child._run_context = _run_context;
+    child.for_each_descendant([this](Graph &sub) { sub._run_context = _run_context; });
+}
+
+void Graph::begin_run_metrics() {
+    // What the managed tensors hold as the replay starts: every tensor a Materialize or a Free node
+    // of the tree allocates or releases, held now, once. An arena-placed one (its lifecycle nodes
+    // carry no bytes) is the arena's, counted with it.
+    std::uint64_t          held = 0;
+    std::set<void const *> seen;
+    auto const             managed = [&](Graph const &graph) {
+        for (auto const &node : graph.nodes()) {
+            if ((node.kind != OpKind::Materialize && node.kind != OpKind::Free) || node.estimated_bytes == 0) {
+                continue;
+            }
+            auto const *desc   = node.op_data.get_if<AllocDescriptor>();
+            auto const *handle = desc != nullptr ? graph.find_tensor(graph.buffer_of(desc->tensor_id)) : nullptr;
+            if (handle == nullptr || handle->tensor_ptr == nullptr || !handle->is_materialized_fn ||
+                !seen.insert(handle->tensor_ptr).second) {
+                continue;
+            }
+            if (handle->is_materialized_fn()) {
+                held += handle->total_bytes();
+            }
+        }
+    };
+    managed(*this);
+    std::as_const(*this).for_each_descendant(managed);
+    _run_context->begin_replay(held);
+    // Every backing in the tree, once, with its counts as the replay starts: the replay's share is
+    // the difference at its end, whichever body or thread did the reading.
+    _replay_backings.clear();
+    auto const collect = [this](Graph const &graph) {
+        for (auto const &[tid, handle] : graph.tensors_map()) {
+            if (!handle.backing || !handle.backing->counters ||
+                std::ranges::any_of(_replay_backings, [&](ReplayBacking const &seen) { return seen.backing == handle.backing; })) {
+                continue;
+            }
+            auto const &counts = *handle.backing->counters;
+            _replay_backings.push_back(ReplayBacking{.tensor        = handle.name,
+                                                     .backing       = handle.backing,
+                                                     .bytes_read    = counts.bytes_read.load(std::memory_order_relaxed),
+                                                     .bytes_written = counts.bytes_written.load(std::memory_order_relaxed),
+                                                     .reads         = counts.reads.load(std::memory_order_relaxed),
+                                                     .writes        = counts.writes.load(std::memory_order_relaxed),
+                                                     .publishes     = counts.publishes.load(std::memory_order_relaxed)});
+        }
+    };
+    collect(*this);
+    std::as_const(*this).for_each_descendant(collect);
+}
+
+void Graph::contribute_run_samples(bool outermost) {
+    std::vector<detail::RunSample> samples;
+    samples.reserve(_timing_samples.size());
+    Graph const *const self = outermost ? nullptr : this;
+    for (auto const &sample : _timing_samples) {
+        samples.push_back(
+            detail::RunSample{.graph = self, .id = sample.id, .kind = sample.kind, .ms = sample.duration_ms, .width = sample.width});
+    }
+    _run_context->add_samples(std::move(samples));
+}
+
+void Graph::end_run_metrics(double wall_ms) {
+    _last_samples = _run_context->take_samples();
+    _last_backings.clear();
+    _last_backings.reserve(_replay_backings.size());
+    for (auto const &start : _replay_backings) {
+        auto const &counts = *start.backing->counters;
+        _last_backings.push_back(BackingRun{.tensor        = start.tensor,
+                                            .storage       = start.backing->describe(),
+                                            .bytes_read    = counts.bytes_read.load(std::memory_order_relaxed) - start.bytes_read,
+                                            .bytes_written = counts.bytes_written.load(std::memory_order_relaxed) - start.bytes_written,
+                                            .reads         = counts.reads.load(std::memory_order_relaxed) - start.reads,
+                                            .writes        = counts.writes.load(std::memory_order_relaxed) - start.writes,
+                                            .publishes     = counts.publishes.load(std::memory_order_relaxed) - start.publishes});
+    }
+    std::ranges::sort(_last_backings, {}, &BackingRun::tensor);
+    _last_wall_ms     = wall_ms;
+    _last_peak_bytes  = _run_context->peak_bytes();
+    _last_arena_bytes = _run_context->arena_bytes();
+    _last_run_valid   = false;
+}
+
+RunMetrics const &Graph::last_run() const {
+    if (_last_run_valid) {
+        return _last_run;
+    }
+    // Labels and graph names are attached here, once per report, not on the replay path.
+    std::unordered_map<Graph const *, std::unordered_map<NodeId, std::string_view>> labels;
+    auto const label_of = [&](Graph const &graph, NodeId id) -> std::string_view {
+        auto [at, added] = labels.try_emplace(&graph);
+        if (added) {
+            for (auto const &node : graph.nodes()) {
+                at->second.emplace(node.id, node.label);
+            }
+        }
+        auto const hit = at->second.find(id);
+        return hit != at->second.end() ? hit->second : std::string_view{};
+    };
+
+    RunMetrics out;
+    out.wall_ms     = _last_wall_ms;
+    out.backings    = _last_backings;
+    out.peak_bytes  = _last_peak_bytes;
+    out.arena_bytes = _last_arena_bytes;
+    std::map<std::pair<Graph const *, NodeId>, std::size_t> index;
+    for (auto const &sample : _last_samples) {
+        Graph const &graph        = sample.graph != nullptr ? *sample.graph : *this;
+        auto const [at, new_node] = index.try_emplace({&graph, sample.id}, out.nodes.size());
+        if (new_node) {
+            out.nodes.push_back(NodeRun{.graph = graph.name(),
+                                        .id    = sample.id,
+                                        .kind  = sample.kind,
+                                        .label = std::string{label_of(graph, sample.id)},
+                                        .ms    = sample.ms,
+                                        .width = sample.width,
+                                        .runs  = 1});
+        } else {
+            NodeRun &run = out.nodes.at(at->second);
+            run.ms += sample.ms;
+            run.width = sample.width;
+            ++run.runs;
+        }
+    }
+    _last_run       = std::move(out);
+    _last_run_valid = true;
+    return _last_run;
+}
 
 std::vector<NodeTiming> const &Graph::timing_report() const {
     if (_timing_report_valid) {

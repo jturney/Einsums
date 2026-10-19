@@ -70,3 +70,31 @@ def test_manifest_lists_the_interface_with_its_contract():
     assert list(entries["A"].dims) == [4, 3]
     assert entries["A"].rank == 2
     assert entries["A"].scope == "graph"
+
+
+def test_last_run_reports_nodes_and_memory_of_the_replay():
+    g = _product()
+    assert list(g.last_run().nodes) == []
+    g.execute()
+    run = g.last_run()
+    assert run.wall_ms > 0.0
+    assert len(run.nodes) == g.num_nodes()
+    assert all(node.runs == 1 and node.graph == "observed" for node in run.nodes)
+    assert sum(node.ms for node in run.nodes) <= run.wall_ms
+    # Every tensor is the caller's: the graph allocated nothing of its own.
+    assert run.peak_bytes == 0
+    assert list(run.backings) == []
+
+
+def test_last_run_counts_the_intermediates_the_graph_holds():
+    A = _filled("A", (8, 8), 0.5)
+    out = einsums.create_zero_tensor("out", [8, 8], dtype="float64")
+    g = cg.Graph("held")
+    X = g.declare_tensor("X", [8, 8], intermediate=True)
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", X, A, A)
+        einsums.einsum("ij <- ik ; kj", out, X, A)
+    g.apply(cg.default_pass_manager())
+    for _ in range(2):
+        g.execute()
+        assert g.last_run().peak_bytes == 8 * 8 * 8

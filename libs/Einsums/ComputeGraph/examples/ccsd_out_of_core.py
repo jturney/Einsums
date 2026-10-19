@@ -51,11 +51,17 @@ What to read in the report the example prints:
   amplitudes read them from the file.
 * ``SlabStreaming: ... writes 'vvvv' a box at a time``: the transform stores
   the v^4 block one (a, b) pair at a time, each box one run of the file.
-* ``MemoryPlanning: peak``: what one iteration holds at once, 11.4 MB. The
-  new T2 is summed in memory and stored once per iteration, the statements
-  that write it being more than one loop over its axes can hold; so are the
+* ``MemoryPlanning: peak``: the plan's estimate of what one iteration holds
+  at once, 11.4 MB, with every tensor freed after its last use. The new T2
+  is summed in memory and stored once per iteration, the statements that
+  write it being more than one loop over its axes can hold; so are the
   o^2 v^2 intermediates. A contraction of T2 with o v^3 reads both from
   files, and loads them whole.
+* ``last iteration``, printed after the energy, is what the last iteration
+  measured as it ran (``graph.last_run()``): the bytes read and written, and
+  the most the graph held at once, 34.9 MB. It holds more than the plan
+  because FreeInsertion leaves intermediates under 1 MiB allocated, and every
+  o^2 v^2 intermediate here is 0.56 MB.
 
 Run with::
 
@@ -275,6 +281,17 @@ def print_explanation(manager):
             print(f"    | {entry}")
 
 
+def print_measured(run):
+    """What the last iteration moved and held, as it ran, beside the plan the report gave."""
+    read = sum(b.bytes_read for b in run.backings)
+    written = sum(b.bytes_written for b in run.backings)
+    print(f"    last iteration: {run.wall_ms:.0f} ms, {read / 1e6:.1f} MB read and {written / 1e6:.2f} MB written, "
+          f"{run.peak_bytes / 1e6:.2f} MB held at most")
+    for b in run.backings:
+        if b.tensor in ("t1", "t2"):
+            print(f"    | {b.tensor}: {b.reads} read(s), {b.writes} write(s), {b.publishes} publish")
+
+
 def reference(eo, ev, three_index, iterations):
     """The same equations in numpy, on the same integrals, for the same number of iterations."""
     def eri(name):
@@ -352,6 +369,7 @@ def main():
                 break
             previous = current
         print(f"\nCCSD correlation energy {current:.10f} after {count} iterations")
+        print_measured(graph.last_run())
 
         want, t1_want, t2_want = reference(eo, ev, three_index, count)
         t1_stored = einsums.create_zero_tensor("t1", list(d1.shape))

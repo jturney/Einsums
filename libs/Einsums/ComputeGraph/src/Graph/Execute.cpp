@@ -56,6 +56,19 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
+namespace {
+
+/// Leaves the replay a run context was entered for, however the replay ends.
+struct LeaveReplay {
+    detail::RunContext &context;
+    explicit LeaveReplay(detail::RunContext &entered) : context(entered) {}
+    LeaveReplay(LeaveReplay const &)            = delete;
+    LeaveReplay &operator=(LeaveReplay const &) = delete;
+    ~LeaveReplay() { context.leave(); }
+};
+
+} // namespace
+
 using namespace gpu_dispatch;
 
 namespace {
@@ -120,6 +133,15 @@ void Graph::execute() {
     // Wall clock of this replay, for the thread-plan trial: replays are the
     // only thing the trial's two sides can be compared on.
     auto const replay_t0 = std::chrono::steady_clock::now();
+
+    // The run metrics describe the outermost replay of the tree; a body's replay adds its node
+    // times to it. Left however the replay ends, so a throw cannot leave the tree marked as
+    // inside a replay.
+    bool const        outermost = _run_context->enter();
+    LeaveReplay const leave{*_run_context};
+    if (outermost) {
+        begin_run_metrics();
+    }
 
     // Rebuild when the order is unknown OR a pass vouched for the order via
     // mark_sorted() but left the position-keyed _deps stale (_deps_valid
@@ -509,11 +531,21 @@ void Graph::execute() {
     // has returned, so nothing is reading a width; every nested body replay it
     // started has returned with it; and this run's timings are complete and
     // recorded, which is the whole reason to wait for it.
-    finish_replay_thread_plan(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replay_t0).count());
+    double const replay_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replay_t0).count();
+    contribute_run_samples(outermost);
+    if (outermost) {
+        end_run_metrics(replay_ms);
+    }
+    finish_replay_thread_plan(replay_ms);
 }
 
 void Graph::execute(Executor &executor) {
-    auto const replay_t0 = std::chrono::steady_clock::now();
+    auto const        replay_t0 = std::chrono::steady_clock::now();
+    bool const        outermost = _run_context->enter();
+    LeaveReplay const leave{*_run_context};
+    if (outermost) {
+        begin_run_metrics();
+    }
     // As the argument-less overload: a caller reaching a parallel backend
     // directly gets the same guarantee about its operands' current buffers.
     resync_slot_storage();
@@ -558,7 +590,12 @@ void Graph::execute(Executor &executor) {
 
     // Same safe point as the argument-less execute(): the replay has returned
     // and its timings are complete.
-    finish_replay_thread_plan(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replay_t0).count());
+    double const replay_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replay_t0).count();
+    contribute_run_samples(outermost);
+    if (outermost) {
+        end_run_metrics(replay_ms);
+    }
+    finish_replay_thread_plan(replay_ms);
 }
 
 UsageAnalysis const &Graph::usage() {

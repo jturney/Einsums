@@ -1069,3 +1069,130 @@ TEST_CASE("A contraction streams its large backed operand beside a small backed 
     cg::einsum("i,j <- i,k ; k,j", 0.0, &expected, 1.0, small, large);
     CHECK(bytes_of(c) == bytes_of(expected));
 }
+
+namespace {
+
+/// The run record of @p graph's backed tensor @p name.
+cg::BackingRun const &backing_run(cg::Graph const &graph, std::string const &name) {
+    auto const &backings = graph.last_run().backings;
+    auto const  hit      = std::ranges::find_if(backings, [&](cg::BackingRun const &run) { return run.tensor == name; });
+    REQUIRE(hit != backings.end());
+    return *hit;
+}
+
+} // namespace
+
+TEST_CASE("last_run counts every read and write of a backing, however a pass moved it", "[TensorIO][Backing][RunMetrics]") {
+    SECTION("a whole load") {
+        TempFile const tmp("count_load.etn");
+        write_entry(tmp.path, "B", filled<double>("B", {4, 3}, 0.5));
+        Product<double> backed(filled<double>("A", {5, 4}, 1.0), {4, 3}, tensor_io::etn_backing(tmp.path, "B"), nullptr);
+        materialize(backed.graph);
+        backed.graph.execute();
+        auto const &run = backing_run(backed.graph, "B");
+        CHECK(run.reads == 1);
+        CHECK(run.bytes_read == 4 * 3 * sizeof(double));
+        CHECK(run.writes == 0);
+        CHECK(run.storage == "tensor_io.etn (entry=B, path=" + tmp.path + ")");
+    }
+    SECTION("slabs a contraction streams, beside a whole load") {
+        TempFile const tmp("count_stream.etn");
+        {
+            TensorFile out(tmp.path, TensorFile::Mode::Write);
+            out.write("S", filled<double>("S", {4, 4}, 0.25));
+            out.write("L", filled<double>("L", {4, 16}, 0.5));
+        }
+        tensor_io::EtnFile const file(tmp.path);
+        cg::Graph                graph("count_stream");
+        auto const              &s = graph.declare_runtime_tensor<double>("S", file.entry("S"));
+        auto const              &l = graph.declare_runtime_tensor<double>("L", file.entry("L"));
+        auto                     c = RuntimeTensor<double>("C", std::vector<size_t>{4, 16});
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("i,j <- i,k ; k,j", 0.0, &c, 1.0, s, l);
+        }
+        auto stream = std::make_shared<cg::passes::SlabStreaming>();
+        stream->set_slab_budget(static_cast<std::int64_t>(4 * 4 * sizeof(double)));
+        cg::PassManager manager;
+        manager.add(stream);
+        manager.add(std::make_shared<cg::passes::Materialization>());
+        graph.apply(manager);
+        REQUIRE(stream->blocks() == std::vector<std::int64_t>{4});
+        graph.execute();
+        // L in four slabs of four columns; S, which fits, once whole.
+        CHECK(backing_run(graph, "L").reads == 4);
+        CHECK(backing_run(graph, "L").bytes_read == 4 * 16 * sizeof(double));
+        CHECK(backing_run(graph, "S").reads == 1);
+        CHECK(backing_run(graph, "S").bytes_read == 4 * 4 * sizeof(double));
+    }
+    SECTION("a whole store after the last writer") {
+        TempFile const tmp("count_store.etn");
+        cg::Graph      graph("count_store");
+        produce(graph, tensor_io::etn_backing(tmp.path, "T", true), filled<double>("A", {5, 4}, 0.25), filled<double>("B", {4, 3}, 0.5));
+        materialize(graph);
+        graph.execute();
+        auto const &run = backing_run(graph, "T");
+        CHECK(run.writes == 1);
+        CHECK(run.bytes_written == 5 * 3 * sizeof(double));
+        CHECK(run.reads == 0);
+    }
+    SECTION("slabs a streamed producer writes, and the slabs its reader reads back") {
+        TempFile const tmp("count_slabs.etn");
+        auto const     a = filled<double>("A", {5, 4}, 0.25);
+        auto const     b = filled<double>("B", {4, 7}, 0.5);
+        cg::Graph      graph("count_slabs");
+        auto          &t = produce(graph, tensor_io::etn_backing(tmp.path, "T", true), a, b);
+        auto           d = RuntimeTensor<double>("D", std::vector<size_t>{5, 2});
+        d.zero();
+        auto const e = filled<double>("E", {7, 2}, 0.75);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("i,l <- i,j ; j,l", &d, t, e);
+        }
+        auto stream = std::make_shared<cg::passes::SlabStreaming>();
+        stream->set_slab_budget(static_cast<std::int64_t>(2 * 5 * sizeof(double)));
+        cg::PassManager manager;
+        manager.add(stream);
+        manager.add(std::make_shared<cg::passes::Materialization>());
+        graph.apply(manager);
+        REQUIRE(stream->num_written() == 1);
+        graph.execute();
+        // Seven columns in blocks of two: 2, 2, 2 and 1, written, then read back the same way.
+        auto const &run = backing_run(graph, "T");
+        CHECK(run.writes == 4);
+        CHECK(run.bytes_written == 5 * 7 * sizeof(double));
+        CHECK(run.reads == 4);
+        CHECK(run.bytes_read == 5 * 7 * sizeof(double));
+    }
+    SECTION("boxes a loop's view names, each element written once") {
+        TempFile const tmp("count_boxes.etn");
+        BoxWrite       program(tensor_io::etn_backing(tmp.path, "W", true));
+        REQUIRE(program.stream->num_boxes() >= 1);
+        program.graph.execute();
+        auto const &run = backing_run(program.graph, "W");
+        CHECK(run.writes > 1);
+        CHECK(run.bytes_written == BoxWrite::naux * BoxWrite::v * BoxWrite::v * sizeof(double));
+    }
+    SECTION("an update: one load, one store and one publish per replay") {
+        TempFile const tmp("count_update.etn");
+        write_entry(tmp.path, "t", filled<double>("t", {4, 3}, 0.5));
+        auto const a = filled<double>("A", {4, 4}, 0.125);
+        cg::Graph  graph("count_update");
+        auto      &t = graph.declare_runtime_tensor<double>("t", tensor_io::etn_backing(tmp.path, "t", false, {}, true));
+        auto      &r = graph.declare_zero_runtime_tensor<double>("r", {4, 3});
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("i,j <- i,k ; k,j", 1.0, &r, 1.0, a, t);
+            cg::permute("i,j <- i,j", 0.0, &t, 0.5, r);
+        }
+        materialize(graph);
+        for (int replay = 0; replay < 2; ++replay) {
+            graph.execute();
+            auto const &run = backing_run(graph, "t");
+            CHECK(run.reads == 1);
+            CHECK(run.writes == 1);
+            CHECK(run.publishes == 1);
+            CHECK(run.bytes_read == 4 * 3 * sizeof(double));
+        }
+    }
+}

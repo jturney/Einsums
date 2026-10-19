@@ -416,7 +416,7 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
         // bookkeeping of its own.
         {
             auto const &handle   = graph.tensor(out_id);
-            Node        mat_node = lifecycle::make_materialize_node(handle, out_id);
+            Node        mat_node = lifecycle::make_materialize_node(handle, out_id, graph.run_context());
             mat_node.id          = graph.reserve_node_id();
             new_nodes.push_back(std::move(mat_node));
         }

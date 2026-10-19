@@ -66,6 +66,9 @@ std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, PredExpr 
     // they resolve against.
     then_graph->set_params_ptr(_params);
     else_graph->set_params_ptr(_params);
+    // And one run context, so a branch's replay counts into this graph's (last_run).
+    share_run_context(*then_graph);
+    share_run_context(*else_graph);
 
     ConditionalDescriptor desc;
     desc.predicate   = std::move(predicate);
@@ -119,6 +122,7 @@ Graph &Graph::add_loop_at(std::string label, size_t max_iterations, PredExpr con
     // against this graph's table, so a body holding its own would write parameters the condition
     // never sees, and could not read one written before the loop.
     body_graph->set_params_ptr(_params);
+    share_run_context(*body_graph);
 
     LoopDescriptor desc;
     desc.body           = body_graph;
@@ -168,6 +172,7 @@ Graph &Graph::add_setup_at(std::string label, std::size_t position) {
     // write it somewhere nobody looks. That is how the fitting diagnostic went missing the
     // first time it was asked for.
     body_graph->set_params_ptr(_params);
+    share_run_context(*body_graph);
 
     SetupDescriptor desc;
     desc.body = body_graph;

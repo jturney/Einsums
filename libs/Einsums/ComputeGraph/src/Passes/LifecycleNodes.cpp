@@ -11,6 +11,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -24,7 +25,7 @@ AllocDescriptor describe(TensorHandle const &handle, TensorId emit_tid) {
 
 } // namespace
 
-Node make_materialize_node(TensorHandle const &handle, TensorId emit_tid) {
+Node make_materialize_node(TensorHandle const &handle, TensorId emit_tid, std::shared_ptr<compute_graph::detail::RunContext> context) {
     Node node;
     node.kind            = OpKind::Materialize;
     node.label           = fmt::format("materialize({})", handle.name);
@@ -37,10 +38,13 @@ Node make_materialize_node(TensorHandle const &handle, TensorId emit_tid) {
     auto       set_dist_fn = handle.set_distribution_fn;
     bool const is_dist     = handle.is_distributed && !handle.is_replicated;
     auto       dist_info   = handle.distribution_info;
+    auto       held_fn     = handle.is_materialized_fn;
+    auto const bytes       = static_cast<std::uint64_t>(handle.total_bytes());
 
     // Idempotent: a no-op when the tensor is already allocated, a reallocation on a replay after a
-    // Free reclaimed it.
-    node.execute = [mat_fn, resize_fn, set_dist_fn, is_dist, dist_info]() {
+    // Free reclaimed it. Only the reallocation counts as memory the graph took.
+    node.execute = [mat_fn, resize_fn, set_dist_fn, is_dist, dist_info, held_fn, bytes, context = std::move(context)]() {
+        bool const held_before = held_fn ? held_fn() : true;
         if (is_dist && resize_fn && dist_info) {
             auto      desc       = std::static_pointer_cast<comm::DistributionDescriptor>(dist_info);
             int const rank       = comm::world_rank();
@@ -59,11 +63,14 @@ Node make_materialize_node(TensorHandle const &handle, TensorId emit_tid) {
         if (mat_fn) {
             mat_fn();
         }
+        if (context && !held_before && held_fn && held_fn()) {
+            context->allocated(bytes);
+        }
     };
     return node;
 }
 
-Node make_free_node(TensorHandle const &handle, TensorId emit_tid) {
+Node make_free_node(TensorHandle const &handle, TensorId emit_tid, std::shared_ptr<compute_graph::detail::RunContext> context) {
     Node node;
     node.kind            = OpKind::Free;
     node.label           = fmt::format("free({})", handle.name);
@@ -72,9 +79,14 @@ Node make_free_node(TensorHandle const &handle, TensorId emit_tid) {
     node.op_data         = describe(handle, emit_tid);
     node.estimated_bytes = handle.total_bytes();
     // No logging here: this fires once per freed tensor per REPLAY.
-    node.execute = [rel_fn = handle.release_fn]() {
+    node.execute = [rel_fn = handle.release_fn, held_fn = handle.is_materialized_fn,
+                    bytes = static_cast<std::uint64_t>(handle.total_bytes()), context = std::move(context)]() {
+        bool const held_before = held_fn && held_fn();
         if (rel_fn) {
             rel_fn();
+        }
+        if (context && held_before && !held_fn()) {
+            context->released(bytes);
         }
     };
     return node;
