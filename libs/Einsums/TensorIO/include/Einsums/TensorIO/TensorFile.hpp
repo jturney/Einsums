@@ -34,6 +34,7 @@
 #include <Einsums/TensorIO/Format.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -43,6 +44,17 @@
 EINSUMS_NAMESPACE_BEGIN()
 namespace APIARY_MODULE("io") tensor_io {
 
+/**
+ * @brief A handle on an ``.etn`` file.
+ *
+ * Writing, rewriting and reserving entries change the handle's own table until it commits, which
+ * @ref close, @ref flush and the destructor do, and each entry operation (@ref rename, @ref swap,
+ * @ref copy, @ref remove, @ref restage, @ref compact) does before it returns. A commit puts new data
+ * and a new table into space the file's last commit does not use and then rewrites the header, so a
+ * process that stops at any point leaves the file as its last commit left it. With
+ * ``--einsums:io:sync`` on, the default, a power loss does too. A handle refuses to commit over a
+ * file another handle has committed to since this one last read it.
+ */
 class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
   public:
     enum class APIARY_EXPOSE Mode : std::uint8_t { Read, Write, ReadWrite };
@@ -52,14 +64,15 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     /// @param mode Read, Write, or ReadWrite.
     APIARY_EXPOSE explicit TensorFile(std::string path, Mode mode = Mode::ReadWrite);
 
-    /// Flushes pending writes and closes the file.
+    /// Commits and closes the file. A commit that fails here is logged and dropped, leaving the
+    /// file as its last commit left it; @ref close reports it instead.
     ~TensorFile();
 
-    // Non-copyable, movable.
+    // Non-copyable, movable: a moved-from handle holds no file.
     TensorFile(TensorFile const &)            = delete;
     TensorFile &operator=(TensorFile const &) = delete;
-    TensorFile(TensorFile &&)                 = default;
-    TensorFile &operator=(TensorFile &&)      = default;
+    TensorFile(TensorFile &&other) noexcept;
+    TensorFile &operator=(TensorFile &&other) noexcept;
 
     // ── Write ────────────────────────────────────────────────────────────
 
@@ -72,6 +85,8 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     void write_local(std::string_view name, Tensor<T, Rank> const &tensor, int rank, int num_ranks);
 
     /// Write a hyperslab of an existing entry; @p tensor must have the slab's shape.
+    /// @param name The entry, which must exist (see @ref reserve).
+    /// @param tensor The slab's elements.
     /// @param ranges Per-dimension [start, end) ranges into the stored tensor.
     template <typename T, size_t Rank>
     void write_slice(std::string_view name, Tensor<T, Rank> const &tensor, std::array<std::pair<size_t, size_t>, Rank> const &ranges);
@@ -94,6 +109,8 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     void read(std::string_view name, Tensor<T, Rank> &tensor);
 
     /// Read a slice (hyperslab) of a tensor.
+    /// @param name The entry.
+    /// @param tensor Where the slab goes, already of its shape.
     /// @param ranges Per-dimension [start, end) ranges.
     template <typename T, size_t Rank>
     void read_slice(std::string_view name, Tensor<T, Rank> &tensor, std::array<std::pair<size_t, size_t>, Rank> const &ranges);
@@ -162,11 +179,8 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     /**
      * @brief Give the entry @p old_name the name @p new_name.
      *
-     * Only the entry table changes, so a rename costs the same whatever the entry holds. The table
-     * is written before this returns. Renaming an entry to its own name does nothing.
-     *
-     * Another TensorFile open on the same path in a writable mode writes the table it read when it
-     * closes, over this one, so rename through the handle that is open, or close it first.
+     * Only the entry table changes, so a rename costs the same whatever the entry holds. It is
+     * committed before this returns. Renaming an entry to its own name does nothing.
      * @throws std::runtime_error when there is no entry @p old_name, or the file is open for reading.
      * @throws std::invalid_argument when an entry is already named @p new_name, or no entry can hold
      *         that name.
@@ -188,11 +202,10 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
      * @brief Copy the entry @p source_name of @p source into the entry @p name of this file.
      *
      * The entry @p name is created with the source's extents, element type and stored order when
-     * it does not exist. When it does, it must have the same extents and element type, and keeps
-     * its own stored order. The elements pass through a buffer of at most @p buffer_bytes, so
-     * neither entry is ever held whole: entries stored in the same order are copied as runs of the
-     * file, and otherwise a box at a time, in runs of the source's order. @p source may be this
-     * file, and copying an entry of this file onto itself does nothing.
+     * it does not exist. When it does, it must have the same extents and element type, keeps its own
+     * stored order, and holds its old elements until the copy is committed. The elements pass through a buffer of at most @p buffer_bytes,
+     * so neither entry is ever held whole: entries stored in the same order are copied as runs of the file, and otherwise a box at a time,
+     * in runs of the source's order. @p source may be this file, and copying an entry of this file onto itself does nothing.
      * @param source The file holding the entry to copy.
      * @param source_name The entry to copy.
      * @param name The entry to copy it into.
@@ -203,6 +216,42 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
      *         element type, or no entry can hold the name.
      */
     void copy(TensorFile const &source, std::string_view source_name, std::string_view name, size_t buffer_bytes = 0);
+
+    /**
+     * @brief Remove the entry @p name, for every rank that holds one, and commit.
+     *
+     * Its data region becomes space later entries reuse; @ref compact gives it back to the disk.
+     * @throws std::runtime_error when there is no entry @p name, or the file is open for reading.
+     */
+    APIARY_EXPOSE void remove(std::string_view name);
+
+    /**
+     * @brief Store the entry @p name with its axes in @p order, moving its elements, and commit.
+     *
+     * The elements are copied into a new region in the new order through a buffer of at most
+     * @p buffer_bytes, and one commit then points the entry at it, so the entry holds its old layout
+     * or its new one whenever the program stops. The file needs room for a second copy of the entry
+     * while this runs. Restaging to the order the entry already has does nothing.
+     * @param name The entry.
+     * @param order The declared axis to store at each position, as @ref stored_order returns it.
+     * @param buffer_bytes As for @ref copy.
+     * @throws std::runtime_error when there is no entry @p name, or the file is open for reading.
+     * @throws std::invalid_argument when @p order is not a permutation of the entry's axes.
+     */
+    APIARY_EXPOSE void restage(std::string_view name, std::vector<size_t> const &order, size_t buffer_bytes = 0);
+
+    /**
+     * @brief Rewrite the file without the space no entry uses.
+     *
+     * Every entry is copied, in its stored order and through a buffer of at most @p buffer_bytes,
+     * into a new file beside this one, which then replaces it. The file is this one or the
+     * compacted one whenever the program stops, and the disk needs room for the entries' bytes
+     * while this runs. Another handle open on the file refuses to commit afterwards; backings,
+     * which open the file for each slab, see the compacted file at their next slab.
+     * @param buffer_bytes As for @ref copy.
+     * @throws std::runtime_error when the file is open for reading.
+     */
+    APIARY_EXPOSE void compact(size_t buffer_bytes = 0);
 
     // ── Query ────────────────────────────────────────────────────────────
 
@@ -217,7 +266,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
 
     /// The order @p name is stored in: the declared axis held at each stored position, which is
     /// ``0, 1, ..., rank - 1`` for an entry stored as declared. See @ref TensorEntry::stored_order.
-    [[nodiscard]] std::vector<size_t> stored_order(std::string_view name) const;
+    APIARY_EXPOSE [[nodiscard]] std::vector<size_t> stored_order(std::string_view name) const;
 
     /// Store @p name with its axes in @p order from now on, recording it in the entry table.
     ///
@@ -226,26 +275,79 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     /// how to lay it out has. Throws when @p order is not a permutation of the entry's axes.
     void set_stored_order(std::string_view name, std::vector<size_t> const &order);
 
+    /// The bytes of the file, as of the last commit, that hold neither the header, an entry's
+    /// elements nor the entry table: what @ref compact would give back.
+    APIARY_EXPOSE [[nodiscard]] size_t unused_bytes() const;
+
     /// List all tensor names in the file.
     APIARY_EXPOSE [[nodiscard]] std::vector<std::string> tensor_names() const;
 
     /// Number of tensors in the file.
     APIARY_EXPOSE [[nodiscard]] size_t num_tensors() const { return _entries.size(); }
 
-    /// Flush pending writes to disk.
+    /// Commit, and sync the file to disk whatever ``--einsums:io:sync`` says.
     APIARY_EXPOSE void flush();
+
+    /// Commit and close the file. Unlike the destructor, throws when the commit fails.
+    APIARY_EXPOSE void close();
 
     /// Get the file path.
     APIARY_EXPOSE [[nodiscard]] std::string const &path() const { return _path; }
 
   private:
+    /// A byte range of the file, [first, second).
+    using Extent = std::pair<uint64_t, uint64_t>;
+
     std::string                             _path;
     Mode                                    _mode;
     int                                     _fd{-1}; ///< POSIX file descriptor
     FileHeader                              _header;
     std::vector<TensorEntry>                _entries;
-    std::unordered_map<std::string, size_t> _name_to_index;    ///< name → entry index
-    uint64_t                                _next_data_offset; ///< Next available offset for data
+    std::unordered_map<std::string, size_t> _name_to_index; ///< name → entry index
+    bool                                    _dirty{false};  ///< The table differs from the last commit.
+    bool                                    _has_header{false};
+    std::vector<Extent>                     _committed; ///< The table and regions the header on disk reaches.
+    std::pair<uint64_t, uint64_t>           _identity{0, 0};
+
+    /// Open @p _path in @p _mode and read or write its header.
+    void open();
+
+    /// Write this handle's table and point the header at it, unless nothing changed. Syncs before
+    /// and after the header when @p sync or ``--einsums:io:sync`` asks.
+    void commit(bool sync);
+
+    /// Sync the file to disk.
+    void sync_to_disk();
+
+    /// Refuse to change the file when another handle has committed to it, or replaced it, since
+    /// this one last read it: space this one thinks free may hold what the other committed.
+    void require_current() const;
+
+    /// Where @p bytes bytes can go: the first gap neither the last commit nor this handle's table
+    /// uses that holds them, or the end of the data.
+    [[nodiscard]] uint64_t allocate(uint64_t bytes) const;
+
+    /// The regions this handle's table names, and the last commit's table and regions, merged.
+    [[nodiscard]] std::vector<Extent> used_extents() const;
+
+    /// Read or write the box @p ranges of @p entry as raw elements, densely in its declared order.
+    void read_entry_slab(TensorEntry const &entry, void *destination, std::vector<std::pair<size_t, size_t>> const &ranges) const;
+    void write_entry_slab(TensorEntry const &entry, void const *source, std::vector<std::pair<size_t, size_t>> const &ranges);
+
+    /// Copy the elements of @p from in @p source into the region of @p to here, which has its
+    /// extents and type, through a buffer of at most @p buffer_bytes.
+    void copy_elements(TensorFile const &source, TensorEntry const &from, TensorEntry const &to, size_t buffer_bytes);
+
+    /// This handle's table, to put back when a change fails partway.
+    struct TableState {
+        std::vector<TensorEntry> entries;
+        bool                     dirty;
+    };
+    [[nodiscard]] TableState table_state() const { return {.entries = _entries, .dirty = _dirty}; }
+    void                     restore(TableState state);
+
+    /// Make @p change to the table and commit it, or, when either fails, put the table back.
+    void commit_change(std::function<void()> const &change);
 
     /// Find entry by name (throws if not found).
     [[nodiscard]] TensorEntry const &find_entry(std::string_view name) const;
@@ -287,9 +389,6 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
         });
     }
 
-    /// Write the header and entry table to disk.
-    void write_metadata();
-
     /// Read the header and entry table from disk.
     void read_metadata();
 
@@ -303,12 +402,13 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     void require_writable(std::string_view operation) const;
 
     /**
-     * @brief The entry a write of @p name fills, with its name, type, extents and data region set.
+     * @brief The entry a write of @p name fills, with its name, type, extents and a new data region.
      *
      * An entry of that name and owning rank already in the file is replaced, never kept beside the
-     * new one: when it holds the same type and extents its data region and stored order are reused,
-     * so rewriting an entry does not grow the file, and otherwise its record is given a new region
-     * at the end of the data. A new entry is stored in its declared order.
+     * new one. Its region is not written over: the new elements go to a region of their own, and the
+     * old one is reused only after the commit that drops it, so a crash leaves the old elements. A
+     * rewrite of the same type and extents keeps the entry's stored order; a new entry is stored in
+     * its declared order.
      * @throws std::invalid_argument when @p name is empty or longer than an entry holds.
      */
     TensorEntry &place_entry(std::string_view operation, std::string_view name, DType dtype, std::vector<size_t> const &dims,
@@ -325,8 +425,14 @@ void TensorFile::write(std::string_view name, Tensor<T, Rank> const &tensor) {
     std::vector<size_t> dims(Rank);
     for (size_t d = 0; d < Rank; d++)
         dims[d] = tensor.dim(d);
-    auto const &entry = place_entry("TensorFile::write", name, dtype_for<T>(), dims, ETN_ALL_RANKS);
-    write_box<T>(entry, tensor, Rank, detail::whole_box(entry));
+    auto saved = table_state();
+    try {
+        auto const &entry = place_entry("TensorFile::write", name, dtype_for<T>(), dims, ETN_ALL_RANKS);
+        write_box<T>(entry, tensor, Rank, detail::whole_box(entry));
+    } catch (...) {
+        restore(std::move(saved));
+        throw;
+    }
 }
 
 template <typename T, size_t Rank>
@@ -335,8 +441,14 @@ void TensorFile::write_local(std::string_view name, Tensor<T, Rank> const &tenso
     std::vector<size_t> dims(Rank);
     for (size_t d = 0; d < Rank; d++)
         dims[d] = tensor.dim(d);
-    auto const &entry = place_entry("TensorFile::write_local", name, dtype_for<T>(), dims, static_cast<uint32_t>(rank));
-    write_box<T>(entry, tensor, Rank, detail::whole_box(entry));
+    auto saved = table_state();
+    try {
+        auto const &entry = place_entry("TensorFile::write_local", name, dtype_for<T>(), dims, static_cast<uint32_t>(rank));
+        write_box<T>(entry, tensor, Rank, detail::whole_box(entry));
+    } catch (...) {
+        restore(std::move(saved));
+        throw;
+    }
 
     // Update header flags
     _header.flags |= 0x1; // has distributed tensors
@@ -389,6 +501,7 @@ void TensorFile::write_slice(std::string_view name, Tensor<T, Rank> const &tenso
         }
     }
 
+    require_current();
     write_box<T>(entry, tensor, Rank, rng);
 }
 
@@ -401,7 +514,7 @@ void TensorFile::reserve(std::string_view name, std::vector<size_t> const &dims,
                                 stored_order.size(), dims.size());
     }
 
-    // A reserved entry holds nothing yet, so a reused one takes the order asked for.
+    // A reserved entry holds nothing yet, so a replaced one takes the order asked for.
     auto &entry = place_entry("TensorFile::reserve", name, dtype_for<T>(), dims, ETN_ALL_RANKS);
     if (stored_order.empty()) {
         std::vector<size_t> declared(dims.size());
@@ -437,8 +550,14 @@ void TensorFile::write(std::string_view name, GeneralRuntimeTensor<T, Alloc> con
     for (size_t d = 0; d < tensor.rank(); ++d) {
         dims[d] = tensor.dim(d);
     }
-    auto const &entry = place_entry("TensorFile::write", name, dtype_for<T>(), dims, ETN_ALL_RANKS);
-    write_box<T>(entry, tensor, tensor.rank(), detail::whole_box(entry));
+    auto saved = table_state();
+    try {
+        auto const &entry = place_entry("TensorFile::write", name, dtype_for<T>(), dims, ETN_ALL_RANKS);
+        write_box<T>(entry, tensor, tensor.rank(), detail::whole_box(entry));
+    } catch (...) {
+        restore(std::move(saved));
+        throw;
+    }
 }
 
 template <typename T, typename Alloc>
@@ -473,6 +592,7 @@ void TensorFile::write_slice(std::string_view name, GeneralRuntimeTensor<T, Allo
         }
     }
 
+    require_current();
     write_box<T>(entry, tensor, tensor.rank(), ranges);
 }
 

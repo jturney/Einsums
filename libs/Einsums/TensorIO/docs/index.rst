@@ -20,10 +20,13 @@ TensorFile
 
 ``TensorFile`` is the serial entry point: it reads and writes whole tensors,
 or hyperslabs of them, in the ``.etn`` format. A file holds many named
-tensors. New tensors append to the end without rewriting existing data, and
-writing a name the file already holds replaces that entry: in place when the
-new tensor has the same extents and element type, so storing a tensor again at
-every iteration does not grow the file.
+tensors. Writing a name the file already holds replaces that entry. Changes
+reach the file in commits, when the handle closes or is flushed: new elements
+and a new entry table go where the last commit does not reach, and a final
+header write switches to them, so a program killed at any point leaves a file
+that opens with its last commit's entries. Storing a tensor again at every
+iteration alternates between two regions of the file, so the file does not
+grow.
 
 .. code-block:: cpp
 
@@ -90,11 +93,12 @@ example from a prior ``write_etn`` or ``TensorFile::reserve``. The in-memory
 tensor must match the slab shape; the bound ``TensorFile`` methods throw at
 execute time if the dimensions disagree.
 
-Copying, renaming and swapping entries
-======================================
+Copying, renaming, swapping and removing entries
+================================================
 
-Three functions change which entry a name reaches, or fill one entry from
-another, without the caller holding either entry in memory:
+These functions change which entry a name reaches, fill one entry from
+another, or tidy a file, without the caller holding any entry in memory. Each
+commits before it returns:
 
 - ``copy_entry(src_path, src_entry, dst_path, dst_entry)`` copies an entry into
   another, in the same file or another, creating the destination with the
@@ -103,9 +107,18 @@ another, without the caller holding either entry in memory:
 - ``rename_entry(path, old_name, new_name)`` renames an entry. It refuses a
   name the file already holds.
 - ``swap_entries(path, first, second)`` exchanges the names of two entries.
+- ``remove_entry(path, name)`` removes an entry. Its bytes become space later
+  entries reuse.
+- ``restage_entry(path, name, order)`` stores an entry with its axes in another
+  order, moving its elements through the same bounded buffer. The entry holds
+  its old layout or its new one whenever the program stops, and the file needs
+  room for a second copy while it runs.
+- ``compact_file(path)`` rewrites the file without the space no entry uses,
+  into a new file that then replaces it. It needs room on disk for the
+  entries' bytes while it runs.
 
-A rename or a swap rewrites only the file's entry table, so it costs the same
-whatever the entries hold.
+A rename, a swap or a removal rewrites only the file's entry table, so it costs
+the same whatever the entries hold.
 
 Each runs at once outside a capture. Inside one it records a node that runs at
 every replay, after every read and write of the file that comes before it in
@@ -140,8 +153,10 @@ The graph wrappers are exposed in Python under ``einsums.io``. Each C++
 ``read_slice_etn`` / ``write_slice_etn`` is bound as ``einsums.io.read_slice``
 / ``einsums.io.write_slice``, and ``read_etn`` / ``write_etn`` as
 ``einsums.io.read`` / ``einsums.io.write``, and ``copy_entry``,
-``rename_entry`` and ``swap_entries`` as ``einsums.io.copy``,
-``einsums.io.rename`` and ``einsums.io.swap``. The slab-by-reference pattern
+``rename_entry``, ``swap_entries``, ``remove_entry``, ``restage_entry`` and
+``compact_file`` as ``einsums.io.copy``, ``einsums.io.rename``,
+``einsums.io.swap``, ``einsums.io.remove``, ``einsums.io.restage`` and
+``einsums.io.compact``. The slab-by-reference pattern
 carries over: a Python ``Slab`` object can be advanced between graph
 executions the same way.
 

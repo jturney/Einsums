@@ -18,12 +18,15 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#include "FileCalls.hpp"
 
 #include <Einsums/Testing.hpp>
 
@@ -70,6 +73,18 @@ void patch_entry_field(std::string const &path, std::string const &name, size_t 
             f.seekp(record + static_cast<std::streamoff>(field_offset));
             f.write(reinterpret_cast<char const *>(&value), sizeof(value));
             REQUIRE(f.good());
+            // Checksum the damage, as a writer that recorded it would have, so a reader sees the
+            // record itself rather than a table torn by a crash.
+            if (header.version >= ETN_VERSION_CHECKSUMS) {
+                std::vector<TensorEntry> table(header.num_tensors);
+                f.seekg(static_cast<std::streamoff>(header.entry_table_offset));
+                f.read(reinterpret_cast<char *>(table.data()), static_cast<std::streamsize>(table.size() * sizeof(TensorEntry)));
+                header.table_crc  = tensor_io::detail::crc32c(table.data(), table.size() * sizeof(TensorEntry));
+                header.header_crc = tensor_io::detail::header_checksum(header);
+                f.seekp(0);
+                f.write(reinterpret_cast<char const *>(&header), sizeof(header));
+                REQUIRE(f.good());
+            }
             return;
         }
     }
@@ -511,29 +526,34 @@ TEST_CASE("TensorFile - slice ranges must lie inside the stored entry", "[Tensor
     }
 }
 
-TEST_CASE("TensorFile - read rejects a damaged entry record", "[TensorIO][Error]") {
-    TempFile const tmp("damaged.etn");
-
+TEST_CASE("TensorFile - a damaged entry record is refused when the file is opened", "[TensorIO][Error]") {
     auto A = create_random_tensor<double>("A", 4, 3);
+
+    // "A" claims twice the bytes its dims hold.
     {
-        TensorFile out(tmp.path, TensorFile::Mode::Write);
-        out.write("A", A);
-        out.write("B", A);
+        TempFile const tmp("damaged_size.etn");
+        {
+            TensorFile out(tmp.path, TensorFile::Mode::Write);
+            out.write("A", A);
+            out.write("B", A);
+        }
+        patch_entry_field<uint64_t>(tmp.path, "A", offsetof(TensorEntry, data_size), uint64_t{4 * 3 * sizeof(double) * 2});
+        REQUIRE_THROWS_WITH(TensorFile(tmp.path, TensorFile::Mode::Read),
+                            Catch::Matchers::ContainsSubstring("damaged") && Catch::Matchers::ContainsSubstring("192"));
     }
 
-    // "A" claims twice the bytes its dims hold; "B" carries a dtype code outside the enum.
-    patch_entry_field<uint64_t>(tmp.path, "A", offsetof(TensorEntry, data_size), uint64_t{4 * 3 * sizeof(double) * 2});
-    patch_entry_field<uint8_t>(tmp.path, "B", offsetof(TensorEntry, dtype), uint8_t{200});
-
-    TensorFile in(tmp.path, TensorFile::Mode::Read);
-    auto       dst = create_zero_tensor<double>("dst", 4, 3);
-    REQUIRE_THROWS_AS(in.read("A", dst), std::runtime_error);
-    REQUIRE_THROWS_WITH(in.read("A", dst), Catch::Matchers::ContainsSubstring("damaged") && Catch::Matchers::ContainsSubstring("192"));
-    REQUIRE_THROWS_WITH(in.read("B", dst), Catch::Matchers::ContainsSubstring("unknown dtype code 200"));
-
-    GeneralRuntimeTensor<double, std::allocator<double>> rt("rt", std::vector<size_t>{1});
-    REQUIRE_THROWS_AS(in.read("A", rt), std::runtime_error);
-    REQUIRE(rt.dim(0) == 1);
+    // "B" carries a dtype code outside the enum.
+    {
+        TempFile const tmp("damaged_dtype.etn");
+        {
+            TensorFile out(tmp.path, TensorFile::Mode::Write);
+            out.write("A", A);
+            out.write("B", A);
+        }
+        patch_entry_field<uint8_t>(tmp.path, "B", offsetof(TensorEntry, dtype), uint8_t{200});
+        REQUIRE_THROWS_WITH(TensorFile(tmp.path, TensorFile::Mode::ReadWrite),
+                            Catch::Matchers::ContainsSubstring("unknown dtype code 200"));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -979,14 +999,19 @@ TEMPLATE_LIST_TEST_CASE("TensorFile - writing an entry again replaces it", "[Ten
         out.write("T", first);
         out.write("U", first);
     }
-    auto const size_once = std::filesystem::file_size(tmp.path);
+    // The same shape and type. The new elements go to a region of their own, as the committed
+    // ones must survive a crash until the commit that replaces them; the second rewrite reuses the
+    // regions the first gave up, so the file grows no further.
     {
         TensorFile rw(tmp.path, TensorFile::Mode::ReadWrite);
-        rw.write("T", second);
+        rw.write("T", first);
     }
-
-    // The same shape and type: the entry's own region is written again, and the file keeps its size.
-    CHECK(std::filesystem::file_size(tmp.path) == size_once);
+    auto const size_rewritten = std::filesystem::file_size(tmp.path);
+    for (int again = 0; again < 3; ++again) {
+        TensorFile rw(tmp.path, TensorFile::Mode::ReadWrite);
+        rw.write("T", again == 2 ? second : first);
+    }
+    CHECK(std::filesystem::file_size(tmp.path) <= size_rewritten);
     {
         TensorFile in(tmp.path, TensorFile::Mode::Read);
         CHECK(in.tensor_names() == std::vector<std::string>{"T", "U"});
@@ -1054,7 +1079,7 @@ TEST_CASE("TensorFile - a file holding two records of one name keeps the later",
             CHECK(back.data()[i] == newer.data()[i]);
         }
     }
-    TensorFile in(tmp.path, TensorFile::Mode::Read);
+    TensorFile const in(tmp.path, TensorFile::Mode::Read);
     CHECK(in.num_tensors() == 1);
 }
 
@@ -1072,8 +1097,138 @@ TEST_CASE("TensorFile - a name an entry cannot hold is refused", "[TensorIO][Err
         CHECK_THROWS_AS(out.write("", tensor), std::invalid_argument);
         out.write(longest, tensor);
     }
-    TensorFile in(tmp.path, TensorFile::Mode::Read);
+    TensorFile const in(tmp.path, TensorFile::Mode::Read);
     CHECK(in.tensor_names() == std::vector<std::string>{longest});
+}
+
+// ── Crashes and other handles ───────────────────────────────────────────────
+
+// A new entry's region used to start where the committed entry table sat, so its first bytes
+// overwrote the only table the header named: a process killed while writing it left a file with
+// none of its entries. Stopping the write at every call it makes must leave the file as it was or
+// as it would be.
+TEST_CASE("TensorFile - a write stopped at any call leaves the file as it was or as it would be", "[TensorIO][Crash]") {
+    TempFile const tmp("killed_write.etn");
+    auto const     a = create_random_tensor<double>("a", 3, 3);
+    auto const     b = create_random_tensor<double>("b", 40, 30);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("a", a);
+    }
+    auto const before       = file_calls::file_bytes(tmp.path);
+    auto const before_state = file_calls::file_state(tmp.path);
+    auto const write_b      = [&] {
+        TensorFile rw(tmp.path, TensorFile::Mode::ReadWrite);
+        rw.write("b", b);
+    };
+    size_t const calls       = file_calls::count_file_calls(write_b);
+    auto const   after_state = file_calls::file_state(tmp.path);
+    REQUIRE(after_state.size() == 2);
+
+    for (size_t n = 0; n <= calls; ++n) {
+        CAPTURE(n, calls);
+        file_calls::put_file_bytes(tmp.path, before);
+        file_calls::run_killed_at(n, write_b);
+        file_calls::FileState state;
+        REQUIRE_NOTHROW(state = file_calls::file_state(tmp.path));
+        CHECK((state == before_state || state == after_state));
+    }
+}
+
+// A table naming a region past the end of the file used to open without complaint; reopened for
+// writing, the bogus region moved the next table out to an offset no write reaches, the header
+// was rewritten to name it, and the failure to write it escaped the destructor and ended the
+// process. The file must be refused in every mode, and left as it was.
+TEST_CASE("TensorFile - a table naming a region past the end of the file is refused and left alone", "[TensorIO][Crash]") {
+    TempFile const tmp("past_the_end.etn");
+    auto const     a = create_random_tensor<double>("a", 3, 3);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("a", a);
+    }
+    patch_entry_field<uint64_t>(tmp.path, "a", offsetof(TensorEntry, data_offset), uint64_t{1} << 30U);
+    auto const damaged = file_calls::file_bytes(tmp.path);
+    for (auto const mode : {TensorFile::Mode::Read, TensorFile::Mode::ReadWrite}) {
+        CHECK_THROWS_WITH(TensorFile(tmp.path, mode),
+                          Catch::Matchers::ContainsSubstring("damaged") && Catch::Matchers::ContainsSubstring("past the end of the file"));
+        // The size first: a writer that trusted the record put its next table a gigabyte out.
+        REQUIRE(std::filesystem::file_size(tmp.path) == damaged.size());
+        CHECK(file_calls::file_bytes(tmp.path) == damaged);
+    }
+}
+
+// Every writable handle used to rewrite the header and table when it closed, changed or not; a
+// write backing opens one per slab it stores.
+TEST_CASE("TensorFile - a writable handle that changed no entry writes nothing when it closes", "[TensorIO][Crash]") {
+    TempFile const tmp("clean_close.etn");
+    auto const     a = create_random_tensor<double>("a", 4, 2);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("a", a);
+    }
+    size_t const opened = file_calls::count_file_calls([&] { TensorFile const rw(tmp.path, TensorFile::Mode::ReadWrite); });
+    CHECK(opened == 0);
+
+    // A slab written into an existing entry changes its elements, not the table.
+    std::vector<double> const slab{1.0, 2.0};
+    size_t                    writes = 0;
+    {
+        file_calls::FileCallHook const hook([&](tensor_io::detail::FileCall const &call) {
+            writes += call.kind == tensor_io::detail::FileCall::Kind::Write ? 1 : 0;
+            return true;
+        });
+        TensorFile                     rw(tmp.path, TensorFile::Mode::ReadWrite);
+        rw.write_slab("a", slab.data(), {{0, 2}, {1, 2}});
+    }
+    CHECK(writes == 1);
+}
+
+// A commit that failed in the destructor used to throw out of it, which ends the process.
+TEST_CASE("TensorFile - a commit that fails when the handle closes does not end the process", "[TensorIO][Crash]") {
+    TempFile const tmp("failed_close.etn");
+    auto const     a = create_random_tensor<double>("a", 2, 2);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("a", a);
+    }
+    auto const                              before = file_calls::file_state(tmp.path);
+    std::optional<file_calls::FileCallHook> full_disk;
+    {
+        TensorFile rw(tmp.path, TensorFile::Mode::ReadWrite);
+        rw.reserve<double>("b", {3});
+        // Installed last so that it is still in place when the handle closes.
+        full_disk.emplace([](tensor_io::detail::FileCall const &call) -> bool {
+            if (call.kind == tensor_io::detail::FileCall::Kind::Write) {
+                throw std::runtime_error("no space left on device");
+            }
+            return true;
+        });
+    }
+    full_disk.reset();
+    CHECK(file_calls::file_state(tmp.path) == before);
+}
+
+// Two writable handles on one file each wrote the table they held when they closed, so the second
+// to close silently dropped what the first had committed.
+TEST_CASE("TensorFile - a handle that another handle committed past refuses to commit", "[TensorIO][Crash]") {
+    TempFile const tmp("stale_handle.etn");
+    auto const     a = create_random_tensor<double>("a", 2, 2);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("a", a);
+    }
+    {
+        TensorFile first(tmp.path, TensorFile::Mode::ReadWrite);
+        first.reserve<double>("x", {2});
+        {
+            TensorFile second(tmp.path, TensorFile::Mode::ReadWrite);
+            second.reserve<double>("y", {2});
+        }
+        CHECK_THROWS_WITH(first.close(), Catch::Matchers::ContainsSubstring("another handle"));
+    }
+    TensorFile const in(tmp.path, TensorFile::Mode::Read);
+    CHECK(in.contains("y"));
+    CHECK_FALSE(in.contains("x"));
 }
 
 // ── Stored order ─────────────────────────────────────────────────────────────
@@ -1166,7 +1321,7 @@ TEST_CASE("TensorFile - the stored order is part of the format", "[TensorIO][Ord
     CHECK_THROWS(entry.set_stored_order({0, 0, 1}));
     CHECK_THROWS(entry.set_stored_order({0, 1}));
 
-    // A file is written at the version every release reads unless an entry is permuted.
+    // Every commit writes the current version, which carries the checksums.
     TempFile const tmp("stored_order_version.etn");
     auto const     version = [&]() {
         FileHeader    header{};
@@ -1178,7 +1333,7 @@ TEST_CASE("TensorFile - the stored order is part of the format", "[TensorIO][Ord
         TensorFile out(tmp.path, TensorFile::Mode::Write);
         out.reserve<double>("plain", {2, 3});
     }
-    CHECK(version() == ETN_VERSION_DECLARED_ORDER);
+    CHECK(version() == ETN_VERSION);
     {
         TensorFile out(tmp.path, TensorFile::Mode::ReadWrite);
         out.reserve<double>("permuted", {2, 3}, {1, 0});

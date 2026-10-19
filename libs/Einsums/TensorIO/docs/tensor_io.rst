@@ -25,8 +25,10 @@ Features
   throws ``std::invalid_argument``, and a slab past the stored extents throws ``std::out_of_range``.
 - **Slice reads**: read a hyperslab without loading the full tensor.
 - **Multi-tensor files**: store many tensors in one file. Writing a name the file holds replaces its entry.
-- **Entry operations**: copy an entry through a bounded buffer, or rename or swap entries by rewriting
-  only the entry table, at once or as nodes of a graph.
+- **Crash-safe**: a process killed at any point, or with ``--einsums:io:sync`` on a power loss, leaves
+  the file as its last commit left it.
+- **Entry operations**: copy an entry through a bounded buffer, rename or swap entries by rewriting
+  only the entry table, remove or restage an entry, or compact the file, at once or as nodes of a graph.
 - **Distributed I/O**: MPI-coordinated writes to a single file using ``MPI_Exscan``.
 - **ComputeGraph integration**: ``read_etn``/``write_etn`` create DiskRead/DiskWrite nodes.
 - **Checkpointing**: save and restore Graph or Workspace state with one call.
@@ -40,13 +42,33 @@ File Format
    [Data region 0]  (raw bytes, 64-byte aligned)
    [Data region 1]
    ...
-   [TensorEntry 0]  (160 bytes each, at end of file)
+   [TensorEntry 0]  (160 bytes each, the entry table)
    [TensorEntry 1]
    ...
 
-Putting the entry table at the end lets you append tensors without shifting
-existing data. Files written through the distributed path are standard binary,
-so serial programs can read them.
+The header names the entry table and each entry names its data region, so
+regions and the table can sit anywhere after the header, with gaps between
+them that later regions reuse. Files written through the distributed path are
+standard binary, so serial programs can read them.
+
+Changes reach the file in commits. A handle's writes, rewrites and reserved
+entries go into space the file's last commit does not use, and when the handle
+closes or is flushed, or an entry operation finishes, it writes a new table
+the same way and then rewrites the 64-byte header to name it. Until that one
+write the file reads as the last commit left it, so a process killed at any
+point leaves a file that opens, holding either the old entries or the new
+ones. Rewriting an entry therefore writes its new elements beside the old
+ones, which the next rewrite reuses: a file holds at most two copies of an
+entry rewritten again and again. With ``--einsums:io:sync`` on, the default,
+the file is synced before and after the header is rewritten, which carries the
+same guarantee across a power loss.
+
+The header records a checksum of itself and of the table, and a count of the
+commits made to the file. Opening a file checks both checksums and that every
+region lies inside the file without sharing a byte with another, and refuses a
+file that fails, in every mode and without writing to it. A handle refuses to
+commit, or to write into the file at all, once another handle has committed to
+it since this one read it.
 
 Each entry's data is dense and column-major. By default its axes are stored in
 the order they are declared; an entry can instead be stored with its axes in
@@ -60,9 +82,9 @@ data back:
    // Declared [Q, a, b], stored [a, b, Q]: a block of Q is one contiguous run.
    out.reserve<double>("Bvv", {naux, nvir, nvir}, {1, 2, 0});
 
-A file holding an entry stored in another order is written at format version 2;
-one holding none stays at version 1. A release that reads only version 1
-refuses a version 2 file rather than reading its elements in the wrong order.
+Every commit writes format version 3, which adds the checksums and the commit
+count. Versions 1 and 2 still open, checked by their structure alone, and
+become version 3 at their first commit.
 
 TensorFile
 ===========
@@ -94,13 +116,18 @@ Basic read/write for serial programs:
 
    // Append in ReadWrite mode
    TensorFile rw("data.etn", TensorFile::Mode::ReadWrite);
-   rw.write("C", C);  // Appends without overwriting A, B
-   rw.write("A", A2); // Replaces A, in place when A2 has A's extents and type
+   rw.write("C", C);  // Adds C beside A and B
+   rw.write("A", A2); // Replaces A once the handle commits; until then A holds its old elements
+   rw.flush();        // Commit, and sync to disk
 
-   // Entries
+   // Entries; each commits before it returns
    rw.rename("C", "D");              // only the entry table changes
    rw.swap("A", "B");                // "A" now reaches what "B" did, and the other way round
    rw.copy(rw, "A", "A_saved");      // through a bounded buffer
+   rw.restage("A_saved", {1, 0});    // store its axes in another order, moving its elements
+   rw.remove("D");                   // its bytes become space later entries reuse
+   rw.unused_bytes();                // what compact() would give back
+   rw.compact();                     // rewrite the file without its gaps
 
 DistributedTensorFile
 ======================

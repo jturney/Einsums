@@ -6,7 +6,8 @@
 #pragma once
 
 /// @file Entries.hpp
-/// @brief Copy, rename and swap the entries of ``.etn`` files, now or as a step of a graph.
+/// @brief Copy, rename, swap, remove and restage the entries of ``.etn`` files, and compact them, now
+///        or as a step of a graph.
 ///
 /// Each runs at once outside a capture. Inside one it records a node that runs at every replay,
 /// ordered after every read and write of the entries it names that comes before it in the graph,
@@ -28,7 +29,9 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <cstddef>
 #include <string>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN()
 namespace APIARY_MODULE("io") tensor_io {
@@ -73,6 +76,41 @@ APIARY_EXPOSE APIARY_RENAME("rename") EINSUMS_EXPORT void rename_entry(std::stri
  * @versionadded{2.0.0}
  */
 APIARY_EXPOSE APIARY_RENAME("swap") EINSUMS_EXPORT void swap_entries(std::string path, std::string first, std::string second);
+
+/**
+ * @brief Remove the entry @p name of @p path.
+ *
+ * Its bytes become space later entries reuse; @ref compact_file gives them back to the disk. See
+ * @ref TensorFile::remove.
+ * @throws std::runtime_error when the file or the entry is missing.
+ * @versionadded{2.0.0}
+ */
+APIARY_EXPOSE APIARY_RENAME("remove") EINSUMS_EXPORT void remove_entry(std::string path, std::string name);
+
+/**
+ * @brief Store the entry @p name of @p path with its axes in @p order, moving its elements.
+ *
+ * The entry holds its old layout or its new one whenever the program stops, and the file needs room
+ * for a second copy of it while this runs. See @ref TensorFile::restage.
+ * @param[in] path The file.
+ * @param[in] name The entry.
+ * @param[in] order The declared axis to store at each position.
+ * @throws std::runtime_error when the file or the entry is missing.
+ * @throws std::invalid_argument when @p order is not a permutation of the entry's axes.
+ * @versionadded{2.0.0}
+ */
+APIARY_EXPOSE APIARY_RENAME("restage") EINSUMS_EXPORT void restage_entry(std::string path, std::string name,
+                                                                         std::vector<std::size_t> order);
+
+/**
+ * @brief Rewrite @p path without the space no entry uses.
+ *
+ * The file is the old one or the compacted one whenever the program stops, and the disk needs room
+ * for the entries' bytes while this runs. See @ref TensorFile::compact.
+ * @throws std::runtime_error when the file is missing.
+ * @versionadded{2.0.0}
+ */
+APIARY_EXPOSE APIARY_RENAME("compact") EINSUMS_EXPORT void compact_file(std::string path);
 
 } // namespace tensor_io
 EINSUMS_NAMESPACE_END()

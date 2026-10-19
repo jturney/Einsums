@@ -15,14 +15,16 @@
 /// [Data region 0]  (raw bytes, 64-byte aligned)
 /// [Data region 1]
 /// ...
-/// [Data region N-1]
-/// [TensorEntry 0]  (160 bytes each, at end of file)
+/// [TensorEntry 0]  (160 bytes each, the entry table)
 /// [TensorEntry 1]
 /// ...
-/// [TensorEntry N-1]
 /// ```
 ///
-/// The entry table is last so appending moves no data. Distributed files read back without MPI.
+/// The header names the entry table and the table names each data region; nothing else locates
+/// anything. Regions and the table may sit in any order and leave gaps, which later regions reuse.
+/// A writer never writes over a byte the header on disk reaches: it writes new regions and a new
+/// table into free space and then rewrites the header, so the file reads as it was before a commit
+/// or as it is after one, whenever the writer stops. Distributed files read back without MPI.
 ///
 /// Data is always column-major, whatever the tensor's layout in memory; there is no layout flag,
 /// and row-major tensors are reordered on the way through.
@@ -34,6 +36,7 @@
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -45,15 +48,18 @@ EINSUMS_NAMESPACE_BEGIN(tensor_io)
 /// Magic bytes identifying an .etn file.
 inline constexpr char ETN_MAGIC[8] = {'E', 'I', 'N', 'S', 'U', 'M', 'S', '\0'}; // NOLINT(modernize-avoid-c-arrays)
 
-/// Newest format version this library reads and writes. Version 2 adds an entry stored in an axis
-/// order other than the one it is declared in (@ref TensorEntry::stored_order). A file is written at
-/// version 2 only when it holds such an entry; one that holds none stays at
-/// @ref ETN_VERSION_DECLARED_ORDER, which every release reads.
-inline constexpr uint32_t ETN_VERSION = 2;
+/// The format version every commit writes, and the newest this library reads. Version 2 added an
+/// entry stored in an axis order other than its declared one (@ref TensorEntry::stored_order);
+/// version 3 adds the header's generation and checksums (@ref FileHeader::generation), which let a
+/// reader tell a file whose last commit finished from one torn by a crash.
+inline constexpr uint32_t ETN_VERSION = 3;
 
-/// The version of a file whose every entry is stored in its declared axis order, and the oldest this
-/// library reads. A release that reads only this version refuses a file with a permuted entry rather
-/// than reading its elements in the wrong order.
+/// The first version whose header carries @ref FileHeader::table_crc and @ref FileHeader::header_crc.
+/// A file of an earlier version has those bytes zero and is checked by its structure alone.
+inline constexpr uint32_t ETN_VERSION_CHECKSUMS = 3;
+
+/// The oldest version this library reads: every entry stored in its declared axis order and no
+/// checksums. DistributedTensorFile still writes it.
 inline constexpr uint32_t ETN_VERSION_DECLARED_ORDER = 1;
 
 /// Alignment for data regions (64 bytes for SIMD/cache-line compatibility).
@@ -81,7 +87,11 @@ struct FileHeader {
     uint64_t total_size;         ///< Total file size in bytes
     uint32_t flags;              ///< Bit flags: 0x1 = has distributed tensors
     uint32_t num_ranks;          ///< MPI world_size at write time (0 = serial)
-    char     reserved[16];       ///< Reserved for future use  // NOLINT(modernize-avoid-c-arrays)
+    /// Commits so far. A writer refuses to commit over a file whose generation moved since it last
+    /// read the header, as another handle's commit would otherwise be lost. Zero before version 3.
+    uint64_t generation;
+    uint32_t table_crc;  ///< CRC-32C of the entry table; zero before version 3.
+    uint32_t header_crc; ///< CRC-32C of these 64 bytes with this field zero; zero before version 3.
 
     /// Initialize with default values.
     void init() {
@@ -93,7 +103,9 @@ struct FileHeader {
         total_size         = 0;
         flags              = 0;
         num_ranks          = 0;
-        std::memset(reserved, 0, sizeof(reserved));
+        generation         = 0;
+        table_crc          = 0;
+        header_crc         = 0;
     }
 
     /// Validate magic and version.
@@ -252,6 +264,27 @@ inline constexpr DType dtype_for<uint64_t>() {
 }
 
 namespace detail {
+
+/// CRC-32C (Castagnoli) of @p bytes bytes at @p data, continuing from @p crc.
+[[nodiscard]] EINSUMS_EXPORT uint32_t crc32c(void const *data, size_t bytes, uint32_t crc = 0);
+
+/// The checksum @ref FileHeader::header_crc records for @p header: of its 64 bytes with that field zero.
+[[nodiscard]] EINSUMS_EXPORT uint32_t header_checksum(FileHeader const &header);
+
+/// A call a TensorFile is about to make that changes the file.
+struct FileCall {
+    enum class Kind : uint8_t { Write, Sync, Truncate, Rename };
+    Kind        kind{Kind::Write};
+    uint64_t    offset{0}; ///< Where a write starts, or the length a truncate leaves.
+    void const *data{nullptr};
+    size_t      bytes{0};
+};
+
+/// Called before every write, sync, truncate and rename a TensorFile makes, which happens only when the hook
+/// returns true. For tests: a hook that returns false from some call on leaves the file as a process
+/// killed at that call would, every earlier call landed and none after it, while the program goes
+/// on as if they had. An empty function removes the hook.
+EINSUMS_EXPORT void set_file_call_hook(std::function<bool(FileCall const &)> hook);
 
 /// Check that a stored entry can be copied to or from a destination of element type @p want.
 ///

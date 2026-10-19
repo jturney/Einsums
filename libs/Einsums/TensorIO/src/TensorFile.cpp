@@ -6,6 +6,9 @@
 #include <Einsums/BufferAllocator/ModuleVars.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
+#include <Einsums/Logging.hpp>
+#include <Einsums/Options/Get.hpp>
+#include <Einsums/TensorIO/Options.hpp>
 #include <Einsums/TensorIO/TensorFile.hpp>
 
 #include <fmt/format.h>
@@ -16,10 +19,15 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
+#include <functional>
 #include <limits>
+#include <ranges>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -28,6 +36,51 @@
 EINSUMS_NAMESPACE_BEGIN(tensor_io)
 
 namespace detail {
+
+namespace {
+
+constexpr std::array<uint32_t, 256> make_crc32c_table() {
+    std::array<uint32_t, 256> table{};
+    for (uint32_t i = 0; i < 256; ++i) {
+        uint32_t crc = i;
+        for (int bit = 0; bit < 8; ++bit) {
+            crc = (crc & 1U) != 0 ? (crc >> 1U) ^ 0x82F63B78U : crc >> 1U;
+        }
+        table[i] = crc;
+    }
+    return table;
+}
+
+constexpr std::array<uint32_t, 256> crc32c_table = make_crc32c_table();
+
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables): a test seam, set only by tests.
+std::function<bool(FileCall const &)> file_call_hook;
+
+/// Whether the call @p call happens: always, unless a test's hook says otherwise.
+bool file_call(FileCall const &call) {
+    return !file_call_hook || file_call_hook(call);
+}
+
+} // namespace
+
+uint32_t crc32c(void const *data, size_t bytes, uint32_t crc) {
+    auto const *p = static_cast<unsigned char const *>(data);
+    crc           = ~crc;
+    for (size_t i = 0; i < bytes; ++i) {
+        crc = crc32c_table[(crc ^ p[i]) & 0xFFU] ^ (crc >> 8U);
+    }
+    return ~crc;
+}
+
+uint32_t header_checksum(FileHeader const &header) {
+    FileHeader copy = header;
+    copy.header_crc = 0;
+    return crc32c(&copy, sizeof(copy));
+}
+
+void set_file_call_hook(std::function<bool(FileCall const &)> hook) {
+    file_call_hook = std::move(hook);
+}
 
 void check_entry_type(std::string_view path, std::string_view operation, TensorEntry const &entry, DType want,
                       std::optional<size_t> want_rank) {
@@ -211,6 +264,10 @@ void scatter_file_order(char *tensor, char const *src, MemoryLayout const &layou
 } // namespace detail
 
 TensorFile::TensorFile(std::string path, Mode mode) : _path(std::move(path)), _mode(mode) {
+    open();
+}
+
+void TensorFile::open() {
     detail::OpenMode open_mode = detail::OpenMode::ReadWrite;
     switch (_mode) {
     case Mode::Read:
@@ -228,37 +285,68 @@ TensorFile::TensorFile(std::string path, Mode mode) : _path(std::move(path)), _m
     if (_fd < 0) {
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: cannot open '{}': {}", _path, std::strerror(errno));
     }
+    _identity = detail::file_identity(_fd);
 
-    if (_mode == Mode::Write) {
-        // New file: write initial header
-        _header.init();
-        _next_data_offset = _header.data_offset;
-        write_metadata();
-    } else {
-        // Existing file: read header and entries
-        struct stat st;
-        if (::fstat(_fd, &st) == 0 && st.st_size > 0) {
+    try {
+        struct stat st{};
+        if (_mode != Mode::Write && ::fstat(_fd, &st) == 0 && st.st_size > 0) {
             read_metadata();
         } else {
-            // Empty file or new file in ReadWrite mode
+            // A new file, or an empty one: it holds a header once something is written to it.
             _header.init();
-            _next_data_offset = _header.data_offset;
-            if (_mode == Mode::ReadWrite) {
-                write_metadata();
+            _entries.clear();
+            _committed.clear();
+            _has_header = false;
+            index_entries();
+            if (_mode != Mode::Read) {
+                _dirty = true;
+                commit(false);
             }
         }
+    } catch (...) {
+        detail::close_file(_fd);
+        _fd = -1;
+        throw;
     }
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape)
+// NOLINTNEXTLINE(bugprone-exception-escape): the commit's failure is caught; logging it cannot throw.
 TensorFile::~TensorFile() {
-    if (_fd >= 0) {
-        if (_mode != Mode::Read) {
-            write_metadata(); // Flush entry table
-        }
-        detail::close_file(_fd);
-        _fd = -1;
+    if (_fd < 0) {
+        return;
     }
+    try {
+        commit(false);
+    } catch (std::exception const &e) {
+        EINSUMS_LOG_WARN("TensorFile: the changes to '{}' since its last commit were dropped: {}", _path, e.what());
+    } catch (...) {
+        EINSUMS_LOG_WARN("TensorFile: the changes to '{}' since its last commit were dropped", _path);
+    }
+    detail::close_file(_fd);
+    _fd = -1;
+}
+
+TensorFile::TensorFile(TensorFile &&other) noexcept
+    : _path(std::move(other._path)), _mode(other._mode), _fd(std::exchange(other._fd, -1)), _header(other._header),
+      _entries(std::move(other._entries)), _name_to_index(std::move(other._name_to_index)), _dirty(std::exchange(other._dirty, false)),
+      _has_header(other._has_header), _committed(std::move(other._committed)), _identity(other._identity) {
+}
+
+TensorFile &TensorFile::operator=(TensorFile &&other) noexcept {
+    if (this != &other) {
+        TensorFile const old(std::move(*this));
+        _path          = std::move(other._path);
+        _mode          = other._mode;
+        _fd            = std::exchange(other._fd, -1);
+        _header        = other._header;
+        _entries       = std::move(other._entries);
+        _name_to_index = std::move(other._name_to_index);
+        _dirty         = std::exchange(other._dirty, false);
+        _has_header    = other._has_header;
+        _committed     = std::move(other._committed);
+        _identity      = other._identity;
+    }
+    return *this;
 }
 
 namespace {
@@ -275,8 +363,13 @@ void TensorFile::write_at(uint64_t offset, void const *data, size_t bytes) {
     auto  *ptr   = static_cast<char const *>(data);
     size_t total = 0;
     while (total < bytes) {
+        size_t const chunk = std::min(bytes - total, kMaxIoBytes);
+        if (!detail::file_call({.kind = detail::FileCall::Kind::Write, .offset = offset + total, .data = ptr + total, .bytes = chunk})) {
+            total += chunk;
+            continue;
+        }
         detail::io_result_t const written =
-            detail::pwrite_file(_fd, ptr + total, std::min(bytes - total, kMaxIoBytes), static_cast<detail::file_offset_t>(offset + total));
+            detail::pwrite_file(_fd, ptr + total, chunk, static_cast<detail::file_offset_t>(offset + total));
         if (written < 0) {
             if (errno == EINTR)
                 continue;
@@ -364,68 +457,249 @@ std::vector<size_t> TensorFile::stored_order(std::string_view name) const {
 void TensorFile::set_stored_order(std::string_view name, std::vector<size_t> const &order) {
     auto const &entry = find_entry(name);
     auto const  index = static_cast<size_t>(&entry - _entries.data());
-    _entries[index].set_stored_order(order);
-    write_metadata();
+    commit_change([&] { _entries[index].set_stored_order(order); });
 }
 
-void TensorFile::write_metadata() {
-    // Update header. A file stays at the version every release reads unless an entry needs more.
-    _header.version =
-        std::ranges::any_of(_entries, [](TensorEntry const &e) { return e.permuted(); }) ? ETN_VERSION : ETN_VERSION_DECLARED_ORDER;
-    _header.num_tensors        = static_cast<uint32_t>(_entries.size());
-    _header.entry_table_offset = align_up(_next_data_offset, ETN_DATA_ALIGNMENT);
-    _header.total_size         = _header.entry_table_offset + _entries.size() * sizeof(TensorEntry);
+namespace {
 
-    // Write header at offset 0
-    write_at(0, &_header, sizeof(FileHeader));
+/// Merge @p extents, sorted by start, into disjoint ranges.
+std::vector<std::pair<uint64_t, uint64_t>> merged(std::vector<std::pair<uint64_t, uint64_t>> extents) {
+    std::ranges::sort(extents);
+    std::vector<std::pair<uint64_t, uint64_t>> out;
+    for (auto const &extent : extents) {
+        if (!out.empty() && extent.first <= out.back().second) {
+            out.back().second = std::max(out.back().second, extent.second);
+        } else {
+            out.push_back(extent);
+        }
+    }
+    return out;
+}
 
-    // Write entry table at the end
-    if (!_entries.empty()) {
-        write_at(_header.entry_table_offset, _entries.data(), _entries.size() * sizeof(TensorEntry));
+/// The extents a header and the table it names reach: the table and every non-empty region.
+std::vector<std::pair<uint64_t, uint64_t>> reached_extents(FileHeader const &header, std::vector<TensorEntry> const &entries) {
+    std::vector<std::pair<uint64_t, uint64_t>> extents;
+    extents.reserve(entries.size() + 1);
+    if (header.num_tensors != 0) {
+        extents.emplace_back(header.entry_table_offset, header.entry_table_offset + uint64_t{header.num_tensors} * sizeof(TensorEntry));
+    }
+    for (auto const &entry : entries) {
+        if (entry.data_size != 0) {
+            extents.emplace_back(entry.data_offset, entry.data_offset + entry.data_size);
+        }
+    }
+    return merged(std::move(extents));
+}
+
+/// Holds the commit lock on a file for its lifetime.
+class CommitLock {
+  public:
+    CommitLock(int fd, std::string_view path) : _fd(fd) {
+        if (detail::lock_file(_fd) != 0) {
+            EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: cannot lock '{}' to commit to it: {}", path, std::strerror(errno));
+        }
+    }
+    ~CommitLock() { (void)detail::unlock_file(_fd); }
+
+    CommitLock(CommitLock const &)            = delete;
+    CommitLock &operator=(CommitLock const &) = delete;
+    CommitLock(CommitLock &&)                 = delete;
+    CommitLock &operator=(CommitLock &&)      = delete;
+
+  private:
+    int _fd;
+};
+
+} // namespace
+
+std::vector<TensorFile::Extent> TensorFile::used_extents() const {
+    std::vector<Extent> extents = _committed;
+    for (auto const &entry : _entries) {
+        if (entry.data_size != 0) {
+            extents.emplace_back(entry.data_offset, entry.data_offset + entry.data_size);
+        }
+    }
+    return merged(std::move(extents));
+}
+
+void TensorFile::require_current() const {
+    if (_fd < 0 || _mode == Mode::Read) {
+        return;
+    }
+    if (detail::path_identity(_path) != _identity) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                "TensorFile: '{}' was replaced since this handle opened it, so it changes nothing more; reopen it", _path);
+    }
+    if (_has_header) {
+        FileHeader on_disk{};
+        read_at(0, &on_disk, sizeof(on_disk));
+        if (on_disk.generation != _header.generation) {
+            EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                    "TensorFile: another handle committed to '{}' since this one read it, so this one changes nothing "
+                                    "more; make the changes through one handle, or reopen",
+                                    _path);
+        }
+    }
+}
+
+uint64_t TensorFile::allocate(uint64_t bytes) const {
+    // Space this handle thinks free may hold what another handle has committed since.
+    require_current();
+    uint64_t cursor = _header.data_offset;
+    for (auto const &[first, last] : used_extents()) {
+        uint64_t const start = align_up(cursor, ETN_DATA_ALIGNMENT);
+        if (bytes != 0 && start + bytes <= first) {
+            return start;
+        }
+        cursor = std::max(cursor, last);
+    }
+    return align_up(cursor, ETN_DATA_ALIGNMENT);
+}
+
+void TensorFile::sync_to_disk() {
+    if (detail::file_call({.kind = detail::FileCall::Kind::Sync, .offset = 0, .data = nullptr, .bytes = 0}) &&
+        detail::sync_file(_fd) != 0) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: cannot sync '{}' to disk: {}", _path, std::strerror(errno));
+    }
+}
+
+void TensorFile::commit(bool sync) {
+    if (_fd < 0 || _mode == Mode::Read) {
+        return;
+    }
+    if (!_dirty) {
+        if (sync) {
+            sync_to_disk();
+        }
+        return;
+    }
+    bool const do_sync = sync || config::get(option::IoSync);
+
+    // The table goes into space the header on disk does not reach, so until the header names it
+    // the file reads as the last commit left it. The lock keeps another handle from committing
+    // between the check that this one is current and its header write.
+    CommitLock const lock(_fd, _path);
+    require_current();
+    // An empty table sits where the data starts, which is inside the file however it is truncated.
+    uint64_t const table_bytes  = _entries.size() * sizeof(TensorEntry);
+    uint64_t const table_offset = table_bytes != 0 ? allocate(table_bytes) : _header.data_offset;
+    write_at(table_offset, _entries.data(), table_bytes);
+    if (do_sync) {
+        sync_to_disk();
     }
 
-    // Truncate file to exact size
-    if (detail::truncate_file(_fd, static_cast<detail::file_offset_t>(_header.total_size)) < 0) {
-        // Non-fatal: file may be slightly larger than needed
+    FileHeader next         = _header;
+    next.version            = ETN_VERSION;
+    next.num_tensors        = static_cast<uint32_t>(_entries.size());
+    next.entry_table_offset = table_offset;
+    next.table_crc          = detail::crc32c(_entries.data(), table_bytes);
+    next.generation         = _header.generation + 1;
+    auto reached            = reached_extents(next, _entries);
+    next.total_size         = std::max<uint64_t>(next.data_offset, reached.empty() ? 0 : reached.back().second);
+    next.header_crc         = detail::header_checksum(next);
+    write_at(0, &next, sizeof(next));
+    if (do_sync) {
+        sync_to_disk();
+    }
+    _header     = next;
+    _committed  = std::move(reached);
+    _has_header = true;
+    _dirty      = false;
+
+    // Nothing past the last byte the header reaches is read again.
+    struct stat st{};
+    if (::fstat(_fd, &st) == 0 && std::cmp_greater(st.st_size, _header.total_size) &&
+        detail::file_call({.kind = detail::FileCall::Kind::Truncate, .offset = _header.total_size, .data = nullptr, .bytes = 0})) {
+        (void)detail::truncate_file(_fd, static_cast<detail::file_offset_t>(_header.total_size));
     }
 }
 
 void TensorFile::read_metadata() {
-    // Read header
+    struct stat st{};
+    if (::fstat(_fd, &st) != 0) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: cannot stat '{}': {}", _path, std::strerror(errno));
+    }
+    auto const file_size = static_cast<uint64_t>(st.st_size);
+    if (file_size < sizeof(FileHeader)) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: '{}' is damaged: it is {} bytes, shorter than an .etn header", _path,
+                                file_size);
+    }
     read_at(0, &_header, sizeof(FileHeader));
-
     if (!_header.is_valid()) {
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: '{}' is not a valid .etn file (bad magic or version)", _path);
     }
-
-    // Read entry table
-    _entries.resize(_header.num_tensors);
-    if (_header.num_tensors > 0) {
-        read_at(_header.entry_table_offset, _entries.data(), _header.num_tensors * sizeof(TensorEntry));
+    bool const checksummed = _header.version >= ETN_VERSION_CHECKSUMS;
+    if (checksummed && detail::header_checksum(_header) != _header.header_crc) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: '{}' is damaged: its header does not match the checksum it records",
+                                _path);
     }
 
-    // A writer before entries were replaced in place appended a rewritten entry beside the old
-    // one. Keep only the last record of each name and owning rank, which is the one lookups
-    // already found; the next write of the table drops the rest.
+    uint64_t const table_bytes = uint64_t{_header.num_tensors} * sizeof(TensorEntry);
+    if (_header.data_offset < sizeof(FileHeader) || _header.entry_table_offset < sizeof(FileHeader) ||
+        _header.entry_table_offset > file_size || table_bytes > file_size - _header.entry_table_offset) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                "TensorFile: '{}' is damaged: its entry table of {} records at offset {} runs past the end of the file ({} "
+                                "bytes)",
+                                _path, _header.num_tensors, _header.entry_table_offset, file_size);
+    }
+    _entries.resize(_header.num_tensors);
+    read_at(_header.entry_table_offset, _entries.data(), table_bytes);
+    if (checksummed && detail::crc32c(_entries.data(), table_bytes) != _header.table_crc) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                "TensorFile: '{}' is damaged: its entry table does not match the checksum its header records", _path);
+    }
+
+    for (auto const &entry : _entries) {
+        detail::check_entry_type(_path, "TensorFile", entry, static_cast<DType>(entry.dtype), std::nullopt);
+        (void)entry.stored_order();
+        if (entry.data_size != 0 &&
+            (entry.data_offset < _header.data_offset || entry.data_offset > file_size || entry.data_size > file_size - entry.data_offset)) {
+            EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                    "TensorFile: entry '{}' in '{}' is damaged: its {} bytes at offset {} run past the end of the file ({} "
+                                    "bytes)",
+                                    entry.get_name(), _path, entry.data_size, entry.data_offset, file_size);
+        }
+    }
+
+    // A writer before entries were replaced appended a rewritten entry beside the old one. Keep only
+    // the last record of each name and owning rank, which is the one lookups always found; the next
+    // commit drops the rest.
     std::vector<TensorEntry>                   kept;
     std::set<std::pair<std::string, uint32_t>> seen;
-    for (auto it = _entries.rbegin(); it != _entries.rend(); ++it) {
-        if (seen.emplace(it->get_name(), it->owning_rank).second) {
-            kept.push_back(*it);
+    kept.reserve(_entries.size());
+    for (auto const &entry : std::ranges::reverse_view(_entries)) {
+        if (seen.emplace(entry.get_name(), entry.owning_rank).second) {
+            kept.push_back(entry);
         }
     }
     std::ranges::reverse(kept);
-    _entries = std::move(kept);
+    bool const dropped = kept.size() != _entries.size();
+    _entries           = std::move(kept);
+
+    // No two of the rest share a byte, nor any of them the table: a writer would fill one with
+    // another's elements.
+    std::vector<std::pair<Extent, std::string>> regions;
+    regions.reserve(_entries.size() + 1);
+    if (_header.num_tensors != 0) {
+        regions.push_back({{_header.entry_table_offset, _header.entry_table_offset + table_bytes}, "the entry table"});
+    }
+    for (auto const &entry : _entries) {
+        if (entry.data_size != 0) {
+            regions.push_back({{entry.data_offset, entry.data_offset + entry.data_size}, fmt::format("entry '{}'", entry.get_name())});
+        }
+    }
+    std::ranges::sort(regions);
+    for (size_t i = 1; i < regions.size(); ++i) {
+        if (regions[i].first.first < regions[i - 1].first.second) {
+            EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: '{}' is damaged: {} and {} share bytes", _path, regions[i - 1].second,
+                                    regions[i].second);
+        }
+    }
 
     index_entries();
-
-    // Compute next available data offset (after last data region)
-    _next_data_offset = _header.data_offset;
-    for (auto const &e : _entries) {
-        uint64_t const end = e.data_offset + e.data_size;
-        if (end > _next_data_offset)
-            _next_data_offset = end;
-    }
+    _committed  = reached_extents(_header, _entries);
+    _has_header = true;
+    _dirty      = dropped;
 }
 
 size_t TensorFile::add_entry(TensorEntry entry) {
@@ -433,6 +707,25 @@ size_t TensorFile::add_entry(TensorEntry entry) {
     _name_to_index[entry.get_name()] = idx;
     _entries.push_back(entry);
     return idx;
+}
+
+void TensorFile::restore(TableState state) {
+    _entries = std::move(state.entries);
+    _dirty   = state.dirty;
+    index_entries();
+}
+
+void TensorFile::commit_change(std::function<void()> const &change) {
+    auto saved = table_state();
+    try {
+        change();
+        index_entries();
+        _dirty = true;
+        commit(false);
+    } catch (...) {
+        restore(std::move(saved));
+        throw;
+    }
 }
 
 void TensorFile::index_entries() {
@@ -459,15 +752,16 @@ void TensorFile::rename(std::string_view old_name, std::string_view new_name) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "TensorFile::rename: '{}' already holds an entry named '{}'; swap the two instead",
                                 _path, new_name);
     }
-    for (auto &entry : _entries) {
-        if (entry.get_name() == old_name) {
-            entry.set_name(new_name);
+    commit_change([&] {
+        for (auto &entry : _entries) {
+            if (entry.get_name() == old_name) {
+                entry.set_name(new_name);
+            }
         }
-    }
-    index_entries();
-    write_metadata();
+    });
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape): an entry operation that commits to a file, not a value swap.
 void TensorFile::swap(std::string_view first, std::string_view second) {
     require_writable("TensorFile::swap");
     (void)find_entry(first);
@@ -477,15 +771,15 @@ void TensorFile::swap(std::string_view first, std::string_view second) {
     }
     std::string const first_name(first);
     std::string const second_name(second);
-    for (auto &entry : _entries) {
-        if (std::string const name = entry.get_name(); name == first_name) {
-            entry.set_name(second_name);
-        } else if (name == second_name) {
-            entry.set_name(first_name);
+    commit_change([&] {
+        for (auto &entry : _entries) {
+            if (std::string const name = entry.get_name(); name == first_name) {
+                entry.set_name(second_name);
+            } else if (name == second_name) {
+                entry.set_name(first_name);
+            }
         }
-    }
-    index_entries();
-    write_metadata();
+    });
 }
 
 namespace {
@@ -496,6 +790,64 @@ size_t copy_buffer_bytes(size_t asked) {
 }
 
 } // namespace
+
+void TensorFile::copy_elements(TensorFile const &source, TensorEntry const &from, TensorEntry const &to, size_t buffer_bytes) {
+    auto const   dtype  = static_cast<DType>(from.dtype);
+    size_t const elem   = dtype_size(dtype);
+    size_t const budget = std::max(copy_buffer_bytes(buffer_bytes), elem);
+    if (from.data_size == 0) {
+        return;
+    }
+    std::vector<size_t> const dims(from.dims, from.dims + from.rank);
+    std::vector<size_t> const order = from.stored_order();
+    if (order == to.stored_order()) {
+        // The same layout: the data regions are the same bytes, moved as runs of the file.
+        std::vector<std::byte> buffer(static_cast<size_t>(std::min<uint64_t>(budget, from.data_size)));
+        for (uint64_t done = 0; done < from.data_size; done += buffer.size()) {
+            size_t const bytes = static_cast<size_t>(std::min<uint64_t>(buffer.size(), from.data_size - done));
+            source.read_at(from.data_offset + done, buffer.data(), bytes);
+            write_at(to.data_offset + done, buffer.data(), bytes);
+        }
+        return;
+    }
+
+    // Boxes cut along the source's order: the axes it stores fastest whole while they fit, the next
+    // in blocks, and the rest one index at a time, so each read is long runs.
+    size_t const rank  = dims.size();
+    size_t const limit = budget / elem;
+    size_t       run   = 1;
+    size_t       whole = 0;
+    while (whole < rank && run * dims[order[whole]] <= limit) {
+        run *= dims[order[whole]];
+        ++whole;
+    }
+    size_t const block = whole < rank ? limit / run : 1;
+
+    std::vector<std::pair<size_t, size_t>> ranges(rank);
+    std::vector<size_t>                    at(rank, 0);
+    for (size_t s = 0; s < whole; ++s) {
+        ranges[order[s]] = {0, dims[order[s]]};
+    }
+    std::vector<std::byte> buffer(run * block * elem);
+    for (bool more = true; more;) {
+        for (size_t s = whole; s < rank; ++s) {
+            size_t const step = s == whole ? block : 1;
+            ranges[order[s]]  = {at[s], std::min(at[s] + step, dims[order[s]])};
+        }
+        source.read_entry_slab(from, buffer.data(), ranges);
+        write_entry_slab(to, buffer.data(), ranges);
+
+        more = false;
+        for (size_t s = whole; s < rank; ++s) {
+            at[s] += s == whole ? block : 1;
+            if (at[s] < dims[order[s]]) {
+                more = true;
+                break;
+            }
+            at[s] = 0;
+        }
+    }
+}
 
 void TensorFile::copy(TensorFile const &source, std::string_view source_name, std::string_view name, size_t buffer_bytes) {
     require_writable("TensorFile::copy");
@@ -518,75 +870,112 @@ void TensorFile::copy(TensorFile const &source, std::string_view source_name, st
                                     dtype_name(static_cast<DType>(existing.dtype)),
                                     std::vector<size_t>(existing.dims, existing.dims + existing.rank));
         }
-    } else {
-        place_entry("TensorFile::copy", name, dtype, dims, ETN_ALL_RANKS).set_stored_order(from.stored_order());
     }
-    TensorEntry const to = find_entry(name);
 
-    size_t const elem   = dtype_size(dtype);
-    size_t const budget = std::max(copy_buffer_bytes(buffer_bytes), elem);
-    if (from.data_size != 0) {
-        std::vector<size_t> const order = from.stored_order();
-        if (order == to.stored_order()) {
-            // The same layout: the data regions are the same bytes, moved as runs of the file.
-            std::vector<std::byte> buffer(static_cast<size_t>(std::min<uint64_t>(budget, from.data_size)));
-            for (uint64_t done = 0; done < from.data_size; done += buffer.size()) {
-                size_t const bytes = static_cast<size_t>(std::min<uint64_t>(buffer.size(), from.data_size - done));
-                source.read_at(from.data_offset + done, buffer.data(), bytes);
-                write_at(to.data_offset + done, buffer.data(), bytes);
-            }
-        } else {
-            // Boxes cut along the source's order: the axes it stores fastest whole while they fit,
-            // the next in blocks, and the rest one index at a time, so each read is long runs.
-            size_t const rank  = dims.size();
-            size_t const limit = budget / elem;
-            size_t       run   = 1;
-            size_t       whole = 0;
-            while (whole < rank && run * dims[order[whole]] <= limit) {
-                run *= dims[order[whole]];
-                ++whole;
-            }
-            size_t const block = whole < rank ? limit / run : 1;
+    auto saved = table_state();
+    try {
+        bool const   existed = contains(name);
+        TensorEntry &placed  = place_entry("TensorFile::copy", name, dtype, dims, ETN_ALL_RANKS);
+        if (!existed) {
+            placed.set_stored_order(from.stored_order());
+        }
+        TensorEntry const to = placed;
+        copy_elements(source, from, to, buffer_bytes);
+        commit(false);
+    } catch (...) {
+        restore(std::move(saved));
+        throw;
+    }
+}
 
-            std::vector<std::pair<size_t, size_t>> ranges(rank);
-            std::vector<size_t>                    at(rank, 0);
-            for (size_t s = 0; s < whole; ++s) {
-                ranges[order[s]] = {0, dims[order[s]]};
-            }
-            std::vector<std::byte> buffer(run * block * elem);
-            for (bool more = true; more;) {
-                for (size_t s = whole; s < rank; ++s) {
-                    size_t const step = s == whole ? block : 1;
-                    ranges[order[s]]  = {at[s], std::min(at[s] + step, dims[order[s]])};
-                }
-                source.read_slab(source_name, buffer.data(), ranges);
-                write_slab(name, buffer.data(), ranges);
+void TensorFile::remove(std::string_view name) {
+    require_writable("TensorFile::remove");
+    (void)find_entry(name);
+    commit_change([&] { std::erase_if(_entries, [&](TensorEntry const &entry) { return entry.get_name() == name; }); });
+}
 
-                more = false;
-                for (size_t s = whole; s < rank; ++s) {
-                    at[s] += s == whole ? block : 1;
-                    if (at[s] < dims[order[s]]) {
-                        more = true;
-                        break;
-                    }
-                    at[s] = 0;
-                }
-            }
+void TensorFile::restage(std::string_view name, std::vector<size_t> const &order, size_t buffer_bytes) {
+    require_writable("TensorFile::restage");
+    TensorEntry const old = find_entry(name);
+    detail::check_entry_type(_path, "TensorFile::restage", old, static_cast<DType>(old.dtype), std::nullopt);
+    TensorEntry next = old;
+    next.set_stored_order(order);
+    if (next.stored_order() == old.stored_order()) {
+        return;
+    }
+
+    auto saved = table_state();
+    try {
+        next.data_offset = allocate(next.data_size);
+        copy_elements(*this, old, next, buffer_bytes);
+        _entries[_name_to_index.at(std::string(name))] = next;
+        _dirty                                         = true;
+        commit(false);
+    } catch (...) {
+        restore(std::move(saved));
+        throw;
+    }
+}
+
+void TensorFile::compact(size_t buffer_bytes) {
+    require_writable("TensorFile::compact");
+    commit(false);
+
+    std::string const packed_path = _path + ".compact";
+    std::error_code   ec;
+    std::filesystem::remove(packed_path, ec);
+    {
+        TensorFile packed(packed_path, Mode::Write);
+        packed._header.flags     = _header.flags;
+        packed._header.num_ranks = _header.num_ranks;
+        for (auto const &entry : _entries) {
+            TensorEntry moved = entry;
+            moved.data_offset = packed.allocate(moved.data_size);
+            packed._entries.push_back(moved);
+            packed.copy_elements(*this, entry, moved, buffer_bytes);
+        }
+        packed.index_entries();
+        packed._dirty = true;
+        packed.commit(true);
+        packed.close();
+    }
+
+    // This handle holds nothing uncommitted, so it closes without writing, and reopens on the
+    // compacted file once that has the path.
+    detail::close_file(_fd);
+    _fd = -1;
+    if (detail::file_call({.kind = detail::FileCall::Kind::Rename, .offset = 0, .data = nullptr, .bytes = 0})) {
+        std::filesystem::rename(packed_path, _path, ec);
+    }
+    if (!ec) {
+        auto const directory = std::filesystem::absolute(_path).parent_path().string();
+        if (detail::file_call({.kind = detail::FileCall::Kind::Sync, .offset = 0, .data = nullptr, .bytes = 0})) {
+            (void)detail::sync_directory(directory);
         }
     }
-    write_metadata();
+    open();
+    if (ec) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile::compact: cannot replace '{}' with its compacted copy: {}", _path,
+                                ec.message());
+    }
+}
+
+size_t TensorFile::unused_bytes() const {
+    struct stat st{};
+    if (_fd < 0 || ::fstat(_fd, &st) != 0) {
+        return 0;
+    }
+    uint64_t used = sizeof(FileHeader);
+    for (auto const &[first, last] : _committed) {
+        used += last - first;
+    }
+    auto const size = static_cast<uint64_t>(st.st_size);
+    return size > used ? static_cast<size_t>(size - used) : 0;
 }
 
 TensorEntry &TensorFile::place_entry(std::string_view operation, std::string_view name, DType dtype, std::vector<size_t> const &dims,
                                      uint32_t owning_rank) {
     detail::check_entry_name(_path, operation, name);
-
-    auto const same = std::ranges::find_if(
-        _entries, [&](TensorEntry const &entry) { return entry.get_name() == name && entry.owning_rank == owning_rank; });
-    if (same != _entries.end() && static_cast<DType>(same->dtype) == dtype && same->rank == dims.size() &&
-        std::equal(dims.begin(), dims.end(), same->dims)) {
-        return *same;
-    }
 
     TensorEntry entry;
     entry.init();
@@ -598,13 +987,19 @@ TensorEntry &TensorFile::place_entry(std::string_view operation, std::string_vie
         entry.dims[d] = dims[d];
         elements *= dims[d];
     }
-    entry.data_offset = align_up(_next_data_offset, ETN_DATA_ALIGNMENT);
     entry.data_size   = elements * dtype_size(dtype);
     entry.owning_rank = owning_rank;
-    _next_data_offset = entry.data_offset + entry.data_size;
+    // A new region, never the replaced entry's: until the commit that drops that region, the
+    // header on disk still reaches it.
+    entry.data_offset = entry.data_size != 0 ? allocate(entry.data_size) : _header.data_offset;
 
+    auto const same = std::ranges::find_if(
+        _entries, [&](TensorEntry const &existing) { return existing.get_name() == name && existing.owning_rank == owning_rank; });
+    _dirty = true;
     if (same != _entries.end()) {
-        // The old data region is left unused: only the record says where an entry's data is.
+        if (static_cast<DType>(same->dtype) == dtype && same->rank == dims.size() && std::equal(dims.begin(), dims.end(), same->dims)) {
+            entry.set_stored_order(same->stored_order());
+        }
         *same = entry;
         return *same;
     }
@@ -612,7 +1007,7 @@ TensorEntry &TensorFile::place_entry(std::string_view operation, std::string_vie
 }
 
 TensorEntry const &TensorFile::find_entry(std::string_view name) const {
-    auto it = _name_to_index.find(std::string(name));
+    auto const it = _name_to_index.find(std::string(name));
     if (it == _name_to_index.end()) {
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "TensorFile: tensor '{}' not found in '{}'", name, _path);
     }
@@ -634,7 +1029,10 @@ struct RawElement {
 } // namespace
 
 void TensorFile::read_slab(std::string_view name, void *destination, std::vector<std::pair<size_t, size_t>> const &ranges) const {
-    auto const &entry = find_entry(name);
+    read_entry_slab(find_entry(name), destination, ranges);
+}
+
+void TensorFile::read_entry_slab(TensorEntry const &entry, void *destination, std::vector<std::pair<size_t, size_t>> const &ranges) const {
     detail::check_slab_ranges(_path, "TensorFile::read_slab", entry, ranges);
 
     // The destination holds the slab densely in the entry's declared order, which the walk restates
@@ -664,13 +1062,18 @@ void TensorFile::read_slab(std::string_view name, void *destination, std::vector
         EINSUMS_THROW_EXCEPTION(std::runtime_error,
                                 "TensorFile::read_slab: entry '{}' in '{}' has elements of {} bytes, which is not a size "
                                 "this reads",
-                                name, _path, size);
+                                entry.get_name(), _path, size);
     }
 }
 
 void TensorFile::write_slab(std::string_view name, void const *source, std::vector<std::pair<size_t, size_t>> const &ranges) {
-    auto const &entry = find_entry(name);
+    write_entry_slab(find_entry(name), source, ranges);
+}
+
+void TensorFile::write_entry_slab(TensorEntry const &entry, void const *source, std::vector<std::pair<size_t, size_t>> const &ranges) {
     detail::check_slab_ranges(_path, "TensorFile::write_slab", entry, ranges);
+    // Another handle may since have removed the entry and given its bytes to another.
+    require_current();
 
     size_t const        size = dtype_size(static_cast<DType>(entry.dtype));
     std::vector<size_t> extents;
@@ -697,7 +1100,7 @@ void TensorFile::write_slab(std::string_view name, void const *source, std::vect
         EINSUMS_THROW_EXCEPTION(std::runtime_error,
                                 "TensorFile::write_slab: entry '{}' in '{}' has elements of {} bytes, which is not a size "
                                 "this writes",
-                                name, _path, size);
+                                entry.get_name(), _path, size);
     }
 }
 
@@ -726,10 +1129,22 @@ std::vector<std::string> TensorFile::tensor_names() const {
 }
 
 void TensorFile::flush() {
-    if (_fd >= 0 && _mode != Mode::Read) {
-        write_metadata();
-        detail::sync_file(_fd);
+    commit(true);
+}
+
+void TensorFile::close() {
+    if (_fd < 0) {
+        return;
     }
+    try {
+        commit(false);
+    } catch (...) {
+        detail::close_file(_fd);
+        _fd = -1;
+        throw;
+    }
+    detail::close_file(_fd);
+    _fd = -1;
 }
 
 EINSUMS_NAMESPACE_END(tensor_io)

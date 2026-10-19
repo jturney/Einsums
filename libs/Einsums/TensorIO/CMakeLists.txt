@@ -11,6 +11,7 @@ set(TensorIOHeaders
     Einsums/TensorIO/Checkpoint.hpp
     Einsums/TensorIO/Entries.hpp
     Einsums/TensorIO/GraphIO.hpp
+    Einsums/TensorIO/Options.hpp
 )
 
 set(TensorIOSources
@@ -20,6 +21,7 @@ set(TensorIOSources
     Checkpoint.cpp
     Entries.cpp
     InitModule.cpp
+    Options.cpp
 )
 
 include(Einsums_AddModule)
@@ -34,6 +36,8 @@ einsums_add_module(
     Einsums_ComputeGraph
     Einsums_Config
     Einsums_Errors
+    Einsums_Logging
+    Einsums_Options
     Einsums_Tensor
     Einsums_TensorBase
     Einsums_Profile

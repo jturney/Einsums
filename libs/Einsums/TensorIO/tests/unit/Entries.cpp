@@ -103,8 +103,10 @@ TEST_CASE("Renaming an entry keeps its elements and frees its old name", "[Tenso
     }
     auto const size_before = std::filesystem::file_size(tmp.path);
 
+    // Only the table is written, beside the committed one, so the file grows by at most a table.
     tensor_io::rename_entry(tmp.path, "a", "c");
-    CHECK(std::filesystem::file_size(tmp.path) == size_before);
+    CHECK(std::filesystem::file_size(tmp.path) <=
+          size_before + tensor_io::align_up(2 * sizeof(tensor_io::TensorEntry), tensor_io::ETN_DATA_ALIGNMENT));
     CHECK(TensorFile(tmp.path, TensorFile::Mode::Read).tensor_names() == std::vector<std::string>{"c", "b"});
     CHECK(same_elements(read_entry<double>(tmp.path, "c"), a));
 
@@ -333,10 +335,12 @@ TEST_CASE("A saved graph keeps its entry operations", "[TensorIO][Entries][SaveL
     TempFile const tmp("saved.etn");
     auto const     a = filled<double>("a", {3}, 1.0);
     auto const     b = filled<double>("b", {3}, 10.0);
+    auto const     m = filled<double>("m", {3, 2}, 20.0);
     {
         TensorFile file(tmp.path, TensorFile::Mode::Write);
         file.write("a", a);
         file.write("b", b);
+        file.write("m", m);
     }
 
     cg::Graph graph("entries");
@@ -345,19 +349,27 @@ TEST_CASE("A saved graph keeps its entry operations", "[TensorIO][Entries][SaveL
         tensor_io::copy_entry(tmp.path, "a", tmp.path, "c");
         tensor_io::rename_entry(tmp.path, "b", "d");
         tensor_io::swap_entries(tmp.path, "c", "d");
+        tensor_io::remove_entry(tmp.path, "a");
+        tensor_io::restage_entry(tmp.path, "m", {1, 0});
+        tensor_io::compact_file(tmp.path);
     }
     auto const saved = cg::save_graph_string(graph);
     REQUIRE(saved.has_value());
-    CHECK_THAT(*saved, Catch::Matchers::ContainsSubstring("tensor_io.CopyEntry"));
-    CHECK_THAT(*saved, Catch::Matchers::ContainsSubstring("tensor_io.RenameEntry"));
-    CHECK_THAT(*saved, Catch::Matchers::ContainsSubstring("tensor_io.SwapEntries"));
+    for (char const *kind : {"tensor_io.CopyEntry", "tensor_io.RenameEntry", "tensor_io.SwapEntries", "tensor_io.RemoveEntry",
+                             "tensor_io.RestageEntry", "tensor_io.CompactFile"}) {
+        CHECK_THAT(*saved, Catch::Matchers::ContainsSubstring(kind));
+    }
 
     auto loaded = cg::load_graph_string(*saved);
     INFO((loaded ? std::string{} : loaded.error().message));
     REQUIRE(loaded.has_value());
     loaded->execute();
 
-    CHECK(TensorFile(tmp.path, TensorFile::Mode::Read).tensor_names() == std::vector<std::string>{"a", "c", "d"});
+    TensorFile const in(tmp.path, TensorFile::Mode::Read);
+    CHECK(in.tensor_names() == std::vector<std::string>{"c", "m", "d"});
+    CHECK(in.stored_order("m") == std::vector<size_t>{1, 0});
+    CHECK(in.unused_bytes() < tensor_io::ETN_DATA_ALIGNMENT * 4);
     CHECK(same_elements(read_entry<double>(tmp.path, "c"), b));
     CHECK(same_elements(read_entry<double>(tmp.path, "d"), a));
+    CHECK(same_elements(read_entry<double>(tmp.path, "m"), m));
 }

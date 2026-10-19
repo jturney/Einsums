@@ -6,6 +6,7 @@
 set(TensorIOTests
     Backing.cpp
     TensorFileBasic.cpp
+    TensorFileCommit.cpp
     TensorFileSliceWrite.cpp
     TensorFileLayout.cpp
     GraphSlab.cpp

@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 #if defined(EINSUMS_WINDOWS)
 #    ifndef WIN32_LEAN_AND_MEAN
@@ -32,7 +33,9 @@
 #    include <sys/stat.h>
 #    include <windows.h>
 #else
+#    include <cerrno>
 #    include <fcntl.h>
+#    include <sys/file.h>
 #    include <sys/stat.h>
 #    include <unistd.h>
 #endif
@@ -108,6 +111,45 @@ inline int sync_file(int fd) {
     return _commit(fd);
 }
 
+/// Hold an exclusive lock on @p fd's file against other handles' commits. A byte far past any data
+/// is locked, as a Windows byte-range lock also stops other handles writing the bytes it covers.
+inline int lock_file(int fd) {
+    auto handle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+    if (handle == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    OVERLAPPED ov{};
+    ov.Offset     = 0;
+    ov.OffsetHigh = 0x7FFFFFFFu;
+    return LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &ov) ? 0 : -1;
+}
+
+inline int unlock_file(int fd) {
+    auto handle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+    if (handle == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    OVERLAPPED ov{};
+    ov.Offset     = 0;
+    ov.OffsetHigh = 0x7FFFFFFFu;
+    return UnlockFileEx(handle, 0, 1, 0, &ov) ? 0 : -1;
+}
+
+/// What tells two opens of one path apart: a file replaced under the path is another file. Windows
+/// refuses to replace a file a handle holds open, so there the answer is always the same.
+inline std::pair<std::uint64_t, std::uint64_t> file_identity(int /*fd*/) {
+    return {0, 0};
+}
+
+inline std::pair<std::uint64_t, std::uint64_t> path_identity(std::string const & /*path*/) {
+    return {0, 0};
+}
+
+/// Make a rename in @p directory survive a power loss. Windows records it with the file.
+inline int sync_directory(std::string const & /*directory*/) {
+    return 0;
+}
+
 #else
 
 using file_offset_t = off_t;
@@ -147,7 +189,54 @@ inline int truncate_file(int fd, file_offset_t length) {
 }
 
 inline int sync_file(int fd) {
+#    if defined(__APPLE__)
+    // fsync on macOS hands the data to the drive without flushing the drive's cache.
+    if (::fcntl(fd, F_FULLFSYNC) == 0) {
+        return 0;
+    }
+#    endif
     return ::fsync(fd);
+}
+
+/// Hold an exclusive lock on @p fd's file against other handles' commits.
+inline int lock_file(int fd) {
+    int result = 0;
+    do {
+        result = ::flock(fd, LOCK_EX);
+    } while (result != 0 && errno == EINTR);
+    return result;
+}
+
+inline int unlock_file(int fd) {
+    return ::flock(fd, LOCK_UN);
+}
+
+/// What tells two opens of one path apart: a file replaced under the path is another file.
+inline std::pair<std::uint64_t, std::uint64_t> file_identity(int fd) {
+    struct stat st{};
+    if (::fstat(fd, &st) != 0) {
+        return {0, 0};
+    }
+    return {static_cast<std::uint64_t>(st.st_dev), static_cast<std::uint64_t>(st.st_ino)};
+}
+
+inline std::pair<std::uint64_t, std::uint64_t> path_identity(std::string const &path) {
+    struct stat st{};
+    if (::stat(path.c_str(), &st) != 0) {
+        return {0, 0};
+    }
+    return {static_cast<std::uint64_t>(st.st_dev), static_cast<std::uint64_t>(st.st_ino)};
+}
+
+/// Make a rename in @p directory survive a power loss.
+inline int sync_directory(std::string const &directory) {
+    int const fd = ::open(directory.c_str(), O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+    int const result = ::fsync(fd);
+    ::close(fd);
+    return result;
 }
 
 #endif

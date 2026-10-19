@@ -847,6 +847,16 @@
     ``patient``, or ``crazy``. Defaults to ``estimate``. The later methods spend more time choosing a
     plan in exchange for a faster transpose, which pays off when one plan is reused many times.
 
+"einsums:io:sync":
+  added: "2.0.0"
+  body: |
+    Sync an ``.etn`` file to disk before and after each commit rewrites its header. A commit puts
+    new data and a new entry table where the file's last commit does not reach and only then
+    rewrites the header, so a process killed at any point leaves the file as its last commit left
+    it whether or not this is on. With it on, the default, a power loss or a crash of the machine
+    does too, at the cost of two syncs per commit. A commit happens when a handle closes or is
+    flushed and at each copy, rename, swap, removal, restage or compaction of an entry.
+
 "einsums:scratch-dir":
   added: "1.0.0"
   body: |
