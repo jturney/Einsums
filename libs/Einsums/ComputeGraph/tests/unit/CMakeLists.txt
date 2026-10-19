@@ -296,6 +296,7 @@ set(ComputeGraphTests
     test_view_lifetime_python.py
     test_view_python.py
     test_nary_einsum_python.py
+    test_observability_python.py
     test_hyp_nary_einsum_diff_python.py
 )
 

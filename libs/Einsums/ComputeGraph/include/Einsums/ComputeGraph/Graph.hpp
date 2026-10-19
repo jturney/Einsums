@@ -187,12 +187,12 @@ struct ParsedEinsumSpec;
 /**
  * @brief Per-node timing entry.
  */
-struct NodeTiming {
-    NodeId      id;
-    std::string label;
-    OpKind      kind;
-    double      duration_ms{0.0}; ///< Wall-clock time in milliseconds
-    unsigned    width{0};         ///< Width it ran at; 0 if unplaced. @see NodeTimingSample::width
+struct APIARY_EXPOSE APIARY_MODULE("graph") NodeTiming {
+    APIARY_EXPOSE APIARY_READONLY NodeId id;                    ///< The node.
+    APIARY_EXPOSE APIARY_READONLY std::string label;            ///< Its label.
+    APIARY_EXPOSE APIARY_READONLY OpKind      kind;             ///< Its kind.
+    APIARY_EXPOSE APIARY_READONLY double      duration_ms{0.0}; ///< Wall-clock time in milliseconds
+    APIARY_EXPOSE APIARY_READONLY unsigned    width{0};         ///< Width it ran at; 0 if unplaced. @see NodeTimingSample::width
 };
 
 /**
@@ -1706,7 +1706,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Access the timing data from the last execute() call. Labels are
     /// resolved here (cached until the next recorded sample), not on the
     /// replay path.
-    [[nodiscard]] std::vector<NodeTiming> const &timing_report() const;
+    /// @return One entry per node the last replay ran, in run order.
+    APIARY_EXPOSE [[nodiscard]] std::vector<NodeTiming> const &timing_report() const;
 
     /// Record a run's per-node timings, under a single lock acquisition. A custom Executor calls
     /// this after running the graph so that print_timing_report() reports its run.
@@ -1790,6 +1791,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[out] os Output stream.
      */
     void print_summary(std::ostream &os) const;
+
+    /// @brief The GraphViz text @ref print_dot writes, as a string.
+    /// @return The DOT source.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE [[nodiscard]] std::string to_dot() const;
+
+    /// @brief The summary @ref print_summary writes, as a string.
+    /// @return The summary text.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE [[nodiscard]] std::string summary() const;
 
     /**
      * @brief Serialize the graph structure as a JSON string.
@@ -4216,6 +4227,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     APIARY_EXPOSE [[nodiscard]] std::vector<std::string> manifest_names() { return manifest().names(); }
+
+    /// @brief Every slot of @ref manifest once, in its order: what Python sees as ``manifest()``.
+    /// @return The entries, an @c InOut slot once.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_RENAME("manifest") [[nodiscard]] std::vector<ManifestEntry> manifest_entries() { return manifest().entries(); }
 
     /**
      * @brief Bind caller storage to a RANK-0 manifest slot.

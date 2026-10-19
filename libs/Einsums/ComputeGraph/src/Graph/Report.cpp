@@ -46,6 +46,8 @@
 #include <ranges>
 #include <set>
 #include <span>
+#include <sstream>
+#include <string>
 #include <unordered_set>
 #include <utility>
 
@@ -226,6 +228,18 @@ void Graph::print_dot(std::ostream &os) const {
     }
 
     os << "}\n";
+}
+
+std::string Graph::to_dot() const {
+    std::ostringstream out;
+    print_dot(out);
+    return out.str();
+}
+
+std::string Graph::summary() const {
+    std::ostringstream out;
+    print_summary(out);
+    return out.str();
 }
 
 void Graph::print_summary(std::ostream &os) const {

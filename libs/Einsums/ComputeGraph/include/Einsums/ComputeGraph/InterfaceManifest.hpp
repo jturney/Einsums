@@ -11,6 +11,7 @@
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
+#include <Einsums/Python/Annotations.hpp>
 
 #include <cstddef>
 #include <memory>
@@ -211,14 +212,14 @@ struct RaggedExtentTable {
  * @see Graph::bind
  * @versionadded{2.0.0}
  */
-struct ManifestEntry {
+struct APIARY_EXPOSE APIARY_MODULE("graph") ManifestEntry {
     /// The binding key. Copied from @ref TensorHandle::name, which capture in turn copied
     /// from the tensor. Names are the interface: a saved graph is bound by name, never by
     /// id. A tensor registered without a meaningful name of its own (the generated
     /// "tensor_<n>" spellings) is a legal entry and a fragile key - it is stable only as
     /// long as nothing upstream renumbers, so a graph meant to be saved should name its
     /// operands.
-    std::string name;
+    APIARY_EXPOSE APIARY_READONLY std::string name;
 
     /// This graph's id for the slot. Graph-LOCAL and not stable across processes: ids are
     /// minted in registration order, so the same tensor in a re-captured graph can hold a
@@ -226,10 +227,10 @@ struct ManifestEntry {
     /// within one manifest; never a binding key and never written to a file.
     TensorId id{0};
 
-    ManifestDirection        direction{ManifestDirection::Input};     ///< Read, written, or both.
-    packed_gemm::ScalarType  dtype{packed_gemm::ScalarType::Unknown}; ///< Element type a bound tensor must match.
-    std::size_t              rank{0};                                 ///< Number of dimensions.
-    std::vector<std::size_t> dims;                                    ///< Extents at capture, one per axis. See the note above.
+    ManifestDirection             direction{ManifestDirection::Input};     ///< Read, written, or both.
+    packed_gemm::ScalarType       dtype{packed_gemm::ScalarType::Unknown}; ///< Element type a bound tensor must match.
+    APIARY_EXPOSE APIARY_READONLY std::size_t rank{0};                     ///< Number of dimensions.
+    APIARY_EXPOSE APIARY_READONLY std::vector<std::size_t> dims;           ///< Extents at capture, one per axis. See the note above.
 
     /// Per-axis symbolic extent declaration, parallel to @ref dims, or empty when every
     /// axis is literal. An empty string in a populated vector is one literal axis, an
@@ -240,16 +241,16 @@ struct ManifestEntry {
     /// serializer writes and a loader reads back, and a symbol is only meaningful by name.
     /// @see TensorHandle::dim_symbols
     /// @see Graph::annotate_dims
-    std::vector<std::string> dim_symbols;
+    APIARY_EXPOSE APIARY_READONLY std::vector<std::string> dim_symbols;
 
     /// Per-axis index-space NAMES, parallel to @ref dims, or empty when the slot is
     /// unannotated. Names, not @ref SpaceId values: an id is a handle into the registry
     /// that issued it and means nothing in another process or another registry.
-    std::vector<std::string> spaces;
+    APIARY_EXPOSE APIARY_READONLY std::vector<std::string> spaces;
 
     /// Whether @ref spaces was inferred rather than declared by a user.
     /// @see TensorHandle::spaces_inferred
-    bool spaces_inferred{false};
+    APIARY_EXPOSE APIARY_READONLY bool spaces_inferred{false};
 
     /// The scope that owns the slot's storage: @c Graph for an operand supplied to this
     /// graph alone, @c Pipeline for one carried between a pipeline's stages, @c Workspace
@@ -281,6 +282,23 @@ struct ManifestEntry {
     ///
     /// Graph-LOCAL, like @ref id, and never written to a file.
     std::vector<TensorId> also;
+
+    /// @brief The direction by name, for Python, where the enum is not bound.
+    /// @return ``"input"``, ``"output"`` or ``"inout"``, as @ref manifest_direction_name spells it.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("direction") [[nodiscard]] std::string direction_name() const {
+        return std::string{manifest_direction_name(direction)};
+    }
+
+    /// @brief The element type a bound tensor must hold, by name.
+    /// @return As @ref scalar_type_name spells it, ``"float64"`` for instance.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("dtype") [[nodiscard]] std::string dtype_name() const { return std::string{scalar_type_name(dtype)}; }
+
+    /// @brief The scope that owns the slot's storage, by name.
+    /// @return As @ref tensor_ownership_name spells it.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("scope") [[nodiscard]] std::string scope_name() const { return std::string{tensor_ownership_name(scope)}; }
 };
 
 /**
