@@ -50,6 +50,17 @@ void execute_node(Graph const &graph, Node &node) {
     }
 }
 
+/// Run @p node, in a profiler zone of its own when @p zoned: the built-in loop and the dataflow
+/// executor open one around every node while the profiler records, and so do these, so an
+/// observer's annotations (WaggleBridge) land on the node under every executor.
+void execute_node_in_zone(Graph const &graph, Node &node, bool zoned) {
+    std::optional<waggle::ScopedZone> zone;
+    if (zoned) {
+        zone.emplace(std::string_view{node.label});
+    }
+    execute_node(graph, node);
+}
+
 /// Run @p work and return how long it took, in milliseconds.
 ///
 /// Every executor records the same per-node number, and a hand-written
@@ -75,8 +86,11 @@ void execute_all_timed(Graph &graph) {
 
     std::vector<NodeTimingSample> samples;
     samples.reserve(nodes.size());
+    bool const zoned = profile::recording();
     for (auto &node : nodes) {
-        samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = timed_ms([&graph, &node] { execute_node(graph, node); })});
+        samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = timed_ms([&graph, &node, zoned] {
+                                                                 execute_node_in_zone(graph, node, zoned);
+                                                             })});
     }
     graph.record_node_timings(std::move(samples));
 }
@@ -138,16 +152,17 @@ void OpenMPExecutor::execute(Graph &graph) {
     std::exception_ptr first_exc;
     std::mutex         exc_mutex;
 
+    bool const zoned = profile::recording();
     for (auto const &group : levels) {
         if (group.size() == 1) {
             size_t const i = group[0];
-            node_ms[i]     = timed_ms([&graph, &nodes, i] { execute_node(graph, nodes[i]); });
+            node_ms[i]     = timed_ms([&graph, &nodes, i, zoned] { execute_node_in_zone(graph, nodes[i], zoned); });
         } else {
 #    pragma omp parallel for schedule(dynamic)
             for (size_t g = 0; g < group.size(); g++) { // NOLINT(modernize-loop-convert)
                 size_t const i = group[g];
                 try {
-                    node_ms[i] = timed_ms([&graph, &nodes, i] { execute_node(graph, nodes[i]); });
+                    node_ms[i] = timed_ms([&graph, &nodes, i, zoned] { execute_node_in_zone(graph, nodes[i], zoned); });
                 } catch (...) {
                     std::scoped_lock const lock(exc_mutex);
                     if (!first_exc) {

@@ -390,3 +390,30 @@ def test_decisions_name_what_slab_streaming_did_by_code(etn_path):
     codes = {d.code for d in pm.decisions}
     assert "slab-streaming.streamed-read" in codes
     assert "materialization.summary" in codes
+
+
+@pytest.mark.parametrize("executor", [None, "sequential", "openmp"])
+def test_the_waggle_bridge_labels_the_zones_a_replay_records(etn_path, tmp_path, executor):
+    import einsums.profile as prof
+
+    if not prof.available():
+        pytest.skip("requires EINSUMS_WITH_PROFILER=ON; this build records nothing")
+    einsums.io.write(etn_path, "Bridged", _filled("Bridged", (4, 3), "float64", 0.5))
+    A = _filled("A", (5, 4), "float64", 0.25)
+    C = einsums.create_zero_tensor("C", [5, 3], dtype="float64")
+    g = cg.Graph("bridged")
+    B = g.declare_tensor("Bridged", backing=einsums.io.etn(etn_path, "Bridged"))
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", C, A, B)
+    g.apply(cg.default_pass_manager())
+    g.set_observer(cg.WaggleBridge())
+    if executor is None:
+        g.execute()
+    else:
+        g.execute(cg.SequentialExecutor() if executor == "sequential" else cg.OpenMPExecutor())
+    prof.flush()
+    out = tmp_path / "profile.json"
+    prof.export_json(str(out))
+    text = out.read_text()
+    assert "read Bridged" in text
+    assert "bridged" in text

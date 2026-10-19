@@ -984,6 +984,11 @@ on, so it has to be thread-safe; one that throws is detached and the replay goes
 on. Python has the log rather than a callback, because a call into Python per
 node would hold the parallel executors to one thread.
 
+``cg.WaggleBridge()`` is the observer for the profiler: while it records, every
+executor opens a zone per node, and the bridge labels it with the graph and node
+and with each read, write and publish of a backing the node made, so the viewer
+on port 19216 and the saved profile name the graph node behind a zone.
+
 What's next
 ===========
 

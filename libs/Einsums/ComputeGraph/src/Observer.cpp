@@ -12,6 +12,7 @@
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/TypeSupport/JsonEscape.hpp>
+#include <Waggle/Waggle.hpp>
 
 #include <fmt/format.h>
 
@@ -100,6 +101,18 @@ void EventLog::write_chrome_trace(std::string const &path) const {
     if (!file) {
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "EventLog::write_chrome_trace: writing '{}' failed", path);
     }
+}
+
+void WaggleBridge::on_node_start(ExecutionEvent const &event) {
+    // The innermost zone on this thread is the node's: every executor opens one before the node
+    // starts while the profiler records, and the observer hears the start on that thread.
+    waggle::annotate("graph", event.graph);
+    waggle::annotate("node", static_cast<std::int64_t>(event.node));
+}
+
+void WaggleBridge::on_io(ExecutionEvent const &event) {
+    char const *what = event.kind == EventKind::Read ? "read" : event.kind == EventKind::Write ? "write" : "publish";
+    waggle::annotate(fmt::format("{} {}", what, event.tensor), static_cast<std::int64_t>(event.bytes));
 }
 
 namespace detail {

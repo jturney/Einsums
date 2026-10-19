@@ -156,4 +156,27 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::vector<ExecutionEvent> _events;
 };
 
+/**
+ * @brief An observer that labels the profiler's zones with what the graph was doing in them.
+ *
+ * Every executor opens a zone per node while the profiler records. This adds to it the graph and
+ * the node it belongs to, and each read, write and publish of a backing the node made, with its
+ * bytes (``read t2``, ``write t2_next``), so the live viewer and the saved profile name the graph
+ * node behind a zone and the storage traffic inside it. Without the profiler recording, it does
+ * nothing.
+ *
+ * @code
+ * g.set_observer(cg.WaggleBridge())
+ * @endcode
+ * @versionadded{2.0.0}
+ */
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT WaggleBridge : public ExecutionObserver {
+  public:
+    /// @brief A bridge to the profiler this process records with.
+    APIARY_EXPOSE WaggleBridge() = default;
+
+    void on_node_start(ExecutionEvent const &event) override;
+    void on_io(ExecutionEvent const &event) override;
+};
+
 EINSUMS_NAMESPACE_END(compute_graph)
