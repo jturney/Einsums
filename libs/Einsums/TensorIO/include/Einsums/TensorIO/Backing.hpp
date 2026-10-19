@@ -40,11 +40,18 @@ inline constexpr std::string_view etn_backing_kind = "tensor_io.etn";
  *            leaves it to the graph, which stores a new entry so the boxes it moves are long
  *            contiguous runs of the file. Give it when another run will read the entry in boxes of
  *            its own. An entry that already exists has to be stored in this order to be reused.
+ * @param[in] update True for a tensor the graph both reads and writes, whose entry it updates at
+ *            every replay: the entry must exist, and its extents and element type are read from it
+ *            now. The tensor starts each replay holding what the entry holds, its writes go to the
+ *            scratch entry ``<entry>.next``, and at the end of the replay that entry replaces
+ *            @p entry in one commit, so the file holds the previous replay's value until then.
+ *            Not with @p write or @p order.
  * @return The backing, for @ref compute_graph::Graph::annotate_backing.
  * @throws std::runtime_error when a read backing's file cannot be opened or holds no such entry.
  * @throws std::invalid_argument when a read backing's entry holds integers, which no graph tensor
  *         does, or, at annotation, when a write backing's entry already holds another shape or
- *         type, or is stored in another order than @p order asks for.
+ *         type, or is stored in another order than @p order asks for; or when @p update is given
+ *         with @p write or @p order, or @p entry is too long to name its scratch entry.
  *
  * Each read or write opens the file, checks that the entry still has the extents and element
  * type it had when the backing was built, and moves the slab: a file rewritten between replays
@@ -60,7 +67,8 @@ inline constexpr std::string_view etn_backing_kind = "tensor_io.etn";
  * @versionadded{2.0.0}
  */
 APIARY_EXPOSE APIARY_RENAME("etn") [[nodiscard]] EINSUMS_EXPORT compute_graph::TensorBacking
-etn_backing(std::string path, std::string entry, bool write = false, std::vector<std::size_t> order = std::vector<std::size_t>{});
+etn_backing(std::string path, std::string entry, bool write = false, std::vector<std::size_t> order = std::vector<std::size_t>{},
+            bool update = false);
 
 /**
  * @brief A ``.etn`` file named once, for the backings of its entries.
@@ -91,13 +99,15 @@ class APIARY_EXPOSE EtnFile {
      * @param[in] entry The entry's name within the file.
      * @param[in] write False for an input the graph reads, true for a tensor it produces and stores.
      * @param[in] order For a write backing, the order to store a new entry's axes in.
+     * @param[in] update True for a tensor the graph reads and writes, which updates the entry at
+     *            every replay; see @ref etn_backing.
      * @return The backing.
      * @throws std::runtime_error As @ref etn_backing.
      * @throws std::invalid_argument As @ref etn_backing.
      */
-    APIARY_EXPOSE [[nodiscard]] compute_graph::TensorBacking entry(std::string entry, bool write = false,
-                                                                   std::vector<std::size_t> order = std::vector<std::size_t>{}) const {
-        return etn_backing(_path, std::move(entry), write, std::move(order));
+    APIARY_EXPOSE [[nodiscard]] compute_graph::TensorBacking
+    entry(std::string entry, bool write = false, std::vector<std::size_t> order = std::vector<std::size_t>{}, bool update = false) const {
+        return etn_backing(_path, std::move(entry), write, std::move(order), update);
     }
 
   private:

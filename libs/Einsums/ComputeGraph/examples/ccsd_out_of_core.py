@@ -17,26 +17,26 @@ The program has three parts.
   (a write backing), together with the MP2 guess for T2 in ``amps.etn``.
   Nothing reads the blocks in that graph, so each is computed a slab at a
   time and stored, and the v^4 block is never held whole.
-* An iteration graph runs one CCSD iteration. It reads the integrals and the
-  current T2 from their entries (read backings) and writes the new T2 into
-  the entry ``t2_next`` (a write backing). Updating T2 in place would ask one
-  entry to be read and written by the same iteration, and every element of
-  the new T2 depends on many elements of the old one.
-* The graph's last step swaps the names ``t2`` and ``t2_next``
-  (``einsums.io.swap``), which rewrites only the file's entry table. The new
-  T2 is then ``t2``, and the old one's entry is free for the next iteration to
-  write. A read backing is read afresh at every replay, so the graph is
+* An iteration graph runs one CCSD iteration. It reads the integrals from
+  their entries (read backings) and T2 through an update backing,
+  ``amps.entry("t2", update=True)``: one tensor that every replay starts
+  holding what the entry holds, and whose final value the entry holds once
+  the replay ends. The residual r2 is an ordinary tensor of the graph, and
+  the update t2 = r2 / D, with the diagonal of the Fock matrix moved into the
+  denominator D, is the one statement that writes T2. Every term before it
+  reads the amplitudes the iteration started from, and the energy after it
+  reads the new ones.
+* The new T2 goes into the scratch entry ``t2.next``, and at the end of the
+  replay that entry replaces ``t2`` in one commit of the file. A crash before
+  then leaves ``t2`` holding the previous iteration's amplitudes. The graph is
   captured once and replayed until the energy settles.
 
-The update is written as t2_new = r2 / D, with the diagonal of the Fock
-matrix moved into the denominator D, so the first statement that writes the
-new T2 overwrites it and the others add into it. T1 is updated the same way.
-
-T1 is stored next to T2. ``einsums.io.write`` captured into a graph records a
-node that writes the tensor when the graph replays, so every iteration
-stores T1 beside the T2 it just wrote, and the swap makes that T2 ``t2``. The
-file always holds one iteration's amplitudes in ``t1`` and ``t2``, whichever
-iteration the program stopped after, for a later run to start from.
+T1 is updated the same way, in memory, and stored next to T2.
+``einsums.io.write`` captured into a graph records a node that writes the
+tensor when the graph replays, so every iteration stores T1 beside the T2 it
+is about to publish. The file holds one iteration's amplitudes in ``t1`` and
+``t2`` whichever iteration the program stopped after, for a later run to
+start from.
 
 The default pipeline decides what to hold whole. A backed tensor larger than
 its share of ``--einsums:max-memory`` is read a block at a time by the
@@ -141,8 +141,7 @@ def transform(ints_path, amps_path, three_index, d2):
 
 
 def iteration(ints_path, amps_path, t1, energy, d1, d2):
-    """One CCSD iteration: T2 read from entry ``t2``, the new T2 written to ``t2_next`` and the two swapped, T1 updated
-    in memory and stored.
+    """One CCSD iteration: T2 read from entry ``t2`` and its new value left there, T1 updated in memory and stored.
 
     The equations are the closed-shell ones of Crawford's ccenergy, with the
     diagonal Fock moved into the denominators: Fae and Fmi hold only the
@@ -153,8 +152,9 @@ def iteration(ints_path, amps_path, t1, energy, d1, d2):
     ints, amps = einsums.io.EtnFile(ints_path), einsums.io.EtnFile(amps_path)
     # Each entry says how large it is and what it holds, so the inputs are declared from the file alone.
     G = {name: graph.declare_tensor(name, backing=ints.entry(name)) for name in BLOCKS}
-    t2 = graph.declare_tensor("t2", backing=amps.entry("t2"))
-    r2 = graph.declare_tensor("t2_new", list(d2.shape), backing=amps.entry("t2_next", write=True))
+    # Read at the start of each replay, written once by the update, and published when the replay ends.
+    t2 = graph.declare_tensor("t2", backing=amps.entry("t2", update=True))
+    r2 = graph.declare_tensor("r2", list(d2.shape), intermediate=True)
     D1, D2 = _tensor("D1", d1), _tensor("D2", d2)
 
     shapes = {"Tau": "oovv", "Taut": "oovv", "Fae": "vv", "Fmi": "oo", "Fme": "ov", "Wmnij": "oooo", "Wmbej": "ovvo",
@@ -224,7 +224,7 @@ def iteration(ints_path, amps_path, t1, energy, d1, d2):
         ein("ia <- mnae ; nmei", r1, t2, G["oovo"], -2.0, True)
         ein("ia <- mnae ; nmie", r1, t2, G["ooov"], 1.0, True)
 
-        # The doubles residual, summed straight into the new T2's entry. The first statement overwrites it.
+        # The doubles residual. The first statement overwrites it.
         la.axpby(1.0, G["oovv"], 0.0, r2)
         symmetrized("ijab <- ijae ; be", t2, Fae, 1.0)
         ein("be <- mb ; me", S["be"], t1, Fme)
@@ -253,21 +253,18 @@ def iteration(ints_path, amps_path, t1, energy, d1, d2):
         symmetrized("ijab <- ie ; abej", t1, G["vvvo"], 1.0)
         symmetrized("ijab <- ma ; mbij", t1, G["ovoo"], 1.0, -1.0)
 
-        # The new amplitudes, and T1 stored beside the T2 this iteration wrote.
-        la.direct_division(1.0, r2, D2, 0.0, r2)
+        # The new amplitudes, and T1 stored beside the T2 this iteration publishes.
+        la.direct_division(1.0, r2, D2, 0.0, t2)
         la.direct_division(1.0, r1, D1, 0.0, t1)
         einsums.io.write(amps_path, "t1", t1)
 
         # E = sum_ijab tau_ijab (2 <ij|ab> - <ij|ba>), from the new amplitudes.
         ein("i,j,a,b <- i,a ; j,b", Tau, t1, t1)
-        la.axpby(1.0, r2, 1.0, Tau)
+        la.axpby(1.0, t2, 1.0, Tau)
         ein("<- i,j,a,b ; i,j,a,b", S["e1"], Tau, G["oovv"])
         ein("<- i,j,a,b ; i,j,b,a", S["e2"], Tau, G["oovv"])
         la.axpby(2.0, S["e1"], 0.0, energy)
         la.axpby(-1.0, S["e2"], 1.0, energy)
-
-        # The new T2 becomes "t2" for the next replay to read, and the old entry is the next one written.
-        einsums.io.swap(amps_path, "t2", "t2_next")
     return graph
 
 
@@ -341,7 +338,7 @@ def main():
         t1 = einsums.create_zero_tensor("t1", list(d1.shape))
         energy = einsums.create_zero_tensor("energy", [1])
         graph = iteration(ints_path, amps_path, t1, energy, d1, d2)
-        print("\nOne iteration, T2 read from 't2' and written to 't2_next'")
+        print("\nOne iteration, T2 read from 't2' and its new value published there")
         manager = cg.default_pass_manager()
         graph.apply(manager)
         print_explanation(manager)

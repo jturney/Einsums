@@ -148,6 +148,12 @@ std::vector<Operation> operations() {
         {.name = "rename", .run = [](std::string const &path) { rename_entry(path, "a", "z"); }},
         {.name = "swap", .run = [](std::string const &path) { swap_entries(path, "a", "c"); }},
         {.name = "remove", .run = [](std::string const &path) { remove_entry(path, "c"); }},
+        {.name = "replace",
+         .run =
+             [](std::string const &path) {
+                 TensorFile file(path, TensorFile::Mode::ReadWrite);
+                 file.replace("a", "c");
+             }},
         {.name = "restage", .run = [](std::string const &path) { restage_entry(path, "b", {0, 1, 2}); }},
         {.name = "compact", .run = [](std::string const &path) { compact_file(path); }, .power_loss = false},
         {.name = "replay a backed graph that ends in a swap",
@@ -162,6 +168,21 @@ std::vector<Operation> operations() {
                      cg::CaptureGuard const guard(graph);
                      cg::permute("i,j <- i,j", 0.0, &next, 2.0, cur);
                      swap_entries(path, "cur", "next");
+                 }
+                 graph.optimize();
+                 graph.execute();
+             },
+         .watched = {"cur"}},
+        // The scratch entry comes and goes, so only the entry the replay updates is watched: it holds
+        // the value the replay started from until the publish, and the next one after it.
+        {.name = "replay a graph that updates an entry in place",
+         .run =
+             [](std::string const &path) {
+                 cg::Graph graph("update");
+                 auto     &cur = graph.declare_runtime_tensor<double>("cur", etn_backing(path, "cur", false, {}, true));
+                 {
+                     cg::CaptureGuard const guard(graph);
+                     cg::permute("i,j <- i,j", 0.0, &cur, 2.0, cur);
                  }
                  graph.optimize();
                  graph.execute();

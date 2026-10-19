@@ -309,3 +309,39 @@ def test_etn_file_names_the_path_once(etn_path):
     g = cg.Graph("named_once")
     B = g.declare_tensor("B", backing=ints.entry("B"))
     assert list(B.shape) == [4, 3]
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_an_update_backed_tensor_carries_its_value_from_replay_to_replay(etn_path, dtype):
+    t0 = _filled("t", (4, 3), dtype, 0.5)
+    einsums.io.write(etn_path, "t", t0)
+    A = _filled("A", (4, 4), dtype, 0.125)
+    B = _filled("B", (4, 4), dtype, 0.25)
+
+    g = cg.Graph("update")
+    t = g.declare_tensor("t", backing=einsums.io.EtnFile(etn_path).entry("t", update=True))
+    r = g.declare_zero_tensor("r", [4, 3], dtype=dtype)
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", r, A, t, c_pf=1.0)  # the value the replay started from
+        einsums.einsum("ij <- ik ; kj", t, B, r)            # the next one
+    assert g.verify() == []
+    assert g.tensor_backing(t).update
+    g.apply(cg.default_pass_manager())
+
+    a, b = np.asarray(A, copy=False), np.asarray(B, copy=False)
+    expected = np.asarray(t0, copy=False).copy()
+    for _ in range(3):
+        g.execute()
+        expected = b @ (a @ expected)
+        assert_close(_read_back(etn_path, "t", (4, 3), dtype), expected, dtype=dtype)
+        assert list(einsums.io.TensorFile(etn_path).tensor_names()) == ["t"]
+
+
+def test_an_update_backing_refuses_write_and_order(etn_path):
+    einsums.io.write(etn_path, "t", _filled("t", (4, 3), "float64", 0.5))
+    with pytest.raises(ValueError, match="takes neither write nor order"):
+        einsums.io.etn(etn_path, "t", write=True, update=True)
+    with pytest.raises(ValueError, match="takes neither write nor order"):
+        einsums.io.etn(etn_path, "t", order=[1, 0], update=True)
+    update = einsums.io.etn(etn_path, "t", update=True)
+    assert update.write and update.update and update.dtype == "float64"

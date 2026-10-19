@@ -152,6 +152,37 @@ TEST_CASE("Swapping two entries exchanges what their names reach", "[TensorIO][E
     CHECK(same_elements(read_entry<double>(tmp.path, "next"), next));
 }
 
+TEST_CASE("Replacing an entry gives its name another entry's elements and frees its own", "[TensorIO][Entries]") {
+    TempFile const tmp("replace.etn");
+    auto const     cur  = filled<double>("cur", {3, 4}, 1.0);
+    auto const     next = filled<float>("next", {5}, 50.0);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("cur", cur);
+        out.write("next", next);
+    }
+
+    {
+        TensorFile file(tmp.path, TensorFile::Mode::ReadWrite);
+        file.replace("next", "cur");
+        // The old elements of "cur" are no longer reached: their space is free.
+        CHECK(file.unused_bytes() >= cur.size() * sizeof(double));
+    }
+    CHECK(same_elements(read_entry<float>(tmp.path, "cur"), next));
+    CHECK_FALSE(TensorFile(tmp.path, TensorFile::Mode::Read).contains("next"));
+
+    TensorFile file(tmp.path, TensorFile::Mode::ReadWrite);
+    // Onto a name nothing holds, it is a rename; onto itself, nothing.
+    file.replace("cur", "other");
+    file.replace("other", "other");
+    CHECK(file.tensor_names() == std::vector<std::string>{"other"});
+    // A missing source, or a name no entry can hold, is refused before anything changes.
+    CHECK_THROWS_AS(file.replace("gone", "other"), std::runtime_error);
+    CHECK_THROWS_AS(file.replace("other", std::string(tensor_io::ETN_MAX_NAME, 'x')), std::invalid_argument);
+    CHECK(file.tensor_names() == std::vector<std::string>{"other"});
+    CHECK_THROWS_AS(TensorFile(tmp.path, TensorFile::Mode::Read).replace("other", "x"), std::runtime_error);
+}
+
 // ── Copy ─────────────────────────────────────────────────────────────────────
 
 TEMPLATE_LIST_TEST_CASE("A copy moves every element through a buffer smaller than the entry", "[TensorIO][Entries]",

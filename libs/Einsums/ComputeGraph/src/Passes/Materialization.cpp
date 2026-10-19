@@ -295,6 +295,7 @@ void Materialization::reset_stats() {
     _num_initialized  = 0;
     _num_loaded       = 0;
     _num_stored       = 0;
+    _num_published    = 0;
     _num_unused       = 0;
 }
 
@@ -358,6 +359,37 @@ bool Materialization::store_written_backings(Graph &graph) {
     if (groups.empty()) {
         return false;
     }
+    graph.insert_node_groups(std::move(groups));
+    return true;
+}
+
+bool Materialization::publish_updates(Graph &graph) {
+    // The publish switches the storage to the value this replay wrote, so it waits for every node
+    // that reads or writes the storage: it carries the storage's key, as a write, and comes last.
+    // Re-runnable: a tensor that already has its publish is left alone.
+    std::vector<Node> appended;
+    for (auto const &[tid, handle] : graph.tensors_map()) {
+        if (!handle.backing || !handle.backing->update || !handle.backing->publish || handle.tensor_ptr == nullptr) {
+            continue;
+        }
+        std::string const label = fmt::format("publish_backing({})", handle.name);
+        if (std::ranges::any_of(graph.nodes(), [&](Node const &node) { return node.kind == OpKind::DiskWrite && node.label == label; })) {
+            continue;
+        }
+        Node node;
+        node.kind    = OpKind::DiskWrite;
+        node.label   = label;
+        node.op_data = compute_graph::detail::backing_io(*handle.backing, tid, 0);
+        node.execute = [backing = handle.backing]() { backing->publish(); };
+        appended.push_back(std::move(node));
+        ++_num_published;
+        report(2, fmt::format("publish update-backed tensor '{}' to {} at the end of the replay", handle.name, handle.backing->describe()));
+    }
+    if (appended.empty()) {
+        return false;
+    }
+    std::vector<std::pair<std::size_t, std::vector<Node>>> groups;
+    groups.emplace_back(graph.nodes().size(), std::move(appended));
     graph.insert_node_groups(std::move(groups));
     return true;
 }
@@ -637,6 +669,25 @@ bool Materialization::run(Graph &graph) {
     // zero for one its writers add into), and produced a slab at a time straight into its storage
     // (by SlabStreaming), a reader that still wants it whole has it read back from that storage.
     auto const init_of = [&graph](TensorHandle const &handle) {
+        // An UPDATE backing's tensor starts from what its storage holds, unless the first thing to
+        // touch it in memory overwrites all of it: a node that writes the tensor itself, not a
+        // view of it, and reads no part of it. Anything else, a view, a body, a node that reads
+        // what it writes, is loaded first.
+        if (handle.backing && handle.backing->update) {
+            TensorId const tid = handle.tensor_ptr != nullptr ? graph.find_tensor_id_by_ptr(handle.tensor_ptr) : 0;
+            auto const    *use = tid != 0 ? graph.usage().find_owner(tid) : nullptr;
+            if (use != nullptr && use->first_use() != TensorUsage::npos) {
+                Node const &first    = graph.nodes()[use->first_use()];
+                bool        has_body = false;
+                for_each_child_graph(first, [&](Graph const &) { has_body = true; });
+                bool const reads = std::ranges::any_of(first.inputs, [&](TensorId in) { return graph.buffer_of(in) == tid; });
+                bool const whole = std::ranges::find(first.outputs, tid) != first.outputs.end();
+                if (!has_body && !reads && whole && !is_lifecycle(first.kind) && first.kind != OpKind::View) {
+                    return InitKind::None;
+                }
+            }
+            return InitKind::FromDisk;
+        }
         if (handle.backing && handle.backing->write) {
             return handle.tensor_ptr != nullptr && compute_graph::detail::written_in_memory(graph, handle.tensor_ptr) ? handle.init_kind
                                                                                                                       : InitKind::FromDisk;
@@ -788,6 +839,7 @@ bool Materialization::run(Graph &graph) {
     }
 
     modified = store_written_backings(graph) || modified;
+    modified = publish_updates(graph) || modified;
 
     report(1, fmt::format("materialized {} deferred tensor(s) ({} initialized, {} of them from a backing, {} unused and left unallocated)",
                           _num_materialized, _num_initialized, _num_loaded, _num_unused));

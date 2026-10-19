@@ -656,6 +656,22 @@ last term.
 ``SlabStreaming`` streams a write-backed tensor only from a writer that
 overwrites it, so such a tensor is held whole while its terms add into it.
 
+With ``update=True`` the graph does both: each replay starts with the tensor
+holding what the entry holds, and the entry holds the tensor's final value once
+the replay ends. The amplitudes of an iterative method are the case it is for.
+
+.. code-block:: python
+
+    t2 = g.declare_tensor("t2", backing=einsums.io.etn("amps.etn", "t2", update=True))
+    with cg.capture(g):
+        ...                                        # terms that read t2 into r2
+        la.direct_division(1.0, r2, D, 0.0, t2)    # the new t2
+
+The new value is written beside the old one and replaces it in one commit of
+the file at the end of the replay, so a crash leaves the previous value. A read
+before the first write of the tensor sees the value the replay started from and
+may be streamed from the file; a read after it sees the new value, in memory.
+
 What a backing changes is where the tensor lives; when it is held whole is the
 ``SlabStreaming`` pass's decision, which runs after ``AxisTiling`` in the
 default pipeline. A backed tensor larger than its share of

@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/InterfaceManifest.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/TensorIO/Backing.hpp>
@@ -157,9 +158,87 @@ bool hold(TensorFile &file, std::string const &entry, std::vector<size_t> const 
     return true;
 }
 
+/// The scratch entry an update backing writes the next value of @p entry into.
+std::string next_entry_of(std::string const &entry) {
+    return entry + ".next";
+}
+
+/// The backing of a tensor the graph reads from @p entry and whose next value it writes into
+/// @p next, which @ref compute_graph::TensorBacking::publish then makes @p entry.
+compute_graph::TensorBacking update_backing(std::string const &path, std::string const &entry, std::string const &next,
+                                            std::vector<size_t> const &dims, packed_gemm::ScalarType dtype,
+                                            std::vector<size_t> const &order) {
+    // The reader and the order are the entry's, as for a read backing.
+    compute_graph::TensorBacking out = complete(path, entry, dims, dtype, false);
+    out.location                     = {{"entry", entry}, {"next", next}, {"path", path}};
+    out.write                        = true;
+    out.update                       = true;
+    out.prepare = [path, entry, next, dims, dtype, order](std::vector<size_t> const &tensor_dims, packed_gemm::ScalarType tensor_dtype) {
+        // Refused before the scratch entry is touched, with the words annotate_backing would use.
+        if (tensor_dims != dims) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "the tensor is [{}] and the storage holds [{}]", fmt::join(tensor_dims, ","),
+                                    fmt::join(dims, ","));
+        }
+        if (tensor_dtype != dtype) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "the tensor holds {} and the storage holds {}",
+                                    compute_graph::scalar_type_name(tensor_dtype), compute_graph::scalar_type_name(dtype));
+        }
+        {
+            // The scratch entry is the graph's own: one a crash left behind, or one of another
+            // shape, type or order from an earlier program, is replaced rather than refused.
+            TensorFile file(path, TensorFile::Mode::ReadWrite);
+            if (file.contains(next) &&
+                (file.dims(next) != dims || scalar_type_of(file.dtype(next)) != dtype || file.stored_order(next) != order)) {
+                file.remove(next);
+            }
+            hold(file, next, dims, dtype, order);
+        }
+        compute_graph::TensorBacking prepared = update_backing(path, entry, next, dims, dtype, order);
+        prepared.prepare                      = nullptr;
+        prepared.write_slab = [path, next, dims, dtype, order](void const *source, std::vector<std::pair<size_t, size_t>> const &ranges) {
+            TensorFile file(path, TensorFile::Mode::ReadWrite);
+            // The publish at the end of each replay turns the scratch entry into the entry, so the
+            // first write of the next replay reserves it again, in the space the old value freed.
+            if (!file.contains(next)) {
+                hold(file, next, dims, dtype, order);
+            }
+            if (auto const [now_dims, now_dtype] = describe_entry(file, next); now_dims != dims || now_dtype != dtype) {
+                EINSUMS_THROW_EXCEPTION(std::runtime_error, "entry '{}' in '{}' is now [{}], not the [{}] the graph was built against",
+                                        next, path, fmt::join(now_dims, ","), fmt::join(dims, ","));
+            }
+            file.write_slab(next, source, ranges);
+        };
+        prepared.publish = [path, entry, next]() {
+            TensorFile file(path, TensorFile::Mode::ReadWrite);
+            file.replace(next, entry);
+        };
+        return prepared;
+    };
+    return out;
+}
+
 } // namespace
 
-compute_graph::TensorBacking etn_backing(std::string path, std::string entry, bool write, std::vector<std::size_t> order) {
+compute_graph::TensorBacking etn_backing(std::string path, std::string entry, bool write, std::vector<std::size_t> order, bool update) {
+    if (update) {
+        if (write || !order.empty()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "etn: an update backing of entry '{}' reads and writes it in the order it is stored, so it takes "
+                                    "neither write nor order",
+                                    entry);
+        }
+        std::string const next = next_entry_of(entry);
+        detail::check_entry_name(path, "etn", next);
+        std::vector<size_t>     dims;
+        packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown};
+        std::vector<size_t>     stored;
+        {
+            TensorFile const file(path, TensorFile::Mode::Read);
+            std::tie(dims, dtype) = describe_entry(file, entry);
+            stored                = file.stored_order(entry);
+        }
+        return update_backing(path, entry, next, dims, dtype, stored);
+    }
     if (!write) {
         std::vector<size_t>     dims;
         packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown};
@@ -195,21 +274,32 @@ namespace {
 compute_graph::TensorBacking open_saved(std::vector<std::pair<std::string, std::string>> const &location, bool write) {
     std::string path;
     std::string entry;
+    std::string next;
     for (auto const &[key, value] : location) {
         if (key == "path") {
             path = value;
         } else if (key == "entry") {
             entry = value;
+        } else if (key == "next") {
+            next = value;
         } else {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "an {} location has no key '{}'; it names a 'path' and an 'entry'",
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "an {} location has no key '{}'; it names a 'path' and an 'entry', and an update backing a 'next'",
                                     etn_backing_kind, key);
         }
     }
     if (path.empty() || entry.empty()) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "an {} location needs both a 'path' and an 'entry'", etn_backing_kind);
     }
+    // An update backing names its scratch entry, which is always the entry's own.
+    bool const update = !next.empty();
+    if (update && (!write || next != next_entry_of(entry))) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "an {} location names the scratch entry '{}', and an update of '{}' writes '{}'",
+                                etn_backing_kind, next, entry, next_entry_of(entry));
+    }
     try {
-        return etn_backing(std::move(path), std::move(entry), write);
+        return update ? etn_backing(std::move(path), std::move(entry), false, {}, true)
+                      : etn_backing(std::move(path), std::move(entry), write);
     } catch (std::invalid_argument const &) {
         throw;
     } catch (std::exception const &error) {

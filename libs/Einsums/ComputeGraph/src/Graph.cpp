@@ -384,8 +384,9 @@ void Graph::attach_backing(TensorHandle &handle, TensorBacking backing) {
         refuse("the tensor is already allocated; declare it on the graph (declare_tensor) so it stays deferred");
     }
     // A read backing fills the tensor, so nothing else may. A write backing's tensor is the graph's
-    // to produce, and one that starts at zero is what a sum of terms adds into.
-    bool const zero_for_writes = backing.write && handle.init_kind == InitKind::Zero;
+    // to produce, and one that starts at zero is what a sum of terms adds into. An update backing
+    // starts it from what the storage holds.
+    bool const zero_for_writes = backing.write && !backing.update && handle.init_kind == InitKind::Zero;
     if (handle.init_kind != InitKind::None && !zero_for_writes) {
         refuse(fmt::format("the tensor is already initialized by '{}' after allocation, and a {} fills it instead",
                            init_kind_name(handle.init_kind), backing.write ? "write backing other than from zero" : "backing"));
@@ -396,6 +397,9 @@ void Graph::attach_backing(TensorHandle &handle, TensorBacking backing) {
         TensorBacking prepared = backing.prepare(handle.dims, handle.dtype);
         if (!prepared.write || !prepared.write_slab || !prepared.read_slab) {
             refuse("preparing the write backing gave no writer and reader");
+        }
+        if (prepared.update && !prepared.publish) {
+            refuse("preparing the update backing gave no way to publish what the graph writes");
         }
         backing = std::move(prepared);
     }

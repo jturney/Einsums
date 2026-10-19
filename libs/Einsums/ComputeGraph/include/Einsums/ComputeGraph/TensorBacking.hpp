@@ -59,7 +59,10 @@ using SlabWriter = std::function<void(void const *source, std::vector<std::pair<
  * A READ backing names storage that already holds the tensor: an input the graph only reads. A
  * WRITE backing names storage the graph fills: the tensor is an output the graph produces, and
  * may read back after producing it. A write backing is completed by the tensor it is annotated
- * on, through @ref prepare, since the storage may not exist yet to describe it.
+ * on, through @ref prepare, since the storage may not exist yet to describe it. An UPDATE backing
+ * is a write backing whose storage also holds the value each replay starts from: the graph reads
+ * the tensor, writes its next value, and the storage is switched to that value at the end of the
+ * replay (@ref update, @ref publish).
  *
  * Built by the module that knows the storage, as ``tensor_io::etn_backing`` builds one for a
  * ``.etn`` entry, and handed to @ref Graph::annotate_backing.
@@ -83,6 +86,17 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") TensorBacking {
 
     /// Whether the graph writes the storage (an output it produces) rather than only reading it.
     APIARY_EXPOSE APIARY_READONLY bool write{false};
+
+    /// Whether the graph also reads the value the storage holds when a replay starts: an UPDATE
+    /// backing, set with @ref write. @ref read_slab reads that value, @ref write_slab writes the
+    /// next one beside it, and @ref publish makes the next one current once the replay has made
+    /// every access. A crash before the publish leaves the storage holding the previous value.
+    APIARY_EXPOSE APIARY_READONLY bool update{false};
+
+    /// Makes what @ref write_slab wrote the value @ref read_slab reads, in one step that survives a
+    /// crash. Run by the graph once per replay, after every access of the storage. Set on an
+    /// update backing only.
+    std::function<void()> publish;
 
     /// Reads a slab of the stored tensor; see @ref SlabReader.
     SlabReader read_slab;

@@ -542,9 +542,10 @@ class RegionAnalysis {
     /// The bytes the intermediates the loop re-declares hold whole, before tiling.
     /// Whether a slice of @p tid is held in memory for each iteration: an intermediate the body
     /// declares, or a write-backed tensor whose box the body fills before SlabStreaming stores it.
+    /// Not an update-backed one, which is produced in memory whole (SlabStreaming::stream_write).
     [[nodiscard]] bool held_per_slice(TensorId tid) const {
         auto const backing = _scope.backing_of(tid);
-        return _scope.intermediate(tid) || (backing != nullptr && backing->write);
+        return _scope.intermediate(tid) || (backing != nullptr && backing->write && !backing->update);
     }
 
     [[nodiscard]] std::size_t streamed_whole_bytes(Labelling const &labelling) const;
@@ -2397,10 +2398,11 @@ bool AxisTiling::tile_graph(Graph &graph) {
                     // A tensor the program writes to storage, over its cap, is a seed too: no one
                     // holds it whole afterwards, and a loop over its own axes lets every statement
                     // that writes it finish one box of it before SlabStreaming stores the box, where
-                    // otherwise each writer but a lone overwriting one keeps it whole in memory.
+                    // otherwise each writer but a lone overwriting one keeps it whole in memory. Not an
+                    // update-backed tensor, which is produced in memory whole.
                     if (auto const backing = scope.backing_of(tid); backing != nullptr) {
-                        if (derived && backing->write && sliceable && bytes > limit_for(bytes) && !declined.contains(tid) &&
-                            std::ranges::find(seeds, std::pair{bytes, tid}) == seeds.end()) {
+                        if (derived && backing->write && !backing->update && sliceable && bytes > limit_for(bytes) &&
+                            !declined.contains(tid) && std::ranges::find(seeds, std::pair{bytes, tid}) == seeds.end()) {
                             largest = std::max(largest, bytes);
                             seeds.emplace_back(bytes, tid);
                         }
@@ -2672,7 +2674,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         // chunks divide the slices, so it is always one loop.
         bool const writes_backed = std::ranges::any_of(labelling.store.tensor, [&](auto const &entry) {
             auto const backing = scope.backing_of(entry.first);
-            return backing != nullptr && backing->write;
+            return backing != nullptr && backing->write && !backing->update;
         });
         if (blocks.has_value() && writes_backed) {
             for (std::size_t k = 0; k < extents.size(); ++k) {

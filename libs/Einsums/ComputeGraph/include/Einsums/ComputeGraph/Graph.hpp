@@ -3247,7 +3247,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @tparam T Element type, which has to be the one the storage holds.
      * @tparam Alloc Allocator.
      * @param[in] name The tensor's name.
-     * @param[in] backing A read backing; the tensor takes its extents.
+     * @param[in] backing A read or update backing; the tensor takes its extents.
      * @param[in] intermediate Whether nothing reads the tensor after ``execute()``.
      * @return The declared tensor, owned by this graph and backed by @p backing.
      * @throws std::invalid_argument for a write backing, whose storage takes its shape from the
@@ -4761,7 +4761,7 @@ auto Graph::declare_runtime_tensor(std::string name, std::vector<size_t> dims, b
 }
 template <typename T, typename Alloc>
 auto Graph::declare_runtime_tensor(std::string name, TensorBacking backing, bool intermediate) -> GeneralRuntimeTensor<T, Alloc> & {
-    if (backing.write) {
+    if (backing.write && !backing.update) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "Graph '{}': declare tensor '{}' from {}: a write backing takes its shape from the tensor, so give the "
                                 "tensor's extents",

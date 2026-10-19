@@ -197,6 +197,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         /// For a write-backed tensor: an operation outside this graph and the graphs below it
         /// writes it in memory, so neither its producer nor its readers here may be streamed.
         bool written_outside{false};
+        /// For an update-backed tensor: this graph runs at or after the first write of it in the
+        /// graph that declares it, so its storage no longer holds the value this graph reads.
+        bool update_after{false};
     };
 
     /// The backed tensor objects visible from a graph, which the enclosing graph hands each body it

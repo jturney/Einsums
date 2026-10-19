@@ -123,27 +123,40 @@ the same whatever the entries hold.
 Each runs at once outside a capture. Inside one it records a node that runs at
 every replay, after every read and write of the file that comes before it in
 the graph and before every one after it, including the loads and stores of
-tensors backed by the file. That makes the usual way to update a tensor too
-large for memory one graph: each replay reads the current value from one entry,
-writes the next into another, and swaps the two, so the same name always holds
-the current value.
+tensors backed by the file.
+
+Updating an entry
+=================
+
+A tensor too large for memory that a graph both reads and updates, the
+amplitudes of an iterative method for instance, is declared with an update
+backing. Each replay starts with the tensor holding what the entry holds. The
+graph reads and writes it as any tensor, its writes go to the scratch entry
+``<entry>.next``, and when the replay ends that entry replaces the entry in one
+commit (``TensorFile::replace``). A crash before then leaves the entry holding
+the previous replay's value.
 
 .. code-block:: cpp
 
     #include <Einsums/TensorIO/Backing.hpp>
-    #include <Einsums/TensorIO/Entries.hpp>
 
     tensor_io::EtnFile const amps("amps.etn");
-    auto &t2     = graph.declare_runtime_tensor<double>("t2", amps.entry("t2"));  // shaped like the entry
-    auto &new_t2 = graph.declare_runtime_tensor<double>("t2_next", {o, o, v, v}, false, amps.entry("t2_next", true));
+    auto &t2 = graph.declare_runtime_tensor<double>("t2", amps.entry("t2", false, {}, true));
+    auto &r2 = graph.declare_runtime_tensor<double>("r2", {o, o, v, v}, /*intermediate=*/true);
     {
         cg::CaptureGuard guard(graph);
-        // ... compute new_t2 from t2 ...
-        tensor_io::swap_entries("amps.etn", "t2", "t2_next");
+        // ... the residual r2 from t2 ...
+        cg::direct_division(1.0, r2, D, 0.0, &t2);  // the new t2
     }
     for (int iter = 0; iter < max_iter; ++iter) {
         graph.execute();  // "t2" holds the newest amplitudes after every replay
     }
+
+Statement order is what decides which value a read sees, as it is for a tensor
+in memory: the reads before the first write of the tensor see the value the
+replay started from, and ``SlabStreaming`` may read those from the entry a
+block at a time; the reads after it see the new value, in memory. The tensor
+is written in memory and stored whole after its last writer.
 
 Python surface
 ==============
@@ -156,7 +169,8 @@ The graph wrappers are exposed in Python under ``einsums.io``. Each C++
 ``compact_file`` as ``einsums.io.copy``, ``einsums.io.rename``,
 ``einsums.io.swap``, ``einsums.io.remove``, ``einsums.io.restage`` and
 ``einsums.io.compact``. ``tensor_io::EtnFile`` is ``einsums.io.EtnFile``, and
-``etn_backing`` is ``einsums.io.etn``. The slab-by-reference pattern
+``etn_backing`` is ``einsums.io.etn``, whose ``update=True`` gives an update
+backing. The slab-by-reference pattern
 carries over: a Python ``Slab`` object can be advanced between graph
 executions the same way.
 

@@ -199,6 +199,20 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE TensorFile {
     APIARY_EXPOSE void swap(std::string_view first, std::string_view second);
 
     /**
+     * @brief Make the entry @p source the entry @p target, dropping what @p target held.
+     *
+     * Only the entry table changes, as for @ref rename, and in one commit: a crash leaves either
+     * both entries as they were or @p target holding what @p source held and no entry @p source.
+     * The space @p target's old elements took is free from that commit on. This is the step that
+     * makes a value written beside the current one current, leaving no second entry behind.
+     * Replacing an entry with itself does nothing.
+     * @throws std::runtime_error when there is no entry @p source, or the file is open for reading.
+     * @throws std::invalid_argument when no entry can hold the name @p target.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void replace(std::string_view source, std::string_view target);
+
+    /**
      * @brief Copy the entry @p source_name of @p source into the entry @p name of this file.
      *
      * The entry @p name is created with the source's extents, element type and stored order when

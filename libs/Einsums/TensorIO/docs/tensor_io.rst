@@ -123,6 +123,7 @@ Basic read/write for serial programs:
    // Entries; each commits before it returns
    rw.rename("C", "D");              // only the entry table changes
    rw.swap("A", "B");                // "A" now reaches what "B" did, and the other way round
+   rw.replace("B", "A");             // "A" now reaches what "B" did, and "B" is gone
    rw.copy(rw, "A", "A_saved");      // through a bounded buffer
    rw.restage("A_saved", {1, 0});    // store its axes in another order, moving its elements
    rw.remove("D");                   // its bytes become space later entries reuse

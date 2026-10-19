@@ -802,3 +802,188 @@ TEST_CASE("A write-backed tensor declared at zero sums its writers at every repl
                           Catch::Matchers::ContainsSubstring("already initialized by 'zero'"));
     }
 }
+
+namespace {
+
+/// The entries of the file at @p path, sorted.
+std::vector<std::string> entries_of(std::string const &path) {
+    TensorFile const file(path, TensorFile::Mode::Read);
+    auto             names = file.tensor_names();
+    std::ranges::sort(names);
+    return names;
+}
+
+/// t <- 0.5 * (A t), the step each replay of the update graphs below takes, computed eagerly.
+RuntimeTensor<double> step_of(RuntimeTensor<double> const &a, RuntimeTensor<double> const &t) {
+    RuntimeTensor<double> product("p", std::vector<size_t>{t.dim(0), t.dim(1)});
+    product.zero();
+    cg::einsum("i,j <- i,k ; k,j", 1.0, &product, 1.0, a, t);
+    RuntimeTensor<double> out("t", std::vector<size_t>{t.dim(0), t.dim(1)});
+    cg::permute("i,j <- i,j", 0.0, &out, 0.5, product);
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("An update-backed tensor starts each replay from its entry and leaves its next value there", "[TensorIO][Backing]") {
+    TempFile const tmp("update.etn");
+    auto const     t0 = filled<double>("t", {4, 3}, 0.5);
+    auto const     a  = filled<double>("A", {4, 4}, 0.125);
+    write_entry(tmp.path, "t", t0);
+
+    cg::Graph graph("update");
+    auto     &t = graph.declare_runtime_tensor<double>("t", tensor_io::EtnFile(tmp.path).entry("t", false, {}, true));
+    auto     &r = graph.declare_zero_runtime_tensor<double>("r", {4, 3});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &r, 1.0, a, t); // reads the value the replay started from
+        cg::permute("i,j <- i,j", 0.0, &t, 0.5, r);         // writes the next one
+    }
+    CHECK(graph.verify().empty());
+    auto const pass = materialize(graph);
+    CHECK(pass->num_loaded() == 1);
+    CHECK(pass->num_stored() == 1);
+    CHECK(pass->num_published() == 1);
+
+    RuntimeTensor<double> expected = t0;
+    for (int replay = 0; replay < 3; ++replay) {
+        graph.execute();
+        expected = step_of(a, expected);
+        CHECK(bytes_of(read_entry<double>(tmp.path, "t", {4, 3})) == bytes_of(expected));
+        // The scratch entry became the entry: nothing is left beside it.
+        CHECK(entries_of(tmp.path) == std::vector<std::string>{"t"});
+    }
+}
+
+TEST_CASE("An update-backed tensor whose first use overwrites it is not loaded", "[TensorIO][Backing]") {
+    TempFile const tmp("update_overwrite.etn");
+    write_entry(tmp.path, "t", filled<double>("t", {4, 3}, 0.5));
+    auto const x = filled<double>("x", {4, 3}, 2.0);
+
+    cg::Graph graph("overwrite");
+    auto     &t = graph.declare_runtime_tensor<double>("t", tensor_io::etn_backing(tmp.path, "t", false, {}, true));
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("i,j <- i,j", 0.0, &t, 1.0, x);
+    }
+    auto const pass = materialize(graph);
+    CHECK(pass->num_loaded() == 0);
+    graph.execute();
+    CHECK(bytes_of(read_entry<double>(tmp.path, "t", {4, 3})) == bytes_of(x));
+}
+
+TEST_CASE("SlabStreaming reads an update-backed tensor from its entry only before its first write", "[TensorIO][Backing]") {
+    TempFile const tmp("update_streamed.etn");
+    auto const     t0 = filled<double>("t", {4, 16}, 0.5);
+    auto const     a  = filled<double>("A", {4, 4}, 0.125);
+    write_entry(tmp.path, "t", t0);
+
+    cg::Graph graph("update_streamed");
+    auto     &t     = graph.declare_runtime_tensor<double>("t", tensor_io::etn_backing(tmp.path, "t", false, {}, true));
+    auto     &r     = graph.declare_zero_runtime_tensor<double>("r", {4, 16});
+    auto      after = RuntimeTensor<double>("after", std::vector<size_t>{4, 16});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &r, 1.0, a, t);     // before the write: may stream from the entry
+        cg::permute("i,j <- i,j", 0.0, &t, 0.5, r);             // the write
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &after, 1.0, a, t); // after it: reads the new value, from memory
+    }
+
+    auto stream = std::make_shared<cg::passes::SlabStreaming>();
+    stream->set_slab_budget(static_cast<std::int64_t>(4 * 4 * sizeof(double)));
+    cg::PassManager manager;
+    manager.add(stream);
+    manager.add(std::make_shared<cg::passes::Materialization>());
+    graph.apply(manager);
+    CHECK(stream->num_streamed() == 1);
+    auto const declined = [&](std::string_view words) {
+        return std::ranges::any_of(stream->skip_reasons(), [&](auto const &skip) { return skip.first.find(words) != std::string::npos; });
+    };
+    CHECK(declined("read after a write of it"));
+    CHECK(declined("update-backed"));
+
+    RuntimeTensor<double> expected = t0;
+    for (int replay = 0; replay < 2; ++replay) {
+        graph.execute();
+        expected = step_of(a, expected);
+        CHECK(bytes_of(read_entry<double>(tmp.path, "t", {4, 16})) == bytes_of(expected));
+        auto want = RuntimeTensor<double>("want", std::vector<size_t>{4, 16});
+        want.zero();
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &want, 1.0, a, expected);
+        CHECK(bytes_of(after) == bytes_of(want));
+    }
+}
+
+TEST_CASE("A saved graph keeps an update backing", "[TensorIO][Backing][SaveLoad]") {
+    TempFile const tmp("update_saved.etn");
+    auto const     t0 = filled<double>("t", {4, 3}, 0.5);
+    auto           a  = filled<double>("A", {4, 4}, 0.125);
+    write_entry(tmp.path, "t", t0);
+
+    cg::Graph graph("update_saved");
+    auto     &t = graph.declare_runtime_tensor<double>("t", tensor_io::etn_backing(tmp.path, "t", false, {}, true));
+    auto     &r = graph.declare_zero_runtime_tensor<double>("r", {4, 3});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &r, 1.0, a, t);
+        cg::permute("i,j <- i,j", 0.0, &t, 0.5, r);
+    }
+    auto const saved = cg::save_graph_string(graph);
+    REQUIRE(saved.has_value());
+    CHECK_THAT(*saved, Catch::Matchers::ContainsSubstring(R"("next":"t.next")"));
+
+    auto loaded = cg::load_graph_string(*saved);
+    INFO((loaded ? std::string{} : loaded.error().message));
+    REQUIRE(loaded.has_value());
+    loaded->bind("A", a);
+    auto const pass = materialize(*loaded);
+    CHECK(pass->num_loaded() == 1);
+    CHECK(pass->num_stored() == 1);
+    CHECK(pass->num_published() == 1);
+    RuntimeTensor<double> expected = t0;
+    for (int replay = 0; replay < 2; ++replay) {
+        INFO("replay " << replay);
+        loaded->execute();
+        expected = step_of(a, expected);
+        CHECK(bytes_of(read_entry<double>(tmp.path, "t", {4, 3})) == bytes_of(expected));
+    }
+}
+
+TEST_CASE("An update backing refuses what it cannot honour", "[TensorIO][Backing]") {
+    TempFile const tmp("update_refusals.etn");
+    write_entry(tmp.path, "t", filled<double>("t", {4, 3}, 0.5));
+
+    CHECK_THROWS_WITH(tensor_io::etn_backing(tmp.path, "t", true, {}, true),
+                      Catch::Matchers::ContainsSubstring("takes neither write nor order"));
+    CHECK_THROWS_WITH(tensor_io::etn_backing(tmp.path, "t", false, {1, 0}, true),
+                      Catch::Matchers::ContainsSubstring("takes neither write nor order"));
+    CHECK_THROWS_WITH(tensor_io::etn_backing(tmp.path, "missing", false, {}, true),
+                      Catch::Matchers::ContainsSubstring("'missing' not found"));
+    // The scratch entry's name has to fit an entry: ".next" on a name already at the limit does not.
+    std::string const longest(tensor_io::ETN_MAX_NAME - 1, 'x');
+    {
+        TensorFile file(tmp.path, TensorFile::Mode::ReadWrite);
+        file.write(longest, filled<double>("x", {2}, 1.0));
+    }
+    CHECK_THROWS(tensor_io::etn_backing(tmp.path, longest, false, {}, true));
+
+    auto const update = tensor_io::etn_backing(tmp.path, "t", false, {}, true);
+    CHECK(update.write);
+    CHECK(update.update);
+    CHECK(update.dims == std::vector<size_t>{4, 3});
+    cg::Graph graph("refusals");
+    CHECK_THROWS_WITH(graph.declare_zero_runtime_tensor<double>("z", {4, 3}, false, update),
+                      Catch::Matchers::ContainsSubstring("already initialized by 'zero'"));
+    CHECK_THROWS_WITH(graph.declare_runtime_tensor<double>("w", {3, 4}, false, update),
+                      Catch::Matchers::ContainsSubstring("the tensor is [3,4] and the storage holds [4,3]"));
+    CHECK(graph.num_tensors() == 0);
+    // Nothing was reserved for the refused declarations.
+    CHECK(entries_of(tmp.path) == std::vector<std::string>{"t", longest});
+
+    // A graph that never writes it would publish nothing it computed, as for any write backing.
+    auto const &u = graph.declare_runtime_tensor<double>("u", update);
+    (void)u;
+    auto const problems = graph.verify();
+    REQUIRE(problems.size() == 1);
+    CHECK_THAT(problems[0], Catch::Matchers::ContainsSubstring("no node writes it"));
+}

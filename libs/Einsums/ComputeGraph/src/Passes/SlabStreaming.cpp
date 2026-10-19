@@ -62,8 +62,35 @@ struct BackedOperand {
     std::shared_ptr<TensorBacking const> backing;
     void const                          *object{nullptr};        ///< The backed tensor object.
     bool                                 written_outside{false}; ///< See SlabStreaming::BackedEntry.
+    bool                                 update_after{false};    ///< See SlabStreaming::BackedEntry.
     bool                                 full{true};             ///< False for a view that slices or permutes.
 };
+
+/// The position of the first node of @p graph that writes the tensor @p object in memory, itself
+/// or in a body below it; the node count when none does.
+std::size_t first_writer(Graph const &graph, void const *object) {
+    auto const &nodes = graph.nodes();
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        Node const &node     = nodes[i];
+        bool        has_body = false;
+        bool        writes   = false;
+        for_each_child_graph(node, [&](Graph const &child) {
+            has_body = true;
+            writes   = writes || compute_graph::detail::written_in_memory(child, object);
+        });
+        if (!has_body && !is_lifecycle(node.kind) && node.kind != OpKind::View && node.kind != OpKind::DiskRead &&
+            node.kind != OpKind::DiskWrite) {
+            writes = std::ranges::any_of(node.outputs, [&](TensorId out) {
+                TensorHandle const *handle = graph.find_tensor(graph.buffer_of(out));
+                return handle != nullptr && handle->tensor_ptr == object;
+            });
+        }
+        if (writes) {
+            return i;
+        }
+    }
+    return nodes.size();
+}
 
 /// Where the View node that produced @p tid sits, if a View node did.
 std::optional<std::size_t> producing_view(Graph const &graph, TensorId tid) {
@@ -96,7 +123,8 @@ std::optional<BackedOperand> backed_operand(Graph const &graph, Backed const &ba
                       .name            = hit->second.name,
                       .backing         = hit->second.backing,
                       .object          = owner->tensor_ptr,
-                      .written_outside = hit->second.written_outside};
+                      .written_outside = hit->second.written_outside,
+                      .update_after    = hit->second.update_after};
     if (handle->is_tensor_view) {
         out.view_node    = producing_view(graph, tid);
         auto const *view = out.view_node ? graph.nodes()[*out.view_node].op_data.get_if<ViewDescriptor>() : nullptr;
@@ -431,19 +459,32 @@ bool SlabStreaming::walk(Graph &graph, Backed backed, double replays) {
     // a sibling walked earlier is seen as it ends up, so one that now writes the tensor only to its
     // storage no longer counts, and the disk keys order this body's reads after those writes; one
     // walked later is seen as captured, which keeps the answer conservative.
-    std::vector<std::pair<Graph *, double>> bodies;
-    for (auto &node : graph.nodes()) {
+    struct Body {
+        Graph      *graph;
+        double      replays;
+        std::size_t position;
+    };
+    std::vector<Body> bodies;
+    auto             &nodes = graph.nodes();
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
         // How often a body runs per replay of the root: a loop's runs up to its bound once for each
         // time the graph holding it does, and a setup or a branch at most once.
-        auto const  *loop         = node.op_data.get_if<LoopDescriptor>();
+        auto const  *loop         = nodes[i].op_data.get_if<LoopDescriptor>();
         double const body_replays = loop != nullptr ? replays * static_cast<double>(loop->max_iterations) : replays;
-        for_each_child_graph(node, [&](Graph &sub) { bodies.emplace_back(&sub, body_replays); });
+        for_each_child_graph(nodes[i], [&](Graph &sub) { bodies.push_back(Body{.graph = &sub, .replays = body_replays, .position = i}); });
     }
-    for (auto const &[body, body_replays] : bodies) {
+    for (auto const &[body, body_replays, position] : bodies) {
         Backed inherited = backed;
         for (auto &[object, entry] : inherited) {
             if (entry.backing->write) {
                 entry.written_outside = entry.written_outside || compute_graph::detail::written_in_memory(graph, object, body);
+            }
+            // A body at or after the first write of an update-backed tensor, or one that writes it
+            // itself, reads it after a write: from memory, never from the storage, which still holds
+            // the value the replay started from. A loop body that writes it reads the write of its
+            // previous iteration, which this covers too.
+            if (entry.backing->update) {
+                entry.update_after = entry.update_after || position >= first_writer(graph, object);
             }
         }
         moved = walk(*body, std::move(inherited), body_replays) || moved;
@@ -568,9 +609,16 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
             };
             // Whether a backed operand is read from its storage here at all, noting why not when not.
             auto const readable = [&](BackedOperand const &use) {
-                // A write-backed tensor's storage holds it only once it has been produced there.
-                // Produced in memory anywhere, it is read from memory, and stored after its last writer.
-                if (use.backing->write && (use.written_outside || compute_graph::detail::written_in_memory(graph, use.object))) {
+                // An update-backed tensor's storage holds the value the replay started from until the
+                // replay ends, so it is read from there exactly by the readers before its first write.
+                if (use.backing->update) {
+                    if (use.update_after || i >= first_writer(graph, use.object)) {
+                        note_skip("the update-backed tensor is read after a write of it, so it is read from memory", where);
+                        return false;
+                    }
+                } else if (use.backing->write && (use.written_outside || compute_graph::detail::written_in_memory(graph, use.object))) {
+                    // A write-backed tensor's storage holds it only once it has been produced there.
+                    // Produced in memory anywhere, it is read from memory, and stored after its last writer.
                     note_skip("the tensor is produced in memory, so its readers read it there and it is stored after its last writer",
                               where);
                     return false;
@@ -762,6 +810,13 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
     std::size_t       whole   = element;
     for (std::size_t const extent : backing.dims) {
         whole *= extent;
+    }
+    // The storage of an update-backed tensor holds the value the replay started from until the
+    // replay ends, and the tensor's later readers want the value written here: it is produced in
+    // memory, stored whole after its last writer and published at the end of the replay.
+    if (backing.update) {
+        note_skip(fmt::format("the tensor is update-backed, {}, then published at the end of the replay", decline), where);
+        return false;
     }
     if (whole <= cap) {
         note_skip(fmt::format("the write-backed tensor fits its share of the budget, {}", decline),
