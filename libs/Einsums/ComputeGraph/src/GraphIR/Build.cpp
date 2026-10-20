@@ -303,6 +303,22 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         node.outputs = remap(spec.outputs, "output");
         node.op_data = spec.descriptor;
 
+        if (auto *alloc = node.op_data.get_if<AllocDescriptor>()) {
+            // An allocation marks one tensor coming into use and reads nothing, which is the only
+            // shape capture writes; the descriptor is what the tensor record says of that tensor.
+            if (!node.inputs.empty() || node.outputs.size() != 1) {
+                throw BuildFailure(fmt::format("alloc node '{}' must have no inputs and one output, not {} and {}", spec.label,
+                                               node.inputs.size(), node.outputs.size()));
+            }
+            TensorHandle const *handle = graph.find_tensor(node.outputs[0]);
+            if (handle == nullptr) {
+                throw BuildFailure(fmt::format("alloc node '{}' names a tensor the frame does not define", spec.label));
+            }
+            alloc->tensor_id   = node.outputs[0];
+            alloc->tensor_name = handle->name;
+            alloc->size_bytes  = handle->total_bytes();
+        }
+
         if (auto *einsum = node.op_data.get_if<EinsumDescriptor>()) {
             // The live blocks a captured node carries, seeded from the loaded snapshot the
             // way every builder seeds them. Restoring them is not cosmetic: a loaded graph is

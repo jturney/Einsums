@@ -752,6 +752,10 @@ void read_descriptor(IrNode &node, Fields const &fields, GateFlagTable const &ga
     case OpKind::Transpose:
         node.descriptor = OpData{};
         return;
+    case OpKind::Alloc:
+        // Filled from the output's tensor record once the frame's tensors exist; see Build.cpp.
+        node.descriptor = AllocDescriptor{};
+        return;
     case OpKind::Scale: {
         ScaleDescriptor desc;
         desc.factor     = fields.prefactor("factor", PrefactorScalar{double{1}});

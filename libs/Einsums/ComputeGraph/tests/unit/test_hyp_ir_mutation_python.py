@@ -60,6 +60,7 @@ from _sanitizer_scaling import fuzz_capped, sanitizer_examples
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _GOLDEN_MIXED = os.path.join(_HERE, "goldens", "v1_0_0_mixed.eig.json")
+_GOLDEN_CSE = os.path.join(_HERE, "goldens", "v1_13_0_cse_slot_redirect.eig.json")
 
 # ──────────────────────────────────────────────────────────────────────────
 # The base graphs
@@ -135,20 +136,6 @@ def _build_axpby(ops):
     return g
 
 
-def _build_cse(ops):
-    # Two identical contractions into graph-owned scratch, which the
-    # structural phase merges: the file then carries an intermediate table, a
-    # slot redirect, and a GEMM hint naming the merged-away tensor.
-    g = cg.Graph("cse")
-    x = g.declare_zero_tensor("X", [3, 3], True)
-    y = g.declare_zero_tensor("Y", [3, 3], True)
-    with cg.capture(g):
-        einsums.einsum("ij <- ik ; kj", x, ops["A"], ops["B"])
-        einsums.einsum("ij <- ik ; kj", y, ops["A"], ops["B"])
-        einsums.einsum("ij <- ik ; kj", ops["O"], x, y, c_pf=1.0)
-    return g
-
-
 def _build_perm_op(ops):
     g = cg.Graph("perm_op")
     with cg.capture(g):
@@ -161,7 +148,6 @@ _BUILDERS = {
     "pair": _build_pair,
     "permute": _build_permute,
     "axpby": _build_axpby,
-    "cse": _build_cse,
     "perm_op": _build_perm_op,
 }
 
@@ -175,17 +161,26 @@ def _base_text(base):
         # comes from the checked-in golden, re-saved by this build so the
         # mutations apply to the current schema.
         return _save_text(cg.load_graph(_GOLDEN_MIXED))
+    if base == "cse":
+        # Mutated as the 1.13.0 build wrote it, and not re-saved. That build left
+        # the merged-away Y in the file, named only by the consumer's stale GEMM
+        # hint, and so wrote the slot redirect Y -> X with it. This build points
+        # the hint at X, nothing names Y, and the writer drops Y and its redirect.
+        # Files like this one exist, and the reader still has to survive a
+        # mutated redirect in them. The graph is two identical contractions of A
+        # and B into the declared scratch X and Y, and O = X Y.
+        with open(_GOLDEN_CSE, encoding="utf-8") as f:
+            return f.read()
     g = _BUILDERS[base](_operands(base))
     if base not in _SAVED_AS_CAPTURED:
         g.apply(cg.structural_pass_manager())
     return _save_text(g)
 
 
-# Bases saved without the structural phase. The permutation-operator einsum
-# cannot be saved after it: the phase expands P(i/j) through graph-owned
-# scratch whose Alloc node the writer refuses (see
-# test_structural_phase_of_a_permutation_operator_saves), so the operator is
-# mutated as captured, where it is one Einsum carrying ``operators``.
+# Bases saved without the structural phase. That phase expands P(i/j) into a
+# contraction and two permutes, which leaves no ``operators`` key to mutate, so
+# the operator is mutated as captured, where it is one Einsum carrying them.
+# test_structural_phase_of_a_permutation_operator_saves covers the expanded form.
 _SAVED_AS_CAPTURED = frozenset({"perm_op"})
 
 

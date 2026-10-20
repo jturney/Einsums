@@ -192,6 +192,7 @@ TEST_CASE("ExecutorBuilder - the reconstructible set holds every kind converted 
         cg::OpKind::Setup,
         cg::OpKind::Syev,
         cg::OpKind::LaplaceQuadrature,
+        cg::OpKind::Alloc,
     };
 
     for (auto kind : converted) {

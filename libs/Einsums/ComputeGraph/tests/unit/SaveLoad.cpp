@@ -1655,6 +1655,68 @@ TEST_CASE("SaveLoad - a result declared at zero is zeroed at every replay of the
     }
 }
 
+// A graph that creates its own tensor records an Alloc node where the tensor comes into use, and
+// before 1.14.0 that node refused the save: every graph holding an intermediate made with
+// create_tensor or create_zero_tensor could not be written, even before any pass had run.
+TEST_CASE("SaveLoad - a graph that creates its own intermediate round-trips", "[ComputeGraph][SaveLoad]") {
+    auto A = create_random_tensor<double>("A", 3, 4);
+    auto B = create_random_tensor<double>("B", 4, 2);
+    auto C = create_random_tensor<double>("C", 2, 3);
+    auto R = create_zero_tensor<double>("R", 3, 3);
+
+    cg::Graph graph("eager_intermediate");
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &T = graph.create_zero_tensor<double, 2>("T", 3, 2);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &T, 1.0, A, B);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &R, 1.0, T, C);
+    }
+    REQUIRE(std::ranges::count_if(graph.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::Alloc; }) == 1);
+    CHECK(graph.serializability_report().empty());
+
+    std::string const saved = must_save(graph);
+    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+        std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_14_0_eager_intermediate.eig.json", std::ios::binary);
+        out << saved;
+    }
+
+    cg::Graph  loaded = must_load(saved);
+    auto const alloc  = std::ranges::find_if(loaded.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::Alloc; });
+    REQUIRE(alloc != loaded.nodes().end());
+    auto const *desc = alloc->op_data.get_if<cg::AllocDescriptor>();
+    REQUIRE(desc != nullptr);
+    REQUIRE(alloc->outputs.size() == 1);
+    CHECK(desc->tensor_id == alloc->outputs[0]);
+    CHECK(desc->tensor_name == "T");
+    CHECK(desc->size_bytes == 3 * 2 * sizeof(double));
+
+    auto result = create_zero_tensor<double>("R", 3, 3);
+    loaded.bind("A", A, "B", B, "C", C, "R", result);
+    auto manager = cg::PassManager::create_default();
+    loaded.apply(manager);
+    loaded.execute();
+
+    auto T_ref    = create_zero_tensor<double>("T_ref", 3, 2);
+    auto expected = create_zero_tensor<double>("E", 3, 3);
+    reference_einsum("i,j <- i,k ; k,j", &T_ref, A, B);
+    reference_einsum("i,j <- i,k ; k,j", &expected, T_ref, C);
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            CHECK_THAT(result(i, j), Catch::Matchers::WithinRel(expected(i, j), 1e-13));
+        }
+    }
+
+    SECTION("an alloc node that reads a tensor is refused") {
+        std::string text = saved;
+        auto const  kind = text.find(R"("kind":"Alloc")");
+        REQUIRE(kind != std::string::npos);
+        auto const inputs = text.find(R"("inputs":[])", kind);
+        REQUIRE(inputs != std::string::npos);
+        text.replace(inputs, std::string_view{R"("inputs":[])"}.size(), R"("inputs":[0])");
+        CHECK_THAT(load_refusal(text), Catch::Matchers::ContainsSubstring("must have no inputs and one output"));
+    }
+}
+
 TEST_CASE("register_backing_kind takes only qualified, new names with an opener", "[ComputeGraph][SaveLoad][Backing]") {
     auto const open = [](auto const &, bool) { return cg::TensorBacking{}; };
     CHECK_THROWS_WITH(cg::register_backing_kind({.name = "unqualified", .open = open}),

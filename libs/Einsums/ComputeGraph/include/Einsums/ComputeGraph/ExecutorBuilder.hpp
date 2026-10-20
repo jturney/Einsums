@@ -394,6 +394,7 @@ EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
     case OpKind::Setup:
     case OpKind::Syev:
     case OpKind::LaplaceQuadrature:
+    case OpKind::Alloc:
         return true;
     default:
         return false;

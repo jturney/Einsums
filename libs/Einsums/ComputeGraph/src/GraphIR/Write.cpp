@@ -270,6 +270,11 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         // rank and operands, and TraceDescriptor's note explains why the empty
         // object is still written rather than the key omitted.
         return Value{std::move(out)};
+    case OpKind::Alloc:
+        // Empty too: the descriptor names the node's one output, that tensor's name and its
+        // size, all of which the tensor record already holds. The reader rebuilds it from the
+        // record, so the file cannot say two different things about one tensor.
+        return Value{std::move(out)};
     case OpKind::Scale: {
         auto const &desc = node.op_data.get<ScaleDescriptor>();
         // The LIVE scalar when the node carries one, because that is what the

@@ -1298,6 +1298,10 @@ std::string reconstruction_blocker(Node const &node) {
         return node.op_data.holds<TraceDescriptor>()
                    ? std::string{}
                    : fmt::format("Trace: expected a TraceDescriptor, found {}", descriptor_name(node.op_data));
+    case OpKind::Alloc:
+        return node.op_data.holds<AllocDescriptor>()
+                   ? std::string{}
+                   : fmt::format("Alloc: expected an AllocDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::WriteParam: {
         auto const *desc = node.op_data.get_if<WriteParamDescriptor>();
         if (desc == nullptr) {
@@ -1584,6 +1588,12 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
     case OpKind::LaplaceQuadrature:
         return build_laplace_quadrature(dtype, expect<LaplaceQuadratureDescriptor>(kind, desc, "LaplaceQuadratureDescriptor"), graph,
                                         inputs, outputs);
+    case OpKind::Alloc:
+        // The tensor was allocated when it was created; the node only marks where in the program
+        // it comes into use, which is what the schedulers and the liveness analyses read.
+        need(kind, "outputs", outputs, 1);
+        (void)expect<AllocDescriptor>(kind, desc, "AllocDescriptor");
+        return [] {};
     default:
         break;
     }

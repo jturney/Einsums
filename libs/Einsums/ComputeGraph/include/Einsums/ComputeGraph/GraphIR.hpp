@@ -137,6 +137,12 @@
  * zeroed once. Absent keys read as allocated and uninitialized, which is what every earlier
  * entry was loaded as.
  *
+ * Since 1.14.0 a file may hold an @ref OpKind::Alloc node, which capture records where a graph
+ * creates its own tensor (@c create_tensor, @c create_zero_tensor). Its descriptor is written
+ * empty: the tensor it brings into use is the node's one output, and that tensor's record already
+ * says its name and size, so the reader rebuilds the descriptor from it. No earlier file could
+ * hold one, so nothing defaults.
+ *
  * @par The hash domain
  * @ref Graph::content_hash digests the canonical bytes of that object with
  * ``provenance`` REMOVED and nothing else changed. Provenance is therefore
@@ -270,7 +276,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.13.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.14.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

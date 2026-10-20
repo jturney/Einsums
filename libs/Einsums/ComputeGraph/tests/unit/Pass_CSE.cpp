@@ -193,6 +193,14 @@ TEMPLATE_LIST_TEST_CASE("CSE - surviving consumer of an eliminated duplicate rea
     REQUIRE(modified);
     REQUIRE(graph.num_nodes() == 3); // D's producer folded away
 
+    // The consumer's GEMM hint follows it to the survivor. It named D, which only a save reads,
+    // and a saved hint naming a tensor no node reads is a file that says two things at once.
+    auto const &consumer = graph.nodes().back();
+    auto const *desc     = consumer.op_data.get_if<cg::EinsumDescriptor>();
+    REQUIRE(desc != nullptr);
+    REQUIRE(desc->gemm_hint != nullptr);
+    CHECK(desc->gemm_hint->a.id == consumer.inputs[0]);
+
     graph.execute();
 
     // Reference: out = (A·B)·F

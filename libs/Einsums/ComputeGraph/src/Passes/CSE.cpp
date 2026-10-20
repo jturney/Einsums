@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
@@ -667,11 +668,17 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
     for (size_t i = 0; i < nodes.size(); i++) {
         if (remove[i])
             continue;
+        bool redirected = false;
         for (auto &tid : nodes[i].inputs) {
             auto it = tensor_redirect.find(tid);
             if (it != tensor_redirect.end()) {
-                tid = it->second;
+                tid        = it->second;
+                redirected = true;
             }
+        }
+        // A reader's GEMM hint names the operand it was captured with, which is the duplicate.
+        if (redirected) {
+            refresh_gemm_hint(graph, nodes[i]);
         }
     }
 
