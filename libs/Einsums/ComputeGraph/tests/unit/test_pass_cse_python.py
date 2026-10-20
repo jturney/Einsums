@@ -292,8 +292,9 @@ def test_cse_does_not_merge_permutes_with_different_index_orders(dtype):
     A = einsums.create_random_tensor("A", [3, 3, 3], dtype=dtype)
 
     g = cg.Graph("cse_permute_orders")
-    P1 = g.create_zero_tensor("P1", [3, 3, 3], dtype=dtype)
-    P2 = g.create_zero_tensor("P2", [3, 3, 3], dtype=dtype)
+    # Results, read after execute(): an intermediate keeps its values only while the graph replays.
+    P1 = g.create_zero_tensor("P1", [3, 3, 3], dtype=dtype, intermediate=False)
+    P2 = g.create_zero_tensor("P2", [3, 3, 3], dtype=dtype, intermediate=False)
     with cg.capture(g):
         einsums.permute("j,i,k <- i,j,k", P1, A, c_pf=0.0, a_pf=1.0)
         einsums.permute("i,k,j <- i,j,k", P2, A, c_pf=0.0, a_pf=1.0)

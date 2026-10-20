@@ -136,7 +136,8 @@ def test_symprop_inferred_C_executes_correctly_via_gemm_dispatch():
 
     g.execute()
 
+    # C stays an intermediate, which the pass needs and execute() does not keep, so it is checked
+    # through D: with B random, D = C B is right only if C is.
     C_ref = np.asarray(A).T @ np.asarray(A)
     D_ref = C_ref @ np.asarray(B)
-    assert_close(C, C_ref)
     assert_close(D, D_ref)

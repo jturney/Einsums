@@ -519,6 +519,11 @@ void Graph::finish_bind_solution(DimSolution const &solution) {
 
 // ── Intermediate re-derivation ─────────────────────────────────────────────
 
+bool Graph::decides_extents(TensorId id) const {
+    TensorHandle const *handle = find_tensor(id);
+    return handle != nullptr && (handle->is_intermediate || _owned_tensor_ptrs.contains(handle->tensor_ptr));
+}
+
 void Graph::resize_derived_extent(TensorId id, std::vector<std::size_t> const &derived, std::string_view producer) {
     TensorHandle *handle = find_tensor(id);
     if (handle == nullptr || handle->rank != derived.size() || handle->dims == derived) {
@@ -528,8 +533,7 @@ void Graph::resize_derived_extent(TensorId id, std::vector<std::size_t> const &d
     // Only storage the GRAPH owns may be reshaped. A caller's tensor that no longer fits
     // is a bind that under-supplied the interface, and saying so is validate_node_extents'
     // job - it can name the node, which is what makes the mistake findable.
-    bool const graph_owned = handle->is_intermediate || _owned_tensor_ptrs.contains(handle->tensor_ptr);
-    if (!graph_owned) {
+    if (!decides_extents(id)) {
         return;
     }
 

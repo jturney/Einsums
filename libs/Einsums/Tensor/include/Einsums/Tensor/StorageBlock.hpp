@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -48,9 +49,29 @@ struct IsStdVector<std::vector<U, A>> : std::true_type {};
  * release and resize. @c base is the current pointer; @c generation counts relocations. The
  * destructor need not be virtual: blocks come from @c make_shared, which captures the right deleter.
  */
+/**
+ * @brief What a graph that holds a tensor as scratch says about its values.
+ *
+ * A graph's intermediate is the graph's to free, reuse or hold a tile at a time, so its values
+ * mean something only while the graph replays. The lease names the graph, for the message a
+ * refused read gives, and asks the graph's replay state whether a replay is running. Type-erased,
+ * because the replay state belongs to the ComputeGraph module and this one sits below it.
+ */
+struct ScratchLease {
+    std::string                 graph;                       ///< The graph's name.
+    std::shared_ptr<void const> state;                       ///< The graph tree's replay state, kept alive.
+    bool (*replaying)(void const *state) noexcept {nullptr}; ///< Whether @ref state says a replay is running.
+
+    /// @brief Whether the values may be read now.
+    [[nodiscard]] bool readable() const noexcept { return replaying == nullptr || replaying(state.get()); }
+};
+
 struct StorageBase {
     void  *base{nullptr}; ///< Current start of the buffer, or null when unallocated.
     size_t generation{0}; ///< Incremented on every relocation of @ref base.
+    /// Set by the graph that holds the tensor as an intermediate; null for a tensor whose values
+    /// are its holder's to read at any time.
+    std::shared_ptr<ScratchLease const> scratch;
 };
 
 /**

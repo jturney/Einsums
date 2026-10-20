@@ -163,9 +163,54 @@ def test_a_declared_tensor_with_no_storage_yet_refuses_every_read():
 
 def test_an_intermediate_released_after_its_last_use_refuses_every_read():
     released, _ = _released_intermediate(True)
-    assert "intermediate=False" in _refused_export(released)
-    with pytest.raises(RuntimeError, match="'K' has no storage"):
+    assert "intermediate of graph 'released'" in _refused_export(released)
+    with pytest.raises(RuntimeError, match="intermediate=False"):
         released[0, 0, 0]
+
+
+# ── An intermediate is readable only while its graph replays ──────────────
+#
+# What an intermediate holds after execute() is whatever the passes left: freed
+# when it is 64 KiB or more, a tile when a triangle pays, another tensor's bytes
+# when the arena reuses it. That depends on the size, the machine and the
+# pipeline, so it is refused always, not only when a pass took it.
+
+
+def test_an_intermediate_no_pass_touched_is_refused_after_execute_too():
+    import einsums.graph as cg
+
+    values = np.arange(6.0).reshape(3, 2)
+    a = einsums.create_zero_tensor("A", [3, 2])
+    np.asarray(a)[...] = values
+    total = einsums.create_zero_tensor("total", [3])
+    graph = cg.Graph("small")
+    small = graph.declare_tensor("S", [3, 2], True)
+    with cg.capture(graph):
+        einsums.einsum("i,j <- i,j ; i,j", small, a, a)
+        einsums.einsum("i <- i,j ; i,j", total, small, a)
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    np.testing.assert_allclose(np.asarray(total), (values**3).sum(axis=1))
+    assert "intermediate of graph 'small'" in _refused_export(small)
+
+
+def test_an_intermediate_reads_inside_the_replay():
+    import einsums.graph as cg
+
+    values = np.arange(6.0).reshape(3, 2)
+    a = einsums.create_zero_tensor("A", [3, 2])
+    np.asarray(a)[...] = values
+    total = einsums.create_zero_tensor("total", [3])
+    graph = cg.Graph("inside")
+    square = graph.declare_tensor("S", [3, 2], True)
+    seen = []
+    with cg.capture(graph):
+        einsums.einsum("i,j <- i,j ; i,j", square, a, a)
+        cg.custom("look", lambda: seen.append(np.asarray(square).copy()), square)
+        einsums.einsum("i <- i,j ; i,j", total, square, a)
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    np.testing.assert_allclose(seen[0], values**2)
 
 
 def test_a_result_the_graph_declared_reads_back_after_execute():

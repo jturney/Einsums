@@ -648,6 +648,10 @@ bool BasisTruncation::transform(Graph &graph) {
         bool                     grid{false};
         bool                     usable{false};
         bool                     intermediate{false};
+        bool                     graph_sized{false}; ///< The graph decides its extents (Graph::decides_extents).
+
+        /// Whether the algebra produces it at extents the graph chooses: resized, not projected.
+        [[nodiscard]] bool derived() const { return intermediate || (graph_sized && written); }
     };
     std::optional<SpaceId> const grid_space = graph.space_registry().find(ThcFactorization::grid_space_name());
 
@@ -662,6 +666,7 @@ bool BasisTruncation::transform(Graph &graph) {
         found.name         = handle.name;
         found.rank         = handle.rank;
         found.intermediate = handle.is_intermediate;
+        found.graph_sized  = graph.decides_extents(tid);
         found.usable       = handle.dtype == packed_gemm::ScalarType::Float64 && handle.impl_fn != nullptr;
         for (std::size_t axis = 0; axis < spaces.size(); ++axis) {
             if (spaces[axis] == *space) {
@@ -737,11 +742,12 @@ bool BasisTruncation::transform(Graph &graph) {
         return false;
     }
 
-    // An interface tensor the algebra WRITES cannot be projected: its extents are the caller's,
+    // A caller's tensor the algebra WRITES cannot be projected: its extents are the caller's,
     // and a graph that wrote a truncated answer into a full-sized buffer would be reporting a
-    // number for a space nobody asked about.
+    // number for a space nobody asked about. A result the graph declared is the graph's to size,
+    // whether or not the caller reads it afterwards.
     for (auto const &candidate : candidates) {
-        if (candidate.written && !candidate.intermediate) {
+        if (candidate.written && !candidate.graph_sized) {
             note_skip("a tensor this graph writes runs over the space being replaced, and its extents belong to the caller",
                       fmt::format("'{}'", candidate.name));
             return false;
@@ -751,7 +757,7 @@ bool BasisTruncation::transform(Graph &graph) {
     std::vector<Candidate const *> to_project;
     std::vector<Candidate const *> to_replace;
     for (auto const &candidate : candidates) {
-        if (candidate.intermediate || !candidate.read) {
+        if (candidate.derived() || !candidate.read) {
             continue;
         }
         if (!candidate.usable) {
@@ -965,7 +971,7 @@ bool BasisTruncation::transform(Graph &graph) {
     // The annotations are re-stated either way, because an annotation naming the space that was
     // replaced would be a claim about the graph that is no longer true.
     for (auto const &candidate : candidates) {
-        if (!candidate.intermediate) {
+        if (!candidate.derived()) {
             continue;
         }
         if (TensorHandle const *handle = graph.find_tensor(candidate.id);

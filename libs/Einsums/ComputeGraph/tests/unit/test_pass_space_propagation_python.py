@@ -162,7 +162,7 @@ def test_the_pass_reports_no_modification_and_the_graph_still_executes(reg):
 
     g = cg.Graph("executes")
     g.set_space_registry(reg)
-    C = g.create_zero_tensor("C", [4, 16], dtype="float64")
+    C = g.create_zero_tensor("C", [4, 16], dtype="float64", intermediate=False)  # a result, read after execute()
     with cg.capture(g):
         einsums.einsum("ix <- ia ; ax", C, A, B)
 

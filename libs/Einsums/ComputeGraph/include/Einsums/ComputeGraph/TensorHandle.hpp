@@ -18,6 +18,7 @@
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/PendingInit.hpp>
+#include <Einsums/Tensor/StorageBlock.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/TensorBase/TensorBase.hpp>
 
@@ -390,6 +391,14 @@ struct TensorHandle {
     /// Type-erased function to release backing storage (free memory, return to deferred state).
     /// Set by make_handle() or declare_tensor(). Called by Free nodes from FreeInsertion pass.
     std::function<void()> release_fn;
+
+    /// Type-erased access to the tensor's own storage block, for the scratch lease
+    /// @ref Graph::execute gives an intermediate. Set only for owning types: a view's block is its
+    /// parent's, and leasing it would make the parent scratch.
+    std::function<einsums::detail::StorageBase *()> storage_of;
+
+    /// Whether @ref Graph::execute has leased this intermediate's storage, so it does it once.
+    bool scratch_leased{false};
 
     /// Type-erased function to zero the tensor data.
     /// Set by declare_tensor on Workspace/Pipeline/Graph. Called by Initialize nodes.
@@ -860,6 +869,9 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
     // views don't have anything to release.
     if constexpr (requires(CleanTensor &t) { t.release(); }) {
         h.release_fn = [tensor_mut]() { tensor_mut->release(); };
+        if constexpr (requires(CleanTensor &t) { t.storage().get(); }) {
+            h.storage_of = [tensor_mut]() -> einsums::detail::StorageBase * { return tensor_mut->storage().get(); };
+        }
     }
 
     // materialize_fn: allocate backing storage for a deferred tensor. When a

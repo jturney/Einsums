@@ -62,6 +62,9 @@ class RunContext {
     /// Leave the replay @ref enter entered.
     void leave() noexcept { _depth.fetch_sub(1, std::memory_order_acq_rel); }
 
+    /// Whether a replay of the tree is running, on any thread.
+    [[nodiscard]] bool replaying() const noexcept { return _depth.load(std::memory_order_acquire) > 0; }
+
     /// Start the outermost replay holding @p held bytes: what the tensors the lifecycle nodes
     /// manage hold right now, whoever allocated them. Counting from that, rather than from the
     /// previous replay's count, keeps a tensor allocated outside a lifecycle node (eagerly, or

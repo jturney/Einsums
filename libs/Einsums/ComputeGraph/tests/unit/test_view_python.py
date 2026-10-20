@@ -276,7 +276,7 @@ def test_einsum_through_view_of_deferred_tensor_matches_numpy(dtype):
 
     g = cg.Graph("pair-driven-deferred")
     T = g.declare_zero_tensor("T", [o, o, v, v], dtype=dtype, intermediate=True)
-    r2 = g.declare_zero_tensor("r2", [o, o, v, v], dtype=dtype, intermediate=True)
+    r2 = g.declare_zero_tensor("r2", [o, o, v, v], dtype=dtype, intermediate=False)  # the result, read after execute()
     H = g.declare_zero_tensor("H", [naux, v, v], dtype=dtype, intermediate=True)
     FULL = (0, 0, 0)
     with cg.capture(g):

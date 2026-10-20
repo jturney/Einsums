@@ -567,6 +567,17 @@ report says so at every verbosity:
       of 2684354, because it is declared as a result the caller may read after
       execute(); declare it as an intermediate if nothing does
 
+The other side of the same declaration: an intermediate keeps its values only
+while the graph replays. A pass may free it after its last use, reuse its
+memory for another tensor, or hold it a block at a time, and which of those
+happens depends on its size, the machine and the pipeline. So reading an
+intermediate from Python after ``execute()`` is refused, always, with an error
+that names the tensor and the graph, and a read from inside the replay, such as
+a ``cg.custom`` node, is not. Declare a tensor you read afterwards as a result.
+A result the graph declared is still the graph's to size: a pass that changes
+the extents of a space, such as a basis truncation, resizes it as it would an
+intermediate.
+
 On the full-axis DF-MP2 capture at water in cc-pVDZ, under a cap of 4096 bytes,
 it chooses the two occupied axes, 25 slices at depth one, and the largest
 intermediate the loop holds falls from 72200 bytes to 2888. With the denominator

@@ -110,18 +110,19 @@ def _mp2(ovov, eps_occ, eps_vir):
 def _ladder(problem, name):
     """``K[i,a,j,b] = sum_Q B[Q,i,a] B[Q,j,b]``, the shape a density-fitted program writes.
 
-    ``K`` is a graph-owned intermediate rather than the caller's tensor, which is
-    what lets its extents follow the space: an interface tensor the algebra WRITES
-    belongs to the caller and the pass declines to shrink it. It is read by a pair
-    quantity the caller owns, because an intermediate nothing reads is one dead-node
-    elimination is right to take away and the sweep needs its values.
+    ``K`` is a result the graph declared rather than the caller's tensor, which is
+    what lets its extents follow the space: a caller's tensor the algebra WRITES
+    keeps the caller's extents and the pass declines to shrink it. It is declared
+    as a result, not an intermediate, because the sweep reads it after execute(),
+    and an intermediate keeps its values only while the graph replays. It is read by
+    a pair quantity the caller owns as well, so the program computes something.
     """
     nocc, nvir = problem["nocc"], problem["nvir"]
     three = _tensor("B_ov", problem["B_ov"])
     pairs = einsums.create_zero_tensor("pairs", [nocc, nocc])
 
     graph = cg.Graph(name)
-    integrals = graph.declare_tensor("K", [nocc, nvir, nocc, nvir], True)
+    integrals = graph.declare_tensor("K", [nocc, nvir, nocc, nvir], False)
     with cg.capture(graph):
         einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", integrals, three, three)
         einsums.einsum("i,a,j,b ; i,a,j,b -> i,j", pairs, integrals, integrals)
@@ -171,16 +172,8 @@ def _truncate(program, problem, occupation, verbosity=1):
 
 
 def _replay(program, verbosity=1):
-    """Optimize and execute, and hand back the truncated integrals and energies.
-
-    The integrals are a graph-owned intermediate, read here after execute() to
-    measure the truncation, which the schedule does not promise to leave whole:
-    AxisTiling runs the pair contraction as a triangle once ``K`` is large enough
-    to pay for it, and then holds only a tile of ``K`` at a time. The schedule is
-    not what these tests are about, so it stays as captured.
-    """
+    """Optimize and execute, and hand back the truncated integrals and energies."""
     manager = cg.default_pass_manager()
-    manager.disable("AxisTiling")
     manager.set_verbosity(verbosity)
     program["graph"].apply(manager)
     program["graph"].execute()

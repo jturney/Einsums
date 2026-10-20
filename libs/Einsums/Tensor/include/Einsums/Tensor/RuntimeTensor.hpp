@@ -73,12 +73,22 @@ Tensor &viewable(Tensor &tensor, char const *what) {
  * sentinel: an element read through it faults, and a buffer exported from it is a null pointer
  * with a full length, which numpy silently replaces with a new uninitialized array.
  *
+ * An intermediate is refused outside a replay even when it has storage: what it holds then is
+ * whatever the passes left, which depends on its size, the machine and the pipeline.
+ *
  * @param tensor The tensor to read or write.
  * @param what What is being done, for the message.
- * @throws std::logic_error when @p tensor has no storage.
+ * @throws std::logic_error when @p tensor has no storage, or is an intermediate and no replay is running.
  */
 template <typename Tensor>
 Tensor &readable(Tensor &tensor, char const *what) {
+    if (auto const &lease = tensor.storage()->scratch; lease != nullptr && !lease->readable()) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                "{}: tensor '{}' is an intermediate of graph '{}', which keeps its values only while it replays: "
+                                "a pass may free it, reuse its memory, or hold it a tile at a time. Declare it with "
+                                "intermediate=False to read it after execute().",
+                                what, tensor.name(), lease->graph);
+    }
     if (!tensor.is_materialized()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error,
                                 "{}: tensor '{}' has no storage. A tensor a graph declared has none until the graph "

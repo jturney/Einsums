@@ -136,7 +136,25 @@ void Graph::resync_slot_storage(std::span<TensorId const> ids) {
     }
 }
 
+void Graph::lease_scratch() {
+    for (auto &[tid, handle] : _tensors) {
+        if (handle.scratch_leased || !handle.is_intermediate || !handle.storage_of) {
+            continue;
+        }
+        handle.scratch_leased = true;
+        auto *storage         = handle.storage_of();
+        if (storage == nullptr || storage->scratch != nullptr) {
+            continue;
+        }
+        storage->scratch = std::make_shared<einsums::detail::ScratchLease const>(
+            einsums::detail::ScratchLease{.graph = _name, .state = _run_context, .replaying = [](void const *state) noexcept {
+                                              return static_cast<detail::RunContext const *>(state)->replaying();
+                                          }});
+    }
+}
+
 void Graph::execute() {
+    lease_scratch();
     // An operand a Free released and a later Materialize replaced has moved,
     // and any stand-in this graph adopted for it still names the old buffer.
     // Before the alias derivation, which reads those addresses.
@@ -568,6 +586,7 @@ void Graph::execute() {
 }
 
 void Graph::execute(Executor &executor) {
+    lease_scratch();
     auto const        replay_t0 = std::chrono::steady_clock::now();
     bool const        outermost = _run_context->enter();
     LeaveReplay const leave{*_run_context};

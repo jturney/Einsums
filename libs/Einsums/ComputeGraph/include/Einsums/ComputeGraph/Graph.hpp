@@ -879,6 +879,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void resync_slot_storage();
 
     /**
+     * @brief Give every intermediate this graph holds a scratch lease on its storage block.
+     *
+     * An intermediate is the graph's to free, reuse or hold a tile at a time, so its values mean
+     * something only while the graph replays; the lease is what lets a read from outside a replay
+     * say so instead of returning whatever the passes left (see @ref einsums::detail::ScratchLease).
+     * Run at the start of every @ref execute; each handle is leased once, and a tensor that already
+     * carries a lease keeps the one it has.
+     */
+    void lease_scratch();
+
+    /**
      * @brief Re-seat the adopted stand-ins of @p ids only.
      *
      * For a node that runs outside this graph's own ``execute()`` but reaches its operands
@@ -4470,6 +4481,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     void resize_intermediate(TensorId id, std::vector<std::size_t> const &dims, std::string_view producer);
+
+    /**
+     * @brief Whether this graph decides @p id's extents.
+     *
+     * True for a tensor the graph made, by a declare or a create, whether or not the caller reads
+     * it afterwards, and for any intermediate. A caller's own tensor keeps the extents the caller
+     * gave it. A separate question from @c is_intermediate, which says whether the values outlive
+     * a replay: a result the graph declared is the graph's to size and the caller's to read.
+     *
+     * @param[in] id A tensor of this graph.
+     * @return The answer; false for an unknown id.
+     */
+    [[nodiscard]] bool decides_extents(TensorId id) const;
 
     /**
      * @brief Every ragged extent table @ref bind_ragged_extents has accepted.

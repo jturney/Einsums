@@ -211,7 +211,7 @@ def test_the_graph_still_executes_and_its_results_are_unchanged(reg):
 
     g = cg.Graph("executes")
     g.set_space_registry(reg)
-    C = g.create_zero_tensor("C", [2, 4], dtype="float64")
+    C = g.create_zero_tensor("C", [2, 4], dtype="float64", intermediate=False)  # a result, read after execute()
     with cg.capture(g):
         einsums.einsum("ix <- ia ; ax", C, A, B)
 
