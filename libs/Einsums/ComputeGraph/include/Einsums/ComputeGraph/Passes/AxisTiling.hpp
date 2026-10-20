@@ -80,6 +80,19 @@
  * the remainder's extent, so a program over two ranged axes emits up to four loops, one per
  * combination of full and remainder blocks.
  *
+ * @par Half the tiles of two exchangeable axes
+ * Where two axes are cut into blocks of one extent and the region's contribution to its one output
+ * is unchanged when they are exchanged, together with an exchange of other axes of the output,
+ * only the tiles on and above the diagonal run. Each tile above it computes its contribution into a
+ * scratch tile and adds it to its own block and, exchanged, to the mirrored one. The particle
+ * ladder of a closed-shell coupled-cluster residual is that shape: it is unchanged under exchanging
+ * (i,a) with (j,b) because its amplitude is, so it costs about half the arithmetic it did. The
+ * exchange is proved, not assumed (@c contribution_symmetry in SymmetryRules.hpp), from symmetries the graph infers or
+ * the caller declared on its tensors, and every declaration the proof rests on is checked before the
+ * loops on every replay. Two exchangeable axes take the triangle over every grid, and its block is
+ * the one the cost model prices cheapest, since halving the tiles changes the kernels' shapes as
+ * well as their count.
+ *
  * @par Which intermediates
  * Every intermediate carrying a sliced axis is re-declared at slice extents inside the body. An
  * input carrying one is read as a VIEW of the caller's buffer and never as a copy, so a rebind
@@ -178,6 +191,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     static constexpr Reason NoAxisSet{"axis-tiling.no-axis-set", "no candidate axis set brings the seed under the cap"};
     static constexpr Reason ElementType{"axis-tiling.element-type", "the region's element type is not one the emitted body can name"};
     static constexpr Reason Sliced{"axis-tiling.sliced", "slice a region into a loop over blocks of its axes"};
+    static constexpr Reason Triangle{"axis-tiling.triangle", "run only the tiles on and above the diagonal of two exchangeable axes, "
+                                                             "and write each off-diagonal tile's mirror from it"};
+    static constexpr Reason TriangleShape{
+        "axis-tiling.triangle-shape", "the two sliced axes differ in extent or block, or the region reduces, sums into a tensor or writes "
+                                      "more than one caller's tensor, so every tile runs"};
+    static constexpr Reason NotExchangeable{"axis-tiling.not-exchangeable",
+                                            "the region's contribution is not provably unchanged when its two sliced axes are exchanged, "
+                                            "so every tile runs"};
+    static constexpr Reason TriangleBacked{"axis-tiling.triangle-backed",
+                                           "the region's output is backed by storage, and a mirrored tile lands outside the box the tile "
+                                           "streams, so every tile runs"};
+    static constexpr Reason BlockPinned{"axis-tiling.block-pinned", "the pinned block extent does not fit the memory the region may take"};
     /// @}
 
     /// @brief Default-construct, reading the cap from @ref option::GraphTilingMemoryCap.
@@ -236,6 +261,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return The cap in bytes; negative when it is derived per graph from the @c --einsums:max-memory option.
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("memory_cap") [[nodiscard]] std::int64_t memory_cap() const;
+
+    /**
+     * @brief Pin the block extent of a triangle's two axes.
+     * @param[in] extent The block, two or more; zero lets the cost model choose, which is the default.
+     *
+     * A triangle's block is priced from the machine's measured kernel rates, so the block it
+     * chooses moves between machines. A test that checks the emission at a given block pins it
+     * here. A pinned block that does not fit the memory the region may take declines the triangle.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void set_block_extent(std::int64_t extent);
 
     /// @brief How many regions the last apply tiled.
     ///
@@ -299,8 +335,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief How the last decision emits a chunk.
     /// @return ``"range"`` when some sliced axis is cut into blocks the body keeps as an axis,
-    ///         ``"grouped"`` when every sliced axis is a point and a chunk is one grouped node per
-    ///         family, and an empty string when the pass declined.
+    ///         ``"triangle"`` when two such axes are exchangeable and only the tiles on and above
+    ///         their diagonal run, ``"grouped"`` when every sliced axis is a point and a chunk is one
+    ///         grouped node per family, and an empty string when the pass declined.
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("emission") [[nodiscard]] std::string emission() const { return _emission; }
 
@@ -316,6 +353,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     ///         four for two ranged axes with remainders, zero when the pass declined.
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("loops") [[nodiscard]] std::size_t loops() const noexcept { return _loops; }
+
+    /// @brief The sign a triangle's mirrored tiles carry.
+    /// @return +1 when the region's contribution is symmetric under exchanging its two sliced axes,
+    ///         -1 when antisymmetric, and 0 when the last decision is not a triangle.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("triangle_sign") [[nodiscard]] int triangle_sign() const noexcept { return _triangle_sign; }
 
     /// @brief The tensor the reduction accumulates into across iterations, if there is one.
     /// @return Its name, or an empty string when the region has no such reduction.
@@ -370,6 +413,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     std::int64_t _memory_cap{0};
     bool         _cap_explicit{false};
+    std::int64_t _block_pin{0};
 
     std::size_t               _num_tiled{0};
     std::size_t               _slice_count{0};
@@ -390,6 +434,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::string               _emission;
     std::vector<std::int64_t> _block_extents;
     std::size_t               _loops{0};
+    int                       _triangle_sign{0};
     std::vector<std::string>  _regions;
 
     /// For every graph this apply has visited, the graph that holds it and the position of the

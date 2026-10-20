@@ -170,7 +170,17 @@ bool same_buffer(Graph const &graph, TensorId id, TensorId root) {
 constexpr int kMaxChainDepth = 8;
 
 // NOLINTNEXTLINE(misc-no-recursion): an axpby's source is itself a chain; kMaxChainDepth bounds it.
-std::optional<SymmetryDescriptor> symmetry_at_depth(EscapeAnalysis const &escape, TensorId tensor, NodeId reader, int depth) {
+using ReliedOn = std::vector<std::pair<TensorId, SymmetryDescriptor>>;
+
+/// Note that the answer rests on @p tensor's own @p hint.
+void rely_on(ReliedOn *relied_on, TensorId tensor, SymmetryDescriptor const &hint) {
+    if (relied_on != nullptr && std::ranges::none_of(*relied_on, [&](auto const &entry) { return entry.first == tensor; })) {
+        relied_on->emplace_back(tensor, hint);
+    }
+}
+
+std::optional<SymmetryDescriptor> symmetry_at_depth(EscapeAnalysis const &escape, TensorId tensor, NodeId reader, int depth,
+                                                    ReliedOn *relied_on) {
     if (depth > kMaxChainDepth)
         return std::nullopt;
     auto const &graph = escape.graph();
@@ -215,7 +225,7 @@ std::optional<SymmetryDescriptor> symmetry_at_depth(EscapeAnalysis const &escape
             auto const *desc = node.op_data.get_if<AxpbyDescriptor>();
             if (!desc || node.inputs.empty() || same_buffer(graph, node.inputs[0], root))
                 return std::nullopt;
-            term      = scaled_by(symmetry_at_depth(escape, node.inputs[0], node.id, depth + 1), live_alpha(*desc));
+            term      = scaled_by(symmetry_at_depth(escape, node.inputs[0], node.id, depth + 1, relied_on), live_alpha(*desc));
             overwrite = is_zero(live_beta(*desc));
             if (!overwrite)
                 state = scaled_by(state, live_beta(*desc));
@@ -243,6 +253,7 @@ std::optional<SymmetryDescriptor> symmetry_at_depth(EscapeAnalysis const &escape
         auto const &hint = graph.tensor(tensor).symmetry_hint;
         if (!hint)
             return std::nullopt;
+        rely_on(relied_on, tensor, *hint);
         return *hint;
     }
     return state;
@@ -484,7 +495,7 @@ bool written_between(EscapeAnalysis const &escape, TensorId id, std::vector<Node
 
 } // namespace
 
-std::optional<SymmetryOp> contribution_symmetry(EscapeAnalysis const &escape, NodeId writer, SymmetryOp const &sigma) {
+std::optional<SymmetryOp> contribution_symmetry(EscapeAnalysis const &escape, NodeId writer, SymmetryOp const &sigma, ReliedOn *relied_on) {
     auto const &graph = escape.graph();
     auto const &nodes = graph.nodes();
     auto const  at    = std::ranges::find(nodes, writer, &Node::id);
@@ -512,6 +523,9 @@ std::optional<SymmetryOp> contribution_symmetry(EscapeAnalysis const &escape, No
     if (!expand(escape, *at, identity, product, 0))
         return std::nullopt;
 
+    // What the proof rests on, handed out only when there is a proof.
+    ReliedOn relying;
+
     // A factor that reads the output makes the contribution depend on what the output held.
     auto const                                        out_root = graph.resolve_alias(at->outputs[0]);
     std::unordered_map<TensorId, std::vector<NodeId>> readers;
@@ -519,7 +533,7 @@ std::optional<SymmetryOp> contribution_symmetry(EscapeAnalysis const &escape, No
     for (auto const &factor : product.factors) {
         if (same_buffer(graph, factor.id, out_root))
             return std::nullopt;
-        auto elements = group_elements(symmetry_at(escape, factor.id, factor.reader), factor.letters.size());
+        auto elements = group_elements(symmetry_at_depth(escape, factor.id, factor.reader, 0, &relying), factor.letters.size());
         if (!elements)
             return std::nullopt;
         groups.push_back(std::move(*elements));
@@ -538,6 +552,10 @@ std::optional<SymmetryOp> contribution_symmetry(EscapeAnalysis const &escape, No
     if (!sign)
         return std::nullopt;
 
+    if (relied_on != nullptr) {
+        for (auto const &[tensor, hint] : relying)
+            rely_on(relied_on, tensor, hint);
+    }
     auto result      = sigma;
     result.sign      = static_cast<int8_t>(*sign);
     result.conjugate = false;
@@ -595,8 +613,8 @@ std::optional<SymmetryDescriptor> self_product_symmetry(Graph const &graph, Node
     return scaled_by(SymmetryDescriptor{{op}}, live_ab_prefactor(*desc));
 }
 
-std::optional<SymmetryDescriptor> symmetry_at(EscapeAnalysis const &escape, TensorId tensor, NodeId reader) {
-    return symmetry_at_depth(escape, tensor, reader, 0);
+std::optional<SymmetryDescriptor> symmetry_at(EscapeAnalysis const &escape, TensorId tensor, NodeId reader, ReliedOn *relied_on) {
+    return symmetry_at_depth(escape, tensor, reader, 0, relied_on);
 }
 
 std::optional<SymmetryDescriptor> output_symmetry(Graph const &graph, Node const &node) {

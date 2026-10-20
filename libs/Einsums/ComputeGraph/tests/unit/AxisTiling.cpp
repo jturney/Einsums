@@ -23,6 +23,7 @@
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <algorithm>
@@ -35,6 +36,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -1890,4 +1892,176 @@ TEST_CASE("AxisTiling does not count a body's tensors against a sibling that run
     auto const                     tiling   = decide_by_default(graph);
     std::vector<std::string> const streamed = tiling->streamed();
     CHECK(std::ranges::find(streamed, std::string{"H1"}) != streamed.end());
+}
+
+// ── The triangle: two exchangeable axes run only the tiles on and above their diagonal ─────────
+
+namespace {
+
+/// The density-fitted particle ladder over an amplitude with a declared symmetry, at extents a
+/// test can afford. The amplitude is made to HAVE the symmetry it declares.
+template <typename T>
+struct LadderProblem {
+    std::size_t      o;
+    std::size_t      v    = 4;
+    std::size_t      naux = 5;
+    RuntimeTensor<T> bvv;
+    RuntimeTensor<T> tau;
+    RuntimeTensor<T> r2;
+
+    /// @p sign +1 builds tau(i,j,e,f) = tau(j,i,f,e); -1 builds tau antisymmetric in (i,j) and in
+    /// (e,f) separately, as a spin-orbital amplitude is. Zero leaves it general and undeclared.
+    LadderProblem(std::size_t occupied, int sign)
+        : o{occupied}, bvv{filled_as<T>("Bvv", {naux, v, v}, 11U)}, tau{"Tau", std::vector<std::size_t>{o, o, v, v}},
+          r2{filled_as<T>("r2", {o, o, v, v}, 17U)} {
+        auto const raw = filled_as<T>("raw", {o, o, v, v}, 13U);
+        for (std::size_t i = 0; i < o; ++i)
+            for (std::size_t j = 0; j < o; ++j)
+                for (std::size_t e = 0; e < v; ++e)
+                    for (std::size_t f = 0; f < v; ++f) {
+                        if (sign > 0) {
+                            tau(i, j, e, f) = raw(i, j, e, f) + raw(j, i, f, e);
+                        } else if (sign < 0) {
+                            tau(i, j, e, f) = raw(i, j, e, f) - raw(j, i, e, f) - raw(i, j, f, e) + raw(j, i, f, e);
+                        } else {
+                            tau(i, j, e, f) = raw(i, j, e, f);
+                        }
+                    }
+        if (sign > 0) {
+            tau.set_symmetry(SymmetryDescriptor{{SymmetryOp::group_swap({0, 2}, {1, 3})}});
+        } else if (sign < 0) {
+            tau.set_symmetry(SymmetryDescriptor{{SymmetryOp::swap(0, 1, -1), SymmetryOp::swap(2, 3, -1)}});
+        }
+    }
+
+    /// r2 = c_pf r2 + the ladder, by plain loops.
+    RuntimeTensor<T> expected(T c_pf) const {
+        RuntimeTensor<T> out = r2;
+        RuntimeTensor<T> half("Href", std::vector<std::size_t>{naux, v, v, o, o});
+        half.zero();
+        testing::reference_einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", &half, bvv, tau);
+        testing::reference_einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", c_pf, &out, T{1}, half, bvv);
+        return out;
+    }
+
+    void capture(cg::Graph &graph, T c_pf) {
+        auto                  &half = graph.scratch_runtime<T>("H", std::vector<std::size_t>{naux, v, v, o, o});
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", &half, bvv, tau);
+        cg::einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", c_pf, &r2, T{1}, half, bvv);
+    }
+
+    /// The cap that holds a tile of the intermediate and not the whole of it.
+    [[nodiscard]] std::int64_t cap() const { return static_cast<std::int64_t>(naux * v * v * o * o * sizeof(T) / 2); }
+};
+
+/// Run the default pipeline over a graph AxisTiling has already rewritten, which materializes the
+/// buffers the emitted bodies declared, then replay it.
+void materialize_and_execute(cg::Graph &graph) {
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    graph.execute();
+}
+
+/// AxisTiling at @p cap with its triangle block pinned to @p block.
+std::shared_ptr<cg::passes::AxisTiling> decide_pinned(cg::Graph &graph, std::int64_t cap, std::int64_t block) {
+    auto tiling = std::make_shared<cg::passes::AxisTiling>();
+    tiling->set_memory_cap(cap);
+    tiling->set_block_extent(block);
+    cg::apply_single_pass(*tiling, graph);
+    return tiling;
+}
+
+template <typename T>
+void require_close(RuntimeTensor<T> const &got, RuntimeTensor<T> const &want, double terms) {
+    double scale = 0.0;
+    for (std::size_t n = 0; n < want.size(); ++n) {
+        scale = std::max(scale, static_cast<double>(std::abs(want.data()[n])));
+    }
+    for (std::size_t n = 0; n < want.size(); ++n) {
+        INFO("element " << n);
+        REQUIRE(std::abs(got.data()[n] - want.data()[n]) <= sum_tolerance<T>() * terms * scale);
+    }
+}
+
+} // namespace
+
+TEMPLATE_TEST_CASE("AxisTiling runs the ladder over a triangle of tiles when tau is declared symmetric",
+                   "[ComputeGraph][Pass][AxisTiling][Triangle]", float, double, std::complex<double>) {
+    using T = TestType;
+    // o = 6 in blocks of 2 divides (three diagonal tiles, three above); o = 7 in blocks of 3 leaves
+    // a remainder of one, which brings in the last-column and remainder-diagonal loops.
+    auto const [o, block, iterations, loops] =
+        GENERATE(table<std::size_t, std::int64_t, std::size_t, std::size_t>({{6, 2, 6, 2}, {7, 3, 6, 4}}));
+    // Accumulating onto r2, and overwriting an r2 full of NaN, which every element must lose.
+    T const c_pf = GENERATE(T{1}, T{0});
+
+    LadderProblem<T> problem(o, +1);
+    if (c_pf == T{0}) {
+        for (std::size_t n = 0; n < problem.r2.size(); ++n) {
+            problem.r2.data()[n] = T{std::numeric_limits<RemoveComplexT<T>>::quiet_NaN()};
+        }
+    }
+    auto const want = problem.expected(c_pf);
+
+    cg::Graph graph("triangle_ladder");
+    problem.capture(graph, c_pf);
+    auto const tiling = decide_pinned(graph, problem.cap(), block);
+    INFO("o " << o << ", block " << block << ", c_pf " << c_pf);
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->emission() == "triangle");
+    CHECK(tiling->triangle_sign() == +1);
+    CHECK(tiling->iterations() == iterations);
+    CHECK(tiling->loops() == loops);
+
+    materialize_and_execute(graph);
+    require_close(problem.r2, want, static_cast<double>(problem.naux * problem.v));
+}
+
+TEST_CASE("AxisTiling mirrors an antisymmetric ladder with the opposite sign", "[ComputeGraph][Pass][AxisTiling][Triangle]") {
+    // Spin-orbital tau, antisymmetric in (i,j): exchanging i and j alone negates the ladder.
+    LadderProblem<double> problem(6, -1);
+    auto const            want = problem.expected(1.0);
+
+    cg::Graph graph("antisymmetric_ladder");
+    problem.capture(graph, 1.0);
+    auto const tiling = decide_pinned(graph, problem.cap(), 2);
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->emission() == "triangle");
+    CHECK(tiling->triangle_sign() == -1);
+
+    materialize_and_execute(graph);
+    require_close(problem.r2, want, static_cast<double>(problem.naux * problem.v));
+}
+
+TEST_CASE("AxisTiling runs every tile when nothing declares tau's symmetry", "[ComputeGraph][Pass][AxisTiling][Triangle]") {
+    LadderProblem<double> problem(6, 0);
+    auto const            want = problem.expected(1.0);
+
+    cg::Graph graph("undeclared_ladder");
+    problem.capture(graph, 1.0);
+    auto const tiling = decide_pinned(graph, problem.cap(), 2);
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->emission() == "range");
+    CHECK(tiling->triangle_sign() == 0);
+    CHECK(declined_because(*tiling, "not provably unchanged"));
+
+    materialize_and_execute(graph);
+    require_close(problem.r2, want, static_cast<double>(problem.naux * problem.v));
+}
+
+TEST_CASE("AxisTiling's triangle refuses to run once tau no longer has its declared symmetry",
+          "[ComputeGraph][Pass][AxisTiling][Triangle]") {
+    // The declaration is a promise the triangle computes half its tiles from, so the loop checks it
+    // on every replay and a broken one stops the run rather than giving a wrong residual.
+    LadderProblem<double> problem(6, +1);
+
+    cg::Graph graph("broken_promise");
+    problem.capture(graph, 1.0);
+    auto const tiling = decide_pinned(graph, problem.cap(), 2);
+    REQUIRE(tiling->emission() == "triangle");
+
+    materialize_and_execute(graph); // Holds.
+    problem.tau(0, 1, 2, 3) += 1.0;
+    REQUIRE_THROWS_AS(graph.execute(), std::runtime_error);
 }

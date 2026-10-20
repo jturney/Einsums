@@ -4,9 +4,11 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
 #include <Einsums/ComputeGraph/DestinationRead.hpp>
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
@@ -14,10 +16,14 @@
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
+#include <Einsums/ComputeGraph/SymmetryRules.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/Tensor/SymmetryOps.hpp>
+#include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -32,7 +38,9 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -273,6 +281,7 @@ struct SlotPlan {
 
 /// One node of the region, everything the rewrite needs to re-emit it at a slice.
 struct NodePlan {
+    NodeId                id{unassigned_node_id};
     OpKind                kind{OpKind::Custom};
     OpData                op_data;
     std::vector<SlotPlan> slots;
@@ -349,6 +358,22 @@ struct Plan {
     std::vector<std::string>                          summed_names;
 
     packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown};
+
+    /// A region whose contribution to its one output is unchanged when its two sliced axes are
+    /// exchanged runs only the tiles on and above their diagonal. Each tile above it computes the
+    /// contribution into a scratch tile, adds it to its own block of the output, and adds the
+    /// exchanged scratch, with the contribution's sign, to the mirrored block.
+    struct Triangle {
+        std::size_t      writer{0};     ///< Index in @ref ops of the contraction writing the output.
+        SymmetryOp       sigma;         ///< On the output's positions, carrying the contribution's sign.
+        std::vector<int> mirror_labels; ///< The output's labels with the two sliced axes exchanged.
+        /// Declared symmetries the proof rests on, checked before the loops on every replay.
+        std::vector<std::pair<TensorId, SymmetryDescriptor>> checks;
+    };
+    std::optional<Triangle> triangle;
+
+    /// The cost model's price of a triangle plan, in its own microseconds.
+    double price_us{0.0};
 };
 
 /// Unify two label vectors position by position, failing on a genuine disagreement.
@@ -1450,6 +1475,7 @@ bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &
             continue;
         }
         NodePlan op;
+        op.id      = nodes[i].id;
         op.kind    = nodes[i].kind;
         op.op_data = nodes[i].op_data;
         op.label   = nodes[i].label;
@@ -1628,8 +1654,122 @@ std::vector<std::vector<AxisWalk>> loop_walks(Plan const &plan) {
     return combine_walks(per_axis);
 }
 
+/// One loop of a triangle: the walk over each of the two axes, which of each walk's positions
+/// every iteration is at, and whether its tiles are off the diagonal and so write a mirror.
+struct TriangleLoop {
+    std::vector<AxisWalk>                 walks;
+    std::vector<std::vector<std::size_t>> table;
+    bool                                  mirror{false};
+};
+
+/// The loops a triangle of tiles takes over two axes of extent @p extent cut in blocks of @p block.
+///
+/// With @c k full blocks and a remainder @c r, the tiles on and above the diagonal are the @c k
+/// full diagonal ones, the @c k(k-1)/2 full ones above them, the @c k full-by-remainder ones in the
+/// last column, and the remainder's own diagonal tile: up to four loops, each at one fixed shape,
+/// as the grid emission has.
+std::vector<TriangleLoop> triangle_loops(std::size_t extent, std::size_t block) {
+    std::size_t const full = extent / block;
+    std::size_t const rest = extent % block;
+    AxisWalk const    whole{.count = full, .step = block, .length = block, .range = true};
+    AxisWalk const    tail{.count = 1, .step = block, .offset = full * block, .length = rest, .range = true};
+
+    std::vector<TriangleLoop> out;
+    if (full > 0) {
+        TriangleLoop diagonal{.walks = {whole, whole}};
+        for (std::size_t b = 0; b < full; ++b) {
+            diagonal.table.push_back({b, b});
+        }
+        out.push_back(std::move(diagonal));
+    }
+    if (full > 1) {
+        TriangleLoop above{.walks = {whole, whole}, .mirror = true};
+        for (std::size_t b = 0; b < full; ++b) {
+            for (std::size_t c = b + 1; c < full; ++c) {
+                above.table.push_back({b, c});
+            }
+        }
+        out.push_back(std::move(above));
+    }
+    if (full > 0 && rest > 0) {
+        TriangleLoop column{.walks = {whole, tail}, .mirror = true};
+        for (std::size_t b = 0; b < full; ++b) {
+            column.table.push_back({b, 0});
+        }
+        out.push_back(std::move(column));
+    }
+    if (rest > 0) {
+        out.push_back(TriangleLoop{.walks = {tail, tail}, .table = {{0, 0}}});
+    }
+    return out;
+}
+
+/// The cost model this pass prices triangles with, built once per process.
+DeviceProfile const &pricing_profile() {
+    static CostModel const model = CostModel::detect_default();
+    return model.device(Target::CPU);
+}
+
+/// What the cost model says one run of @p plan's statements costs at the tile shape @p length
+/// (one entry per sliced axis), in its microseconds, plus the mirror's two passes over a scratch
+/// tile when @p mirror is set.
+double tile_price(Graph const &graph, Plan const &plan, std::vector<std::size_t> const &length, bool mirror) {
+    auto const &profile = pricing_profile();
+    double      total   = 0.0;
+    for (std::size_t o = 0; o < plan.ops.size(); ++o) {
+        auto const &op = plan.ops[o];
+        if (op.kind != OpKind::Einsum) {
+            continue;
+        }
+        auto const                         lists = live_index_lists(op.op_data.get<EinsumDescriptor>());
+        std::map<std::string, std::size_t> extent;
+        auto const                         learn = [&](std::vector<std::string> const &letters, SlotPlan const &slot) {
+            auto const &dims = graph.tensor(slot.tid).dims;
+            for (std::size_t p = 0; p < letters.size() && p < dims.size(); ++p) {
+                bool const sliced  = p < slot.labels.size() && slot.labels[p] != kFree;
+                extent[letters[p]] = sliced ? length[static_cast<std::size_t>(slot.labels[p])] : dims[p];
+            }
+        };
+        learn(lists.c, op.slots[0]);
+        learn(lists.a, op.slots[1]);
+        learn(lists.b, op.slots[2]);
+        auto const in = [](std::vector<std::string> const &letters, std::string const &l) {
+            return std::ranges::find(letters, l) != letters.end();
+        };
+        std::size_t m = 1, n = 1, k = 1, batch = 1;
+        for (auto const &[letter, e] : extent) {
+            bool const c = in(lists.c, letter), a = in(lists.a, letter), b = in(lists.b, letter);
+            if (a && b && c) {
+                batch *= e;
+            } else if (a && b) {
+                k *= e;
+            } else if (a) {
+                m *= e;
+            } else if (b) {
+                n *= e;
+            }
+        }
+        total += static_cast<double>(batch) * profile.estimate_gemm_time_us(m, n, k);
+        if (mirror && plan.triangle.has_value() && o == plan.triangle->writer) {
+            std::size_t elements = 1;
+            auto const &dims     = graph.tensor(op.slots[0].tid).dims;
+            for (std::size_t p = 0; p < dims.size(); ++p) {
+                bool const sliced = p < op.slots[0].labels.size() && op.slots[0].labels[p] != kFree;
+                elements *= sliced ? length[static_cast<std::size_t>(op.slots[0].labels[p])] : dims[p];
+            }
+            // The direct add and the mirrored permute each read the scratch and read and write a block.
+            total += profile.estimate_memory_time_us(6 * elements * graph.tensor(op.slots[0].tid).element_size);
+        }
+    }
+    return total;
+}
+
 /// The chunking of a plan in words, for the report and the explanation.
 std::string describe_chunks(Plan const &plan) {
+    if (plan.triangle.has_value()) {
+        return fmt::format("a triangle of blocks of {} in {} loop(s) of {} iteration(s) in all", fmt::join(plan.blocks, " x "),
+                           triangle_loops(plan.extents[0], plan.blocks[0]).size(), plan.iterations);
+    }
     if (plan.range) {
         return fmt::format("blocks of {} in {} loop(s) of {} iteration(s) in all", fmt::join(plan.blocks, " x "), loop_walks(plan).size(),
                            plan.iterations);
@@ -1775,8 +1915,13 @@ std::optional<double> real_prefactor(PrefactorScalar const &value) {
 /// A range plan emits one body per loop of @ref loop_walks, each at depth one: an axis cut into
 /// blocks is read through a RANGE view and kept in every spec at the block's extent, so one
 /// contraction covers the block, and @p tag keeps the parameters of one loop apart from another's.
+///
+/// A triangle's loops pass @p table, the block positions each iteration visits, in place of the
+/// grid, and a loop over tiles off the diagonal sets @p mirror: its contraction writes a scratch
+/// tile, which is added to the tile's own block of the output and, exchanged, to the mirrored one.
 template <typename T>
-void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWalk> const &walks, std::string const &tag) {
+void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWalk> const &walks, std::string const &tag,
+               std::vector<std::vector<std::size_t>> const *table = nullptr, bool mirror = false) {
     std::size_t const depth = plan.range ? 1 : std::max<std::size_t>(1, plan.depth);
 
     // ── Declarations, before the guard ──────────────────────────────────────
@@ -1800,6 +1945,19 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
             owned[{tid, member}] = &body.declare_runtime_tensor<T>(fmt::format("{}#{}", handle.name, member), dims, /*intermediate=*/true);
         }
     }
+    // A mirrored tile's contribution, at the shape of the tile's block of the output.
+    RuntimeTensor<T> *scratch = nullptr;
+    if (mirror) {
+        auto const              &out    = plan.ops[plan.triangle->writer].slots[0];
+        auto const              &handle = parent.tensor(out.tid);
+        std::vector<std::size_t> dims;
+        dims.reserve(handle.dims.size());
+        for (std::size_t p = 0; p < handle.dims.size(); ++p) {
+            bool const sliced = p < out.labels.size() && out.labels[p] != kFree;
+            dims.push_back(sliced ? walks[static_cast<std::size_t>(out.labels[p])].length : handle.dims[p]);
+        }
+        scratch = &body.declare_runtime_tensor<T>("axtile_mirror", dims, /*intermediate=*/true);
+    }
     std::vector<RuntimeTensor<T> *> partials(depth, nullptr);
     if (plan.accumulator_id != 0) {
         for (std::size_t member = 0; member < depth; ++member) {
@@ -1811,7 +1969,8 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
     CaptureGuard const guard(body);
 
     // ── The slice index, one parameter per axis per member ──────────────────
-    auto const  bounds   = declare_walk_bounds(body, depth, walks, "axtile", tag);
+    auto const  bounds   = table != nullptr ? declare_table_bounds(body, walks, *table, "axtile", tag)
+                                            : declare_walk_bounds(body, depth, walks, "axtile", tag);
     auto const &index_of = bounds.start;
     auto const &end_of   = bounds.end;
 
@@ -1886,15 +2045,41 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
 
         switch (op.kind) {
         case OpKind::Einsum: {
-            auto const &desc     = op.op_data.get<EinsumDescriptor>();
-            auto const  lists    = live_index_lists(desc);
-            auto const  c        = surviving(lists.c, op.slots[0].labels, walks);
-            auto const  a        = surviving(lists.a, op.slots[1].labels, walks);
-            auto const  b        = surviving(lists.b, op.slots[2].labels, walks);
-            auto const  alpha    = real_prefactor(live_ab_prefactor(desc));
-            auto const  beta     = real_prefactor(live_c_prefactor(desc));
-            auto const  as_gemm  = gemm_shape(c, a, b, lists.link);
-            bool        readable = true;
+            auto const &desc  = op.op_data.get<EinsumDescriptor>();
+            auto const  lists = live_index_lists(desc);
+            auto const  c     = surviving(lists.c, op.slots[0].labels, walks);
+            auto const  a     = surviving(lists.a, op.slots[1].labels, walks);
+            auto const  b     = surviving(lists.b, op.slots[2].labels, walks);
+            auto const  alpha = real_prefactor(live_ab_prefactor(desc));
+            auto const  beta  = real_prefactor(live_c_prefactor(desc));
+            if (mirror && &op == &plan.ops[plan.triangle->writer]) {
+                // The tile's contribution once, then its two destinations. Both adds are permutes
+                // with the contraction's own destination prefactor, so a prefactor of zero
+                // overwrites each block exactly as the captured contraction did, and every element
+                // of the output is written by exactly one of the two.
+                auto      &tile = view_runtime(*scratch, std::vector<ViewAxis>(scratch->rank(), ViewAxis::full()));
+                auto const text = einsum_spec_text(a, b, c, live_conj_a(desc), live_conj_b(desc), lists.operators);
+                einsum(EinsumFormatString(text), T{0}, &tile, as<T>(live_ab_prefactor(desc)), *operand[1][0], *operand[2][0]);
+
+                T const     beta  = as<T>(live_c_prefactor(desc));
+                auto const &sigma = plan.triangle->sigma;
+                permute(PermuteFormatString(fmt::format("{} <- {}", fmt::join(c, ","), fmt::join(c, ","))), beta, operand[0][0], T{1},
+                        tile);
+
+                // The mirrored block at q holds the contribution at the exchanged index, which is
+                // sign times the tile at apply(sigma, q).
+                std::vector<std::string> exchanged;
+                exchanged.reserve(c.size());
+                for (std::size_t p = 0; p < c.size(); ++p) {
+                    exchanged.push_back(c[static_cast<std::size_t>(static_cast<unsigned char>(sigma.permutation[p]))]);
+                }
+                auto &mirrored = view_of(op.slots[0].tid, plan.triangle->mirror_labels, 0);
+                permute(PermuteFormatString(fmt::format("{} <- {}", fmt::join(c, ","), fmt::join(exchanged, ","))), beta, &mirrored,
+                        T(static_cast<double>(sigma.sign)), tile);
+                break;
+            }
+            auto const as_gemm  = gemm_shape(c, a, b, lists.link);
+            bool       readable = true;
             for (auto const &slot : operand) {
                 for (auto const *view : slot) {
                     readable = readable && gemm_readable(*view);
@@ -2025,6 +2210,36 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
     }
 }
 
+/// Check, in the PARENT before the loop and on every replay, that @p handle's tensor still has the
+/// symmetry @p desc it was declared with. A triangle computes half its tiles from that promise, so
+/// a broken one is an error here rather than a wrong result later.
+template <typename T>
+void check_declared_symmetry(Graph &graph, TensorHandle const &handle, SymmetryDescriptor const &desc) {
+    CaptureGuard const guard(graph);
+    auto const         label = fmt::format("AxisTiling: check the declared symmetry of '{}'", handle.name);
+    auto const         fail  = [name = handle.name]() {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                "AxisTiling: '{}' was declared symmetric, and a tiling that computes half of a contraction from that "
+                                "declaration relies on it, but its values no longer have the declared symmetry",
+                                name);
+    };
+    if (handle.is_tensor_view) {
+        auto *tensor = static_cast<RuntimeTensorView<T> *>(handle.live_ptr());
+        custom(label, std::tie(*tensor), std::tuple<>{}, [tensor, desc, fail]() {
+            if (!check_symmetry(*tensor, desc)) {
+                fail();
+            }
+        });
+    } else {
+        auto *tensor = static_cast<RuntimeTensor<T> *>(handle.live_ptr());
+        custom(label, std::tie(*tensor), std::tuple<>{}, [tensor, desc, fail]() {
+            if (!check_symmetry(*tensor, desc)) {
+                fail();
+            }
+        });
+    }
+}
+
 /// The dtype dispatch, and the only place the pass names an element type.
 bool emit_tiled_loop(Graph &graph, Plan const &plan) {
     auto emit = [&]<typename T>() {
@@ -2039,6 +2254,12 @@ bool emit_tiled_loop(Graph &graph, Plan const &plan) {
         for (auto const &[tid, prefactor] : plan.summed_into) {
             if (T const factor = as<T>(prefactor); factor != T{1}) {
                 scale_in_parent(graph, graph.tensor(tid), factor);
+                ++prologue;
+            }
+        }
+        if (plan.triangle.has_value()) {
+            for (auto const &[tid, desc] : plan.triangle->checks) {
+                check_declared_symmetry<T>(graph, graph.tensor(tid), desc);
                 ++prologue;
             }
         }
@@ -2064,7 +2285,18 @@ bool emit_tiled_loop(Graph &graph, Plan const &plan) {
         // loops follow the zeroing, one after another, in the order @ref loop_walks lists them.
         auto const below = static_cast<std::size_t>(std::ranges::count_if(plan.replaced, [site](std::size_t p) { return p < site; }));
         std::size_t const position = (site - below) + prologue;
-        auto const        loops    = loop_walks(plan);
+        if (plan.triangle.has_value()) {
+            auto const loops = triangle_loops(plan.extents[0], plan.blocks[0]);
+            for (std::size_t l = 0; l < loops.size(); ++l) {
+                std::size_t const iterations = loops[l].table.size();
+                Graph            &body =
+                    graph.add_loop_at(fmt::format("AxisTiling#{}", l), iterations,
+                                      PredExpr::iteration(CmpOp::Lt, BoundExpr(static_cast<std::int64_t>(iterations) - 1)), position + l);
+                emit_body<T>(graph, body, plan, loops[l].walks, fmt::format("{}", l), &loops[l].table, loops[l].mirror);
+            }
+            return;
+        }
+        auto const loops = loop_walks(plan);
         for (std::size_t l = 0; l < loops.size(); ++l) {
             std::size_t const iterations = plan.range ? walk_iterations(loops[l]) : plan.iterations;
             Graph            &body =
@@ -2092,7 +2324,150 @@ bool emit_tiled_loop(Graph &graph, Plan const &plan) {
     }
 }
 
+/// Whether @p lhs is the better of two plans that fit. A triangle beats every plan that runs all its
+/// tiles, since it does about half the arithmetic whatever the bytes; two triangles compare by
+/// price, and two grids by the bytes they stream.
+bool preferred(Plan const &lhs, Plan const &rhs) {
+    if (lhs.triangle.has_value() != rhs.triangle.has_value()) {
+        return lhs.triangle.has_value();
+    }
+    if (lhs.triangle.has_value()) {
+        return lhs.price_us < rhs.price_us;
+    }
+    return lhs.traffic < rhs.traffic;
+}
+
+/// Every way to pair up the positions in @p rest so that paired positions have equal extents, each
+/// written as swaps into a copy of @p current, appended to @p out with the empty pairing first.
+void exchanges(std::vector<std::size_t> const &rest, std::vector<std::size_t> const &dims, std::size_t from, SymmetryOp current,
+               std::vector<bool> &taken, std::vector<SymmetryOp> &out) {
+    while (from < rest.size() && taken[from]) {
+        ++from;
+    }
+    if (from == rest.size()) {
+        out.push_back(current);
+        return;
+    }
+    taken[from] = true;
+    exchanges(rest, dims, from + 1, current, taken, out); // This position stays where it is.
+    for (std::size_t other = from + 1; other < rest.size(); ++other) {
+        if (taken[other] || dims[rest[from]] != dims[rest[other]]) {
+            continue;
+        }
+        taken[other]                    = true;
+        auto paired                     = current;
+        paired.permutation[rest[from]]  = static_cast<int8_t>(rest[other]);
+        paired.permutation[rest[other]] = static_cast<int8_t>(rest[from]);
+        exchanges(rest, dims, from + 1, paired, taken, out);
+        taken[other] = false;
+    }
+    taken[from] = false;
+}
+
+/// The triangle a two-axis range plan can be, or the reason it cannot.
+struct TriangleVerdict {
+    std::optional<Plan::Triangle> triangle;
+    Reason const                 *reason{nullptr};
+};
+
+/// Whether @p plan's region writes one caller's tensor whose contribution is unchanged when the two
+/// sliced axes are exchanged, together with some exchange of the output's other axes.
+TriangleVerdict find_triangle(Graph const &graph, Plan const &plan, std::function<bool(TensorId)> const &backed,
+                              EscapeAnalysis const &escape) {
+    if (!plan.range || plan.extents.size() != 2 || plan.extents[0] != plan.extents[1] || plan.accumulator_id != 0 ||
+        !plan.summed_into.empty()) {
+        return {.reason = &AxisTiling::TriangleShape};
+    }
+    std::set<TensorId> owned;
+    for (auto const &[tid, labels] : plan.body_owned) {
+        owned.insert(tid);
+    }
+    std::optional<std::size_t> writer;
+    for (std::size_t o = 0; o < plan.ops.size(); ++o) {
+        if (owned.contains(plan.ops[o].slots[0].tid)) {
+            continue;
+        }
+        if (writer.has_value()) {
+            return {.reason = &AxisTiling::TriangleShape}; // Two caller's tensors written.
+        }
+        writer = o;
+    }
+    if (!writer.has_value()) {
+        return {.reason = &AxisTiling::TriangleShape};
+    }
+    auto const &op = plan.ops[*writer];
+    if (op.kind != OpKind::Einsum) {
+        return {.reason = &AxisTiling::NotExchangeable};
+    }
+    auto const &labels = op.slots[0].labels;
+    auto const  row    = std::ranges::find(labels, 0);
+    auto const  col    = std::ranges::find(labels, 1);
+    if (row == labels.end() || col == labels.end() || std::ranges::count(labels, 0) != 1 || std::ranges::count(labels, 1) != 1) {
+        return {.reason = &AxisTiling::TriangleShape};
+    }
+    // The output is the writer's alone in the region: a reader would see half-mirrored blocks.
+    TensorId const out = graph.buffer_of(op.slots[0].tid);
+    for (std::size_t o = 0; o < plan.ops.size(); ++o) {
+        for (std::size_t slot = (o == *writer ? 1 : 0); slot < plan.ops[o].slots.size(); ++slot) {
+            if (graph.buffer_of(plan.ops[o].slots[slot].tid) == out) {
+                return {.reason = &AxisTiling::TriangleShape};
+            }
+        }
+    }
+    if (backed(op.slots[0].tid)) {
+        return {.reason = &AxisTiling::TriangleBacked};
+    }
+
+    auto const &dims = graph.tensor(op.slots[0].tid).dims;
+    if (dims.size() > static_cast<std::size_t>(kMaxSymmetryRank)) {
+        return {.reason = &AxisTiling::NotExchangeable};
+    }
+    auto const p_row        = static_cast<std::size_t>(row - labels.begin());
+    auto const p_col        = static_cast<std::size_t>(col - labels.begin());
+    auto       base         = SymmetryOp::identity();
+    base.permutation[p_row] = static_cast<int8_t>(p_col);
+    base.permutation[p_col] = static_cast<int8_t>(p_row);
+    std::vector<std::size_t> rest;
+    for (std::size_t p = 0; p < dims.size(); ++p) {
+        if (p != p_row && p != p_col) {
+            rest.push_back(p);
+        }
+    }
+    std::vector<SymmetryOp> candidates;
+    std::vector<bool>       taken(rest.size(), false);
+    exchanges(rest, dims, 0, base, taken, candidates);
+
+    for (auto const &sigma : candidates) {
+        std::vector<std::pair<TensorId, SymmetryDescriptor>> relied_on;
+        auto const                                           proven = contribution_symmetry(escape, op.id, sigma, &relied_on);
+        if (!proven.has_value()) {
+            continue;
+        }
+        // Every promise the proof rests on gets a check the emitted loop can run.
+        bool const checkable = std::ranges::all_of(relied_on, [&](auto const &entry) {
+            auto const &handle = graph.tensor(entry.first);
+            return handle.is_runtime && handle.dtype == plan.dtype;
+        });
+        if (!checkable) {
+            return {.reason = &AxisTiling::NotExchangeable};
+        }
+        Plan::Triangle triangle;
+        triangle.writer               = *writer;
+        triangle.sigma                = *proven;
+        triangle.mirror_labels        = labels;
+        triangle.mirror_labels[p_row] = 1;
+        triangle.mirror_labels[p_col] = 0;
+        triangle.checks               = std::move(relied_on);
+        return {.triangle = std::move(triangle)};
+    }
+    return {.reason = &AxisTiling::NotExchangeable};
+}
+
 } // namespace
+
+void AxisTiling::set_block_extent(std::int64_t extent) {
+    _block_pin = extent;
+}
 
 void AxisTiling::set_memory_cap(std::int64_t bytes) {
     _memory_cap   = bytes;
@@ -2120,7 +2495,8 @@ void AxisTiling::reset_stats() {
     _summed_into.clear();
     _emission.clear();
     _block_extents.clear();
-    _loops = 0;
+    _loops         = 0;
+    _triangle_sign = 0;
     _regions.clear();
     _enclosing.clear();
 }
@@ -2525,6 +2901,9 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
     };
 
     std::optional<Plan> best;
+    // Built on the first two-axis candidate that could be a triangle; the graph does not change
+    // until a plan is emitted.
+    std::optional<EscapeAnalysis> escape;
     // The finest slicing of a candidate no slice of which fits, taken when no candidate fits at all
     // and the seed outweighs everything the loop leaves outside it, the case where cutting it
     // still brings the peak down from the seed to a slice.
@@ -2737,6 +3116,74 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         analysis->describe(positions, plan.axis_names, plan.axis_letters);
         analysis->partition(labelling, plan.streamed, plan.whole);
 
+        // Two exchangeable axes run only the tiles on and above their diagonal. The block is the one
+        // the cost model prices cheapest among those that fit, since halving the tiles changes the
+        // kernels' shapes as well as their count, which streamed bytes do not see.
+        if (plan.range && positions.size() == 2) {
+            if (!escape.has_value()) {
+                escape.emplace(EscapeAnalysis::over(graph));
+            }
+            auto verdict = find_triangle(graph, plan, [&](TensorId tid) { return scope.backing_of(tid) != nullptr; }, *escape);
+            if (!verdict.triangle.has_value()) {
+                note_skip(*verdict.reason, detail);
+            } else {
+                Plan candidate                  = plan;
+                candidate.triangle              = std::move(verdict.triangle);
+                std::size_t const        extent = extents[0];
+                std::vector<std::size_t> options;
+                if (_block_pin > 0) {
+                    options.push_back(static_cast<std::size_t>(_block_pin));
+                } else {
+                    for (std::size_t const b : balanced_blocks(extent)) {
+                        options.push_back(b);
+                    }
+                }
+                std::optional<std::size_t> chosen;
+                for (std::size_t const b : options) {
+                    // Two or more blocks, or the triangle is the whole square and saves nothing.
+                    if (b < 2 || b >= extent) {
+                        continue;
+                    }
+                    std::size_t largest = 0;
+                    std::size_t held    = 0;
+                    long double moved   = 0.0L;
+                    analysis->range_cost(labelling, extents, {b, b}, largest, held, moved);
+                    // The scratch a mirrored tile is computed into, beside the loop's other buffers.
+                    std::size_t scratch = graph.tensor(candidate.ops[candidate.triangle->writer].slots[0].tid).element_size;
+                    for (std::size_t const d : graph.tensor(candidate.ops[candidate.triangle->writer].slots[0].tid).dims) {
+                        scratch *= d;
+                    }
+                    scratch = scratch / (extent * extent) * (b * b);
+                    if (!fits(std::max(largest, scratch), held + scratch)) {
+                        continue;
+                    }
+                    candidate.blocks = {b, b};
+                    double price     = 0.0;
+                    for (auto const &loop : triangle_loops(extent, b)) {
+                        price += static_cast<double>(loop.table.size()) *
+                                 tile_price(graph, candidate, {loop.walks[0].length, loop.walks[1].length}, loop.mirror);
+                    }
+                    if (!chosen.has_value() || price < candidate.price_us) {
+                        chosen                  = b;
+                        candidate.price_us      = price;
+                        candidate.largest_after = std::max(largest, scratch);
+                        candidate.traffic       = moved;
+                    }
+                }
+                if (!chosen.has_value()) {
+                    note_skip(_block_pin > 0 ? BlockPinned : TriangleShape, detail);
+                } else {
+                    candidate.blocks     = {*chosen, *chosen};
+                    candidate.depth      = *chosen * *chosen;
+                    candidate.iterations = 0;
+                    for (auto const &loop : triangle_loops(extent, *chosen)) {
+                        candidate.iterations += loop.table.size();
+                    }
+                    plan = std::move(candidate);
+                }
+            }
+        }
+
         report(3, fmt::format("candidate {} streams {:.0f} bytes {}", fmt::join(plan.axis_names, " x "), static_cast<double>(plan.traffic),
                               plan.range ? fmt::format("in blocks of {}", fmt::join(plan.blocks, " x "))
                                          : fmt::format("at depth {}", plan.depth)));
@@ -2750,7 +3197,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
             if (better) {
                 fallback = std::move(plan);
             }
-        } else if (!best.has_value() || plan.traffic < best->traffic) {
+        } else if (!best.has_value() || preferred(plan, *best)) {
             best = std::move(plan);
         }
     }
@@ -2793,9 +3240,10 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         _streamed    = best->streamed;
         _whole       = best->whole;
         _accumulator = best->accumulator;
-        _emission    = best->range ? "range" : "grouped";
+        _emission    = best->triangle.has_value() ? "triangle" : best->range ? "range" : "grouped";
         _block_extents.assign(best->blocks.begin(), best->blocks.end());
-        _loops = loop_walks(*best).size();
+        _loops         = best->triangle.has_value() ? triangle_loops(best->extents[0], best->blocks[0]).size() : loop_walks(*best).size();
+        _triangle_sign = best->triangle.has_value() ? best->triangle->sigma.sign : 0;
     }
     ++_num_tiled;
     graph.note_structural_change();
@@ -2805,6 +3253,16 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                     best->slices, describe_chunks(*best), best->largest_before, best->largest_after,
                     best->best_effort ? " (none fits the budget beside the tensors outside the loop)" : "");
     _regions.push_back(line);
+    if (best->triangle.has_value()) {
+        std::size_t const tiles = (best->extents[0] + best->blocks[0] - 1) / best->blocks[0];
+        applied(Triangle,
+                fmt::format("runs {} of {} tile(s) of {} x {}, writing each off-diagonal tile's mirror with sign {:+d}",
+                            tiles * (tiles + 1) / 2, tiles * tiles, best->blocks[0], best->blocks[1], int{best->triangle->sigma.sign}),
+                Decision{.detail  = fmt::format("axes {}", fmt::join(best->axis_names, " x ")),
+                         .graph   = graph.name(),
+                         .tensors = {seed_handle->name}},
+                1);
+    }
     applied(Sliced, line,
             Decision{.detail  = fmt::format("axes {}", fmt::join(best->axis_names, " x ")),
                      .graph   = graph.name(),

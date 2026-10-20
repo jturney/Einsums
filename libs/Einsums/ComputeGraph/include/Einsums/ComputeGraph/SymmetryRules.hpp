@@ -35,6 +35,8 @@
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 
 #include <optional>
+#include <utility>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -113,9 +115,13 @@ struct Node;
  * @param[in] escape The analysis of the graph @p reader belongs to.
  * @param[in] tensor The tensor read.
  * @param[in] reader The node that reads it.
+ * @param[out] relied_on When given, receives every tensor whose own @c symmetry_hint the answer
+ *             rests on, with that hint: the promises a caller may want to check at run time.
  * @return The generators that hold at the read, or nothing.
  */
-[[nodiscard]] EINSUMS_EXPORT std::optional<SymmetryDescriptor> symmetry_at(EscapeAnalysis const &escape, TensorId tensor, NodeId reader);
+[[nodiscard]] EINSUMS_EXPORT std::optional<SymmetryDescriptor>
+                             symmetry_at(EscapeAnalysis const &escape, TensorId tensor, NodeId reader,
+                                         std::vector<std::pair<TensorId, SymmetryDescriptor>> *relied_on = nullptr);
 
 /**
  * @brief Is what @p writer adds to its output unchanged, up to a sign, when its output's axes are
@@ -144,10 +150,13 @@ struct Node;
  * @param[in] sigma  The permutation of the output's positions, in the convention of
  *                   @c SymmetryOp: position @c p takes the letter at @c sigma.permutation[p]. Its
  *                   sign and conjugate fields are ignored.
+ * @param[out] relied_on When given, receives the declared symmetries the proof rests on, as
+ *             @ref symmetry_at reports them, each tensor once.
  * @return @p sigma with the sign the contribution picks up (+1 symmetric, -1 antisymmetric), or
  *         nothing when no proof was found.
  */
-[[nodiscard]] EINSUMS_EXPORT std::optional<SymmetryOp> contribution_symmetry(EscapeAnalysis const &escape, NodeId writer,
-                                                                             SymmetryOp const &sigma);
+[[nodiscard]] EINSUMS_EXPORT std::optional<SymmetryOp>
+                             contribution_symmetry(EscapeAnalysis const &escape, NodeId writer, SymmetryOp const &sigma,
+                                                   std::vector<std::pair<TensorId, SymmetryDescriptor>> *relied_on = nullptr);
 
 EINSUMS_NAMESPACE_END(compute_graph)

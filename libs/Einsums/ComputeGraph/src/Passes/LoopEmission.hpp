@@ -170,6 +170,61 @@ inline WalkBounds declare_walk_bounds(Graph &body, std::size_t depth, std::vecto
     return out;
 }
 
+/// The bound one axis takes when the loop's positions come from a table rather than a grid: on
+/// iteration @c t, block @c table[t][axis] of the walk, @p step apart, plus @p bias. Periodic in the
+/// table's length for the same reason @ref slice_bound is periodic in the slice count.
+inline std::function<std::int64_t()> table_bound(std::shared_ptr<TileCursor>                                  cursor,
+                                                 std::shared_ptr<std::vector<std::vector<std::size_t>> const> table, std::size_t axis,
+                                                 std::size_t step, std::int64_t bias) {
+    return [cursor = std::move(cursor), table = std::move(table), axis, step, bias]() -> std::int64_t {
+        auto const &row = (*table)[cursor->calls++ % table->size()];
+        return (static_cast<std::int64_t>(row[axis]) * static_cast<std::int64_t>(step)) + bias;
+    };
+}
+
+/**
+ * @brief Record the parameters a loop's bounds are read from, visiting the positions @p table lists.
+ *
+ * The grid form, @ref declare_walk_bounds, visits every combination of one position per axis. A
+ * loop that visits only some of them, the diagonal of two axes or the blocks above it, lists them:
+ * row @c t holds, for each axis, which of that axis's @c walks[k].count positions iteration @c t is
+ * at. Depth one, names as @ref declare_walk_bounds spells them for member zero.
+ *
+ * @param[in] body The loop body.
+ * @param[in] walks One walk per axis: its step, offset and length.
+ * @param[in] table One row per iteration, one position per axis.
+ * @param[in] prefix What every name starts with.
+ * @param[in] tag What keeps the names of one loop apart from another's, or empty.
+ */
+inline WalkBounds declare_table_bounds(Graph &body, std::vector<AxisWalk> const &walks, std::vector<std::vector<std::size_t>> table,
+                                       std::string const &prefix, std::string const &tag) {
+    auto const shared = std::make_shared<std::vector<std::vector<std::size_t>> const>(std::move(table));
+
+    auto const bound = [&](std::string const &name, std::size_t k, std::size_t bias) {
+        write_param(name, table_bound(std::make_shared<TileCursor>(), shared, k, walks[k].step, static_cast<std::int64_t>(bias)));
+        body.params_ptr()->set(name, (static_cast<std::int64_t>((*shared)[0][k]) * static_cast<std::int64_t>(walks[k].step)) +
+                                         static_cast<std::int64_t>(bias));
+    };
+
+    WalkBounds out;
+    out.start.resize(1);
+    out.end.resize(1);
+    for (std::size_t k = 0; k < walks.size(); ++k) {
+        auto const &walk = walks[k];
+        auto const  name = tag.empty() ? fmt::format("{}:{}:0", prefix, k) : fmt::format("{}:{}:{}:0", prefix, tag, k);
+        bound(name, k, walk.offset);
+        out.start[0].push_back(name);
+        if (walk.range) {
+            auto const end = name + ":end";
+            bound(end, k, walk.offset + walk.length);
+            out.end[0].push_back(end);
+        } else {
+            out.end[0].emplace_back();
+        }
+    }
+    return out;
+}
+
 /// The permutation operators a spec applies, each followed by a space, in the prefix position
 /// the arrow form takes them in.
 inline std::string operator_prefix(std::vector<PermutationOperator> const &operators) {
