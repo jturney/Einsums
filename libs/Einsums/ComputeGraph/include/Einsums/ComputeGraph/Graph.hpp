@@ -871,9 +871,26 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * which is after the parent's Materialize has placed the buffer the body is about to
      * read. A slot whose tensor has not moved costs one comparison.
      *
+     * A stand-in is shared by every graph that adopted the same tensor, so every re-seat in the
+     * process is serialized: two graphs, or two nodes of one, may reach one stand-in at once.
+     *
      * @see TensorSlot::resync_of
      */
     void resync_slot_storage();
+
+    /**
+     * @brief Re-seat the adopted stand-ins of @p ids only.
+     *
+     * For a node that runs outside this graph's own ``execute()`` but reaches its operands
+     * through this graph's slots, as a node LoopInvariantHoisting lifts out of a body does. Its
+     * dataflow edges order it after the Materialize and Free of the tensors it touches and of
+     * no others, so it may read the storage of those alone: a re-seat of the whole graph would
+     * read a block another thread is relocating and rewrite a stand-in another node is reading.
+     * A redirected id is re-seated through the slot it redirects to.
+     *
+     * @param[in] ids Tensors of this graph, as the node names them.
+     */
+    void resync_slot_storage(std::span<TensorId const> ids);
 
     /**
      * @brief Derive the alias relation from ``View`` nodes and manifest

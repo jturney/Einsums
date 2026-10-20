@@ -92,6 +92,14 @@ waggle::ZoneSite const &graph_executor_site() {
     return site;
 }
 
+/// Serializes every stand-in re-seat in the process. One lock rather than one per graph,
+/// because a stand-in is shared by every graph that adopted the tensor; a re-seat is a
+/// comparison per slot, so nothing waits on it for long.
+std::mutex &resync_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
 } // namespace
 
 void Graph::resync_slot_storage() {
@@ -107,8 +115,22 @@ void Graph::resync_slot_storage() {
     // A slot a redirect points at a stand-in is reached through the stand-in's
     // OWN slot, which is where the adoption is recorded; the object is one
     // object, so fixing it once fixes every slot naming it.
+    std::scoped_lock const lock(resync_mutex());
     for (auto const &[id, slot] : _slot_map) {
         if (slot && slot->owner && slot->ptr != nullptr && slot->resync_of != nullptr) {
+            slot->resync_of(slot->ptr);
+        }
+    }
+}
+
+void Graph::resync_slot_storage(std::span<TensorId const> ids) {
+    std::scoped_lock const lock(resync_mutex());
+    for (TensorId id : ids) {
+        if (auto const redirect = _slot_redirects.find(id); redirect != _slot_redirects.end()) {
+            id = redirect->second;
+        }
+        TensorSlot const *slot = find_slot(id);
+        if (slot != nullptr && slot->owner && slot->ptr != nullptr && slot->resync_of != nullptr) {
             slot->resync_of(slot->ptr);
         }
     }

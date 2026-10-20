@@ -325,16 +325,22 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
                 // re-seats its adopted stand-ins only when the body itself executes. Hoisted, the
                 // node runs before that, right after the parent's Materialize may have moved a
                 // scratch buffer, and it wrote through the stand-in's stale address while the body
-                // then read the new, unwritten one. So the body's slots are re-seated first; one
-                // comparison per slot when nothing moved. The anchor, not the body's address, in
-                // case the body is ever held elsewhere.
-                auto const body_anchor = loop_desc->body->anchor();
-                auto const reseat      = [body_anchor](std::function<void()> inner) -> std::function<void()> {
+                // then read the new, unwritten one. So the slots this node reaches are re-seated
+                // first; one comparison per slot when nothing moved. Only those: hoisted nodes run
+                // concurrently in the parent, and re-seating the whole body rewrote stand-ins
+                // another hoisted node was reading and read blocks a Materialize this node is not
+                // ordered after was relocating. The ids are the body's, taken before the remap
+                // below. The anchor, not the body's address, in case the body is ever held
+                // elsewhere.
+                auto const            body_anchor = loop_desc->body->anchor();
+                std::vector<TensorId> touched(h.inputs);
+                touched.insert(touched.end(), h.outputs.begin(), h.outputs.end());
+                auto const reseat = [body_anchor, touched](std::function<void()> inner) -> std::function<void()> {
                     if (!inner) {
                         return inner;
                     }
-                    return [body_anchor, inner = std::move(inner)]() {
-                        body_anchor->graph().resync_slot_storage();
+                    return [body_anchor, touched, inner = std::move(inner)]() {
+                        body_anchor->graph().resync_slot_storage(touched);
                         inner();
                     };
                 };

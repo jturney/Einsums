@@ -13,6 +13,7 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <algorithm>
 #include <complex>
 #include <cstdint>
 #include <functional>
@@ -764,4 +765,73 @@ TEST_CASE("LoopInvariantHoisting - hoists a custom node declared pure", "[Comput
     graph.execute();
     CHECK(builds == 1);
     CHECK(acc(0) + acc(1) + acc(2) == 36.0); // 3 iterations of 2 + 4 + 6
+}
+
+// A hoisted node used to re-seat every stand-in of the body it came from before it ran. Hoisted
+// nodes run concurrently in the parent, so one rewrote the stand-in another was reading, and read a
+// storage block a Materialize it is not ordered after was relocating: the ThreadSanitizer race in
+// the parallel-executor stress shard. A node re-seats only the operands it touches.
+TEST_CASE("LoopInvariantHoisting - a hoisted node re-seats only the stand-ins it touches", "[ComputeGraph][Passes][Loop]") {
+    using RT           = RuntimeTensor<double>;
+    constexpr size_t m = 4;
+    RT               A("A", std::vector<size_t>{m, 1});
+    RT               B1("B1", std::vector<size_t>{1, m});
+    RT               B2("B2", std::vector<size_t>{1, m});
+    RT               x("x", std::vector<size_t>{m});
+    RT               v("v", std::vector<size_t>{m});
+    A  = 1.0;
+    B1 = 2.0;
+    B2 = 3.0;
+    x  = 1.0;
+    v.zero();
+
+    cg::Graph graph("lih_reseat_scope");
+    auto     &big1 = graph.create_zero_runtime_tensor<double>("big1", {m, m});
+    auto     &big2 = graph.create_zero_runtime_tensor<double>("big2", {m, m});
+    auto     &body = graph.add_loop("loop", 2, [](size_t it) { return it == 0; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ij <- ik ; kj", &big1, A, B1);
+        cg::einsum("ij <- ik ; kj", &big2, A, B2);
+        cg::einsum("i <- ij ; j", 1.0, &v, 1.0, big1, x);
+        cg::einsum("i <- ij ; j", 1.0, &v, 1.0, big2, x);
+    }
+    auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
+    REQUIRE(pass.num_hoisted() == 2);
+
+    auto const producer_of = [&graph](RT const &tensor) -> cg::Node const & {
+        cg::TensorId const id = graph.find_tensor_id_by_ptr(&tensor);
+        for (auto const &node : graph.nodes()) {
+            if (node.kind == cg::OpKind::Einsum && std::ranges::find(node.outputs, id) != node.outputs.end()) {
+                return node;
+            }
+        }
+        FAIL("no hoisted einsum writes " << tensor.name());
+        return graph.nodes().front();
+    };
+    cg::Node const &first  = producer_of(big1);
+    cg::Node const &second = producer_of(big2);
+
+    // The body reaches big2 through a stand-in it adopted, which a re-seat points at whatever
+    // big2's block holds now.
+    auto const      loop = std::ranges::find_if(graph.nodes(), [](cg::Node const &n) { return n.op_data.get_if<cg::LoopDescriptor>(); });
+    cg::Graph      &body_graph = *loop->op_data.get_if<cg::LoopDescriptor>()->body;
+    cg::TensorSlot *slot       = body_graph.find_slot(body_graph.find_tensor_id_by_ptr(&big2));
+    REQUIRE(slot != nullptr);
+    REQUIRE(slot->ptr != &big2);
+    auto const *stand_in = static_cast<RT const *>(slot->ptr);
+    REQUIRE(stand_in->impl().data() == big2.data());
+
+    // The address kernels read is the one the stand-in caches, which only a re-seat changes:
+    // released, a re-seat moves it to the sentinel. The producer of big1 does not touch big2, so
+    // running it must leave big2's stand-in as it was.
+    double const *before = stand_in->impl().data();
+    big2.release();
+    first.execute();
+    CHECK(stand_in->impl().data() == before);
+
+    // The producer of big2 does touch it, and re-seats it on the block it writes.
+    big2.materialize();
+    second.execute();
+    CHECK(stand_in->impl().data() == big2.data());
 }
