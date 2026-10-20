@@ -60,6 +60,7 @@ import tempfile
 
 import numpy as np
 import pytest
+from _pytest.outcomes import Skipped
 
 import einsums
 import einsums.graph as cg
@@ -298,9 +299,13 @@ def _draw_saveable(rng, max_stmts, tries=32):
     return None
 
 
-@pytest.mark.parametrize("dtype", ALL_DTYPES)
-@pytest.mark.parametrize("seed", fuzz_seeds(80))
-def test_fuzz_optimized_roundtrip_flat(seed, dtype):
+_FLAT_SEEDS = fuzz_seeds(80)
+_LONG_SEEDS = fuzz_seeds(60)
+_VIEW_SEEDS = fuzz_seeds(60)
+_SCRATCH_SEEDS = fuzz_seeds(60)
+
+
+def _flat_case(seed, dtype):
     rng = np.random.default_rng(20_000 + seed)
     prog = _draw_saveable(rng, max_stmts=8)
     if prog is None:
@@ -308,8 +313,7 @@ def test_fuzz_optimized_roundtrip_flat(seed, dtype):
     check_program_optimized_roundtrip(prog, *_seed_arrays(rng, dtype), f"ortflat{seed}", dtype=dtype)
 
 
-@pytest.mark.parametrize("seed", fuzz_seeds(60))
-def test_fuzz_optimized_roundtrip_long_chains(seed):
+def _long_chain_case(seed):
     # Longer programs give the fusion and CSE passes something to fuse, which is
     # where the optimized file differs most from the captured one.
     rng = np.random.default_rng(30_000 + seed)
@@ -319,8 +323,7 @@ def test_fuzz_optimized_roundtrip_long_chains(seed):
     check_program_optimized_roundtrip(prog, *_seed_arrays(rng), f"ortlong{seed}")
 
 
-@pytest.mark.parametrize("seed", fuzz_seeds(60))
-def test_fuzz_optimized_roundtrip_with_views(seed):
+def _view_case(seed):
     # Unfiltered draws with every view generator on, so plain sub-blocks,
     # chained views, transposed views and rank-dropping views all appear.
     rng = np.random.default_rng(40_000 + seed)
@@ -328,9 +331,7 @@ def test_fuzz_optimized_roundtrip_with_views(seed):
     check_program_optimized_roundtrip(prog, *_seed_arrays(rng), f"ortview{seed}")
 
 
-@pytest.mark.parametrize("dtype", ALL_DTYPES)
-@pytest.mark.parametrize("seed", fuzz_seeds(60))
-def test_fuzz_optimized_roundtrip_scratch(seed, dtype):
+def _scratch_case(seed, dtype):
     # A motif over graph-owned scratch that a structural pass is built to
     # rewrite (a transpose PermuteFusion folds, a contraction CSE deduplicates,
     # a scale ScaleAbsorption absorbs), after a short caller-tensor program.
@@ -338,6 +339,42 @@ def test_fuzz_optimized_roundtrip_scratch(seed, dtype):
     rng = np.random.default_rng(50_000 + seed)
     prog = (_draw_saveable(rng, max_stmts=4) or []) + _gen_scratch_motif(rng)
     check_program_optimized_roundtrip(prog, *_seed_arrays(rng, dtype), f"ortscr{seed}", dtype=dtype, scratch=True)
+
+
+def _corpus():
+    """Every case the parametrized tests below run, as thunks, for the guard to run again."""
+    for seed in _FLAT_SEEDS:
+        for dtype in ALL_DTYPES:
+            yield lambda seed=seed, dtype=dtype: _flat_case(seed, dtype)
+    for seed in _LONG_SEEDS:
+        yield lambda seed=seed: _long_chain_case(seed)
+    for seed in _VIEW_SEEDS:
+        yield lambda seed=seed: _view_case(seed)
+    for seed in _SCRATCH_SEEDS:
+        for dtype in ALL_DTYPES:
+            yield lambda seed=seed, dtype=dtype: _scratch_case(seed, dtype)
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", _FLAT_SEEDS)
+def test_fuzz_optimized_roundtrip_flat(seed, dtype):
+    _flat_case(seed, dtype)
+
+
+@pytest.mark.parametrize("seed", _LONG_SEEDS)
+def test_fuzz_optimized_roundtrip_long_chains(seed):
+    _long_chain_case(seed)
+
+
+@pytest.mark.parametrize("seed", _VIEW_SEEDS)
+def test_fuzz_optimized_roundtrip_with_views(seed):
+    _view_case(seed)
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", _SCRATCH_SEEDS)
+def test_fuzz_optimized_roundtrip_scratch(seed, dtype):
+    _scratch_case(seed, dtype)
 
 
 def test_optimized_roundtrip_of_a_pinned_fusable_program():
@@ -424,27 +461,39 @@ def test_a_tuned_graph_saves_only_when_the_save_allows_it(tmp_path):
 def test_optimized_roundtrip_corpus_actually_round_trips():
     """The refusal rule must not swallow the corpus.
 
-    Ordered last in the file so the parametrized cases above have run. Of the
-    trials drawn from saveable kinds, most must survive the passes and the file:
-    a pass that started leaving an unsaveable node behind on ordinary programs
-    would otherwise turn every trial into a skip and this shard into a no-op.
+    Of the trials drawn from saveable kinds, most must survive the passes and the
+    file: a pass that started leaving an unsaveable node behind on ordinary
+    programs would otherwise turn every trial into a skip and this shard into a
+    no-op. Runs the corpus itself rather than reading what the cases above
+    counted: under pytest-xdist those ran in other processes, and under ``-k``
+    they may not have run at all.
     """
-    attempted = _STATS["attempted"]
-    tripped = _STATS["round_tripped"]
+    before = dict(_STATS)
+    refused_before = len(_REFUSED_AFTER_PASSES)
+    for case in _corpus():
+        try:
+            case()
+        except Skipped:
+            pass
+    stats = {key: _STATS[key] - before[key] for key in _STATS}
+    refused_after_passes = _REFUSED_AFTER_PASSES[refused_before:]
+
+    attempted = stats["attempted"]
+    tripped = stats["round_tripped"]
     assert attempted > 0, "no optimized round-trip trial ran at all"
     assert tripped > 0, f"every one of {attempted} trials was refused; nothing was round-tripped"
-    scratch_tripped = _STATS["scratch_round_tripped"]
-    assert scratch_tripped >= 0.6 * _STATS["scratch_attempted"], (
-        f"only {scratch_tripped} of {_STATS['scratch_attempted']} scratch programs round-tripped"
+    scratch_tripped = stats["scratch_round_tripped"]
+    assert scratch_tripped >= 0.6 * stats["scratch_attempted"], (
+        f"only {scratch_tripped} of {stats['scratch_attempted']} scratch programs round-tripped"
     )
-    assert _STATS["scratch_rewritten"] >= 0.6 * scratch_tripped, (
-        f"the passes changed only {_STATS['scratch_rewritten']} of {scratch_tripped} round-tripped scratch files, so "
+    assert stats["scratch_rewritten"] >= 0.6 * scratch_tripped, (
+        f"the passes changed only {stats['scratch_rewritten']} of {scratch_tripped} round-tripped scratch files, so "
         "the shard is mostly re-testing captured graphs the unoptimized round-trip shard already covers"
     )
-    no_view_attempted = attempted - _STATS["with_views_attempted"]
-    no_view_tripped = tripped - _STATS["with_views_round_tripped"]
+    no_view_attempted = attempted - stats["with_views_attempted"]
+    no_view_tripped = tripped - stats["with_views_round_tripped"]
     assert no_view_tripped >= 0.8 * no_view_attempted, (
         f"only {no_view_tripped} of {no_view_attempted} view-free optimized programs round-tripped; "
-        f"{_STATS['refused_only_after_passes']} were saveable as captured and refused only after the passes:\n"
-        + "\n".join(f"{p!r}\n  -> {r.splitlines()[-1] if r else r}" for p, r in _REFUSED_AFTER_PASSES[:5])
+        f"{stats['refused_only_after_passes']} were saveable as captured and refused only after the passes:\n"
+        + "\n".join(f"{p!r}\n  -> {r.splitlines()[-1] if r else r}" for p, r in refused_after_passes[:5])
     )

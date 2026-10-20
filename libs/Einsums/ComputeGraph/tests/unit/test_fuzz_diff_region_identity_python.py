@@ -31,16 +31,17 @@ from einsums.testing import ALL_DTYPES
 from _fuzz_diff_common import *  # shared fuzz/differential harness
 
 
-@pytest.mark.parametrize("dtype", ALL_DTYPES)
-@pytest.mark.parametrize("seed", fuzz_seeds(120))
-def test_fuzz_region_identity_flat(seed, dtype):
+_FLAT_SEEDS = fuzz_seeds(120)
+_CONTROL_FLOW_SEEDS = fuzz_seeds(60)
+
+
+def _flat_case(seed, dtype):
     rng = np.random.default_rng(seed)
     prog = _gen_block(rng, depth=0, max_stmts=10)
     check_program_region_identity(prog, *_seed_arrays(rng, dtype), f"rid{seed}", dtype=dtype)
 
 
-@pytest.mark.parametrize("seed", fuzz_seeds(60))
-def test_fuzz_region_identity_control_flow(seed):
+def _control_flow_case(seed):
     # Loops and conditionals are BARRIERS: the region rule stops at them rather
     # than descending, so what this exercises is that a graph full of barriers
     # still round-trips the runs BETWEEN them. A framework that silently
@@ -52,6 +53,17 @@ def test_fuzz_region_identity_control_flow(seed):
     check_program_region_identity(prog, *_seed_arrays(rng, "float64"), f"ridcf{seed}")
 
 
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", _FLAT_SEEDS)
+def test_fuzz_region_identity_flat(seed, dtype):
+    _flat_case(seed, dtype)
+
+
+@pytest.mark.parametrize("seed", _CONTROL_FLOW_SEEDS)
+def test_fuzz_region_identity_control_flow(seed):
+    _control_flow_case(seed)
+
+
 def test_the_corpus_actually_formed_regions():
     """A green shard that raised nothing would prove nothing.
 
@@ -59,18 +71,21 @@ def test_the_corpus_actually_formed_regions():
     asserts is that the pass had something to do on most of them. A generator
     change that stopped emitting raisable ops would otherwise leave this file
     passing while testing an empty set, which is the failure mode a coverage
-    counter exists to catch.
+    counter exists to catch. Runs the corpus itself rather than reading what the
+    cases above counted: under pytest-xdist those ran in other processes, and
+    under ``-k`` they may not have run at all.
     """
-    attempted = _REGION_STATS["attempted"]
-    if attempted == 0:
-        # Selected on its own, so the counter it reads was never fed. Skipping
-        # rather than failing, because the counter is a property of the shards
-        # above and this only has something to say after they have run; a full
-        # run of this file always does.
-        pytest.skip("no trials ran in this selection; run the whole shard")
+    before = dict(_REGION_STATS)
+    for seed in _FLAT_SEEDS:
+        for dtype in ALL_DTYPES:
+            _flat_case(seed, dtype)
+    for seed in _CONTROL_FLOW_SEEDS:
+        _control_flow_case(seed)
+    attempted = _REGION_STATS["attempted"] - before["attempted"]
+    assert attempted > 0, "no region-identity trial ran at all"
 
-    with_regions = _REGION_STATS["with_regions"]
-    rewritten = _REGION_STATS["rewritten"]
+    with_regions = _REGION_STATS["with_regions"] - before["with_regions"]
+    rewritten = _REGION_STATS["rewritten"] - before["rewritten"]
     assert with_regions > attempted // 2, (
         f"only {with_regions} of {attempted} trials formed any region; "
         "the generator may have stopped emitting raisable operations"
@@ -203,9 +218,11 @@ def _emit_grouped(rng, pools, count):
     return picks
 
 
-@pytest.mark.parametrize("dtype", ["float32", "float64"])
-@pytest.mark.parametrize("seed", fuzz_seeds(40))
-def test_fuzz_region_identity_grouped(seed, dtype):
+_GROUPED_SEEDS = fuzz_seeds(40)
+_GROUPED_DTYPES = ["float32", "float64"]
+
+
+def _grouped_case(seed, dtype):
     count = int(np.random.default_rng(seed).integers(2, 6))
 
     def run(identity):
@@ -243,14 +260,28 @@ def test_fuzz_region_identity_grouped(seed, dtype):
                 f"captured=\n{a}\nafter round trip=\n{b}")
 
 
+@pytest.mark.parametrize("dtype", _GROUPED_DTYPES)
+@pytest.mark.parametrize("seed", _GROUPED_SEEDS)
+def test_fuzz_region_identity_grouped(seed, dtype):
+    _grouped_case(seed, dtype)
+
+
 def test_the_grouped_corpus_actually_raised_families():
-    """A green grouped shard that raised nothing would prove nothing."""
-    attempted = _GROUPED_STATS["attempted"]
-    if attempted == 0:
-        pytest.skip("no grouped trials ran in this selection; run the whole shard")
-    assert _GROUPED_STATS["with_regions"] == attempted, (
-        f"only {_GROUPED_STATS['with_regions']} of {attempted} grouped trials formed a region; "
+    """A green grouped shard that raised nothing would prove nothing.
+
+    Runs the grouped corpus itself, for the same reason the corpus guard above does.
+    """
+    before = dict(_GROUPED_STATS)
+    for seed in _GROUPED_SEEDS:
+        for dtype in _GROUPED_DTYPES:
+            _grouped_case(seed, dtype)
+    attempted = _GROUPED_STATS["attempted"] - before["attempted"]
+    with_regions = _GROUPED_STATS["with_regions"] - before["with_regions"]
+    rewritten = _GROUPED_STATS["rewritten"] - before["rewritten"]
+    assert attempted > 0, "no grouped trial ran at all"
+    assert with_regions == attempted, (
+        f"only {with_regions} of {attempted} grouped trials formed a region; "
         "the grouped kinds may have stopped being raisable")
-    assert _GROUPED_STATS["rewritten"] == attempted, (
-        f"only {_GROUPED_STATS['rewritten']} of {attempted} grouped trials lowered every region; "
+    assert rewritten == attempted, (
+        f"only {rewritten} of {attempted} grouped trials lowered every region; "
         "a raise or a lower declined - check the pass's skip reasons")

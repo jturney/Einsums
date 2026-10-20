@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from _pytest.outcomes import Skipped
 
 from einsums.testing import ALL_DTYPES
 
@@ -63,9 +64,11 @@ def _draw_saveable(rng, depth, max_stmts, tries=32):
     return None
 
 
-@pytest.mark.parametrize("dtype", ALL_DTYPES)
-@pytest.mark.parametrize("seed", fuzz_seeds(120))
-def test_fuzz_roundtrip_flat(seed, dtype):
+_FLAT_SEEDS = fuzz_seeds(120)
+_CONTROL_FLOW_SEEDS = fuzz_seeds(60)
+
+
+def _flat_case(seed, dtype):
     rng = np.random.default_rng(seed)
     prog = _draw_saveable(rng, depth=0, max_stmts=8)
     if prog is None:
@@ -73,8 +76,7 @@ def test_fuzz_roundtrip_flat(seed, dtype):
     check_program_roundtrip(prog, *_seed_arrays(rng, dtype), f"rtflat{seed}", dtype=dtype)
 
 
-@pytest.mark.parametrize("seed", fuzz_seeds(60))
-def test_fuzz_roundtrip_control_flow(seed):
+def _control_flow_case(seed):
     # depth 1 lets the generator draw loops and conditionals, so the fragment
     # encoding and its boundary references are exercised rather than only the
     # flat node list.
@@ -83,6 +85,17 @@ def test_fuzz_roundtrip_control_flow(seed):
     if prog is None:
         pytest.skip("no saveable program drawn for this seed")
     check_program_roundtrip(prog, *_seed_arrays(rng), f"rtcf{seed}")
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", _FLAT_SEEDS)
+def test_fuzz_roundtrip_flat(seed, dtype):
+    _flat_case(seed, dtype)
+
+
+@pytest.mark.parametrize("seed", _CONTROL_FLOW_SEEDS)
+def test_fuzz_roundtrip_control_flow(seed):
+    _control_flow_case(seed)
 
 
 def test_roundtrip_of_a_pinned_reconstructible_program():
@@ -111,13 +124,26 @@ def test_roundtrip_of_a_pinned_reconstructible_program():
 def test_roundtrip_corpus_is_not_all_skips():
     """The skip rule must not swallow the whole corpus.
 
-    Ordered last in the file so the parametrized cases above have run and the
-    counter means something. If this fails, either the reconstructible set
-    shrank or the generator stopped drawing anything the IR can carry - both are
-    regressions, and both would otherwise show up as a shard that passes without
-    testing anything.
+    Runs the corpus itself rather than reading what the cases above counted:
+    under pytest-xdist those ran in other processes, and under ``-k`` they may
+    not have run at all. If this fails, either the reconstructible set shrank
+    or the generator stopped drawing anything the IR can carry - both are
+    regressions, and both would otherwise show up as a shard that passes
+    without testing anything.
     """
-    attempted = _ROUNDTRIP_STATS["attempted"]
-    tripped = _ROUNDTRIP_STATS["round_tripped"]
+    before = dict(_ROUNDTRIP_STATS)
+    for seed in _FLAT_SEEDS:
+        for dtype in ALL_DTYPES:
+            try:
+                _flat_case(seed, dtype)
+            except Skipped:
+                pass
+    for seed in _CONTROL_FLOW_SEEDS:
+        try:
+            _control_flow_case(seed)
+        except Skipped:
+            pass
+    attempted = _ROUNDTRIP_STATS["attempted"] - before["attempted"]
+    tripped = _ROUNDTRIP_STATS["round_tripped"] - before["round_tripped"]
     assert attempted > 0, "no round-trip trial ran at all"
     assert tripped > 0, f"every one of {attempted} trials skipped; nothing was actually round-tripped"

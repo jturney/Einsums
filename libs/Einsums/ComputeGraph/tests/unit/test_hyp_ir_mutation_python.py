@@ -633,23 +633,31 @@ def test_every_base_carries_what_the_mutations_target():
 
 
 def test_mutation_corpus_is_not_all_reports():
-    """Ordered last: the property must have run files, not only rejected them.
+    """The property must have run files, not only rejected them.
 
     A reader that refused everything would satisfy "reported or harmless"
-    trivially.
+    trivially. Runs the property itself rather than reading what the cases above
+    counted: under pytest-xdist those ran in other processes, and under ``-k``
+    they may not have run at all. The settings derandomize it, so this draws the
+    same mutations they do.
     """
-    assert _STATS["trials"] > 0, "no mutation trial ran"
+    before = dict(_STATS)
+    for base in BASES:
+        test_a_mutated_file_is_reported_or_harmless(base=base)
+    stats = {key: _STATS[key] - before[key] for key in _STATS}
+
+    assert stats["trials"] > 0, "no mutation trial ran"
     if fuzz_capped():
         pytest.skip("sample counts are capped, too few trials for every outcome to occur")
     # Most mutations touch an extent, a rank or an id, and the loader checks those against each
     # other and against the GEMM hints, so reports dominate by design. What the guard needs is
     # every non-report outcome to occur: files that ran and matched, and well-formed different
     # programs that ran.
-    ran = _STATS["harmless"] + _STATS["semantic_ran"]
-    assert ran > 0.05 * _STATS["trials"], f"only {ran} of {_STATS['trials']} mutated files were executed: {_STATS}"
-    assert _STATS["harmless"] > 0, f"no mutated file ran and matched: {_STATS}"
-    assert _STATS["semantic_ran"] > 0, f"no well-formed different program ran: {_STATS}"
-    assert _STATS["reported"] > 0.1 * _STATS["trials"], f"almost nothing was reported: {_STATS}"
+    ran = stats["harmless"] + stats["semantic_ran"]
+    assert ran > 0.05 * stats["trials"], f"only {ran} of {stats['trials']} mutated files were executed: {stats}"
+    assert stats["harmless"] > 0, f"no mutated file ran and matched: {stats}"
+    assert stats["semantic_ran"] > 0, f"no well-formed different program ran: {stats}"
+    assert stats["reported"] > 0.1 * stats["trials"], f"almost nothing was reported: {stats}"
 
 
 # ──────────────────────────────────────────────────────────────────────────
