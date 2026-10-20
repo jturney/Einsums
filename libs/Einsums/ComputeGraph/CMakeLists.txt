@@ -57,6 +57,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/UsageAnalysis.hpp
     Einsums/ComputeGraph/DestinationRead.hpp
     Einsums/ComputeGraph/EscapeAnalysis.hpp
+    Einsums/ComputeGraph/SymmetryRules.hpp
     Einsums/ComputeGraph/NodeFeatures.hpp
     Einsums/ComputeGraph/TensorExpr.hpp
     Einsums/ComputeGraph/Passes/ContractionPlanning.hpp
@@ -176,6 +177,7 @@ set(ComputeGraphSources
     UsageAnalysis.cpp
     DestinationRead.cpp
     EscapeAnalysis.cpp
+    SymmetryRules.cpp
     NodeFeatures.cpp
     TensorExpr.cpp
     BisectDriver.cpp

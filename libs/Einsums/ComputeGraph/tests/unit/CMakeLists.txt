@@ -115,6 +115,7 @@ set(ComputeGraphTests
     Pass_ScalingAnalysis.cpp
     Pass_SpacePropagation.cpp
     Pass_SymmetryPropagation.cpp
+    SymmetryRules.cpp
     PassManager.cpp
     PassPhases.cpp
     PassSwitches.cpp

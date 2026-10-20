@@ -116,12 +116,8 @@ TEST_CASE("SymmetryPropagation - inferred tag survives re-run", "[ComputeGraph][
     REQUIRE(C.has_symmetry());
 }
 
-// Note on Hermitian coverage: the propagate_self_contraction rule
-// distinguishes symmetric vs Hermitian output based on EinsumDescriptor's
-// conj_a/conj_b flags, but the current cg::einsum capture path does not
-// expose a way to set those flags. Once conjugation wiring lands in the
-// graph API, a Hermitian integration test can be added without further
-// pass changes.
+// The Hermitian branch of the self-contraction rule is covered by SymmetryRules.cpp, which calls
+// the rule directly with a conjugated operand.
 
 TEST_CASE("SymmetryPropagation - permute of symmetric stays symmetric", "[ComputeGraph][Passes][Symmetry]") {
     auto A = create_random_tensor<double>("A", 4, 4);

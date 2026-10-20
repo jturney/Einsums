@@ -141,6 +141,7 @@
 #include <Einsums/ComputeGraph/PredExpr.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
 #include <Einsums/ComputeGraph/SymbolicCost.hpp>
+#include <Einsums/ComputeGraph/SymmetryRules.hpp>
 #include <Einsums/ComputeGraph/TensorExpr.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
