@@ -2065,3 +2065,23 @@ TEST_CASE("AxisTiling's triangle refuses to run once tau no longer has its decla
     problem.tau(0, 1, 2, 3) += 1.0;
     REQUIRE_THROWS_AS(graph.execute(), std::runtime_error);
 }
+
+TEST_CASE("AxisTiling runs every tile when no triangle block fits beside the mirror's scratch",
+          "[ComputeGraph][Pass][AxisTiling][Triangle]") {
+    // A cap that holds one occupied pair of the intermediate and no two-by-two tile of it: the
+    // exchange is provable, but the smallest triangle is over the cap, so the pass takes points
+    // and says that it was the fit, not the proof, that decided.
+    LadderProblem<double> problem(6, +1);
+    auto const            want = problem.expected(1.0);
+
+    cg::Graph graph("triangle_too_big");
+    problem.capture(graph, 1.0);
+    auto const tiling = decide(graph, static_cast<std::int64_t>(problem.naux * problem.v * problem.v * sizeof(double)));
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->emission() != "triangle");
+    CHECK(tiling->triangle_sign() == 0);
+    CHECK(declined_because(*tiling, "no block of two or more fits"));
+
+    materialize_and_execute(graph);
+    require_close(problem.r2, want, static_cast<double>(problem.naux * problem.v));
+}

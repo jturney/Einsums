@@ -203,6 +203,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
                                            "the region's output is backed by storage, and a mirrored tile lands outside the box the tile "
                                            "streams, so every tile runs"};
     static constexpr Reason BlockPinned{"axis-tiling.block-pinned", "the pinned block extent does not fit the memory the region may take"};
+    static constexpr Reason TriangleFit{"axis-tiling.triangle-fit",
+                                        "no block of two or more fits the memory the region may take beside the mirror's scratch tile, so "
+                                        "every tile runs"};
     /// @}
 
     /// @brief Default-construct, reading the cap from @ref option::GraphTilingMemoryCap.

@@ -2374,8 +2374,11 @@ struct TriangleVerdict {
 /// sliced axes are exchanged, together with some exchange of the output's other axes.
 TriangleVerdict find_triangle(Graph const &graph, Plan const &plan, std::function<bool(TensorId)> const &backed,
                               EscapeAnalysis const &escape) {
-    if (!plan.range || plan.extents.size() != 2 || plan.extents[0] != plan.extents[1] || plan.accumulator_id != 0 ||
-        !plan.summed_into.empty()) {
+    // Axes of different extents cannot be exchanged at all; that is not a decision worth a line.
+    if (plan.extents.size() != 2 || plan.extents[0] != plan.extents[1]) {
+        return {};
+    }
+    if (plan.accumulator_id != 0 || !plan.summed_into.empty()) {
         return {.reason = &AxisTiling::TriangleShape};
     }
     std::set<TensorId> owned;
@@ -3119,13 +3122,16 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         // Two exchangeable axes run only the tiles on and above their diagonal. The block is the one
         // the cost model prices cheapest among those that fit, since halving the tiles changes the
         // kernels' shapes as well as their count, which streamed bytes do not see.
-        if (plan.range && positions.size() == 2) {
+        // Whether or not the grid search found blocks worth cutting: the triangle chooses its own.
+        if (positions.size() == 2) {
             if (!escape.has_value()) {
                 escape.emplace(EscapeAnalysis::over(graph));
             }
             auto verdict = find_triangle(graph, plan, [&](TensorId tid) { return scope.backing_of(tid) != nullptr; }, *escape);
             if (!verdict.triangle.has_value()) {
-                note_skip(*verdict.reason, detail);
+                if (verdict.reason != nullptr) {
+                    note_skip(*verdict.reason, detail);
+                }
             } else {
                 Plan candidate                  = plan;
                 candidate.triangle              = std::move(verdict.triangle);
@@ -3140,8 +3146,9 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                 }
                 std::optional<std::size_t> chosen;
                 for (std::size_t const b : options) {
-                    // Two or more blocks, or the triangle is the whole square and saves nothing.
-                    if (b < 2 || b >= extent) {
+                    // Two or more blocks, or the triangle is the whole square and saves nothing. A
+                    // region that writes storage is one loop per shape, so no remainder.
+                    if (b < 2 || b >= extent || (writes_backed && extent % b != 0)) {
                         continue;
                     }
                     std::size_t largest = 0;
@@ -3171,8 +3178,9 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                     }
                 }
                 if (!chosen.has_value()) {
-                    note_skip(_block_pin > 0 ? BlockPinned : TriangleShape, detail);
+                    note_skip(_block_pin > 0 ? BlockPinned : TriangleFit, detail);
                 } else {
+                    candidate.range      = true;
                     candidate.blocks     = {*chosen, *chosen};
                     candidate.depth      = *chosen * *chosen;
                     candidate.iterations = 0;
