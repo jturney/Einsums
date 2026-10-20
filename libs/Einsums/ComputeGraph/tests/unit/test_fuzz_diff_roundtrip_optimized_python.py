@@ -7,20 +7,21 @@
 
 ``test_fuzz_diff_roundtrip_python.py`` saves the graph exactly as captured. That
 is the easy file to write: every node is one the user asked for, spelled the way
-capture spelled it. The file a real workflow saves is the one after
-``default_pass_manager()``, which is a different population of nodes: fused
+capture spelled it. The file a real workflow saves is the one the structural
+passes leave, which is the only form a file holds (see GraphIR.hpp): fused
 einsums with rewritten index lists and folded prefactors, permutes a pass
-introduced, gemm hints a pass computed, slot redirects, intermediates the
-memory planner shares. None of those is reachable from the captured-graph shard,
-and each is a field the writer can drop or the reader can rebuild wrongly
-without either one raising.
+introduced, gemm hints a pass derived again, slot redirects. None of those is
+reachable from the captured-graph shard, and each is a field the writer can drop
+or the reader can rebuild wrongly without either one raising.
 
-So each trial runs three ways and demands they agree:
+So each trial follows the documented workflow and runs three ways that must agree:
 
   1. the numpy oracle,
-  2. the optimized graph executed in memory,
-  3. the optimized graph written to a file, read back, bound by manifest name
-     to a fresh copy of the operands, and executed.
+  2. the graph after the structural passes, carried on in memory through the
+     resource and tuning passes and executed,
+  3. the same graph written to a file at that point, read back, bound by
+     manifest name to a fresh copy of the operands, put through the same
+     resource and tuning passes, and executed.
 
 (3) against (1) catches a round trip that computes the wrong answer. (3) against
 (2) catches one that computes a DIFFERENT answer from the graph it was saved
@@ -39,12 +40,10 @@ only contribute to the refusal tally; the guard below them asserts the refusal
 names the view, so the day views become saveable this shard starts comparing
 them with no edit.
 
-Most of that population is still out of reach. The passes rewrite only
-tensors the graph owns, and a graph that owns an intermediate holds lifecycle
-nodes the writer refuses, so the programs drawn here are over the caller's
-tensors and their optimized files are mostly the captured ones.
-``test_optimized_roundtrip_of_graph_owned_scratch_is_refused`` holds the place
-of the arm that will cover the rest.
+The passes rewrite only tensors the graph owns, because a caller reads whatever
+it handed in, so a program over the caller's tensors alone gives them little to
+change. The scratch arm draws programs over graph-owned intermediates, and the
+corpus guard asserts that most of its files differ from their captured form.
 
 Loops and conditionals are not drawn: the Python binding can only build them
 with a callable predicate, which a file cannot hold, so every one would be a
@@ -68,12 +67,12 @@ from einsums.testing import ALL_DTYPES
 from _fuzz_diff_common import (
     _DTYPE_CAP,
     _DTYPE_TOL,
-    MAT_BY_SHAPE,
-    SCRATCH_BY_SHAPE,
     _build_with_scratch,
     _gen_block,
+    _gen_scratch_motif,
     _make_pool,
     _oracle,
+    _oracle_typed,
     _seed_arrays,
     _square_seed_arrays,
     _usable,
@@ -104,9 +103,16 @@ _STATS = {
     # because it is a coverage gap rather than a wrong answer, but the report
     # names it.
     "refused_only_after_passes": 0,
-    # Round-tripped trials whose optimized file differs from the captured one.
-    # Not asserted: see test_optimized_roundtrip_of_graph_owned_scratch_is_refused.
+    # Round-tripped trials whose saved file differs from the captured one.
+    # Counted for every arm but asserted only for the scratch arm: the passes
+    # leave a write to a caller's tensor alone, so a program over the caller's
+    # tensors alone has little for them to rewrite.
     "rewritten": 0,
+    # The scratch arm, kept apart so the guard can ask it alone whether the
+    # passes changed the files it saves.
+    "scratch_attempted": 0,
+    "scratch_round_tripped": 0,
+    "scratch_rewritten": 0,
 }
 _REFUSED_AFTER_PASSES = []
 
@@ -137,24 +143,44 @@ def _saves(graph, path):
     return None
 
 
-def _run_optimized_roundtrip(prog, m_arrays, v_arrays, t_arrays, name):
-    """Run the optimized graph in memory, then save, load, rebind and run it.
+def _phase(populate):
+    """A pass manager holding one phase of the default pipeline."""
+    manager = cg.PassManager()
+    getattr(manager, populate)()
+    return manager
+
+
+def _finish(graph):
+    """The phases a loaded graph still needs, in the order the default pipeline runs them."""
+    graph.apply(_phase("populate_resource"))
+    graph.apply(_phase("populate_tuning"))
+
+
+def _run_optimized_roundtrip(prog, m_arrays, v_arrays, t_arrays, name, with_scratch=False):
+    """Optimize, then run the graph in memory and through a file, the documented way.
+
+    The structural passes run first, and the file is written there, because that
+    is the only form a file holds. Both the graph in memory and the one read back
+    then go through the resource and tuning passes. With @p with_scratch, every
+    scratch slot @p prog names is a graph-owned intermediate, and only the
+    caller's tensors are returned.
 
     Returns ``(in_memory, loaded, None)``, or ``(in_memory, None, refusal)``
     with the refusal message when the save refuses.
     """
-    mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, name)
-    g = cg.Graph(name)
-    build_cg(prog, g, mats, vecs, r3s, name)
+    if with_scratch:
+        g, mats, vecs, r3s = _build_with_scratch(prog, m_arrays, v_arrays, t_arrays, name)
+    else:
+        mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, name)
+        g = cg.Graph(name)
+        build_cg(prog, g, mats, vecs, r3s, name)
 
     with tempfile.TemporaryDirectory() as scratch:
         captured_path = os.path.join(scratch, f"{name}.captured.eig.json")
         captured_refusal = _saves(g, captured_path)
 
-        g.apply(cg.default_pass_manager())
+        g.apply(_phase("populate_structural"))
         path = os.path.join(scratch, f"{name}.eig.json")
-        # Save BEFORE executing, so the file holds the graph as the passes left
-        # it and not whatever an executor cached on the nodes during a replay.
         refusal = _saves(g, path)
         loaded = None if refusal is not None else cg.load_graph(path)
 
@@ -164,8 +190,9 @@ def _run_optimized_roundtrip(prog, m_arrays, v_arrays, t_arrays, name):
         if captured_refusal is None and refusal is None and _body(captured_path) != _body(path):
             # The passes changed what the file says, so this trial exercised a
             # file capture could never have written.
-            _STATS["rewritten"] += 1
+            _STATS["scratch_rewritten" if with_scratch else "rewritten"] += 1
 
+    _finish(g)
     g.execute()
     in_memory = _pools_of(mats, vecs, r3s)
     if loaded is None:
@@ -190,6 +217,7 @@ def _run_optimized_roundtrip(prog, m_arrays, v_arrays, t_arrays, name):
         )
         loaded.bind(key, by_name[key])
 
+    _finish(loaded)
     loaded.execute()
     return in_memory, _pools_of(b_mats, b_vecs, b_r3s), None
 
@@ -208,22 +236,32 @@ def _compare(got, expected, prog, stage, dtype, rtol, atol):
                 )
 
 
-def check_program_optimized_roundtrip(prog, m_arrays, v_arrays, t_arrays, label, dtype="float64"):
-    """Oracle, optimized in memory, and optimized after a round trip all agree."""
+def check_program_optimized_roundtrip(prog, m_arrays, v_arrays, t_arrays, label, dtype="float64", scratch=False):
+    """Oracle, optimized in memory, and optimized after a round trip all agree.
+
+    With @p scratch the program's scratch slots are graph-owned intermediates,
+    and the trial is tallied apart from the caller-tensor arms.
+    """
     rtol, atol = _DTYPE_TOL[dtype]
-    om = [a.copy() for a in m_arrays]
-    ov = [a.copy() for a in v_arrays]
-    ot = [a.copy() for a in t_arrays]
-    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        interp_np(prog, om, ov, ot, np.dtype(dtype))
-    if not _usable(om, ov, ot, cap=_DTYPE_CAP[dtype]):
-        pytest.skip("oracle overflowed, a numerically degenerate program")
+    if scratch:
+        om, ov, ot = _oracle_typed(prog, m_arrays, v_arrays, t_arrays, dtype)
+    else:
+        om = [a.copy() for a in m_arrays]
+        ov = [a.copy() for a in v_arrays]
+        ot = [a.copy() for a in t_arrays]
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            interp_np(prog, om, ov, ot, np.dtype(dtype))
+        if not _usable(om, ov, ot, cap=_DTYPE_CAP[dtype]):
+            pytest.skip("oracle overflowed, a numerically degenerate program")
 
     with_views = _has_kind(prog, _VIEW_KINDS)
-    _STATS["attempted"] += 1
-    _STATS["with_views_attempted"] += with_views
+    if scratch:
+        _STATS["scratch_attempted"] += 1
+    else:
+        _STATS["attempted"] += 1
+        _STATS["with_views_attempted"] += with_views
 
-    in_memory, loaded, refusal = _run_optimized_roundtrip(prog, m_arrays, v_arrays, t_arrays, f"{label}_ort")
+    in_memory, loaded, refusal = _run_optimized_roundtrip(prog, m_arrays, v_arrays, t_arrays, f"{label}_ort", scratch)
 
     # The in-memory arm stands on its own: the optimized graph must agree with
     # numpy whether or not it can be saved, so a refusal still checks it.
@@ -233,8 +271,11 @@ def check_program_optimized_roundtrip(prog, m_arrays, v_arrays, t_arrays, label,
         _STATS["refused"] += 1
         pytest.skip("the optimized graph holds a node the IR cannot carry yet")
 
-    _STATS["round_tripped"] += 1
-    _STATS["with_views_round_tripped"] += with_views
+    if scratch:
+        _STATS["scratch_round_tripped"] += 1
+    else:
+        _STATS["round_tripped"] += 1
+        _STATS["with_views_round_tripped"] += with_views
     _compare(loaded, (om, ov, ot), prog, "OPTIMIZED + ROUND-TRIPPED disagrees with oracle", dtype, rtol, atol)
     # Against the graph it was saved from. The same tolerance, not bitwise: the
     # loaded graph re-plans its executor, and a different reduction order or
@@ -286,6 +327,18 @@ def test_fuzz_optimized_roundtrip_with_views(seed):
     check_program_optimized_roundtrip(prog, *_seed_arrays(rng), f"ortview{seed}")
 
 
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@pytest.mark.parametrize("seed", fuzz_seeds(60))
+def test_fuzz_optimized_roundtrip_scratch(seed, dtype):
+    # A motif over graph-owned scratch that a structural pass is built to
+    # rewrite (a transpose PermuteFusion folds, a contraction CSE deduplicates,
+    # a scale ScaleAbsorption absorbs), after a short caller-tensor program.
+    # These are the files the shard exists for.
+    rng = np.random.default_rng(50_000 + seed)
+    prog = (_draw_saveable(rng, max_stmts=4) or []) + _gen_scratch_motif(rng)
+    check_program_optimized_roundtrip(prog, *_seed_arrays(rng, dtype), f"ortscr{seed}", dtype=dtype, scratch=True)
+
+
 def test_optimized_roundtrip_of_a_pinned_fusable_program():
     """One program that is saveable by construction.
 
@@ -331,42 +384,6 @@ def test_view_refusal_names_the_view():
     assert all(b.kind_name == "View" for b in report), [(b.label, b.kind_name, b.reason) for b in report]
 
 
-def test_optimized_roundtrip_of_graph_owned_scratch_is_refused():
-    """Placeholder: a graph that holds its own intermediates cannot be saved yet.
-
-    The passes this shard means to cover (PermuteFusion, CSE,
-    DeadNodeElimination, the memory planner) act only on tensors the graph
-    owns, because a caller reads whatever it handed in. A program over the
-    caller's tensors alone gives them nothing to rewrite, and the files the
-    arms above save differ from their captured form only where Reorder moved
-    a node. A graph-owned intermediate brings Alloc, Materialize or Initialize
-    nodes, and the writer refuses all three.
-
-    When those become reconstructible this case fails. Replace it with an arm
-    that draws ``_gen_scratch_motif`` programs through ``_build_with_scratch``
-    and ``_oracle_typed``, and assert in the corpus guard that most of its
-    round-tripped files differ from their captured form.
-    """
-    rng = np.random.default_rng(7171)
-    m, v, t = _seed_arrays(rng)
-    shape = next(sh for sh in SCRATCH_BY_SHAPE if sh[0] == sh[1] and len(MAT_BY_SHAPE.get(sh, ())) >= 2)
-    a, c = MAT_BY_SHAPE[shape][:2]
-    declared, eager = SCRATCH_BY_SHAPE[shape][:2]
-    # The same contraction into two scratch buffers, both read: CSE's shape.
-    prog = [
-        ("einsum", "ij <- ik ; kj", 1.0, a, a, 0.0, declared, False, False),
-        ("einsum", "ij <- ik ; kj", 1.0, a, a, 0.0, eager, False, False),
-        ("axpy", 1.0, declared, c),
-        ("axpy", 1.0, eager, c),
-    ]
-    g, *_ = _build_with_scratch(prog, m, v, t, "ortscratch")
-    g.apply(cg.default_pass_manager())
-    report = g.serializability_report()
-    assert report, "an optimized graph with graph-owned scratch saves now; replace this placeholder as its docstring says"
-    lifecycle = {"Alloc", "Materialize", "Initialize"}
-    assert all(b.kind_name in lifecycle for b in report), [(b.label, b.kind_name, b.reason) for b in report]
-
-
 def test_optimized_roundtrip_corpus_actually_round_trips():
     """The refusal rule must not swallow the corpus.
 
@@ -379,6 +396,14 @@ def test_optimized_roundtrip_corpus_actually_round_trips():
     tripped = _STATS["round_tripped"]
     assert attempted > 0, "no optimized round-trip trial ran at all"
     assert tripped > 0, f"every one of {attempted} trials was refused; nothing was round-tripped"
+    scratch_tripped = _STATS["scratch_round_tripped"]
+    assert scratch_tripped >= 0.6 * _STATS["scratch_attempted"], (
+        f"only {scratch_tripped} of {_STATS['scratch_attempted']} scratch programs round-tripped"
+    )
+    assert _STATS["scratch_rewritten"] >= 0.6 * scratch_tripped, (
+        f"the passes changed only {_STATS['scratch_rewritten']} of {scratch_tripped} round-tripped scratch files, so "
+        "the shard is mostly re-testing captured graphs the unoptimized round-trip shard already covers"
+    )
     no_view_attempted = attempted - _STATS["with_views_attempted"]
     no_view_tripped = tripped - _STATS["with_views_round_tripped"]
     assert no_view_tripped >= 0.8 * no_view_attempted, (
