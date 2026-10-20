@@ -1792,7 +1792,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return One id per node: what the built-in loop names its node zones with, built once per
      *         change of the node list rather than interned per node per replay.
      */
-    [[nodiscard]] EINSUMS_EXPORT std::vector<std::uint32_t> node_zone_ids();
+    [[nodiscard]] std::vector<std::uint32_t> node_zone_ids();
 
     /// @brief The run context this graph and its bodies share.
     /// @return The context, never null.

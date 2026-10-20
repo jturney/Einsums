@@ -2806,8 +2806,8 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                     best->best_effort ? " (none fits the budget beside the tensors outside the loop)" : "");
     _regions.push_back(line);
     applied(Sliced, line,
-            Decision{.graph   = graph.name(),
-                     .detail  = fmt::format("axes {}", fmt::join(best->axis_names, " x ")),
+            Decision{.detail  = fmt::format("axes {}", fmt::join(best->axis_names, " x ")),
+                     .graph   = graph.name(),
                      .tensors = {seed_handle->name},
                      .facts   = {Fact{.name = "slices", .value = static_cast<double>(best->slices)},
                                  Fact{.name = "largest_before", .value = static_cast<double>(best->largest_before), .unit = "B"},

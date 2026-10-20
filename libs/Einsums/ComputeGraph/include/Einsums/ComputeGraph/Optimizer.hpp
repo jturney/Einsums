@@ -1221,7 +1221,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return The records @ref explain prints from, each naming its pass and graph.
      * @versionadded{2.0.0}
      */
-    APIARY_EXPOSE APIARY_GETTER("decisions") [[nodiscard]] EINSUMS_EXPORT std::vector<Decision> decisions() const;
+    APIARY_EXPOSE APIARY_GETTER("decisions") [[nodiscard]] std::vector<Decision> decisions() const;
 
     /**
      * @brief Populate this PassManager with the default pass list (in place).
