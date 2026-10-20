@@ -12,16 +12,25 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/SymmetryRules.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/SymmetryOps.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <fmt/format.h>
+#include <fmt/ranges.h>
+
+#include <algorithm>
 #include <complex>
 #include <cstddef>
+#include <numeric>
 #include <optional>
+#include <random>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -440,4 +449,273 @@ TEST_CASE("symmetry_at - a tensor a nested loop writes gives nothing", "[Compute
 
     auto const escape = cg::EscapeAnalysis::over(outer);
     REQUIRE_FALSE(cg::symmetry_at(escape, id_of(outer, "tau"), only_node(outer, cg::OpKind::Permute).id).has_value());
+}
+
+// ── contribution_symmetry ────────────────────────────────────────────────────
+
+namespace {
+
+constexpr int nQ = 3, no = 3, nv = 4;
+
+/// A tensor whose values have @p desc, declared so the graph knows it.
+Tensor<double, 4> declared(std::string const &name, SymmetryDescriptor const &desc, std::size_t d0, std::size_t d1, std::size_t d2,
+                           std::size_t d3) {
+    auto t = create_random_tensor<double>(name, d0, d1, d2, d3);
+    t.set_symmetry(desc);
+    symmetrize(t);
+    return t;
+}
+
+/// The density-fitted particle ladder, H = B tau then R = H B, captured into @p graph.
+void capture_df_ladder(cg::Graph &graph, Tensor<double, 4> &R, Tensor<double, 3> const &B_first, Tensor<double, 4> const &tau,
+                       Tensor<double, 3> const &B_second) {
+    auto                  &H = graph.create_zero_tensor<double, 5>("H", nQ, nv, nv, no, no);
+    cg::CaptureGuard const guard(graph);
+    cg::einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", 0.0, &H, 1.0, B_first, tau);
+    cg::einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", 0.0, &R, 1.0, H, B_second);
+}
+
+/// The node writing @p name.
+cg::NodeId writer_of(cg::Graph const &graph, std::string_view name) {
+    auto const id = id_of(graph, name);
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == cg::OpKind::Einsum && node.outputs.size() == 1 && node.outputs[0] == id)
+            return node.id;
+    }
+    FAIL("no einsum writes " << name);
+    return cg::NodeId{};
+}
+
+} // namespace
+
+TEST_CASE("contribution_symmetry - the DF ladder is symmetric under the (i,a)-(j,b) exchange", "[ComputeGraph][Symmetry]") {
+    auto const B   = create_random_tensor<double>("B", nQ, nv, nv);
+    auto const tau = declared("tau", pair_exchange(), no, no, nv, nv);
+    cg::Graph  graph("df_ladder");
+    auto      &R = graph.create_zero_tensor<double, 4>("R", no, no, nv, nv);
+    capture_df_ladder(graph, R, B, tau, B);
+
+    auto const escape = cg::EscapeAnalysis::over(graph);
+    auto const op     = cg::contribution_symmetry(escape, writer_of(graph, "R"), pair_exchange().ops[0]);
+    REQUIRE(op.has_value());
+    REQUIRE(op->sign == +1);
+
+    graph.execute();
+    REQUIRE(values_have(R, SymmetryDescriptor{{*op}}));
+}
+
+TEST_CASE("contribution_symmetry - the DF ladder declines without tau's symmetry", "[ComputeGraph][Symmetry]") {
+    auto const B   = create_random_tensor<double>("B", nQ, nv, nv);
+    auto const tau = create_random_tensor<double>("tau", no, no, nv, nv);
+    cg::Graph  graph("df_ladder_undeclared");
+    auto      &R = graph.create_zero_tensor<double, 4>("R", no, no, nv, nv);
+    capture_df_ladder(graph, R, B, tau, B);
+
+    auto const escape = cg::EscapeAnalysis::over(graph);
+    REQUIRE_FALSE(cg::contribution_symmetry(escape, writer_of(graph, "R"), pair_exchange().ops[0]).has_value());
+
+    graph.execute();
+    REQUIRE_FALSE(values_have(R, pair_exchange()));
+}
+
+TEST_CASE("contribution_symmetry - the DF ladder declines with a different tensor in the second B slot", "[ComputeGraph][Symmetry]") {
+    auto const B   = create_random_tensor<double>("B", nQ, nv, nv);
+    auto const B2  = create_random_tensor<double>("B2", nQ, nv, nv);
+    auto const tau = declared("tau", pair_exchange(), no, no, nv, nv);
+    cg::Graph  graph("df_ladder_two_b");
+    auto      &R = graph.create_zero_tensor<double, 4>("R", no, no, nv, nv);
+    capture_df_ladder(graph, R, B, tau, B2);
+
+    auto const escape = cg::EscapeAnalysis::over(graph);
+    REQUIRE_FALSE(cg::contribution_symmetry(escape, writer_of(graph, "R"), pair_exchange().ops[0]).has_value());
+
+    graph.execute();
+    REQUIRE_FALSE(values_have(R, pair_exchange()));
+}
+
+TEST_CASE("contribution_symmetry - the DF ladder is not symmetric under i<->j alone", "[ComputeGraph][Symmetry]") {
+    auto const B   = create_random_tensor<double>("B", nQ, nv, nv);
+    auto const tau = declared("tau", pair_exchange(), no, no, nv, nv);
+    cg::Graph  graph("df_ladder_ij_only");
+    auto      &R = graph.create_zero_tensor<double, 4>("R", no, no, nv, nv);
+    capture_df_ladder(graph, R, B, tau, B);
+
+    auto const escape = cg::EscapeAnalysis::over(graph);
+    REQUIRE_FALSE(cg::contribution_symmetry(escape, writer_of(graph, "R"), SymmetryOp::swap(0, 1)).has_value());
+
+    graph.execute();
+    REQUIRE_FALSE(values_have(R, SymmetryDescriptor::symmetric_pair(0, 1)));
+}
+
+TEST_CASE("contribution_symmetry - the DF ladder declines when B changes between its two reads", "[ComputeGraph][Symmetry]") {
+    // The two B factors trade places in the proof, which needs them to hold the same values.
+    auto       B   = create_random_tensor<double>("B", nQ, nv, nv);
+    auto const X   = create_random_tensor<double>("X", nQ, nv, nv);
+    auto const tau = declared("tau", pair_exchange(), no, no, nv, nv);
+    cg::Graph  graph("df_ladder_b_changes");
+    auto      &H = graph.create_zero_tensor<double, 5>("H", nQ, nv, nv, no, no);
+    auto      &R = graph.create_zero_tensor<double, 4>("R", no, no, nv, nv);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", 0.0, &H, 1.0, B, tau);
+        cg::axpby(1.0, X, 1.0, &B);
+        cg::einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", 0.0, &R, 1.0, H, B);
+    }
+
+    auto const escape = cg::EscapeAnalysis::over(graph);
+    REQUIRE_FALSE(cg::contribution_symmetry(escape, writer_of(graph, "R"), pair_exchange().ops[0]).has_value());
+
+    graph.execute();
+    REQUIRE_FALSE(values_have(R, pair_exchange()));
+}
+
+TEST_CASE("contribution_symmetry - the conventional ladder takes the integral's own symmetry", "[ComputeGraph][Symmetry]") {
+    // R_ijab = sum_ef tau_ijef V_abef with V_abef = V_bafe: the search exchanges e and f and uses
+    // one generator of each factor.
+    auto const tau = declared("tau", pair_exchange(), no, no, nv, nv);
+    auto const V   = declared("V", pair_exchange(), nv, nv, nv, nv);
+    cg::Graph  graph("conventional_ladder");
+    auto      &R = graph.create_zero_tensor<double, 4>("R", no, no, nv, nv);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j,a,b <- i,j,e,f ; a,b,e,f", 0.0, &R, 1.0, tau, V);
+    }
+
+    auto const escape = cg::EscapeAnalysis::over(graph);
+    auto const op     = cg::contribution_symmetry(escape, writer_of(graph, "R"), pair_exchange().ops[0]);
+    REQUIRE(op.has_value());
+    REQUIRE(op->sign == +1);
+
+    graph.execute();
+    REQUIRE(values_have(R, SymmetryDescriptor{{*op}}));
+}
+
+TEST_CASE("contribution_symmetry - an antisymmetric amplitude gives an antisymmetric ladder", "[ComputeGraph][Symmetry]") {
+    // Spin-orbital form: tau antisymmetric in (i,j), so the ladder is too, with sign -1.
+    auto const tau = declared("tau", SymmetryDescriptor{{SymmetryOp::swap(0, 1, -1), SymmetryOp::swap(2, 3, -1)}}, no, no, nv, nv);
+    auto const V   = create_random_tensor<double>("V", nv, nv, nv, nv);
+    cg::Graph  graph("spin_orbital_ladder");
+    auto      &R = graph.create_zero_tensor<double, 4>("R", no, no, nv, nv);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j,a,b <- i,j,e,f ; a,b,e,f", 0.0, &R, 1.0, tau, V);
+    }
+
+    auto const escape = cg::EscapeAnalysis::over(graph);
+    auto const op     = cg::contribution_symmetry(escape, writer_of(graph, "R"), SymmetryOp::swap(0, 1));
+    REQUIRE(op.has_value());
+    REQUIRE(op->sign == -1);
+
+    graph.execute();
+    REQUIRE(values_have(R, SymmetryDescriptor{{*op}}));
+}
+
+TEST_CASE("contribution_symmetry - an intermediate written twice is not inlined", "[ComputeGraph][Symmetry]") {
+    // H's second write adds a term with no symmetry, so H is a factor of its own, and nothing is
+    // known about it.
+    auto const B   = create_random_tensor<double>("B", nQ, nv, nv);
+    auto const Y   = create_random_tensor<double>("Y", nQ, nv, nv, no, no);
+    auto const tau = declared("tau", pair_exchange(), no, no, nv, nv);
+    cg::Graph  graph("df_ladder_two_writes");
+    auto      &H = graph.create_zero_tensor<double, 5>("H", nQ, nv, nv, no, no);
+    auto      &R = graph.create_zero_tensor<double, 4>("R", no, no, nv, nv);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("Q,a,f,i,j <- Q,a,e ; i,j,e,f", 0.0, &H, 1.0, B, tau);
+        cg::axpby(1.0, Y, 1.0, &H);
+        cg::einsum("i,j,a,b <- Q,a,f,i,j ; Q,b,f", 0.0, &R, 1.0, H, B);
+    }
+
+    auto const escape = cg::EscapeAnalysis::over(graph);
+    REQUIRE_FALSE(cg::contribution_symmetry(escape, writer_of(graph, "R"), pair_exchange().ops[0]).has_value());
+
+    graph.execute();
+    REQUIRE_FALSE(values_have(R, pair_exchange()));
+}
+
+TEST_CASE("contribution_symmetry - every answer on random contractions holds for the values", "[ComputeGraph][Symmetry]") {
+    // Soundness sweep: random two-operand einsums over a pool of declared symmetric, antisymmetric
+    // and general operands (one tensor may fill both slots), random output letters and a random
+    // permutation of them. Whenever the proof answers, the executed contribution must satisfy it.
+    constexpr std::size_t n    = 3;
+    auto                  make = [](std::string const &name, std::size_t rank, std::optional<SymmetryDescriptor> desc) {
+        auto t = rank == 2 ? RuntimeTensor<double>(create_random_tensor<double>(name, n, n))
+                           : RuntimeTensor<double>(create_random_tensor<double>(name, n, n, n, n));
+        if (desc) {
+            if (rank == 2) {
+                auto s = create_random_tensor<double>(name, n, n);
+                s.set_symmetry(*desc);
+                symmetrize(s);
+                t = RuntimeTensor<double>(s);
+            } else {
+                auto s = create_random_tensor<double>(name, n, n, n, n);
+                s.set_symmetry(*desc);
+                symmetrize(s);
+                t = RuntimeTensor<double>(s);
+            }
+            t.set_symmetry(*desc);
+        }
+        return t;
+    };
+    std::vector<RuntimeTensor<double>> pool;
+    pool.push_back(make("S4", 4, pair_exchange()));
+    pool.push_back(make("A4", 4, SymmetryDescriptor{{SymmetryOp::swap(0, 1, -1), SymmetryOp::swap(2, 3, -1)}}));
+    pool.push_back(make("G4", 4, std::nullopt));
+    pool.push_back(make("S2", 2, SymmetryDescriptor::symmetric_pair(0, 1)));
+    pool.push_back(make("N2", 2, SymmetryDescriptor::antisymmetric_pair(0, 1)));
+    pool.push_back(make("G2", 2, std::nullopt));
+
+    std::mt19937                   rng(20261020);
+    std::vector<std::string> const alphabet{"i", "j", "k", "l"};
+    auto pick   = [&rng](std::size_t bound) { return std::uniform_int_distribution<std::size_t>(0, bound - 1)(rng); };
+    int  proven = 0;
+    for (int trial = 0; trial < 400; ++trial) {
+        auto const &A = pool[pick(pool.size())];
+        auto const &B = pick(3) == 0 ? A : pool[pick(pool.size())];
+
+        std::vector<std::string> a_letters, b_letters;
+        for (std::size_t p = 0; p < A.rank(); ++p)
+            a_letters.push_back(alphabet[pick(alphabet.size())]);
+        for (std::size_t p = 0; p < B.rank(); ++p)
+            b_letters.push_back(alphabet[pick(alphabet.size())]);
+
+        // Output: two to four distinct letters the operands use, in a random order.
+        std::vector<std::string> used;
+        for (auto const &l : a_letters)
+            if (std::ranges::find(used, l) == used.end())
+                used.push_back(l);
+        for (auto const &l : b_letters)
+            if (std::ranges::find(used, l) == used.end())
+                used.push_back(l);
+        if (used.size() < 2)
+            continue;
+        std::ranges::shuffle(used, rng);
+        used.resize(2 + pick(used.size() - 1));
+
+        auto                sigma = SymmetryOp::identity();
+        std::vector<int8_t> order(used.size());
+        std::iota(order.begin(), order.end(), int8_t{0});
+        std::ranges::shuffle(order, rng);
+        for (std::size_t p = 0; p < order.size(); ++p)
+            sigma.permutation[p] = order[p];
+
+        auto const spec = fmt::format("{} <- {} ; {}", fmt::join(used, ","), fmt::join(a_letters, ","), fmt::join(b_letters, ","));
+        RuntimeTensor<double> R("R", std::vector<std::size_t>(used.size(), n));
+        cg::Graph             graph("random");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum(std::string_view{spec}, 0.0, &R, 1.0, A, B);
+        }
+
+        auto const escape = cg::EscapeAnalysis::over(graph);
+        auto const op     = cg::contribution_symmetry(escape, only_node(graph, cg::OpKind::Einsum).id, sigma);
+        if (!op)
+            continue;
+        ++proven;
+        graph.execute();
+        INFO(spec << " with " << A.name() << ", " << B.name() << ", sign " << int{op->sign});
+        REQUIRE(check_symmetry(R, SymmetryDescriptor{{*op}}, 1e-10));
+    }
+    // The sweep must reach the proof often enough to mean something.
+    REQUIRE(proven >= 40);
 }

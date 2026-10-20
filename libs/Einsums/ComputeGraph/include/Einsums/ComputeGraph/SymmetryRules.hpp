@@ -117,4 +117,37 @@ struct Node;
  */
 [[nodiscard]] EINSUMS_EXPORT std::optional<SymmetryDescriptor> symmetry_at(EscapeAnalysis const &escape, TensorId tensor, NodeId reader);
 
+/**
+ * @brief Is what @p writer adds to its output unchanged, up to a sign, when its output's axes are
+ *        permuted by @p sigma?
+ *
+ * The question a pass asks before computing half of a contraction and permuting the rest from it.
+ * It is asked of the CONTRIBUTION, the term @p writer adds, not of the output tensor, which may
+ * hold anything else as well.
+ *
+ * An operand of @p writer that exactly one einsum writes, by overwriting it, is replaced by that
+ * einsum's own operands, and so on down, so a chain of contractions is judged as the one
+ * expression it computes. The density-fitted particle ladder, @c H = B tau then @c R += H B, is
+ * judged as @c R += B tau B. The remaining factors are then matched against their own images: the
+ * contribution is unchanged when some relabeling of the summed letters, together with @p sigma on
+ * the output letters, carries every factor onto a factor of the same tensor, up to an element of
+ * that tensor's symmetry group as it stands where it is read (@ref symmetry_at). On the ladder the
+ * relabeling exchanges e and f, the two B factors trade places, and tau's (i,a)-(j,b) exchange
+ * absorbs the rest.
+ *
+ * Proof, not evidence: every step is an identity the operands satisfy, so a positive answer holds
+ * for all values. A negative one may be conservative: the search takes generators as declared and
+ * gives up on anything conjugated.
+ *
+ * @param[in] escape The analysis of the graph @p writer belongs to.
+ * @param[in] writer An einsum node.
+ * @param[in] sigma  The permutation of the output's positions, in the convention of
+ *                   @c SymmetryOp: position @c p takes the letter at @c sigma.permutation[p]. Its
+ *                   sign and conjugate fields are ignored.
+ * @return @p sigma with the sign the contribution picks up (+1 symmetric, -1 antisymmetric), or
+ *         nothing when no proof was found.
+ */
+[[nodiscard]] EINSUMS_EXPORT std::optional<SymmetryOp> contribution_symmetry(EscapeAnalysis const &escape, NodeId writer,
+                                                                             SymmetryOp const &sigma);
+
 EINSUMS_NAMESPACE_END(compute_graph)
