@@ -583,6 +583,59 @@ def _ccsd_tau_program(antisymmetrized=False) -> Program:
 #: gives them. Materialization closes the list because a graph holding a
 #: declared intermediate cannot execute without it, and it is where a rewrite's
 #: leftovers become visible.
+def _annotated_after_capture_program() -> Program:
+    """A disjoint pair annotated after capture, which is the surface a Python caller has.
+
+    The captured einsums' own letter maps are empty, since nothing was annotated when
+    they were captured, while a node a rewrite lowers binds its operands' annotations.
+    DeltaElimination raised the algebra from the empty maps and its emitted node from
+    the annotations, so its report said ``?a*?e`` where the node it emitted said
+    ``v*x``. The raise, the term's price and the cost check now all read a letter's
+    space from the operands as they stand.
+    """
+    return Program(
+        pool={'p0': (2, 6), 'p1': (2, 6), 'p2': (6, 6), 'p3': (6, 6), 'p4': (6, 3), 'p5': (6, 3), 'p6': (3, 2), 'p7': (3, 2), 'p8': (2, 2), 'p9': (2, 2), 'p10': (3, 4, 4, 4), 'p11': (3, 4, 4, 4)},
+        inter={'t_e0': (2, 6), 't_e1': (2, 6), 't_p2': (2, 4, 4, 4)},
+        outs={'r0': (2, 6), 'r1': (6, 2), 'r2': (1,), 'r3': (1,), 'r4': (2, 4, 4, 4)},
+        stmts=(
+            ('r0', ('a', 'd'), 'p0', ('a', 'b'), 'p2', ('b', 'd'), 0.0, 1.0),
+            ('r1', ('b', 'a'), 'p4', ('b', 'e'), 'p6', ('e', 'a'), 0.0, 1.0),
+            ('t_p2', ('a', 'i', 'j', 'k'), 'p6', ('e', 'a'), 'p10', ('e', 'i', 'j', 'k'), 0.0, 1.0, 'einsum', (((('i',), ('j',)), 0, ('i', 'j')),), (True, False)),
+        ),
+        terms=(('p0', 'p2'), ('p4', 'p6'), ('p6', 'p10')),
+        disjoint=(1, 'e'),
+        loop=(0, 1, 1),
+    )
+
+
+def _letter_reused_across_statements_program() -> Program:
+    """One letter name in two statements, annotated in only one of them.
+
+    MultiTermFactorization ranks its search with a region-wide letter table, which gives
+    ``r1``'s unannotated ``a`` the space ``r3``'s ``a`` carries. Its emitted terms were
+    priced from that table too, so its report said ``x*?c*?d`` for a node that binds
+    ``?a*?c*?d``. An emitted term is now priced over the spaces its own node binds.
+    """
+    return Program(
+        pool={'p0': (2, 6), 'p1': (2, 6), 'p2': (6, 6), 'p3': (6, 6), 'p4': (6, 3), 'p5': (6, 3), 'p6': (3, 2), 'p7': (3, 2), 'p8': (2, 2), 'p9': (2, 2), 'p10': (3, 4, 4, 4), 'p11': (3, 4, 4, 4), 'p12': (2, 4, 4, 4), 'p13': (2, 4, 4, 4)},
+        inter={'t1_0': (6, 2), 't_e1': (2, 6), 't_e2': (2, 6)},
+        outs={'r0': (2, 6), 'r1': (6, 2), 'r2': (1,), 'r3': (2, 4, 4, 4), 'r4': (2, 4, 4, 4)},
+        stmts=(
+            ('r0', ('a', 'd'), 'p0', ('a', 'b'), 'p2', ('b', 'd'), 0.0, 1.0),
+            ('t1_0', ('d', 'a'), 'p4', ('d', 'e'), 'p6', ('e', 'a'), 0.0, 1.0),
+            ('r1', ('d', 'c'), 't1_0', ('d', 'a'), 'p8', ('a', 'c'), 0.0, 1.0),
+            ('t_e1', ('a', 'b'), 'p8', ('a', 'c'), 'p0', ('c', 'b'), 0.0, 1.0),
+            ('t_e2', ('a', 'b'), 't_e1', ('a', 'b'), 'p0', ('a', 'b'), 0.0, 1.0, 'dp'),
+            ('r2', (), 't_e2', ('a', 'b'), 'p0', ('a', 'b'), 0.0, 1.0, 'dot'),
+            ('r3', ('a', 'i', 'j', 'k'), 'p6', ('e', 'a'), 'p10', ('e', 'i', 'j', 'k'), 0.0, 1.0, 'einsum', (((('i',), ('j',)), 0, ('i', 'j')),), (True, False)),
+            ('r4', ('a', 'i', 'j', 'k'), 'p12', ('a', 'i', 'j', 'k'), None, (), 0.0, 1.0, 'perm', ()),
+        ),
+        terms=(('p0', 'p2'), ('p4', 'p6', 'p8'), ('p6', 'p10')),
+        disjoint=(1, 'e'),
+        loop=(0, 1, 1),
+    )
+
+
 def _region_pass_manager():
     mtf = cg.MultiTermFactorization()
     # Off by default, so a fuzz that did not switch it on would cover the pass
@@ -909,6 +962,8 @@ def _check(prog, dtype, seed=0):
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
 @example(prog=_ccsd_tau_program())
 @example(prog=_ccsd_tau_program(antisymmetrized=True))
+@example(prog=_annotated_after_capture_program())
+@example(prog=_letter_reused_across_statements_program())
 def test_the_region_pipeline_keeps_the_answer(prog, dtype):
     _check(prog, dtype)
 

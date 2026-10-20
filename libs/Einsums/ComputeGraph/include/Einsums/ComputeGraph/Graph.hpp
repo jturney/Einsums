@@ -5623,6 +5623,36 @@ namespace detail {
 bind_einsum_spaces(Graph &graph, TensorId a_id, TensorId b_id, TensorId c_id, std::vector<std::string> const &a_indices,
                    std::vector<std::string> const &b_indices, std::vector<std::string> const &c_indices, std::string_view context);
 
+/**
+ * @brief The letter-to-space bindings @ref bind_einsum_spaces derives, without annotating the output.
+ *
+ * @param[in] graph The graph the operands belong to.
+ * @param[in] a_id, b_id, c_id The operands, as for @ref bind_einsum_spaces.
+ * @param[in] a_indices, b_indices, c_indices Their index letters.
+ * @param[in] context Caller name for a conflict diagnostic.
+ * @return The bindings, empty when no operand is annotated.
+ * @throws std::invalid_argument when one letter binds two different spaces.
+ */
+[[nodiscard]] EINSUMS_EXPORT std::vector<std::pair<std::string, SpaceId>>
+einsum_letter_spaces(Graph const &graph, TensorId a_id, TensorId b_id, TensorId c_id, std::vector<std::string> const &a_indices,
+                     std::vector<std::string> const &b_indices, std::vector<std::string> const &c_indices, std::string_view context);
+
+/**
+ * @brief The space each letter of an einsum node stands for, as the graph stands now.
+ *
+ * A node's @c letter_spaces is what capture could see. Annotations made after capture, which is
+ * the surface a Python caller has, are not in it, while a node a pass builds from the same
+ * operands binds them (@ref bind_einsum_spaces). Anything that compares a captured node with one
+ * built from it, such as a cost a rewrite reports against the nodes it emits, has to read both the
+ * same way: from the operands' current annotations, as SpacePropagation does, with the
+ * capture-time map filling the letters no operand annotates.
+ *
+ * @param[in] graph The graph @p node belongs to.
+ * @param[in] node An einsum node; any other kind gives an empty list.
+ * @return The bindings.
+ */
+[[nodiscard]] EINSUMS_EXPORT std::vector<std::pair<std::string, SpaceId>> current_letter_spaces(Graph const &graph, Node const &node);
+
 } // namespace detail
 
 // ── Global graph registry for profiler integration ─────────────────────────

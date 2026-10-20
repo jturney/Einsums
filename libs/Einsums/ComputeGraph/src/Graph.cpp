@@ -56,6 +56,7 @@
 #include <ranges>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <unordered_set>
 #include <utility>
 
@@ -822,10 +823,10 @@ EINSUMS_NAMESPACE_END(compute_graph)
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 namespace detail {
 
-std::vector<std::pair<std::string, SpaceId>> bind_einsum_spaces(Graph &graph, TensorId a_id, TensorId b_id, TensorId c_id,
-                                                                std::vector<std::string> const &a_indices,
-                                                                std::vector<std::string> const &b_indices,
-                                                                std::vector<std::string> const &c_indices, std::string_view context) {
+std::vector<std::pair<std::string, SpaceId>> einsum_letter_spaces(Graph const &graph, TensorId a_id, TensorId b_id, TensorId c_id,
+                                                                  std::vector<std::string> const &a_indices,
+                                                                  std::vector<std::string> const &b_indices,
+                                                                  std::vector<std::string> const &c_indices, std::string_view context) {
     TensorHandle const *a = graph.find_tensor(a_id);
     TensorHandle const *b = graph.find_tensor(b_id);
     TensorHandle const *c = graph.find_tensor(c_id);
@@ -835,8 +836,14 @@ std::vector<std::pair<std::string, SpaceId>> bind_einsum_spaces(Graph &graph, Te
         LetterSpaceOperand{.label = "B", .indices = &b_indices, .spaces = b != nullptr ? &b->spaces : nullptr},
         LetterSpaceOperand{.label = "C", .indices = &c_indices, .spaces = c != nullptr ? &c->spaces : nullptr},
     };
+    return build_letter_spaces(std::span<LetterSpaceOperand const>{operands}, &graph.space_registry(), context);
+}
 
-    auto letters = build_letter_spaces(std::span<LetterSpaceOperand const>{operands}, &graph.space_registry(), context);
+std::vector<std::pair<std::string, SpaceId>> bind_einsum_spaces(Graph &graph, TensorId a_id, TensorId b_id, TensorId c_id,
+                                                                std::vector<std::string> const &a_indices,
+                                                                std::vector<std::string> const &b_indices,
+                                                                std::vector<std::string> const &c_indices, std::string_view context) {
+    auto letters = einsum_letter_spaces(graph, a_id, b_id, c_id, a_indices, b_indices, c_indices, context);
 
     if (auto *output = graph.find_tensor(c_id); output != nullptr && output->is_intermediate && output->spaces.empty()) {
         auto inferred = spaces_from_letters(c_indices, letters);
@@ -846,6 +853,38 @@ std::vector<std::pair<std::string, SpaceId>> bind_einsum_spaces(Graph &graph, Te
         }
     }
 
+    return letters;
+}
+
+std::vector<std::pair<std::string, SpaceId>> current_letter_spaces(Graph const &graph, Node const &node) {
+    auto const *desc = node.op_data.get_if<EinsumDescriptor>();
+    if (desc == nullptr) {
+        return {};
+    }
+    std::vector<std::pair<std::string, SpaceId>> letters = desc->letter_spaces;
+    if (node.inputs.size() < 2 || node.outputs.empty()) {
+        return letters;
+    }
+    auto const                                   lists = live_index_lists(*desc);
+    std::vector<std::pair<std::string, SpaceId>> current;
+    try {
+        current = einsum_letter_spaces(graph, node.inputs[0], node.inputs[1], node.outputs[0], lists.a, lists.b, lists.c, node.label);
+    } catch (std::invalid_argument const &) {
+        // Operands whose annotations now disagree about a letter: a node built from them would be
+        // refused, and the one captured keeps what capture saw.
+        return letters;
+    }
+    for (auto const &[letter, space] : current) {
+        if (!space.valid()) {
+            continue; // No operand annotates the axis; what capture saw stands.
+        }
+        auto const hit = std::ranges::find_if(letters, [&](auto const &entry) { return entry.first == letter; });
+        if (hit == letters.end()) {
+            letters.emplace_back(letter, space);
+        } else {
+            hit->second = space;
+        }
+    }
     return letters;
 }
 

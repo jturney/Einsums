@@ -26,6 +26,7 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -1652,9 +1653,52 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     auto emit_contraction = [&](Factor const &a, Factor const &b, TensorId target, std::vector<TensorId> const &targets,
                                 std::string const &target_name, std::vector<ExprIndex> const &target_indices,
                                 PrefactorScalar target_prefactor, PrefactorScalar factor, std::string const &label) {
+        // Each letter priced as THIS node will bind it: its operands' annotations, then the
+        // algebra's own index spaces, which the lowering keeps. The search's table is region-wide
+        // and gives a letter the space some other statement's use of the same name carries; that
+        // is a fair guess for ranking, and it is not what the node says.
+        LetterTable term_table = emit_table;
+        {
+            auto const letters_in = [](std::vector<ExprIndex> const &indices) {
+                std::vector<std::string> out;
+                out.reserve(indices.size());
+                for (auto const &index : indices) {
+                    out.push_back(index.letter);
+                }
+                return out;
+            };
+            std::vector<std::pair<std::string, SpaceId>> bound;
+            try {
+                bound = detail::einsum_letter_spaces(graph, a.tensor, b.tensor, target, letters_in(a.indices), letters_in(b.indices),
+                                                     letters_in(target_indices), "MultiTermFactorization");
+            } catch (std::invalid_argument const &) {
+                bound.clear(); // Operands that disagree about a letter bind it to nothing.
+            }
+            auto const rebind = [&](std::vector<ExprIndex> const &indices) {
+                for (auto const &index : indices) {
+                    SpaceId space = index.space;
+                    if (auto const hit = std::ranges::find_if(bound, [&](auto const &entry) { return entry.first == index.letter; });
+                        hit != bound.end() && hit->second.valid()) {
+                        space = hit->second;
+                    }
+                    auto const variable = term_table.var.find(index.letter);
+                    if (space.valid()) {
+                        term_table.var[index.letter] = SymbolicVar::space(space);
+                    } else if (variable != term_table.var.end() && variable->second.is_space()) {
+                        variable->second = SymbolicVar::anonymous(index.letter);
+                        if (auto const extent = term_table.extent.find(index.letter); extent != term_table.extent.end()) {
+                            term_table.anonymous_extent.try_emplace(index.letter, static_cast<double>(extent->second));
+                        }
+                    }
+                }
+            };
+            rebind(a.indices);
+            rebind(b.indices);
+            rebind(target_indices);
+        }
         ExprTerm term =
             contraction_term({.term = leaf_for(a, {}), .indices = a.indices, .conjugate = a.conjugate},
-                             {.term = leaf_for(b, {}), .indices = b.indices, .conjugate = b.conjugate}, target_indices, factor, emit_table);
+                             {.term = leaf_for(b, {}), .indices = b.indices, .conjugate = b.conjugate}, target_indices, factor, term_table);
 
         ExprStatement statement;
         statement.target           = target;

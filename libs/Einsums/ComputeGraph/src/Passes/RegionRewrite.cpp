@@ -37,14 +37,19 @@ namespace {
 
 /// The flops of every node in @p nodes that carries a contraction, through the SAME formula the
 /// raise gives a term. Nothing else in the algebra is priced, so nothing else is priced here.
-SymbolicPoly node_flops(std::vector<Node> const &nodes, auto &&include) {
+SymbolicPoly node_flops(Graph const &graph, std::vector<Node> const &nodes, auto &&include) {
     SymbolicPoly out;
     for (auto const &node : nodes) {
         if (!include(node)) {
             continue;
         }
         if (auto const *desc = node.op_data.get_if<EinsumDescriptor>(); desc != nullptr) {
-            out += symbolic_cost_for(*desc).flops;
+            // Each letter's space as the graph stands now, the way the raise reads the same node:
+            // a captured node's own map is what capture saw, and a node lowered after an
+            // annotation binds more.
+            EinsumDescriptor current = *desc;
+            current.letter_spaces    = detail::current_letter_spaces(graph, node);
+            out += symbolic_cost_for(current).flops;
         }
     }
     return out;
@@ -283,7 +288,7 @@ bool RegionRewrite::transform(Graph &graph) {
         if (_verify_costs) {
             auto const &all  = graph.nodes();
             auto const  span = [&](Node const &node) { return std::ranges::find(region.nodes, node.id) != region.nodes.end(); };
-            nodes_before     = node_flops(all, span);
+            nodes_before     = node_flops(graph, all, span);
             for (auto const &node : all) {
                 before_ids.insert(node.id);
             }
@@ -301,7 +306,8 @@ bool RegionRewrite::transform(Graph &graph) {
             // The emitted nodes are the ones whose id the graph did not hold before. Keyed by id
             // rather than by position, because lowering sorts the graph and the splice does not
             // stay where it was put.
-            SymbolicPoly const nodes_after = node_flops(graph.nodes(), [&](Node const &node) { return !before_ids.contains(node.id); });
+            SymbolicPoly const nodes_after =
+                node_flops(graph, graph.nodes(), [&](Node const &node) { return !before_ids.contains(node.id); });
             if (!(nodes_before == expr_before)) {
                 _cost_mismatches.push_back(fmt::format("region {} reports a before-cost of {} and its nodes cost {}", index,
                                                        expr_before.to_string(registry), nodes_before.to_string(registry)));

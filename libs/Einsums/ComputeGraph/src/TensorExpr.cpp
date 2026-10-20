@@ -387,15 +387,16 @@ std::vector<Region> form_regions(Graph const &graph, EscapeAnalysis const &escap
 
 namespace {
 
-/// The letters of one operand, paired with the space the node bound to each.
-std::vector<ExprIndex> indices_from(std::vector<std::string> const &letters, EinsumDescriptor const &desc) {
+/// The letters of one operand, paired with the space each stands for as the graph stands now
+/// (detail::current_letter_spaces), which is what a node lowered from the algebra will bind.
+std::vector<ExprIndex> indices_from(std::vector<std::string> const &letters, std::vector<std::pair<std::string, SpaceId>> const &spaces) {
     std::vector<ExprIndex> out;
     out.reserve(letters.size());
     for (auto const &letter : letters) {
         ExprIndex index;
         index.letter = letter;
-        if (auto const space = desc.space_for_letter(letter); space.has_value()) {
-            index.space = *space;
+        if (auto const hit = std::ranges::find_if(spaces, [&](auto const &entry) { return entry.first == letter; }); hit != spaces.end()) {
+            index.space = hit->second;
         }
         out.push_back(std::move(index));
     }
@@ -991,18 +992,24 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
                     RaiseFailure{.reason = "a contraction names fewer than two operands", .detail = fmt::format("node '{}'", node->label)});
             }
             auto const &params = desc->params;
+            auto const  spaces = detail::current_letter_spaces(graph, *node);
 
             ExprTerm term;
             term.kind    = TermKind::Contraction;
             term.factor  = live_ab_prefactor(*desc);
-            term.indices = indices_from(c_list, *desc);
+            term.indices = indices_from(c_list, spaces);
             term.operands.push_back(leaf_for(expr, leaves, graph, node->inputs[0]));
             term.operands.push_back(leaf_for(expr, leaves, graph, node->inputs[1]));
-            term.operand_indices.push_back(indices_from(a_list, *desc));
-            term.operand_indices.push_back(indices_from(b_list, *desc));
+            term.operand_indices.push_back(indices_from(a_list, spaces));
+            term.operand_indices.push_back(indices_from(b_list, spaces));
             term.conjugate.push_back(live_conj_a(*desc));
             term.conjugate.push_back(live_conj_b(*desc));
-            term.cost = symbolic_cost_for(*desc);
+            {
+                // Priced with the same spaces its indices carry, not the capture-time map.
+                EinsumDescriptor current = *desc;
+                current.letter_spaces    = spaces;
+                term.cost                = symbolic_cost_for(current);
+            }
 
             statement.target_prefactor = live_c_prefactor(*desc);
             statement.target_indices   = term.indices;
@@ -1413,9 +1420,32 @@ expected<void, RaiseFailure> lower_region(Graph &graph, Region const &region, Te
             auto const &a_leaf = expr.at(term.operands[0]);
             auto const &b_leaf = expr.at(term.operands[1]);
             try {
-                emitted.push_back(graph.make_einsum_node(a_leaf.tensor, b_leaf.tensor, statement.target, spec, statement.target_prefactor,
-                                                         term.factor, !term.conjugate.empty() && term.conjugate[0],
-                                                         term.conjugate.size() > 1 && term.conjugate[1], statement.origin_label));
+                Node node = graph.make_einsum_node(a_leaf.tensor, b_leaf.tensor, statement.target, spec, statement.target_prefactor,
+                                                   term.factor, !term.conjugate.empty() && term.conjugate[0],
+                                                   term.conjugate.size() > 1 && term.conjugate[1], statement.origin_label);
+                // The node binds what its operands are annotated with. A letter the algebra placed
+                // in a space that no operand annotates, such as one carried onto an intermediate a
+                // rewrite created, keeps that space, so the node says what the algebra knew.
+                if (auto *built = node.op_data.get_if<EinsumDescriptor>(); built != nullptr) {
+                    auto const keep = [&](std::vector<ExprIndex> const &indices) {
+                        for (auto const &index : indices) {
+                            if (!index.space.valid()) {
+                                continue;
+                            }
+                            auto const hit =
+                                std::ranges::find_if(built->letter_spaces, [&](auto const &entry) { return entry.first == index.letter; });
+                            if (hit == built->letter_spaces.end()) {
+                                built->letter_spaces.emplace_back(index.letter, index.space);
+                            } else if (!hit->second.valid()) {
+                                hit->second = index.space;
+                            }
+                        }
+                    };
+                    keep(statement.target_indices);
+                    keep(term.operand_indices[0]);
+                    keep(term.operand_indices[1]);
+                }
+                emitted.push_back(std::move(node));
             } catch (std::exception const &error) {
                 return unexpected(RaiseFailure{.reason = "a contraction could not be rebuilt from the algebra",
                                                .detail = fmt::format("target '{}': {}", statement.target_name, error.what())});
