@@ -59,7 +59,7 @@ using detail::AxisWalk;
 using detail::combine_walks;
 using detail::declare_walk_bounds;
 using detail::einsum_spec_text;
-using detail::operator_prefix;
+using detail::permute_spec_text;
 using detail::walk_iterations;
 
 /// A position carrying no slice label.
@@ -2063,8 +2063,7 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
 
                 T const     beta  = as<T>(live_c_prefactor(desc));
                 auto const &sigma = plan.triangle->sigma;
-                permute(PermuteFormatString(fmt::format("{} <- {}", fmt::join(c, ","), fmt::join(c, ","))), beta, operand[0][0], T{1},
-                        tile);
+                permute(PermuteFormatString(permute_spec_text(c, c)), beta, operand[0][0], T{1}, tile);
 
                 // The mirrored block at q holds the contribution at the exchanged index, which is
                 // sign times the tile at apply(sigma, q).
@@ -2074,8 +2073,7 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
                     exchanged.push_back(c[static_cast<std::size_t>(static_cast<unsigned char>(sigma.permutation[p]))]);
                 }
                 auto &mirrored = view_of(op.slots[0].tid, plan.triangle->mirror_labels, 0);
-                permute(PermuteFormatString(fmt::format("{} <- {}", fmt::join(c, ","), fmt::join(exchanged, ","))), beta, &mirrored,
-                        T(static_cast<double>(sigma.sign)), tile);
+                permute(PermuteFormatString(permute_spec_text(c, exchanged)), beta, &mirrored, T(static_cast<double>(sigma.sign)), tile);
                 break;
             }
             auto const as_gemm  = gemm_shape(c, a, b, lists.link);
@@ -2106,11 +2104,10 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
             // and the snapshot only stands in for a node that has none.
             PrefactorScalar const alpha = desc.params ? desc.params->alpha : PrefactorScalar{desc.alpha};
             PrefactorScalar const beta  = desc.params ? desc.params->beta : PrefactorScalar{desc.beta};
-            auto const            text =
-                fmt::format("{} <- {}{}", fmt::join(surviving(desc.c_indices, op.slots[0].labels, walks), ","),
-                            operator_prefix(desc.operators), fmt::join(surviving(desc.a_indices, op.slots[1].labels, walks), ","));
-            auto const re_a = real_prefactor(alpha);
-            auto const re_c = real_prefactor(beta);
+            auto const            text  = permute_spec_text(surviving(desc.c_indices, op.slots[0].labels, walks),
+                                                            surviving(desc.a_indices, op.slots[1].labels, walks), desc.operators);
+            auto const            re_a  = real_prefactor(alpha);
+            auto const            re_c  = real_prefactor(beta);
             if (chunked && re_a.has_value() && re_c.has_value() && desc.operators.empty()) {
                 grouped_permute(text, operand[0], sources(1), std::vector<double>(depth, *re_c), std::vector<double>(depth, *re_a));
                 break;

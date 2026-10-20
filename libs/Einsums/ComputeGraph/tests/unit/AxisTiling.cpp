@@ -2085,3 +2085,45 @@ TEST_CASE("AxisTiling runs every tile when no triangle block fits beside the mir
     materialize_and_execute(graph);
     require_close(problem.r2, want, static_cast<double>(problem.naux * problem.v));
 }
+
+TEST_CASE("AxisTiling spells a body from letters no spec may hold", "[ComputeGraph][Pass][AxisTiling]") {
+    // A pass that lowers its algebra builds nodes straight from the algebra's letters, which name
+    // an elementwise op's axes by position ('#0') and a renamed summed letter '~0'. The body this
+    // pass emits spells each contraction as text, and the parser refused those letters: "output
+    // index '#0' has a non-letter character". The letters are renamed where they are spelled.
+    std::size_t const     n = 6;
+    std::size_t const     k = 5;
+    auto const            a = filled_as<double>("A", {n, k}, 3U);
+    auto const            b = filled_as<double>("B", {k, n}, 5U);
+    auto const            w = filled_as<double>("w", {n}, 7U);
+    RuntimeTensor<double> e("e", std::vector<std::size_t>{n});
+    e.zero();
+
+    cg::Graph graph("pass_built_letters");
+    auto     &half = graph.scratch_runtime<double>("H", std::vector<std::size_t>{n, n});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &half, a, b);
+    }
+    auto const           h_id = graph.find_tensor_by_ptr(&half)->id;
+    auto const           w_id = graph.register_tensor(cg::make_handle(w, 0));
+    auto const           e_id = graph.register_tensor(cg::make_handle(e, 0));
+    cg::ParsedEinsumSpec spec;
+    spec.c_indices = {"#0"};
+    spec.a_indices = {"#0", "~0"};
+    spec.b_indices = {"~0"};
+    spec.raw       = spec.render();
+    graph.add_node(graph.make_einsum_node(h_id, w_id, e_id, spec, 0.0, 1.0));
+
+    auto const tiling = decide(graph, static_cast<std::int64_t>(n * n * sizeof(double) / 2));
+    REQUIRE(tiling->num_tiled() == 1);
+    materialize_and_execute(graph);
+
+    RuntimeTensor<double> h_want("Href", std::vector<std::size_t>{n, n});
+    h_want.zero();
+    testing::reference_einsum("i,j <- i,k ; k,j", &h_want, a, b);
+    RuntimeTensor<double> want("want", std::vector<std::size_t>{n});
+    want.zero();
+    testing::reference_einsum("i <- i,j ; j", &want, h_want, w);
+    require_close(e, want, static_cast<double>(n * k));
+}

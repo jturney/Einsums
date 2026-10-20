@@ -25,10 +25,14 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -235,15 +239,69 @@ inline std::string operator_prefix(std::vector<PermutationOperator> const &opera
     return out;
 }
 
+/// Rename, alike in every list, each label the spec parser would refuse.
+///
+/// A node's letters are data, and the algebra names some axes with labels no spec may hold: an
+/// elementwise op's axes by position ('#0'), a letter a rewrite renamed ('~0'), a quadrature axis
+/// ('laplace_t'). They are also the variables of the node's symbolic cost, so they stay as they are
+/// on the node, and a body that spells the node as text renames them there instead, to labels none
+/// of the lists spells.
+inline void make_spellable(std::vector<std::vector<std::string> *> const &lists, std::vector<PermutationOperator> *operators = nullptr) {
+    auto const spellable = [](std::string const &letter) {
+        return !letter.empty() && std::ranges::all_of(letter, [](unsigned char ch) { return std::isalnum(ch) != 0; });
+    };
+    std::set<std::string> used;
+    for (auto const *list : lists) {
+        used.insert(list->begin(), list->end());
+    }
+    std::map<std::string, std::string> renamed;
+    std::size_t                        fresh   = 0;
+    auto const                         respell = [&](std::string &letter) {
+        if (spellable(letter)) {
+            return;
+        }
+        auto [entry, inserted] = renamed.try_emplace(letter);
+        if (inserted) {
+            // A single letter where one is free: a list of one label is spelled without commas,
+            // and the parser reads a comma-less list a character at a time.
+            do {
+                entry->second = fresh < 52 ? std::string(1, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"[fresh])
+                                           : fmt::format("x{}", fresh - 52);
+                ++fresh;
+            } while (used.contains(entry->second));
+            used.insert(entry->second);
+        }
+        letter = entry->second;
+    };
+    for (auto *list : lists) {
+        std::ranges::for_each(*list, respell);
+    }
+    if (operators != nullptr) {
+        for (auto &op : *operators) {
+            for (auto &group : op.groups) {
+                std::ranges::for_each(group, respell);
+            }
+        }
+    }
+}
+
 /// The canonical spelling of a contraction, which is what the capture entry point parses back
-/// into the same lists, conjugation flags and operators.
-inline std::string einsum_spec_text(std::vector<std::string> const &a, std::vector<std::string> const &b, std::vector<std::string> const &c,
-                                    bool conj_a, bool conj_b, std::vector<PermutationOperator> const &operators) {
+/// into the same lists, conjugation flags and operators, with every label made one it accepts.
+inline std::string einsum_spec_text(std::vector<std::string> a, std::vector<std::string> b, std::vector<std::string> c, bool conj_a,
+                                    bool conj_b, std::vector<PermutationOperator> operators) {
+    make_spellable({&a, &b, &c}, &operators);
     auto const side = [](std::vector<std::string> const &indices, bool conjugated) {
         std::string const joined = fmt::format("{}", fmt::join(indices, ","));
         return conjugated ? fmt::format("conj({})", joined) : joined;
     };
     return fmt::format("{} <- {}{} ; {}", fmt::join(c, ","), operator_prefix(operators), side(a, conj_a), side(b, conj_b));
+}
+
+/// The spelling of a permutation, with every label made one the parser accepts.
+inline std::string permute_spec_text(std::vector<std::string> c, std::vector<std::string> a,
+                                     std::vector<PermutationOperator> operators = {}) {
+    make_spellable({&c, &a}, &operators);
+    return fmt::format("{} <- {}{}", fmt::join(c, ","), operator_prefix(operators), fmt::join(a, ","));
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes::detail)
