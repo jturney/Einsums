@@ -1206,7 +1206,10 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
 
     // ── Symmetry metadata (as GeneralTensor; see Tensor/SymmetryOps.hpp) ─
 
-    void set_symmetry(SymmetryDescriptor desc) {
+    /// Declare the symmetry the tensor's values have. A promise, not a check: a graph that
+    /// computes half of a contraction from it checks it before relying on it, and nothing else does.
+    /// An empty descriptor clears the declaration.
+    APIARY_EXPOSE void set_symmetry(SymmetryDescriptor desc) {
         if (desc.empty())
             _symmetry.reset();
         else
@@ -1215,9 +1218,11 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
 
     [[nodiscard]] SymmetryDescriptor const *symmetry() const noexcept { return _symmetry.get(); }
 
-    void clear_symmetry() { _symmetry.reset(); }
+    /// Drop the declared symmetry.
+    APIARY_EXPOSE void clear_symmetry() { _symmetry.reset(); }
 
-    [[nodiscard]] bool has_symmetry() const { return _symmetry && !_symmetry->empty(); }
+    /// Whether a symmetry is declared.
+    APIARY_EXPOSE [[nodiscard]] bool has_symmetry() const { return _symmetry && !_symmetry->empty(); }
 
     // ── Deferred-allocation lifecycle (as GeneralTensor, for the graph passes) ─
 

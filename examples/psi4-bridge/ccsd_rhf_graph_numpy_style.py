@@ -132,6 +132,11 @@ t1 = einsums.zeros((nocc, nv), name="t1")
 t2 = E("i,j,a,b <- i,j,a,b ; i,j,a,b", G["oovv"], Dijab, SH2, 1.0, "t2init")  # placeholder, overwrite next
 # MP2 guess t2 = oovv / Dijab (eager)
 la.direct_division(1.0, G["oovv"], Dijab, 0.0, t2)
+# The closed-shell amplitude is unchanged when the two electrons trade places, (i,a) with (j,b):
+# t2[i,j,a,b] = t2[j,i,b,a]. Declaring it lets the optimizer prove the particle ladder has the same
+# symmetry and compute only the occupied pairs with i <= j, about half its arithmetic. A declaration
+# is a promise, which the tiled loop checks on every iteration before relying on it.
+t2.set_symmetry(einsums.SymmetryDescriptor([einsums.SymmetryOp.group_swap([0, 2], [1, 3])]))
 
 # ── deferred graph-owned scratch: declared on the GRAPH (not eager) so the
 #    memory passes engage. g.declare_zero_tensor registers an AllocState::Deferred

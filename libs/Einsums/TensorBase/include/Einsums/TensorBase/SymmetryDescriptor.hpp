@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Python/Annotations.hpp>
 
 #include <array>
 #include <cstddef>
@@ -30,13 +31,13 @@ inline constexpr int kMaxSymmetryRank = 8;
 ///
 /// Padding: for tensors of rank < ``kMaxSymmetryRank`` the unused trailing
 /// positions must be filled with their natural index (``permutation[i] = i``).
-struct EINSUMS_EXPORT SymmetryOp {
+struct APIARY_EXPOSE EINSUMS_EXPORT SymmetryOp {
     std::array<int8_t, kMaxSymmetryRank> permutation{};
     int8_t                               sign{+1};         ///< +1 symmetric, -1 antisymmetric
     bool                                 conjugate{false}; ///< true for Hermitian / anti-Hermitian
 
     /// Identity operation: all positions map to themselves.
-    [[nodiscard]] static SymmetryOp identity() {
+    APIARY_EXPOSE [[nodiscard]] static SymmetryOp identity() {
         SymmetryOp op;
         for (int i = 0; i < kMaxSymmetryRank; ++i)
             op.permutation[i] = static_cast<int8_t>(i);
@@ -44,7 +45,7 @@ struct EINSUMS_EXPORT SymmetryOp {
     }
 
     /// Swap two index positions. All other positions are identity.
-    [[nodiscard]] static SymmetryOp swap(int a, int b, int8_t sign = +1, bool conjugate = false) {
+    APIARY_EXPOSE [[nodiscard]] static SymmetryOp swap(int a, int b, int8_t sign = +1, bool conjugate = false) {
         auto op           = identity();
         op.permutation[a] = static_cast<int8_t>(b);
         op.permutation[b] = static_cast<int8_t>(a);
@@ -58,6 +59,12 @@ struct EINSUMS_EXPORT SymmetryOp {
     /// positions not listed in either group are identity.
     [[nodiscard]] static SymmetryOp group_swap(std::initializer_list<int> g1, std::initializer_list<int> g2, int8_t sign = +1,
                                                bool conjugate = false);
+
+    /// Swap two index groups, held in vectors, which is the form a binding can pass.
+    /// ``SymmetryOp.group_swap([0, 2], [1, 3])`` on ``T[i, j, a, b]`` exchanges the pair ``(i, a)``
+    /// with the pair ``(j, b)``.
+    APIARY_EXPOSE [[nodiscard]] static SymmetryOp group_swap(std::vector<int> const &g1, std::vector<int> const &g2, int8_t sign = +1,
+                                                             bool conjugate = false);
 
     [[nodiscard]] bool operator==(SymmetryOp const &other) const noexcept {
         return permutation == other.permutation && sign == other.sign && conjugate == other.conjugate;
@@ -79,15 +86,19 @@ struct EINSUMS_EXPORT SymmetryOp {
 /// Floating-point arithmetic drifts away from exact symmetry. ``tolerance``
 /// is the maximum absolute element-wise deviation that ``check_symmetry()``
 /// accepts as "still symmetric."
-struct EINSUMS_EXPORT SymmetryDescriptor {
+struct APIARY_EXPOSE EINSUMS_EXPORT SymmetryDescriptor {
     std::vector<SymmetryOp> ops;
     double                  tolerance{1e-12};
 
-    SymmetryDescriptor() = default;
-    explicit SymmetryDescriptor(std::vector<SymmetryOp> gens, double tol = 1e-12) : ops(std::move(gens)), tolerance(tol) {}
+    APIARY_EXPOSE SymmetryDescriptor() = default;
 
-    [[nodiscard]] bool        empty() const noexcept { return ops.empty(); }
-    [[nodiscard]] std::size_t size() const noexcept { return ops.size(); }
+    /// A descriptor from its generators, and the deviation @ref tolerance accepts.
+    APIARY_EXPOSE explicit SymmetryDescriptor(std::vector<SymmetryOp> gens, double tol = 1e-12) : ops(std::move(gens)), tolerance(tol) {}
+
+    /// Whether there are no generators, which describes no symmetry.
+    APIARY_EXPOSE [[nodiscard]] bool empty() const noexcept { return ops.empty(); }
+    /// How many generators there are.
+    APIARY_EXPOSE [[nodiscard]] std::size_t size() const noexcept { return ops.size(); }
 
     /// Append another generator to this descriptor (mutates in place).
     SymmetryDescriptor &add(SymmetryOp op) {
@@ -103,31 +114,31 @@ struct EINSUMS_EXPORT SymmetryDescriptor {
     // ── Named factories ─────────────────────────────────────────────────────
 
     /// Symmetric in a single index pair: ``T(..,a,..,b,..) = T(..,b,..,a,..)``.
-    [[nodiscard]] static SymmetryDescriptor symmetric_pair(int a, int b);
+    APIARY_EXPOSE [[nodiscard]] static SymmetryDescriptor symmetric_pair(int a, int b);
 
     /// Antisymmetric in a single index pair: ``T(..,a,..,b,..) = -T(..,b,..,a,..)``.
-    [[nodiscard]] static SymmetryDescriptor antisymmetric_pair(int a, int b);
+    APIARY_EXPOSE [[nodiscard]] static SymmetryDescriptor antisymmetric_pair(int a, int b);
 
     /// Hermitian in a single index pair (complex tensors):
     /// ``T(..,a,..,b,..) = conj(T(..,b,..,a,..))``.
-    [[nodiscard]] static SymmetryDescriptor hermitian_pair(int a, int b);
+    APIARY_EXPOSE [[nodiscard]] static SymmetryDescriptor hermitian_pair(int a, int b);
 
     /// Anti-Hermitian / skew-Hermitian: ``T(..,a,..,b,..) = -conj(T(..,b,..,a,..))``.
-    [[nodiscard]] static SymmetryDescriptor anti_hermitian_pair(int a, int b);
+    APIARY_EXPOSE [[nodiscard]] static SymmetryDescriptor anti_hermitian_pair(int a, int b);
 
     /// 8-fold symmetry of real two-electron integrals in chemists' notation
     /// ``(μν|λσ) = (νμ|λσ) = (μν|σλ) = (νμ|σλ) = (λσ|μν) = (σλ|μν) = (λσ|νμ) = (σλ|νμ)``.
     /// The three generators are: swap(0,1), swap(2,3), group_swap({0,1},{2,3}).
-    [[nodiscard]] static SymmetryDescriptor eri_8fold();
+    APIARY_EXPOSE [[nodiscard]] static SymmetryDescriptor eri_8fold();
 
     /// 4-fold symmetry of complex two-electron integrals: two real-pair swaps,
     /// no bra/ket swap (which would also complex-conjugate).
-    [[nodiscard]] static SymmetryDescriptor eri_4fold();
+    APIARY_EXPOSE [[nodiscard]] static SymmetryDescriptor eri_4fold();
 
     /// CCSD T2 amplitudes ``T[a,b,i,j]``: antisym in virtual pair (0,1) and
     /// antisym in occupied pair (2,3), so ``T[a,b,i,j] = -T[b,a,i,j] =
     /// -T[a,b,j,i] = T[b,a,j,i]``.
-    [[nodiscard]] static SymmetryDescriptor ccsd_t2();
+    APIARY_EXPOSE [[nodiscard]] static SymmetryDescriptor ccsd_t2();
 };
 
 EINSUMS_NAMESPACE_END()

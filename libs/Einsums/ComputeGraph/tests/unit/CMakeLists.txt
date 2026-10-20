@@ -232,6 +232,7 @@ set(ComputeGraphTests
     test_laplace_transform_python.py
     test_laplace_mp2_python.py
     test_axis_tiling_python.py
+    test_axis_tiling_triangle_python.py
     test_fuzz_ergonomics_python.py
     test_gemm_views_python.py
     test_gemv_views_python.py

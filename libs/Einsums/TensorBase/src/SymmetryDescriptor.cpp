@@ -21,6 +21,17 @@ SymmetryOp SymmetryOp::group_swap(std::initializer_list<int> g1, std::initialize
     return op;
 }
 
+SymmetryOp SymmetryOp::group_swap(std::vector<int> const &g1, std::vector<int> const &g2, int8_t sign, bool conjugate) {
+    auto op = identity();
+    for (std::size_t k = 0; k < g1.size() && k < g2.size(); ++k) {
+        op.permutation[g1[k]] = static_cast<int8_t>(g2[k]);
+        op.permutation[g2[k]] = static_cast<int8_t>(g1[k]);
+    }
+    op.sign      = sign;
+    op.conjugate = conjugate;
+    return op;
+}
+
 SymmetryDescriptor SymmetryDescriptor::symmetric_pair(int a, int b) {
     return SymmetryDescriptor{{SymmetryOp::swap(a, b, +1)}};
 }

@@ -15,6 +15,7 @@ set(TensorBaseSources IndexUtilities.cpp Options.cpp SymmetryDescriptor.cpp)
 include(Einsums_AddModule)
 einsums_add_module(
   Einsums TensorBase
+  PYBIND
   SOURCES ${TensorBaseSources}
   HEADERS ${TensorBaseHeaders}
   DEPENDENCIES
