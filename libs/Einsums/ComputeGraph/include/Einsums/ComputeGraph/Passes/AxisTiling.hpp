@@ -93,6 +93,12 @@
  * the one the cost model prices cheapest, since halving the tiles changes the kernels' shapes as
  * well as their count.
  *
+ * The saving is arithmetic, so it does not wait for memory to run short. After the intermediates
+ * over the cap, every intermediate an einsum reads whose contribution is provably symmetric in two
+ * axes of its output is a seed too, and its region becomes a triangle when the cost model prices
+ * the triangle below the region run whole, the per-kernel overhead of the extra tiles included.
+ * Such a seed takes a triangle or nothing: a program that fits gains nothing from a grid.
+ *
  * @par Which intermediates
  * Every intermediate carrying a sliced axis is re-declared at slice extents inside the body. An
  * input carrying one is read as a VIEW of the caller's buffer and never as a copy, so a rebind
@@ -113,15 +119,16 @@
  * whole question, though, since an intermediate that takes a large part of the machine costs the
  * kernels that write and read it, so the budget also gives each intermediate a share,
  * @ref option::GraphTilingBudgetShare of it. When the program fits and no intermediate is over its
- * share, the pass declines before it reads a node. Otherwise every intermediate a sliceable
+ * share, there is nothing to stream, and the pass looks only for a triangle that pays. Otherwise every intermediate a sliceable
  * statement writes that is over the lesser of its share and what the other tensors leave is a
  * seed, largest first, and its loop's buffers are held to that lesser bound together: every
  * streamed intermediate's block, and the buffers of each remainder loop beside the full block's,
  * since every loop declares its own and all of them live for the whole replay.
  *
  * @par What it declines
- * A program whose largest intermediate already fits the cap, which is what makes the pass a
- * no-op on a form that never needed it, and what makes the order against
+ * A program whose largest intermediate already fits the cap and has no symmetric region whose
+ * triangle pays, which is what makes the pass a no-op on a form that never needed it, and what
+ * makes the order against
  * @ref passes::LaplaceTransform the right way round: a transform that has already dissolved the
  * four-index intermediates leaves this pass nothing to do, and it says so through the tally
  * rather than tiling what is already small.
@@ -159,8 +166,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *
  * A member of @ref PassManager::create_default, after the algebraic rewrites. By default the cap
  * is what the @c --einsums:max-memory option leaves after every other tensor of the graph, so in the default
- * pipeline the pass acts only on a program that would not fit and otherwise declines without
- * touching the graph. A caller with a smaller footprint to live inside sets a cap of its own.
+ * pipeline the pass streams only a program that would not fit; on one that fits it does no more
+ * than run a provably symmetric region as a triangle where that is cheaper. A caller with a smaller footprint to live inside sets a cap of
+ * its own.
  * @versionadded{2.0.0}
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT AxisTiling : public OptimizerPass {
@@ -206,6 +214,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     static constexpr Reason TriangleFit{"axis-tiling.triangle-fit",
                                         "no block of two or more fits the memory the region may take beside the mirror's scratch tile, so "
                                         "every tile runs"};
+    static constexpr Reason TrianglePrice{"axis-tiling.triangle-price",
+                                          "the region has nothing to stream, and the cost model prices its triangle no cheaper than "
+                                          "running it whole, so it runs as captured"};
     /// @}
 
     /// @brief Default-construct, reading the cap from @ref option::GraphTilingMemoryCap.
@@ -396,6 +407,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         std::size_t share{0};
         /// What the tree's tensors hold before the region is tiled, when @ref budget is set.
         std::size_t total{0};
+        /// Take only a triangle, and only one the cost model prices below running the region
+        /// whole: the seed is there for its symmetry, not because it is over its cap.
+        bool triangle_only{false};
     };
 
     /// @brief Tile the region around one seed, if any candidate axis set can.

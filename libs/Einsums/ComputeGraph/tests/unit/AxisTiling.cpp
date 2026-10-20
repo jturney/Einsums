@@ -1911,8 +1911,8 @@ struct LadderProblem {
 
     /// @p sign +1 builds tau(i,j,e,f) = tau(j,i,f,e); -1 builds tau antisymmetric in (i,j) and in
     /// (e,f) separately, as a spin-orbital amplitude is. Zero leaves it general and undeclared.
-    LadderProblem(std::size_t occupied, int sign)
-        : o{occupied}, bvv{filled_as<T>("Bvv", {naux, v, v}, 11U)}, tau{"Tau", std::vector<std::size_t>{o, o, v, v}},
+    LadderProblem(std::size_t occupied, int sign, std::size_t virt = 4, std::size_t aux = 5)
+        : o{occupied}, v{virt}, naux{aux}, bvv{filled_as<T>("Bvv", {naux, v, v}, 11U)}, tau{"Tau", std::vector<std::size_t>{o, o, v, v}},
           r2{filled_as<T>("r2", {o, o, v, v}, 17U)} {
         auto const raw = filled_as<T>("raw", {o, o, v, v}, 13U);
         for (std::size_t i = 0; i < o; ++i)
@@ -2081,6 +2081,64 @@ TEST_CASE("AxisTiling runs every tile when no triangle block fits beside the mir
     CHECK(tiling->emission() != "triangle");
     CHECK(tiling->triangle_sign() == 0);
     CHECK(declined_because(*tiling, "no block of two or more fits"));
+
+    materialize_and_execute(graph);
+    require_close(problem.r2, want, static_cast<double>(problem.naux * problem.v));
+}
+
+TEST_CASE("AxisTiling runs a ladder that fits as a triangle when the triangle pays", "[ComputeGraph][Pass][AxisTiling][Triangle]") {
+    // Nothing here is over any cap, so nothing is streamed; the exchange alone makes the region a
+    // seed. At these extents each kernel does enough arithmetic that halving the tiles saves more
+    // than the extra kernels and the mirror cost, whatever block the cost model picks.
+    LadderProblem<double> problem(8, +1, 16, 32);
+    auto const            want = problem.expected(1.0);
+
+    cg::Graph graph("fitting_ladder");
+    problem.capture(graph, 1.0);
+    std::shared_ptr<cg::passes::AxisTiling> tiling;
+    SECTION("under a cap the caller set") {
+        tiling = decide(graph, std::int64_t{1} << 40);
+        CHECK(declined_because(*tiling, "already fits the cap"));
+    }
+    SECTION("under the memory budget") {
+        tiling = std::make_shared<cg::passes::AxisTiling>();
+        cg::apply_single_pass(*tiling, graph);
+        CHECK(declined_because(*tiling, "fit the memory budget"));
+    }
+    REQUIRE(tiling->num_tiled() == 1);
+    CHECK(tiling->emission() == "triangle");
+    CHECK(tiling->triangle_sign() == +1);
+
+    materialize_and_execute(graph);
+    require_close(problem.r2, want, static_cast<double>(problem.naux * problem.v));
+}
+
+TEST_CASE("AxisTiling leaves a ladder that fits alone when its triangle does not pay", "[ComputeGraph][Pass][AxisTiling][Triangle]") {
+    // Three occupied orbitals take blocks of two: a full diagonal tile, a mirrored edge and a
+    // remainder diagonal, three tiles of near-empty kernels against one. The launch overhead the
+    // cost model charges per kernel decides, so the region runs as captured.
+    LadderProblem<double> problem(3, +1);
+    auto const            want = problem.expected(1.0);
+
+    cg::Graph graph("cheap_ladder");
+    problem.capture(graph, 1.0);
+    auto const tiling = decide(graph, std::int64_t{1} << 40);
+    CHECK(tiling->num_tiled() == 0);
+    CHECK(declined_because(*tiling, "no cheaper than running it whole"));
+
+    materialize_and_execute(graph);
+    require_close(problem.r2, want, static_cast<double>(problem.naux * problem.v));
+}
+
+TEST_CASE("AxisTiling leaves a ladder that fits alone when nothing proves the exchange", "[ComputeGraph][Pass][AxisTiling][Triangle]") {
+    LadderProblem<double> problem(8, 0, 16, 32);
+    auto const            want = problem.expected(1.0);
+
+    cg::Graph graph("undeclared_fitting_ladder");
+    problem.capture(graph, 1.0);
+    auto const tiling = decide(graph, std::int64_t{1} << 40);
+    CHECK(tiling->num_tiled() == 0);
+    CHECK(declined_because(*tiling, "already fits the cap"));
 
     materialize_and_execute(graph);
     require_close(problem.r2, want, static_cast<double>(problem.naux * problem.v));

@@ -171,8 +171,16 @@ def _truncate(program, problem, occupation, verbosity=1):
 
 
 def _replay(program, verbosity=1):
-    """Optimize and execute, and hand back the truncated integrals and energies."""
+    """Optimize and execute, and hand back the truncated integrals and energies.
+
+    The integrals are a graph-owned intermediate, read here after execute() to
+    measure the truncation, which the schedule does not promise to leave whole:
+    AxisTiling runs the pair contraction as a triangle once ``K`` is large enough
+    to pay for it, and then holds only a tile of ``K`` at a time. The schedule is
+    not what these tests are about, so it stays as captured.
+    """
     manager = cg.default_pass_manager()
+    manager.disable("AxisTiling")
     manager.set_verbosity(verbosity)
     program["graph"].apply(manager)
     program["graph"].execute()

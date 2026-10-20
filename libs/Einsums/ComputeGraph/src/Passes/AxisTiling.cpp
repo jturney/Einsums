@@ -2463,6 +2463,83 @@ TriangleVerdict find_triangle(Graph const &graph, Plan const &plan, std::functio
     return {.reason = &AxisTiling::NotExchangeable};
 }
 
+/// The intermediates worth a region for its triangle alone, largest first: every operand of an
+/// einsum that a sliceable statement writes, when what that einsum adds to its output is provably
+/// unchanged by exchanging two of the output's axes, together with some exchange of the others.
+/// That is the question @ref find_triangle asks of the region, asked here of the einsum alone so a
+/// program with nothing to stream is read once per einsum rather than once per candidate region.
+/// The two axes need an extent of three or more, since a triangle cuts them into two or more
+/// blocks of at least two.
+///
+/// @pre The graph's node list is in dependency order.
+std::vector<std::pair<std::size_t, TensorId>> symmetric_seeds(Graph const &graph, Scope const &scope, std::set<TensorId> const &declined) {
+    std::set<TensorId> sliceably_written;
+    for (auto const &node : graph.nodes()) {
+        if (tileable_kind(node.kind) || registered_sliceable(node)) {
+            sliceably_written.insert(node.outputs.begin(), node.outputs.end());
+        }
+    }
+
+    std::vector<std::pair<std::size_t, TensorId>> out;
+    std::optional<EscapeAnalysis>                 escape;
+    for (auto const &node : graph.nodes()) {
+        if (node.kind != OpKind::Einsum || node.outputs.size() != 1) {
+            continue;
+        }
+        std::vector<std::pair<std::size_t, TensorId>> operands;
+        for (TensorId const tid : node.inputs) {
+            auto const *handle = graph.find_tensor(tid);
+            if (handle == nullptr || handle->is_tiled || handle->is_distributed || !scope.intermediate(tid) || declined.contains(tid) ||
+                !sliceably_written.contains(tid)) {
+                continue;
+            }
+            operands.emplace_back(handle->total_bytes(), tid);
+        }
+        auto const *output = graph.find_tensor(node.outputs[0]);
+        if (operands.empty() || output == nullptr || output->dims.size() > static_cast<std::size_t>(kMaxSymmetryRank)) {
+            continue;
+        }
+
+        auto const &dims   = output->dims;
+        bool        proven = false;
+        for (std::size_t p = 0; p < dims.size() && !proven; ++p) {
+            for (std::size_t q = p + 1; q < dims.size() && !proven; ++q) {
+                if (dims[p] != dims[q] || dims[p] < 3) {
+                    continue;
+                }
+                auto base           = SymmetryOp::identity();
+                base.permutation[p] = static_cast<int8_t>(q);
+                base.permutation[q] = static_cast<int8_t>(p);
+                std::vector<std::size_t> rest;
+                for (std::size_t r = 0; r < dims.size(); ++r) {
+                    if (r != p && r != q) {
+                        rest.push_back(r);
+                    }
+                }
+                std::vector<SymmetryOp> candidates;
+                std::vector<bool>       taken(rest.size(), false);
+                exchanges(rest, dims, 0, base, taken, candidates);
+                if (!escape.has_value()) {
+                    escape.emplace(EscapeAnalysis::over(graph));
+                }
+                proven = std::ranges::any_of(
+                    candidates, [&](SymmetryOp const &sigma) { return contribution_symmetry(*escape, node.id, sigma).has_value(); });
+            }
+        }
+        if (!proven) {
+            continue;
+        }
+        for (auto const &entry : operands) {
+            if (std::ranges::find(out, entry) == out.end()) {
+                out.push_back(entry);
+            }
+        }
+    }
+    std::ranges::sort(
+        out, [](auto const &lhs, auto const &rhs) { return lhs.first != rhs.first ? lhs.first > rhs.first : lhs.second < rhs.second; });
+    return out;
+}
+
 } // namespace
 
 void AxisTiling::set_block_extent(std::int64_t extent) {
@@ -2716,8 +2793,8 @@ bool AxisTiling::tile_graph(Graph &graph) {
 
     // A negative cap is derived: an intermediate may take what the memory budget leaves after
     // every other tensor of the tree, and no more than its share of the budget. A program that
-    // fits as a whole with no intermediate over its share is left alone before a node is read or
-    // reordered, which is what keeps the pass free in the default pipeline.
+    // fits as a whole with no intermediate over its share has nothing to stream, and is read only
+    // for regions whose triangle pays on its own.
     bool const  derived = cap < 0;
     std::size_t budget  = 0;
     std::size_t share   = 0;
@@ -2823,7 +2900,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
                      Decision{.facts = {Fact{.name = "total", .value = static_cast<double>(total), .unit = "B"},
                                         Fact{.name = "budget", .value = static_cast<double>(budget), .unit = "B"}}},
                      1);
-                return tiled.moved();
+                break;
             }
             if (!derived && largest <= static_cast<std::size_t>(cap)) {
                 note_skip(FitsCap, fmt::format("{} bytes against a cap of {}", largest, cap));
@@ -2831,11 +2908,11 @@ bool AxisTiling::tile_graph(Graph &graph) {
                      Decision{.facts = {Fact{.name = "largest", .value = static_cast<double>(largest), .unit = "B"},
                                         Fact{.name = "cap", .value = static_cast<double>(cap), .unit = "B"}}},
                      1);
-                return tiled.moved();
+                break;
             }
             if (seeds.empty()) {
                 note_skip(NoSliceableWriter, fmt::format("{} bytes against a cap of {}", largest, limit_for(largest)));
-                return tiled.moved();
+                break;
             }
         }
         // A destination the program writes to storage first, then largest first. Its region takes in
@@ -2860,6 +2937,34 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 break;
             }
             declined.insert(seed);
+        }
+        if (!rewrote) {
+            break;
+        }
+    }
+
+    // What streaming left, or all of a program with nothing to stream: a region whose contribution
+    // is provably symmetric in two axes does about half its arithmetic as a triangle whether or not
+    // its intermediates fit, so it is a seed of its own, tiled only when the cost model prices the
+    // triangle below running the region whole. A seed already declined declines here too, since a
+    // triangle is one of the plans it was offered.
+    while (true) {
+        graph.topological_sort();
+        std::size_t const total   = derived ? footprint(graph) : 0;
+        bool              rewrote = false;
+        for (auto const &[bytes, seed] : symmetric_seeds(graph, scope, declined)) {
+            std::size_t limit = static_cast<std::size_t>(std::max<std::int64_t>(cap, 0));
+            if (derived) {
+                std::size_t const others = total - std::min(total, bytes);
+                limit                    = others < budget ? std::min(budget - others, share) : 0;
+            }
+            Allowance const allowance{
+                .cap = limit, .budget = derived ? budget : 0, .share = derived ? share : 0, .total = total, .triangle_only = true};
+            declined.insert(seed);
+            if (tile_region(graph, seed, allowance)) {
+                rewrote = true;
+                break;
+            }
         }
         if (!rewrote) {
             break;
@@ -2912,6 +3017,9 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
     std::size_t         infeasible    = 0;
     std::size_t         over_cap      = 0;
     for (auto const &positions : candidate_sets(seed_handle->rank)) {
+        if (allowance.triangle_only && (positions.size() != 2 || seed_handle->dims[positions[0]] != seed_handle->dims[positions[1]])) {
+            continue;
+        }
         auto const detail = fmt::format("seed '{}', candidate axes {}", seed_handle->name, fmt::join(positions, ","));
 
         // The region: the seed's writers and readers, and then every writer and reader of any
@@ -3174,8 +3282,14 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                         candidate.traffic       = moved;
                     }
                 }
+                // A region with nothing to stream is tiled for the triangle alone, so the triangle
+                // has to beat the region run whole, one tile of the full extents.
+                double const whole = allowance.triangle_only ? tile_price(graph, plan, {extent, extent}, false) : 0.0;
                 if (!chosen.has_value()) {
                     note_skip(_block_pin > 0 ? BlockPinned : TriangleFit, detail);
+                } else if (allowance.triangle_only && candidate.price_us >= whole) {
+                    note_skip(TrianglePrice, fmt::format("{}; {:.1f} us as a triangle of blocks of {} against {:.1f} us whole", detail,
+                                                         candidate.price_us, *chosen, whole));
                 } else {
                     candidate.range      = true;
                     candidate.blocks     = {*chosen, *chosen};
@@ -3189,6 +3303,9 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
             }
         }
 
+        if (allowance.triangle_only && (!plan.triangle.has_value() || best_effort)) {
+            continue;
+        }
         report(3, fmt::format("candidate {} streams {:.0f} bytes {}", fmt::join(plan.axis_names, " x "), static_cast<double>(plan.traffic),
                               plan.range ? fmt::format("in blocks of {}", fmt::join(plan.blocks, " x "))
                                          : fmt::format("at depth {}", plan.depth)));
@@ -3219,6 +3336,9 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         best = std::move(fallback);
     }
 
+    if (!best.has_value() && allowance.triangle_only) {
+        return false; // Each candidate noted why it is no triangle, or why its triangle does not pay.
+    }
     if (!best.has_value()) {
         note_skip(NoAxisSet, fmt::format("seed '{}': {} set(s) the program cannot carry a slice labelling for, {} above the cap",
                                          seed_handle->name, infeasible, over_cap));
