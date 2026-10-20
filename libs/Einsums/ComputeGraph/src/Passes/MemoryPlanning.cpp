@@ -449,7 +449,7 @@ void MemoryPlanning::reset_stats() {
     _planned_tensor_bytes = 0;
 }
 
-bool MemoryPlanning::run(Graph &graph) {
+bool MemoryPlanning::transform(Graph &graph) {
     PassCounter const planned{_num_planned};
     // Walk the whole graph tree so loop bodies / conditional branches
     // contribute to the reported footprint. recurse_into_subgraphs() stays

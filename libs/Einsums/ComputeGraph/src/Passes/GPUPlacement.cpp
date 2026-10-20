@@ -212,7 +212,7 @@ void GPUPlacement::reset_stats() {
     _num_placed = 0;
 }
 
-bool GPUPlacement::run(Graph &graph) {
+bool GPUPlacement::transform(Graph &graph) {
     PassCounter const placed{_num_placed};
 
     // Is there a usable device right now? gpu::has_gpu cannot answer that - it is

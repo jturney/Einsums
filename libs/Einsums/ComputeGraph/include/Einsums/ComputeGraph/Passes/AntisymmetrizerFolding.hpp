@@ -106,8 +106,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// floating point.
     [[nodiscard]] PassTier tier() const override { return PassTier::ReAssociating; }
 
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
@@ -120,6 +118,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Contractions rewritten.
     APIARY_EXPOSE APIARY_GETTER("num_folded") [[nodiscard]] std::size_t num_folded() const { return _num_folded; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     std::size_t _num_candidates{0};

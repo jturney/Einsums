@@ -81,12 +81,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
+  protected:
     /**
      * @brief Run the memory-aware reorder pass.
      * @param[in,out] graph The graph to reorder.
      * @return True if the node order changed.
      */
-    bool run(Graph &graph) override;
+    bool transform(Graph &graph) override;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

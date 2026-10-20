@@ -857,7 +857,11 @@ convenience; a graph planned with mixed thread widths against one BLAS vendor
 and replayed against another does not merely run slower. So ``save_graph``
 refuses a graph that a resource or tuning pass has already changed, and names
 those passes: save after ``cg.structural_pass_manager()``, as above, and run the
-other two after loading.
+other two after loading. A pass counts however it was run, through a manager or
+on its own, unless all it changed is something the file leaves out, such as
+thread widths or stream assignment. A file that will only ever be loaded where it
+was planned can be written anyway with
+``cg.save_graph(g, path, allow_machine_dependent=True)``.
 
 **Setup is computed at bind**: fitted factors, inverted metrics, quadrature
 points and weights. A setup body runs at the first ``execute`` after a bind

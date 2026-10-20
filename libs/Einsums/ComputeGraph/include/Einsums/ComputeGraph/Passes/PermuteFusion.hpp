@@ -99,7 +99,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// unfused form hands it a transposed copy, and those are different kernels. Bit-identical on five CI legs and one ULP
     /// apart on Accelerate, which is why this is not the bitwise tier with a caveat.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::ReAssociating; }
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
@@ -112,6 +111,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Number of candidates that passed safety checks and were actually rewritten.
     APIARY_EXPOSE APIARY_GETTER("num_rewrites") [[nodiscard]] size_t num_rewrites() const { return _num_rewrites; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_candidates{0};

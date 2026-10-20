@@ -70,8 +70,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// antisymmetrizer rather than after, which reorders the additions.
     [[nodiscard]] PassTier tier() const override { return PassTier::ReAssociating; }
 
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
@@ -83,6 +81,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Sites rewritten.
     APIARY_EXPOSE APIARY_GETTER("num_merged") [[nodiscard]] std::size_t num_merged() const { return _num_merged; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     std::size_t _num_candidates{0};

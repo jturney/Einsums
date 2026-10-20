@@ -131,7 +131,7 @@ void AntisymmetrizerFolding::reset_stats() {
     _num_folded     = 0;
 }
 
-bool AntisymmetrizerFolding::run(Graph &graph) {
+bool AntisymmetrizerFolding::transform(Graph &graph) {
     graph.topological_sort();
 
     auto const guard = EscapeAnalysis::over(graph);

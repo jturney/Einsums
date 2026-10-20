@@ -75,10 +75,12 @@ class EINSUMS_EXPORT CommunicationInsertion : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
                NodeFeature::MixedPrecision | NodeFeature::ControlFlow | NodeFeature::RawScalar;
     }
-    bool run(Graph &graph) override;
     void reset_stats() override;
 
     [[nodiscard]] size_t num_inserted() const { return _num_inserted; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_inserted{0};

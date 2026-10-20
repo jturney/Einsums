@@ -83,7 +83,7 @@ class PerturbingPass : public cg::OptimizerPass {
     [[nodiscard]] cg::PassPhase phase() const override { return cg::PassPhase::StructuralAlgebraic; }
     [[nodiscard]] cg::PassTier  tier() const override { return _tier; }
 
-    bool run(cg::Graph &graph) override {
+    bool transform(cg::Graph &graph) override {
         for (auto &node : graph.nodes()) {
             auto *desc = node.op_data.get_if<cg::EinsumDescriptor>();
             if (desc == nullptr || !desc->params) {
@@ -112,7 +112,7 @@ class InertPass : public cg::OptimizerPass {
     [[nodiscard]] cg::PassPhase phase() const override { return cg::PassPhase::StructuralAlgebraic; }
     [[nodiscard]] cg::PassTier  tier() const override { return cg::PassTier::BitwiseExact; }
 
-    bool run(cg::Graph &) override { return false; }
+    bool transform(cg::Graph &) override { return false; }
 };
 
 std::shared_ptr<cg::OptimizerPass> perturbing(std::string name, double factor, cg::PassTier tier) {

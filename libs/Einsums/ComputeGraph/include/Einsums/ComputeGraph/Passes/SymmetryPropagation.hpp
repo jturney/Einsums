@@ -101,7 +101,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Analysis; }
     /// Every feature: an analysis pass annotates and never rewrites a node, which the pass manager enforces.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
-    bool                                      run(Graph &graph) override;
     void                                      reset_stats() override;
 
     /// @copydoc OptimizerPass::explain
@@ -119,6 +118,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Number of tensor handles this pass tagged with an inferred descriptor.
     APIARY_EXPOSE APIARY_GETTER("num_inferred") [[nodiscard]] std::size_t num_inferred() const { return _num_inferred; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     std::size_t _num_inferred{0};

@@ -689,7 +689,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
     return true;
 }
 
-bool CSE::run(Graph &graph) {
+bool CSE::transform(Graph &graph) {
     // CSE walks the tree itself rather than letting PassManager recurse (see
     // recurse_into_subgraphs). The driver hands a pass nothing but the
     // sub-graph, and two of the guards below cannot be decided from inside one:

@@ -109,7 +109,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Tuning; }
     /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
-    bool                                      run(Graph &graph) override;
     void                                      reset_stats() override;
 
     /// @copydoc OptimizerPass::explain
@@ -143,6 +142,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// may still hold the handle; what it must not keep is the storage.
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_unused") [[nodiscard]] size_t num_unused() const { return _num_unused; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_materialized{0};

@@ -75,7 +75,7 @@ void accumulate(Graph &graph, GpuStats &acc) {
 
 } // namespace
 
-bool GPUDiagnostics::run(Graph &graph) {
+bool GPUDiagnostics::transform(Graph &graph) {
     // Aggregate over the whole graph tree so transfers / GPU nodes inside
     // loop bodies and conditional branches are counted too.
     GpuStats acc;

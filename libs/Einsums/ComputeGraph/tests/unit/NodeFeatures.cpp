@@ -48,7 +48,7 @@ class EinsumRemover : public cg::OptimizerPass {
     [[nodiscard]] std::string                     name() const override { return "EinsumRemover"; }
     [[nodiscard]] std::optional<cg::NodeFeatures> understood_features() const override { return _understood; }
 
-    bool run(cg::Graph &graph) override {
+    bool transform(cg::Graph &graph) override {
         std::vector<bool> remove(graph.nodes().size(), false);
         bool              any = false;
         for (std::size_t i = 0; i < graph.nodes().size(); i++) {

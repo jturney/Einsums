@@ -76,7 +76,7 @@ std::vector<std::string> ProvenancePropagation::explain() const {
     return {fmt::format("ProvenancePropagation: carried a provenance tag onto {} tensor(s)", _num_propagated)};
 }
 
-bool ProvenancePropagation::run(Graph &graph) {
+bool ProvenancePropagation::transform(Graph &graph) {
     PassCounter const propagated{_num_propagated};
     graph.topological_sort();
 

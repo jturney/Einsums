@@ -446,7 +446,7 @@ bool Materialization::publish_updates(Graph &graph) {
     return true;
 }
 
-bool Materialization::run(Graph &graph) {
+bool Materialization::transform(Graph &graph) {
     // Storage an earlier run already gave a Materialize, anywhere in the tree; see
     // collect_materialized_ptrs. Neither the parent's own handles nor a body's are planned again.
     std::unordered_set<void const *> already_live;

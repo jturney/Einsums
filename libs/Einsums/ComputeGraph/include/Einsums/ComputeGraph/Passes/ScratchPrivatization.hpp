@@ -92,7 +92,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::StructuralResource; }
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
@@ -101,6 +100,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     }
     APIARY_EXPOSE APIARY_GETTER("num_copies_created") [[nodiscard]] size_t num_copies_created() const { return _num_copies_created; }
     APIARY_EXPOSE APIARY_GETTER("num_nodes_rebuilt") [[nodiscard]] size_t  num_nodes_rebuilt() const { return _num_nodes_rebuilt; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     /// Innermost-first: privatize inside nested bodies/branches before this level.

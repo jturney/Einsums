@@ -86,7 +86,7 @@ std::vector<std::string> LinearCombinationContractionFolding::explain() const {
                         _num_groups, _num_eliminated + _num_groups, _num_groups, _num_groups)};
 }
 
-bool LinearCombinationContractionFolding::run(Graph &graph) {
+bool LinearCombinationContractionFolding::transform(Graph &graph) {
     graph.topological_sort();
 
     auto       &nodes   = graph.nodes();

@@ -22,7 +22,7 @@ void CommunicationScheduling::reset_stats() {
     _num_scheduled = 0;
 }
 
-bool CommunicationScheduling::run(Graph &graph) {
+bool CommunicationScheduling::transform(Graph &graph) {
     PassCounter const scheduled{_num_scheduled};
     if (comm::world_size() <= 1)
         return false;

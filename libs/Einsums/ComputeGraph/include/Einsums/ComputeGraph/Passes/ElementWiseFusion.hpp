@@ -80,7 +80,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Folding consecutive element-wise ops multiplies their scalars, which is done once instead of once per element and lands
     /// on the same value.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::BitwiseExact; }
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
@@ -89,6 +88,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     APIARY_EXPOSE APIARY_GETTER("num_fused") [[nodiscard]] size_t num_fused() const { return _num_fused; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_fused{0};

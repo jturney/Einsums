@@ -108,7 +108,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
     void                                   print_report(std::ostream &os) const;
@@ -136,6 +135,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] size_t device_reuse_savings() const {
         return _device_total_memory > _device_peak_memory ? _device_total_memory - _device_peak_memory : 0;
     }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     bool   _apply_arena{true};

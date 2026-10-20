@@ -431,11 +431,13 @@ struct SaveOptions {
  * @brief Write @p graph to @p path, throwing on refusal.
  * @param[in] graph The graph to write.
  * @param[in] path  Destination file.
+ * @param[in] allow_machine_dependent Write the graph even when a structural-resource or tuning
+ *            pass has changed it; see @ref SaveOptions::allow_machine_dependent.
  * @throws std::runtime_error With the refusal's message.
  * @versionadded{2.0.0}
  */
-APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("save_graph") EINSUMS_EXPORT void save_graph_file(Graph const       &graph,
-                                                                                                     std::string const &path);
+APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("save_graph") EINSUMS_EXPORT void
+save_graph_file(Graph const &graph, std::string const &path, bool allow_machine_dependent = false);
 
 /**
  * @brief Read @p path back as a runnable graph, throwing on failure.

@@ -88,7 +88,7 @@ void ElementWiseFusion::reset_stats() {
     _num_fused = 0;
 }
 
-bool ElementWiseFusion::run(Graph &graph) {
+bool ElementWiseFusion::transform(Graph &graph) {
     PassCounter const fused{_num_fused};
     graph.topological_sort();
 

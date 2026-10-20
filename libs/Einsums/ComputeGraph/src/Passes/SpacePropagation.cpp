@@ -245,7 +245,7 @@ void SpacePropagation::reset_stats() {
     _num_inferred = 0;
 }
 
-bool SpacePropagation::run(Graph &graph) {
+bool SpacePropagation::transform(Graph &graph) {
     PassCounter const inferred_count{_num_inferred};
     graph.topological_sort();
 

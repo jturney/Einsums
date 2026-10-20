@@ -49,7 +49,7 @@ class WriterToBack : public cg::OptimizerPass {
     [[nodiscard]] std::string name() const override { return "WriterToBack"; }
     [[nodiscard]] bool        recurse_into_subgraphs() const override { return _recurse; }
 
-    bool run(cg::Graph &graph) override {
+    bool transform(cg::Graph &graph) override {
         auto &nodes = graph.nodes();
         if (nodes.size() < 2 || _done) {
             return false;
@@ -72,7 +72,7 @@ class NoOpButReports : public cg::OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "NoOpButReports"; }
     [[nodiscard]] bool        recurse_into_subgraphs() const override { return true; }
-    bool                      run(cg::Graph                      &/*graph*/) override { return false; }
+    bool                      transform(cg::Graph                      &/*graph*/) override { return false; }
 };
 
 /// C = A * B, then D = C * B. The second node READS what the first wrote, so

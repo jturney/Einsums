@@ -139,11 +139,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief Zero the per-apply counters.
     void reset_stats() override;
 
-    /// @brief Apply, then emit the setup bodies the accepted plans asked for.
-    /// @param[in,out] graph The graph to rewrite.
-    /// @return True when anything was rewritten.
-    bool run(Graph &graph) override;
-
     /// @brief How many contractions were re-associated around a provider's factors.
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_factorized") [[nodiscard]] std::size_t num_factorized() const { return _num_factorized; }
@@ -231,6 +226,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief The pass's own report lines.
     /// @return One line when anything was factorized.
     [[nodiscard]] std::vector<std::string> describe() const override;
+
+    /// @brief Apply, then emit the setup bodies the accepted plans asked for.
+    /// @param[in,out] graph The graph to rewrite.
+    /// @return True when anything was rewritten.
+    bool transform(Graph &graph) override;
 
   private:
     /// A setup body an accepted plan still needs emitted. Held until @ref run's region loop is

@@ -146,7 +146,7 @@ void ScratchPrivatization::reset_stats() {
     _num_nodes_rebuilt      = 0;
 }
 
-bool ScratchPrivatization::run(Graph &graph) {
+bool ScratchPrivatization::transform(Graph &graph) {
     PassCounter const nodes_rebuilt{_num_nodes_rebuilt};
     run_recursive(graph);
     return nodes_rebuilt.moved();

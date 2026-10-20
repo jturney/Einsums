@@ -481,7 +481,7 @@ void ContractionPlanning::reset_stats() {
     _apply_reports.clear();
 }
 
-bool ContractionPlanning::run(Graph &graph) {
+bool ContractionPlanning::transform(Graph &graph) {
     bool modified = false;
 
     // One run's worth of chain reports, cleared here and nowhere else. It used to

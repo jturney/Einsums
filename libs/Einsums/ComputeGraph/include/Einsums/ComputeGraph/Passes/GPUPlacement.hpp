@@ -111,7 +111,6 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
                NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
     }
-    bool run(Graph &graph) override;
     void reset_stats() override;
 
     /// Number of nodes placed on GPU in the last run.
@@ -123,6 +122,9 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
     double gpu_throughput_gflops{5000.0}; ///< Estimated GPU throughput (GFLOP/s)
     double pcie_bandwidth_gbs{12.0};      ///< PCIe bandwidth (GB/s) for transfer overhead
     double gpu_launch_overhead_us{10.0};  ///< GPU kernel launch overhead (microseconds)
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _min_bytes;

@@ -24,7 +24,7 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
-bool Reorder::run(Graph &graph) {
+bool Reorder::transform(Graph &graph) {
     auto &nodes = graph.nodes();
     if (nodes.size() < 2) {
         return false;

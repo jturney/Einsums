@@ -214,9 +214,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// adds them in a different order.
     [[nodiscard]] PassTier tier() const override { return PassTier::ReAssociating; }
 
-    /// @copydoc OptimizerPass::run
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::reset_stats
     void reset_stats() override;
 
@@ -330,6 +327,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     ///         the loop, and added to at every iteration; empty when no contraction sums a sliced axis.
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("summed_into") [[nodiscard]] std::vector<std::string> summed_into() const { return _summed_into; }
+
+  protected:
+    /// @copydoc OptimizerPass::run
+    bool transform(Graph &graph) override;
 
   private:
     /// @brief Tile every region of one graph of the tree, without descending into its sub-graphs.

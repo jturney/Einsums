@@ -159,7 +159,7 @@ void StreamContractionFusion::reset_stats() {
     _num_eliminated = 0;
 }
 
-bool StreamContractionFusion::run(Graph &graph) {
+bool StreamContractionFusion::transform(Graph &graph) {
     graph.topological_sort();
 
     auto &nodes = graph.nodes();

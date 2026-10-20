@@ -97,7 +97,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::tier
     /// Removing a node nothing reads cannot change a value anything reads.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::BitwiseExact; }
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
@@ -113,6 +112,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Number of nodes eliminated in the last run.
     APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     /// Eliminate dead nodes in @p g, then descend into its sub-graphs. A

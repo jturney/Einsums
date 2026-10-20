@@ -123,7 +123,7 @@ void FreeInsertion::reset_stats() {
     _num_freed = 0;
 }
 
-bool FreeInsertion::run(Graph &graph) {
+bool FreeInsertion::transform(Graph &graph) {
     PassCounter const freed{_num_freed};
     auto             &nodes   = graph.nodes();
     auto const       &tensors = graph.tensors_map();

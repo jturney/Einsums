@@ -85,13 +85,6 @@ struct RegionDump {
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT RegionRewrite : public OptimizerPass {
   public:
-    /**
-     * @brief Raise every region, offer it to @ref rewrite, lower what changed.
-     * @param[in,out] graph The graph to rewrite.
-     * @return True when any region was rewritten.
-     */
-    bool run(Graph &graph) override;
-
     /// @brief Region rewrites are machine-independent algebra, so their output is saved.
     /// @return @ref PassPhase::StructuralAlgebraic.
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
@@ -341,6 +334,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * @return The features a region of this pass may hold.
      */
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return default_region_features; }
+
+    /**
+     * @brief Raise every region, offer it to @ref rewrite, lower what changed.
+     * @param[in,out] graph The graph to rewrite.
+     * @return True when any region was rewritten.
+     */
+    bool transform(Graph &graph) override;
 
   private:
     /// Record a region turned away, counting the reason for the structural report as well as

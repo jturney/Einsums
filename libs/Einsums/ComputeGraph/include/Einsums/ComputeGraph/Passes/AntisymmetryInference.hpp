@@ -74,8 +74,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Changes no arithmetic at all.
     [[nodiscard]] PassTier tier() const override { return PassTier::BitwiseExact; }
 
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
@@ -92,6 +90,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// TENSORS tagged antisymmetric. A tensor rather than a write, because a
     /// tensor built by accumulation is settled by all of its writes together.
     APIARY_EXPOSE APIARY_GETTER("num_tagged") [[nodiscard]] std::size_t num_tagged() const { return _num_tagged; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     std::size_t _num_candidates{0};

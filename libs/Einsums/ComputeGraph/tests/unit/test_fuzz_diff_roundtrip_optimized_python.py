@@ -61,6 +61,7 @@ import tempfile
 import numpy as np
 import pytest
 
+import einsums
 import einsums.graph as cg
 from einsums.testing import ALL_DTYPES
 
@@ -382,6 +383,42 @@ def test_view_refusal_names_the_view():
     if not report:
         pytest.skip("views became saveable; the view arm now compares them")
     assert all(b.kind_name == "View" for b in report), [(b.label, b.kind_name, b.reason) for b in report]
+
+
+def test_a_tuned_graph_saves_only_when_the_save_allows_it(tmp_path):
+    """The Python spelling of the override: ``allow_machine_dependent``.
+
+    Mirrors the SaveLoad case in C++. Reorder decides an order for one machine's memory, so a
+    save refuses the graph it changed and names the pass, and the keyword writes it anyway; what
+    loads back is a plain graph that no pass has changed.
+    """
+    n = 8
+    A = einsums.create_random_tensor("A", [n, n])
+    B = einsums.create_random_tensor("B", [n, n])
+    R = einsums.create_zero_tensor("R", [n, n])
+    S = einsums.create_zero_tensor("S", [n, n])
+
+    g = cg.Graph("orttuned")
+    X = g.scratch("X", [n, n])
+    Y = g.scratch("Y", [n, n])
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", X, A, B)
+        einsums.einsum("ij <- ik ; kj", Y, B, A)
+        einsums.einsum("ij <- ik ; kj", R, X, A)
+        einsums.einsum("ij <- ik ; kj", S, Y, B)
+
+    pm = cg.PassManager()
+    pm.add(cg.Reorder())
+    assert g.apply(pm), "Reorder was expected to move the second product ahead"
+    assert g.machine_dependent_passes() == ["Reorder"]
+
+    path = str(tmp_path / "orttuned.eig.json")
+    with pytest.raises(RuntimeError, match=r"machine-dependent passes \(Reorder\)"):
+        cg.save_graph(g, path)
+    assert not os.path.exists(path)
+
+    cg.save_graph(g, path, allow_machine_dependent=True)
+    assert cg.load_graph(path).machine_dependent_passes() == []
 
 
 def test_optimized_roundtrip_corpus_actually_round_trips():

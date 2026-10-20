@@ -38,7 +38,7 @@ class TracingPass : public cg::OptimizerPass {
 
     [[nodiscard]] std::string name() const override { return "Tracing"; }
 
-    bool run(cg::Graph &graph) override {
+    bool transform(cg::Graph &graph) override {
         _log->push_back({graph.name(), graph.num_nodes()});
         return false;
     }

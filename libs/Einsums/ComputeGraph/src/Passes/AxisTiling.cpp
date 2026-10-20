@@ -2211,7 +2211,7 @@ std::optional<std::size_t> gather_site(std::vector<NodeIo> const &io, std::vecto
 
 } // namespace
 
-bool AxisTiling::run(Graph &graph) {
+bool AxisTiling::transform(Graph &graph) {
     bool const moved = tile_graph(graph);
 
     // The graphs this one holds: the manager runs this pass on each of them next, and that run

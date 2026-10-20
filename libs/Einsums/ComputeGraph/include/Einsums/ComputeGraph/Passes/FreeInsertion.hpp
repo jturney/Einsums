@@ -94,11 +94,13 @@ class EINSUMS_EXPORT FreeInsertion : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
     [[nodiscard]] size_t num_freed() const { return _num_freed; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _min_bytes;

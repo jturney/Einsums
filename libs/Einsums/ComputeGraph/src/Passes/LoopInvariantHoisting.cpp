@@ -27,7 +27,7 @@ void LoopInvariantHoisting::reset_stats() {
     _num_hoisted = 0;
 }
 
-bool LoopInvariantHoisting::run(Graph &graph) {
+bool LoopInvariantHoisting::transform(Graph &graph) {
     PassCounter const hoisted_count{_num_hoisted};
     run_recursive(graph);
     return hoisted_count.moved();

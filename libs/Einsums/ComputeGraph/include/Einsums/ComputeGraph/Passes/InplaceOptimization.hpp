@@ -103,7 +103,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
@@ -114,6 +113,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Number of output buffers merged into dying inputs in the last run.
     APIARY_EXPOSE APIARY_GETTER("num_merged") [[nodiscard]] size_t num_merged() const { return _num_merged; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_candidates{0};

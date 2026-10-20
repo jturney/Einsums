@@ -134,7 +134,7 @@ bool read_einsum_indices(Node const &node, std::vector<std::string> &a, std::vec
 
 } // namespace
 
-bool AntisymmetryDetection::run(Graph &graph) {
+bool AntisymmetryDetection::transform(Graph &graph) {
     // A tensor written by any node holds, right now, whatever it was initialized
     // to. Graph scratch is typically zero, and a zero tensor satisfies every
     // symmetry there is, so tagging one records a fact true of the buffer and

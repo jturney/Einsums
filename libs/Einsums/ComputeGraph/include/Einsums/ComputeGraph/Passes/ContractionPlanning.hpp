@@ -151,7 +151,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Re-parenthesizing a GEMM chain is matrix-chain associativity, which is exact in the algebra and reorders every
     /// accumulation it touches.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::ReAssociating; }
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
@@ -189,6 +188,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE APIARY_GETTER("intermediates_created") [[nodiscard]] size_t intermediates_created() const {
         return _intermediates_created;
     }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     CostModel _cost_model;

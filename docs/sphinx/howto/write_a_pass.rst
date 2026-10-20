@@ -28,14 +28,17 @@ A pass derives from :cpp:class:`~einsums::compute_graph::OptimizerPass` and impl
       public:
         std::string name() const override { return "MyPass"; }
 
-        bool run(Graph &graph) override {
+      protected:
+        bool transform(Graph &graph) override {
             // inspect and possibly modify graph.nodes()
             return false;   // true if the graph was modified
         }
     };
 
-The return value from ``run`` is how the manager knows whether anything changed, which drives re-running analysis passes and the report.
+The return value from ``transform`` is how the manager knows whether anything changed, which drives re-running analysis passes and the report.
 Returning ``true`` when nothing changed causes needless work; returning ``false`` after a rewrite is a correctness problem.
+It is also what a save reads: a pass is run through ``run``, which calls ``transform`` and, when it reports a change, records the pass on the graph by its phase.
+Keep ``transform`` protected, so that no caller can change a graph without leaving that record.
 
 If your pass produces a valid topological ordering, call ``graph.mark_sorted()`` so the graph is not sorted again.
 
@@ -53,7 +56,7 @@ The phase answers one question: may a saved graph keep this pass's output, or mu
     * - Phase
       - Meaning
     * - ``Analysis``
-      - Writes annotations only, never rewrites the node set. ``run()`` returns false.
+      - Writes annotations only, never rewrites the node set. ``transform()`` returns false.
     * - ``StructuralAlgebraic``
       - Machine-independent rewrites of the mathematics. **The only phase a saved graph persists.**
     * - ``StructuralResource``
@@ -131,11 +134,11 @@ Decline early and cheaply
 =========================
 
 Your pass will run on every graph anyone optimizes, and almost none of them will be graphs it can help.
-Give it a cheap gate at the top of ``run()``, before it does any real work:
+Give it a cheap gate at the top of ``transform()``, before it does any real work:
 
 .. code-block:: cpp
 
-    bool MyPass::run(Graph &graph) {
+    bool MyPass::transform(Graph &graph) {
         if (!has_anything_i_can_use(graph)) {
             return false;               // one cheap scan, then out
         }
@@ -153,7 +156,7 @@ If you build on the region rewrite framework by deriving from ``RegionRewrite`` 
     [[nodiscard]] bool applicable(Graph const &graph) const override;
 
 Returning false from it records a skip and stops before region formation, so the decline still appears in the report rather than being silent.
-Note that this hook belongs to ``RegionRewrite`` and not to the ``OptimizerPass`` base, so a pass deriving straight from the base does the gate in ``run()`` as above.
+Note that this hook belongs to ``RegionRewrite`` and not to the ``OptimizerPass`` base, so a pass deriving straight from the base does the gate in ``transform()`` as above.
 
 Test it against the eager oracle
 ================================
@@ -196,7 +199,7 @@ Checklist
 =========
 
 #. Header in ``Passes/``, implementation in ``src/Passes/``.
-#. ``name()`` and ``run()``; ``run()`` returns whether it changed anything.
+#. ``name()`` and ``transform()``; ``transform()`` returns whether it changed anything.
 #. ``phase()`` and ``tier()`` declared, with the tier measured rather than assumed.
 #. ``applicable()`` gate so the common case costs almost nothing.
 #. ``explain()``, counters, ``reset_stats()``, and skip reasons for what it declined.

@@ -124,7 +124,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::tier
     /// The absorbed scale becomes the consumer's prefactor, which the consumer was already applying.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::BitwiseExact; }
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
@@ -138,6 +137,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Number of scale nodes eliminated in the last run (dead-removed or folded).
     APIARY_EXPOSE APIARY_GETTER("num_absorbed") [[nodiscard]] size_t num_absorbed() const { return _num_absorbed; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t                                   _num_absorbed{0};

@@ -29,7 +29,7 @@ void ConstantFolding::reset_stats() {
     _num_folded = 0;
 }
 
-bool ConstantFolding::run(Graph &graph) {
+bool ConstantFolding::transform(Graph &graph) {
     PassCounter const folded_count{_num_folded};
     graph.topological_sort();
 

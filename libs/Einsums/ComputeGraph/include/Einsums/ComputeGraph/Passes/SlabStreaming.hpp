@@ -199,9 +199,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
                NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
     }
 
-    /// @copydoc OptimizerPass::run
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::reset_stats
     void reset_stats() override;
 
@@ -254,6 +251,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     ///         it; empty for a tensor the apply moved no box of, or whose storage has no order.
     /// @versionadded{2.0.0}
     APIARY_EXPOSE [[nodiscard]] std::vector<std::size_t> stored_order(std::string const &name) const;
+
+  protected:
+    /// @copydoc OptimizerPass::run
+    bool transform(Graph &graph) override;
 
   private:
     /// One streamed contraction's report line.

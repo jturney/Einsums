@@ -132,7 +132,7 @@ void PermuteFusion::reset_stats() {
     _num_rewrites   = 0;
 }
 
-bool PermuteFusion::run(Graph &graph) {
+bool PermuteFusion::transform(Graph &graph) {
     PassCounter const rewrites{_num_rewrites};
     graph.topological_sort();
 

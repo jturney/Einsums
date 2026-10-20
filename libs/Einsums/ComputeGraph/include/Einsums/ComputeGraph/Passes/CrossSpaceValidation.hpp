@@ -181,9 +181,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Every feature: an analysis pass annotates and never rewrites a node, which the pass manager enforces.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
-    /// @copydoc OptimizerPass::run
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::reset_stats
     void reset_stats() override;
 
@@ -229,6 +226,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// How many findings are notes.
     /// @return The count of @ref CrossSpaceSeverity::Note findings.
     APIARY_EXPOSE APIARY_GETTER("num_notes") [[nodiscard]] std::size_t num_notes() const noexcept { return _num_notes; }
+
+  protected:
+    /// @copydoc OptimizerPass::run
+    bool transform(Graph &graph) override;
 
   private:
     std::vector<CrossSpaceFinding> _findings;

@@ -65,7 +65,7 @@ void TransferInsertion::reset_stats() {
     _num_transfers = 0;
 }
 
-bool TransferInsertion::run(Graph &graph) {
+bool TransferInsertion::transform(Graph &graph) {
     PassCounter const transfers{_num_transfers};
     graph.topological_sort();
 

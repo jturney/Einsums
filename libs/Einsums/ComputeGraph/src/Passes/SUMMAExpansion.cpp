@@ -105,7 +105,7 @@ void SUMMAExpansion::reset_stats() {
     _num_expanded = 0;
 }
 
-bool SUMMAExpansion::run(Graph &graph) {
+bool SUMMAExpansion::transform(Graph &graph) {
     PassCounter const expanded{_num_expanded};
     if (comm::world_size() <= 1)
         return false;

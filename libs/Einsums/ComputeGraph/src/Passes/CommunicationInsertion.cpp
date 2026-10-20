@@ -22,7 +22,7 @@ void CommunicationInsertion::reset_stats() {
     _num_inserted = 0;
 }
 
-bool CommunicationInsertion::run(Graph &graph) {
+bool CommunicationInsertion::transform(Graph &graph) {
     // On single rank (mock), no communication is needed.
     if (comm::world_size() <= 1)
         return false;

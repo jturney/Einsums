@@ -119,7 +119,7 @@ void AntisymmetryInference::reset_stats() {
     _num_tagged     = 0;
 }
 
-bool AntisymmetryInference::run(Graph &graph) {
+bool AntisymmetryInference::transform(Graph &graph) {
     // Topological order so a fact settled on one tensor is available to the node
     // that consumes it. The rules chain: a detected leaf fact reaches a foldable
     // premise only by being carried forward.

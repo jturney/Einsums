@@ -194,7 +194,7 @@ void DistributiveFactoring::reset_stats() {
     _groups.clear();
 }
 
-bool DistributiveFactoring::run(Graph &graph) {
+bool DistributiveFactoring::transform(Graph &graph) {
     return factor_one_level(graph);
 }
 

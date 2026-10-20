@@ -303,14 +303,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
                NodeFeature::RawScalar;
     }
 
-    /// @copydoc OptimizerPass::run
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
 
     /// @copydoc OptimizerPass::reset_stats
     void reset_stats() override;
+
+  protected:
+    /// @copydoc OptimizerPass::run
+    bool transform(Graph &graph) override;
 
   private:
     /// @brief One tensor of the caller's whose axes run over the space being replaced.

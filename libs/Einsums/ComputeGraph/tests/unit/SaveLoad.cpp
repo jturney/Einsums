@@ -1753,6 +1753,69 @@ TEST_CASE("SaveLoad - a graph a tuning pass changed is refused unless the save a
     CHECK(must_load(*allowed).machine_dependent_passes().empty());
 }
 
+// The record used to be kept by the pass manager alone, so a pass run by calling run() on it changed
+// the graph without a trace and the save wrote one machine's schedule as the program.
+TEST_CASE("SaveLoad - a tuning pass run directly is refused like one a pipeline ran", "[ComputeGraph][SaveLoad]") {
+    constexpr size_t n = 8;
+    auto             A = create_random_tensor<double>("A", n, n);
+    auto             B = create_random_tensor<double>("B", n, n);
+    auto             R = create_zero_tensor<double>("R", n, n);
+    auto             S = create_zero_tensor<double>("S", n, n);
+
+    cg::Graph graph("tuned_directly");
+    auto     &X = graph.scratch<double, 2>("X", n, n);
+    auto     &Y = graph.scratch<double, 2>("Y", n, n);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &X, 1.0, A, B);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &Y, 1.0, B, A);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &R, 1.0, X, A);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &S, 1.0, Y, B);
+    }
+
+    cg::passes::Reorder reorder;
+    REQUIRE(reorder.run(graph));
+    CHECK(graph.machine_dependent_passes() == std::vector<std::string>{"Reorder"});
+
+    auto const refused = cg::save_graph_string(graph);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK_THAT(refused.error().message, Catch::Matchers::ContainsSubstring("machine-dependent passes (Reorder)"));
+}
+
+// A save drops a node's stream id, so the pass that writes nothing else leaves the file as it was,
+// and refusing it would protect nothing. Run directly and through a manager alike.
+TEST_CASE("SaveLoad - a pass that changes only what a save drops leaves the graph saveable", "[ComputeGraph][SaveLoad]") {
+    constexpr size_t n = 4;
+    auto             A = create_random_tensor<double>("A", n, n);
+    auto             B = create_random_tensor<double>("B", n, n);
+    auto             C = create_zero_tensor<double>("C", n, n);
+
+    cg::Graph graph("streams_only");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &C, 1.0, A, B);
+    }
+    auto const before = cg::save_graph_string(graph, {.pretty = false});
+    REQUIRE(before.has_value());
+
+    // A stream other than the compute stream on a host node, which StreamAssignment puts back.
+    graph.nodes().front().stream_id = 1;
+    cg::passes::StreamAssignment streams;
+    REQUIRE(streams.run(graph));
+    CHECK(graph.machine_dependent_passes().empty());
+
+    graph.nodes().front().stream_id = 1;
+    cg::PassManager manager;
+    manager.add<cg::passes::StreamAssignment>();
+    REQUIRE(graph.apply(manager));
+    CHECK(graph.machine_dependent_passes().empty());
+
+    auto const after = cg::save_graph_string(graph, {.pretty = false});
+    INFO((after ? std::string{} : after.error().message));
+    REQUIRE(after.has_value());
+    CHECK(*after == *before);
+}
+
 TEST_CASE("register_backing_kind takes only qualified, new names with an opener", "[ComputeGraph][SaveLoad][Backing]") {
     auto const open = [](auto const &, bool) { return cg::TensorBacking{}; };
     CHECK_THROWS_WITH(cg::register_backing_kind({.name = "unqualified", .open = open}),

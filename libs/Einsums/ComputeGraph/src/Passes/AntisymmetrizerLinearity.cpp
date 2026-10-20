@@ -73,7 +73,7 @@ void AntisymmetrizerLinearity::reset_stats() {
     _num_merged     = 0;
 }
 
-bool AntisymmetrizerLinearity::run(Graph &graph) {
+bool AntisymmetrizerLinearity::transform(Graph &graph) {
     graph.topological_sort();
 
     auto const  guard          = EscapeAnalysis::over(graph);

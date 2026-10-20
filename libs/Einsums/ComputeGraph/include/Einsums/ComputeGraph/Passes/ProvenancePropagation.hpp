@@ -89,13 +89,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return True.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
-    /**
-     * @brief Propagate tags across @p graph.
-     * @param[in,out] graph The graph to annotate.
-     * @return False always: an analysis pass never changes the node set.
-     */
-    bool run(Graph &graph) override;
-
     /// @brief Zero the per-apply counters.
     void reset_stats() override { _num_propagated = 0; }
 
@@ -106,6 +99,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief How many tensors received a tag on the last apply.
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_propagated") [[nodiscard]] std::size_t num_propagated() const { return _num_propagated; }
+
+  protected:
+    /**
+     * @brief Propagate tags across @p graph.
+     * @param[in,out] graph The graph to annotate.
+     * @return False always: an analysis pass never changes the node set.
+     */
+    bool transform(Graph &graph) override;
 
   private:
     std::size_t _num_propagated{0};

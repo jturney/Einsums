@@ -120,8 +120,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// The folded form accumulates the same terms; measured at exactly zero on all six legs.
     [[nodiscard]] PassTier tier() const override { return PassTier::BitwiseExact; }
 
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
@@ -146,6 +144,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Sites actually rewritten (num_matched that also passed the dtype and
     /// operand gates). Each eliminates one axpby and one tmpP buffer.
     APIARY_EXPOSE APIARY_GETTER("num_rewritten") [[nodiscard]] size_t num_rewritten() const { return _num_rewritten; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     /// Fold the sites of @p graph, then descend. @p external holds the storage something outside

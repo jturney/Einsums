@@ -272,7 +272,7 @@ void LayoutAssignment::reset_stats() {
     _estimated_saving_us = 0.0;
 }
 
-bool LayoutAssignment::run(Graph &graph) {
+bool LayoutAssignment::transform(Graph &graph) {
     PassCounter const relaid_out{_num_relaid_out};
     PassCounter const folded{_num_permutes_folded};
 

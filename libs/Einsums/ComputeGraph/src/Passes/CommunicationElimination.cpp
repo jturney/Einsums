@@ -21,7 +21,7 @@ void CommunicationElimination::reset_stats() {
     _num_eliminated = 0;
 }
 
-bool CommunicationElimination::run(Graph &graph) {
+bool CommunicationElimination::transform(Graph &graph) {
     auto &nodes = graph.nodes();
     if (nodes.empty())
         return false;

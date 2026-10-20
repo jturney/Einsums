@@ -186,7 +186,7 @@ Graph *RegionRewrite::setup_body_for(Graph &graph, std::string label) {
     return &host.add_setup_at(std::move(label), position);
 }
 
-bool RegionRewrite::run(Graph &graph) {
+bool RegionRewrite::transform(Graph &graph) {
     bool const dump = _dump || config::get(option::GraphDumpRegions);
 
     // Recorded before anything else, and before any rewrite moves a node: the driver runs a

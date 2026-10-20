@@ -67,7 +67,7 @@ void GEMMBatching::reset_stats() {
     _num_gate_skipped = 0;
 }
 
-bool GEMMBatching::run(Graph &graph) {
+bool GEMMBatching::transform(Graph &graph) {
     PassCounter const batches{_num_batches};
     graph.topological_sort();
 

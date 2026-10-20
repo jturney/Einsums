@@ -70,9 +70,10 @@ class EINSUMS_EXPORT StreamAssignment : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Tuning; }
+    /// Stream ids only, which a save does not write.
+    [[nodiscard]] bool changes_saved_form() const override { return false; }
     /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
-    bool                                      run(Graph &graph) override;
     void                                      reset_stats() override;
 
     /// Safe on loop bodies / conditional branches: assigns a stream id to
@@ -81,6 +82,9 @@ class EINSUMS_EXPORT StreamAssignment : public OptimizerPass {
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     [[nodiscard]] size_t num_assigned() const { return _num_assigned; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_assigned{0};

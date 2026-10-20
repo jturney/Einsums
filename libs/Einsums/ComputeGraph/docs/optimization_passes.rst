@@ -178,13 +178,17 @@ Writing Custom Passes
    public:
        std::string name() const override { return "MyPass"; }
 
-       bool run(cg::Graph &graph) override {
+   protected:
+       // The pass itself. Callers use run(), which calls this and records the
+       // change on the graph for a later save.
+       bool transform(cg::Graph &graph) override {
            auto &nodes = graph.nodes();
            // Inspect and modify nodes...
            // If you modify the order, call graph.mark_sorted()
            return true;  // Return true if modified
        }
 
+   public:
        // Which phase this belongs to. The default is `tuning`, the phase whose
        // output is never saved, so a pass that skips this is safe rather than
        // silently persisted. See Phases above.
@@ -194,7 +198,7 @@ Writing Custom Passes
        // or a conditional branch. The manager then drives the recursion.
        bool recurse_into_subgraphs() const override { return true; }
 
-       // The node features this rewrite models. In run(), skip any node for
+       // The node features this rewrite models. In transform(), skip any node for
        // which understands(graph, node) is false and leave it exactly as found.
        // A pass that does not override this is left unchecked.
        std::optional<cg::NodeFeatures> understood_features() const override {
@@ -202,8 +206,9 @@ Writing Custom Passes
        }
 
        // Clear per-apply counters. The manager calls this once per apply(),
-       // NOT once per run(): with recursion enabled, run() is called once per
-       // subgraph, and resetting there would report only the last one.
+       // NOT once per transform(): with recursion enabled, transform() is
+       // called once per subgraph, and resetting there would report only the
+       // last one.
        void reset_stats() override { _num_rewrites = 0; }
    };
 

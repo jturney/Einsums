@@ -138,7 +138,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Folding a transpose pair into one contraction changes the order the two terms are summed in.
     [[nodiscard]] PassTier tier() const override { return PassTier::ReAssociating; }
 
-    bool                                   run(Graph &graph) override;
     void                                   reset_stats() override;
     [[nodiscard]] std::vector<std::string> explain() const override;
 
@@ -151,6 +150,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Total number of einsum nodes eliminated (folded away).
     APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_groups{0};

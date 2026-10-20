@@ -68,7 +68,6 @@ class EINSUMS_EXPORT GPUDiagnostics : public OptimizerPass {
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Diagnostic; }
     /// Every feature: an analysis pass annotates and never rewrites a node, which the pass manager enforces.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
-    bool                                      run(Graph &graph) override;
 
     /// Print the diagnostic report to a stream.
     void print_report(std::ostream &os) const;
@@ -79,6 +78,9 @@ class EINSUMS_EXPORT GPUDiagnostics : public OptimizerPass {
     [[nodiscard]] size_t d2h_transfers() const { return _d2h_transfers; }
     [[nodiscard]] size_t total_transfer_bytes() const { return _total_transfer_bytes; }
     [[nodiscard]] size_t peak_device_bytes() const { return _peak_device_bytes; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _gpu_nodes{0};

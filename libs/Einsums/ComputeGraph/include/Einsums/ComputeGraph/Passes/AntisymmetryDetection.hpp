@@ -77,8 +77,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::tier
     [[nodiscard]] PassTier tier() const override { return PassTier::BitwiseExact; }
 
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
@@ -93,6 +91,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Tensors that gained at least one generator.
     APIARY_EXPOSE APIARY_GETTER("num_tensors") [[nodiscard]] std::size_t num_tensors() const { return _num_tensors; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     std::size_t _num_probed{0};

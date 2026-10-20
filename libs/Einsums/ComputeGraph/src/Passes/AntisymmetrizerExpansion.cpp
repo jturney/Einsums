@@ -38,7 +38,7 @@ void AntisymmetrizerExpansion::reset_stats() {
     _num_terms    = 0;
 }
 
-bool AntisymmetrizerExpansion::run(Graph &graph) {
+bool AntisymmetrizerExpansion::transform(Graph &graph) {
     // Sites are collected against the ORIGINAL numbering, which is the only one
     // a pass that has not mutated anything can speak, and which is also what
     // Graph::replace_nodes expects for both the removal mask and the insert

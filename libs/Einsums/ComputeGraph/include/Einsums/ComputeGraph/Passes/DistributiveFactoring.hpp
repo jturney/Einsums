@@ -191,8 +191,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Folding A*B1 + A*B2 into A*(B1+B2) sums the operands before contracting instead of after.
     [[nodiscard]] PassTier tier() const override { return PassTier::ReAssociating; }
 
-    bool run(Graph &graph) override;
-
     [[nodiscard]] std::vector<std::string> explain() const override;
 
     void reset_stats() override;
@@ -221,6 +219,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     };
 
     [[nodiscard]] std::vector<FactoringGroup> const &groups() const { return _groups; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     /// Factor one graph in isolation (no descent). Returns true if it rewrote

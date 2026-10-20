@@ -181,7 +181,7 @@ void SymmetryPropagation::reset_stats() {
     _num_inferred = 0;
 }
 
-bool SymmetryPropagation::run(Graph &graph) {
+bool SymmetryPropagation::transform(Graph &graph) {
     PassCounter const inferred{_num_inferred};
     graph.topological_sort();
 

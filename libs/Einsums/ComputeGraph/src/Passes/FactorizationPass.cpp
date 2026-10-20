@@ -355,11 +355,11 @@ bool FactorizationPass::applicable(Graph const &graph) const {
         graph.tensors_map(), [&known](auto const &entry) { return !entry.second.tag.name.empty() && known.claims(entry.second.tag.name); });
 }
 
-bool FactorizationPass::run(Graph &graph) {
+bool FactorizationPass::transform(Graph &graph) {
     _pending.clear();
     _considered.clear();
     _fits.clear();
-    bool modified = RegionRewrite::run(graph);
+    bool modified = RegionRewrite::transform(graph);
 
     // After the region loop, never inside it: a region is a range of positions in the node
     // vector and those positions stay live for the whole of the loop above.

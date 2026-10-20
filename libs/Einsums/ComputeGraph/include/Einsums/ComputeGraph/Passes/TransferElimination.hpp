@@ -83,7 +83,6 @@ class EINSUMS_EXPORT TransferElimination : public OptimizerPass {
                NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped |
                NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
     }
-    bool run(Graph &graph) override;
     void reset_stats() override;
 
     /// Recurse into loop bodies / conditional branches. Per-graph cleanup
@@ -93,6 +92,9 @@ class EINSUMS_EXPORT TransferElimination : public OptimizerPass {
 
     /// Number of transfer nodes removed in the last run.
     [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_eliminated{0};

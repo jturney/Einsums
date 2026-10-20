@@ -96,7 +96,7 @@ void ScalingAnalysis::rank_nodes(SpaceRegistry const *registry) {
     }
 }
 
-bool ScalingAnalysis::run(Graph &graph) {
+bool ScalingAnalysis::transform(Graph &graph) {
     // The accumulate-across-subgraphs rule @ref PassCounter states, on a COLLECTION rather than a
     // counter: what this run() added is the tail past this mark.
     std::size_t const analyzed_at_entry = _node_costs.size();

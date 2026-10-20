@@ -125,6 +125,35 @@ std::shared_ptr<TensorBacking const> OptimizerPass::backing_of(Graph const &grap
     return handle != nullptr ? handle->backing : nullptr;
 }
 
+bool OptimizerPass::run(Graph &graph) {
+    bool const modified = transform(graph);
+    if (modified) {
+        note_change(graph);
+    }
+    return modified;
+}
+
+void OptimizerPass::note_change(Graph &graph) const {
+    switch (phase()) {
+    case PassPhase::StructuralAlgebraic:
+        // What a save persists is this phase's output, so this is the phase whose membership
+        // the provenance block is about.
+        graph.note_structural_pass(name());
+        break;
+    case PassPhase::StructuralResource:
+    case PassPhase::Tuning:
+        // Never saved, so a save has to know the graph now holds it. A change the writer drops
+        // leaves the file as it was, and refusing it would protect nothing.
+        if (changes_saved_form()) {
+            graph.note_machine_dependent_pass(name());
+        }
+        break;
+    case PassPhase::Analysis:
+    case PassPhase::Diagnostic:
+        break;
+    }
+}
+
 bool OptimizerPass::exceeds_streaming_share(TensorBacking const &backing) {
     std::size_t const share = passes::detail::budget_share();
     return share > 0 && passes::detail::stored_bytes(backing) > share;
@@ -566,7 +595,7 @@ bool apply_single_pass(OptimizerPass &pass, Graph &graph) {
 
 bool run_pass_tree(OptimizerPass &pass, Graph &graph) {
     std::size_t const from     = pass.num_decisions();
-    bool              modified = pass.run(graph);
+    bool              modified = pass.transform(graph);
     pass.name_graph(from, graph.name());
     if (pass.recurse_into_subgraphs()) {
         // The children see this graph as their innermost enclosing one, for as long as they run.
@@ -684,8 +713,10 @@ bool PassManager::run(Graph &graph) {
             // descendants (we don't snapshot them).
             auto saved_nodes = graph.nodes();
 
-            std::size_t const from     = pass->num_decisions();
-            bool const        modified = pass->run(graph);
+            std::size_t const from = pass->num_decisions();
+            // The pass itself, not run(): the graph is restored below, and a record of the change
+            // would outlive it.
+            bool const modified = pass->transform(graph);
             pass->name_graph(from, graph.name());
             auto   t1 = std::chrono::high_resolution_clock::now();
             double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -715,32 +746,22 @@ bool PassManager::run(Graph &graph) {
 
             check_read_only_phase(graph, *pass, structure_before);
 
+            // Recorded on the graph handed in, which is the one a save is asked about, even when
+            // the change was in a sub-graph the pass recursed into.
+            if (modified) {
+                pass->note_change(graph);
+            }
+
             switch (pass->phase()) {
             case PassPhase::Analysis:
                 // Annotations now describe the current node set.
                 structure_stale_for_analysis = false;
                 break;
             case PassPhase::StructuralAlgebraic:
-                // What a save persists is this phase's output, so this is the phase whose
-                // membership the provenance block is about. Recorded here rather than asked of
-                // the caller.
-                if (modified) {
-                    graph.note_structural_pass(pass->name());
-                }
-                structure_stale_for_analysis = structure_stale_for_analysis || modified;
-                break;
             case PassPhase::StructuralResource:
-                // Never saved, so a save has to know the graph now holds it.
-                if (modified) {
-                    graph.note_machine_dependent_pass(pass->name());
-                }
                 structure_stale_for_analysis = structure_stale_for_analysis || modified;
                 break;
             case PassPhase::Tuning:
-                if (modified) {
-                    graph.note_machine_dependent_pass(pass->name());
-                }
-                break;
             case PassPhase::Diagnostic:
                 break;
             }

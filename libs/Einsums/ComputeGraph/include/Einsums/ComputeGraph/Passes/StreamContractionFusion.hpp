@@ -176,8 +176,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
                NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
     }
 
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
@@ -204,6 +202,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// caches cannot disable the pass outright. Without a cost_model (or
     /// without cache data) returns kMaxOutputElemsFallback.
     [[nodiscard]] size_t max_output_elems(size_t elem_size) const;
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     /// The streamed tensor must have at least this many elements. Measured

@@ -327,7 +327,6 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
                NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
     }
-    bool run(Graph &graph) override;
     void reset_stats() override;
 
     /// @copydoc OptimizerPass::explain
@@ -358,6 +357,9 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     /// Gathers not emitted because a dense copy of exactly those tiles was already
     /// available and nothing had written them since.
     [[nodiscard]] size_t num_gathers_reused() const { return _num_gathers_reused; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     /// Expand the tiled ops of one graph of the tree.

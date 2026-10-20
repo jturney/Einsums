@@ -30,7 +30,7 @@ class Recording : public cg::OptimizerPass {
     [[nodiscard]] std::string name() const override { return "Recording"; }
     [[nodiscard]] bool        recurse_into_subgraphs() const override { return true; }
 
-    bool run(cg::Graph & /*graph*/) override {
+    bool transform(cg::Graph & /*graph*/) override {
         report(2, "an uncoded note");
         note_skip("an uncoded reason", "detail one");
         note_skip(Coded, "detail two", cg::Decision{.tensors = {"T"}});

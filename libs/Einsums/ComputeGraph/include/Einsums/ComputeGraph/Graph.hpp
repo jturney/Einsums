@@ -2485,7 +2485,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * pass list from whoever called ``save_graph``, which is to say from someone who had to
      * remember.
      *
-     * Called by ``PassManager::run`` for each pass in that phase that reports a modification.
+     * Called by @ref OptimizerPass::run for each pass in that phase that reports a modification,
+     * whether a pipeline ran it or a caller did.
      * Order is the order they ran, and a pass that ran twice and changed something twice is
      * recorded once: the list says what shaped this graph, not how many times.
      *
@@ -2512,8 +2513,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * Those phases decide for one machine and one memory budget (tiling, materialization,
      * frees, the arena, batching, the schedule), and a file holds only the algebraic form, so
-     * @ref save_graph refuses a graph this list is not empty for. Recorded by the pass manager,
-     * which is what @ref Graph::apply goes through too.
+     * @ref save_graph refuses a graph this list is not empty for. Recorded by @ref OptimizerPass::run,
+     * so a pass run on its own leaves the same record as one a pipeline runs, and skipped for
+     * a pass whose changes a save drops (@ref OptimizerPass::changes_saved_form).
      *
      * @param[in] pass_name The pass that modified this graph.
      * @versionadded{2.0.0}

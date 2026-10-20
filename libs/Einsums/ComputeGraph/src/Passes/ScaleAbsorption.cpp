@@ -38,7 +38,7 @@ void ScaleAbsorption::reset_stats() {
     _compensated.clear();
 }
 
-bool ScaleAbsorption::run(Graph &graph) {
+bool ScaleAbsorption::transform(Graph &graph) {
     PassCounter const absorbed{_num_absorbed};
     graph.topological_sort();
 

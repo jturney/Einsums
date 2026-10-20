@@ -76,10 +76,12 @@ class EINSUMS_EXPORT SUMMAExpansion : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
                NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
     }
-    bool run(Graph &graph) override;
     void reset_stats() override;
 
     [[nodiscard]] size_t num_expanded() const { return _num_expanded; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_expanded{0};

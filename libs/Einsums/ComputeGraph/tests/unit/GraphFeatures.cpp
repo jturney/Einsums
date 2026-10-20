@@ -159,7 +159,7 @@ namespace {
 class CorruptingPass : public cg::OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "CorruptingPass"; }
-    bool                      run(cg::Graph &graph) override {
+    bool                      transform(cg::Graph &graph) override {
         cg::Node node;
         node.kind   = cg::OpKind::Custom;
         node.label  = "stray";
@@ -176,7 +176,7 @@ class DroppingPass : public cg::OptimizerPass {
   public:
     explicit DroppingPass(bool declare) : _declare(declare) {}
     [[nodiscard]] std::string name() const override { return "DroppingPass"; }
-    bool                      run(cg::Graph &graph) override {
+    bool                      transform(cg::Graph &graph) override {
         graph.nodes().pop_back();
         if (_declare) {
             graph.note_structural_change();
@@ -352,7 +352,7 @@ namespace {
 class AccumulatingPass : public cg::OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "AccumulatingPass"; }
-    bool                      run(cg::Graph &graph) override {
+    bool                      transform(cg::Graph &graph) override {
         bool changed = false;
         for (auto &node : graph.nodes()) {
             if (auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr && desc->params != nullptr) {
@@ -1309,7 +1309,7 @@ class CountingUserPass : public cg::OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "CountingUserPass"; }
 
-    bool run(cg::Graph &graph) override {
+    bool transform(cg::Graph &graph) override {
         _seen = graph.num_nodes();
         return false; // observes only
     }

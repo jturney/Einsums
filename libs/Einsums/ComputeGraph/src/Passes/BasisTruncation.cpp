@@ -560,7 +560,7 @@ void BasisTruncation::emit_setup(Graph &body, std::vector<Target> const &targets
     }
 }
 
-bool BasisTruncation::run(Graph &graph) {
+bool BasisTruncation::transform(Graph &graph) {
     if (!_amplitudes.has_value() || !_fock.has_value()) {
         note_skip("no amplitudes or no Fock block were handed to the pass, so there is no density to truncate a space from");
         return false;

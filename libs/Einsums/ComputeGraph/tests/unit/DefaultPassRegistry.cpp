@@ -40,7 +40,7 @@ class CountingPass final : public cg::OptimizerPass {
   public:
     explicit CountingPass(std::string name) : _name(std::move(name)) {}
     [[nodiscard]] std::string name() const override { return _name; }
-    bool                      run(cg::Graph                      &/*graph*/) override {
+    bool                      transform(cg::Graph                      &/*graph*/) override {
         ++runs()[_name];
         return false;
     }

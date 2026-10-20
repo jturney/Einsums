@@ -24,7 +24,7 @@ void InputSlicing::reset_stats() {
     _num_sliced = 0;
 }
 
-bool InputSlicing::run(Graph &graph) {
+bool InputSlicing::transform(Graph &graph) {
     PassCounter const sliced{_num_sliced};
     if (comm::world_size() <= 1)
         return false;

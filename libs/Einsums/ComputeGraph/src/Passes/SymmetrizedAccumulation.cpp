@@ -75,7 +75,7 @@ void collect_value_ptrs(Graph const &graph, std::unordered_set<void const *> &ou
 
 } // namespace
 
-bool SymmetrizedAccumulation::run(Graph &graph) {
+bool SymmetrizedAccumulation::transform(Graph &graph) {
     return run_one(graph, {}, {});
 }
 

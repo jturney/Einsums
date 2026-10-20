@@ -214,7 +214,7 @@ namespace {
 /// by appending its BatchedGemm node.
 struct RotateNodesPass final : cg::OptimizerPass {
     [[nodiscard]] std::string name() const override { return "RotateNodesPass"; }
-    bool                      run(cg::Graph &graph) override {
+    bool                      transform(cg::Graph &graph) override {
         auto &nodes = graph.nodes();
         if (nodes.size() < 2) {
             return false;

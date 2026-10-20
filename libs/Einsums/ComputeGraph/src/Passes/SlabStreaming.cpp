@@ -430,7 +430,7 @@ std::size_t SlabStreaming::budget() const {
     return detail::budget_share();
 }
 
-bool SlabStreaming::run(Graph &graph) {
+bool SlabStreaming::transform(Graph &graph) {
     _root = &graph;
     _held_in.clear();
     bool const moved = walk(graph, Backed{}, 1.0);

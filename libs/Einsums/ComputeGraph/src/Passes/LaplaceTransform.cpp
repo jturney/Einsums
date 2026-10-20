@@ -356,11 +356,11 @@ bool LaplaceTransform::applicable(Graph const &graph) const {
     return std::ranges::any_of(graph.tensors_map(), [](auto const &entry) { return entry.second.tag.name == kTag; });
 }
 
-bool LaplaceTransform::run(Graph &graph) {
+bool LaplaceTransform::transform(Graph &graph) {
     _pending.clear();
     _claimed.clear();
     _dissolve.clear();
-    bool modified = RegionRewrite::run(graph);
+    bool modified = RegionRewrite::transform(graph);
 
     // After the region loop, never inside it: a region is a range of positions in the node
     // vector and those positions stay live for the whole of the loop above.

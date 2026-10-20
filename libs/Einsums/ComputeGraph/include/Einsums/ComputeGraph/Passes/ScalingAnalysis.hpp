@@ -145,9 +145,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Every feature: an analysis pass annotates and never rewrites a node, which the pass manager enforces.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
-    /// @copydoc OptimizerPass::run
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::reset_stats
     void reset_stats() override;
 
@@ -256,6 +253,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// The rendered element-count polynomial of every sized intermediate.
     /// @return The renderings, parallel to @ref intermediate_names.
     APIARY_EXPOSE [[nodiscard]] std::vector<std::string> intermediate_sizes_str() const;
+
+  protected:
+    /// @copydoc OptimizerPass::run
+    bool transform(Graph &graph) override;
 
   private:
     /// @brief Recompute @ref _rate_limiting from @ref _node_costs.

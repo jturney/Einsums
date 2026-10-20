@@ -74,11 +74,13 @@ class EINSUMS_EXPORT IOPrefetch : public OptimizerPass {
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Tuning; }
     /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
-    bool                                      run(Graph &graph) override;
     void                                      reset_stats() override;
 
     /// Number of DiskRead nodes moved in the last run.
     [[nodiscard]] size_t num_prefetched() const { return _num_prefetched; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_prefetched{0};

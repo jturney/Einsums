@@ -142,14 +142,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// once and passes it down.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
 
-    /**
-     * @brief Run the CSE pass on @p graph and every loop body / conditional
-     *        branch beneath it.
-     * @param[in,out] graph The graph to optimize.
-     * @return True if at least one duplicate node was eliminated anywhere.
-     */
-    bool run(Graph &graph) override;
-
     /// @brief How many duplicate nodes the last @ref run eliminated, across the whole tree.
     ///
     /// Every other structural-algebraic pass carries one of these, and this pass wanting one
@@ -160,6 +152,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
+
+  protected:
+    /**
+     * @brief Run the CSE pass on @p graph and every loop body / conditional
+     *        branch beneath it.
+     * @param[in,out] graph The graph to optimize.
+     * @return True if at least one duplicate node was eliminated anywhere.
+     */
+    bool transform(Graph &graph) override;
 
   private:
     /// One graph of the tree. @p tree_context is an opaque handle to the

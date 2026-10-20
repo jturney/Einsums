@@ -62,7 +62,7 @@ void TransferElimination::reset_stats() {
     _num_eliminated = 0;
 }
 
-bool TransferElimination::run(Graph &graph) {
+bool TransferElimination::transform(Graph &graph) {
     PassCounter const eliminated{_num_eliminated};
     graph.topological_sort();
 

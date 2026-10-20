@@ -265,7 +265,7 @@ class UnclassifiedPass : public cg::OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "UnclassifiedPass"; }
 
-    bool run(cg::Graph &) override { return false; }
+    bool transform(cg::Graph &) override { return false; }
 };
 
 /// Analysis phase, but it rewrites the node set. The manager must catch it.
@@ -274,7 +274,7 @@ class RogueAnalysisPass : public cg::OptimizerPass {
     [[nodiscard]] std::string   name() const override { return "RogueAnalysisPass"; }
     [[nodiscard]] cg::PassPhase phase() const override { return cg::PassPhase::Analysis; }
 
-    bool run(cg::Graph &graph) override {
+    bool transform(cg::Graph &graph) override {
         cg::Node n;
         n.kind  = cg::OpKind::Scale;
         n.label = "rogue";
@@ -290,7 +290,7 @@ class NodeCountingAnalysis : public cg::OptimizerPass {
     [[nodiscard]] std::string   name() const override { return "NodeCountingAnalysis"; }
     [[nodiscard]] cg::PassPhase phase() const override { return cg::PassPhase::Analysis; }
 
-    bool run(cg::Graph &graph) override {
+    bool transform(cg::Graph &graph) override {
         _last_seen = graph.num_nodes();
         _runs++;
         return false;
@@ -317,7 +317,7 @@ class AppendNodePass : public cg::OptimizerPass {
     [[nodiscard]] std::string   name() const override { return "AppendNodePass"; }
     [[nodiscard]] cg::PassPhase phase() const override { return cg::PassPhase::StructuralAlgebraic; }
 
-    bool run(cg::Graph &graph) override {
+    bool transform(cg::Graph &graph) override {
         if (!_active) {
             return false;
         }

@@ -167,7 +167,7 @@ class BudgetProbe : public cg::OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "BudgetProbe"; }
 
-    bool run(cg::Graph &) override {
+    bool transform(cg::Graph &) override {
         _unlimited = budget().unlimited();
         _remaining = budget().remaining();
         _seen      = true;

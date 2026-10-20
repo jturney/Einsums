@@ -227,11 +227,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief Zero the per-apply counters.
     void reset_stats() override;
 
-    /// @brief Apply, then emit the setup bodies the accepted rewrites asked for.
-    /// @param[in,out] graph The graph to rewrite.
-    /// @return True when anything was rewritten.
-    bool run(Graph &graph) override;
-
     /**
      * @brief The target relative accuracy of the quadrature.
      *
@@ -329,6 +324,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief A region rewrite needs the numerator and the direct product both.
     /// @return Two.
     [[nodiscard]] std::size_t min_region_nodes() const override { return 2; }
+
+    /// @brief Apply, then emit the setup bodies the accepted rewrites asked for.
+    /// @param[in,out] graph The graph to rewrite.
+    /// @return True when anything was rewritten.
+    bool transform(Graph &graph) override;
 
   private:
     /// A setup body an accepted rewrite still needs emitted. Held until the region loop is

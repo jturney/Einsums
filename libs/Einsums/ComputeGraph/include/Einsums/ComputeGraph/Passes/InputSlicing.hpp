@@ -75,10 +75,12 @@ class EINSUMS_EXPORT InputSlicing : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
                NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::RawScalar;
     }
-    bool run(Graph &graph) override;
     void reset_stats() override;
 
     [[nodiscard]] size_t num_sliced() const { return _num_sliced; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_sliced{0};

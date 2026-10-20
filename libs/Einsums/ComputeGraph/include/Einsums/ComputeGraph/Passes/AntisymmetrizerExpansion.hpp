@@ -99,8 +99,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// under any scheduler.
     [[nodiscard]] PassTier tier() const override { return PassTier::BitwiseExact; }
 
-    bool run(Graph &graph) override;
-
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
@@ -119,6 +117,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Permuted accumulations emitted across every rewritten site, which is the
     /// sum of the sites' term counts.
     APIARY_EXPOSE APIARY_GETTER("num_terms") [[nodiscard]] std::size_t num_terms() const { return _num_terms; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     std::size_t _num_sites{0};

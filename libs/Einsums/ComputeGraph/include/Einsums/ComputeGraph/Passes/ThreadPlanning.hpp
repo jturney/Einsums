@@ -120,10 +120,11 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Tuning; }
+    /// Widths, admission priorities and the planned thread count, none of which a save writes.
+    [[nodiscard]] bool changes_saved_form() const override { return false; }
     /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
-    bool run(Graph &graph) override;
     void reset_stats() override;
 
     /// Recursion is done inside @ref run, not by the pass manager: a body is
@@ -181,6 +182,9 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
     /// Contraction nodes whose kernel route this run pinned, over the whole
     /// subgraph tree.
     [[nodiscard]] std::size_t num_route_pinned() const { return _num_route_pinned; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     /// One graph's plan. Recursion returns the body's serial cost so the

@@ -134,7 +134,6 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
@@ -152,6 +151,9 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
 
     /// Groups skipped by the profitability gate this run.
     [[nodiscard]] size_t num_gate_skipped() const { return _num_gate_skipped; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     CostModel _cost_model{};

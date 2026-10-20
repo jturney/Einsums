@@ -87,7 +87,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Evaluating a node at pass time runs the same kernel over the same values and stores what it
     /// produced, so the replay returns the number the computation would have returned.
     [[nodiscard]] PassTier tier() const override { return PassTier::BitwiseExact; }
-    bool                   run(Graph &graph) override;
     void                   reset_stats() override;
 
     /// @copydoc OptimizerPass::explain
@@ -104,6 +103,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Number of nodes folded in the last run.
     APIARY_EXPOSE APIARY_GETTER("num_folded") [[nodiscard]] size_t num_folded() const { return _num_folded; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_folded{0};

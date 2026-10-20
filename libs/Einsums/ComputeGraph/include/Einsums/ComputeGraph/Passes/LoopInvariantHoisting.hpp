@@ -85,11 +85,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::tier
     /// Computing an invariant once rather than each iteration performs the same arithmetic on the same inputs.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::BitwiseExact; }
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
     APIARY_EXPOSE APIARY_GETTER("num_hoisted") [[nodiscard]] size_t num_hoisted() const { return _num_hoisted; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     /// Innermost-first descent. Recurse into every Loop body that is a direct

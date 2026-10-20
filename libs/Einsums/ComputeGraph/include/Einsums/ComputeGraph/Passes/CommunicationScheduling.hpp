@@ -70,10 +70,12 @@ class EINSUMS_EXPORT CommunicationScheduling : public OptimizerPass {
                NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped |
                NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
     }
-    bool run(Graph &graph) override;
     void reset_stats() override;
 
     [[nodiscard]] size_t num_scheduled() const { return _num_scheduled; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_scheduled{0};

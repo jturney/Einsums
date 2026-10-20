@@ -354,7 +354,7 @@ void InplaceOptimization::reset_stats() {
     _num_merged     = 0;
 }
 
-bool InplaceOptimization::run(Graph &graph) {
+bool InplaceOptimization::transform(Graph &graph) {
     PassCounter const merged{_num_merged};
     PassCounter const candidates{_num_candidates};
     Accepts const     accepts = [this, &graph](Node const &node) {

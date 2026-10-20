@@ -162,7 +162,7 @@ std::vector<std::string> ThreadPlanning::explain() const {
     return lines;
 }
 
-bool ThreadPlanning::run(Graph &graph) {
+bool ThreadPlanning::transform(Graph &graph) {
     unsigned p = _requested_threads;
     if (p == 0) {
         // The budget is what the executor rations against, so planning against

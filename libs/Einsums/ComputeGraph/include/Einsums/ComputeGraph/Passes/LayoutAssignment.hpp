@@ -183,7 +183,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// such a graph.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
-    bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
@@ -204,6 +203,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief What those copies were modelled to cost, in microseconds per replay.
     /// @return The estimate. A modelled number and not a measured one; see the file note.
     APIARY_EXPOSE APIARY_GETTER("estimated_saving_us") [[nodiscard]] double estimated_saving_us() const { return _estimated_saving_us; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     CostModel   _cost_model;

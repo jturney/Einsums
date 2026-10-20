@@ -188,7 +188,7 @@ void TiledExpansion::reset_stats() {
     _num_gathers_reused = 0;
 }
 
-bool TiledExpansion::run(Graph &graph) {
+bool TiledExpansion::transform(Graph &graph) {
     // Planning is per graph, and a control-flow node names none of what its body touches, so
     // a tiled tensor that one graph writes and another touches cannot be planned from either
     // side: a reader predicts its tiles without seeing the writer, a per-tile writer leaves

@@ -256,7 +256,7 @@ void IOPrefetch::reset_stats() {
     _num_prefetched = 0;
 }
 
-bool IOPrefetch::run(Graph &graph) {
+bool IOPrefetch::transform(Graph &graph) {
     PassCounter const prefetched{_num_prefetched};
     bool const        result = process(graph, _num_prefetched);
     if (prefetched.moved()) {

@@ -93,7 +93,7 @@ void CrossSpaceValidation::reset_stats() {
     _num_notes    = 0;
 }
 
-bool CrossSpaceValidation::run(Graph &graph) {
+bool CrossSpaceValidation::transform(Graph &graph) {
     // The accumulate-across-subgraphs rule @ref PassCounter states, on a COLLECTION rather than a
     // counter: what this run() added is the tail past this mark, and the mark is the index the
     // report below starts reading from, so the snapshot is needed as a value and not only as a

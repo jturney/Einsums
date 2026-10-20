@@ -54,7 +54,7 @@ class SpendingPass : public cg::OptimizerPass {
 
     [[nodiscard]] std::string name() const override { return "SpendingPass"; }
 
-    bool run(cg::Graph &graph) override {
+    bool transform(cg::Graph &graph) override {
         applied = approximate(graph, _record);
         return applied;
     }

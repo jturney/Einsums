@@ -15,7 +15,7 @@ void StreamAssignment::reset_stats() {
     _num_assigned = 0;
 }
 
-bool StreamAssignment::run(Graph &graph) {
+bool StreamAssignment::transform(Graph &graph) {
     PassCounter const assigned{_num_assigned};
     for (auto &node : graph.nodes()) {
         int new_stream = 0; // default: compute stream

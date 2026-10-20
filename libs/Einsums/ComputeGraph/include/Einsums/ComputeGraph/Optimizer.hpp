@@ -57,7 +57,7 @@ struct TensorBacking;
  */
 enum class PassPhase : std::uint8_t {
     /// Writes annotations onto tensors or nodes and never rewrites the node
-    /// set; ``run()`` returns false. Re-runnable at any point, and the manager
+    /// set; ``transform()`` returns false. Re-runnable at any point, and the manager
     /// re-runs these at the end of a pipeline whose structure changed.
     Analysis,
     /// Machine-independent rewrites of the mathematics. This is the only phase
@@ -243,9 +243,9 @@ class SearchBudget {
  * @brief One of a pass's statistics, snapshotted at the top of its @ref OptimizerPass::run.
  *
  * @par The problem this exists for
- * ``PassManager::run`` zeroes a pass's counters ONCE per ``apply()``, then invokes ``run()``
+ * ``PassManager::run`` zeroes a pass's counters ONCE per ``apply()``, then invokes ``transform()``
  * once per SUB-GRAPH (see @ref OptimizerPass::reset_stats for why the reset cannot move into
- * ``run``). So a counter is a running total across the whole sub-graph tree, and a ``run()``
+ * ``transform``). So a counter is a running total across the whole sub-graph tree, and a ``transform()``
  * that answers ``return _num_fused > 0;`` reports THIS graph as modified whenever any EARLIER
  * sub-graph changed something. That is silent for a single loop, whose body is visited last,
  * and wrong the moment a graph holds a conditional or a second loop.
@@ -268,7 +268,7 @@ class SearchBudget {
  * increment site.
  *
  * @note Holds a POINTER to the counter, so it must not outlive it. Declare it as a local in
- *       ``run()``, which is the only place it makes sense: it is a snapshot of one invocation.
+ *       ``transform()``, which is the only place it makes sense: it is a snapshot of one invocation.
  */
 class PassCounter {
   public:
@@ -276,15 +276,15 @@ class PassCounter {
     /// @param[in] counter The pass member to watch. Must outlive this object.
     explicit PassCounter(std::size_t const &counter) noexcept : _counter(&counter), _entry(counter) {}
 
-    /// @brief How much this ``run()`` has added to the counter.
+    /// @brief How much this ``transform()`` has added to the counter.
     /// @return The delta since construction.
     ///
     /// This is the number a per-graph report wants, where the counter itself holds the total
     /// over every sub-graph visited so far.
     [[nodiscard]] std::size_t delta() const noexcept { return *_counter - _entry; }
 
-    /// @brief Whether this ``run()`` moved the counter at all.
-    /// @return True when it did, which is what ``run()`` returns.
+    /// @brief Whether this ``transform()`` moved the counter at all.
+    /// @return True when it did, which is what ``transform()`` returns.
     [[nodiscard]] bool moved() const noexcept { return delta() != 0; }
 
   private:
@@ -304,12 +304,16 @@ class PassCounter {
  * class MyPass : public OptimizerPass {
  * public:
  *     std::string name() const override { return "MyPass"; }
- *     bool run(Graph &graph) override {
+ * protected:
+ *     bool transform(Graph &graph) override {
  *         // Inspect and modify graph.nodes()
  *         return false;
  *     }
  * };
  * @endcode
+ *
+ * A pass implements @ref transform and is run through @ref run, which records the change on
+ * the graph for a later save to read.
  *
  * @note Passes that modify the graph should call graph.mark_sorted() if they
  *       produce a valid topological ordering, to prevent unnecessary re-sorting.
@@ -336,10 +340,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
 
     /**
      * @brief Run the optimization pass on the given graph.
+     *
+     * Runs @ref transform and, when it changed @p graph, records the change on the graph the way a
+     * pipeline does: a @ref PassPhase::StructuralAlgebraic pass joins the provenance
+     * (@ref Graph::structural_passes), and a @ref PassPhase::StructuralResource or
+     * @ref PassPhase::Tuning pass whose change a save would write
+     * (@ref changes_saved_form) makes the save refuse
+     * (@ref Graph::machine_dependent_passes). Not virtual, so no way of running a pass skips
+     * the record.
+     *
+     * Only @p graph itself is visited. A pipeline also visits the sub-graphs of a pass that
+     * asks for it (@ref recurse_into_subgraphs).
      * @param[in,out] graph The graph to optimize.
      * @return True if the graph was modified, false if no changes were made.
      */
-    virtual bool run(Graph &graph) = 0;
+    EINSUMS_EXPORT bool run(Graph &graph);
 
     /**
      * @brief Which pipeline phase this pass belongs to.
@@ -380,11 +395,24 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
     [[nodiscard]] virtual PassTier tier() const { return PassTier::Tuning; }
 
     /**
+     * @brief Whether a change this pass makes reaches what a save writes.
+     *
+     * True by default. A pass that writes only state a save leaves out (a node's thread width,
+     * stream, or cost estimate) returns false, and @ref run then does not count it against a
+     * save: refusing would protect a file that is the same either way. Only meaningful for
+     * a @ref PassPhase::StructuralResource or @ref PassPhase::Tuning pass, the phases whose
+     * changes a save refuses.
+     * @return False when every change the pass makes is one a save drops.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] virtual bool changes_saved_form() const { return true; }
+
+    /**
      * @brief Should ``PassManager`` re-invoke this pass on every sub-graph?
      *
      * Controls whether the PassManager automatically descends into
      * loop bodies and conditional branches (via
-     * ``Graph::for_each_subgraph``) and calls ``run()`` again at each
+     * ``Graph::for_each_subgraph``) and calls ``transform()`` again at each
      * level. Default ``false``.
      *
      * Passes whose semantics are *correct on a flat sub-graph* (CSE,
@@ -395,13 +423,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * hoisting allocs to the parent, FreeInsertion placing frees after
      * the loop, TransferInsertion hoisting H2D for loop-invariant inputs)
      * should keep this ``false`` and instead walk children themselves
-     * inside ``run()`` via ``Graph::for_each_subgraph``. Their output
+     * inside ``transform()`` via ``Graph::for_each_subgraph``. Their output
      * lands in the *parent* graph, not the child.
      *
      * Passes that need parent context to decide correctness must also keep
      * this ``false`` until they grow the required cross-graph reasoning.
      * ``DeadNodeElimination`` and ``CSE`` are the current instances, and both
-     * opt out here while walking the tree THEMSELVES inside ``run()``, which
+     * opt out here while walking the tree THEMSELVES inside ``transform()``, which
      * is not the same as not running on bodies.
      *
      * What it takes to recurse safely, by example:
@@ -462,14 +490,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * than whatever the last-visited subgraph happened to contribute.
      *
      * Any pass that maintains counters must override this and must NOT zero
-     * them inside ``run()``: with ``recurse_into_subgraphs() == true`` the
-     * driver calls ``run()`` once per subgraph, so a reset there discards every
+     * them inside ``transform()``: with ``recurse_into_subgraphs() == true`` the
+     * driver calls ``transform()`` once per subgraph, so a reset there discards every
      * earlier level. That is silent for a single loop (the body is visited
      * last, so its count survives) and wrong the moment a graph has a
      * conditional -- the empty else-branch resets the counters to zero -- or
      * more than one loop. ``graph.explain()`` reads these getters.
      *
-     * The corollary is that a counter is a RUNNING TOTAL inside one ``apply()``, so ``run()``
+     * The corollary is that a counter is a RUNNING TOTAL inside one ``apply()``, so ``transform()``
      * cannot test it against zero to decide what it returns. @ref PassCounter is that test.
      */
     virtual void reset_stats() {}
@@ -512,7 +540,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      *
      * One entry per distinct reason, with the number of candidates that hit it,
      * ordered most-frequent first. Populated by @ref note_skip during
-     * ``run()``; empty for a pass that never declines anything or has not been
+     * ``transform()``; empty for a pass that never declines anything or has not been
      * taught to explain itself yet.
      *
      * This is the negative half of @ref explain: `explain()` says what a pass
@@ -576,7 +604,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * the affected ``(reader NodeId, TensorId)`` pairs here; the validator skips
      * exactly those. The pass owns the compensation's correctness — its own
      * numeric tests must cover it, since the structural guard is waived. Return
-     * the pairs recorded during ``run()``; empty by default (no exemptions).
+     * the pairs recorded during ``transform()``; empty by default (no exemptions).
      */
     [[nodiscard]] virtual std::vector<std::pair<NodeId, TensorId>> compensated_reads() const { return {}; }
 
@@ -617,6 +645,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
     [[nodiscard]] SearchBudget const &budget() const noexcept { return _budget; }
 
   protected:
+    /**
+     * @brief The pass itself: inspect @p graph and change it.
+     *
+     * What a pass implements, and never called directly: @ref run calls it and records what it
+     * changed, and the pipeline calls it on each sub-graph a recursing pass visits.
+     * @param[in,out] graph The graph to optimize.
+     * @return True if the graph was modified, false if no changes were made.
+     */
+    virtual bool transform(Graph &graph) = 0;
+
     /**
      * @brief Emit ``[PassName] message`` to the passes logger when ``_verbosity >= level``.
      *
@@ -764,6 +802,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
 
   private:
     friend EINSUMS_EXPORT bool run_pass_tree(OptimizerPass &pass, Graph &graph);
+    friend class PassManager;
+
+    /// Record on @p graph that this pass changed it, by phase; see @ref run.
+    void note_change(Graph &graph) const;
 
     /// The graphs enclosing the one @ref run was handed, outermost first; empty at the root and
     /// for a pass run directly. Kept by @ref run_pass_tree as it descends.

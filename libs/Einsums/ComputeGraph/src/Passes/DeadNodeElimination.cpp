@@ -55,7 +55,7 @@ void DeadNodeElimination::reset_stats() {
     _pruned_unreported = 0;
 }
 
-bool DeadNodeElimination::run(Graph &graph) {
+bool DeadNodeElimination::transform(Graph &graph) {
     std::unordered_set<void const *> const no_external;
     return run_one(graph, no_external);
 }

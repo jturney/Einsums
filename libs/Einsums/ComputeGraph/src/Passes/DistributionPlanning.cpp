@@ -114,7 +114,7 @@ void DistributionPlanning::reset_stats() {
     _num_replicated  = 0;
 }
 
-bool DistributionPlanning::run(Graph &graph) {
+bool DistributionPlanning::transform(Graph &graph) {
     PassCounter const distributed{_num_distributed};
     PassCounter const replicated{_num_replicated};
     int               num_ranks = comm::world_size();

@@ -84,7 +84,6 @@ class EINSUMS_EXPORT TransferInsertion : public OptimizerPass {
                NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped |
                NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
     }
-    bool run(Graph &graph) override;
     void reset_stats() override;
 
     /// Recurse into loop bodies / conditional branches.
@@ -97,6 +96,9 @@ class EINSUMS_EXPORT TransferInsertion : public OptimizerPass {
 
     /// Number of transfer nodes inserted in the last run.
     [[nodiscard]] size_t num_transfers() const { return _num_transfers; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_transfers{0};

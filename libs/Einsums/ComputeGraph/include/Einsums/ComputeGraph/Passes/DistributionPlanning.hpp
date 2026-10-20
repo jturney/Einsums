@@ -86,11 +86,13 @@ class EINSUMS_EXPORT DistributionPlanning : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
                NodeFeature::RawScalar;
     }
-    bool run(Graph &graph) override;
     void reset_stats() override;
 
     [[nodiscard]] size_t num_distributed() const { return _num_distributed; }
     [[nodiscard]] size_t num_replicated() const { return _num_replicated; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _threshold;

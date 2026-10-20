@@ -65,10 +65,12 @@ class EINSUMS_EXPORT CommunicationElimination : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
                NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::Tiled | NodeFeature::RawScalar;
     }
-    bool run(Graph &graph) override;
     void reset_stats() override;
 
     [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+
+  protected:
+    bool transform(Graph &graph) override;
 
   private:
     size_t _num_eliminated{0};

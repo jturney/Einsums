@@ -255,8 +255,10 @@ expected<void, GraphError> validate_graph_ir(std::string const &path, SpaceRegis
 
 // ── The Python spelling ────────────────────────────────────────────────────
 
-void save_graph_file(Graph const &graph, std::string const &path) {
-    if (auto const done = save_graph(graph, path); !done) {
+void save_graph_file(Graph const &graph, std::string const &path, bool allow_machine_dependent) {
+    SaveOptions options;
+    options.allow_machine_dependent = allow_machine_dependent;
+    if (auto const done = save_graph(graph, path, options); !done) {
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "{}", done.error().message);
     }
 }
