@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/BufferAllocator/MemoryPool.hpp>
 #include <Einsums/GPU/BLAS.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
@@ -1307,9 +1308,18 @@ TEST_CASE("gpu::blas::gemv with strided vectors", "[gpu][blas]") {
 }
 
 // BLAS reads no output when beta is zero, so whatever the output held, NaN included, is overwritten.
+// MPS documents C = alpha*AB + beta*C and makes no such promise. A replayed device GEMM on a macOS CI
+// runner returned NaN for a 256 x 256 output carved by memory::aligned_alloc, which holds leftover
+// bytes, so the case also runs at that size on that memory, which the device reads in place.
 TEST_CASE("gpu::blas::gemm and gemv with beta zero overwrite a NaN output", "[gpu][blas]") {
     EINSUMS_SKIP_WITHOUT_GPU();
-    constexpr int      N   = 32;
+    int const  N         = GENERATE(32, 256);
+    bool const host_side = GENERATE(false, true);
+    if (host_side && !einsums::gpu::has_unified_memory) {
+        SKIP("a discrete device does not read host memory in place");
+    }
+    CAPTURE(N, host_side);
+
     float const        nan = std::numeric_limits<float>::quiet_NaN();
     std::vector<float> A(N * N), x(N), C(N * N, nan), y(N, nan), C_ref(N * N), y_ref(N);
     for (int i = 0; i < N * N; i++)
@@ -1319,10 +1329,11 @@ TEST_CASE("gpu::blas::gemm and gemv with beta zero overwrite a NaN output", "[gp
     einsums::blas::vendor::sgemm('n', 'n', N, N, N, 1.0f, A.data(), N, A.data(), N, 0.0f, C_ref.data(), N);
     einsums::blas::vendor::sgemv('n', N, N, 1.0f, A.data(), N, x.data(), 1, 0.0f, y_ref.data(), 1);
 
-    void *dA = test_malloc(A.size() * sizeof(float));
-    void *dx = test_malloc(x.size() * sizeof(float));
-    void *dC = test_malloc(C.size() * sizeof(float));
-    void *dy = test_malloc(y.size() * sizeof(float));
+    auto  alloc = [&](size_t bytes) { return host_side ? einsums::memory::aligned_alloc(bytes) : test_malloc(bytes); };
+    void *dA    = alloc(A.size() * sizeof(float));
+    void *dx    = alloc(x.size() * sizeof(float));
+    void *dC    = alloc(C.size() * sizeof(float));
+    void *dy    = alloc(y.size() * sizeof(float));
     memcpy_host_to_device(dA, A.data(), A.size() * sizeof(float));
     memcpy_host_to_device(dx, x.data(), x.size() * sizeof(float));
     memcpy_host_to_device(dC, C.data(), C.size() * sizeof(float));
@@ -1335,15 +1346,18 @@ TEST_CASE("gpu::blas::gemm and gemv with beta zero overwrite a NaN output", "[gp
     memcpy_device_to_host(y.data(), dy, y.size() * sizeof(float));
 
     for (int i = 0; i < N * N; i++) {
-        CHECK(C[i] == Catch::Approx(C_ref[i]).margin(1e-4f));
+        CHECK(C[i] == Catch::Approx(C_ref[i]).epsilon(1e-4f).margin(1e-3f));
     }
     for (int i = 0; i < N; i++) {
-        CHECK(y[i] == Catch::Approx(y_ref[i]).margin(1e-4f));
+        CHECK(y[i] == Catch::Approx(y_ref[i]).epsilon(1e-4f).margin(1e-3f));
     }
-    device_free(dA);
-    device_free(dx);
-    device_free(dC);
-    device_free(dy);
+    for (void *p : {dA, dx, dC, dy}) {
+        if (host_side) {
+            einsums::memory::aligned_free(p);
+        } else {
+            device_free(p);
+        }
+    }
 }
 
 #if defined(EINSUMS_HAVE_MPS)

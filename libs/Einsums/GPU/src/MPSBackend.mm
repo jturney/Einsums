@@ -219,6 +219,15 @@ bool mps_gemm_impl(char transa, char transb, int m, int n, int k,
     size_t sizeB = (size_t)ldb * ((transb == 'n' || transb == 'N') ? n : k) * elementSize;
     size_t sizeC = (size_t)ldc * n * elementSize;
 
+    // BLAS reads no C when beta is zero, and callers rely on it: an output carved from an arena or a
+    // freed block holds whatever was there, NaN included. MPS documents C = alpha*AB + beta*C and
+    // makes no such promise, so C is cleared here, column by column to leave the padding past m alone.
+    if (beta == 0.0) {
+        for (int j = 0; j < n; j++) {
+            std::memset(static_cast<std::byte *>(c) + (size_t)j * ldc * elementSize, 0, (size_t)m * elementSize);
+        }
+    }
+
     id<MTLBuffer> bufA = wrap_or_copy(a, sizeA, true);
     id<MTLBuffer> bufB = wrap_or_copy(b, sizeB, true);
     id<MTLBuffer> bufC = wrap_or_copy(c, sizeC, false);
@@ -332,6 +341,11 @@ bool sgemv(char trans, int m, int n,
     size_t sizeA = (size_t)lda * n * sizeof(float);
     size_t sizeX = (transpose ? m : n) * sizeof(float);
     size_t sizeY = (transpose ? n : m) * sizeof(float);
+
+    // As in the GEMM: BLAS reads no y when beta is zero, and MPS makes no such promise.
+    if (beta == 0.0f) {
+        std::memset(y, 0, sizeY);
+    }
 
     id<MTLBuffer> bufA = wrap_or_copy(a, sizeA, true);
     id<MTLBuffer> bufX = wrap_or_copy(x, sizeX, true);
