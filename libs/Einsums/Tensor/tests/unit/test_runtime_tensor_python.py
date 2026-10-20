@@ -106,3 +106,68 @@ def test_dim_size_rank_match_numpy():
     assert t.rank() == arr.ndim == 3
     assert [t.dim(i) for i in range(3)] == list(arr.shape)
     assert t.size == arr.size
+
+
+# ── A tensor with no storage refuses to be read ───────────────────────────
+#
+# A tensor a graph declared has no storage until the graph materializes it, and
+# an intermediate the graph owns gives it up after its last use in a replay.
+# The buffer protocol used to export such a tensor as a null pointer with a full
+# length, which numpy silently replaced with a new uninitialized array on every
+# read, and an element read dereferenced the release sentinel and killed the
+# interpreter with SIGSEGV.
+#
+# pybind11 reports a failed export as a bare BufferError and chains the reason
+# as its cause, which is what a traceback prints first.
+
+
+def _refused_export(tensor):
+    with pytest.raises(BufferError) as raised:
+        np.asarray(tensor)
+    return str(raised.value.__cause__)
+
+
+def _released_intermediate(intermediate):
+    """A 128 KiB K = B B read by one more contraction, replayed once.
+
+    FreeInsertion frees an intermediate of 64 KiB or more after its last reader,
+    so an intermediate K has no storage once execute() returns.
+    """
+    import einsums.graph as cg
+
+    n = 64
+    values = np.random.default_rng(3).standard_normal((n, 4))
+    b = einsums.create_zero_tensor("B", [n, 4])
+    np.asarray(b)[...] = values
+    pairs = einsums.create_zero_tensor("pairs", [n, n])
+    graph = cg.Graph("released")
+    k = graph.declare_tensor("K", [n, n, 4], intermediate)
+    with cg.capture(graph):
+        einsums.einsum("i,j,k <- i,k ; j,k", k, b, b)
+        einsums.einsum("i,j <- i,j,k ; i,k", pairs, k, b)
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    return k, np.einsum("ik,jk->ijk", values, values)
+
+
+def test_a_declared_tensor_with_no_storage_yet_refuses_every_read():
+    import einsums.graph as cg
+
+    deferred = cg.Graph("deferred").declare_tensor("K", [4, 3], True)
+    assert "'K' has no storage" in _refused_export(deferred)
+    with pytest.raises(RuntimeError, match="'K' has no storage"):
+        deferred[0, 0]
+    with pytest.raises(RuntimeError, match="'K' has no storage"):
+        deferred[0, 0] = 1.0
+
+
+def test_an_intermediate_released_after_its_last_use_refuses_every_read():
+    released, _ = _released_intermediate(True)
+    assert "intermediate=False" in _refused_export(released)
+    with pytest.raises(RuntimeError, match="'K' has no storage"):
+        released[0, 0, 0]
+
+
+def test_a_result_the_graph_declared_reads_back_after_execute():
+    kept, want = _released_intermediate(False)
+    np.testing.assert_allclose(np.asarray(kept), want, rtol=0, atol=1e-14)

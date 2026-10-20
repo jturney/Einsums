@@ -64,6 +64,30 @@ Tensor &viewable(Tensor &tensor, char const *what) {
     }
     return tensor;
 }
+
+/**
+ * @brief Returns @p tensor, after checking that it has storage to read or write through.
+ *
+ * A tensor a graph declared has no storage until the graph materializes it, and an intermediate
+ * the graph owns loses it again after its last use in a replay. Its data pointer is then null or a
+ * sentinel: an element read through it faults, and a buffer exported from it is a null pointer
+ * with a full length, which numpy silently replaces with a new uninitialized array.
+ *
+ * @param tensor The tensor to read or write.
+ * @param what What is being done, for the message.
+ * @throws std::logic_error when @p tensor has no storage.
+ */
+template <typename Tensor>
+Tensor &readable(Tensor &tensor, char const *what) {
+    if (!tensor.is_materialized()) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                "{}: tensor '{}' has no storage. A tensor a graph declared has none until the graph "
+                                "materializes it, and an intermediate the graph owns gives it up after its last use in a "
+                                "replay. Declare the tensor with intermediate=False to read it after execute().",
+                                what, tensor.name());
+    }
+    return tensor;
+}
 } // namespace detail
 
 /**
@@ -88,7 +112,7 @@ struct
 APIARY_EXPOSE
 // Each (T, std::allocator<T>) is instantiated individually, as the allocator depends on T.
 APIARY_BUFFER_PROTOCOL
-APIARY_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride, element_type = T)
+APIARY_BUFFER_PROTOCOL_STD(data = exported_data, rank = rank, dim = dim, stride = stride, element_type = T)
 APIARY_ITERATOR_STD(begin = begin, end = end)
 APIARY_INDEX_PROTOCOL_STD(element_type = T, rank = rank, dim = dim, at_element = at_element, set_element = set_element, at_view = at_view, view_type = einsums::RuntimeTensorView<T>)
 APIARY_INSTANTIATE_AS("RuntimeTensorF", GeneralRuntimeTensor<float, std::allocator<float>>)
@@ -493,6 +517,14 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     [[nodiscard]] Pointer data() noexcept { return (_aliased || _storage->external != nullptr) ? _impl.data() : _storage->owned.data(); }
 
     /**
+     * @brief The pointer the buffer protocol exports: data(), for a tensor that has storage.
+     *
+     * @throws std::logic_error when the tensor has none (see @ref detail::readable), rather than
+     *         exporting a null pointer that numpy would replace with an uninitialized array.
+     */
+    [[nodiscard]] Pointer exported_data() { return detail::readable(*this, "buffer export").data(); }
+
+    /**
      * @copydoc data()
      */
     [[nodiscard]] ConstPointer data() const noexcept {
@@ -561,6 +593,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      */
     T at_element(std::vector<std::int64_t> const &idx) const {
         static_assert(!IsDeviceTensor, "at_element() is not supported for device runtime tensors.");
+        detail::readable(*this, "element read");
         return _impl.subscript(idx);
     }
 
@@ -572,6 +605,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      */
     void set_element(std::vector<std::int64_t> const &idx, T value) {
         static_assert(!IsDeviceTensor, "set_element() is not supported for device runtime tensors.");
+        detail::readable(*this, "element write");
         _impl.subscript(idx) = value;
     }
 

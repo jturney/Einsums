@@ -1086,7 +1086,7 @@ def _interp_np_stmts(stmts, m, v, t, dt, key):
             _, kind, op, a, src, cpf, C = s
             pool = m if kind == "m" else t
             letters = _APERM_LETTERS[kind]
-            a = _dtype_scalar(a, np.asarray(pool[C]).dtype)
+            a = _dtype_scalar(a, pool[C].dtype)
             if op is not None and pool[src].size:
                 _note_term(key, abs(a) * float(np.max(np.abs(pool[src]))))
             pool[C] = cast(a * apply_operator(op, letters, pool[src]) + cpf * pool[C])
@@ -1198,7 +1198,7 @@ def _emit_primitive(s, m, v, t):
         _, kind, op, a, src, cpf, C = s
         pool = m if kind == "m" else t
         letters = ",".join(_APERM_LETTERS[kind])
-        a = _dtype_scalar(a, np.asarray(pool[C]).dtype)
+        a = _dtype_scalar(a, pool[C].dtype)
         einsums.permute(f"{letters} <- {operator_prefix(op)}{letters}", pool[C], pool[src], c_pf=cpf, a_pf=a)
     elif k in ("dot", "dotc"):
         _, kind, out, A, B = s
