@@ -987,7 +987,7 @@ void TensorFile::compact(size_t buffer_bytes) {
     detail::close_file(_fd);
     _fd = -1;
     if (detail::file_call({.kind = detail::FileCall::Kind::Rename, .offset = 0, .data = nullptr, .bytes = 0})) {
-        std::filesystem::rename(packed_path, _path, ec);
+        ec = detail::replace_file(packed_path, _path);
     }
     if (!ec) {
         auto const directory = std::filesystem::absolute(_path).parent_path().string();
