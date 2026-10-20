@@ -475,3 +475,64 @@ TEST_CASE("Operation - custom with inputs and no outputs", "[ComputeGraph][Opera
     graph.execute();
     CHECK(trace == Catch::Approx(A(0, 0) + A(1, 1) + A(2, 2)));
 }
+
+// ── Eager operations on a graph's intermediate ─────────────────────────
+//
+// An intermediate's values mean something only while its graph replays: after execute() a pass may
+// have freed it, reused its bytes or held it a tile at a time. A Python read was refused at the
+// buffer export, but an eager operation reached the memory through impl() and read or wrote
+// whatever was there without a word, from C++ and from Python alike.
+
+namespace {
+
+RuntimeTensor<double> ramp(std::string const &name, std::size_t n) {
+    RuntimeTensor<double> out(name, std::vector<std::size_t>{n, n});
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        out.data()[i] = 0.25 * static_cast<double>(i + 1);
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("Operation - an eager op refuses a graph's intermediate outside its replay", "[ComputeGraph][Operations]") {
+    constexpr std::size_t n = 3;
+    auto const            a = ramp("A", n);
+    RuntimeTensor<double> out("out", std::vector<std::size_t>{n, n});
+    RuntimeTensor<double> dst("dst", std::vector<std::size_t>{n, n});
+
+    cg::Graph graph("lease");
+    auto     &scratch = graph.declare_runtime_tensor<double>("K", std::vector<std::size_t>{n, n}, /*intermediate=*/true);
+    auto     &kept    = graph.declare_runtime_tensor<double>("R", std::vector<std::size_t>{n, n}, /*intermediate=*/false);
+    double    inside  = 0.0;
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &scratch, a, a);
+        // Inside the replay the lease is live, so an eager op in a custom node reads K.
+        cg::custom("peek", std::tie(scratch, a), std::tuple<>{}, [&]() { cg::dot(&inside, scratch, a); });
+        cg::einsum("i,j <- i,k ; k,j", &out, scratch, a);
+        cg::einsum("i,j <- i,k ; k,j", &kept, a, a);
+    }
+    graph.optimize();
+    graph.execute();
+
+    RuntimeTensor<double> want("want", std::vector<std::size_t>{n, n});
+    reference_einsum("i,j <- i,k ; k,j", 0.0, &want, 1.0, a, a);
+    double want_dot = 0.0;
+    for (std::size_t i = 0; i < want.size(); ++i) {
+        want_dot += want.data()[i] * a.data()[i];
+    }
+    CHECK(inside == Catch::Approx(want_dot));
+
+    auto const names_the_graph = Catch::Matchers::ContainsSubstring("intermediate of graph 'lease'");
+    CHECK_THROWS_WITH(cg::einsum("i,j <- i,k ; k,j", &dst, scratch, a), names_the_graph);
+    CHECK_THROWS_WITH(cg::einsum("i,j <- i,k ; k,j", &scratch, a, a), names_the_graph);
+    CHECK_THROWS_WITH(cg::scale(2.0, &scratch), names_the_graph);
+    CHECK_THROWS_WITH((void)cg::dot(scratch, a), names_the_graph);
+    // A view shares its parent's storage block, so it carries the same lease.
+    RuntimeTensorView<double> const view(scratch);
+    CHECK_THROWS_WITH(cg::permute("j,i <- i,j", 0.0, &dst, 1.0, view), names_the_graph);
+
+    // A declared result keeps its values, and eager ops use it freely.
+    CHECK_NOTHROW(cg::einsum("i,j <- i,k ; k,j", &dst, kept, a));
+}

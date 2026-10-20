@@ -194,6 +194,33 @@ def test_an_intermediate_no_pass_touched_is_refused_after_execute_too():
     assert "intermediate of graph 'small'" in _refused_export(small)
 
 
+def test_an_eager_op_refuses_an_intermediate_after_execute():
+    # An eager op reaches the memory through the tensor's impl, not the buffer export, so it used
+    # to read and write a stale intermediate without a word.
+    import einsums.graph as cg
+
+    values = np.arange(6.0).reshape(3, 2)
+    a = einsums.create_zero_tensor("A", [3, 2])
+    np.asarray(a)[...] = values
+    total = einsums.create_zero_tensor("total", [3])
+    dst = einsums.create_zero_tensor("dst", [3, 2])
+    row = einsums.create_zero_tensor("row", [2])
+    graph = cg.Graph("eager")
+    small = graph.declare_tensor("S", [3, 2], True)
+    with cg.capture(graph):
+        einsums.einsum("i,j <- i,j ; i,j", small, a, a)
+        einsums.einsum("i <- i,j ; i,j", total, small, a)
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    with pytest.raises(RuntimeError, match="intermediate of graph 'eager'"):
+        einsums.einsum("i,j <- i,j ; i,j", dst, small, a)
+    with pytest.raises(RuntimeError, match="intermediate of graph 'eager'"):
+        einsums.einsum("i,j <- i,j ; i,j", small, a, a)
+    # A slice is a view sharing the intermediate's storage, so it is refused with it.
+    with pytest.raises(RuntimeError, match="intermediate of graph 'eager'"):
+        einsums.einsum("j <- j ; j", row, small[0, :], small[0, :])
+
+
 def test_an_intermediate_reads_inside_the_replay():
     import einsums.graph as cg
 

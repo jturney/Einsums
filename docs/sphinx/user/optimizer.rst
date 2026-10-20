@@ -570,10 +570,12 @@ report says so at every verbosity:
 The other side of the same declaration: an intermediate keeps its values only
 while the graph replays. A pass may free it after its last use, reuse its
 memory for another tensor, or hold it a block at a time, and which of those
-happens depends on its size, the machine and the pipeline. So reading an
-intermediate from Python after ``execute()`` is refused, always, with an error
-that names the tensor and the graph, and a read from inside the replay, such as
-a ``cg.custom`` node, is not. Declare a tensor you read afterwards as a result.
+happens depends on its size, the machine and the pipeline. So using an
+intermediate after ``execute()`` is refused, always, with an error that names
+the tensor and the graph: reading it from Python, and passing it, or a view of
+it, to an eager operation from Python or C++. The same use from inside the
+replay, such as a ``cg.custom`` node, is not refused. Declare a tensor you use
+afterwards as a result.
 A result the graph declared is still the graph's to size: a pass that changes
 the extents of a space, such as a basis truncation, resizes it as it would an
 intermediate.

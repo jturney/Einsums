@@ -59,15 +59,59 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace detail {
+
+/// Refuses @p operand when it is a graph's intermediate and no replay of that graph is running.
+/// Takes a tensor, a pointer to one, or a list of either. A view shares its parent's storage
+/// block, so a view of an intermediate is refused with it. A tiled tensor has no block of its
+/// own and a graph never leases one, so it passes.
+template <typename Operand>
+void refuse_scratch_operand(Operand const &operand, char const *op) {
+    if constexpr (std::is_pointer_v<Operand>) {
+        if (operand != nullptr) {
+            refuse_scratch_operand(*operand, op);
+        }
+    } else if constexpr (requires { operand.storage(); }) {
+        einsums::detail::refuse_if_scratch(operand, op);
+    } else if constexpr (TiledTensorConcept<Operand>) {
+        return;
+    } else if constexpr (std::ranges::range<Operand>) {
+        for (auto const &element : operand) {
+            refuse_scratch_operand(element, op);
+        }
+    } else if constexpr (requires { std::tuple_size<Operand>::value; }) {
+        std::apply([op](auto const &...elements) { (refuse_scratch_operand(elements, op), ...); }, operand);
+    } else {
+        static_assert(sizeof(Operand) == 0, "refuse_scratch_operand: not a tensor, a pointer to one, or a list or tuple of them");
+    }
+}
+
+/// Whether an operation runs now rather than being recorded: true outside a capture, after
+/// refusing any of @p operands that is a graph's intermediate outside that graph's replay.
+///
+/// Every eager branch goes through this, so an eager call reads and writes only values that
+/// outlive execute(). Inside a replay (a custom node's body) the lease is live and nothing is
+/// refused.
+template <typename... Operands>
+[[nodiscard]] bool runs_eagerly(CaptureContext const &ctx, char const *op, Operands const &...operands) {
+    if (ctx.is_capturing()) {
+        return false;
+    }
+    (refuse_scratch_operand(operands, op), ...);
+    return true;
+}
+
 /// Guard for the returning-form ops (dot/svd/syev/qr/det/...), which build and
 /// return a fresh result tensor and therefore cannot run inside graph capture.
-/// Throws std::logic_error carrying @p message when a capture is active; a no-op
-/// otherwise. Centralizes the identical `if (is_capturing()) throw ...` guard
+/// Throws std::logic_error carrying @p message when a capture is active. Outside
+/// one the op runs now, so @p operands are refused as @ref runs_eagerly refuses
+/// them. Centralizes the identical `if (is_capturing()) throw ...` guard
 /// that each returning-form overload would otherwise open-code.
-inline void reject_if_capturing(char const *message) {
+template <typename... Operands>
+void reject_if_capturing(char const *message, char const *op, Operands const &...operands) {
     if (CaptureContext::current().is_capturing()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "{}", message);
     }
+    (refuse_scratch_operand(operands, op), ...);
 }
 
 /// A dense rank-2 copy of @p A, which the returning-form LAPACK wrappers need
@@ -222,7 +266,7 @@ void scale(typename AType::ValueType factor, AType *A) {
         // (the einsum-rewriting passes don't apply to a tiled per-tile op).
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::scale", A)) {
             WAGGLE_ZONE("scale eager");
             detail::tiled_scale<T>(factor, A);
             return;
@@ -248,7 +292,7 @@ void scale(typename AType::ValueType factor, AType *A) {
         static_assert(detail::ImplBackedTensor<AType>, "cg::scale: a non-tiled operand must be a dense tensor, view or runtime tensor");
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::scale", A)) {
             detail::eager_scale<T>(factor, A->impl());
             return;
         }
@@ -287,7 +331,7 @@ void conj(AType *A) {
     if constexpr (TiledTensorConcept<AType>) {
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::conj", A)) {
             WAGGLE_ZONE("conj eager");
             detail::tiled_conj<T>(A);
             return;
@@ -304,7 +348,7 @@ void conj(AType *A) {
         static_assert(detail::ImplBackedTensor<AType>, "cg::conj: a non-tiled operand must be a dense tensor, view or runtime tensor");
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::conj", A)) {
             detail::eager_conj<T>(A->impl());
             return;
         }
@@ -338,7 +382,7 @@ void complex_part_op(ResultType *out, AType const &A) {
                 tiled_abs(a, o);
             }
         };
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, name[index], out, A)) {
             WAGGLE_ZONE(eager[index]);
             kernel(A, out);
             return;
@@ -352,7 +396,7 @@ void complex_part_op(ResultType *out, AType const &A) {
         ctx.record(OpKind::Custom, name[index], {a_id}, {r_id}, std::move(executor));
     } else if constexpr (std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>) {
         using T = typename AType::ValueType;
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, name[index], out, A)) {
             eager_complex_part<T>(Part, A.impl(), out->impl());
             return;
         }
@@ -378,7 +422,7 @@ void complex_part_op(ResultType *out, AType const &A) {
                 einsums::detail::impl_scal(typename ResultType::ValueType{0}, o->impl());
             }
         };
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, name[index], out, A)) {
             WAGGLE_ZONE(eager[index]);
             compute(out, &A);
             return;
@@ -502,7 +546,7 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
                                     "cg::permute: a permutation operator is not supported on tiled operands (spec '{}')", parsed.raw);
         }
         auto &tctx = CaptureContext::current();
-        if (!tctx.is_capturing()) {
+        if (detail::runs_eagerly(tctx, "cg::permute", C, A)) {
             WAGGLE_ZONE("permute eager");
             detail::tiled_permute(parsed, beta, C, alpha, A);
             return;
@@ -532,7 +576,7 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
         return;
     } else {
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::permute", C, A)) {
             detail::eager_permute<T>(parsed, beta, C->impl(), alpha, A.impl());
             return;
         }
@@ -605,7 +649,7 @@ void transpose(CType *C, AType const &A) {
                   "cg::transpose: operands must be dense tensors, views or runtime tensors");
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::transpose", C, A)) {
         detail::eager_transpose<T>(C->impl(), A.impl());
         return;
     }
@@ -687,7 +731,7 @@ void block_copy(DstType *dst, SrcType const &src, std::vector<size_t> dst_offset
 
     using T   = typename DstType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::block_copy", dst, src)) {
         detail::eager_block_copy<T>(dst->impl(), src.impl(), dst_offsets, src_offsets, extents);
         return;
     }
@@ -819,7 +863,7 @@ void gather(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> c
 
     using T   = typename DstType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::gather", dst, src)) {
         detail::eager_gather<T>(dst->impl(), src.impl(), indices, extents, dst_axis);
         return;
     }
@@ -878,7 +922,7 @@ void scatter_into(DstType *dst, SrcType const &src, std::vector<std::vector<size
 
     using T   = typename DstType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, who, dst, src)) {
         eager_scatter<T>(Accumulate, dst->impl(), src.impl(), indices, extents);
         return;
     }
@@ -975,7 +1019,7 @@ void sqrt(ResultType *out, AType const &A) {
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::sqrt", out, A)) {
         detail::eager_sqrt<T>(A.impl(), out->impl());
         return;
     }
@@ -1039,7 +1083,7 @@ void sum_axes(ResultType *out, AType const &A, std::vector<size_t> axes) {
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::sum_axes", out, A)) {
         detail::eager_sum_axes<T>(out->impl(), A.impl(), kept);
         return;
     }
@@ -1093,7 +1137,7 @@ void reshape(ResultType *out, AType const &A, bool row_major) {
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::reshape", out, A)) {
         detail::eager_reshape<T>(out->impl(), A.impl(), row_major);
         return;
     }
@@ -1137,7 +1181,7 @@ void diagonal(ResultType *out, AType const &A) {
 
     using T   = typename ResultType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::diagonal", out, A)) {
         detail::eager_diagonal<T>(A.impl(), out->impl());
         return;
     }
@@ -1191,7 +1235,7 @@ template <CoreTensorConcept CType, typename UnaryOperator>
     requires BasicTensorConcept<CType> && RankTensorConcept<CType> && (!std::convertible_to<UnaryOperator, std::string_view>)
 void element_transform(CType *C, UnaryOperator unary_op) {
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::element_transform", C)) {
         WAGGLE_ZONE("element_transform eager");
         detail::dense_element_transform(C, unary_op);
         return;
@@ -1214,7 +1258,7 @@ template <TiledTensorConcept CType, typename UnaryOperator>
     requires(!std::convertible_to<UnaryOperator, std::string_view>)
 void element_transform(CType *C, UnaryOperator unary_op) {
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::element_transform", C)) {
         WAGGLE_ZONE("element_transform eager");
         detail::tiled_element_transform(C, unary_op);
         return;
@@ -1261,7 +1305,7 @@ template <CoreBasicTensorConcept CType>
 void element_transform(CType *C, std::string_view op_name, std::optional<double> param = std::nullopt) {
     using T   = typename CType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::element_transform", C)) {
         detail::eager_element_transform<T>(C->impl(), op_name, param);
         return;
     }
@@ -1375,7 +1419,7 @@ void element_transform_python(TensorType *C, std::function<typename TensorType::
     };
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::element_transform", C)) {
         WAGGLE_ZONE("element_transform_python eager");
         run(C);
         return;
@@ -1424,7 +1468,7 @@ APIARY_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<std::complex<double>>)
 void shift(typename AType::ValueType beta, AType *A) {
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::shift", A)) {
         detail::eager_shift<T>(beta, A->impl());
         return;
     }
@@ -1479,7 +1523,7 @@ void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
                       "cg::axpy with a tiled operand requires both X and Y to be TiledRuntimeTensor");
         using T   = typename XType::ValueType;
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::axpy", X, Y)) {
             WAGGLE_ZONE("axpy eager");
             detail::tiled_axpy<T>(alpha, X, Y);
             return;
@@ -1508,7 +1552,7 @@ void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
                       "cg::axpy: non-tiled operands must be dense tensors, views or runtime tensors");
         using T   = typename XType::ValueType;
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::axpy", X, Y)) {
             detail::eager_axpy<T>(alpha, X.impl(), Y->impl());
             return;
         }
@@ -1576,7 +1620,7 @@ void axpby(typename XType::ValueType alpha, XType const &X, typename XType::Valu
                       "cg::axpby: non-tiled operands must be dense tensors, views or runtime tensors");
         using T   = typename XType::ValueType;
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::axpby", X, Y)) {
             detail::eager_axpby<T>(alpha, X.impl(), beta, Y->impl());
             return;
         }
@@ -1661,7 +1705,7 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C)
     using T       = typename AType::ValueType;
     char const ta = TransA ? 't' : 'n', tb = TransB ? 't' : 'n';
     auto      &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::gemm", A, B, C)) {
         detail::eager_gemm<T>(ta, tb, static_cast<T>(alpha), A.impl(), nullptr, B.impl(), nullptr, static_cast<T>(beta), C->impl());
         return;
     }
@@ -1733,7 +1777,7 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C,
                   "the dense-operand path is the only one; non-dense operands cannot be captured");
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::gemm", A, B, C)) {
         detail::eager_gemm<T>(ta, tb, static_cast<T>(alpha), A.impl(), detail::symmetry_of(A), B.impl(), detail::symmetry_of(B),
                               static_cast<T>(beta), C->impl());
         return;
@@ -1809,7 +1853,7 @@ void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y)
     using T        = typename AType::ValueType;
     char const ta  = TransA ? 't' : 'n';
     auto      &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::gemv", A, z, y)) {
         detail::eager_gemv<T>(ta, static_cast<T>(alpha), A.impl(), z.impl(), static_cast<T>(beta), y->impl());
         return;
     }
@@ -1876,7 +1920,7 @@ void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y,
 
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::gemv", A, z, y)) {
         detail::eager_gemv<T>(ta, static_cast<T>(alpha), A.impl(), z.impl(), static_cast<T>(beta), y->impl());
         return;
     }
@@ -1949,7 +1993,7 @@ void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType 
                   "the dense-operand path is the only one; non-dense operands cannot be captured");
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::ger", X, Y, A)) {
         detail::eager_ger<T>(false, alpha, X.impl(), Y.impl(), A->impl());
         return;
     }
@@ -1995,7 +2039,7 @@ void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType
 
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::gerc", X, Y, A)) {
         detail::eager_ger<T>(true, alpha, X.impl(), Y.impl(), A->impl());
         return;
     }
@@ -2043,7 +2087,8 @@ APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,  
 // clang-format on
 auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
     detail::reject_if_capturing("cg::dot(A, B) returning scalar cannot be used during graph capture. "
-                                "Use cg::einsum(\" <- i ; i\", &result, A, B) instead.");
+                                "Use cg::einsum(\" <- i ; i\", &result, A, B) instead.",
+                                "cg::dot", A, B);
     // A reduction's summation order is its thread count's, so an unfenced dot is a function of the machine as well as of
     // the operands. See @ref blas::SerialVendorScope.
     blas::SerialVendorScope const serial;
@@ -2066,7 +2111,7 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
     // typed kernel and a capture-baked closure, and report as blockers.
     if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && std::is_same_v<typename AType::ValueType, ResultT> &&
                   std::is_same_v<typename BType::ValueType, ResultT>) {
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::dot", A, B)) {
             *result = detail::eager_dot<ResultT>(A.impl(), B.impl(), false);
             return;
         }
@@ -2076,7 +2121,7 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
         // Rank is keyed on the destination, which is a registered scalar: 0.
         detail::capture_dot<ResultT>(ctx, false, a_id, b_id, r_id, 0);
     } else {
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::dot", A, B)) {
             WAGGLE_ZONE("dot eager");
             // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
             blas::SerialVendorScope const serial;
@@ -2119,7 +2164,7 @@ void dot_into(ResultType *result, AType const &A, BType const &B) {
             return tiled_dot<Conj, T>(a, b);
         };
 
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, Conj ? "cg::dotc" : "cg::dot", result, A, B)) {
             WAGGLE_ZONE(Conj ? "dotc_python eager" : "dot_python eager");
             result->data()[0] = compute(A, B);
             return;
@@ -2140,7 +2185,7 @@ void dot_into(ResultType *result, AType const &A, BType const &B) {
         td.conjugated = Conj;
         ctx.record(OpKind::Dot, Conj ? "dotc" : "dot", {a_id, b_id}, {r_id}, std::move(executor), std::move(td));
     } else {
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, Conj ? "cg::dotc" : "cg::dot", result, A, B)) {
             result->data()[0] = eager_dot<T>(A.impl(), B.impl(), Conj);
             return;
         }
@@ -2305,7 +2350,7 @@ void sum_python(ResultType *result, AType const &A) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::sum: result tensor must have at least one element");
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::sum", result, A)) {
         result->data()[0] = detail::eager_sum<T>(A.impl());
         return;
     }
@@ -2335,7 +2380,7 @@ void max_python(ResultType *result, AType const &A) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::max: cannot reduce an empty tensor");
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::max", result, A)) {
         result->data()[0] = detail::eager_max<T>(A.impl());
         return;
     }
@@ -2397,7 +2442,7 @@ void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
                   "cg::direct_product: operands must be dense tensors, views or runtime tensors");
     using E   = typename CType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::direct_product", A, B, C)) {
         if constexpr (std::is_same_v<typename AType::ValueType, E> && std::is_same_v<typename BType::ValueType, E>) {
             detail::eager_direct_product<E>(static_cast<E>(alpha), A.impl(), B.impl(), static_cast<E>(beta), C->impl());
         } else {
@@ -2470,7 +2515,7 @@ void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) 
         static_assert(TiledTensorConcept<AType> && TiledTensorConcept<BType> && TiledTensorConcept<CType>,
                       "cg::direct_division with a tiled operand requires all of A, B, C to be TiledRuntimeTensor");
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::direct_division", A, B, C)) {
             WAGGLE_ZONE("direct_division eager");
             detail::tiled_direct_division<T>(alpha, A, B, beta, C);
             return;
@@ -2501,7 +2546,7 @@ void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) 
                       "cg::direct_division: non-tiled operands must be dense tensors, views or runtime tensors");
         using E   = typename CType::ValueType;
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::direct_division", A, B, C)) {
             if constexpr (std::is_same_v<typename AType::ValueType, E> && std::is_same_v<typename BType::ValueType, E>) {
                 detail::eager_direct_division<E>(static_cast<E>(alpha), A.impl(), B.impl(), static_cast<E>(beta), C->impl());
             } else {
@@ -2607,7 +2652,7 @@ void outer_sum(ResultType *result, std::vector<VectorType const *> vectors, std:
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::outer_sum", result, vectors)) {
         std::vector<einsums::detail::TensorImpl<T> const *> impls(N);
         for (size_t k = 0; k < N; ++k)
             impls[k] = &vectors[k]->impl();
@@ -2833,7 +2878,7 @@ void batched_gemm(double alpha, std::vector<AType const *> a_list, std::vector<B
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::batched_gemm", a_list, b_list, c_list)) {
         std::vector<void const *> a_vs(count), b_vs(count);
         std::vector<void *>       c_vs(count);
         for (size_t i = 0; i < count; ++i) {
@@ -2968,7 +3013,7 @@ void batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::batched_gemm_blocked", a_list, b_list, c_base)) {
         std::vector<void const *> a_vs(count), b_vs(count);
         std::vector<void *>       c_vs(count);
         T                        *base = c_base->data();
@@ -3230,7 +3275,7 @@ void grouped_batched_gemm(double alpha, std::vector<AType const *> a_list, std::
     detail::require_distinct_destinations(c_list, "cg::grouped_batched_gemm");
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::grouped_batched_gemm", a_list, b_list, c_list)) {
         std::vector<void const *> a_vs(count), b_vs(count);
         std::vector<void *>       c_vs(count);
         for (size_t i = 0; i < count; ++i) {
@@ -3386,7 +3431,7 @@ void grouped_batched_gemm_blocked(double alpha, std::vector<AType const *> a_lis
     d.blocked      = true;
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::grouped_batched_gemm_blocked", a_list, b_list, c_bases)) {
         std::vector<void const *> a_vs(count), b_vs(count);
         std::vector<void *>       c_vs(count);
         for (size_t i = 0; i < count; ++i) {
@@ -3546,7 +3591,7 @@ void grouped_dot(std::vector<ResultType *> results, std::vector<AType const *> a
 
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::grouped_dot", results, a_list, b_list)) {
         auto const r = detail::impls_of(results);
         auto const a = detail::impls_of(a_list);
         auto const b = detail::impls_of(b_list);
@@ -3646,7 +3691,7 @@ void grouped_axpby(std::vector<double> alphas, std::vector<XType const *> x_list
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::grouped_axpby", x_list, y_list)) {
         auto const x = detail::impls_of(x_list);
         auto const y = detail::impls_of(y_list);
         detail::eager_grouped_axpby<T>(a_typed, x, b_typed, y);
@@ -3763,7 +3808,7 @@ void grouped_permute(std::string const &spec, std::vector<CType *> c_list, std::
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::grouped_permute", c_list, a_list)) {
         auto const c = detail::impls_of(c_list);
         auto const a = detail::impls_of(a_list);
         detail::eager_grouped_permute<T>(parsed, c_typed, c, a_typed, a);
@@ -3811,7 +3856,7 @@ void grouped_binary_elementwise(char const *who, OpKind kind, char const *label,
     require_distinct_destinations(c_list, who);
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, who, a_list, b_list, c_list)) {
         auto const a = detail::impls_of(a_list);
         auto const b = detail::impls_of(b_list);
         auto const c = detail::impls_of(c_list);
@@ -4025,7 +4070,7 @@ void grouped_sandwich(std::vector<CType *> c_list, std::vector<AType const *> a_
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::grouped_sandwich", c_list, a_list, m_list, p_list, s_list)) {
         auto const c = detail::impls_of(c_list);
         auto const a = detail::impls_of(a_list);
         auto const m = detail::impls_of(m_list);
@@ -4154,7 +4199,7 @@ void grouped_gather_rotate(std::vector<CType *> c_list, SrcType const &src, std:
     detail::require_distinct_destinations(c_list, "cg::grouped_gather_rotate");
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::grouped_gather_rotate", c_list, src, x_list)) {
         auto const c = detail::impls_of(c_list);
         auto const x = detail::impls_of(x_list);
         detail::eager_grouped_gather_rotate<T>(c, src.impl(), x, q_list, u_list);
@@ -4179,7 +4224,7 @@ APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<std::complex<float>,
 APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 // clang-format on
 auto norm(linear_algebra::Norm norm_type, AType const &A) -> RemoveComplexT<typename AType::ValueType> {
-    detail::reject_if_capturing("cg::norm() returning scalar cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::norm() returning scalar cannot be used during graph capture.", "cg::norm", A);
     // A reduction's summation order is its thread count's, so an unfenced norm is a function of the machine as well as of
     // the operands. See @ref blas::SerialVendorScope.
     blas::SerialVendorScope const serial;
@@ -4192,7 +4237,7 @@ void norm(RemoveComplexT<typename AType::ValueType> *result, linear_algebra::Nor
     if constexpr (CoreBasicTensorConcept<AType>) {
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::norm", A)) {
             *result = detail::eager_norm<T>(static_cast<char>(norm_type), A.impl());
             return;
         }
@@ -4201,7 +4246,7 @@ void norm(RemoveComplexT<typename AType::ValueType> *result, linear_algebra::Nor
         detail::capture_norm<T>(ctx, static_cast<char>(norm_type), a_ref, r_id, result);
     } else {
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::norm", A)) {
             WAGGLE_ZONE("norm eager");
             // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
             blas::SerialVendorScope const serial;
@@ -4272,7 +4317,7 @@ void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const
     if constexpr (!TiledTensorConcept<AType>) {
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::norm", result, A)) {
             result->data()[0] = detail::eager_norm<T>(static_cast<char>(norm_type), A.impl());
             return;
         }
@@ -4291,7 +4336,7 @@ void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const
         };
 
         auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::norm", result, A)) {
             WAGGLE_ZONE("norm_python eager");
             result->data()[0] = compute(norm_type, A);
             return;
@@ -4330,7 +4375,8 @@ void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const
 template <MatrixConcept AType>
 auto trace(AType const &A) -> typename AType::ValueType {
     detail::reject_if_capturing("cg::trace(A) returning scalar cannot be used during graph capture. "
-                                "Use cg::trace(&result, A) instead.");
+                                "Use cg::trace(&result, A) instead.",
+                                "cg::trace", A);
     if (A.dim(0) != A.dim(1))
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
     return detail::diagonal_sum(A);
@@ -4352,7 +4398,8 @@ APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double
 // clang-format on
 auto trace(AType const &A) -> typename AType::ValueType {
     detail::reject_if_capturing("cg::trace(A) returning scalar cannot be used during graph capture. "
-                                "Use cg::trace(&result, A) instead.");
+                                "Use cg::trace(&result, A) instead.",
+                                "cg::trace", A);
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::trace: input must be rank-2; got rank {}.", A.rank());
     }
@@ -4376,7 +4423,7 @@ void trace(typename AType::ValueType *result, AType const &A) {
     // Dense operands only: a block or tiled matrix has no single buffer for the
     // rank-erased diagonal walk, and keeps the typed sum and a capture-baked closure.
     static_assert(CoreBasicTensorConcept<AType>, "the dense-operand path is the only one; non-dense operands cannot be captured");
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::trace", A)) {
         *result = detail::eager_trace<T>(A.impl());
         return;
     }
@@ -4437,7 +4484,7 @@ void trace_python(ResultType *result, AType const &A) {
 
     auto &ctx = CaptureContext::current();
     if constexpr (TiledTensorConcept<AType>) {
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::trace", result, A)) {
             WAGGLE_ZONE("trace_python eager");
             result->data()[0] = detail::tiled_trace<T>(A);
             return;
@@ -4455,7 +4502,7 @@ void trace_python(ResultType *result, AType const &A) {
 
         ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor));
     } else {
-        if (!ctx.is_capturing()) {
+        if (detail::runs_eagerly(ctx, "cg::trace", result, A)) {
             result->data()[0] = detail::eager_trace<T>(A.impl());
             return;
         }
@@ -4537,7 +4584,7 @@ void symm_gemm(AType const &A, BType const &B, CType *C, bool conjugate = false)
         }
     };
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::symm_gemm", A, B, C)) {
         WAGGLE_ZONE("symm_gemm eager");
         run(A, B, C);
         return;
@@ -4578,7 +4625,7 @@ void eigh_dense(char const *who, AType *A, WType *W) {
                   "the dense-operand path is the only one; non-dense operands cannot be captured");
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, who, A, W)) {
         eager_syev<T>(ComputeEigenvectors, A->impl(), W->impl());
         return;
     }
@@ -4600,7 +4647,7 @@ void eigh_tiled(AType *A, WType *W) {
         }
     };
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, Hermitian ? "cg::heev" : "cg::syev", A, W)) {
         WAGGLE_ZONE(Hermitian ? "heev eager" : "syev eager");
         kernel(A, W);
         return;
@@ -4651,7 +4698,8 @@ template <bool ComputeEigenvectors = true, MatrixConcept AType>
     requires(NotComplex<AType>)
 auto syev(AType const &A) -> std::tuple<RemoveViewT<AType>, BasicTensorLike<AType, typename AType::ValueType, 1>> {
     detail::reject_if_capturing("cg::syev(A) returning form cannot be used during graph capture. "
-                                "Use the in-place form cg::syev(&A, &W) with pre-allocated tensors instead.");
+                                "Use the in-place form cg::syev(&A, &W) with pre-allocated tensors instead.",
+                                "cg::syev", A);
     return linear_algebra::syev<ComputeEigenvectors>(A);
 }
 
@@ -4673,7 +4721,8 @@ APIARY_INSTANTIATE_BOOLS("syev_eig", einsums::GeneralRuntimeTensor<double, std::
 std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
            einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> syev_eig(AType const &A) {
     detail::reject_if_capturing("cg::syev(A) returning form cannot be used during graph capture. "
-                                "Use the in-place form cg::syev(&A, &W) instead.");
+                                "Use the in-place form cg::syev(&A, &W) instead.",
+                                "cg::syev", A);
     if (A.rank() != 2 || A.dim(0) != A.dim(1)) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::syev requires square rank-2 input; got dims ({}, {}).", A.rank() >= 1 ? A.dim(0) : 0,
                                 A.rank() >= 2 ? A.dim(1) : 0);
@@ -4802,7 +4851,7 @@ auto gesv(AType *A, BType *B) -> int {
                   "the dense-operand path is the only one; non-dense operands cannot be captured");
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::gesv", A, B)) {
         return detail::eager_gesv<T>(A->impl(), B->impl());
     }
     auto const a_ref = ctx.get_slot(*A);
@@ -4856,7 +4905,7 @@ auto getrf(AType *A, LuPivots *pivots) -> int {
     static_assert(CoreBasicTensorConcept<AType>, "the dense-operand path is the only one; non-dense operands cannot be captured");
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::getrf", A)) {
         return detail::eager_getrf<T>(A->impl(), *pivots);
     }
     detail::capture_getrf<T>(ctx, ctx.get_slot(*A), *pivots);
@@ -4894,7 +4943,7 @@ auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
                   "the dense-operand path is the only one; non-dense operands cannot be captured");
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::getrs", A, B)) {
         return detail::eager_getrs<T>(A.impl(), pivots, B->impl());
     }
     auto const a_ref = ctx.get_slot(A);
@@ -4998,7 +5047,7 @@ void diis_step(std::shared_ptr<DiisAccelerator<T>> const &accelerator) {
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::diis_step")) {
         WAGGLE_ZONE("diis_step eager");
         accelerator->step();
         return;
@@ -5051,7 +5100,7 @@ void invert(AType *A) {
     static_assert(CoreBasicTensorConcept<AType>, "the dense-operand path is the only one; non-dense operands cannot be captured");
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::invert", A)) {
         detail::eager_invert<T>(A->impl());
         return;
     }
@@ -5064,7 +5113,7 @@ void invert(AType *A) {
 
 template <MatrixConcept AType>
 auto svd(AType const &A) {
-    detail::reject_if_capturing("cg::svd(A) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::svd(A) returning form cannot be used during graph capture.", "cg::svd", A);
     return linear_algebra::svd(A);
 }
 
@@ -5087,7 +5136,7 @@ auto svd(AType const &A) -> std::tuple<
     einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
     einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
     einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
-    detail::reject_if_capturing("cg::svd(A) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::svd(A) returning form cannot be used during graph capture.", "cg::svd", A);
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::svd requires rank-2 input; got rank {}.", A.rank());
     }
@@ -5112,7 +5161,7 @@ auto svd(AType const &A) -> std::tuple<
 
 template <MatrixConcept AType>
 auto svd_dd(AType const &A, linear_algebra::Vectors job = linear_algebra::Vectors::ALL) {
-    detail::reject_if_capturing("cg::svd_dd(A) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::svd_dd(A) returning form cannot be used during graph capture.", "cg::svd_dd", A);
     return linear_algebra::svd_dd(A, job);
 }
 
@@ -5136,7 +5185,7 @@ auto svd_dd(AType const &A, linear_algebra::Vectors job = linear_algebra::Vector
     einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
     einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
     einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
-    detail::reject_if_capturing("cg::svd_dd(A) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::svd_dd(A) returning form cannot be used during graph capture.", "cg::svd_dd", A);
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::svd_dd requires rank-2 input; got rank {}.", A.rank());
     }
@@ -5161,7 +5210,7 @@ auto svd_dd(AType const &A, linear_algebra::Vectors job = linear_algebra::Vector
 
 template <MatrixConcept AType>
 auto truncated_svd(AType const &A, size_t k) {
-    detail::reject_if_capturing("cg::truncated_svd(A, k) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::truncated_svd(A, k) returning form cannot be used during graph capture.", "cg::truncated_svd", A);
     return linear_algebra::truncated_svd(A, k);
 }
 
@@ -5189,7 +5238,7 @@ auto truncated_svd(AType const &A, size_t k) -> std::tuple<
     einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
     einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
     einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
-    detail::reject_if_capturing("cg::truncated_svd(A, k) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::truncated_svd(A, k) returning form cannot be used during graph capture.", "cg::truncated_svd", A);
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::truncated_svd requires rank-2 input; got rank {}.", A.rank());
     }
@@ -5212,7 +5261,7 @@ auto truncated_svd(AType const &A, size_t k) -> std::tuple<
 template <MatrixConcept AType>
     requires(NotComplex<AType>)
 auto truncated_syev(AType const &A, size_t k) {
-    detail::reject_if_capturing("cg::truncated_syev(A, k) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::truncated_syev(A, k) returning form cannot be used during graph capture.", "cg::truncated_syev", A);
     return linear_algebra::truncated_syev(A, k);
 }
 
@@ -5240,7 +5289,7 @@ APIARY_INSTANTIATE_AS("truncated_syev", einsums::GeneralRuntimeTensor<double, st
 auto truncated_syev(AType const &A, size_t k)
     -> std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
                   einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
-    detail::reject_if_capturing("cg::truncated_syev(A, k) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::truncated_syev(A, k) returning form cannot be used during graph capture.", "cg::truncated_syev", A);
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::truncated_syev requires rank-2 input; got rank {}.", A.rank());
     }
@@ -5260,7 +5309,7 @@ auto truncated_syev(AType const &A, size_t k)
 
 template <MatrixConcept AType>
 auto qr(AType const &A) {
-    detail::reject_if_capturing("cg::qr(A) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::qr(A) returning form cannot be used during graph capture.", "cg::qr", A);
     return linear_algebra::qr(A);
 }
 
@@ -5280,7 +5329,7 @@ APIARY_INSTANTIATE_AS("qr", einsums::GeneralRuntimeTensor<std::complex<double>, 
 // clang-format on
 auto qr(AType const &A) -> std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
                                       einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
-    detail::reject_if_capturing("cg::qr(A) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::qr(A) returning form cannot be used during graph capture.", "cg::qr", A);
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::qr requires rank-2 input; got rank {}.", A.rank());
     }
@@ -5301,7 +5350,7 @@ auto qr(AType const &A) -> std::tuple<einsums::GeneralRuntimeTensor<typename ATy
 template <MatrixConcept AType>
 auto pow(AType const &A, typename AType::ValueType alpha,
          typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon()) -> RemoveViewT<AType> {
-    detail::reject_if_capturing("cg::pow(A, alpha) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::pow(A, alpha) returning form cannot be used during graph capture.", "cg::pow", A);
     return linear_algebra::pow(A, alpha, cutoff);
 }
 
@@ -5323,7 +5372,7 @@ APIARY_INSTANTIATE_AS("pow", einsums::GeneralRuntimeTensor<double, std::allocato
 auto pow(AType const &A, typename AType::ValueType alpha,
          typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon())
     -> einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>> {
-    detail::reject_if_capturing("cg::pow(A, alpha) returning form cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::pow(A, alpha) returning form cannot be used during graph capture.", "cg::pow", A);
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::pow requires rank-2 input; got rank {}.", A.rank());
     }
@@ -5343,7 +5392,7 @@ auto pow(AType const &A, typename AType::ValueType alpha,
 
 template <MatrixConcept AType>
 auto det(AType const &A) -> typename AType::ValueType {
-    detail::reject_if_capturing("cg::det(A) returning scalar cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::det(A) returning scalar cannot be used during graph capture.", "cg::det", A);
     return linear_algebra::det(A);
 }
 
@@ -5362,7 +5411,7 @@ APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<std::complex<float>, 
 APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 // clang-format on
 auto det(AType const &A) -> typename AType::ValueType {
-    detail::reject_if_capturing("cg::det(A) returning scalar cannot be used during graph capture.");
+    detail::reject_if_capturing("cg::det(A) returning scalar cannot be used during graph capture.", "cg::det", A);
     if (A.rank() != 2 || A.dim(0) != A.dim(1)) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::det requires square rank-2 input; got rank {}.", A.rank());
     }
@@ -5520,7 +5569,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     auto parsed = detail::prepare_einsum(spec, A, B, *C, conj_a, conj_b);
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::einsum", C, A, B)) {
         WAGGLE_ZONE("einsum eager");
         // Through the library, on the operands' TensorImpls: this file compiles no einsum engine.
         dispatch::erased_string_einsum<T>(parsed, c_pf, C->impl(), ab_pf, A.impl(), B.impl(), conj_a, conj_b);
@@ -5576,7 +5625,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::einsum", C, A, B)) {
         WAGGLE_ZONE("einsum eager");
         detail::tiled_runtime_einsum<T>(parsed, c_pf, C, ab_pf, A, B);
         return;
@@ -5688,7 +5737,7 @@ void einsum(EinsumFormatString spec, typename CType::ValueType c_pf, CType *C,
     }
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::einsum", C, A, B)) {
         WAGGLE_ZONE("einsum eager (mixed precision)");
         dispatch::erased_mixed_string_einsum<typename CType::ValueType, typename AType::ValueType, typename BType::ValueType>(
             parsed, c_pf, C->impl(), ab_pf, A.impl(), B.impl(), conj_a, conj_b);
@@ -5841,7 +5890,7 @@ template <typename F, CoreBasicTensorConcept... ReadTensors, CoreBasicTensorConc
 void parallel_for(std::string name, size_t begin, size_t end, F &&body, std::tuple<ReadTensors const *...> reads,
                   std::tuple<WriteTensors *...> writes) {
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::parallel_for", reads, writes)) {
         WAGGLE_ZONE("parallel_for eager");
         task_pool::TaskPool::get_singleton().parallel_for(name, begin, end, std::forward<F>(body));
         return;
@@ -5879,7 +5928,7 @@ void parallel_for(std::string name, size_t begin, size_t end, F &&body, std::tup
 template <typename F, CoreBasicTensorConcept... TensorTypes>
 void parallel_for(std::string name, size_t begin, size_t end, F &&body, TensorTypes *...tensors) {
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::parallel_for", tensors...)) {
         WAGGLE_ZONE("parallel_for eager");
         task_pool::TaskPool::get_singleton().parallel_for(name, begin, end, std::forward<F>(body));
         return;
@@ -5917,7 +5966,7 @@ template <typename Acc, typename InitFactory, typename Body, typename Combiner, 
 void parallel_reduce(std::string name, size_t begin, size_t end, Acc *result, InitFactory &&init, Body &&body, Combiner &&combine,
                      TensorTypes *...tensors) {
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::parallel_reduce", tensors...)) {
         WAGGLE_ZONE("parallel_reduce eager");
         *result = task_pool::TaskPool::get_singleton().parallel_reduce<Acc>(name, begin, end, std::forward<InitFactory>(init),
                                                                             std::forward<Body>(body), std::forward<Combiner>(combine));
@@ -6091,7 +6140,7 @@ void custom(PureTag /*pure*/, std::string label, std::tuple<Inputs &...> inputs,
  */
 APIARY_EXPOSE APIARY_MODULE("graph") inline void custom(std::string label, std::function<void()> executor, bool pure = false) {
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::custom")) {
         executor();
         return;
     }
@@ -6132,7 +6181,7 @@ APIARY_INSTANTIATE_AS("custom", einsums::GeneralRuntimeTensor<std::complex<doubl
 // clang-format on
 void custom(std::string label, std::function<void()> executor, TensorType *target, bool pure = false) {
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
+    if (detail::runs_eagerly(ctx, "cg::custom", target)) {
         executor();
         return;
     }

@@ -55,7 +55,7 @@ void read_etn(std::string file_path, std::string tensor_name, TensorType *output
         file.read(tensor_name, *output);
     };
 
-    if (!compute_graph::CaptureContext::current().is_capturing()) {
+    if (compute_graph::detail::runs_eagerly(compute_graph::CaptureContext::current(), "tensor_io::read_etn", output)) {
         executor();
         return;
     }
@@ -83,7 +83,7 @@ void write_etn(std::string file_path, std::string tensor_name, TensorType const 
         file.write(tensor_name, *input);
     };
 
-    if (!compute_graph::CaptureContext::current().is_capturing()) {
+    if (compute_graph::detail::runs_eagerly(compute_graph::CaptureContext::current(), "tensor_io::write_etn", input)) {
         executor();
         return;
     }
@@ -161,7 +161,7 @@ void read_slice_etn(std::string file_path, std::string tensor_name, Slab const &
         detail::file_read_slice_dispatch(file, tensor_name, *output, slab_ptr->ranges);
     };
 
-    if (!compute_graph::CaptureContext::current().is_capturing()) {
+    if (compute_graph::detail::runs_eagerly(compute_graph::CaptureContext::current(), "tensor_io::read_slice_etn", output)) {
         executor();
         return;
     }
@@ -194,7 +194,7 @@ void write_slice_etn(std::string file_path, std::string tensor_name, Slab const 
         detail::file_write_slice_dispatch(file, tensor_name, *input, slab_ptr->ranges);
     };
 
-    if (!compute_graph::CaptureContext::current().is_capturing()) {
+    if (compute_graph::detail::runs_eagerly(compute_graph::CaptureContext::current(), "tensor_io::write_slice_etn", input)) {
         executor();
         return;
     }

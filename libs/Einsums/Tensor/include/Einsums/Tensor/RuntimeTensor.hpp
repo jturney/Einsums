@@ -66,6 +66,31 @@ Tensor &viewable(Tensor &tensor, char const *what) {
 }
 
 /**
+ * @brief Throws when @p tensor is a graph's intermediate and that graph is not replaying.
+ *
+ * An intermediate is the graph's to free, reuse or hold a tile at a time, so outside a replay
+ * what it holds depends on its size, the machine and the pipeline, and a write to it is lost or
+ * overwritten. Any tensor type sharing a storage block works, so a view of an intermediate is
+ * refused along with it.
+ *
+ * @param tensor The tensor to use.
+ * @param what What is being done, for the message.
+ * @throws std::logic_error when @p tensor is an intermediate and no replay of its graph is running.
+ */
+template <typename Tensor>
+void refuse_if_scratch(Tensor const &tensor, char const *what) {
+    auto const &storage = tensor.storage();
+    if (storage == nullptr || storage->scratch == nullptr || storage->scratch->readable()) [[likely]] {
+        return;
+    }
+    EINSUMS_THROW_EXCEPTION(std::logic_error,
+                            "{}: tensor '{}' is an intermediate of graph '{}', which keeps its values only while it replays: "
+                            "a pass may free it, reuse its memory, or hold it a tile at a time. Declare it with "
+                            "intermediate=False to use it after execute().",
+                            what, tensor.name(), storage->scratch->graph);
+}
+
+/**
  * @brief Returns @p tensor, after checking that it has storage to read or write through.
  *
  * A tensor a graph declared has no storage until the graph materializes it, and an intermediate
@@ -82,13 +107,7 @@ Tensor &viewable(Tensor &tensor, char const *what) {
  */
 template <typename Tensor>
 Tensor &readable(Tensor &tensor, char const *what) {
-    if (auto const &lease = tensor.storage()->scratch; lease != nullptr && !lease->readable()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error,
-                                "{}: tensor '{}' is an intermediate of graph '{}', which keeps its values only while it replays: "
-                                "a pass may free it, reuse its memory, or hold it a tile at a time. Declare it with "
-                                "intermediate=False to read it after execute().",
-                                what, tensor.name(), lease->graph);
-    }
+    refuse_if_scratch(tensor, what);
     if (!tensor.is_materialized()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error,
                                 "{}: tensor '{}' has no storage. A tensor a graph declared has none until the graph "
