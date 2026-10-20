@@ -329,6 +329,13 @@ void Graph::note_structural_pass(std::string pass_name) {
     _structural_passes.push_back(std::move(pass_name));
 }
 
+void Graph::note_machine_dependent_pass(std::string pass_name) {
+    if (std::ranges::find(_machine_dependent_passes, pass_name) != _machine_dependent_passes.end()) {
+        return;
+    }
+    _machine_dependent_passes.push_back(std::move(pass_name));
+}
+
 void Graph::annotate_tag(TensorId id, ProvenanceTag tag) {
     auto &handle = tensor(id);
 

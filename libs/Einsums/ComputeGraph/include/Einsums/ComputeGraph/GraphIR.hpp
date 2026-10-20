@@ -222,7 +222,11 @@
  * would leave a loaded graph reading a buffer nothing writes.
  *
  * @par What refuses, and when
- * At SAVE: any node @ref Graph::serializability_report names (the error carries
+ * At SAVE: a graph a structural-resource or tuning pass has changed
+ * (@ref Graph::machine_dependent_passes, named in the error), unless
+ * @ref SaveOptions::allow_machine_dependent says otherwise, because those phases
+ * decide for one machine and one budget and a file holds the algebraic form;
+ * any node @ref Graph::serializability_report names (the error carries
  * the whole report); a @ref BoundExpr or @ref PredExpr callback arm, naming the
  * node and the field; an anonymous @ref OpKind::ElementTransform kernel; and a
  * @ref PredExpr::FlagTest whose array has no name, pointing at
@@ -290,6 +294,12 @@ struct SaveOptions {
     /// provenance block. Supplied by the caller because nothing records what ran
     /// on a graph; see the file note on provenance.
     std::vector<std::string> structural_passes;
+
+    /// Write a graph a structural-resource or tuning pass has changed
+    /// (@ref Graph::machine_dependent_passes), which a save otherwise refuses. The file then
+    /// holds one machine's and one budget's decisions as if they were the program, and a
+    /// loader on another machine runs them as written.
+    bool allow_machine_dependent{false};
 };
 
 /**

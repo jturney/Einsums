@@ -561,6 +561,8 @@ struct GraphState {
 
     /// Structural-algebraic passes that rewrote this graph, in the order they did. @see note_structural_pass
     std::vector<std::string> _structural_passes;
+    /// Structural-resource and tuning passes that changed this graph. @see note_machine_dependent_pass
+    std::vector<std::string> _machine_dependent_passes;
     /// Version _usage was built at (UINT64_MAX = never built).
     std::uint64_t  _usage_version{std::numeric_limits<std::uint64_t>::max()};
     UsageAnalysis  _usage;
@@ -2504,6 +2506,28 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     APIARY_EXPOSE [[nodiscard]] std::vector<std::string> const &structural_passes() const noexcept { return _structural_passes; }
+
+    /**
+     * @brief Record that a structural-resource or tuning pass has changed this graph.
+     *
+     * Those phases decide for one machine and one memory budget (tiling, materialization,
+     * frees, the arena, batching, the schedule), and a file holds only the algebraic form, so
+     * @ref save_graph refuses a graph this list is not empty for. Recorded by the pass manager,
+     * which is what @ref Graph::apply goes through too.
+     *
+     * @param[in] pass_name The pass that modified this graph.
+     * @versionadded{2.0.0}
+     */
+    void note_machine_dependent_pass(std::string pass_name);
+
+    /**
+     * @brief The structural-resource and tuning passes that have changed this graph, in order.
+     * @return The names, empty on a graph only capture and the structural passes have shaped.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::string> const &machine_dependent_passes() const noexcept {
+        return _machine_dependent_passes;
+    }
 
     // ── The accuracy contract ───────────────────────────────────────────────
 

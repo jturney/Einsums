@@ -730,9 +730,17 @@ bool PassManager::run(Graph &graph) {
                 structure_stale_for_analysis = structure_stale_for_analysis || modified;
                 break;
             case PassPhase::StructuralResource:
+                // Never saved, so a save has to know the graph now holds it.
+                if (modified) {
+                    graph.note_machine_dependent_pass(pass->name());
+                }
                 structure_stale_for_analysis = structure_stale_for_analysis || modified;
                 break;
             case PassPhase::Tuning:
+                if (modified) {
+                    graph.note_machine_dependent_pass(pass->name());
+                }
+                break;
             case PassPhase::Diagnostic:
                 break;
             }

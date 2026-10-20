@@ -56,6 +56,7 @@
 #include <Einsums/Json/Json.hpp>
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <cstdint>
 #include <fstream>
@@ -93,6 +94,16 @@ std::uint64_t Graph::content_hash() const {
 // ── save ───────────────────────────────────────────────────────────────────
 
 expected<std::string, GraphError> save_graph_string(Graph const &graph, SaveOptions const &options) {
+    // A file holds the algebraic form, and the resource and tuning phases are re-derived after a
+    // load on whatever machine and budget runs it. A graph those phases have changed holds their
+    // decisions for this one, and saving it would make them the program.
+    if (auto const &passes = graph.machine_dependent_passes(); !passes.empty() && !options.allow_machine_dependent) {
+        return unexpected(GraphError::validation(fmt::format(
+            "save_graph: graph '{}' has been changed by machine-dependent passes ({}), and a file holds only the algebraic form. "
+            "Save it after the structural passes (PassManager::structural_pass_manager) and run the resource and tuning passes "
+            "after loading, or set SaveOptions::allow_machine_dependent",
+            graph.name(), fmt::join(passes, ", "))));
+    }
     try {
         json::Value const document = graph_ir::write_document(graph, options);
         return json::emit(document, json::EmitOptions{.style = options.pretty ? json::EmitStyle::Pretty : json::EmitStyle::Canonical});

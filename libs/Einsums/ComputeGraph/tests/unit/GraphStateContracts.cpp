@@ -616,15 +616,11 @@ TEST_CASE("Graph state - save after optimize, load, bind, move, execute", "[Comp
     require_close(R2, R_ref);
 }
 
-// Placeholder for a capability that does not exist yet: saving a graph after optimize() when
-// it holds deferred scratch. The Materialization pass optimize() runs emits a Materialize node
-// for the scratch, and the writer cannot rebuild that kind from data, so the save refuses.
-// The refusal is the right behaviour today (a file that silently dropped the node would load
-// into a graph whose scratch is never allocated), and this case pins that it stays a refusal
-// that names the node. The replacement test, once Materialize is reconstructible: save after
-// optimize, load, bind new operands, execute, and compare against reference_einsum, as the
-// case above does for a graph without scratch.
-TEST_CASE("Graph state - save after optimize refuses a graph with deferred scratch, naming the node",
+// A file holds the algebraic form, and the resource and tuning phases run again after a load on
+// whatever machine and budget runs it. optimize() runs them here, and Materialization gives the
+// scratch a Materialize node that decides when this process allocates it, so the save refuses and
+// names the pass. Overriding that does not make the node something a file can rebuild.
+TEST_CASE("Graph state - save after optimize refuses a graph the tuning passes changed, naming the pass",
           "[ComputeGraph][GraphState][SaveLoad][Optimize]") {
     auto A = create_random_tensor<double>("A", 6, 4);
     auto B = create_random_tensor<double>("B", 4, 5);
@@ -643,10 +639,14 @@ TEST_CASE("Graph state - save after optimize refuses a graph with deferred scrat
 
     auto const text = cg::save_graph_string(graph);
     REQUIRE_FALSE(text.has_value());
-    CHECK_THAT(text.error().message, Catch::Matchers::ContainsSubstring("Materialize"));
-    CHECK_THAT(text.error().message, Catch::Matchers::ContainsSubstring("materialize(T)"));
+    CHECK_THAT(text.error().message, Catch::Matchers::ContainsSubstring("Materialization"));
+    CHECK_THAT(text.error().message, Catch::Matchers::ContainsSubstring("structural_pass_manager"));
 
-    // The refused graph is untouched by the attempt and still runs.
+    auto const overridden = cg::save_graph_string(graph, {.allow_machine_dependent = true});
+    REQUIRE_FALSE(overridden.has_value());
+    CHECK_THAT(overridden.error().message, Catch::Matchers::ContainsSubstring("materialize(T)"));
+
+    // The refused graph is untouched by the attempts and still runs.
     require_well_formed(graph);
     graph.execute();
     auto T_ref = create_zero_tensor<double>("T_ref", 6, 5);
@@ -654,4 +654,50 @@ TEST_CASE("Graph state - save after optimize refuses a graph with deferred scrat
     reference_einsum("ij <- ik ; kj", &T_ref, A, B);
     reference_einsum("ij <- ik ; kj", &C_ref, T_ref, D);
     require_close(C, C_ref);
+}
+
+// The same graph saved the documented way: after the structural passes, then loaded, bound, and
+// put through the resource and tuning passes in the process that runs it.
+TEST_CASE("Graph state - a graph with deferred scratch saved after the structural passes runs after a load",
+          "[ComputeGraph][GraphState][SaveLoad][Optimize]") {
+    auto A = create_random_tensor<double>("A", 6, 4);
+    auto B = create_random_tensor<double>("B", 4, 5);
+    auto D = create_random_tensor<double>("D", 5, 3);
+    auto C = create_zero_tensor<double>("C", 6, 3);
+
+    cg::Graph graph("gsc_save_structural_scratch");
+    {
+        auto                  &T = graph.scratch<double, 2>("T", 6, 5);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &T, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, T, D);
+    }
+    auto structural = cg::PassManager::structural_pass_manager();
+    graph.apply(structural);
+    CHECK(graph.machine_dependent_passes().empty());
+
+    auto const text = cg::save_graph_string(graph);
+    INFO((text ? std::string{} : text.error().message));
+    REQUIRE(text.has_value());
+    auto loaded = cg::load_graph_string(*text);
+    INFO((loaded ? std::string{} : loaded.error().message));
+    REQUIRE(loaded.has_value());
+
+    auto A2 = create_random_tensor<double>("A2", 6, 4);
+    auto B2 = create_random_tensor<double>("B2", 4, 5);
+    auto D2 = create_random_tensor<double>("D2", 5, 3);
+    auto C2 = create_zero_tensor<double>("C2", 6, 3);
+    loaded->bind("A", A2, "B", B2, "D", D2, "C", C2);
+    auto resource = cg::PassManager::resource_pass_manager();
+    auto tuning   = cg::PassManager::tuning_pass_manager();
+    loaded->apply(resource);
+    loaded->apply(tuning);
+    require_well_formed(*loaded);
+    loaded->execute();
+
+    auto T_ref = create_zero_tensor<double>("T_ref", 6, 5);
+    auto C_ref = create_zero_tensor<double>("C_ref", 6, 3);
+    reference_einsum("ij <- ik ; kj", &T_ref, A2, B2);
+    reference_einsum("ij <- ik ; kj", &C_ref, T_ref, D2);
+    require_close(C2, C_ref);
 }

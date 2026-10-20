@@ -1717,6 +1717,42 @@ TEST_CASE("SaveLoad - a graph that creates its own intermediate round-trips", "[
     }
 }
 
+// A file holds the algebraic form. A tuning pass decides for one machine and one budget, and a save
+// that wrote its output would make that decision the program on every machine that loads it, so a
+// graph a tuning pass changed is refused unless the caller says otherwise.
+TEST_CASE("SaveLoad - a graph a tuning pass changed is refused unless the save allows it", "[ComputeGraph][SaveLoad]") {
+    constexpr size_t n = 8;
+    auto             A = create_random_tensor<double>("A", n, n);
+    auto             B = create_random_tensor<double>("B", n, n);
+    auto             R = create_zero_tensor<double>("R", n, n);
+    auto             S = create_zero_tensor<double>("S", n, n);
+
+    cg::Graph graph("tuned");
+    auto     &X = graph.scratch<double, 2>("X", n, n);
+    auto     &Y = graph.scratch<double, 2>("Y", n, n);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &X, 1.0, A, B);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &Y, 1.0, B, A);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &R, 1.0, X, A);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &S, 1.0, Y, B);
+    }
+    REQUIRE(cg::save_graph_string(graph).has_value());
+
+    auto [reordered, pass] = graph.apply<cg::passes::Reorder>();
+    REQUIRE(reordered);
+    CHECK(graph.machine_dependent_passes() == std::vector<std::string>{"Reorder"});
+
+    auto const refused = cg::save_graph_string(graph);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK_THAT(refused.error().message, Catch::Matchers::ContainsSubstring("machine-dependent passes (Reorder)"));
+
+    auto const allowed = cg::save_graph_string(graph, {.allow_machine_dependent = true});
+    INFO((allowed ? std::string{} : allowed.error().message));
+    REQUIRE(allowed.has_value());
+    CHECK(must_load(*allowed).machine_dependent_passes().empty());
+}
+
 TEST_CASE("register_backing_kind takes only qualified, new names with an opener", "[ComputeGraph][SaveLoad][Backing]") {
     auto const open = [](auto const &, bool) { return cg::TensorBacking{}; };
     CHECK_THROWS_WITH(cg::register_backing_kind({.name = "unqualified", .open = open}),

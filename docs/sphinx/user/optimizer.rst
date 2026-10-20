@@ -834,6 +834,7 @@ Saving, loading and binding
 
 .. code-block:: python
 
+    g.apply(cg.structural_pass_manager())
     cg.save_graph(g, "mp2.eig")
 
     loaded = cg.load_graph("mp2.eig")            # or load_graph_into(path, registry)
@@ -853,7 +854,10 @@ assignment, GPU placement, the distribution plan, per-node thread widths, and
 the tiling schedule. Nothing machine-dependent is in the file. Reusing a saved
 tuning decision across machines is not a performance risk to weigh against
 convenience; a graph planned with mixed thread widths against one BLAS vendor
-and replayed against another does not merely run slower.
+and replayed against another does not merely run slower. So ``save_graph``
+refuses a graph that a resource or tuning pass has already changed, and names
+those passes: save after ``cg.structural_pass_manager()``, as above, and run the
+other two after loading.
 
 **Setup is computed at bind**: fitted factors, inverted metrics, quadrature
 points and weights. A setup body runs at the first ``execute`` after a bind
