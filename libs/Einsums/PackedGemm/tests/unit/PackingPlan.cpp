@@ -12,8 +12,11 @@
 //   3. Correctness with alpha/beta scaling.
 
 #include <Einsums/PackedGemm/ContractionKey.hpp>
+#include <Einsums/PackedGemm/Describe.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorAlgebra/Detail/PackedGemmIndices.hpp>
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 
 #include <Einsums/Testing.hpp>
@@ -595,5 +598,101 @@ TEST_CASE("PackedGemm with complex<double>", "[mlir][packing][complex]") {
                         C_ref(ii, ll) += A(ii, jj, kk) * std::conj(B(jj, kk, ll));
 
         REQUIRE(complex_tensors_close(C_packed, C_ref));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What the engine would do, described without running it
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// The key try_packed_gemm builds for C(c) = A(a) B(b) on these tensors.
+template <typename CType, typename AType, typename BType>
+ContractionKey key_for(std::vector<std::string> const &c, std::vector<std::string> const &a, std::vector<std::string> const &b,
+                       CType const &C, AType const &A, BType const &B) {
+    ContractionKey key;
+    key.spec.c_indices      = c;
+    key.spec.a_indices      = a;
+    key.spec.b_indices      = b;
+    key.spec.target_indices = unique_ordered(c);
+    key.spec.link_indices   = compute_link_indices(a, b, key.spec.target_indices);
+    key.spec.scalar_type    = ScalarType::Float64;
+    key.a_desc              = tensor_descriptor(A);
+    key.b_desc              = tensor_descriptor(B);
+    key.c_desc              = tensor_descriptor(C);
+    for (auto const &t : key.spec.target_indices) {
+        key.target_dims.push_back(static_cast<int64_t>(C.dim(static_cast<size_t>(std::ranges::find(c, t) - c.begin()))));
+    }
+    for (auto const &l : key.spec.link_indices) {
+        key.link_dims.push_back(static_cast<int64_t>(A.dim(static_cast<size_t>(std::ranges::find(a, l) - a.begin()))));
+    }
+    return key;
+}
+
+} // namespace
+
+TEST_CASE("describe_packed_contraction reports the plan the engine runs", "[packing][describe]") {
+    // A cost model prices a contraction from this description, so it must say what the engine does:
+    // a C whose indices interleave A's and B's is scattered, in runs set by its layout rather than by
+    // M, N or K, and the contracted extent is cut in the shares the engine cuts it in.
+    SECTION("a C that interleaves the operands is scattered, in runs of its leading block") {
+        // One tile of the CCSD ladder's <ab|ef> = B(Q,a,e) B(Q,b,f), a and b cut to a block.
+        constexpr size_t q = 7, v = 6;
+        auto const       block = GENERATE(as<size_t>{}, 2, 3, 5);
+        CAPTURE(block);
+        Tensor<double, 4> W{"W", block, block, v, v};
+        Tensor<double, 3> Ba{"Ba", q, block, v};
+        Tensor<double, 3> Bb{"Bb", q, block, v};
+        auto const        shape = describe_packed_contraction(key_for({"a", "b", "e", "f"}, {"Q", "a", "e"}, {"Q", "b", "f"}, W, Ba, Bb));
+        REQUIRE(shape.valid);
+        CHECK(shape.M * shape.N == static_cast<int64_t>(block * v * block * v));
+        CHECK(shape.K == static_cast<int64_t>(q));
+        CHECK(shape.c_scattered);
+        // a and b sit side by side at the front of W, so the scatter writes block x block spans.
+        CHECK(shape.c_run == static_cast<int64_t>(block * block));
+        CHECK(shape.a_run == static_cast<int64_t>(q));
+        CHECK(shape.b_run == static_cast<int64_t>(q));
+
+        // The engine scatters it too.
+        fill_seq(Ba, 0.0);
+        fill_seq(Bb, 1.0);
+        REQUIRE(tensor_algebra::detail::try_packed_gemm_indices<false, false>(0.0, Indices{a, b, e, f}, &W, 1.0, Indices{Q, a, e}, Ba,
+                                                                              Indices{Q, b, f}, Bb));
+        CHECK(last_packed_blocking().c_scattered);
+    }
+
+    SECTION("a flat GEMM writes C in place") {
+        Tensor<double, 2> C{"C", 24, 40};
+        Tensor<double, 2> A{"A", 24, 32};
+        Tensor<double, 2> B{"B", 32, 40};
+        auto const        shape = describe_packed_contraction(key_for({"i", "j"}, {"i", "k"}, {"k", "j"}, C, A, B));
+        REQUIRE(shape.valid);
+        CHECK(shape.M * shape.N == 24 * 40);
+        CHECK(shape.K == 32);
+        CHECK_FALSE(shape.c_scattered);
+        CHECK(shape.c_run == 0);
+    }
+
+    SECTION("the contracted extent is cut in the shares the engine cuts it in") {
+        // The ladder's residual tile: a small output over a long K, the shape split-K exists for.
+        // Whether this machine cuts it is its cores' call; the description must agree either way.
+        constexpr size_t  o = 5, v = 53, block = 4;
+        Tensor<double, 4> R{"R", o, o, block, block};
+        Tensor<double, 4> tau{"tau", o, o, v, v};
+        Tensor<double, 4> W{"W", block, block, v, v};
+        fill_seq(tau, 0.0);
+        fill_seq(W, 1.0);
+        auto const shape =
+            describe_packed_contraction(key_for({"i", "j", "a", "b"}, {"i", "j", "e", "f"}, {"a", "b", "e", "f"}, R, tau, W));
+        REQUIRE(shape.valid);
+        REQUIRE(tensor_algebra::detail::try_packed_gemm_indices<false, false>(0.0, Indices{i, j, a, b}, &R, 1.0, Indices{i, j, e, f}, tau,
+                                                                              Indices{a, b, e, f}, W));
+        CHECK(shape.k_shares == last_k_split());
+    }
+
+    SECTION("a contraction the engine has no plan for is described as invalid") {
+        CHECK_FALSE(describe_packed_contraction(make_hadamard_key(4)).valid);
+        CHECK_FALSE(describe_packed_contraction(make_scalar_output_key(4)).valid);
     }
 }

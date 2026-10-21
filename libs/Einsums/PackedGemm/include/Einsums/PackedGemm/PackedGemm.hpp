@@ -3282,18 +3282,9 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     PackingPlan const *cached = PackingPlanCache::instance().lookup(key);
     PackingPlan        computed;
     if (cached == nullptr) {
-        computed = compute_packing_topology(key);
+        // The plan a cost model sees for this key too (see describe_packed_contraction).
+        computed = prepare_packing_plan(key);
         if (computed.valid) {
-            fill_strides(computed, A, B, *C);
-            sort_k_dims_for_packing(computed);
-            coalesce_plan(computed, static_cast<int64_t>(sizeof(ValueType)));
-            // Which operand takes the kernel's M role is a property of the contraction and the
-            // resolved kernel, so it is settled once here and cached with the plan.
-            if (mn_roles_should_swap(computed, micro_kernel_shape<ValueType>(),
-                                     get_scalar_type<ValueType>() == ScalarType::Complex64 ||
-                                         get_scalar_type<ValueType>() == ScalarType::Complex128)) {
-                computed = transposed_plan(computed);
-            }
             PackingPlanCache::instance().insert(key, computed);
             // Re-look-up so `cached` names the cache's copy, not this frame's: a site remembers the
             // pointer, and only cache entries live long enough.

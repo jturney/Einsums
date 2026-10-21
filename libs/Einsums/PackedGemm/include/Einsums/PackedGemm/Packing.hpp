@@ -351,6 +351,51 @@ class EINSUMS_EXPORT PackingPlanCache {
 /// `plan.m_dims[i].tensor_stride` etc. are left as 0; call `fill_strides` to fill them.
 PackingPlan EINSUMS_EXPORT compute_packing_topology(ContractionKey const &key);
 
+/// @brief Fill tensor strides in a PackingPlan from the strides @p key records for each operand.
+///
+/// The same strides `fill_strides(plan, A, B, C)` reads from the tensors, since a key records
+/// each tensor's strides in index order.
+inline void fill_strides(PackingPlan &plan, ContractionKey const &key) {
+    auto const stride = [](TensorDescriptor const &desc, size_t pos) { return desc.strides[pos]; };
+    for (auto &ds : plan.m_dims) {
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = stride(key.a_desc, ds.tensor_pos);
+    }
+    for (auto &ds : plan.k_dims_in_a) {
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = stride(key.a_desc, ds.tensor_pos);
+    }
+    for (auto &ds : plan.n_dims) {
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = stride(key.b_desc, ds.tensor_pos);
+    }
+    for (auto &ds : plan.k_dims_in_b) {
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = stride(key.b_desc, ds.tensor_pos);
+    }
+    for (auto &ds : plan.c_m_dims) {
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = stride(key.c_desc, ds.tensor_pos);
+    }
+    for (auto &ds : plan.c_n_dims) {
+        if (ds.tensor_pos != kSyntheticDimPos)
+            ds.tensor_stride = stride(key.c_desc, ds.tensor_pos);
+    }
+    for (auto &bds : plan.batch_dims) {
+        bds.a_stride = stride(key.a_desc, bds.a_pos);
+        bds.b_stride = stride(key.b_desc, bds.b_pos);
+        bds.c_stride = stride(key.c_desc, bds.c_pos);
+    }
+}
+
+/// @brief The plan the packed engine runs the contraction @p key describes with: its topology,
+/// the strides @p key records, the K dims ordered for packing, contiguous dims merged, and the
+/// roles of A and B exchanged when the micro-kernel for @c key.spec.scalar_type wants them so.
+///
+/// @ref try_packed_gemm caches exactly this plan, so a caller that prices a contraction sees the
+/// plan the engine would run. Invalid when @ref compute_packing_topology is.
+PackingPlan EINSUMS_EXPORT prepare_packing_plan(ContractionKey const &key);
+
 /// @brief Fill tensor strides in a PackingPlan from the actual runtime tensors.
 ///
 /// Must be called after `compute_packing_topology` returns a valid plan.

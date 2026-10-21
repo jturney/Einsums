@@ -5,6 +5,7 @@
 
 set(PackedGemmHeaders
     Einsums/PackedGemm/ContractionKey.hpp
+    Einsums/PackedGemm/Describe.hpp
     Einsums/PackedGemm/InitModule.hpp
     Einsums/PackedGemm/MicroKernel.hpp
     Einsums/PackedGemm/MicroKernelBody.hpp
@@ -17,6 +18,7 @@ set(PackedGemmHeaders
 
 set(PackedGemmSources
     ContractionKey.cpp
+    Describe.cpp
     InitModule.cpp
     MicroKernelDispatch.cpp
     Options.cpp
