@@ -2881,15 +2881,25 @@ bool AxisTiling::tile_graph(Graph &graph) {
     for (bool first = true;; first = false) {
         std::size_t const total = derived ? footprint(graph) : 0;
 
-        // The cap one intermediate of @p bytes is held to: the fixed cap, or the lesser of its
-        // share and what the budget leaves after everything else. Zero when the others alone
-        // exceed the budget.
+        // A program over its budget streams because it must, and a loop it streams in may take
+        // whatever the budget leaves; the share caps only what a program that fits streams for the
+        // share's own sake. Held to the share as well, the CCSD tutorial's file-backed stage cut
+        // its ladder into blocks of 2 x 4 under a 16 MB budget while the replay held 11.6 MB, and
+        // spent more than half its iteration on the small blocks.
+        bool const forced = derived && total > budget;
+
+        // The cap one intermediate of @p bytes is held to: the fixed cap, or what the budget leaves
+        // after everything else, no more than its share unless the program is over its budget.
+        // Zero when the others alone exceed the budget.
         auto const limit_for = [&](std::size_t bytes) -> std::size_t {
             if (!derived) {
                 return static_cast<std::size_t>(cap);
             }
             std::size_t const others = total - std::min(total, bytes);
-            return others < budget ? std::min(budget - others, share) : 0;
+            if (others >= budget) {
+                return 0;
+            }
+            return forced ? budget - others : std::min(budget - others, share);
         };
 
         // A seed is an intermediate over its cap that a sliceable statement writes: the tensors
@@ -2998,7 +3008,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
         bool rewrote = false;
         for (auto const &[bytes, seed] : seeds) {
             Allowance const allowance{
-                .cap = limit_for(bytes), .budget = derived ? budget : 0, .share = derived ? share : 0, .total = total};
+                .cap = limit_for(bytes), .budget = derived ? budget : 0, .share = derived ? share : 0, .total = total, .forced = forced};
             if (tile_region(graph, seed, allowance)) {
                 rewrote = true;
                 break;
@@ -3228,7 +3238,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                     best_effort = true;
                     room        = allowance.share;
                 } else {
-                    room = std::min(allowance.budget - outside, allowance.share);
+                    room = allowance.forced ? allowance.budget - outside : std::min(allowance.budget - outside, allowance.share);
                 }
             }
             auto const fits = [joint, room](std::size_t largest, std::size_t held) { return (joint ? held : largest) <= room; };

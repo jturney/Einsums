@@ -421,6 +421,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         /// Take only a triangle, and only one the cost model prices below running the region
         /// whole: the seed is there for its symmetry, not because it is over its cap.
         bool triangle_only{false};
+        /// The program is over its budget, so the loop's buffers may take what the budget leaves,
+        /// not only the share.
+        bool forced{false};
     };
 
     /// @brief Tile the region around one seed, if any candidate axis set can.

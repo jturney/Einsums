@@ -1852,6 +1852,37 @@ TEST_CASE("AxisTiling holds a loop's buffers to their share together, remainders
     CHECK(std::abs(energy - expected.value) <= sum_tolerance<double>() * expected.magnitude);
 }
 
+TEST_CASE("AxisTiling gives a loop the budget leaves when the program is over its budget", "[ComputeGraph][Pass][AxisTiling]") {
+    // A program over its budget streams because it must, so its loop may take what the budget
+    // leaves. Held to the share as well, the CCSD tutorial's file-backed stage cut its ladder into
+    // blocks of 2 x 4 under a 16 MB budget while the whole replay held 11.6 MB; taking the room,
+    // its blocks are 7 x 9 and an iteration takes 53 ms instead of 73. A program that fits keeps
+    // the share's cap (the case above).
+    Mp2<double> p(5, nvir, naux);
+    cg::Graph   graph("mp2 over budget");
+    capture_mp2(graph, p);
+    std::size_t const before = tree_bytes(graph);
+    std::size_t const four   = p.o * p.v * p.o * p.v * sizeof(double);
+
+    // Half a four-index tensor short of the program, and a share a fifth of that.
+    std::size_t const budget_bytes = before - (four / 2);
+    std::size_t const share_bytes  = four / 10;
+    Budget const      budget(budget_bytes);
+    Share const       share(static_cast<double>(share_bytes) / static_cast<double>(budget_bytes));
+    auto const        tiling = decide_by_default(graph);
+    REQUIRE(tiling->num_tiled() >= 1);
+    INFO("sliced " << fmt::format("{}", fmt::join(tiling->axis_letters(), ",")) << " in blocks of "
+                   << fmt::format("{}", fmt::join(tiling->block_extents(), ",")) << ", largest " << tiling->largest_after());
+    CHECK(tiling->largest_after() > share_bytes);
+    CHECK(tree_bytes(graph) <= budget_bytes);
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    auto const   expected = mp2_reference(p);
+    double const energy   = replay_mp2(graph, p);
+    CHECK(std::abs(energy - expected.value) <= sum_tolerance<double>() * expected.magnitude);
+}
+
 TEST_CASE("AxisTiling does not count a body's tensors against a sibling that runs before it", "[ComputeGraph][Pass][AxisTiling]") {
     // A setup body builds H1 and contracts it into R; the loop after it reads R and builds X, which
     // only the loop names. The setup has finished before the loop starts, so X is not live beside
