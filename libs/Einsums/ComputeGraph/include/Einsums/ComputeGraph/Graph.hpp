@@ -659,8 +659,10 @@ struct GraphState {
     double                         _last_wall_ms{0.0};
     std::uint64_t                  _last_peak_bytes{0};
     std::uint64_t                  _last_arena_bytes{0};
-    mutable RunMetrics             _last_run;
-    mutable bool                   _last_run_valid{true};
+    /// Whether a replay's peak has been reported over --einsums:max-memory; once per graph.
+    bool               _warned_over_budget{false};
+    mutable RunMetrics _last_run;
+    mutable bool       _last_run_valid{true};
 
     /// Executor plain execute() delegates to (see set_executor); nullptr means
     /// the built-in sequential path. Loop bodies replay through this.

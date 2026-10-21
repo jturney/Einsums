@@ -216,6 +216,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     static constexpr Reason TriangleFit{"axis-tiling.triangle-fit",
                                         "no block of two or more fits the memory the region may take beside the mirror's scratch tile, so "
                                         "every tile runs"};
+    static constexpr Reason RegionKeptSmall{"axis-tiling.region-kept-small",
+                                            "streaming every intermediate the loop reaches leaves no region this pass can slice, so the "
+                                            "loop streams the seed and holds the others whole"};
     static constexpr Reason TrianglePrice{"axis-tiling.triangle-price",
                                           "the region has nothing to stream, and the cost model prices its triangle no cheaper than "
                                           "running it whole, so it runs as captured"};

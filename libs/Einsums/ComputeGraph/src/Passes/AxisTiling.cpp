@@ -3083,312 +3083,351 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
     std::size_t         outside_bytes = 0;
     std::size_t         infeasible    = 0;
     std::size_t         over_cap      = 0;
-    for (auto const &positions : candidate_sets(seed_handle->rank)) {
-        if (allowance.triangle_only && (positions.size() != 2 || seed_handle->dims[positions[0]] != seed_handle->dims[positions[1]])) {
-            continue;
+    // Two rounds. The first takes every region in whole, as a loop that streams all it reaches
+    // holds the least. Only when no candidate gives any plan does the second run, where a region
+    // that stops slicing once it grows keeps its last sliceable form instead (see fall_back); the
+    // first round's declines are withdrawn, since the second examines every candidate again.
+    std::size_t const first_round = num_decisions();
+    for (bool const keep_small : {false, true}) {
+        if (keep_small) {
+            if (best.has_value() || fallback.has_value()) {
+                break;
+            }
+            retract_declines(first_round);
+            outside_bytes = 0;
+            infeasible    = 0;
+            over_cap      = 0;
         }
-        auto const detail = fmt::format("seed '{}', candidate axes {}", seed_handle->name, fmt::join(positions, ","));
+        for (auto const &positions : candidate_sets(seed_handle->rank)) {
+            if (allowance.triangle_only && (positions.size() != 2 || seed_handle->dims[positions[0]] != seed_handle->dims[positions[1]])) {
+                continue;
+            }
+            auto const detail = fmt::format("seed '{}', candidate axes {}", seed_handle->name, fmt::join(positions, ","));
 
-        // The region: the seed's writers and readers, and then every writer and reader of any
-        // other intermediate over the cap that the labelling reaches, since the loop has to
-        // stream that one too. A tensor the labelling reaches that fits the cap is not followed:
-        // it stays whole, written and read through slices of its own buffer, so the statements of
-        // other terms that touch it stay outside the loop.
-        std::vector<std::size_t>      members = touchers(seed);
-        std::optional<RegionAnalysis> analysis;
-        Labelling                     labelling;
-        std::string                   why;
-        std::string                   barrier_label;
-        while (true) {
-            if (auto const barrier = std::ranges::find_if_not(members, sliceable); barrier != members.end()) {
-                why           = "a statement that reads or writes an intermediate the loop has to stream is one this pass cannot slice";
-                barrier_label = fmt::format("; statement '{}'", nodes[*barrier].label);
-                break;
-            }
-            analysis.emplace(graph, scope, members, seed);
-            if (!analysis->collect()) {
-                why = "a statement of the region names operands this pass cannot read as a dense, single-buffer slice";
-                break;
-            }
-            if (!analysis->all_runtime()) {
-                why = "the region names an operand this pass cannot slice, because a rank-erased operand is one the emitted body can name "
-                      "and a statically ranked one is not";
-                break;
-            }
-            labelling = analysis->propagate(positions);
-            if (!labelling.feasible) {
-                why = labelling.reason;
-                break;
-            }
-            // A tensor the region WRITES is completed by the loop, so every statement that touches
-            // it has to be in it. A tensor the region only READS is an input: its writers and
-            // other readers join when all of them can, which streams it too, and otherwise it is
-            // read through slices of its whole buffer, as any caller's tensor is.
-            std::set<std::size_t> grown(members.begin(), members.end());
-            auto const            follow = [&](TensorId tid, std::vector<int> const &labels, bool written) {
-                auto const *handle = graph.find_tensor(tid);
-                if (handle == nullptr || !scope.intermediate(tid) || handle->total_bytes() <= limit ||
-                    std::ranges::all_of(labels, [](int v) { return v == kFree; })) {
+            // The region: the seed's writers and readers, and then every writer and reader of any
+            // other intermediate over the cap that the labelling reaches, since the loop has to
+            // stream that one too. A tensor the labelling reaches that fits the cap is not followed:
+            // it stays whole, written and read through slices of its own buffer, so the statements of
+            // other terms that touch it stay outside the loop.
+            std::vector<std::size_t>      members = touchers(seed);
+            std::optional<RegionAnalysis> analysis;
+            Labelling                     labelling;
+            std::string                   why;
+            std::string                   barrier_label;
+            // The last region the labelling went through, before it grew. Streaming an intermediate the
+            // labelling reaches is a choice, not a requirement: left out, it stays whole and is written
+            // and read through slices of its own buffer. So a region that stops slicing once it takes
+            // such a tensor in falls back to the region before it, which streams the seed and holds the
+            // rest whole, rather than streaming nothing. A budget the program's other tensors nearly
+            // fill leaves the seed a cap of a few kilobytes, every intermediate is over it, and growing
+            // the region to take them all in drew the whole CCSD update cycle into the ladder's loop,
+            // where no labelling holds.
+            std::vector<std::size_t> sliced_members;
+            auto const               fall_back = [&](std::string reason) {
+                if (!keep_small || sliced_members.empty()) {
+                    why = std::move(reason);
                     return;
                 }
-                auto const others = touchers(tid);
-                if (!written && !std::ranges::all_of(others, [&](std::size_t i) {
-                        return grown.contains(i) ||
-                               ((tileable_kind(nodes[i].kind) || registered_sliceable(nodes[i])) && understands(graph, nodes[i]));
-                    })) {
-                    return;
-                }
-                grown.insert(others.begin(), others.end());
+                note_skip(RegionKeptSmall, fmt::format("{}; {}; the region streams the seed and holds the rest whole", detail, reason));
+                members = sliced_members;
+                analysis.emplace(graph, scope, members, seed);
+                analysis->collect();
+                labelling = analysis->propagate(positions);
             };
-            for (auto const &[tid, labels] : labelling.store.tensor) {
-                follow(tid, labels, true);
-            }
-            for (auto const &[site, labels] : labelling.store.use) {
-                follow(analysis->slot_tensor(site.first, site.second), labels, false);
-            }
-            if (grown.size() == members.size()) {
-                break;
-            }
-            members.assign(grown.begin(), grown.end());
-        }
-        if (!why.empty()) {
-            ++infeasible;
-            note_skip(why, detail + barrier_label);
-            continue;
-        }
-
-        std::string                                       accumulator;
-        TensorId                                          accumulator_id = 0;
-        std::vector<std::pair<TensorId, PrefactorScalar>> summed_into;
-        std::string                                       reason;
-        if (!analysis->closes(labelling, accumulator, accumulator_id, summed_into, reason)) {
-            note_skip(reason, detail);
-            continue;
-        }
-
-        std::vector<std::size_t> extents;
-        std::size_t              slices = 1;
-        for (std::size_t const position : positions) {
-            extents.push_back(seed_handle->dims[position]);
-            slices *= seed_handle->dims[position];
-        }
-
-        // Against a fixed cap every intermediate is held to it alone. Against the memory budget
-        // the loop's buffers are held to it together, beside every tensor the loop does not
-        // re-declare, and to their share of it.
-        bool const  joint       = allowance.budget != 0;
-        std::size_t room        = limit;
-        bool        best_effort = false;
-        if (joint) {
-            std::size_t const outside = allowance.total - std::min(allowance.total, analysis->streamed_whole_bytes(labelling));
-            outside_bytes             = std::max(outside_bytes, outside);
-            if (outside >= allowance.budget) {
-                note_skip(
-                    "the program's other tensors alone exceed the memory budget, so no slice of the region fits beside them",
-                    fmt::format("{}; {} bytes outside the loop against --einsums:max-memory of {}", detail, outside, allowance.budget));
-                // Nothing can meet the budget; a slice within the tensor's share is as far as cutting
-                // the seed still lowers the peak, and finer slices only add iterations.
-                best_effort = true;
-                room        = allowance.share;
-            } else {
-                room = std::min(allowance.budget - outside, allowance.share);
-            }
-        }
-        auto const fits = [joint, room](std::size_t largest, std::size_t held) { return (joint ? held : largest) <= room; };
-
-        std::size_t unit      = 0;
-        std::size_t unit_held = 0;
-        long double traffic   = 0.0L;
-        analysis->cost(labelling, extents, 1, unit, unit_held, traffic);
-        bool const slice_fits = fits(unit, unit_held);
-        if (!slice_fits) {
-            ++over_cap;
-            best_effort = true;
-        }
-
-        // Blocks where a contraction of the loop rewards them, a grouped chunk of points
-        // otherwise.
-        // A slice that fits nothing is cut as finely as it goes: blocks are chosen to fit, and none would.
-        std::optional<BlockChoice> blocks;
-        if (auto const reusable = analysis->reusable_labels(labelling); slice_fits && !reusable.empty()) {
-            if (std::string_view const blocker = analysis->range_blocker(labelling); !blocker.empty()) {
-                note_skip(blocker, detail);
-            } else {
-                blocks =
-                    choose_blocks(extents, reusable, labelling.fully_sliced, fits,
-                                  [&](std::vector<std::size_t> const &b, std::size_t &largest, std::size_t &held, long double &streamed) {
-                                      analysis->range_cost(labelling, extents, b, largest, held, streamed);
-                                  });
-            }
-        }
-        // A region that writes a tensor to storage is one loop. Blocks that leave a remainder add a
-        // loop per remainder, and SlabStreaming streams each loop's writes only when no other loop
-        // writes the tensor in memory, which two loops writing it never satisfy; the grouped plan's
-        // chunks divide the slices, so it is always one loop.
-        bool const writes_backed = std::ranges::any_of(labelling.store.tensor, [&](auto const &entry) {
-            auto const backing = scope.backing_of(entry.first);
-            return backing != nullptr && backing->write && !backing->update;
-        });
-        if (blocks.has_value() && writes_backed) {
-            for (std::size_t k = 0; k < extents.size(); ++k) {
-                if (extents[k] % blocks->blocks[k] != 0) {
-                    blocks.reset();
+            while (true) {
+                if (auto const barrier = std::ranges::find_if_not(members, sliceable); barrier != members.end()) {
+                    barrier_label = sliced_members.empty() ? fmt::format("; statement '{}'", nodes[*barrier].label) : std::string{};
+                    fall_back("a statement that reads or writes an intermediate the loop has to stream is one this pass cannot slice");
                     break;
                 }
-            }
-        }
-        if (!blocks.has_value() && !labelling.fully_sliced.empty()) {
-            note_skip(OperandWithoutAxes, detail);
-            continue;
-        }
-
-        Plan plan;
-        plan.extents        = extents;
-        plan.slices         = slices;
-        plan.largest_before = seed_handle->total_bytes();
-        if (blocks.has_value()) {
-            plan.range  = true;
-            plan.blocks = blocks->blocks;
-            plan.depth  = 1;
-            for (std::size_t const b : plan.blocks) {
-                plan.depth *= b;
-            }
-            plan.iterations = 0;
-            for (auto const &walks : loop_walks(plan)) {
-                plan.iterations += walk_iterations(walks);
-            }
-            plan.largest_after = blocks->largest;
-            plan.traffic       = blocks->traffic;
-        } else {
-            std::size_t const depth   = slice_fits ? chunk_depth(slices, joint ? unit_held : unit, room) : 1;
-            std::size_t       largest = 0;
-            std::size_t       held    = 0;
-            analysis->cost(labelling, extents, depth, largest, held, traffic);
-            plan.depth         = depth;
-            plan.iterations    = slices / depth;
-            plan.largest_after = largest;
-            plan.traffic       = traffic;
-        }
-        plan.best_effort    = best_effort;
-        plan.fits_share     = slice_fits;
-        plan.accumulator    = accumulator;
-        plan.accumulator_id = accumulator_id;
-        plan.summed_into    = summed_into;
-        for (auto const &[tid, prefactor] : summed_into) {
-            plan.summed_names.push_back(graph.tensor(tid).name);
-        }
-        plan.store = labelling.store;
-        if (!analysis->build(labelling, plan, reason)) {
-            note_skip(reason, detail);
-            continue;
-        }
-        if (auto const site = gather_site(io, plan.replaced); site.has_value()) {
-            plan.site = *site;
-        } else {
-            note_skip(StatementBetween, detail);
-            continue;
-        }
-        analysis->describe(positions, plan.axis_names, plan.axis_letters);
-        analysis->partition(labelling, plan.streamed, plan.whole);
-
-        // Two exchangeable axes run only the tiles on and above their diagonal. The block is the one
-        // the cost model prices cheapest among those that fit, since halving the tiles changes the
-        // kernels' shapes as well as their count, which streamed bytes do not see.
-        // Whether or not the grid search found blocks worth cutting: the triangle chooses its own.
-        if (positions.size() == 2) {
-            if (!escape.has_value()) {
-                escape.emplace(EscapeAnalysis::over(graph));
-            }
-            auto verdict = find_triangle(graph, plan, [&](TensorId tid) { return scope.backing_of(tid) != nullptr; }, *escape);
-            if (!verdict.triangle.has_value()) {
-                if (verdict.reason != nullptr) {
-                    note_skip(*verdict.reason, detail);
+                analysis.emplace(graph, scope, members, seed);
+                if (!analysis->collect()) {
+                    fall_back("a statement of the region names operands this pass cannot read as a dense, single-buffer slice");
+                    break;
                 }
+                if (!analysis->all_runtime()) {
+                    fall_back(
+                        "the region names an operand this pass cannot slice, because a rank-erased operand is one the emitted body can "
+                        "name and a statically ranked one is not");
+                    break;
+                }
+                labelling = analysis->propagate(positions);
+                if (!labelling.feasible) {
+                    fall_back(labelling.reason);
+                    break;
+                }
+                sliced_members = members;
+                // A tensor the region WRITES is completed by the loop, so every statement that touches
+                // it has to be in it. A tensor the region only READS is an input: its writers and
+                // other readers join when all of them can, which streams it too, and otherwise it is
+                // read through slices of its whole buffer, as any caller's tensor is.
+                std::set<std::size_t> grown(members.begin(), members.end());
+                auto const            follow = [&](TensorId tid, std::vector<int> const &labels, bool written) {
+                    auto const *handle = graph.find_tensor(tid);
+                    if (handle == nullptr || !scope.intermediate(tid) || handle->total_bytes() <= limit ||
+                        std::ranges::all_of(labels, [](int v) { return v == kFree; })) {
+                        return;
+                    }
+                    auto const others = touchers(tid);
+                    if (!written && !std::ranges::all_of(others, [&](std::size_t i) {
+                            return grown.contains(i) ||
+                                   ((tileable_kind(nodes[i].kind) || registered_sliceable(nodes[i])) && understands(graph, nodes[i]));
+                        })) {
+                        return;
+                    }
+                    grown.insert(others.begin(), others.end());
+                };
+                for (auto const &[tid, labels] : labelling.store.tensor) {
+                    follow(tid, labels, true);
+                }
+                for (auto const &[site, labels] : labelling.store.use) {
+                    follow(analysis->slot_tensor(site.first, site.second), labels, false);
+                }
+                if (grown.size() == members.size()) {
+                    break;
+                }
+                members.assign(grown.begin(), grown.end());
+            }
+            if (!why.empty()) {
+                ++infeasible;
+                note_skip(why, detail + barrier_label);
+                continue;
+            }
+
+            std::string                                       accumulator;
+            TensorId                                          accumulator_id = 0;
+            std::vector<std::pair<TensorId, PrefactorScalar>> summed_into;
+            std::string                                       reason;
+            if (!analysis->closes(labelling, accumulator, accumulator_id, summed_into, reason)) {
+                note_skip(reason, detail);
+                continue;
+            }
+
+            std::vector<std::size_t> extents;
+            std::size_t              slices = 1;
+            for (std::size_t const position : positions) {
+                extents.push_back(seed_handle->dims[position]);
+                slices *= seed_handle->dims[position];
+            }
+
+            // Against a fixed cap every intermediate is held to it alone. Against the memory budget
+            // the loop's buffers are held to it together, beside every tensor the loop does not
+            // re-declare, and to their share of it.
+            bool const  joint       = allowance.budget != 0;
+            std::size_t room        = limit;
+            bool        best_effort = false;
+            if (joint) {
+                std::size_t const outside = allowance.total - std::min(allowance.total, analysis->streamed_whole_bytes(labelling));
+                outside_bytes             = std::max(outside_bytes, outside);
+                if (outside >= allowance.budget) {
+                    note_skip(
+                        "the program's other tensors alone exceed the memory budget, so no slice of the region fits beside them",
+                        fmt::format("{}; {} bytes outside the loop against --einsums:max-memory of {}", detail, outside, allowance.budget));
+                    // Nothing can meet the budget; a slice within the tensor's share is as far as cutting
+                    // the seed still lowers the peak, and finer slices only add iterations.
+                    best_effort = true;
+                    room        = allowance.share;
+                } else {
+                    room = std::min(allowance.budget - outside, allowance.share);
+                }
+            }
+            auto const fits = [joint, room](std::size_t largest, std::size_t held) { return (joint ? held : largest) <= room; };
+
+            std::size_t unit      = 0;
+            std::size_t unit_held = 0;
+            long double traffic   = 0.0L;
+            analysis->cost(labelling, extents, 1, unit, unit_held, traffic);
+            bool const slice_fits = fits(unit, unit_held);
+            if (!slice_fits) {
+                ++over_cap;
+                best_effort = true;
+            }
+
+            // Blocks where a contraction of the loop rewards them, a grouped chunk of points
+            // otherwise.
+            // A slice that fits nothing is cut as finely as it goes: blocks are chosen to fit, and none would.
+            std::optional<BlockChoice> blocks;
+            if (auto const reusable = analysis->reusable_labels(labelling); slice_fits && !reusable.empty()) {
+                if (std::string_view const blocker = analysis->range_blocker(labelling); !blocker.empty()) {
+                    note_skip(blocker, detail);
+                } else {
+                    blocks =
+                        choose_blocks(extents, reusable, labelling.fully_sliced, fits,
+                                      [&](std::vector<std::size_t> const &b, std::size_t &largest, std::size_t &held,
+                                          long double &streamed) { analysis->range_cost(labelling, extents, b, largest, held, streamed); });
+                }
+            }
+            // A region that writes a tensor to storage is one loop. Blocks that leave a remainder add a
+            // loop per remainder, and SlabStreaming streams each loop's writes only when no other loop
+            // writes the tensor in memory, which two loops writing it never satisfy; the grouped plan's
+            // chunks divide the slices, so it is always one loop.
+            bool const writes_backed = std::ranges::any_of(labelling.store.tensor, [&](auto const &entry) {
+                auto const backing = scope.backing_of(entry.first);
+                return backing != nullptr && backing->write && !backing->update;
+            });
+            if (blocks.has_value() && writes_backed) {
+                for (std::size_t k = 0; k < extents.size(); ++k) {
+                    if (extents[k] % blocks->blocks[k] != 0) {
+                        blocks.reset();
+                        break;
+                    }
+                }
+            }
+            if (!blocks.has_value() && !labelling.fully_sliced.empty()) {
+                note_skip(OperandWithoutAxes, detail);
+                continue;
+            }
+
+            Plan plan;
+            plan.extents        = extents;
+            plan.slices         = slices;
+            plan.largest_before = seed_handle->total_bytes();
+            if (blocks.has_value()) {
+                plan.range  = true;
+                plan.blocks = blocks->blocks;
+                plan.depth  = 1;
+                for (std::size_t const b : plan.blocks) {
+                    plan.depth *= b;
+                }
+                plan.iterations = 0;
+                for (auto const &walks : loop_walks(plan)) {
+                    plan.iterations += walk_iterations(walks);
+                }
+                plan.largest_after = blocks->largest;
+                plan.traffic       = blocks->traffic;
             } else {
-                Plan candidate                  = plan;
-                candidate.triangle              = std::move(verdict.triangle);
-                std::size_t const        extent = extents[0];
-                std::vector<std::size_t> options;
-                if (_block_pin > 0) {
-                    options.push_back(static_cast<std::size_t>(_block_pin));
-                } else {
-                    for (std::size_t const b : balanced_blocks(extent)) {
-                        options.push_back(b);
-                    }
-                }
-                std::optional<std::size_t> chosen;
-                for (std::size_t const b : options) {
-                    // Two or more blocks, or the triangle is the whole square and saves nothing. A
-                    // region that writes storage is one loop per shape, so no remainder.
-                    if (b < 2 || b >= extent || (writes_backed && extent % b != 0)) {
-                        continue;
-                    }
-                    std::size_t largest = 0;
-                    std::size_t held    = 0;
-                    long double moved   = 0.0L;
-                    analysis->range_cost(labelling, extents, {b, b}, largest, held, moved);
-                    // The scratch a mirrored tile is computed into, beside the loop's other buffers.
-                    std::size_t scratch = graph.tensor(candidate.ops[candidate.triangle->writer].slots[0].tid).element_size;
-                    for (std::size_t const d : graph.tensor(candidate.ops[candidate.triangle->writer].slots[0].tid).dims) {
-                        scratch *= d;
-                    }
-                    scratch = scratch / (extent * extent) * (b * b);
-                    if (!fits(std::max(largest, scratch), held + scratch)) {
-                        continue;
-                    }
-                    candidate.blocks = {b, b};
-                    double price     = 0.0;
-                    for (auto const &loop : triangle_loops(extent, b)) {
-                        price += static_cast<double>(loop.table.size()) *
-                                 tile_price(graph, candidate, {loop.walks[0].length, loop.walks[1].length}, loop.mirror, pricing());
-                    }
-                    report(3, fmt::format("triangle of blocks of {} priced at {:.1f} us", b, price));
-                    if (!chosen.has_value() || price < candidate.price_us) {
-                        chosen                  = b;
-                        candidate.price_us      = price;
-                        candidate.largest_after = std::max(largest, scratch);
-                        candidate.traffic       = moved;
-                    }
-                }
-                // A region with nothing to stream is tiled for the triangle alone, so the triangle
-                // has to beat the region run whole, one tile of the full extents.
-                double const whole = allowance.triangle_only ? tile_price(graph, plan, {extent, extent}, false, pricing()) : 0.0;
-                if (!chosen.has_value()) {
-                    note_skip(_block_pin > 0 ? BlockPinned : TriangleFit, detail);
-                } else if (allowance.triangle_only && candidate.price_us >= whole) {
-                    note_skip(TrianglePrice, fmt::format("{}; {:.1f} us as a triangle of blocks of {} against {:.1f} us whole", detail,
-                                                         candidate.price_us, *chosen, whole));
-                } else {
-                    candidate.range      = true;
-                    candidate.blocks     = {*chosen, *chosen};
-                    candidate.depth      = *chosen * *chosen;
-                    candidate.iterations = 0;
-                    for (auto const &loop : triangle_loops(extent, *chosen)) {
-                        candidate.iterations += loop.table.size();
-                    }
-                    plan = std::move(candidate);
-                }
+                std::size_t const depth   = slice_fits ? chunk_depth(slices, joint ? unit_held : unit, room) : 1;
+                std::size_t       largest = 0;
+                std::size_t       held    = 0;
+                analysis->cost(labelling, extents, depth, largest, held, traffic);
+                plan.depth         = depth;
+                plan.iterations    = slices / depth;
+                plan.largest_after = largest;
+                plan.traffic       = traffic;
             }
-        }
+            plan.best_effort    = best_effort;
+            plan.fits_share     = slice_fits;
+            plan.accumulator    = accumulator;
+            plan.accumulator_id = accumulator_id;
+            plan.summed_into    = summed_into;
+            for (auto const &[tid, prefactor] : summed_into) {
+                plan.summed_names.push_back(graph.tensor(tid).name);
+            }
+            plan.store = labelling.store;
+            if (!analysis->build(labelling, plan, reason)) {
+                note_skip(reason, detail);
+                continue;
+            }
+            if (auto const site = gather_site(io, plan.replaced); site.has_value()) {
+                plan.site = *site;
+            } else {
+                note_skip(StatementBetween, detail);
+                continue;
+            }
+            analysis->describe(positions, plan.axis_names, plan.axis_letters);
+            analysis->partition(labelling, plan.streamed, plan.whole);
 
-        if (allowance.triangle_only && (!plan.triangle.has_value() || best_effort)) {
-            continue;
-        }
-        report(3, fmt::format("candidate {} streams {:.0f} bytes {}", fmt::join(plan.axis_names, " x "), static_cast<double>(plan.traffic),
-                              plan.range ? fmt::format("in blocks of {}", fmt::join(plan.blocks, " x "))
-                                         : fmt::format("at depth {}", plan.depth)));
-        if (best_effort) {
-            // One whose slices fit the share, by traffic as any plan; failing that the smallest slice.
-            bool const better = !fallback.has_value() || (plan.fits_share && !fallback->fits_share) ||
-                                (plan.fits_share == fallback->fits_share &&
-                                 (plan.fits_share ? plan.traffic < fallback->traffic
-                                                  : (plan.largest_after < fallback->largest_after ||
-                                                     (plan.largest_after == fallback->largest_after && plan.traffic < fallback->traffic))));
-            if (better) {
-                fallback = std::move(plan);
+            // Two exchangeable axes run only the tiles on and above their diagonal. The block is the one
+            // the cost model prices cheapest among those that fit, since halving the tiles changes the
+            // kernels' shapes as well as their count, which streamed bytes do not see.
+            // Whether or not the grid search found blocks worth cutting: the triangle chooses its own.
+            if (positions.size() == 2) {
+                if (!escape.has_value()) {
+                    escape.emplace(EscapeAnalysis::over(graph));
+                }
+                auto verdict = find_triangle(graph, plan, [&](TensorId tid) { return scope.backing_of(tid) != nullptr; }, *escape);
+                if (!verdict.triangle.has_value()) {
+                    if (verdict.reason != nullptr) {
+                        note_skip(*verdict.reason, detail);
+                    }
+                } else {
+                    Plan candidate                  = plan;
+                    candidate.triangle              = std::move(verdict.triangle);
+                    std::size_t const        extent = extents[0];
+                    std::vector<std::size_t> options;
+                    if (_block_pin > 0) {
+                        options.push_back(static_cast<std::size_t>(_block_pin));
+                    } else {
+                        for (std::size_t const b : balanced_blocks(extent)) {
+                            options.push_back(b);
+                        }
+                    }
+                    std::optional<std::size_t> chosen;
+                    for (std::size_t const b : options) {
+                        // Two or more blocks, or the triangle is the whole square and saves nothing. A
+                        // region that writes storage is one loop per shape, so no remainder.
+                        if (b < 2 || b >= extent || (writes_backed && extent % b != 0)) {
+                            continue;
+                        }
+                        std::size_t largest = 0;
+                        std::size_t held    = 0;
+                        long double moved   = 0.0L;
+                        analysis->range_cost(labelling, extents, {b, b}, largest, held, moved);
+                        // The scratch a mirrored tile is computed into, beside the loop's other buffers.
+                        std::size_t scratch = graph.tensor(candidate.ops[candidate.triangle->writer].slots[0].tid).element_size;
+                        for (std::size_t const d : graph.tensor(candidate.ops[candidate.triangle->writer].slots[0].tid).dims) {
+                            scratch *= d;
+                        }
+                        scratch = scratch / (extent * extent) * (b * b);
+                        if (!fits(std::max(largest, scratch), held + scratch)) {
+                            continue;
+                        }
+                        candidate.blocks = {b, b};
+                        double price     = 0.0;
+                        for (auto const &loop : triangle_loops(extent, b)) {
+                            price += static_cast<double>(loop.table.size()) *
+                                     tile_price(graph, candidate, {loop.walks[0].length, loop.walks[1].length}, loop.mirror, pricing());
+                        }
+                        report(3, fmt::format("triangle of blocks of {} priced at {:.1f} us", b, price));
+                        if (!chosen.has_value() || price < candidate.price_us) {
+                            chosen                  = b;
+                            candidate.price_us      = price;
+                            candidate.largest_after = std::max(largest, scratch);
+                            candidate.traffic       = moved;
+                        }
+                    }
+                    // A region with nothing to stream is tiled for the triangle alone, so the triangle
+                    // has to beat the region run whole, one tile of the full extents.
+                    double const whole = allowance.triangle_only ? tile_price(graph, plan, {extent, extent}, false, pricing()) : 0.0;
+                    if (!chosen.has_value()) {
+                        note_skip(_block_pin > 0 ? BlockPinned : TriangleFit, detail);
+                    } else if (allowance.triangle_only && candidate.price_us >= whole) {
+                        note_skip(TrianglePrice, fmt::format("{}; {:.1f} us as a triangle of blocks of {} against {:.1f} us whole", detail,
+                                                             candidate.price_us, *chosen, whole));
+                    } else {
+                        candidate.range      = true;
+                        candidate.blocks     = {*chosen, *chosen};
+                        candidate.depth      = *chosen * *chosen;
+                        candidate.iterations = 0;
+                        for (auto const &loop : triangle_loops(extent, *chosen)) {
+                            candidate.iterations += loop.table.size();
+                        }
+                        plan = std::move(candidate);
+                    }
+                }
             }
-        } else if (!best.has_value() || preferred(plan, *best)) {
-            best = std::move(plan);
+
+            if (allowance.triangle_only && (!plan.triangle.has_value() || best_effort)) {
+                continue;
+            }
+            report(3,
+                   fmt::format("candidate {} streams {:.0f} bytes {}", fmt::join(plan.axis_names, " x "), static_cast<double>(plan.traffic),
+                               plan.range ? fmt::format("in blocks of {}", fmt::join(plan.blocks, " x "))
+                                          : fmt::format("at depth {}", plan.depth)));
+            if (best_effort) {
+                // One whose slices fit the share, by traffic as any plan; failing that the smallest slice.
+                bool const better =
+                    !fallback.has_value() || (plan.fits_share && !fallback->fits_share) ||
+                    (plan.fits_share == fallback->fits_share &&
+                     (plan.fits_share ? plan.traffic < fallback->traffic
+                                      : (plan.largest_after < fallback->largest_after ||
+                                         (plan.largest_after == fallback->largest_after && plan.traffic < fallback->traffic))));
+                if (better) {
+                    fallback = std::move(plan);
+                }
+            } else if (!best.has_value() || preferred(plan, *best)) {
+                best = std::move(plan);
+            }
         }
     }
 

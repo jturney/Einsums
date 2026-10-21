@@ -2197,6 +2197,63 @@ TEST_CASE("AxisTiling picks its triangle block from what the tile's layout costs
     CHECK(steep > flat);
 }
 
+TEST_CASE("AxisTiling streams the seed alone when taking in what its labels reach leaves nothing to slice",
+          "[ComputeGraph][Pass][AxisTiling]") {
+    // The CCSD update cycle in miniature: W(a,e,b,f) = B(Q,a,e) B(Q,b,f), tau = t,
+    // r(i,j,a,b) = tau(i,j,e,f) W(a,e,b,f), and t += r with each electron's indices exchanged.
+    // Sliced on W's e and f, the labels run tau -> t -> r and back into W's a and b, where they
+    // meet the e and f they started from. The region takes in every intermediate over the cap
+    // that the labels reach, so with a cap below tau's size it took in the whole cycle and no
+    // labelling held: on the CCSD tutorial a budget the other tensors nearly filled left the seed
+    // a 13 KB cap, and the 63 MB ladder intermediate stayed whole, four times over the budget.
+    // Taking a tensor in is a choice, since one left out stays whole and is written through
+    // slices; the region falls back to the seed and its own readers and writers.
+    constexpr std::size_t o = 2, v = 6, naux = 3;
+    auto const            bvv = filled_as<double>("Bvv", {naux, v, v}, 21U);
+    auto const            t0  = filled_as<double>("t0", {o, o, v, v}, 23U);
+
+    // Reference, by plain loops.
+    RuntimeTensor<double> want = t0;
+    {
+        RuntimeTensor<double> w_ref("Wref", std::vector<std::size_t>{v, v, v, v});
+        RuntimeTensor<double> r_ref("Rref", std::vector<std::size_t>{o, o, v, v});
+        w_ref.zero();
+        r_ref.zero();
+        testing::reference_einsum("a,e,b,f <- Q,a,e ; Q,b,f", &w_ref, bvv, bvv);
+        testing::reference_einsum("i,j,a,b <- i,j,e,f ; a,e,b,f", &r_ref, t0, w_ref);
+        testing::reference_permute("j,i,b,a <- i,j,a,b", 1.0, &want, 1.0, r_ref);
+    }
+
+    RuntimeTensor<double> out("out", std::vector<std::size_t>{o, o, v, v});
+    cg::Graph             graph("update_cycle");
+    {
+        auto                  &t   = graph.scratch_runtime<double>("t", std::vector<std::size_t>{o, o, v, v});
+        auto                  &tau = graph.scratch_runtime<double>("tau", std::vector<std::size_t>{o, o, v, v});
+        auto                  &w   = graph.scratch_runtime<double>("W", std::vector<std::size_t>{v, v, v, v});
+        auto                  &r   = graph.scratch_runtime<double>("r", std::vector<std::size_t>{o, o, v, v});
+        cg::CaptureGuard const guard(graph);
+        cg::axpby(1.0, t0, 0.0, &t);
+        cg::axpby(1.0, t, 0.0, &tau);
+        cg::einsum("a,e,b,f <- Q,a,e ; Q,b,f", &w, bvv, bvv);
+        cg::einsum("i,j,a,b <- i,j,e,f ; a,e,b,f", &r, tau, w);
+        cg::permute("j,i,b,a <- i,j,a,b", 1.0, &t, 1.0, r);
+        cg::axpby(1.0, t, 0.0, &out);
+    }
+
+    // Below tau, t and r (1152 bytes each) and well above a slice of W.
+    auto const  tiling = decide(graph, 1000);
+    std::string reasons;
+    for (auto const &[reason, count] : tiling->skip_reasons()) {
+        reasons += reason + "; ";
+    }
+    CAPTURE(reasons);
+    REQUIRE(tiling->num_tiled() >= 1);
+    CHECK(declined_because(*tiling, "holds the others whole"));
+
+    materialize_and_execute(graph);
+    require_close(out, want, static_cast<double>(naux * v * v));
+}
+
 TEST_CASE("AxisTiling leaves a ladder that fits alone when nothing proves the exchange", "[ComputeGraph][Pass][AxisTiling][Triangle]") {
     LadderProblem<double> problem(8, 0, 16, 32);
     auto const            want = problem.expected(1.0);

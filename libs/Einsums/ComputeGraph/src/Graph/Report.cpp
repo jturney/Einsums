@@ -14,6 +14,7 @@
 /// out-of-process viewer can enumerate the graphs alive right now, which is the
 /// same audience the renderers above serve.
 
+#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
@@ -26,7 +27,10 @@
 #include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
+#include <Einsums/Logging.hpp>
+#include <Einsums/Options/Get.hpp>
 #include <Einsums/Profile/Profile.hpp>
+#include <Einsums/StringUtil/MemoryString.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TypeSupport/JsonEscape.hpp>
 
@@ -138,6 +142,20 @@ void Graph::end_run_metrics(double wall_ms) {
     _last_peak_bytes  = _run_context->peak_bytes();
     _last_arena_bytes = _run_context->arena_bytes();
     _last_run_valid   = false;
+
+    // The passes plan against --einsums:max-memory, and a plan that cannot meet it is noted only in
+    // the pass report. The replay's measured peak counts graph-managed tensors alone, never the
+    // caller's, so a peak over the budget is a budget missed whatever any pass believed; said once
+    // per graph, where a caller sees it.
+    if (!_warned_over_budget && _last_peak_bytes > 0) {
+        std::size_t const budget = string_util::memory_string(config::get(option::MaxMemory));
+        if (budget != 0 && _last_peak_bytes > budget) {
+            _warned_over_budget = true;
+            EINSUMS_LOG_WARN("graph '{}': a replay held {} bytes of graph-managed tensors, over --einsums:max-memory of {} bytes; the "
+                             "optimizer could not fit the program to the budget (--einsums:pass:verbosity 3 reports why)",
+                             _name, _last_peak_bytes, budget);
+        }
+    }
 }
 
 RunMetrics const &Graph::last_run() const {
