@@ -299,6 +299,46 @@ TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - hoists the writer of a deferred
     }
 }
 
+TEST_CASE("LoopInvariantHoisting - the loop reads only the hoisted outputs its body still reads", "[ComputeGraph][Passes][Loop]") {
+    // Hoisting a chain moves an intermediate's writer and its reader out together. The loop was
+    // still made a reader of every hoisted output, the intermediate among them, and a pass that
+    // slices an intermediate declines every statement it cannot slice: AxisTiling left the 79 MB
+    // ladder intermediate of out_of_core.py whole, a replay five times over its budget.
+    constexpr size_t N = 3;
+    auto             A = create_random_tensor<double>("A", 4, 4);
+    auto             B = create_random_tensor<double>("B", 4, 4);
+    auto             C = create_zero_tensor<double>("C", 4, 4);
+    auto             D = create_zero_tensor<double>("D", 4, 4);
+    auto             t = create_zero_tensor<double>("t", 4, 4);
+    cg::Graph        g("lih_wiring");
+    auto            &body = g.add_loop("loop", N, [](size_t it) { return it + 1 < N; });
+    cg::TensorId     x_id = 0;
+    {
+        auto &X = body.declare_internal_tensor<double>("X", std::vector<size_t>{4, 4});
+        x_id    = body.find_tensor_id_by_ptr(&X);
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", &X, A, B); // invariant writer of X
+        cg::einsum("ik;kj->ij", &C, X, B); // invariant reader of X, writer of C
+        cg::einsum("ik;kj->ij", &D, C, t); // stays: t changes below
+        cg::axpy(1.0, D, &t);
+    }
+    REQUIRE(x_id != 0);
+
+    cg::PassManager pm;
+    auto            lih = std::make_shared<cg::passes::LoopInvariantHoisting>();
+    pm.add(lih);
+    REQUIRE(g.apply(pm));
+    REQUIRE(lih->num_hoisted() == 2);
+
+    auto const loop = std::ranges::find_if(g.nodes(), [](cg::Node const &n) { return n.kind == cg::OpKind::Loop; });
+    REQUIRE(loop != g.nodes().end());
+    auto const named = [&](std::string_view name) {
+        return std::ranges::any_of(loop->inputs, [&](cg::TensorId tid) { return g.tensor(tid).name == name; });
+    };
+    CHECK(named("C"));       // the body still reads it
+    CHECK_FALSE(named("X")); // only the hoisted reader did
+}
+
 TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - inner-loop invariant hoists all the way to parent", "[ComputeGraph][Passes][Loop][Nested]",
                         testing::AllScalarTypes) {
     using T = TestType;

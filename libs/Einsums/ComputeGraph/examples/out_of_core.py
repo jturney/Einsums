@@ -114,6 +114,9 @@ def program(path, problem, iterations):
     """Bvv produced once into the file by a setup body, and the DF particle ladder run on it per iteration.
 
     Bvv[Q,a,b] = sum_mn (Q|mn) C[m,a] C[n,b]; r2[i,j,a,b] = sum_Qef Bvv[Q,a,e] Bvv[Q,b,f] tau[i,j,e,f].
+    The amplitudes change every iteration, as a CC code's do (here they are halved), so the ladder
+    is computed again each time; with amplitudes that never changed, LoopInvariantHoisting would
+    move it before the loop and compute it once.
     """
     fitted, cv, tau = problem["fitted"], problem["cv"], problem["tau"]
     naux, nvir, nocc = fitted.shape[0], cv.shape[1], tau.shape[0]
@@ -131,6 +134,7 @@ def program(path, problem, iterations):
     body = graph.add_loop("iterations", iterations, lambda it: it + 1 < iterations)
     with cg.capture(body):
         einsums.einsum("i,j,a,b <- Q,a,e ; Q,b,f ; i,j,e,f", r2, bvv, bvv, T)
+        einsums.linalg.scale(0.5, T)
     return graph, r2
 
 
@@ -176,7 +180,8 @@ def main():
     os.remove(path)
     try:
         print("One program: Bvv produced into", os.path.basename(path), "by a setup body, read by every iteration")
-        graph, r2 = program(path, problem, iterations=3)
+        iterations = 3
+        graph, r2 = program(path, problem, iterations)
         manager = cg.default_pass_manager()
         graph.apply(manager)
         print_explanation(manager)
@@ -185,7 +190,8 @@ def main():
         stored = einsums.create_zero_tensor("Bvv", list(bvv.shape))
         einsums.io.read(path, "Bvv", stored)
         check("stored Bvv", stored, bvv, 1e-12)
-        check("ladder", r2, expected, 1e-10)
+        # The last iteration's amplitudes were halved once per earlier iteration.
+        check("ladder", r2, expected * 0.5 ** (iterations - 1), 1e-10)
 
         print("\nA later run reusing the file")
         graph, r2 = later_run(path, problem)

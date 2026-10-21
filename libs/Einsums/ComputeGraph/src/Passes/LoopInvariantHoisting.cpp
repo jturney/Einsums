@@ -358,14 +358,29 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             }
         }
 
-        // Collect each hoisted node's output IDs so we can wire them as
-        // inputs of the Loop node below, without this data-flow edge,
-        // ``topological_sort`` has nothing tying the hoisted producers
-        // to the loop's body.
+        // The outputs the body still reads become inputs of the Loop node below: without that
+        // data-flow edge, ``topological_sort`` has nothing tying the hoisted producers to the
+        // body that consumes them. Only those. An output nothing left in the body reads, such as
+        // an intermediate whose reader was hoisted with its writer, would make the Loop node a
+        // reader of a tensor it never touches, and a pass that slices that tensor declines a
+        // statement it cannot slice: AxisTiling left a hoisted 79 MB ladder intermediate whole.
+        std::unordered_set<void const *> body_reads;
+        for (auto const &bnode : remaining) {
+            auto const [reads, writes] = loop_desc->body->effective_io(bnode);
+            for (TensorId const tid : reads) {
+                if (TensorHandle const *read = loop_desc->body->find_tensor(loop_desc->body->buffer_of(tid)); read != nullptr) {
+                    body_reads.insert(read->tensor_ptr);
+                }
+            }
+        }
         std::vector<TensorId> hoisted_output_ids;
         for (auto const &h : hoisted) {
-            for (auto tid : h.outputs)
-                hoisted_output_ids.push_back(tid);
+            for (auto tid : h.outputs) {
+                TensorHandle const *written = graph.find_tensor(graph.buffer_of(tid));
+                if (written == nullptr || written->tensor_ptr == nullptr || body_reads.contains(written->tensor_ptr)) {
+                    hoisted_output_ids.push_back(tid);
+                }
+            }
         }
 
         // Update body to only contain remaining (non-hoisted) nodes.
