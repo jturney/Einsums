@@ -50,8 +50,8 @@ What to read in the report the example prints:
   iteration of a loop moves the block its view names, one run of the file,
   in place of the whole tensor.
 * ``AxisTiling: slicing Bvv*tau[0]``: the ladder's partial product is built
-  three values of Q at a time, and the residual collects each block's share.
-* ``MemoryPlanning: peak``: 5.75 MB for the program and 2.74 MB for the later
+  fifteen values of Q at a time, and the residual collects each block's share.
+* ``MemoryPlanning: peak``: 11.70 MB for the program and 8.89 MB for the later
   run, under a budget of 16 MB; Bvv alone is 3.2 MB, and ``Bvv*tau`` 79 MB.
 
 Run with::

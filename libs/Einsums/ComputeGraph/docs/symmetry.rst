@@ -262,8 +262,8 @@ would run its tiles, from the hardware profile ``einsums tune`` writes or from
 a built-in table, and takes the cheapest. On benzene in cc-pVDZ, where the
 particle ladder dominates, the triangle took a CCSD iteration to 0.69 to 0.72
 of the time without it. On water in cc-pVTZ it picks blocks of 7 x 7 and makes
-an iteration 23% faster, and a third faster with the integrals in files, where
-the triangle also reads fewer blocks of them. :ref:`tutorial-ccsd` shows the
+an iteration 19% faster, and 18% faster with the integrals in files, where the
+triangle also reads fewer blocks of them. :ref:`tutorial-ccsd` shows the
 declaration and those measurements.
 
 A symmetry declared on a tensor the graph declared, such as one backed by a

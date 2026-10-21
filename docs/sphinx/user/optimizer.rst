@@ -750,7 +750,7 @@ is built, for water in cc-pVTZ under a 16 MB budget: a setup body produces
 ``Bvv`` into a file, every iteration of the loop runs the particle ladder on it,
 and the file is stored so the blocks the loop reads are contiguous. A second
 part reuses the file from another graph, as a later run would. Its docstring
-says which lines of the report to read; the program's peak is 5.75 MB, with
+says which lines of the report to read; the program's peak is 11.70 MB, with
 ``Bvv`` at 3.2 MB and the ladder's four-index intermediate at 79 MB.
 
 At a size where a backing matters, the same ladder for benzene in cc-pVDZ
