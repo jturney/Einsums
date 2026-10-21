@@ -22,6 +22,7 @@
 #include <Einsums/ComputeGraph/Observer.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp>
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
@@ -58,6 +59,15 @@ struct MemoryBudget {
     ~MemoryBudget() { config::set(option::MaxMemory, previous); }
     MemoryBudget(MemoryBudget const &)            = delete;
     MemoryBudget &operator=(MemoryBudget const &) = delete;
+};
+
+/// Sets --einsums:graph:tiling-budget-share for one case.
+struct BudgetShare {
+    double previous{config::get(option::GraphTilingBudgetShare)};
+    explicit BudgetShare(double fraction) { config::set(option::GraphTilingBudgetShare, fraction); }
+    ~BudgetShare() { config::set(option::GraphTilingBudgetShare, previous); }
+    BudgetShare(BudgetShare const &)            = delete;
+    BudgetShare &operator=(BudgetShare const &) = delete;
 };
 
 struct TempFile {
@@ -269,8 +279,11 @@ TEST_CASE("Random programs over backed tensors replay correctly and hold no stre
     Program const prog = draw(rng);
     INFO("program:\n" << prog.describe());
 
-    // A share of 64 bytes: every backed tensor (at least 3 x 3 doubles) is over it.
-    MemoryBudget const budget(400);
+    // A share of 64 bytes: every backed tensor (at least 3 x 3 doubles) is over it. The share is a
+    // fraction of the budget, and a budget these programs meet keeps the share that small without
+    // a budget no program can meet, which the replay reports as a missed budget.
+    MemoryBudget const budget(std::size_t{1} << 20);
+    BudgetShare const  share(64.0 / static_cast<double>(std::size_t{1} << 20));
 
     TempFile const                               tmp("program_" + std::to_string(seed) + ".etn");
     std::map<std::string, RuntimeTensor<double>> values; // what the oracle reads and writes

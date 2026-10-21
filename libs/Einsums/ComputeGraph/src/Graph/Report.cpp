@@ -151,9 +151,9 @@ void Graph::end_run_metrics(double wall_ms) {
         std::size_t const budget = string_util::memory_string(config::get(option::MaxMemory));
         if (budget != 0 && _last_peak_bytes > budget) {
             _warned_over_budget = true;
-            EINSUMS_LOG_WARN("graph '{}': a replay held {} bytes of graph-managed tensors, over --einsums:max-memory of {} bytes; the "
-                             "optimizer could not fit the program to the budget (--einsums:pass:verbosity 3 reports why)",
-                             _name, _last_peak_bytes, budget);
+            EINSUMS_LOG_ERROR("graph '{}': a replay held {} bytes of graph-managed tensors, over --einsums:max-memory of {} bytes; the "
+                              "optimizer could not fit the program to the budget (--einsums:pass:verbosity 3 reports why)",
+                              _name, _last_peak_bytes, budget);
         }
     }
 }
