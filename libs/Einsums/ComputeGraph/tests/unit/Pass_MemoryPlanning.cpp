@@ -6,8 +6,10 @@
 /// @file Pass_MemoryPlanning.cpp
 /// @brief Unit tests for the MemoryPlanning analysis pass.
 
+#include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
+#include <Einsums/Options/Get.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -402,6 +404,95 @@ TEMPLATE_LIST_TEST_CASE("MemoryPlanning - arena keeps overlapping lifetimes apar
 // live together, so they need disjoint ranges: a slot sized in elements, or a
 // second slot placed by the first tensor's element size, would overlap them and
 // corrupt both results.
+namespace {
+
+/// An intermediate the arena hosts, used only at the start, and two caller tensors far larger
+/// than it, used only at the end once it is dead. Without the arena the peak is the end alone;
+/// an arena is held for as long as the graph is, so with one the end holds it as well.
+struct ArenaAtTheEnd {
+    static constexpr std::size_t n = 32, m = 256;
+    Tensor<double, 2>            A    = create_random_tensor<double>("A", n, n);
+    Tensor<double, 2>            out1 = create_zero_tensor<double>("out1", n, n);
+    Tensor<double, 2>            W    = create_random_tensor<double>("W", m, m);
+    Tensor<double, 2>            out2 = create_zero_tensor<double>("out2", m, m);
+
+    void capture(cg::Graph &graph) {
+        auto                  &X = graph.create_tensor<double, 2>("X", n, n);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &X, A, A);
+        cg::einsum("ik;kj->ij", &out1, X, A); // X dies here
+        cg::einsum("ik;kj->ij", &out2, W, W);
+    }
+
+    /// MemoryPlanning's peak for the program, after FreeInsertion has bracketed X.
+    std::size_t planned_peak(bool apply_arena, std::size_t *arena_bytes = nullptr) {
+        cg::Graph graph("arena_at_the_end");
+        capture(graph);
+        graph.apply<cg::passes::FreeInsertion>(std::size_t{0});
+        auto [modified, mp] = graph.apply<cg::passes::MemoryPlanning>(apply_arena);
+        if (arena_bytes != nullptr) {
+            *arena_bytes = mp.num_planned() > 0 && apply_arena ? mp.planned_arena_bytes() : 0;
+        }
+        return mp.peak_memory();
+    }
+};
+
+/// Sets --einsums:max-memory for one case.
+struct MaxMemory {
+    std::string previous{config::get(option::MaxMemory)};
+    explicit MaxMemory(std::size_t bytes) { config::set(option::MaxMemory, std::to_string(bytes) + "b"); }
+    ~MaxMemory() { config::set(option::MaxMemory, previous); }
+    MaxMemory(MaxMemory const &)            = delete;
+    MaxMemory &operator=(MaxMemory const &) = delete;
+};
+
+} // namespace
+
+TEST_CASE("MemoryPlanning - the peak counts an applied arena held whole", "[ComputeGraph][Passes][Arena]") {
+    // The peak was computed from each tensor's live interval before the arena was placed, and an
+    // arena is one block held for as long as the graph is. On the CCSD tutorial's file-backed stage
+    // the plan reported 9.44 MB and the replay held 11.30 MB: the arena's 4.61 MB, whole, beside the
+    // peak of everything else.
+    MaxMemory const   budget(std::size_t{1} << 30);
+    ArenaAtTheEnd     program;
+    std::size_t       arena   = 0;
+    std::size_t const without = program.planned_peak(false);
+    std::size_t const with    = program.planned_peak(true, &arena);
+    REQUIRE(arena > 0);
+    CHECK(with >= without + arena);
+}
+
+TEST_CASE("MemoryPlanning - an arena that holds the plan over the budget is declined", "[ComputeGraph][Passes][Arena]") {
+    // With the arena the plan is over the budget, and without it the plan is lower: each
+    // intermediate is then allocated and freed on its own.
+    ArenaAtTheEnd     program;
+    std::size_t       arena   = 0;
+    std::size_t const without = program.planned_peak(false);
+    std::size_t const with    = [&] {
+        MaxMemory const plenty(std::size_t{1} << 30);
+        return program.planned_peak(true, &arena);
+    }();
+    REQUIRE(with > without);
+
+    MaxMemory const between(without + (with - without) / 2);
+    cg::Graph       graph("arena_over_budget");
+    program.capture(graph);
+    graph.apply<cg::passes::FreeInsertion>(std::size_t{0});
+    auto [modified, mp] = graph.apply<cg::passes::MemoryPlanning>();
+    CHECK(mp.num_planned() == 0);
+    CHECK(mp.peak_memory() == without);
+    CHECK(std::ranges::any_of(mp.skip_reasons(),
+                              [](auto const &entry) { return entry.first.find("would hold the plan over") != std::string::npos; }));
+
+    // And the program still computes what it computed.
+    graph.execute();
+    auto out_ref = create_zero_tensor<double>("out_ref", ArenaAtTheEnd::m, ArenaAtTheEnd::m);
+    reference_einsum("ij <- ik ; kj", &out_ref, program.W, program.W);
+    for (std::size_t k = 0; k < out_ref.size(); ++k) {
+        REQUIRE(program.out2.data()[k] == Catch::Approx(out_ref.data()[k]).epsilon(1e-10));
+    }
+}
+
 TEST_CASE("MemoryPlanning - arena packs intermediates of different element sizes", "[ComputeGraph][Passes][Arena]") {
     using Z_t              = std::complex<double>;
     constexpr size_t N     = kArenaN;

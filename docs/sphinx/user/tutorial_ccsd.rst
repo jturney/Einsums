@@ -248,16 +248,16 @@ Only the inputs are annotated; the passes carry the spaces through every interme
       - [diagnostic] ScalingAnalysis: rate-limiting node(s) 'einsum: C[i,j,a,b] = A[i,j,e,f] * B[a,e,b,f]' (#63) at 2*o^2*v^4
       - [diagnostic] ScalingAnalysis: intermediate footprint at most 2*o^2 + o^4 + 2*o*v + 9*o^2*v^2 + o^3*v + 2*v^2 + v^4 elements over 18 intermediate(s), a sum of sizes rather than a liveness-aware high-water mark
       - [tuning] InplaceOptimization: merged 0 buffer(s) into dying inputs (13 candidate(s))
-      - [tuning] FreeInsertion: 20 intermediate(s) freed after their last consumer
-      - [tuning] MemoryPlanning: peak 66.44 MB of 92.87 MB total
-      - [tuning]     arena: 62.88 MB hosting 20 intermediate(s) (75.52 MB of buffers)
+      - [tuning] FreeInsertion: 21 intermediate(s) freed after their last consumer
+      - [tuning] MemoryPlanning: peak 70.83 MB of 92.87 MB total
+      - [tuning]     arena: 62.88 MB hosting 21 intermediate(s) (75.57 MB of buffers)
 
 Read it from the top.
 
 * The spin adaptation writes many terms as ``2 A - B``, where ``A`` and ``B`` are the same integral with two indices exchanged. ``LinearCombinationContractionFolding`` found nine such pairs and runs each as one contraction against the combined integral.
 * The cost of an iteration is a polynomial in the spaces' symbols, and the rate-limiting node is the ladder at :math:`2 o^2 v^4`. The term :math:`2 v^4 Q` is the planner's choice for the ladder: with the spaces annotated it forms :math:`\langle ab|ef\rangle` from its factors and then contracts it, the order with the fewest operations for this family.
-* The footprint has a :math:`v^4` term, the price of that choice: 63 MB of the 66 MB peak. It is the subject of stage 5.
-* The memory passes free every intermediate after its last use and pack 20 of them into one arena.
+* The footprint has a :math:`v^4` term, the price of that choice: 63 MB of the 71 MB peak. It is the subject of stage 5.
+* The memory passes free every intermediate after its last use and pack 21 of them into one arena, which is held whole for the replay, so the peak counts all of it.
 
 The same report is available as records a program can read, ``graph.decisions``, each with a stable code; :ref:`tutorial-optimizer` describes them.
 

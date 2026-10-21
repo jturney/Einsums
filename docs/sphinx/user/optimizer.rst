@@ -987,10 +987,12 @@ moved, counted wherever a pass moved it: a whole load or store, a streamed slab,
 a box, a publish. ``peak_bytes`` is the most the graph held at once of the
 tensors it allocates and frees, plus MemoryPlanning's arena when there is one;
 the caller's own tensors and library scratch are outside it. It is the number to
-set beside ``MemoryPlanning.peak_memory``, which estimates the same peak with
-every tensor freed after its last use; FreeInsertion leaves intermediates under
-64 KiB allocated, so a graph of many tiny intermediates holds a little more than
-the estimate.
+set beside ``MemoryPlanning.peak_memory``, which estimates the same peak: every
+tensor freed after its last use and an applied arena held whole, since the arena
+is one block that lives as long as the graph. FreeInsertion leaves at most 64 KiB
+of the smallest intermediates allocated in all, so the two differ by little.
+MemoryPlanning declines its arena where the arena would hold the plan over
+``--einsums:max-memory`` and the plan without it is lower.
 
 To hear a replay as it runs, attach an observer. ``cg.EventLog`` keeps every
 event: each node's start and end with its duration and thread, each read, write

@@ -92,8 +92,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// The codes this pass records its decisions under (@ref Decision::code).
     /// @{
     static constexpr Reason Peak{"memory-planning.peak",
-                                 "the most host memory the plan holds at once, with every tensor freed after its last use"};
+                                 "the most host memory the plan holds at once: every tensor freed after its last use, and an applied "
+                                 "arena held whole"};
     static constexpr Reason Arena{"memory-planning.arena", "place intermediates at offsets of one arena whose buffers they share"};
+    static constexpr Reason ArenaOverBudget{"memory-planning.arena-over-budget",
+                                            "an arena is held whole for as long as the graph is, and here it would hold the plan over "
+                                            "--einsums:max-memory where freeing each intermediate after its last use keeps it lower, so "
+                                            "none is placed"};
     /// @}
 
     APIARY_EXPOSE MemoryPlanning() = default;
