@@ -381,6 +381,27 @@ TEST_CASE("Random programs over backed tensors replay correctly and hold no stre
         auto const managed = std::ranges::find_if(peak->facts, [](cg::Fact const &f) { return f.name == "managed_peak"; });
         REQUIRE(managed != peak->facts.end());
         CHECK(static_cast<double>(graph.last_run().peak_bytes) == managed->value);
+
+        // Beside it, what the replay holds throughout: the caller's tensors and nothing backed,
+        // since a backed tensor is moved through boxes and slabs the lifecycle nodes manage. The
+        // budget bounds the two together.
+        auto const resident = std::ranges::find_if(peak->facts, [](cg::Fact const &f) { return f.name == "resident"; });
+        REQUIRE(resident != peak->facts.end());
+        CHECK(static_cast<double>(graph.last_run().resident_bytes) == resident->value);
+        // A drawn operand no statement names never reaches the graph.
+        std::set<std::string> named;
+        for (auto const &st : prog.statements) {
+            for (std::size_t const k : {st.out, st.x, st.y}) {
+                named.insert(prog.operands[k].name);
+            }
+        }
+        std::uint64_t callers = 0;
+        for (auto const &[name, tensor] : caller) {
+            if (named.contains(name)) {
+                callers += tensor.size() * sizeof(double);
+            }
+        }
+        CHECK(graph.last_run().resident_bytes == callers);
     }
 
     // Every whole read of a backed tensor over its share, unless SlabStreaming, the pass that decides

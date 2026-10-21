@@ -89,11 +89,15 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") RunMetrics {
     /// One entry per backing in the graph and its bodies, in name order.
     APIARY_EXPOSE APIARY_READONLY std::vector<BackingRun> backings;
     /// The most bytes of graph-managed tensors held at once: deferred tensors the graph allocated
-    /// and freed, plus @ref arena_bytes. Not the process's memory: BLAS scratch and the caller's own
-    /// tensors are outside it.
+    /// and freed, plus @ref arena_bytes. Not the process's memory: BLAS scratch is outside it, and
+    /// the caller's own tensors are in @ref resident_bytes.
     APIARY_EXPOSE APIARY_READONLY std::uint64_t peak_bytes{0};
     /// The arena MemoryPlanning placed intermediates in, held for the whole replay; 0 without one.
     APIARY_EXPOSE APIARY_READONLY std::uint64_t arena_bytes{0};
+    /// What the replay held from its start to its end outside @ref peak_bytes: the caller's
+    /// tensors and any intermediate given storage outside a lifecycle node (@ref
+    /// Graph::resident_bytes). The program held @ref peak_bytes plus this at its peak.
+    APIARY_EXPOSE APIARY_READONLY std::uint64_t resident_bytes{0};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

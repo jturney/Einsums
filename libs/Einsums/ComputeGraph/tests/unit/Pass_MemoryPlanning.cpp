@@ -502,6 +502,51 @@ TEST_CASE("MemoryPlanning - the managed peak is what the replay holds", "[Comput
     }
 }
 
+TEST_CASE("MemoryPlanning - resident bytes are what the replay holds outside its lifecycle nodes", "[ComputeGraph][Passes]") {
+    // The budget bounds the program, and the replay's own count leaves out what it holds from start
+    // to end: the caller's tensors, and an intermediate nothing allocates and frees. Each such
+    // tensor is counted once, however many nodes read it, and one no node reads is not counted.
+    constexpr std::size_t n      = 32;
+    constexpr std::size_t matrix = n * n * sizeof(double);
+    auto                  A      = create_random_tensor<double>("A", n, n);
+    auto                  out    = create_zero_tensor<double>("out", n, n);
+    auto                  unused = create_zero_tensor<double>("unused", n, n);
+    (void)unused;
+
+    auto const capture = [&](cg::Graph &graph) {
+        auto &X = graph.create_tensor<double, 2>("X", n, n);
+        auto &Y = graph.create_tensor<double, 2>("Y", n, n);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", &X, A, A);
+            cg::einsum("ik;kj->ij", &out, X, A);
+            cg::einsum("ik;kj->ij", &Y, out, A);
+            cg::einsum("ik;kj->ij", &out, Y, A);
+        }
+    };
+
+    SECTION("intermediates the lifecycle nodes manage") {
+        cg::Graph graph("resident_managed");
+        capture(graph);
+        graph.apply<cg::passes::FreeInsertion>(std::size_t{0});
+        auto [modified, mp] = graph.apply<cg::passes::MemoryPlanning>(false);
+        graph.execute();
+        CHECK(graph.last_run().resident_bytes == 2 * matrix); // A and out
+        CHECK(graph.last_run().resident_bytes == mp.resident_memory());
+        CHECK(graph.resident_bytes() == mp.resident_memory());
+    }
+
+    SECTION("intermediates nothing frees") {
+        cg::Graph graph("resident_unmanaged");
+        capture(graph);
+        auto [modified, mp] = graph.apply<cg::passes::MemoryPlanning>(false);
+        graph.execute();
+        CHECK(graph.last_run().resident_bytes == 4 * matrix); // A, out, X and Y
+        CHECK(graph.last_run().resident_bytes == mp.resident_memory());
+        CHECK(graph.last_run().peak_bytes == 0);
+    }
+}
+
 TEST_CASE("MemoryPlanning - an arena that holds the plan over the budget is declined", "[ComputeGraph][Passes][Arena]") {
     // With the arena the plan is over the budget, and without it the plan is lower: each
     // intermediate is then allocated and freed on its own.

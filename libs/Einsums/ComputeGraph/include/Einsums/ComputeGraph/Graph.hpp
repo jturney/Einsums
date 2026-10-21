@@ -658,6 +658,7 @@ struct GraphState {
     std::vector<BackingRun>        _last_backings;
     double                         _last_wall_ms{0.0};
     std::uint64_t                  _last_peak_bytes{0};
+    std::uint64_t                  _last_resident_bytes{0};
     std::uint64_t                  _last_arena_bytes{0};
     /// Whether a replay's peak has been reported over --einsums:max-memory; once per graph.
     bool               _warned_over_budget{false};
@@ -1793,6 +1794,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     APIARY_EXPOSE [[nodiscard]] RunMetrics const &last_run() const;
+
+    /**
+     * @brief The bytes a replay holds from its start to its end that no lifecycle node of it
+     *        allocates or frees.
+     * @return The bytes of every tensor this graph and its bodies read or write that is in memory
+     *         for the whole replay: the caller's tensors, and any intermediate given storage
+     *         outside a Materialize node. Each tensor once; views and tensors a Materialize or Free
+     *         node manages are left out. A backed tensor is read and written through buffers
+     *         those nodes manage, so its stored bytes are not counted.
+     *
+     * The other half of the program's memory beside @ref RunMetrics::peak_bytes, which counts
+     * what the lifecycle nodes hold. Their sum is what the budget check compares with
+     * --einsums:max-memory.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] std::uint64_t resident_bytes() const;
 
     /**
      * @brief Make @p child, and every graph under it, share this graph's run context.

@@ -523,6 +523,7 @@ std::size_t managed_peak(Graph &graph, std::size_t arena) {
 
 void MemoryPlanning::reset_stats() {
     _managed_peak_memory  = 0;
+    _resident_memory      = 0;
     _planned_arena_bytes  = 0;
     _num_planned          = 0;
     _planned_tensor_bytes = 0;
@@ -551,14 +552,17 @@ bool MemoryPlanning::transform(Graph &graph) {
         _peak_memory = std::max(_peak_memory, peak_with_arena);
     }
     _managed_peak_memory = managed_peak(graph, _apply_arena ? _planned_arena_bytes : 0);
+    _resident_memory     = graph.resident_bytes();
 
     note(Peak,
-         fmt::format("peak host memory {} bytes (of {} total allocated), {} of them graph-managed as a replay holds them{}", _peak_memory,
-                     _total_memory, _managed_peak_memory,
+         fmt::format("peak host memory {} bytes (of {} total allocated), {} of them graph-managed as a replay holds them, beside {} "
+                     "resident throughout{}",
+                     _peak_memory, _total_memory, _managed_peak_memory, _resident_memory,
                      _device_peak_memory > 0 ? fmt::format(", device peak {} bytes", _device_peak_memory) : std::string{}),
          Decision{.graph = graph.name(),
                   .facts = {Fact{.name = "peak", .value = static_cast<double>(_peak_memory), .unit = "B"},
                             Fact{.name = "managed_peak", .value = static_cast<double>(_managed_peak_memory), .unit = "B"},
+                            Fact{.name = "resident", .value = static_cast<double>(_resident_memory), .unit = "B"},
                             Fact{.name = "total", .value = static_cast<double>(_total_memory), .unit = "B"},
                             Fact{.name = "device_peak", .value = static_cast<double>(_device_peak_memory), .unit = "B"}}},
          1);

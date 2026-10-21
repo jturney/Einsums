@@ -137,6 +137,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("managed_peak_memory") [[nodiscard]] size_t managed_peak_memory() const { return _managed_peak_memory; }
 
+    /// What a replay holds from its start to its end outside @ref managed_peak_memory: the
+    /// caller's tensors and any intermediate given storage outside a lifecycle node, as
+    /// Graph::last_run reports it in resident_bytes. The program holds the two together at its
+    /// peak, and that sum is what has to fit --einsums:max-memory.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("resident_memory") [[nodiscard]] size_t resident_memory() const { return _resident_memory; }
+
     /// Device memory: total across all device-resident tensors.
     APIARY_EXPOSE APIARY_GETTER("device_total_memory") [[nodiscard]] size_t device_total_memory() const { return _device_total_memory; }
 
@@ -156,6 +163,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     size_t _total_memory{0};
     size_t _peak_memory{0};
     size_t _managed_peak_memory{0};
+    size_t _resident_memory{0};
     size_t _device_total_memory{0};
     size_t _device_peak_memory{0};
     size_t _planned_arena_bytes{0};

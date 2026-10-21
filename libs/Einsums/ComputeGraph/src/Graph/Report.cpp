@@ -43,6 +43,7 @@
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -138,24 +139,87 @@ void Graph::end_run_metrics(double wall_ms) {
                                             .publishes     = counts.publishes.load(std::memory_order_relaxed) - start.publishes});
     }
     std::ranges::sort(_last_backings, {}, &BackingRun::tensor);
-    _last_wall_ms     = wall_ms;
-    _last_peak_bytes  = _run_context->peak_bytes();
-    _last_arena_bytes = _run_context->arena_bytes();
-    _last_run_valid   = false;
+    _last_wall_ms        = wall_ms;
+    _last_peak_bytes     = _run_context->peak_bytes();
+    _last_arena_bytes    = _run_context->arena_bytes();
+    _last_resident_bytes = resident_bytes();
+    _last_run_valid      = false;
 
     // The passes plan against --einsums:max-memory, and a plan that cannot meet it is noted only in
-    // the pass report. The replay's measured peak counts graph-managed tensors alone, never the
-    // caller's, so a peak over the budget is a budget missed whatever any pass believed; said once
-    // per graph, where a caller sees it.
-    if (!_warned_over_budget && _last_peak_bytes > 0) {
+    // the pass report. The budget bounds the program, so the replay's own count is set beside what
+    // it held throughout, the caller's tensors among them, and a sum over the budget is a budget
+    // missed whatever any pass believed; said once per graph, where a caller sees it.
+    std::uint64_t const held = _last_peak_bytes + _last_resident_bytes;
+    if (!_warned_over_budget && held > 0) {
         std::size_t const budget = string_util::memory_string(config::get(option::MaxMemory));
-        if (budget != 0 && _last_peak_bytes > budget) {
+        if (budget != 0 && held > budget) {
             _warned_over_budget = true;
-            EINSUMS_LOG_ERROR("graph '{}': a replay held {} bytes of graph-managed tensors, over --einsums:max-memory of {} bytes; the "
-                              "optimizer could not fit the program to the budget (--einsums:pass:verbosity 3 reports why)",
-                              _name, _last_peak_bytes, budget);
+            EINSUMS_LOG_ERROR("graph '{}': a replay held {} bytes at its peak, {} of graph-managed tensors and {} resident throughout, "
+                              "over --einsums:max-memory of {} bytes; the optimizer could not fit the program to the budget "
+                              "(--einsums:pass:verbosity 3 reports why)",
+                              _name, held, _last_peak_bytes, _last_resident_bytes, budget);
         }
     }
+}
+
+std::uint64_t Graph::resident_bytes() const {
+    // The tensor objects a lifecycle node allocates or frees, anywhere in the tree: the replay's
+    // own count holds those, an arena's among them.
+    std::unordered_set<void const *> managed;
+    // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
+    std::function<void(Graph const &)> lifecycle = [&](Graph const &g) {
+        for (auto const &node : g.nodes()) {
+            if (node.kind == OpKind::Materialize || node.kind == OpKind::Free) {
+                if (auto const *desc = node.op_data.get_if<AllocDescriptor>(); desc != nullptr) {
+                    if (TensorHandle const *handle = g.find_tensor(g.buffer_of(desc->tensor_id));
+                        handle != nullptr && handle->tensor_ptr != nullptr) {
+                        managed.insert(handle->tensor_ptr);
+                    }
+                }
+            }
+            for_each_child_graph(node, [&](Graph const &child) { lifecycle(child); });
+        }
+    };
+    lifecycle(*this);
+
+    // A body names its parent's tensors through handles of its own over the same object, so a
+    // tensor is counted once by that object; a handle with no object is its graph's own.
+    std::unordered_set<void const *>             counted;
+    std::set<std::pair<Graph const *, TensorId>> unowned;
+    std::uint64_t                                total = 0;
+    // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
+    std::function<void(Graph const &)> count = [&](Graph const &g) {
+        std::unordered_set<TensorId> named;
+        for (auto const &node : g.nodes()) {
+            bool has_body = false;
+            for_each_child_graph(node, [&](Graph const &) { has_body = true; });
+            if (has_body || node.kind == OpKind::Materialize || node.kind == OpKind::Free) {
+                continue;
+            }
+            for (auto const *ids : {&node.inputs, &node.outputs}) {
+                for (TensorId const tid : *ids) {
+                    named.insert(g.buffer_of(tid));
+                }
+            }
+        }
+        for (auto const &[tid, handle] : g.tensors_map()) {
+            if (handle.is_tensor_view || g.buffer_of(tid) != tid || !named.contains(tid)) {
+                continue;
+            }
+            if (handle.tensor_ptr != nullptr && managed.contains(handle.tensor_ptr)) {
+                continue;
+            }
+            bool const fresh = handle.tensor_ptr != nullptr ? counted.insert(handle.tensor_ptr).second : unowned.emplace(&g, tid).second;
+            if (fresh) {
+                total += handle.total_bytes();
+            }
+        }
+        for (auto const &node : g.nodes()) {
+            for_each_child_graph(node, [&](Graph const &child) { count(child); });
+        }
+    };
+    count(*this);
+    return total;
 }
 
 RunMetrics const &Graph::last_run() const {
@@ -176,10 +240,11 @@ RunMetrics const &Graph::last_run() const {
     };
 
     RunMetrics out;
-    out.wall_ms     = _last_wall_ms;
-    out.backings    = _last_backings;
-    out.peak_bytes  = _last_peak_bytes;
-    out.arena_bytes = _last_arena_bytes;
+    out.wall_ms        = _last_wall_ms;
+    out.backings       = _last_backings;
+    out.peak_bytes     = _last_peak_bytes;
+    out.arena_bytes    = _last_arena_bytes;
+    out.resident_bytes = _last_resident_bytes;
     std::map<std::pair<Graph const *, NodeId>, std::size_t> index;
     for (auto const &sample : _last_samples) {
         Graph const &graph        = sample.graph != nullptr ? *sample.graph : *this;
