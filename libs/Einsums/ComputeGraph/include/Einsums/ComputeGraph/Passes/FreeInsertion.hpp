@@ -61,9 +61,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @endcode
  *
  * @par Limitations
- * - Only frees tensors whose byte size is >= min_bytes (default 64 KiB). Below that the peak a Free
- *   saves is noise beside the two lifecycle nodes it costs every replay. Allocation itself is not the
- *   reason: storage comes from mimalloc, which hands a freed block of the same size straight back.
+ * - Leaves held at most min_bytes (default 64 KiB) of tensors in all, the smallest first, and frees
+ *   every other. One tensor under the floor saves a peak that is noise beside the two lifecycle nodes
+ *   its Free costs every replay, but a graph may have any number of them, so the floor bounds their
+ *   total, not each one. Allocation itself is not the reason: storage comes from mimalloc, which
+ *   hands a freed block of the same size straight back.
  * - Frees graph-owned is_intermediate tensors, and graph-scoped tensors with a read backing: those
  *   are filled from their storage by an Initialize node on every replay, so holding them past their
  *   last use keeps a copy the next replay reads again anyway. After execute() such a tensor holds no
@@ -84,8 +86,8 @@ class EINSUMS_EXPORT FreeInsertion : public OptimizerPass {
     /// The default @p min_bytes: 64 KiB.
     static constexpr size_t default_min_bytes = static_cast<size_t>(64) * 1024;
 
-    /// @param min_bytes Only free tensors of at least this many bytes (default 64 KiB). Below
-    ///                  that the peak a Free saves is noise beside the nodes it costs per replay.
+    /// @param min_bytes The most bytes of tensors left held rather than freed, in all (default
+    ///                  64 KiB), the smallest first.
     explicit FreeInsertion(size_t min_bytes = default_min_bytes) : _min_bytes(min_bytes) {}
 
     [[nodiscard]] std::string name() const override { return "FreeInsertion"; }

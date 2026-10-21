@@ -14,8 +14,11 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -91,6 +94,43 @@ TEST_CASE("FreeInsertion - the default floor frees a mid-sized intermediate and 
     auto const freed = std::ranges::find_if(g.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::Free; });
     REQUIRE(freed != g.nodes().end());
     CHECK(freed->label == "free(big)");
+}
+
+TEST_CASE("FreeInsertion - the floor bounds what small intermediates hold together", "[ComputeGraph][FreeInsertion][Loop]") {
+    // Every streaming loop declares its own block buffers in its body, and a remainder block is
+    // small. The floor kept each one under it allocated for good, since its Free saves less than
+    // its lifecycle nodes cost, but nothing bounded how many there were: the out-of-core CCSD
+    // example held 28 remainder buffers just under 64 KiB, 1.78 MB in all against a 3 MB budget,
+    // and its measured peak ran 1.4 times its plan. The floor now bounds their total.
+    constexpr std::size_t loops = 10;
+    constexpr std::size_t n     = 60; // 28.8 KB of doubles: under the floor alone, five times it in all
+    constexpr std::size_t each  = n * n * sizeof(double);
+    static_assert(each < cg::passes::FreeInsertion::default_min_bytes);
+    static_assert(loops * each > 4 * cg::passes::FreeInsertion::default_min_bytes);
+
+    auto A = create_random_tensor<double>("A", n, n);
+    auto C = create_zero_tensor<double>("C", n, n);
+
+    cg::Graph                g("many_small");
+    std::vector<cg::Graph *> bodies;
+    for (std::size_t k = 0; k < loops; ++k) {
+        auto &body = g.add_loop(fmt::format("loop{}", k), /*max_iterations=*/1, [](size_t) { return false; });
+        bodies.push_back(&body);
+        cg::CaptureGuard const guard(body);
+        auto                  &block = body.create_zero_tensor<double, 2>(fmt::format("block{}", k), n, n);
+        cg::einsum("ik;kj->ij", 0.0, &block, 1.0, A, A);
+        cg::einsum("ik;kj->ij", 1.0, &C, 1.0, block, A);
+    }
+
+    cg::passes::FreeInsertion fi;
+    REQUIRE(fi.run(g));
+    // As many as fit within the floor together stay held; every other one is freed.
+    constexpr std::size_t held = cg::passes::FreeInsertion::default_min_bytes / each;
+    CHECK(fi.num_freed() == loops - held);
+    CHECK((loops - fi.num_freed()) * each <= cg::passes::FreeInsertion::default_min_bytes);
+
+    REQUIRE_NOTHROW(g.execute());
+    REQUIRE_NOTHROW(g.execute());
 }
 
 TEST_CASE("FreeInsertion - is idempotent across runs", "[ComputeGraph][FreeInsertion]") {

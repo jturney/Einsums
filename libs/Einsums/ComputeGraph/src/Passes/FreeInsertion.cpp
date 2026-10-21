@@ -85,9 +85,9 @@ struct DescendantFreeable {
 // not be reclaimed here for the reason the Part B comment gives, and the visitor
 // cannot see which node handed it the graph, so the exclusion has to happen where
 // the descent is chosen.
-void collect_freeable(Graph &graph, size_t min_bytes, std::vector<DescendantFreeable> &out) {
+void collect_freeable(Graph &graph, std::vector<DescendantFreeable> &out) {
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (!handle.is_intermediate || !handle.release_fn || handle.aliases != 0 || handle.total_bytes() < min_bytes) {
+        if (!handle.is_intermediate || !handle.release_fn || handle.aliases != 0) {
             continue;
         }
         // A declaration no node of the body uses has no storage to free, and the Materialize this
@@ -104,14 +104,14 @@ void collect_freeable(Graph &graph, size_t min_bytes, std::vector<DescendantFree
     for (auto &node : graph.nodes()) {
         if (auto *loop = node.op_data.get_if<LoopDescriptor>()) {
             if (loop->body) {
-                collect_freeable(*loop->body, min_bytes, out);
+                collect_freeable(*loop->body, out);
             }
         } else if (auto *cond = node.op_data.get_if<ConditionalDescriptor>()) {
             if (cond->then_branch) {
-                collect_freeable(*cond->then_branch, min_bytes, out);
+                collect_freeable(*cond->then_branch, out);
             }
             if (cond->else_branch) {
-                collect_freeable(*cond->else_branch, min_bytes, out);
+                collect_freeable(*cond->else_branch, out);
             }
         }
     }
@@ -184,8 +184,6 @@ bool FreeInsertion::transform(Graph &graph) {
             continue;
         if (setup_outputs.contains(tid))
             continue;
-        if (handle.total_bytes() < _min_bytes)
-            continue;
         // Aliasing tensors (Views) don't own their storage.
         if (handle.aliases != 0)
             continue;
@@ -232,7 +230,7 @@ bool FreeInsertion::transform(Graph &graph) {
 
         auto collect_from = [&](Graph &child) {
             std::vector<DescendantFreeable> found;
-            collect_freeable(child, _min_bytes, found);
+            collect_freeable(child, found);
 
             for (auto const &f : found) {
                 auto const &handle = f.owner->tensor(f.tid);
@@ -266,6 +264,40 @@ bool FreeInsertion::transform(Graph &graph) {
                 collect_from(*cond->else_branch);
             }
         }
+    }
+
+    // The size floor bounds what is held, not what each tensor saves. One tensor under it saves a
+    // peak that is noise beside the two lifecycle nodes its Free costs per replay, but nothing
+    // bounds how many such tensors a graph has: every streaming loop declares its own remainder
+    // block, and the out-of-core CCSD example kept 28 of them, each just under 64 KiB, 1.78 MB in
+    // all against a 3 MB budget. So the smallest are left held only while everything left held
+    // stays within the floor together; every other candidate is freed.
+    {
+        std::vector<std::size_t> small;
+        for (std::size_t k = 0; k < plans.size(); ++k) {
+            if (plans[k].owner->tensor(plans[k].tid).total_bytes() < _min_bytes) {
+                small.push_back(k);
+            }
+        }
+        std::ranges::stable_sort(small, {}, [&](std::size_t k) { return plans[k].owner->tensor(plans[k].tid).total_bytes(); });
+        std::vector<bool> held(plans.size(), false);
+        std::size_t       held_bytes = 0;
+        for (std::size_t const k : small) {
+            std::size_t const bytes = plans[k].owner->tensor(plans[k].tid).total_bytes();
+            if (held_bytes + bytes > _min_bytes) {
+                break;
+            }
+            held_bytes += bytes;
+            held[k] = true;
+        }
+        std::vector<FreePlan> kept;
+        kept.reserve(plans.size());
+        for (std::size_t k = 0; k < plans.size(); ++k) {
+            if (!held[k]) {
+                kept.push_back(plans[k]);
+            }
+        }
+        plans = std::move(kept);
     }
 
     if (plans.empty())
