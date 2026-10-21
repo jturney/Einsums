@@ -84,6 +84,13 @@ def test_a_measured_profile_is_found_by_the_next_process(tmp_path):
     document = json.loads(_cached(tmp_path).read_text())
     assert {"machine", "software", "measured", "omp_region_cost_ns", "cost_model"} <= set(document)
 
+    # The contraction terms tiling prices against: GEMM rates on both engines, and the scatter's
+    # and the packers' extra costs by run length.
+    cpu = document["cost_model"]["cpu"]
+    assert {point["engine"] for point in cpu["gemm_efficiency"]} == {"routed", "packed"}
+    assert cpu["scatter"] and all(point["run"] > 0 and point["ns_per_element"] >= 0 for point in cpu["scatter"])
+    assert cpu["pack"] and all(point["run"] > 0 and point["ns_per_element"] >= 0 for point in cpu["pack"])
+
     # Every probe separates its two routes here, at two threads, so every option is written; a probe
     # that could not would say so rather than write a number.
     assert set(document["options"]) == TUNED, measured.stdout

@@ -32,15 +32,22 @@ view (the full struct is in ``CostModel.hpp``):
        // Network (for distributed):
        double inter_node_bandwidth_gbps;
        double inter_node_latency_us;
-       // GEMM efficiency table:
+       // GEMM efficiency table, per engine:
        std::vector<GemmEfficiencyPoint> gemm_efficiency;
+       // Extra cost per element by contiguous run length:
+       std::vector<RunCostPoint> scatter_cost;  // writing C through the scatter
+       std::vector<RunCostPoint> pack_cost;     // gathering an operand into its panel
        // Cache hierarchy:
        std::vector<CacheLevel> caches;
    };
 
-The GEMM efficiency table maps matrix shapes to measured GFLOPS, enabling
-shape-dependent cost estimation (small GEMMs are much slower per FLOP than
-large ones).
+The GEMM efficiency table maps matrix shapes to measured GFLOPS, each point tagged with the engine it was measured on: ``routed``, whatever the string einsum hands a flat contraction to, or ``packed``, PackedGemm's tile kernel.
+Rates between points are interpolated in log space: trilinearly over a grid of shapes, or by size along a table of cubes, which knows nothing of shape.
+
+A GEMM's M, N and K are not all a contraction costs.
+A contraction whose C interleaves its operands' indices is built in a scratch block and scattered into place, at a cost per element set by how long C's contiguous runs are, and an operand split by a stride break is gathered into its panel the same way.
+``estimate_contraction_time_us`` prices a contraction from ``packed_gemm::describe_packed_contraction``, the plan PackedGemm would run: a call per split-K share, the arithmetic at the engine's rate but never faster than the operands and C can stream, the scatter's and the packers' extra costs at their run lengths, and split-K's buffers.
+AxisTiling prices each tile of a loop this way, so a small block pays for its short runs and its repeated packing rather than only its arithmetic.
 
 Auto-Detection
 ===============
@@ -104,12 +111,11 @@ An imported file is filed under the machine it describes, so on a cluster whose
 home directories are shared, a login node can import the compute nodes'
 profile and only the compute nodes use it.
 
-It sweeps DGEMM over a log-spaced range of sizes (default 16 to 2048, set by
-``--min-size``/``--max-size``) and measures copy and per-cache-level bandwidth,
-permute throughput, BLAS call overhead, per-kernel thread-efficiency curves
-(skipped with ``--no-thread-sweep``) and the OpenMP region cost at every team
-size. It starts from the built-in table rather than from an earlier profile, so
-nothing it does not measure is inherited from one.
+It measures GEMM rates on a grid of shapes, every M, N and K from a log-spaced range (default 16 to 2048 in 8 steps, set by ``--min-size``, ``--max-size`` and ``--num-points``) up to 2\ :sup:`30` multiply-adds, once through the string einsum and once through PackedGemm pinned to its tile kernel.
+It measures the scatter's extra cost per element by timing the CCSD ladder's tile ``a,b,e,f <- Q,a,e ; Q,b,f`` against the same contraction writing ``a,e,b,f`` in place, at runs from 4 to 1024, and the packers' the same way with an operand split at runs from 2 to 256.
+It also measures copy and per-cache-level bandwidth, permute throughput, the string einsum's call overhead, per-kernel thread-efficiency curves (skipped with ``--no-thread-sweep``) and the OpenMP region cost at every team size.
+It starts from the built-in table rather than from an earlier profile, so nothing it does not measure is inherited from one.
+A profile written before the scatter and pack costs were measured keeps its own rates and takes the built-in table's curves, with a warning to measure again.
 
 Then it measures the thresholds that decide between two routes and were set on
 one machine: the outer-product floor, the outer product's GEMM-to-ger limit,

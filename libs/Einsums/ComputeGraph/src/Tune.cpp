@@ -20,7 +20,6 @@
 #include <Einsums/Hardware/Options.hpp>
 #include <Einsums/Hardware/Profile.hpp>
 #include <Einsums/Json/Json.hpp>
-#include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/PackedGemm/Options.hpp>
 #include <Einsums/PackedGemm/PackedGemm.hpp>
@@ -70,7 +69,7 @@ struct Config {
     std::string dtype          = "double";
     size_t      min_size       = 16;
     size_t      max_size       = 2048;
-    size_t      num_points     = 15;
+    size_t      num_points     = 8;
     size_t      warmup         = 3;
     size_t      repeats        = 10;
     bool        thread_sweep   = true;
@@ -90,9 +89,9 @@ void print_usage() {
     fmt::print("\nMeasuring:\n");
     fmt::print("  --output <path>    Profile to write (default: this machine's, in the cache directory)\n");
     fmt::print("  --dtype <type>     Data type: double or float (default: double)\n");
-    fmt::print("  --min-size <N>     Minimum matrix dimension (default: 16)\n");
-    fmt::print("  --max-size <N>     Maximum matrix dimension (default: 2048)\n");
-    fmt::print("  --num-points <N>   Number of measurement points (default: 15)\n");
+    fmt::print("  --min-size <N>     Smallest extent on each axis of the GEMM grid (default: 16)\n");
+    fmt::print("  --max-size <N>     Largest extent on each axis of the GEMM grid (default: 2048)\n");
+    fmt::print("  --num-points <N>   Extents per axis of the GEMM grid (default: 8)\n");
     fmt::print("  --warmup <N>       Warmup iterations (default: 3)\n");
     fmt::print("  --repeats <N>      Measurement iterations (default: 10)\n");
     fmt::print("  --no-thread-sweep  Skip the per-family efficiency curves\n");
@@ -216,59 +215,6 @@ std::vector<size_t> log_space(size_t min_val, size_t max_val, size_t num_points)
     return sizes;
 }
 
-/// Measure DGEMM GFLOPS for a given square size.
-double measure_dgemm_gflops(size_t N, size_t warmup, size_t repeats) {
-    auto A = random_tensor<double>("A", N, N);
-    auto B = random_tensor<double>("B", N, N);
-    auto C = Tensor<double, 2>("C", N, N);
-
-    // Warmup
-    for (size_t w = 0; w < warmup; w++) {
-        linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C);
-    }
-
-    // Measure
-    std::vector<double> times(repeats);
-    for (size_t r = 0; r < repeats; r++) {
-        auto t0 = std::chrono::steady_clock::now();
-        linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C);
-        auto t1  = std::chrono::steady_clock::now();
-        times[r] = std::chrono::duration<double>(t1 - t0).count();
-    }
-
-    // Median time
-    std::ranges::sort(times);
-    double const median_s = times[repeats / 2];
-
-    double const flops = 2.0 * static_cast<double>(N) * static_cast<double>(N) * static_cast<double>(N);
-    return flops / (median_s * 1e9);
-}
-
-/// Measure SGEMM GFLOPS for a given square size.
-double measure_sgemm_gflops(size_t N, size_t warmup, size_t repeats) {
-    auto A = random_tensor<float>("A", N, N);
-    auto B = random_tensor<float>("B", N, N);
-    auto C = Tensor<float, 2>("C", N, N);
-
-    for (size_t w = 0; w < warmup; w++) {
-        linear_algebra::gemm<false, false>(1.0f, A, B, 0.0f, &C);
-    }
-
-    std::vector<double> times(repeats);
-    for (size_t r = 0; r < repeats; r++) {
-        auto t0 = std::chrono::steady_clock::now();
-        linear_algebra::gemm<false, false>(1.0f, A, B, 0.0f, &C);
-        auto t1  = std::chrono::steady_clock::now();
-        times[r] = std::chrono::duration<double>(t1 - t0).count();
-    }
-
-    std::ranges::sort(times);
-    double const median_s = times[repeats / 2];
-
-    double const flops = 2.0 * static_cast<double>(N) * static_cast<double>(N) * static_cast<double>(N);
-    return flops / (median_s * 1e9);
-}
-
 /// Measure memory bandwidth via a simple copy benchmark.
 double measure_bandwidth_gbps() {
     constexpr size_t BUFFER_SIZE = static_cast<long>(64 * 1024) * 1024; // 64 MB
@@ -317,6 +263,117 @@ double median_seconds(size_t warmup, size_t repeats, F &&run) {
     }
     std::ranges::sort(times);
     return times[repeats / 2];
+}
+
+/// Multiply-adds above which a GEMM grid point is skipped. The cost model reads past the largest
+/// measured shape at the edge of the grid, and the largest shapes are most of a sweep's time.
+constexpr double kGridMaxMultiplyAdds = 1073741824.0; // 2^30
+
+/// Seconds for `c <- a ; b` on @p C, @p A and @p B through the packed engine, pinned to it as a
+/// planned graph pins it, or NaN when the engine declines the contraction.
+template <typename T, typename CType, typename AType, typename BType>
+double packed_seconds(Config const &cfg, std::vector<std::string> c, std::vector<std::string> a, std::vector<std::string> b, CType &C,
+                      AType const &A, BType const &B) {
+    packed_gemm::ContractionSpec spec;
+    spec.c_indices = std::move(c);
+    spec.a_indices = std::move(a);
+    spec.b_indices = std::move(b);
+    packed_gemm::ContractionSite site;
+    site.route           = packed_gemm::KernelRoute::Packed;
+    bool         handled = true;
+    double const seconds = median_seconds(
+        cfg.warmup, cfg.repeats, [&] { handled = packed_gemm::try_packed_gemm(spec, T{0}, &C, T{1}, A, B, true, &site) && handled; });
+    return handled ? seconds : std::numeric_limits<double>::quiet_NaN();
+}
+
+/// The GEMM rate of both engines over a grid of shapes, every M, N and K in @p sizes up to
+/// kGridMaxMultiplyAdds: the routed one through the string einsum a graph's flat contraction
+/// takes, the packed one through PackedGemm pinned to its tile kernel. Returns the routed peak.
+template <typename T>
+double measure_gemm_grid(Config const &cfg, std::vector<size_t> const &sizes, cg::DeviceProfile &profile) {
+    double peak     = 0.0;
+    size_t measured = 0;
+    for (size_t const M : sizes) {
+        for (size_t const N : sizes) {
+            for (size_t const K : sizes) {
+                if (static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K) > kGridMaxMultiplyAdds) {
+                    continue;
+                }
+                auto const   A     = random_tensor<T>("A", M, K);
+                auto const   B     = random_tensor<T>("B", K, N);
+                auto         C     = Tensor<T, 2>("C", M, N);
+                double const flops = 2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K);
+                double const routed =
+                    median_seconds(cfg.warmup, cfg.repeats, [&] { cg::einsum("m,n <- m,k ; k,n", T{0}, &C, T{1}, A, B); });
+                double const packed = packed_seconds<T>(cfg, {"m", "n"}, {"m", "k"}, {"k", "n"}, C, A, B);
+                profile.gemm_efficiency.push_back(
+                    {.M = M, .N = N, .K = K, .gflops = flops / (routed * 1e9), .engine = cg::GemmEngine::Routed});
+                if (std::isfinite(packed)) {
+                    profile.gemm_efficiency.push_back(
+                        {.M = M, .N = N, .K = K, .gflops = flops / (packed * 1e9), .engine = cg::GemmEngine::Packed});
+                }
+                peak = std::max(peak, flops / (routed * 1e9));
+                if (M == N && N == K) {
+                    einsums::println("  {:>5} x {:>5} x {:>5}: {:>7.1f} GFLOPS routed, {:>7.1f} packed", M, N, K, flops / (routed * 1e9),
+                                     std::isfinite(packed) ? flops / (packed * 1e9) : 0.0);
+                }
+                ++measured;
+            }
+        }
+    }
+    einsums::println("  {} shapes on a grid of {} extents per axis (cubes shown)", measured, sizes.size());
+    return peak;
+}
+
+/// The scatter's extra cost per element of C by run length: the CCSD ladder's tile a,b,e,f <-
+/// Q,a,e ; Q,b,f, whose C is scattered in runs of a x b, against the same contraction writing
+/// a,e,b,f in place. M = N = 512 and K = 256 throughout, so only the runs change.
+template <typename T>
+std::vector<cg::RunCostPoint> measure_scatter_cost(Config const &cfg) {
+    constexpr size_t              Q = 256, MN = 512;
+    std::vector<cg::RunCostPoint> curve;
+    for (size_t const side : {2UL, 4UL, 8UL, 16UL, 32UL}) {
+        size_t const e        = MN / side;
+        auto const   Ba       = random_tensor<T>("Ba", Q, side, e);
+        auto const   Bb       = random_tensor<T>("Bb", Q, side, e);
+        auto         W        = Tensor<T, 4>("W", side, side, e, e);
+        auto         in_place = Tensor<T, 4>("W_flat", side, e, side, e);
+        double const scatter  = packed_seconds<T>(cfg, {"a", "b", "e", "f"}, {"Q", "a", "e"}, {"Q", "b", "f"}, W, Ba, Bb);
+        double const direct   = packed_seconds<T>(cfg, {"a", "e", "b", "f"}, {"Q", "a", "e"}, {"Q", "b", "f"}, in_place, Ba, Bb);
+        if (!std::isfinite(scatter) || !std::isfinite(direct)) {
+            continue;
+        }
+        double const ns = std::max(0.0, (scatter - direct) * 1e9 / static_cast<double>(MN * MN));
+        curve.push_back({.run = side * side, .ns_per_element = ns});
+        einsums::println("  runs of {:>4}: {:>6.3f} ns per element of C", side * side, ns);
+    }
+    return curve;
+}
+
+/// The packers' extra cost per element of an operand by run length: A with its free extent
+/// split as x,k,y, contiguous in runs of x along the extent the packer walks, against the same A
+/// laid out x,y,k and read in one run. M = N = 512 and K = 256 throughout, and C keeps x and y
+/// side by side, so it is written in place either way.
+template <typename T>
+std::vector<cg::RunCostPoint> measure_pack_cost(Config const &cfg) {
+    constexpr size_t              K = 256, MN = 512;
+    std::vector<cg::RunCostPoint> curve;
+    auto const                    B = random_tensor<T>("B", K, MN);
+    for (size_t run = 2; run < MN; run *= 2) {
+        size_t const y        = MN / run;
+        auto const   gathered = random_tensor<T>("A_split", run, K, y);
+        auto const   flat     = random_tensor<T>("A_flat", run, y, K);
+        auto         C        = Tensor<T, 3>("C", run, y, MN);
+        double const split    = packed_seconds<T>(cfg, {"x", "y", "n"}, {"x", "k", "y"}, {"k", "n"}, C, gathered, B);
+        double const whole    = packed_seconds<T>(cfg, {"x", "y", "n"}, {"x", "y", "k"}, {"k", "n"}, C, flat, B);
+        if (!std::isfinite(split) || !std::isfinite(whole)) {
+            continue;
+        }
+        double const ns = std::max(0.0, (split - whole) * 1e9 / static_cast<double>(MN * K));
+        curve.push_back({.run = run, .ns_per_element = ns});
+        einsums::println("  runs of {:>4}: {:>6.3f} ns per element of A", run, ns);
+    }
+    return curve;
 }
 
 /// Achieved (read + write) bandwidth of a rank-2 transpose of an N x N tensor.
@@ -502,13 +559,14 @@ double measure_overhead_us() {
 
     constexpr size_t NUM_ITERS = 1000;
 
-    // Warmup
-    for (size_t w = 0; w < 100; w++)
-        linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C);
+    // Through the string einsum, the call every contraction in a graph makes.
+    for (size_t w = 0; w < 100; w++) {
+        cg::einsum("m,n <- m,k ; k,n", 0.0, &C, 1.0, A, B);
+    }
 
     auto t0 = std::chrono::steady_clock::now();
     for (size_t iter = 0; iter < NUM_ITERS; iter++) {
-        linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C);
+        cg::einsum("m,n <- m,k ; k,n", 0.0, &C, 1.0, A, B);
     }
     auto t1 = std::chrono::steady_clock::now();
 
@@ -891,7 +949,7 @@ int measure(Config cfg) {
     einsums::println("Machine: {}", einsums::hardware::machine_fingerprint());
     einsums::println("Output: {}", cfg.output);
     einsums::println("Data type: {}", cfg.dtype);
-    einsums::println("Size range: {} to {} ({} points)", cfg.min_size, cfg.max_size, cfg.num_points);
+    einsums::println("GEMM grid: {} to {}, {} extents per axis", cfg.min_size, cfg.max_size, cfg.num_points);
     einsums::println("Warmup: {}, Repeats: {}", cfg.warmup, cfg.repeats);
 
     // Start from the built-in table, never from an earlier profile, so nothing
@@ -914,29 +972,22 @@ int measure(Config cfg) {
     {
         SerialMeasurementScope const serial;
 
-        // Measure GEMM efficiency
-        einsums::println("\n--- GEMM Benchmark ---\n");
+        // The GEMM rate of both engines over a grid of shapes, and the scatter's and the packers'
+        // extra costs by run length, all through the entry points a graph's contractions take.
+        einsums::println("\n--- GEMM Grid ---\n");
         cost_model.cpu.gemm_efficiency.clear();
-
-        for (size_t const N : sizes) {
-            double gflops;
-            if (cfg.dtype == "float") {
-                gflops = measure_sgemm_gflops(N, cfg.warmup, cfg.repeats);
-            } else {
-                gflops = measure_dgemm_gflops(N, cfg.warmup, cfg.repeats);
-            }
-
-            peak_gflops = std::max(peak_gflops, gflops);
-            cost_model.cpu.gemm_efficiency.push_back({.M = N, .N = N, .K = N, .gflops = gflops});
-
-            einsums::println("  {} x {} x {}: {:.1f} GFLOPS", N, N, N, gflops);
-        }
-
+        peak_gflops = cfg.dtype == "float" ? measure_gemm_grid<float>(cfg, sizes, cost_model.cpu)
+                                           : measure_gemm_grid<double>(cfg, sizes, cost_model.cpu);
         if (cfg.dtype == "float") {
             cost_model.cpu.peak_gflops_fp32 = peak_gflops;
         } else {
             cost_model.cpu.peak_gflops_fp64 = peak_gflops;
         }
+
+        einsums::println("\n--- C Scatter ---\n");
+        cost_model.cpu.scatter_cost = cfg.dtype == "float" ? measure_scatter_cost<float>(cfg) : measure_scatter_cost<double>(cfg);
+        einsums::println("\n--- Operand Packing ---\n");
+        cost_model.cpu.pack_cost = cfg.dtype == "float" ? measure_pack_cost<float>(cfg) : measure_pack_cost<double>(cfg);
 
         // Measure memory bandwidth
         einsums::println("\n--- Memory Bandwidth ---\n");
@@ -988,7 +1039,7 @@ int measure(Config cfg) {
         einsums::println("\n--- Kernel Overhead ---\n");
         double const overhead                    = measure_overhead_us();
         cost_model.cpu.kernel_launch_overhead_us = overhead;
-        einsums::println("  DGEMM(2x2x2) call overhead: {:.2f} us", overhead);
+        einsums::println("  einsum(2x2x2) call overhead: {:.2f} us", overhead);
     } // end SerialMeasurementScope
 
     // Measure how each kernel family scales with thread count, at each size
