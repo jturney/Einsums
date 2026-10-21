@@ -2768,6 +2768,24 @@ std::vector<NodeIo> buffer_io(Graph &graph) {
     return out;
 }
 
+/// The first and last position of @p io that reads or writes @p tid's buffer in @p graph, or every
+/// position when none does.
+std::pair<std::size_t, std::size_t> held_span(Graph const &graph, std::vector<NodeIo> const &io, TensorId tid) {
+    TensorId const buffer = tid == 0 ? 0 : graph.buffer_of(tid);
+    std::size_t    first  = io.size();
+    std::size_t    last   = 0;
+    for (std::size_t i = 0; i < io.size(); ++i) {
+        if (buffer != 0 && (io[i].reads.contains(buffer) || io[i].writes.contains(buffer))) {
+            first = std::min(first, i);
+            last  = i;
+        }
+    }
+    if (first == io.size()) {
+        return {0, io.empty() ? 0 : io.size() - 1};
+    }
+    return {first, last};
+}
+
 bool intersects(std::set<TensorId> const &lhs, std::set<TensorId> const &rhs) {
     return std::ranges::any_of(lhs, [&rhs](TensorId tid) { return rhs.contains(tid); });
 }
@@ -2828,7 +2846,27 @@ bool AxisTiling::transform(Graph &graph) {
     return moved;
 }
 
-std::size_t AxisTiling::footprint(Graph const &graph) const {
+std::size_t AxisTiling::Footprint::beside(std::size_t lo, std::size_t hi) const {
+    std::size_t out = fixed;
+    for (auto const &life : lives) {
+        if (life.first <= hi && lo <= life.last) {
+            out += life.bytes;
+        }
+    }
+    return out;
+}
+
+std::size_t AxisTiling::Footprint::peak() const {
+    // The most held at once is held while some intermediate is first written, so only those
+    // positions need summing.
+    std::size_t out = fixed;
+    for (auto const &at : lives) {
+        out = std::max(out, beside(at.first, at.first));
+    }
+    return out;
+}
+
+AxisTiling::Footprint AxisTiling::footprint(Graph &graph) const {
     // The root, and on the way to it each level's node whose body holds the graph being tiled.
     std::vector<std::pair<Graph *, std::size_t>> chain;
     Graph const                                 *root = &graph;
@@ -2883,9 +2921,32 @@ std::size_t AxisTiling::footprint(Graph const &graph) const {
 
     // A body names its parent's tensors through handles of its own over the same tensor object,
     // so one tensor is counted once by that object; a handle with no object is its graph's own.
+    // The span of this graph's statements each buffer is touched in, and whether the first touch
+    // writes it.
+    struct Touch {
+        std::size_t first{0};
+        std::size_t last{0};
+        bool        written_first{false};
+    };
+    std::map<TensorId, Touch> touches;
+    {
+        auto const io = buffer_io(graph);
+        for (std::size_t i = 0; i < io.size(); ++i) {
+            for (auto const *buffers : {&io[i].reads, &io[i].writes}) {
+                for (TensorId const buffer : *buffers) {
+                    auto [at, added] = touches.try_emplace(buffer, Touch{.first = i, .last = i});
+                    at->second.last  = i;
+                    if (added) {
+                        at->second.written_first = io[i].writes.contains(buffer) && !io[i].reads.contains(buffer);
+                    }
+                }
+            }
+        }
+    }
+
+    Footprint                                    out;
     std::set<void const *>                       objects;
     std::set<std::pair<Graph const *, TensorId>> unbacked;
-    std::size_t                                  total = 0;
     // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
     std::function<void(Graph const &)> count = [&](Graph const &g) {
         // Only what a node reads or writes is ever allocated: a rewrite leaves the handles of the
@@ -2916,9 +2977,20 @@ std::size_t AxisTiling::footprint(Graph const &graph) const {
                 continue;
             }
             bool const fresh = handle.tensor_ptr != nullptr ? objects.insert(handle.tensor_ptr).second : unbacked.emplace(&g, tid).second;
-            if (fresh) {
-                total += handle.total_bytes();
+            if (!fresh) {
+                continue;
             }
+            std::size_t const bytes = handle.total_bytes();
+            out.total += bytes;
+            // An intermediate of the graph being tiled that a statement writes before any reads it
+            // is allocated before that writer and freed after its last reader.
+            if (&g == &graph && handle.is_intermediate) {
+                if (auto const hit = touches.find(tid); hit != touches.end() && hit->second.written_first) {
+                    out.lives.push_back(Footprint::Life{.bytes = bytes, .first = hit->second.first, .last = hit->second.last});
+                    continue;
+                }
+            }
+            out.fixed += bytes;
         }
         for (auto const &node : g.nodes()) {
             for_each_child_graph(node, [&](Graph const &child) {
@@ -2929,7 +3001,7 @@ std::size_t AxisTiling::footprint(Graph const &graph) const {
         }
     };
     count(*root);
-    return total;
+    return out;
 }
 
 bool AxisTiling::tile_graph(Graph &graph) {
@@ -2964,23 +3036,29 @@ bool AxisTiling::tile_graph(Graph &graph) {
     // declined once declines again on the same graph and is not retried.
     std::set<TensorId> declined;
     for (bool first = true;; first = false) {
-        std::size_t const total = derived ? footprint(graph) : 0;
+        // The spans the footprint records are positions in this order, and so are the regions'.
+        graph.topological_sort();
+        Footprint const   fp   = derived ? footprint(graph) : Footprint{};
+        std::size_t const peak = fp.peak();
+        auto const        io   = derived ? buffer_io(graph) : std::vector<NodeIo>{};
 
         // A program over its budget streams because it must, and a loop it streams in may take
         // whatever the budget leaves; the share caps only what a program that fits streams for the
         // share's own sake. Held to the share as well, the CCSD tutorial's file-backed stage cut
         // its ladder into blocks of 2 x 4 under a 16 MB budget while the replay held 11.6 MB, and
         // spent more than half its iteration on the small blocks.
-        bool const forced = derived && total > budget;
+        bool const forced = derived && peak > budget;
 
-        // The cap one intermediate of @p bytes is held to: the fixed cap, or what the budget leaves
-        // after everything else, no more than its share unless the program is over its budget.
-        // Zero when the others alone exceed the budget.
-        auto const limit_for = [&](std::size_t bytes) -> std::size_t {
+        // The cap one intermediate @p tid of @p bytes is held to: the fixed cap, or what the budget
+        // leaves after everything else held while it is, no more than its share unless the program
+        // is over its budget. Zero when the others alone exceed the budget.
+        auto const limit_for = [&](TensorId tid, std::size_t bytes) -> std::size_t {
             if (!derived) {
                 return static_cast<std::size_t>(cap);
             }
-            std::size_t const others = total - std::min(total, bytes);
+            auto const [lo, hi]      = held_span(graph, io, tid);
+            std::size_t const beside = fp.beside(lo, hi);
+            std::size_t const others = beside - std::min(beside, bytes);
             if (others >= budget) {
                 return 0;
             }
@@ -3014,7 +3092,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
                     // otherwise each writer but a lone overwriting one keeps it whole in memory. Not an
                     // update-backed tensor, which is produced in memory whole.
                     if (auto const backing = scope.backing_of(tid); backing != nullptr) {
-                        if (derived && backing->write && !backing->update && sliceable && bytes > limit_for(bytes) &&
+                        if (derived && backing->write && !backing->update && sliceable && bytes > limit_for(tid, bytes) &&
                             !declined.contains(tid) && std::ranges::find(seeds, std::pair{bytes, tid}) == seeds.end()) {
                             largest = std::max(largest, bytes);
                             seeds.emplace_back(bytes, tid);
@@ -3022,7 +3100,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
                         continue;
                     }
                     // A read-backed tensor is not one: its storage holds it, and SlabStreaming moves it.
-                    if (sliceable && handle->alloc_state == AllocState::Deferred && bytes > limit_for(bytes) &&
+                    if (sliceable && handle->alloc_state == AllocState::Deferred && bytes > limit_for(tid, bytes) &&
                         (held == nullptr || bytes > held->total_bytes())) {
                         held = handle;
                     }
@@ -3030,18 +3108,19 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 }
                 std::size_t const bytes = handle->total_bytes();
                 largest                 = std::max(largest, bytes);
-                if (sliceable && bytes > limit_for(bytes) && !declined.contains(tid) &&
+                if (sliceable && bytes > limit_for(tid, bytes) && !declined.contains(tid) &&
                     std::ranges::find(seeds, std::pair{bytes, tid}) == seeds.end()) {
                     seeds.emplace_back(bytes, tid);
                 }
             }
         }
         if (first && held != nullptr) {
-            std::size_t const bytes = held->total_bytes();
-            note_skip(ResultHeld, fmt::format("'{}', {} bytes against a cap of {}", held->name, bytes, limit_for(bytes)));
+            std::size_t const bytes   = held->total_bytes();
+            TensorId const    held_id = graph.find_tensor_id_by_ptr(held->tensor_ptr);
+            note_skip(ResultHeld, fmt::format("'{}', {} bytes against a cap of {}", held->name, bytes, limit_for(held_id, bytes)));
             _held_results.push_back(fmt::format("held '{}' whole, {} bytes against a cap of {}, because it is declared as a result the "
                                                 "caller may read after execute(); declare it as an intermediate if nothing does",
-                                                held->name, bytes, limit_for(bytes)));
+                                                held->name, bytes, limit_for(held_id, bytes)));
             note(ResultHeld, _held_results.back(),
                  Decision{.tensors = {held->name}, .facts = {Fact{.name = "bytes", .value = static_cast<double>(bytes), .unit = "B"}}}, 1);
         }
@@ -3054,12 +3133,14 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 // method's loop, has nothing here to decline.
                 return tiled.moved();
             }
-            if (derived && total <= budget && largest <= share) {
+            if (derived && peak <= budget && largest <= share) {
                 note_skip(FitsBudget,
-                          fmt::format("{} bytes against --einsums:max-memory of {}, the largest intermediate {} against a share of {}",
-                                      total, budget, largest, share));
-                note(FitsBudget, fmt::format("declined: the program's tensors hold {} bytes and the memory budget is {}", total, budget),
-                     Decision{.facts = {Fact{.name = "total", .value = static_cast<double>(total), .unit = "B"},
+                          fmt::format("{} bytes at the program's peak against --einsums:max-memory of {}, the largest intermediate {} "
+                                      "against a share of {}",
+                                      peak, budget, largest, share));
+                note(FitsBudget,
+                     fmt::format("declined: the program's tensors hold {} bytes at its peak and the memory budget is {}", peak, budget),
+                     Decision{.facts = {Fact{.name = "total", .value = static_cast<double>(peak), .unit = "B"},
                                         Fact{.name = "budget", .value = static_cast<double>(budget), .unit = "B"}}},
                      1);
                 break;
@@ -3073,7 +3154,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
                 break;
             }
             if (seeds.empty()) {
-                note_skip(NoSliceableWriter, fmt::format("{} bytes against a cap of {}", largest, limit_for(largest)));
+                note_skip(NoSliceableWriter, fmt::format("{} bytes against a cap of {}", largest, limit_for(0, largest)));
                 break;
             }
         }
@@ -3089,11 +3170,13 @@ bool AxisTiling::tile_graph(Graph &graph) {
             return lhs.first != rhs.first ? lhs.first > rhs.first : lhs.second < rhs.second;
         });
 
-        graph.topological_sort();
         bool rewrote = false;
         for (auto const &[bytes, seed] : seeds) {
-            Allowance const allowance{
-                .cap = limit_for(bytes), .budget = derived ? budget : 0, .share = derived ? share : 0, .total = total, .forced = forced};
+            Allowance const allowance{.cap       = limit_for(seed, bytes),
+                                      .budget    = derived ? budget : 0,
+                                      .share     = derived ? share : 0,
+                                      .footprint = derived ? &fp : nullptr,
+                                      .forced    = forced};
             if (tile_region(graph, seed, allowance)) {
                 rewrote = true;
                 break;
@@ -3112,16 +3195,22 @@ bool AxisTiling::tile_graph(Graph &graph) {
     // triangle is one of the plans it was offered.
     while (true) {
         graph.topological_sort();
-        std::size_t const total   = derived ? footprint(graph) : 0;
-        bool              rewrote = false;
+        Footprint const fp      = derived ? footprint(graph) : Footprint{};
+        auto const      io      = derived ? buffer_io(graph) : std::vector<NodeIo>{};
+        bool            rewrote = false;
         for (auto const &[bytes, seed] : symmetric_seeds(graph, scope, declined)) {
             std::size_t limit = static_cast<std::size_t>(std::max<std::int64_t>(cap, 0));
             if (derived) {
-                std::size_t const others = total - std::min(total, bytes);
+                auto const [lo, hi]      = held_span(graph, io, seed);
+                std::size_t const beside = fp.beside(lo, hi);
+                std::size_t const others = beside - std::min(beside, bytes);
                 limit                    = others < budget ? std::min(budget - others, share) : 0;
             }
-            Allowance const allowance{
-                .cap = limit, .budget = derived ? budget : 0, .share = derived ? share : 0, .total = total, .triangle_only = true};
+            Allowance const allowance{.cap           = limit,
+                                      .budget        = derived ? budget : 0,
+                                      .share         = derived ? share : 0,
+                                      .footprint     = derived ? &fp : nullptr,
+                                      .triangle_only = true};
             declined.insert(seed);
             if (tile_region(graph, seed, allowance)) {
                 rewrote = true;
@@ -3312,7 +3401,9 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
             std::size_t room        = limit;
             bool        best_effort = false;
             if (joint) {
-                std::size_t const outside = allowance.total - std::min(allowance.total, analysis->streamed_whole_bytes(labelling));
+                auto const [lo, hi]       = std::ranges::minmax(analysis->members());
+                std::size_t const held    = allowance.footprint->beside(lo, hi);
+                std::size_t const outside = held - std::min(held, analysis->streamed_whole_bytes(labelling));
                 outside_bytes             = std::max(outside_bytes, outside);
                 if (outside >= allowance.budget) {
                     note_skip(

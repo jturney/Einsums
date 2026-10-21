@@ -219,8 +219,9 @@ inline constinit cl::ConfigOption<double> GraphFnoOccupation = cl::config_opt<do
 /// Zero disables the pass, which is the spelling a caller who wants the captured schedule uses.
 ///
 /// The default, any negative value, derives the cap from the machine: an intermediate may be as
-/// large as ``--einsums:max-memory`` less every other tensor the graph names, counted as if all
-/// were live at once, and no larger than ``--einsums:graph:tiling-budget-share`` of the budget. A
+/// large as ``--einsums:max-memory`` less every other tensor alive beside it, an intermediate
+/// being alive from its first writer to its last reader, and in a program whose peak fits the
+/// budget no larger than ``--einsums:graph:tiling-budget-share`` of the budget. A
 /// positive value is a cap on each intermediate alone, for a caller who wants a footprint smaller
 /// than the machine allows.
 inline constinit cl::ConfigOption<std::int64_t> GraphTilingMemoryCap = cl::config_opt<std::int64_t>(

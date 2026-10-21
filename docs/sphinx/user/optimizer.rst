@@ -526,10 +526,12 @@ the grouped form of the same body. Zero is the spelling for a caller who wants t
 captured schedule.
 
 By default the cap is derived from the machine. An intermediate may take what
-:option:`--einsums:max-memory` leaves after every other tensor the graph names,
-counted as if all of them were live at once except those that only a body
-running before or after this one uses, and no more than
-:option:`--einsums:graph:tiling-budget-share` of the budget. The share is there
+:option:`--einsums:max-memory` leaves after every other tensor alive beside it:
+the caller's tensors throughout, an intermediate from its first writer to its
+last reader, and nothing only a body running before or after this one uses. In
+a program whose peak fits the budget it takes no more than
+:option:`--einsums:graph:tiling-budget-share` of the budget, and in one over its
+budget a loop may take all that the budget leaves. The share is there
 because fitting is not the only reason to stream: an intermediate that takes a
 large part of the machine costs the kernels that write and read it, and a
 program that holds it whole can be slower than one that streams it in blocks. A
@@ -994,9 +996,9 @@ replay whose sum is over ``--einsums:max-memory`` reports the missed budget as a
 error, once per graph. ``MemoryPlanning.managed_peak_memory`` and
 ``MemoryPlanning.resident_memory`` predict the two to the byte;
 ``MemoryPlanning.peak_memory`` is the plan's own estimate, which counts every
-tensor freed after its last use. MemoryPlanning declines its arena where the
-arena would hold the plan over ``--einsums:max-memory`` and the plan without it
-is lower.
+tensor freed after its last use. MemoryPlanning declines its arena where, counted
+as a replay counts it, the arena would hold the program over
+``--einsums:max-memory`` and the program without it holds less.
 
 To hear a replay as it runs, attach an observer. ``cg.EventLog`` keeps every
 event: each node's start and end with its duration and thread, each read, write

@@ -1530,6 +1530,11 @@ namespace {
 /// four-index intermediates.
 constexpr std::size_t program_bytes = (naux * nocc * nvir * sizeof(double)) + whole_bytes + sizeof(double) + (5 * whole_bytes);
 
+/// The most the program holds at once. Each intermediate lives from its writer to its last reader,
+/// and the most alive together are four, while Kbar is first written: T, K_again, K_exchange and
+/// Kbar itself, K having died with T's writer.
+constexpr std::size_t peak_bytes = program_bytes - whole_bytes;
+
 /// --einsums:graph:tiling-budget-share at @p fraction for one case, restored on the way out.
 struct Share {
     double previous{config::get(option::GraphTilingBudgetShare)};
@@ -1580,9 +1585,9 @@ TEST_CASE("AxisTiling derives its cap from the memory budget by default", "[Comp
     cg::Graph graph("mp2 full axis");
     capture(graph, problem);
 
-    // The budget falls half an intermediate short of the program, so the integral may hold what
-    // the budget leaves after everything else: half of itself.
-    Budget const budget(program_bytes - (whole_bytes / 2));
+    // The budget falls half an intermediate short of the program's peak, so the program has to
+    // stream something to fit.
+    Budget const budget(peak_bytes - (whole_bytes / 2));
     auto const   tiling = decide_by_default(graph);
     REQUIRE(tiling->num_tiled() >= 1);
     CHECK(tiling->largest_before() == whole_bytes);
@@ -1868,8 +1873,9 @@ TEST_CASE("AxisTiling gives a loop the budget leaves when the program is over it
     std::size_t const before = tree_bytes(graph);
     std::size_t const four   = p.o * p.v * p.o * p.v * sizeof(double);
 
-    // Half a four-index tensor short of the program, and a share a fifth of that.
-    std::size_t const budget_bytes = before - (four / 2);
+    // Half a four-index tensor short of the program's peak, and a share a fifth of that. Of the
+    // five four-index intermediates at most four are alive at once.
+    std::size_t const budget_bytes = before - four - (four / 2);
     std::size_t const share_bytes  = four / 10;
     Budget const      budget(budget_bytes);
     Share const       share(static_cast<double>(share_bytes) / static_cast<double>(budget_bytes));
@@ -1878,13 +1884,75 @@ TEST_CASE("AxisTiling gives a loop the budget leaves when the program is over it
     INFO("sliced " << fmt::format("{}", fmt::join(tiling->axis_letters(), ",")) << " in blocks of "
                    << fmt::format("{}", fmt::join(tiling->block_extents(), ",")) << ", largest " << tiling->largest_after());
     CHECK(tiling->largest_after() > share_bytes);
-    CHECK(tree_bytes(graph) <= budget_bytes);
 
     auto manager = cg::PassManager::create_default();
     graph.apply(manager);
     auto const   expected = mp2_reference(p);
     double const energy   = replay_mp2(graph, p);
     CHECK(std::abs(energy - expected.value) <= sum_tolerance<double>() * expected.magnitude);
+    // What the replay held at its peak, the caller's tensors included, is within the budget.
+    CHECK(graph.last_run().peak_bytes + graph.last_run().resident_bytes <= budget_bytes);
+}
+
+TEST_CASE("AxisTiling counts what is alive beside a loop, not every tensor at once", "[ComputeGraph][Pass][AxisTiling]") {
+    //   X[i,j]  = A[i,k] B[k,j];  y[i] = X[i,j] v[j]       X is dead from here on
+    //   H[i,j]  = P[i,k] Q[k,j];  h[i] = H[i,j] w[j]       the region, seeded by H
+    // An intermediate is allocated before its first writer and freed after its last reader, so X
+    // is gone while H's loop runs. Counted as if every tensor were alive at once, X left H's loop
+    // nothing under a budget one byte short of the caller's tensors and X together, and H's loop
+    // was the best effort; with X counted where it is alive, the loop takes the bytes X gave back.
+    // Read again after the region, X is alive beside it and counts; a caller's tensor always does.
+    constexpr std::size_t m = 32, q = 4;
+    auto const            a   = filled("A", {m, q}, 3U);
+    auto const            b   = filled("B", {q, m}, 5U);
+    auto const            pf  = filled("P", {m, q}, 7U);
+    auto const            qf  = filled("Q", {q, m}, 11U);
+    auto const            v   = filled("v", {m}, 13U);
+    auto const            w   = filled("w", {m}, 17U);
+    auto const            big = filled("C", {m, m}, 19U); // a caller's tensor as large as X
+
+    auto const run = [&](bool x_after, bool caller_instead) {
+        RuntimeTensor<double> y("y", std::vector<std::size_t>{m});
+        RuntimeTensor<double> h("h", std::vector<std::size_t>{m});
+        RuntimeTensor<double> z("z", std::vector<std::size_t>{m});
+        cg::Graph             graph("alive beside the loop");
+        auto                 &x  = graph.scratch_runtime<double>("X", std::vector<std::size_t>{m, m});
+        auto                 &hh = graph.scratch_runtime<double>("H", std::vector<std::size_t>{m, m});
+        {
+            cg::CaptureGuard const guard(graph);
+            if (caller_instead) {
+                cg::einsum("i <- i,j ; j", &y, big, v);
+            } else {
+                cg::einsum("i,j <- i,k ; k,j", &x, a, b);
+                cg::einsum("i <- i,j ; j", &y, x, v);
+            }
+            cg::einsum("i,j <- i,k ; k,j", &hh, pf, qf);
+            cg::einsum("i <- i,j ; j", &h, hh, w);
+            if (x_after) {
+                cg::einsum("i <- i,j ; j", &z, x, w);
+            }
+        }
+        std::size_t const four   = m * m * sizeof(double);
+        std::size_t const before = tree_bytes(graph);
+        Budget const      budget(before - four - 1); // everything but H, less a byte
+        auto              tiling = decide_by_default(graph);
+        return std::pair{tiling, before};
+    };
+
+    SECTION("an intermediate dead before the region leaves its bytes to the loop") {
+        auto const [tiling, before] = run(false, false);
+        REQUIRE(tiling->num_tiled() >= 1);
+        CHECK_FALSE(declined_because(*tiling, "the program's other tensors alone exceed the memory budget"));
+        CHECK(tiling->largest_after() > m * sizeof(double)); // more than a row of H at a time
+    }
+    SECTION("an intermediate read after the region is alive beside it") {
+        auto const [tiling, before] = run(true, false);
+        CHECK(declined_because(*tiling, "the program's other tensors alone exceed the memory budget"));
+    }
+    SECTION("a caller's tensor is alive throughout") {
+        auto const [tiling, before] = run(false, true);
+        CHECK(declined_because(*tiling, "the program's other tensors alone exceed the memory budget"));
+    }
 }
 
 TEST_CASE("AxisTiling does not count a body's tensors against a sibling that runs before it", "[ComputeGraph][Pass][AxisTiling]") {

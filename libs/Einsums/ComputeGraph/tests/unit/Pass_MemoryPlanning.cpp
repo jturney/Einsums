@@ -548,33 +548,79 @@ TEST_CASE("MemoryPlanning - resident bytes are what the replay holds outside its
 }
 
 TEST_CASE("MemoryPlanning - an arena that holds the plan over the budget is declined", "[ComputeGraph][Passes][Arena]") {
-    // With the arena the plan is over the budget, and without it the plan is lower: each
-    // intermediate is then allocated and freed on its own.
-    ArenaAtTheEnd     program;
-    std::size_t       arena   = 0;
-    std::size_t const without = program.planned_peak(false);
-    std::size_t const with    = [&] {
+    // X dies early and is the arena's; Y is read by a loop body through a view, so it keeps its own
+    // storage. The arena is held whole beside Y, where without it X is long freed. Each is counted
+    // as a replay counts it, the caller's tensors throughout: the plan's own peak let those die
+    // after their last use, so it found room for an arena that held the CCSD tutorial's stage 5
+    // over a 32 MB budget.
+    constexpr std::size_t n = 32, m = 128;
+    auto                  A   = create_random_tensor<double>("A", n, n);
+    auto                  W   = create_random_tensor<double>("W", m, m);
+    auto                  out = create_zero_tensor<double>("out", n, n);
+    auto                  acc = create_zero_tensor<double>("acc", m / 2, m);
+
+    auto const build = [&](cg::Graph &graph) {
+        auto &X = graph.create_tensor<double, 2>("X", n, n);
+        auto &Y = graph.create_tensor<double, 2>("Y", m, m);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", &X, A, A);
+            cg::einsum("ik;kj->ij", &out, X, A); // X dies here
+            cg::einsum("ik;kj->ij", &Y, W, W);
+        }
+        auto &body = graph.add_loop("iter", 1, [](size_t) { return false; });
+        {
+            cg::CaptureGuard const guard(body);
+            auto const            &top = cg::view<double, 2>(Y, cg::ViewAxis::range(0, m / 2), cg::ViewAxis::full());
+            cg::einsum("ik;kj->ij", 0.0, &acc, 1.0, top, W);
+        }
+        graph.apply<cg::passes::FreeInsertion>(std::size_t{0});
+    };
+    auto const replayed = [&](bool apply) {
+        cg::Graph graph("arena_beside_a_view");
+        build(graph);
+        auto [modified, mp] = graph.apply<cg::passes::MemoryPlanning>(apply);
+        return std::pair{mp.managed_peak_memory() + graph.resident_bytes(), mp.num_planned()};
+    };
+
+    auto const [without, none] = replayed(false);
+    auto const [with, planned] = [&] {
         MaxMemory const plenty(std::size_t{1} << 30);
-        return program.planned_peak(true, &arena);
+        return replayed(true);
     }();
+    REQUIRE(planned > 0);
     REQUIRE(with > without);
 
-    MaxMemory const between(without + (with - without) / 2);
-    cg::Graph       graph("arena_over_budget");
-    program.capture(graph);
-    graph.apply<cg::passes::FreeInsertion>(std::size_t{0});
+    std::size_t const budget_bytes = without + (with - without) / 2;
+    MaxMemory const   between(budget_bytes);
+    cg::Graph         graph("arena_over_budget");
+    build(graph);
     auto [modified, mp] = graph.apply<cg::passes::MemoryPlanning>();
     CHECK(mp.num_planned() == 0);
-    CHECK(mp.peak_memory() == without);
     CHECK(std::ranges::any_of(mp.skip_reasons(),
                               [](auto const &entry) { return entry.first.find("would hold the plan over") != std::string::npos; }));
 
-    // And the program still computes what it computed.
+    // A later replay fits, and the program still computes what it computed. The first also holds
+    // X from its creation, before any Materialize runs.
     graph.execute();
-    auto out_ref = create_zero_tensor<double>("out_ref", ArenaAtTheEnd::m, ArenaAtTheEnd::m);
-    reference_einsum("ij <- ik ; kj", &out_ref, program.W, program.W);
-    for (std::size_t k = 0; k < out_ref.size(); ++k) {
-        REQUIRE(program.out2.data()[k] == Catch::Approx(out_ref.data()[k]).epsilon(1e-10));
+    graph.execute();
+    CHECK(graph.last_run().peak_bytes + graph.last_run().resident_bytes <= budget_bytes);
+    auto Y_ref   = create_zero_tensor<double>("Y_ref", m, m);
+    auto acc_ref = create_zero_tensor<double>("acc_ref", m / 2, m);
+    reference_einsum("ij <- ik ; kj", &Y_ref, W, W);
+    for (std::size_t i = 0; i < m / 2; ++i) {
+        for (std::size_t j = 0; j < m; ++j) {
+            double sum = 0.0;
+            for (std::size_t k = 0; k < m; ++k) {
+                sum += Y_ref(i, k) * W(k, j);
+            }
+            acc_ref(i, j) = sum;
+        }
+    }
+    for (std::size_t i = 0; i < m / 2; ++i) {
+        for (std::size_t j = 0; j < m; ++j) {
+            REQUIRE(acc(i, j) == Catch::Approx(acc_ref(i, j)).epsilon(1e-10));
+        }
     }
 }
 

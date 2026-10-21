@@ -489,13 +489,15 @@
 
     Zero disables the pass. A negative value, the default, derives the cap from the machine: an
     intermediate may take whatever :option:`--einsums:max-memory` leaves after every other tensor
-    the graph names, counted as if all of them were live at once except those only a body that runs
-    before or after the one being tiled uses, and no more than
-    :option:`--einsums:graph:tiling-budget-share` of the budget. The pass therefore fires when the
-    program would not fit and when one of its intermediates is over its share, and leaves every
-    other program as captured, which is what makes it a member of the default pipeline. A positive
-    value caps each intermediate on its own, for a caller who wants a smaller footprint than the
-    machine allows.
+    alive beside it. The caller's tensors are alive throughout, an intermediate of the graph from
+    its first writer to its last reader, and a tensor only a body that runs before or after the
+    one being tiled uses is not alive beside it at all. In a program whose peak fits the budget,
+    an intermediate also takes no more than :option:`--einsums:graph:tiling-budget-share` of the
+    budget; in one over its budget, a loop may take all that the budget leaves. The pass
+    therefore fires when the program would not fit and when one of its intermediates is over its
+    share, and leaves every other program as captured, which is what makes it a member of the
+    default pipeline. A positive value caps each intermediate on its own, for a caller who wants a
+    smaller footprint than the machine allows.
 
 "einsums:graph:storage-byte-weight":
   added: "2.0.0"

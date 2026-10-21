@@ -412,6 +412,30 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool tile_graph(Graph &graph);
 
     /// @brief The memory one region may take.
+    /// What the tree's tensors hold, and when.
+    ///
+    /// An intermediate of the graph being tiled is held from its first writer to its last reader,
+    /// in the graph's current order, since the memory passes allocate it before the one and free
+    /// it after the other. Everything else is counted as held throughout: the caller's tensors,
+    /// an intermediate read before it is written, and the tensors of the tree's other graphs,
+    /// whose order this pass does not follow.
+    struct Footprint {
+        /// One intermediate held for a span of the graph's statements.
+        struct Life {
+            std::size_t bytes{0};
+            std::size_t first{0}; ///< Position of its first writer.
+            std::size_t last{0};  ///< Position of its last reader or writer.
+        };
+        std::size_t       total{0}; ///< Every tensor at once.
+        std::size_t       fixed{0}; ///< What is held throughout.
+        std::vector<Life> lives;
+
+        /// What is held while any statement from position @p lo to @p hi runs.
+        [[nodiscard]] std::size_t beside(std::size_t lo, std::size_t hi) const;
+        /// The most held while any one statement runs: the program's peak.
+        [[nodiscard]] std::size_t peak() const;
+    };
+
     struct Allowance {
         /// The cap on each intermediate alone; an intermediate that fits it is not streamed.
         std::size_t cap{0};
@@ -421,8 +445,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         /// The most the loop's buffers may hold together whatever the budget leaves, when
         /// @ref budget is set.
         std::size_t share{0};
-        /// What the tree's tensors hold before the region is tiled, when @ref budget is set.
-        std::size_t total{0};
+        /// What the tree's tensors hold before the region is tiled, and when, when @ref budget is
+        /// set.
+        Footprint const *footprint{nullptr};
         /// Take only a triangle, and only one the cost model prices below running the region
         /// whole: the seed is there for its symmetry, not because it is over its cap.
         bool triangle_only{false};
@@ -438,14 +463,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return True when the region was replaced by a loop.
     bool tile_region(Graph &graph, TensorId seed, Allowance const &allowance);
 
-    /// @brief The bytes of every tensor the tree around @p graph names, each counted once.
+    /// @brief The bytes of every tensor the tree around @p graph names, each counted once, and
+    ///        the span of @p graph's statements each of its intermediates is held for.
     ///
     /// The tree is the one whose root this pass has walked out to through @ref _enclosing, so a
     /// loop body counts its parent's tensors too. A view owns no storage and is not counted, and
     /// neither is a tensor no node of its graph reads or writes, which is never allocated.
-    /// @param[in] graph A graph of the tree.
-    /// @return The total in bytes.
-    [[nodiscard]] std::size_t footprint(Graph const &graph) const;
+    /// @param[in] graph A graph of the tree, in the order its spans are positions of.
+    /// @return The footprint.
+    [[nodiscard]] Footprint footprint(Graph &graph) const;
 
     /// @brief The profile triangles are priced against: the supplied one, else the detected machine's.
     [[nodiscard]] DeviceProfile const &pricing() const;

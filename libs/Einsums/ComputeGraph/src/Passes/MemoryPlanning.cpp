@@ -417,63 +417,6 @@ void apply_arena_plan(Graph &graph, ArenaPlan const &plan) {
                      }());
 }
 
-/// @p repeats: @p graph runs inside a loop, at this depth or above, so a tensor's liveness can cross
-/// from one iteration to the next and the interval test does not hold. Nothing there is planned.
-void plan_tree(Graph &graph, NoteSkip const &note, bool apply, bool repeats, size_t &arena_bytes, size_t &num_planned, size_t &tensor_bytes,
-               size_t &peak_with_arena) {
-    if (repeats) {
-        // Said only where something would have been planned: a body holds no lifecycle node of its
-        // own unless a pass left one there.
-        if (std::ranges::any_of(graph.nodes(), [](Node const &node) { return node.kind == OpKind::Materialize; })) {
-            note("the graph runs inside a loop, where a tensor's liveness crosses iterations", graph.name());
-        }
-    } else {
-        ArenaPlan const plan = plan_arena(graph, note);
-        // An arena is one block held for as long as the graph is, so the plan with it holds the
-        // arena whole beside everything else at its own peak, while without it every intermediate
-        // is freed after its last use. On the CCSD tutorial's file-backed stage the arena's 4.61 MB
-        // took the peak from 9.50 MB to 11.30 MB for no measurable speed. It is kept wherever
-        // memory allows, since elsewhere it has paid for itself, and declined only where it holds
-        // the plan over --einsums:max-memory and the plan without it is lower.
-        if (!plan.tensors.empty()) {
-            std::unordered_set<TensorId> placed;
-            for (auto const &t : plan.tensors) {
-                placed.insert(graph.buffer_of(t.tid));
-            }
-            std::size_t const without = analyze_one(graph).peak;
-            std::size_t const with    = analyze_one(graph, placed).peak + plan.arena_bytes;
-            std::size_t const budget  = detail::memory_budget();
-            if (budget != 0 && with > budget && with > without) {
-                note(MemoryPlanning::ArenaOverBudget.text,
-                     fmt::format("graph '{}': {} bytes at the peak with an arena of {}, {} without, against a budget of {}", graph.name(),
-                                 with, plan.arena_bytes, without, budget));
-                for (auto &node : graph.nodes()) {
-                    bool const loop = node.kind == OpKind::Loop;
-                    for_each_child_graph(node, [&](Graph &sub) {
-                        plan_tree(sub, note, apply, repeats || loop, arena_bytes, num_planned, tensor_bytes, peak_with_arena);
-                    });
-                }
-                return;
-            }
-            peak_with_arena = std::max(peak_with_arena, with);
-        }
-        arena_bytes += plan.arena_bytes;
-        num_planned += plan.tensors.size();
-        for (auto const &t : plan.tensors) {
-            tensor_bytes += t.bytes;
-        }
-        if (apply) {
-            apply_arena_plan(graph, plan);
-        }
-    }
-    for (auto &node : graph.nodes()) {
-        bool const loop = node.kind == OpKind::Loop;
-        for_each_child_graph(node, [&](Graph &sub) {
-            plan_tree(sub, note, apply, repeats || loop, arena_bytes, num_planned, tensor_bytes, peak_with_arena);
-        });
-    }
-}
-
 /// The replay's own count of what the graph holds, kept the way the lifecycle nodes keep it: a
 /// Materialize counts its tensor when the tensor is not held already, a Free releases it, and a
 /// tensor no Free releases stays held into the next replay. An arena's nodes count nothing; the
@@ -482,13 +425,16 @@ struct ManagedCount {
     std::unordered_map<void const *, std::size_t> live;
     std::size_t                                   now{0};
     std::size_t                                   peak{0};
+    /// Tensors an arena would host: their nodes would count nothing.
+    std::unordered_set<void const *> const *hosted{nullptr};
 
     void replay(Graph &graph) {
         for (auto &node : graph.nodes()) {
             if ((node.kind == OpKind::Materialize || node.kind == OpKind::Free) && node.estimated_bytes != 0) {
                 auto const *desc   = node.op_data.get_if<AllocDescriptor>();
                 auto const *handle = desc != nullptr ? graph.find_tensor(graph.buffer_of(desc->tensor_id)) : nullptr;
-                if (handle != nullptr && handle->tensor_ptr != nullptr && handle->is_materialized_fn) {
+                if (handle != nullptr && handle->tensor_ptr != nullptr && handle->is_materialized_fn &&
+                    (hosted == nullptr || !hosted->contains(handle->tensor_ptr))) {
                     if (node.kind == OpKind::Materialize) {
                         if (live.try_emplace(handle->tensor_ptr, handle->total_bytes()).second) {
                             now += handle->total_bytes();
@@ -508,15 +454,79 @@ struct ManagedCount {
 
 /// The most a replay holds of the tensors the graph allocates and frees, plus @p arena: what
 /// Graph::last_run reports as peak_bytes. A later replay, since the first begins with nothing held.
-std::size_t managed_peak(Graph &graph, std::size_t arena) {
-    ManagedCount first;
+/// With @p hosted, the tensors an arena would host are left to @p arena.
+std::size_t managed_peak(Graph &graph, std::size_t arena, std::unordered_set<void const *> const *hosted = nullptr) {
+    ManagedCount first{.hosted = hosted};
     first.replay(graph);
-    ManagedCount steady;
-    steady.live = first.live;
-    steady.now  = first.now;
-    steady.peak = first.now;
+    ManagedCount steady{.live = first.live, .now = first.now, .peak = first.now, .hosted = hosted};
     steady.replay(graph);
     return steady.peak + arena;
+}
+
+/// @p repeats: @p graph runs inside a loop, at this depth or above, so a tensor's liveness can cross
+/// from one iteration to the next and the interval test does not hold. Nothing there is planned.
+void plan_tree(Graph &graph, NoteSkip const &note, bool apply, bool repeats, size_t resident, size_t &arena_bytes, size_t &num_planned,
+               size_t &tensor_bytes, size_t &peak_with_arena) {
+    if (repeats) {
+        // Said only where something would have been planned: a body holds no lifecycle node of its
+        // own unless a pass left one there.
+        if (std::ranges::any_of(graph.nodes(), [](Node const &node) { return node.kind == OpKind::Materialize; })) {
+            note("the graph runs inside a loop, where a tensor's liveness crosses iterations", graph.name());
+        }
+    } else {
+        ArenaPlan const plan = plan_arena(graph, note);
+        // An arena is one block held for as long as the graph is, so a replay with it holds the
+        // arena whole beside everything else at its peak, while without it every intermediate is
+        // freed after its last use. On the CCSD tutorial's file-backed stage the arena's 4.61 MB
+        // took the peak from 9.50 MB to 11.30 MB for no measurable speed. It is kept wherever
+        // memory allows, since elsewhere it has paid for itself, and declined only where it holds
+        // the program over --einsums:max-memory and the program without it holds less. Both are
+        // what a replay counts, the caller's tensors among them: the plan's own peak lets those die
+        // after their last use, and on the tutorial's stage 5 under 32 MB it put the program at
+        // 17.1 MB with the arena while a replay held 34.1 MB.
+        if (!plan.tensors.empty()) {
+            std::unordered_set<TensorId>     placed;
+            std::unordered_set<void const *> hosted;
+            for (auto const &t : plan.tensors) {
+                placed.insert(graph.buffer_of(t.tid));
+                if (TensorHandle const *handle = graph.find_tensor(graph.buffer_of(t.tid)); handle != nullptr && handle->tensor_ptr) {
+                    hosted.insert(handle->tensor_ptr);
+                }
+            }
+            std::size_t const without = managed_peak(graph, 0) + resident;
+            std::size_t const with    = managed_peak(graph, plan.arena_bytes, &hosted) + resident;
+            std::size_t const budget  = detail::memory_budget();
+            if (budget != 0 && with > budget && with > without) {
+                note(
+                    MemoryPlanning::ArenaOverBudget.text,
+                    fmt::format("graph '{}': {} bytes at the peak with an arena of {}, {} without, {} of them resident throughout, against "
+                                "a budget of {}",
+                                graph.name(), with, plan.arena_bytes, without, resident, budget));
+                for (auto &node : graph.nodes()) {
+                    bool const loop = node.kind == OpKind::Loop;
+                    for_each_child_graph(node, [&](Graph &sub) {
+                        plan_tree(sub, note, apply, repeats || loop, resident, arena_bytes, num_planned, tensor_bytes, peak_with_arena);
+                    });
+                }
+                return;
+            }
+            peak_with_arena = std::max(peak_with_arena, analyze_one(graph, placed).peak + plan.arena_bytes);
+        }
+        arena_bytes += plan.arena_bytes;
+        num_planned += plan.tensors.size();
+        for (auto const &t : plan.tensors) {
+            tensor_bytes += t.bytes;
+        }
+        if (apply) {
+            apply_arena_plan(graph, plan);
+        }
+    }
+    for (auto &node : graph.nodes()) {
+        bool const loop = node.kind == OpKind::Loop;
+        for_each_child_graph(node, [&](Graph &sub) {
+            plan_tree(sub, note, apply, repeats || loop, resident, arena_bytes, num_planned, tensor_bytes, peak_with_arena);
+        });
+    }
 }
 
 } // namespace
@@ -546,7 +556,7 @@ bool MemoryPlanning::transform(Graph &graph) {
     std::size_t peak_with_arena = 0;
     plan_tree(
         graph, [this](std::string_view reason, std::string_view detail) { note_skip(reason, detail); }, _apply_arena, /*repeats=*/false,
-        _planned_arena_bytes, _num_planned, _planned_tensor_bytes, peak_with_arena);
+        graph.resident_bytes(), _planned_arena_bytes, _num_planned, _planned_tensor_bytes, peak_with_arena);
     // The peak the plan holds: an applied arena is held whole, beside what is live at the peak.
     if (_apply_arena) {
         _peak_memory = std::max(_peak_memory, peak_with_arena);
