@@ -259,6 +259,46 @@ TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - hoisted node with a deferred ou
     }
 }
 
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - hoists the writer of a deferred tensor the body declares", "[ComputeGraph][Passes][Loop]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    // A pass that folds or factors inside a loop body declares its workspace on the body, and the
+    // writer of one is often loop-invariant: LCCF's combined operand of an integral the loop never
+    // writes is the common case. The hoist was refused, because Materialization once placed a
+    // deferred tensor's allocation only in the graph that declared it, which left the hoisted
+    // writer a null buffer. It now gives a body's deferred tensor its storage in the parent, by
+    // the tensor object the parent's handle shares, so the writer leaves the loop and the full
+    // pipeline still allocates what it writes before it runs.
+    constexpr size_t N   = 4;
+    auto             A   = create_random_tensor<T>("A", 3, 3);
+    auto             B   = create_random_tensor<T>("B", 3, 3);
+    auto             acc = create_zero_tensor<T>("acc", 3, 3);
+
+    cg::Graph g("lih_body_declared");
+    auto     &body = g.add_loop("loop", N, [](size_t it) { return it + 1 < N; });
+    {
+        auto                  &W = body.template declare_internal_tensor<T>("W", std::vector<size_t>{3, 3});
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", &W, A, B); // invariant, its one writer
+        cg::axpy(T{1}, W, &acc);
+    }
+
+    auto pm = cg::PassManager::create_default();
+    g.apply(pm);
+    CHECK(std::ranges::any_of(g.nodes(), [](cg::Node const &n) { return n.kind == cg::OpKind::Einsum; }));
+
+    auto AB = create_zero_tensor<T>("AB", 3, 3);
+    reference_einsum("ij <- ik ; kj", &AB, A, B);
+    for (int replay = 1; replay <= 2; ++replay) {
+        acc.zero();
+        REQUIRE_NOTHROW(g.execute());
+        for (size_t k = 0; k < acc.size(); ++k) {
+            INFO("replay " << replay << " element " << k);
+            CHECK(close_to(acc.data()[k], static_cast<T>(N) * AB.data()[k]));
+        }
+    }
+}
+
 TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - inner-loop invariant hoists all the way to parent", "[ComputeGraph][Passes][Loop][Nested]",
                         testing::AllScalarTypes) {
     using T = TestType;

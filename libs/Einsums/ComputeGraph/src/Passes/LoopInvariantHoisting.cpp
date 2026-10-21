@@ -212,23 +212,6 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
                 continue;
             }
 
-            // Refuse to hoist a producer whose output is a DEFERRED declaration of this body.
-            // Materialization runs after this pass and places a deferred tensor's allocation from
-            // the declarations of the graph that owns it; the declaration stays here when the
-            // node leaves, so the buffer the hoisted node writes would never be allocated and the
-            // read of it is a null pointer at execute rather than a wrong number. Reachable since
-            // region rewrites began raising loop bodies, which is what first put a pass-declared
-            // workspace inside one.
-            bool const deferred_outputs = std::ranges::any_of(bnode.outputs, [&loop_desc](TensorId out_tid) {
-                TensorHandle const &handle = loop_desc->body->tensor(out_tid);
-                return handle.alloc_state == AllocState::Deferred;
-            });
-            if (deferred_outputs) {
-                note_skip("node writes a deferred declaration of this body, whose allocation would stay behind",
-                          fmt::format("body node '{}'", bnode.label));
-                continue;
-            }
-
             // Refuse to hoist a producer whose output is read by an *earlier*
             // body node. That earlier read observes the value from the previous
             // iteration (the output is loop-carried *through* this producer), so
@@ -310,6 +293,21 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             // which states the same orphan-parent-handle convention effective_io uses.
             TensorId const parent_tid = graph.find_or_register_tensor_ptr(handle);
             id_remap[body_tid]        = parent_tid;
+
+            // A deferred intermediate the body declared moves out with its writer. The parent's
+            // handle becomes the declaration, and the body's a stand-in for a parent tensor, as
+            // for any parent tensor a body names. Left the body's, a pass run on the body alone
+            // would see only the body's readers and treat the tensor as its own to change:
+            // LayoutAssignment re-ordered LCCF's hoisted combined operand under the builder that
+            // writes it in the parent, which still wrote the captured order.
+            if (handle.alloc_state == AllocState::Deferred && handle.is_intermediate) {
+                TensorHandle &declared          = graph.tensor(parent_tid);
+                declared.is_intermediate        = true;
+                declared.materialize_on_execute = handle.materialize_on_execute;
+                TensorHandle &stand_in          = loop_desc->body->tensor(body_tid);
+                stand_in.is_intermediate        = false;
+                stand_in.materialize_on_execute = false;
+            }
             return parent_tid;
         };
 

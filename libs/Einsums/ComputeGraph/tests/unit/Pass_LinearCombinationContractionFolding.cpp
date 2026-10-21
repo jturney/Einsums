@@ -24,6 +24,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <string>
@@ -324,6 +325,56 @@ TEST_CASE("LCCF - the L builder is a separate node that LIH hoists out of a loop
     }
 }
 
+TEST_CASE("LCCF - a hoisted L keeps the layout its builder writes", "[ComputeGraph][Passes][LCCF]") {
+    // Declared on the loop body and hoisted out with its builder, L was still the body's
+    // declaration, so LayoutAssignment, run on the body, saw only the fused contraction reading
+    // it and stored it as (v,v,o,v). The builder in the parent writes the captured (o,v,v,v)
+    // order through a closure no pass rewrites, and the replay threw on the mismatch. The hoist
+    // now makes the parent's handle the declaration, where the builder pins its layout.
+    size_t const o = 2, v = 3, niter = 3;
+    auto         g_typed = create_random_tensor<double>("g", o, v, v, v);
+    auto         d_typed = create_random_tensor<double>("d", o, v);
+
+    RuntimeTensor<double> const g_rt(g_typed), d_rt(d_typed);
+    RuntimeTensor<double>       t1("t1", std::vector<size_t>{o, v});
+    RuntimeTensor<double>       Fae("Fae", std::vector<size_t>{v, v});
+    t1.zero();
+    Fae.zero();
+
+    cg::Graph graph("lccf_hoisted_layout");
+    {
+        auto                  &body = graph.add_loop("iter", niter, [niter](size_t it) { return it + 1 < niter; });
+        cg::CaptureGuard const guard(body);
+        cg::einsum("a,e <- m,f ; m,a,f,e", 1.0, &Fae, 2.0, t1, g_rt);
+        cg::einsum("a,e <- m,f ; m,a,e,f", 1.0, &Fae, -1.0, t1, g_rt);
+        cg::axpy(1.0, d_rt, &t1);
+    }
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    REQUIRE(std::ranges::any_of(graph.nodes(), [](cg::Node const &n) { return n.label.starts_with("lccf_build_L"); }));
+    REQUIRE_NOTHROW(graph.execute());
+
+    Tensor<double, 2> ref("ref", v, v);
+    ref.zero();
+    for (size_t it = 0; it < niter; ++it) {
+        for (size_t a = 0; a < v; ++a) {
+            for (size_t e = 0; e < v; ++e) {
+                for (size_t m = 0; m < o; ++m) {
+                    for (size_t f = 0; f < v; ++f) {
+                        ref(a, e) += static_cast<double>(it) * d_typed(m, f) * (2.0 * g_typed(m, a, f, e) - g_typed(m, a, e, f));
+                    }
+                }
+            }
+        }
+    }
+    for (size_t a = 0; a < v; ++a) {
+        for (size_t e = 0; e < v; ++e) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(a), static_cast<ptrdiff_t>(e)};
+            CHECK(std::abs(Fae(idx) - ref(a, e)) < 1e-11);
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Arena-hosted L intermediate
 // ─────────────────────────────────────────────────────────────────────────────
@@ -431,6 +482,93 @@ TEST_CASE("LCCF - a second optimized graph does not inherit the first one's L", 
         graph.execute();
 
         require_matches(out_rt, ref, fmt::format("calculation {}", calculation));
+    }
+}
+
+namespace {
+/// The handle of the combined operand LCCF folded group @p n into.
+cg::TensorHandle const *combined_operand(cg::Graph const &graph, int n) {
+    for (auto const &[tid, handle] : graph.tensors_map()) {
+        if (handle.name == fmt::format("_lccf_L_{}", n)) {
+            return &handle;
+        }
+    }
+    return nullptr;
+}
+} // namespace
+
+TEST_CASE("LCCF - the combined operand is an intermediate the replay allocates", "[ComputeGraph][Passes][LCCF]") {
+    // The pass allocated each combined operand the moment it ran, so a 2 MiB L held memory from
+    // optimize() on, before any replay needed it, and every later pass had to treat it as a
+    // tensor that already existed. FreeInsertion freed it after its first replay. It is declared
+    // instead, like any intermediate: the memory passes give it storage for the span of each
+    // replay that uses it, and a graph run without them gives it storage at its first execute.
+    auto A = create_random_tensor<double>("A", kArenaK);
+    auto B = create_random_tensor<double>("B", kArenaK, kArenaN, kArenaN);
+
+    Tensor<double, 2> ref("ref", kArenaN, kArenaN);
+    reference_2j_minus_k(ref, A, B);
+
+    RuntimeTensor<double> const A_rt(A), B_rt(B);
+
+    SECTION("the pass alone") {
+        RuntimeTensor<double> out_rt("out", std::vector<size_t>{kArenaN, kArenaN});
+        out_rt.zero();
+        cg::Graph graph("lccf_declared_alone");
+        capture_2j_minus_k(graph, out_rt, A_rt, B_rt);
+
+        auto [modified, pass] = graph.apply<cg::passes::LinearCombinationContractionFolding>();
+        REQUIRE(modified);
+        REQUIRE(pass.num_groups() == 1);
+        auto const *combined = combined_operand(graph, 0);
+        REQUIRE(combined != nullptr);
+        CHECK(combined->is_intermediate);
+        CHECK(combined->alloc_state == cg::AllocState::Deferred);
+
+        graph.execute();
+        require_matches(out_rt, ref, "first execute");
+        graph.execute();
+        require_matches(out_rt, ref, "second execute");
+    }
+
+    SECTION("the default pipeline") {
+        RuntimeTensor<double> out_rt("out", std::vector<size_t>{kArenaN, kArenaN});
+        out_rt.zero();
+        cg::Graph graph("lccf_declared_pipeline");
+        capture_2j_minus_k(graph, out_rt, A_rt, B_rt);
+
+        auto pm = cg::PassManager::create_default();
+        graph.apply(pm);
+        auto const *combined = combined_operand(graph, 0);
+        REQUIRE(combined != nullptr);
+        CHECK(combined->alloc_state == cg::AllocState::Deferred);
+
+        for (int replay = 1; replay <= 3; ++replay) {
+            graph.execute();
+            require_matches(out_rt, ref, fmt::format("replay {}", replay));
+        }
+        // The replay holds L while it is in use, and counts it.
+        CHECK(graph.last_run().peak_bytes >= kArenaK * kArenaN * kArenaN * sizeof(double));
+    }
+
+    SECTION("inside a loop, built once before it") {
+        RuntimeTensor<double> out_rt("out", std::vector<size_t>{kArenaN, kArenaN});
+        out_rt.zero();
+        cg::Graph graph("lccf_declared_loop");
+        {
+            auto &body = graph.add_loop("iter", 3, [](size_t it) { return it + 1 < 3; });
+            capture_2j_minus_k(body, out_rt, A_rt, B_rt);
+        }
+
+        auto pm = cg::PassManager::create_default();
+        graph.apply(pm);
+        // B never changes, so the builder leaves the loop, and the parent gives L its storage.
+        CHECK(std::ranges::any_of(graph.nodes(), [](cg::Node const &n) { return n.label.starts_with("lccf_build_L"); }));
+
+        for (int replay = 1; replay <= 2; ++replay) {
+            graph.execute();
+            require_matches(out_rt, ref, fmt::format("replay {}", replay));
+        }
     }
 }
 

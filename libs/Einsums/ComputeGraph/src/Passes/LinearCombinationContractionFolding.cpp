@@ -247,7 +247,7 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
         return a.key < b.key;
     });
 
-    size_t const      orig_count = nodes.size(); // appended Alloc nodes (>= this) are always kept
+    size_t const      orig_count = nodes.size();
     std::vector<bool> used(orig_count, false);
     std::vector<bool> remove(orig_count, false);
     // (position in the ORIGINAL numbering, nodes to splice immediately before it).
@@ -348,15 +348,20 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
             }
         }
 
-        auto l_res = graph.create_zero_runtime_tensor_dynamic(fmt::format("_lccf_L_{}", _num_groups), dtype, b_handle->dims);
-        if (!l_res) {
+        // L is an intermediate like any other: declared here, given storage by the memory passes
+        // for the span of each replay that uses it, or at its first execute in a graph run
+        // without them. The build's first permute overwrites it, so it needs no zeroing.
+        TensorId l_id = 0;
+        compute_graph::detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
+            auto &l = graph.declare_internal_tensor<T>(fmt::format("_lccf_L_{}", _num_groups), b_handle->dims);
+            l_id    = graph.find_tensor_id_by_ptr(&l);
+        });
+        if (l_id == 0) {
             continue;
         }
-        TensorId const l_id = l_res.value().first;
 
-        // The create_* calls above append Alloc nodes and may reallocate the
-        // node vector, dangling the descriptor pointer fetched for the gate;
-        // re-resolve it before building the fused spec from it.
+        // Declaring L may reallocate the graph's storage the descriptor pointer fetched for the
+        // gate points into; re-resolve it before building the fused spec from it.
         n0_desc = nodes[members[0].node_index].op_data.get_if<EinsumDescriptor>();
 
         PrefactorScalar ab0 = members[0].ab_prefactor;
@@ -500,8 +505,8 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
         return false;
     }
 
-    // Keep appended fused nodes (index >= orig_count); drop folded originals, and
-    // splice each L-builder immediately before its contraction. A contraction's own
+    // Drop the folded originals, and splice each L-builder immediately before its
+    // contraction. A contraction's own
     // slot is never erased (it took over node-0's), so the shifted position still
     // points at it and inserting "before" lands the builder directly ahead of its
     // consumer. @see Graph::replace_nodes for the position bookkeeping.
