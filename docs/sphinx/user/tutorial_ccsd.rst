@@ -277,22 +277,22 @@ The capture is stage 4's, unchanged, and the report says what changed:
 
 .. code-block:: text
 
-    slicing Bvv*Bvv[1] into 53 slice(s), blocks of 14 in 2 loop(s) of 4 iteration(s) in all, seed 63123848 bytes -> largest intermediate 16674224 bytes
+    slicing Bvv*Bvv[1] into 53 slice(s), blocks of 18 in 2 loop(s) of 3 iteration(s) in all, seed 63123848 bytes -> largest intermediate 21438288 bytes
 
-``AxisTiling`` turned the ladder into a loop over blocks of one of its virtual indices, so :math:`\langle ab|ef\rangle` is built and used 16.7 MB at a time instead of 63 MB.
+``AxisTiling`` turned the ladder into a loop over blocks of one of its virtual indices, so :math:`\langle ab|ef\rangle` is built and used 21.4 MB at a time instead of 63 MB.
 The block is the one the optimizer predicts runs fastest within the budget, pricing each candidate's contractions at the shape its tiles have.
 Nothing in the equations moved, and the energy is the same to every digit.
 A program that fits its budget is left alone, which is why stage 4, with the machine's whole memory as its budget, was not tiled.
 
 **A budget has to leave room for what cannot be sliced.**
-The program's other tensors, the integral blocks and the four-index intermediates, take about 34 MB here, counted as if all of them were live at once.
-Under a 32 MB budget the ladder's loop over one index no longer fits beside them, and the pass falls back to a loop that streams more of the program in smaller pieces:
+The program's inputs, the integral blocks, amplitudes and denominators, hold 18.1 MB from the first statement to the last; an intermediate counts only from its first writer to its last reader.
+Under a 32 MB budget the ladder's loop takes smaller blocks of the same index, 8.3 MB of :math:`\langle ab|ef\rangle` at a time, and runs within 5% of the 64 MB loop.
+Under 16 MB the inputs alone are over the budget, and no loop can help; the replay says so:
 
 .. code-block:: text
 
-    slicing Bvv*Bvv[0] x Bvv*Bvv[2] into 2809 slice(s), blocks of 1 x 9 in 2 loop(s) of 318 iteration(s) in all, seed 63123848 bytes -> largest intermediate 202248 bytes
+    graph 'ccsd': a replay held 25179784 bytes at its peak, 7101152 of graph-managed tensors and 18078632 resident throughout, over --einsums:max-memory of 16777216 bytes; the optimizer could not fit the program to the budget
 
-It meets the budget and takes about 2.5 times as long as the loop at 64 MB.
 A budget smaller than the inputs is the next stage's problem.
 
 Stage 6: integrals and amplitudes in files
@@ -318,7 +318,7 @@ The report says how each one is moved:
 
 .. code-block:: text
 
-    slicing Bvv*Bvv[1] x Bvv*Bvv[3] into 2809 slice(s), blocks of 7 x 9 in 4 loop(s) of 48 iteration(s) in all, seed 63123848 bytes -> largest intermediate 1415736 bytes
+    slicing Bvv*Bvv[1] into 53 slice(s), blocks of 7 in 2 loop(s) of 8 iteration(s) in all, seed 63123848 bytes -> largest intermediate 8337112 bytes
     SlabStreaming: 'einsum: C[a,e] = A[m,f] * B[m,a,f,e]' reads 'ovvv' in blocks of 23 of 53 along its last axis (a letter the output keeps, so each block writes its own slice); 5955080 bytes read per execution, about 0.2 flop per byte read
     ...
     SlabStreaming: 'einsum: C[a,e,b,f] = A[Q,a,e] * B[Q,b,f]' reads 'Bvv' a box at a time, the box its view names: 418488 bytes in 1 run(s) each time the view is made, in place of the whole tensor
@@ -335,15 +335,15 @@ The ladder is sliced again, in smaller blocks; the 6 MB ``ovvv`` block is read a
 
 .. code-block:: text
 
-    the last replay held at most 8720008 bytes
-      Bvv: 44359728 bytes read in 96 read(s), 0 written
+    the last replay held at most 15920688 bytes
+      Bvv: 28516968 bytes read in 24 read(s), 0 written
       ...
-      ovvv: 29775400 bytes read in 18 read(s), 0 written
+      ovvv: 35730480 bytes read in 18 read(s), 0 written
       t1: 2120 bytes read in 1 read(s), 2120 written
       t2: 561800 bytes read in 1 read(s), 561800 written
 
-The replay held 8.7 MB at most, against 66 MB in stage 4.
-That was paid for in reading: ``Bvv`` is 3.2 MB and was read 14 times over, because every block of the ladder reads the box it needs.
+The replay held 15.9 MB at most, against 66 MB in stage 4.
+That was paid for in reading: ``Bvv`` is 3.2 MB and was read 9 times over, because every block of the ladder reads the box it needs.
 The budget steers what is streamed, and is not a hard limit on what a replay holds.
 And the commit is not free either: each replay waits for the drive three times, once for each amplitude and once for the commit that publishes both.
 
@@ -392,11 +392,11 @@ and what the replay read from the file falls with it:
 
 .. code-block:: text
 
-    the last replay held at most 10612568 bytes
+    the last replay held at most 8440616 bytes
       Bvv: 28516968 bytes read in 72 read(s), 0 written
       ...
 
-In stage 6, ``Bvv`` was read in 96 pieces, 44 MB a replay; here it is 72 pieces and 29 MB, because the triangle skips the blocks below the diagonal.
+``Bvv`` is read in 72 pieces here against stage 6's 24, and the same 29 MB: the triangle skips the blocks below the diagonal, but its blocks are smaller, so each piece is too.
 The blocks are stage 7's: the 16 MB budget has room for them and for the mirror's scratch tile beside everything else.
 
 What each stage costs
@@ -412,21 +412,21 @@ The programs ran interleaved, five times each, and the table gives the median; t
    * - Stage
      - ms per iteration
    * - 1. NumPy
-     - 33.3
+     - 30.9
    * - 2. Einsums, eager
-     - 32.0
+     - 29.5
    * - 3. Captured and replayed
-     - 21.7
+     - 19.7
    * - 4. Scratch and spaces declared
-     - 17.6
+     - 16.3
    * - 5. A 64 MB memory budget
-     - 15.5
+     - 14.2
    * - 6. Integrals and amplitudes in files, a 16 MB budget
-     - 55.7
+     - 46.1
    * - 7. Pair symmetry declared
-     - 14.3
+     - 13.3
    * - 8. Files and symmetry, a 16 MB budget
-     - 45.6
+     - 44.2
 
 Read it as six observations rather than a ranking.
 
@@ -435,26 +435,26 @@ The two run the same algorithm on the same BLAS, and come out even.
 Stage 2 exists to fix the semantics, not the speed.
 
 **The speed comes from capturing, and from what you declare.**
-Replaying the captured iteration is 1.5 times faster than NumPy, and declaring scratch and spaces takes that to 1.9.
+Replaying the captured iteration is 1.6 times faster than NumPy, and declaring scratch and spaces takes that to 1.9.
 None of it touched the equations.
 
 **Holding less need not cost time.**
-Stage 5 holds a 16.7 MB block of :math:`\langle ab|ef\rangle` where stage 4 holds all 63 MB, and runs 12% faster.
+Stage 5 holds a 21.4 MB block of :math:`\langle ab|ef\rangle` where stage 4 holds all 63 MB, and runs 13% faster.
 
 **Files are bought with time.**
-Stage 6 holds an eighth of what stage 4 holds and takes about three times as long.
-The difference is the ladder's loop, which reads each block's box of ``Bvv`` from the file, 14 times its size in all, the slabs of ``ovvv`` and the other integral blocks, and the three waits for the drive that make each commit safe.
+Stage 6 holds a quarter of what stage 4 holds and takes about three times as long.
+The difference is the ladder's loop, which reads each block's box of ``Bvv`` from the file, 9 times its size in all, the slabs of ``ovvv`` and the other integral blocks, and the three waits for the drive that make each commit safe.
 At a molecule whose integrals do not fit in memory, there is no faster version to compare it with.
 
 **The triangle pays at water too.**
-It halves the ladder's arithmetic, and stage 7 is 19% faster than stage 4.
+It halves the ladder's arithmetic, and stage 7 is 18% faster than stage 4.
 How large the blocks should be is the optimizer's choice, and it is not the arithmetic that decides it.
 A block of the ladder's output is computed by a contraction of its own, and a small block pays for more contractions, more packing of their operands, and more of the mirror's copies; a large block computes more of the diagonal twice.
 The optimizer prices each candidate block as the contraction engine would run its tiles, from the hardware profile when ``einsums tune`` has measured one and from a built-in table otherwise, and here it picks blocks of 7 x 7.
 On benzene in cc-pVDZ, where the ladder is most of an iteration, the same declaration took an iteration to 0.69 to 0.72 of the time without it.
 
-**With files, the triangle pays as much.**
-Stage 8 is 18% faster than stage 6: the triangle runs about half the ladder's tiles and reads a third less of ``Bvv``, while the reads of the other integrals and the waits for the commit stay as they were.
+**With files, the triangle pays less.**
+Stage 8 is 4% faster than stage 6. The triangle halves the ladder's arithmetic, but with files the ladder is a smaller part of the iteration: ``Bvv`` is read in the same 29 MB either way, and the reads of the other integrals and the waits for the commit stay as they were.
 
 Where to go next
 ================
