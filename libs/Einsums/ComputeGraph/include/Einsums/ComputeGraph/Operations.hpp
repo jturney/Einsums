@@ -229,16 +229,6 @@ template <typename T>
 concept MatrixOrVectorOperand = MatrixOperand<T> || VectorOperand<T>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// einsum: graph-aware, runtime-string contraction spec
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Contractions are specified by runtime strings only. The compile-time
-// index-tuple overloads were removed: index tuples are types and can't be
-// rewritten by optimization passes, while strings are data that live on the
-// graph and can be mutated in place. See the string overloads further down in
-// this file for the public entry points.
-
-// ─────────────────────────────────────────────────────────────────────────────
 // scale
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -5448,7 +5438,8 @@ auto det(AType const &A) -> typename AType::ValueType {
 // ═══════════════════════════════════════════════════════════════════════════
 // String-based einsum API
 //
-// Uses string notation instead of compile-time index types.
+// A contraction's spec is data: parsed once into index lists that live on the
+// node, where optimization passes rewrite them in place.
 // Supports both "ij <- ik ; kj" (arrow) and "ik;kj -> ij" (NumPy) formats.
 // Single-char and multi-char indices auto-detected.
 // Dispatches to DOT, GER, GEMV, GEMM, direct product, or generic fallback.
@@ -5456,11 +5447,10 @@ auto det(AType const &A) -> typename AType::ValueType {
 
 namespace detail {
 
-/// Build an EinsumDescriptor from a ParsedEinsumSpec.
 /// Every index name must denote ONE size wherever it appears. Checking at
 /// capture (and on the eager path) puts the failure in the user's own stack
-/// frame with names attached, instead of a garbage-dimension BLAS error - or
-/// silent corruption - at execute time.
+/// frame with names attached, instead of a garbage-dimension BLAS error, or
+/// silent corruption, at execute time.
 template <typename AType, typename BType, typename CType>
 void validate_einsum_dims(ParsedEinsumSpec const &parsed, AType const &A, BType const &B, CType const &C) {
     std::unordered_map<std::string_view, std::pair<size_t, char>> sizes;
@@ -5585,15 +5575,12 @@ void einsum_parsed(ParsedEinsumSpec parsed, typename AType::ValueType c_pf, CTyp
                                      {c_id, c_slot, &C->impl()});
 }
 
-// build_einsum_descriptor now lives in Node.hpp so Graph::make_einsum_node can
-// share it; see einsums::compute_graph::detail there.
-
 } // namespace detail
 
 /**
  * @brief String-based einsum with explicit prefactors.
  *
- * Uses string notation instead of compile-time index types:
+ * The spec names each operand's indices in a string:
  * @code
  * cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);     // GEMM
  * cg::einsum("ij <- ki ; kj", 0.0, &C, 1.0, A, B);     // GEMM with transposed A

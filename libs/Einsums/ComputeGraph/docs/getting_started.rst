@@ -134,8 +134,7 @@ dependencies, so you do not have to mark parallelism by hand.
 String-Based Einsum
 ===================
 
-You can name indices with a string instead of compile-time index types. Three
-notations are accepted.
+A contraction names its indices in a string. Three notations are accepted.
 
 .. code-block:: cpp
 

@@ -5,9 +5,10 @@
 String-Based Einsum
 ====================
 
-The string-based einsum API lets you specify contraction patterns as strings
-instead of compile-time index types. This is more concise and enables
-Python interoperability.
+ComputeGraph specifies every contraction pattern as a string. The spec is
+data: it is parsed once into index lists that live on the graph's node, where
+optimization passes rewrite them in place, and the same string works from
+Python.
 
 Notation
 ========
