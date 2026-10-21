@@ -300,6 +300,29 @@ foreach(sphinx_source_file ${sphinx_libs_source_files})
        "${CMAKE_CURRENT_BINARY_DIR}/sphinx/libs/${sphinx_source_file}")
 endforeach()
 
+# The CCSD tutorial includes its code from the example programs the tests run, so
+# the page shows exactly what is tested. Copied beside the pages, where the
+# literalinclude directives find them.
+file(
+  GLOB sphinx_ccsd_example_files CONFIGURE_DEPENDS
+  RELATIVE "${PROJECT_SOURCE_DIR}/libs/Einsums/ComputeGraph/examples"
+  "${PROJECT_SOURCE_DIR}/libs/Einsums/ComputeGraph/examples/ccsd_*.py"
+)
+list(FILTER sphinx_ccsd_example_files EXCLUDE REGEX "^ccsd_(out_of_core|tiled)\\.py$")
+
+foreach(sphinx_source_file ${sphinx_ccsd_example_files})
+  set(_dest "${CMAKE_CURRENT_BINARY_DIR}/sphinx/examples/ccsd/${sphinx_source_file}")
+  add_custom_command(
+    OUTPUT "${_dest}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/libs/Einsums/ComputeGraph/examples/${sphinx_source_file}"
+    COMMAND
+      ${CMAKE_COMMAND} -E copy_if_different
+      "${PROJECT_SOURCE_DIR}/libs/Einsums/ComputeGraph/examples/${sphinx_source_file}" "${_dest}"
+  )
+  list(APPEND sphinx_source_files_build "${_dest}")
+  list(APPEND _copied_dest_files "${_dest}")
+endforeach()
+
 # Harden against stale copies. The copy step above is additive: when a
 # hand-written source .rst is DELETED, its previously-copied file lingers in the
 # build tree and Sphinx still builds it (this is how a removed page kept

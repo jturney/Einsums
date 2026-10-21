@@ -84,6 +84,13 @@ if(EINSUMS_BUILD_PYTHON
   set(python_example_scripts
       annotate_and_rebind.py
       ccsd_out_of_core.py
+      ccsd_stage1_numpy.py
+      ccsd_stage2_eager.py
+      ccsd_stage3_graph.py
+      ccsd_stage4_optimizer.py
+      ccsd_stage5_memory.py
+      ccsd_stage6_disk.py
+      ccsd_stage7_symmetry.py
       ccsd_tiled.py
       mp2_simulation.py
       optimizer_tour.py

@@ -22,7 +22,8 @@ information is consumed in three places:
 
 3. **Symmetry-exploiting passes**: ``AntisymmetryInference``,
    ``AntisymmetrizerFolding``, and ``LayoutAssignment`` read the descriptor
-   to make their decisions.
+   to make their decisions, and ``AxisTiling`` computes only half of a
+   contraction whose result it can prove pair-symmetric.
 
 .. contents::
    :local:
@@ -204,7 +205,7 @@ are never mutated.
 Higher-Rank Coverage
 ====================
 
-The Phase 2 BLAS dispatch covers rank 2 exhaustively. Higher-rank
+The BLAS dispatch covers rank 2 exhaustively. Higher-rank
 symmetries are declared and verified today, since the descriptor type and
 ``symmetrize`` / ``check_symmetry`` are rank-N generic, but vendor BLAS
 has no direct support for them: no ``spmm`` for 4-index symmetric, no
@@ -219,13 +220,57 @@ Packed storage for big higher-rank tensors such as compact ERI or antisym T2
 is future work. The memory savings are real, roughly 8 times for 8-fold ERI,
 but require either custom kernels or per-access canonicalization.
 
+Computing Half a Pair-Symmetric Contraction
+===========================================
+
+The closed-shell CCSD amplitude is unchanged when the two electrons trade
+places, ``t2[i,j,a,b] = t2[j,i,b,a]``: a swap of the axis pair ``(0, 2)`` with
+the pair ``(1, 3)``. Declared on the tensor, it lets ``AxisTiling`` prove that a
+contraction's result has the same symmetry, slice that result over two
+exchangeable axes, compute only the blocks on and above the diagonal, and write
+each off-diagonal block's mirror from it.
+
+.. code-block:: python
+
+   t2.set_symmetry(einsums.SymmetryDescriptor([einsums.SymmetryOp.group_swap([0, 2], [1, 3])]))
+
+The triangle needs all of the following, and the report names the first one
+that fails:
+
+- Two sliced axes of the same extent and block, in a region that writes one of
+  the caller's tensors and neither reduces nor sums into a tensor
+  (``axis-tiling.triangle-shape``).
+- A contribution provably unchanged when the two axes are exchanged, from the
+  declared symmetries of the operands (``axis-tiling.not-exchangeable``).
+- An output that is not backed by storage, since a mirrored block lands
+  outside the box the block streams (``axis-tiling.triangle-backed``).
+- A block of two or more that fits beside the scratch block the mirror is
+  computed into (``axis-tiling.triangle-fit``).
+- When the region has nothing to stream and would otherwise run as captured, a
+  cost-model price for the triangle below the price of running it whole
+  (``axis-tiling.triangle-price``).
+
+A declaration is a promise the triangle relies on, so the tiling checks it: a
+node before the loop runs ``check_symmetry`` on the declared tensor at every
+replay, and throws if its values no longer have the declared symmetry.
+
+Whether the triangle pays depends on how much of the iteration the
+contraction is. On benzene in cc-pVDZ, where the particle ladder dominates, it
+took a CCSD iteration to 0.69 to 0.72 of the time without it; on water in
+cc-pVTZ the loop of small blocks and the mirror's copies cost more than the
+arithmetic saved. :ref:`tutorial-ccsd` shows both the declaration and that
+measurement.
+
 Python API
 ==========
 
-The descriptor API is C++-only today: ``RuntimeTensor`` in Python has no
-``set_symmetry`` / ``has_symmetry`` / ``symmetry`` / ``clear_symmetry``, and
-``SymmetryDescriptor`` is not bound. From Python the pass itself is available
-as ``einsums.graph.SymmetryPropagation``, which reports ``num_inferred``.
+``RuntimeTensor`` has ``set_symmetry``, ``has_symmetry`` and
+``clear_symmetry``. ``einsums.SymmetryDescriptor`` is built from a list of
+``einsums.SymmetryOp`` generators (``swap``, ``group_swap``, ``identity``) or
+from the same named factories as in C++ (``symmetric_pair``, ``eri_8fold``,
+``ccsd_t2`` and the rest). There is no getter for the descriptor itself. The
+propagation pass is ``einsums.graph.SymmetryPropagation``, which reports
+``num_inferred``.
 
 Design Notes
 ============
@@ -243,7 +288,8 @@ double-precision BLAS workloads.
 
 **Descriptor as source of truth.** BLAS dispatch and ComputeGraph
 passes trust the declared descriptor and do not re-verify at every
-call. If you attach a symmetric descriptor to a non-symmetric matrix,
+call; the one exception is the triangle above, which checks it at every
+replay. If you attach a symmetric descriptor to a non-symmetric matrix,
 you will get silently wrong results. Use ``symmetrize()`` on ingest when in
 doubt.
 

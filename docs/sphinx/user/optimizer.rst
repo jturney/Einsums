@@ -1019,6 +1019,8 @@ on port 19216 and the saved profile name the graph node behind a zone.
 What's next
 ===========
 
+* :ref:`tutorial-ccsd`, which applies the declarations on this page to one
+  CCSD program, one at a time, and measures each.
 * ``optimizer_tour.py``, ``annotate_and_rebind.py`` and ``TagsAndProviders.cpp``
   in the ComputeGraph examples directory.
 * :ref:`tutorial-compute-graph` for capture, replay, control flow and the parts

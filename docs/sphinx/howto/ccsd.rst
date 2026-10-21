@@ -225,8 +225,9 @@ The version on this page is eager, which is the right place to start because eag
 It is not where the performance is.
 
 The iteration body is the same work every time, which is exactly the shape a :doc:`ComputeGraph </user/tutorial_compute_graph>` is for.
-Capture the body once, optimize it, and replay it, as ``ccsd_rhf_graph_numpy_style.py`` does for the closed-shell case.
+Capture the body once, optimize it, and replay it.
 Fusion, memory planning, and batching all operate on the captured form, and none of them are available to the eager calls above.
+:ref:`tutorial-ccsd` takes the closed-shell CCSD through every step of that, from NumPy to a captured graph that runs in a memory budget, keeps its integrals and amplitudes in files, and uses the amplitudes' symmetry, with each stage measured.
 
 Read :doc:`/user/tutorial_best_practices` before doing that conversion.
 Two points from it matter most here: everything you allocate per iteration wants to come from a pool rather than a fresh allocation, and the intermediates that die on first read should never be materialized at all.
@@ -234,6 +235,7 @@ Two points from it matter most here: everything you allocate per iteration wants
 Next
 ====
 
+- :ref:`tutorial-ccsd` for the closed-shell CCSD taken from NumPy to an optimized graph, stage by stage.
 - :ref:`howto-graphs` for converting the iteration body to a captured graph.
 - :ref:`howto-from-psi4` for the integral bridge in detail.
 - :doc:`/user/tutorial_best_practices` for what to fix once it is captured.
