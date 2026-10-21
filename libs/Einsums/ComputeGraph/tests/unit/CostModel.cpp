@@ -62,9 +62,141 @@ TEST_CASE("DeviceProfile - GEMM GFLOPS with efficiency table", "[ComputeGraph][C
     CHECK(at_16 == Catch::Approx(10.0));
     CHECK(at_256 == Catch::Approx(80.0));
 
-    // Between 16 and 256 → should pick nearest
+    // Between measured cubes the log rate is interpolated in log size: 64 is halfway from 16 to 256.
     double const at_64 = p.estimate_gemm_gflops(64, 64, 64);
-    CHECK(at_64 > 0);
+    CHECK(at_64 == Catch::Approx(std::sqrt(10.0 * 80.0)));
+
+    // Clamped at the ends of what was measured.
+    CHECK(p.estimate_gemm_gflops(4, 4, 4) == Catch::Approx(10.0));
+    CHECK(p.estimate_gemm_gflops(4096, 4096, 4096) == Catch::Approx(98.0));
+}
+
+TEST_CASE("DeviceProfile - a cube table reads a shape at the cube of its volume", "[ComputeGraph][CostModel]") {
+    // A table of cubes knows nothing of shape, so any shape reads where its volume's cube sits.
+    cg::DeviceProfile p;
+    p.gemm_efficiency = {{.M = 16, .N = 16, .K = 16, .gflops = 8.0}, {.M = 256, .N = 256, .K = 256, .gflops = 80.0}};
+    CHECK(p.estimate_gemm_gflops(16, 64, 256) == Catch::Approx(p.estimate_gemm_gflops(64, 64, 64)));
+    CHECK(p.estimate_gemm_gflops(64, 64, 64) == Catch::Approx(std::sqrt(8.0 * 80.0)));
+}
+
+TEST_CASE("DeviceProfile - a grid of shapes is read trilinearly in log space", "[ComputeGraph][CostModel]") {
+    // A rate that is linear in log M, log N and log K is reproduced exactly between grid points.
+    auto const rate = [](double m, double n, double k) {
+        return 10.0 * std::pow(m / 16.0, 0.2) * std::pow(n / 16.0, 0.3) * std::pow(k / 16.0, 0.4);
+    };
+    cg::DeviceProfile p;
+    for (size_t const m : {16, 256}) {
+        for (size_t const n : {16, 256}) {
+            for (size_t const k : {16, 256}) {
+                p.gemm_efficiency.push_back(
+                    {.M = m, .N = n, .K = k, .gflops = rate(static_cast<double>(m), static_cast<double>(n), static_cast<double>(k))});
+            }
+        }
+    }
+    CHECK(p.estimate_gemm_gflops(64, 32, 128) == Catch::Approx(rate(64, 32, 128)));
+    CHECK(p.estimate_gemm_gflops(16, 256, 16) == Catch::Approx(rate(16, 256, 16)));
+    // Outside the grid the nearest face answers.
+    CHECK(p.estimate_gemm_gflops(4096, 64, 64) == Catch::Approx(rate(256, 64, 64)));
+
+    SECTION("a corner the grid skipped drops out") {
+        // Calibration skips its largest shapes. The rest of the cell still answers, and a measured
+        // point still reads back exactly.
+        std::erase_if(p.gemm_efficiency, [](cg::GemmEfficiencyPoint const &pt) { return pt.M == 256 && pt.N == 256 && pt.K == 256; });
+        double const inside = p.estimate_gemm_gflops(128, 128, 128);
+        CHECK(inside > rate(16, 16, 16));
+        CHECK(inside < rate(256, 256, 256));
+        CHECK(p.estimate_gemm_gflops(256, 256, 16) == Catch::Approx(rate(256, 256, 16)));
+    }
+}
+
+TEST_CASE("DeviceProfile - each engine reads its own points", "[ComputeGraph][CostModel]") {
+    cg::DeviceProfile p;
+    p.gemm_efficiency = {{.M = 64, .N = 64, .K = 64, .gflops = 40.0, .engine = cg::GemmEngine::Routed},
+                         {.M = 64, .N = 64, .K = 64, .gflops = 25.0, .engine = cg::GemmEngine::Packed}};
+    CHECK(p.estimate_gemm_gflops(64, 64, 64) == Catch::Approx(40.0));
+    CHECK(p.estimate_gemm_gflops(64, 64, 64, cg::GemmEngine::Packed) == Catch::Approx(25.0));
+
+    // A profile that measured only the routed engine answers for both.
+    std::erase_if(p.gemm_efficiency, [](cg::GemmEfficiencyPoint const &pt) { return pt.engine == cg::GemmEngine::Packed; });
+    CHECK(p.estimate_gemm_gflops(64, 64, 64, cg::GemmEngine::Packed) == Catch::Approx(40.0));
+}
+
+TEST_CASE("DeviceProfile - run costs interpolate in log run length", "[ComputeGraph][CostModel]") {
+    std::vector<cg::RunCostPoint> const curve{
+        {.run = 64, .ns_per_element = 0.1}, {.run = 1, .ns_per_element = 2.0}, {.run = 8, .ns_per_element = 0.5}};
+    CHECK(cg::DeviceProfile::run_cost_ns(curve, 1) == Catch::Approx(2.0));
+    CHECK(cg::DeviceProfile::run_cost_ns(curve, 8) == Catch::Approx(0.5));
+    // 32 sits two thirds of the way from 8 to 64 in log run length.
+    CHECK(cg::DeviceProfile::run_cost_ns(curve, 32) == Catch::Approx(0.5 + (2.0 / 3.0) * (0.1 - 0.5)));
+    CHECK(cg::DeviceProfile::run_cost_ns(curve, 4096) == Catch::Approx(0.1));
+    CHECK(cg::DeviceProfile::run_cost_ns({}, 4) == 0.0);
+}
+
+TEST_CASE("DeviceProfile - a contraction's time adds the parts the engine runs", "[ComputeGraph][CostModel]") {
+    cg::DeviceProfile p;
+    p.kernel_launch_overhead_us = 1.0;
+    p.mem_bandwidth_gbps        = 100.0;
+    p.gemm_efficiency           = {{.M = 64, .N = 64, .K = 64, .gflops = 50.0, .engine = cg::GemmEngine::Routed},
+                                   {.M = 64, .N = 64, .K = 64, .gflops = 40.0, .engine = cg::GemmEngine::Packed}};
+    p.scatter_cost              = {{.run = 1, .ns_per_element = 4.0}, {.run = 64, .ns_per_element = 0.25}};
+    p.pack_cost                 = {{.run = 1, .ns_per_element = 1.0}, {.run = 64, .ns_per_element = 0.0}};
+
+    einsums::packed_gemm::PackedContractionShape flat{
+        .valid = true, .M = 64, .N = 64, .K = 64, .c_scattered = false, .a_run = 64, .b_run = 64};
+    double const arithmetic = 2.0 * 64 * 64 * 64 / (50.0 * 1e3);
+    CHECK(p.estimate_contraction_time_us(flat) == Catch::Approx(1.0 + arithmetic));
+
+    SECTION("a low-intensity GEMM costs at least its traffic") {
+        // Two rows against a long K: the operands take far longer to stream than the arithmetic.
+        einsums::packed_gemm::PackedContractionShape thin{.valid = true, .M = 2, .N = 2, .K = 300000, .a_run = 300000, .b_run = 300000};
+        double const                                 traffic = p.estimate_memory_time_us((2 * 300000 + 300000 * 2 + 4) * sizeof(double));
+        CHECK(traffic > 2.0 * 2 * 2 * 300000 / (50.0 * 1e3));
+        CHECK(p.estimate_contraction_time_us(thin) == Catch::Approx(1.0 + traffic));
+    }
+
+    SECTION("a scattered C pays the packed rate and its runs") {
+        auto scattered        = flat;
+        scattered.c_scattered = true;
+        scattered.c_run       = 64;
+        double const long_run = p.estimate_contraction_time_us(scattered);
+        CHECK(long_run == Catch::Approx(1.0 + 2.0 * 64 * 64 * 64 / (40.0 * 1e3) + 64.0 * 64.0 * 0.25 / 1e3));
+        scattered.c_run = 1;
+        CHECK(p.estimate_contraction_time_us(scattered) == Catch::Approx(long_run + 64.0 * 64.0 * (4.0 - 0.25) / 1e3));
+    }
+
+    SECTION("a gathered operand pays its packer's extra cost") {
+        auto gathered  = flat;
+        gathered.a_run = 1;
+        CHECK(p.estimate_contraction_time_us(gathered) == Catch::Approx(1.0 + arithmetic + 64.0 * 64.0 * 1.0 / 1e3));
+    }
+
+    SECTION("a cut extent pays a call per share and its buffers") {
+        auto cut     = flat;
+        cut.k_shares = 4;
+        CHECK(p.estimate_contraction_time_us(cut) ==
+              Catch::Approx(4.0 + arithmetic + p.estimate_memory_time_us(2 * 4 * 64 * 64 * sizeof(double))));
+    }
+
+    SECTION("a contraction with no plan costs one call") {
+        CHECK(p.estimate_contraction_time_us(einsums::packed_gemm::PackedContractionShape{}) == Catch::Approx(1.0));
+    }
+}
+
+TEST_CASE("DeviceProfile - every built-in CPU table prices the scatter and the packers", "[ComputeGraph][CostModel]") {
+    // An uncalibrated machine must still see that a scattered C costs time, or tiling falls back
+    // to pricing arithmetic alone.
+    auto const db = cg::DeviceProfileDB::load_defaults();
+    for (auto const &profile : db.profiles()) {
+        if (profile.device_type != cg::DeviceType::CPU) {
+            continue;
+        }
+        CAPTURE(profile.name);
+        REQUIRE_FALSE(profile.scatter_cost.empty());
+        REQUIRE_FALSE(profile.pack_cost.empty());
+        CHECK(cg::DeviceProfile::run_cost_ns(profile.scatter_cost, 4) > cg::DeviceProfile::run_cost_ns(profile.scatter_cost, 256));
+    }
+    auto const model = cg::CostModel::built_in();
+    CHECK_FALSE(model.cpu.scatter_cost.empty());
 }
 
 TEST_CASE("DeviceProfile - estimate_gemm_time_us", "[ComputeGraph][CostModel]") {
@@ -253,11 +385,14 @@ TEST_CASE("DeviceProfileDB - upsert adds new", "[ComputeGraph][CostModel]") {
 
 TEST_CASE("CostModel - save and load JSON", "[ComputeGraph][CostModel]") {
     cg::CostModel original;
-    original.source                    = "test";
-    original.cpu.name                  = "Test CPU";
-    original.cpu.peak_gflops_fp64      = 42.0;
-    original.cpu.mem_bandwidth_gbps    = 99.0;
-    original.cpu.gemm_efficiency       = {{.M = 64, .N = 64, .K = 64, .gflops = 30.0}, {.M = 256, .N = 256, .K = 256, .gflops = 40.0}};
+    original.source                 = "test";
+    original.cpu.name               = "Test CPU";
+    original.cpu.peak_gflops_fp64   = 42.0;
+    original.cpu.mem_bandwidth_gbps = 99.0;
+    original.cpu.gemm_efficiency    = {{.M = 64, .N = 64, .K = 64, .gflops = 30.0}, {.M = 256, .N = 256, .K = 256, .gflops = 40.0}};
+    original.cpu.gemm_efficiency.push_back({.M = 32, .N = 8, .K = 512, .gflops = 12.0, .engine = cg::GemmEngine::Packed});
+    original.cpu.scatter_cost          = {{.run = 1, .ns_per_element = 3.5}, {.run = 64, .ns_per_element = 0.2}};
+    original.cpu.pack_cost             = {{.run = 2, .ns_per_element = 0.75}};
     original.cpu.permute_efficiency    = {{.bytes = 4096, .rank = 2, .gbps = 21.5}, {.bytes = 65536, .rank = 4, .gbps = 12.5}};
     original.cpu.caches                = {{.size_bytes = 65536, .bandwidth_gbps = 118.0, .latency_ns = 0.95},
                                           {.size_bytes = 8388608, .bandwidth_gbps = 96.0, .latency_ns = 7.0}};
@@ -276,7 +411,16 @@ TEST_CASE("CostModel - save and load JSON", "[ComputeGraph][CostModel]") {
     CHECK(loaded.cpu.name == "Test CPU");
     CHECK(loaded.cpu.peak_gflops_fp64 == Catch::Approx(42.0));
     CHECK(loaded.cpu.mem_bandwidth_gbps == Catch::Approx(99.0));
-    CHECK(loaded.cpu.gemm_efficiency.size() == 2);
+    REQUIRE(loaded.cpu.gemm_efficiency.size() == 3);
+    CHECK(loaded.cpu.gemm_efficiency[0].engine == cg::GemmEngine::Routed);
+    CHECK(loaded.cpu.gemm_efficiency[2].engine == cg::GemmEngine::Packed);
+    CHECK(loaded.cpu.gemm_efficiency[2].N == 8);
+    REQUIRE(loaded.cpu.scatter_cost.size() == 2);
+    CHECK(loaded.cpu.scatter_cost[0].run == 1);
+    CHECK(loaded.cpu.scatter_cost[0].ns_per_element == Catch::Approx(3.5));
+    CHECK(loaded.cpu.scatter_cost[1].run == 64);
+    REQUIRE(loaded.cpu.pack_cost.size() == 1);
+    CHECK(loaded.cpu.pack_cost[0].ns_per_element == Catch::Approx(0.75));
     CHECK(loaded.gpu.name == "Test GPU");
     CHECK(loaded.gpu.peak_gflops_fp64 == Catch::Approx(1000.0));
 
@@ -1194,6 +1338,22 @@ TEST_CASE("CostModel - the hardware profile's cost model overrides the built-in 
     CHECK(loaded.source == "calibrated");
     CHECK(loaded.cpu.name == "ProfileOverrideTest CPU");
 
+    // A profile measured before the scatter and pack costs keeps what it measured and takes the
+    // table's curves for the rest, so tiling still sees a scattered C cost something.
+    auto const table = cg::CostModel::built_in();
+    cost_model.cpu.scatter_cost.clear();
+    cost_model.cpu.pack_cost.clear();
+    cost_model.cpu.gemm_efficiency = {{.M = 128, .N = 128, .K = 128, .gflops = 77.0}};
+    std::string const older        = write("einsums_profile_cost_model_older.json", "");
+    config::set(option::HardwareProfile, older);
+    auto completed = cg::CostModel::detect_default();
+    CHECK(completed.source == "calibrated");
+    REQUIRE(completed.cpu.gemm_efficiency.size() == 1);
+    CHECK(completed.cpu.gemm_efficiency[0].gflops == Catch::Approx(77.0));
+    REQUIRE(completed.cpu.scatter_cost.size() == table.cpu.scatter_cost.size());
+    CHECK(completed.cpu.scatter_cost[0].ns_per_element == Catch::Approx(table.cpu.scatter_cost[0].ns_per_element));
+    CHECK(completed.cpu.pack_cost.size() == table.cpu.pack_cost.size());
+
     auto const       &software = hardware::software_identity();
     std::string const stale    = write("einsums_profile_cost_model_stale.json", fmt::format("{}.{}.0", software.major, software.minor + 1));
     config::set(option::HardwareProfile, stale);
@@ -1202,6 +1362,7 @@ TEST_CASE("CostModel - the hardware profile's cost model overrides the built-in 
     CHECK(fallback.source == "database");
 
     std::remove(current.c_str());
+    std::remove(older.c_str());
     std::remove(stale.c_str());
 }
 

@@ -13,6 +13,7 @@
 #include <Einsums/ComputeGraphTypes/EnumNames.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Json/Json.hpp>
+#include <Einsums/PackedGemm/Describe.hpp>
 
 #include <algorithm>
 #include <array>
@@ -190,10 +191,59 @@ struct EfficiencyCurve {
     return rungs;
 }
 
+/**
+ * @brief Which kernel a GEMM rate describes.
+ *
+ * A contraction whose C interleaves its operands' indices always runs the packed tile kernel; a
+ * flat one with a contiguous C may be handed to the vendor's GEMM instead. The two reach different
+ * rates on the same shape, so a profile can carry a curve for each.
+ */
+enum class GemmEngine : std::uint8_t {
+    Routed = 0, ///< Whatever the string einsum routes a flat contraction to
+    Packed      ///< The packed tile kernel, as the scatter path runs it
+};
+
+/// Number of entries in @ref GemmEngine.
+inline constexpr std::size_t kGemmEngineCount = 2;
+
+/// The one @ref GemmEngine name table; both directions read it.
+inline constexpr EnumNames kGemmEngineNames{std::array<std::pair<GemmEngine, std::string_view>, kGemmEngineCount>{{
+                                                {GemmEngine::Routed, "routed"},
+                                                {GemmEngine::Packed, "packed"},
+                                            }},
+                                            "routed"};
+
+[[nodiscard]] inline std::string_view to_string(GemmEngine engine) {
+    return kGemmEngineNames.name(engine);
+}
+
+/// Parse a @ref GemmEngine name. Returns false and leaves @p out alone for an unknown name.
+[[nodiscard]] inline bool gemm_engine_from_string(std::string_view name, GemmEngine &out) {
+    auto const engine = kGemmEngineNames.from_name(name);
+    if (!engine) {
+        return false;
+    }
+    out = *engine;
+    return true;
+}
+
 /// A single measured GEMM efficiency data point.
 struct GemmEfficiencyPoint {
-    size_t M{0}, N{0}, K{0};
-    double gflops{0};
+    size_t     M{0}, N{0}, K{0};
+    double     gflops{0};
+    GemmEngine engine{GemmEngine::Routed};
+};
+
+/**
+ * @brief The extra cost per element of a memory pattern at one contiguous run length.
+ *
+ * Extra over the pattern's best case, which the GEMM rate already includes: a C written in place
+ * for the scatter, a flat operand for the packers. A run is the number of elements the pattern
+ * touches contiguously before its next stride break.
+ */
+struct RunCostPoint {
+    size_t run{0};
+    double ns_per_element{0};
 };
 
 /// A single measured permute (tensor transpose) data point.
@@ -248,6 +298,14 @@ struct DeviceProfile {
     std::vector<GemmEfficiencyPoint>    gemm_efficiency;
     std::vector<PermuteEfficiencyPoint> permute_efficiency;
 
+    /// Extra cost per element of writing C through the scatter, by the length of C's contiguous
+    /// runs (see @ref estimate_contraction_time_us). Empty prices the scatter at nothing extra.
+    std::vector<RunCostPoint> scatter_cost;
+
+    /// Extra cost per element of gathering an operand into its packed panel, by the length of the
+    /// operand's contiguous runs. Empty prices every operand as flat.
+    std::vector<RunCostPoint> pack_cost;
+
     /// The `P` the efficiency curves were measured at. Zero means the profile
     /// was never swept, and then no width is clamped against it.
     unsigned max_threads{0};
@@ -257,26 +315,31 @@ struct DeviceProfile {
     /// what that costs.
     std::vector<EfficiencyCurve> thread_efficiency;
 
-    /// Estimate GEMM throughput using nearest-neighbor interpolation.
+    /// GEMM throughput of the routed engine; see the overload taking a @ref GemmEngine.
     [[nodiscard]] double estimate_gemm_gflops(size_t M, size_t N, size_t K) const {
-        if (gemm_efficiency.empty()) {
-            double const volume     = static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K);
-            double const efficiency = std::min(0.85, 0.1 + 0.75 * (1.0 - std::exp(-volume / 1e6)));
-            return peak_gflops_fp64 * efficiency;
-        }
-        auto const target_vol  = static_cast<double>(M * N * K);
-        double     best_dist   = 1e30;
-        double     best_gflops = peak_gflops_fp64 * 0.5;
-        for (auto const &pt : gemm_efficiency) {
-            auto const   pt_vol = static_cast<double>(pt.M * pt.N * pt.K);
-            double const dist   = std::abs(std::log(target_vol + 1.0) - std::log(pt_vol + 1.0));
-            if (dist < best_dist) {
-                best_dist   = dist;
-                best_gflops = pt.gflops;
-            }
-        }
-        return best_gflops;
+        return estimate_gemm_gflops(M, N, K, GemmEngine::Routed);
     }
+
+    /**
+     * @brief GEMM throughput of @p engine on an M x N x K GEMM, in GFLOP/s.
+     *
+     * Read from the points measured on @p engine, or on the routed engine when it has none.
+     *
+     * - Points on a grid of shapes are interpolated trilinearly in log M, log N and log K, on the
+     *   log of the rate. A corner the grid skipped drops out and the others' weights are
+     *   renormalized; with no corner at all, the nearest point answers.
+     * - Points that are all cubes are read at the cube root of M N K, interpolated in log size. A
+     *   table of cubes knows nothing of shape; @ref estimate_contraction_time_us prices a thin
+     *   GEMM's low intensity with a memory floor instead.
+     *
+     * Either way the rate is clamped at the ends of what was measured and is exact at a measured
+     * point. With no points at all, a smooth curve in the volume stands in.
+     */
+    [[nodiscard]] EINSUMS_EXPORT double estimate_gemm_gflops(size_t M, size_t N, size_t K, GemmEngine engine) const;
+
+    /// Extra nanoseconds per element @p curve charges at contiguous run length @p run: interpolated
+    /// in log run length, clamped at the ends, zero for an empty curve.
+    [[nodiscard]] EINSUMS_EXPORT static double run_cost_ns(std::vector<RunCostPoint> const &curve, size_t run);
 
     /**
      * @brief Estimate GEMM time at @p threads threads.
@@ -300,6 +363,25 @@ struct DeviceProfile {
         double const bw = (device_type == DeviceType::GPU && device_bandwidth_gbps > 0) ? device_bandwidth_gbps : mem_bandwidth_gbps;
         return static_cast<double>(bytes) / (bw * 1e3 * parallel_speedup(KernelFamily::Elementwise, bytes, threads));
     }
+
+    /**
+     * @brief Time of the contraction @p shape describes, at @p threads threads.
+     *
+     * The parts the packed engine runs one after another on a thread, added:
+     *
+     * - a call overhead for each share the contracted extent is cut into;
+     * - the arithmetic, at the @ref GemmEngine::Packed rate when C is scattered and the routed rate
+     *   otherwise, scaled by the GEMM family's thread curve, and never less than the time to stream
+     *   the operands and the output once;
+     * - the scatter's extra cost per element of C at C's run length, scaled as elementwise traffic;
+     * - the packers' extra cost per element of each operand at its run length, scaled with the
+     *   arithmetic;
+     * - for a cut extent, each share's buffer written and read back into C, at memory bandwidth.
+     *
+     * @p shape must be valid; an invalid one has no plan to price and costs one call overhead.
+     */
+    [[nodiscard]] EINSUMS_EXPORT double estimate_contraction_time_us(packed_gemm::PackedContractionShape const &shape, unsigned threads = 1,
+                                                                     size_t element_size = sizeof(double)) const;
 
     [[nodiscard]] double estimate_total_gemm_time_us(size_t M, size_t N, size_t K, size_t element_size, unsigned threads = 1) const {
         double const compute_us  = estimate_gemm_time_us(M, N, K, threads);

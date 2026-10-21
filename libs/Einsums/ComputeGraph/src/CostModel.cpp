@@ -19,10 +19,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <string>
 #include <string_view>
@@ -52,6 +54,30 @@ namespace {
 /// The CPU data-cache hierarchy, in L1 -> L3 order, taken from the one detector
 /// (Einsums_Hardware), so it agrees with PackedGemm. Bandwidth and latency stay
 /// unmeasured (zero) - consumers key off size_bytes.
+/// The machine the built-in scatter and pack curves were measured on, an Apple M4, by its copy
+/// bandwidth in GB/s. Another table's curves are scaled by its own bandwidth against this.
+constexpr double kReferenceBandwidthGbps = 120.0;
+
+/// The built-in scatter curve, ns(r) = floor + per_run / r extra nanoseconds per element of C. Set
+/// from the CCSD ladder's tile on the M4, one thread: the scatter wrote 0.62 ns per element in runs
+/// of 16 and 0.33 ns in runs of 81, of which about 0.1 ns is the write a C in place pays too.
+constexpr double kScatterFloorNs  = 0.16;
+constexpr double kScatterPerRunNs = 5.8;
+
+/// The built-in pack curve: nothing extra for a long run, about half a nanosecond per element
+/// gathered one at a time. A placeholder of the right order; einsums-tune measures the real one.
+constexpr double kPackFloorNs  = 0.0;
+constexpr double kPackPerRunNs = 0.5;
+
+/// Points of ns(r) = (floor + per_run / r) * scale at run lengths 1, 2, 4, ..., 1024.
+std::vector<RunCostPoint> run_cost_curve(double floor, double per_run, double scale) {
+    std::vector<RunCostPoint> curve;
+    for (size_t run = 1; run <= 1024; run *= 2) {
+        curve.push_back({.run = run, .ns_per_element = (floor + per_run / static_cast<double>(run)) * scale});
+    }
+    return curve;
+}
+
 std::vector<CacheLevel> detect_cpu_caches() {
     auto const             &cache = einsums::hardware::cpu_info().cache;
     std::vector<CacheLevel> levels;
@@ -128,6 +154,209 @@ void DeviceProfileDB::upsert(DeviceProfile profile) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DeviceProfile: contraction rates
+// ═══════════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+/// Natural log of an extent, with an empty extent read as one.
+double log_extent(size_t extent) {
+    return std::log(static_cast<double>(std::max<size_t>(extent, 1)));
+}
+
+/// Where @p x falls among the ascending log positions @p axis: the lower neighbour's index and the
+/// fraction of the way to the next, clamped to the ends.
+std::pair<size_t, double> bracket(std::vector<double> const &axis, double x) {
+    if (axis.size() < 2 || x <= axis.front()) {
+        return {0, 0.0};
+    }
+    if (x >= axis.back()) {
+        return {axis.size() - 2, 1.0};
+    }
+    auto const   upper = static_cast<size_t>(std::ranges::upper_bound(axis, x) - axis.begin());
+    size_t const lower = upper - 1;
+    return {lower, (x - axis[lower]) / (axis[upper] - axis[lower])};
+}
+
+/// Linear interpolation of @p ys over the ascending @p xs at @p x, clamped to the ends.
+double interpolate(std::vector<double> const &xs, std::vector<double> const &ys, double x) {
+    if (xs.size() == 1) {
+        return ys.front();
+    }
+    auto const [i, t] = bracket(xs, x);
+    return ys[i] + t * (ys[i + 1] - ys[i]);
+}
+
+/// The log rate of @p points read at the cube of the GEMM's volume, interpolated in log size.
+/// Every point is a cube. A table of cubes says how a kernel's fixed costs amortize with size and
+/// nothing about shape, so a shape is read by its size alone; a thin GEMM's low arithmetic
+/// intensity is the memory floor's to price (see DeviceProfile::estimate_contraction_time_us).
+double cube_log_rate(std::vector<GemmEfficiencyPoint const *> points, size_t M, size_t N, size_t K) {
+    std::ranges::sort(points, {}, &GemmEfficiencyPoint::M);
+    std::vector<double> xs, ys;
+    for (auto const *pt : points) {
+        if (!xs.empty() && log_extent(pt->M) == xs.back()) {
+            continue;
+        }
+        xs.push_back(log_extent(pt->M));
+        ys.push_back(std::log(pt->gflops));
+    }
+    return interpolate(xs, ys, (log_extent(M) + log_extent(N) + log_extent(K)) / 3.0);
+}
+
+/// The log rate of @p points read trilinearly in log M, log N and log K over the grid their shapes
+/// span. A corner the grid lacks drops out and the rest are reweighted; with none, the nearest
+/// point by log distance answers.
+double grid_log_rate(std::vector<GemmEfficiencyPoint const *> const &points, size_t M, size_t N, size_t K) {
+    auto const axis_of = [&](auto member) {
+        std::vector<double> axis;
+        axis.reserve(points.size());
+        for (auto const *pt : points) {
+            axis.push_back(log_extent(pt->*member));
+        }
+        std::ranges::sort(axis);
+        axis.erase(std::ranges::unique(axis).begin(), axis.end());
+        return axis;
+    };
+    std::array<std::vector<double>, 3> const axes{axis_of(&GemmEfficiencyPoint::M), axis_of(&GemmEfficiencyPoint::N),
+                                                  axis_of(&GemmEfficiencyPoint::K)};
+    std::array<double, 3> const              at{log_extent(M), log_extent(N), log_extent(K)};
+    std::array<std::pair<size_t, double>, 3> where{};
+    for (size_t d = 0; d < 3; ++d) {
+        where[d] = bracket(axes[d], at[d]);
+    }
+
+    double weighted = 0.0;
+    double total    = 0.0;
+    for (unsigned corner = 0; corner < 8; ++corner) {
+        double                weight = 1.0;
+        std::array<double, 3> position{};
+        for (size_t d = 0; d < 3; ++d) {
+            bool const upper  = ((corner >> d) & 1U) != 0U;
+            auto const [i, t] = where[d];
+            if (axes[d].size() < 2) {
+                if (upper) {
+                    weight = 0.0;
+                }
+                position[d] = axes[d].front();
+                continue;
+            }
+            weight *= upper ? t : 1.0 - t;
+            position[d] = axes[d][upper ? i + 1 : i];
+        }
+        if (weight == 0.0) {
+            continue;
+        }
+        auto const found = std::ranges::find_if(points, [&](GemmEfficiencyPoint const *pt) {
+            return log_extent(pt->M) == position[0] && log_extent(pt->N) == position[1] && log_extent(pt->K) == position[2];
+        });
+        if (found != points.end()) {
+            weighted += weight * std::log((*found)->gflops);
+            total += weight;
+        }
+    }
+    if (total > 0.0) {
+        return weighted / total;
+    }
+
+    GemmEfficiencyPoint const *nearest  = points.front();
+    double                     shortest = std::numeric_limits<double>::infinity();
+    for (auto const *pt : points) {
+        double const dm = log_extent(pt->M) - at[0], dn = log_extent(pt->N) - at[1], dk = log_extent(pt->K) - at[2];
+        if (double const d = dm * dm + dn * dn + dk * dk; d < shortest) {
+            shortest = d;
+            nearest  = pt;
+        }
+    }
+    return std::log(nearest->gflops);
+}
+
+} // namespace
+
+double DeviceProfile::estimate_gemm_gflops(size_t M, size_t N, size_t K, GemmEngine engine) const {
+    std::vector<GemmEfficiencyPoint const *> points;
+    for (GemmEngine const from : {engine, GemmEngine::Routed}) {
+        for (auto const &pt : gemm_efficiency) {
+            if (pt.engine == from && pt.gflops > 0.0) {
+                points.push_back(&pt);
+            }
+        }
+        if (!points.empty()) {
+            break;
+        }
+    }
+    if (points.empty()) {
+        double const volume     = static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K);
+        double const efficiency = std::min(0.85, 0.1 + 0.75 * (1.0 - std::exp(-volume / 1e6)));
+        return peak_gflops_fp64 * efficiency;
+    }
+    bool const cubes = std::ranges::all_of(points, [](GemmEfficiencyPoint const *pt) { return pt->M == pt->N && pt->N == pt->K; });
+    return std::exp(cubes ? cube_log_rate(points, M, N, K) : grid_log_rate(points, M, N, K));
+}
+
+double DeviceProfile::run_cost_ns(std::vector<RunCostPoint> const &curve, size_t run) {
+    if (curve.empty()) {
+        return 0.0;
+    }
+    std::vector<RunCostPoint> sorted = curve;
+    std::ranges::sort(sorted, {}, &RunCostPoint::run);
+    std::vector<double> xs, ys;
+    for (auto const &pt : sorted) {
+        if (!xs.empty() && log_extent(pt.run) == xs.back()) {
+            continue;
+        }
+        xs.push_back(log_extent(pt.run));
+        ys.push_back(pt.ns_per_element);
+    }
+    return std::max(0.0, interpolate(xs, ys, log_extent(run)));
+}
+
+double DeviceProfile::estimate_contraction_time_us(packed_gemm::PackedContractionShape const &shape, unsigned threads,
+                                                   size_t element_size) const {
+    if (!shape.valid) {
+        return kernel_launch_overhead_us;
+    }
+    auto const   M            = static_cast<size_t>(shape.M);
+    auto const   N            = static_cast<size_t>(shape.N);
+    auto const   K            = static_cast<size_t>(shape.K);
+    auto const   batch        = static_cast<double>(std::max<int64_t>(shape.batch, 1));
+    auto const   md           = static_cast<double>(M);
+    auto const   nd           = static_cast<double>(N);
+    auto const   kd           = static_cast<double>(K);
+    double const gemm_speedup = gemm_parallel_speedup(M, N, K, threads);
+
+    double const     flops  = 2.0 * md * nd * kd * batch;
+    GemmEngine const engine = shape.c_scattered ? GemmEngine::Packed : GemmEngine::Routed;
+    // At the rate the GEMM curve gives for this shape, but never faster than its operands and its
+    // output can stream: a low-intensity GEMM is bandwidth-bound whatever the curve says.
+    double const traffic    = batch * (md * kd + kd * nd + md * nd) * static_cast<double>(element_size);
+    double const arithmetic = std::max(flops / (estimate_gemm_gflops(M, N, K, engine) * 1e3 * gemm_speedup),
+                                       estimate_memory_time_us(static_cast<size_t>(traffic), threads));
+
+    double const packing = batch *
+                           (md * kd * run_cost_ns(pack_cost, static_cast<size_t>(shape.a_run)) +
+                            kd * nd * run_cost_ns(pack_cost, static_cast<size_t>(shape.b_run))) /
+                           (1e3 * gemm_speedup);
+
+    double scatter = 0.0;
+    if (shape.c_scattered) {
+        size_t const c_bytes = M * N * element_size;
+        scatter              = batch * md * nd * run_cost_ns(scatter_cost, static_cast<size_t>(shape.c_run)) /
+                               (1e3 * parallel_speedup(KernelFamily::Elementwise, c_bytes, threads));
+    }
+
+    // A cut extent writes each share's whole output into a buffer of its own and adds the buffers
+    // into C: every share's output written once and read back once.
+    double     shares_traffic = 0.0;
+    auto const shares         = static_cast<double>(std::max(shape.k_shares, 1));
+    if (shape.k_shares > 1) {
+        shares_traffic = estimate_memory_time_us(static_cast<size_t>(2.0 * shares * md * nd * static_cast<double>(element_size)), threads);
+    }
+
+    return shares * kernel_launch_overhead_us + arithmetic + packing + scatter + shares_traffic;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Built-in default profiles
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -145,6 +374,8 @@ DeviceProfileDB DeviceProfileDB::load_defaults() {
                                            {.M = 64, .N = 64, .K = 64, .gflops = 30.0},
                                            {.M = 256, .N = 256, .K = 256, .gflops = 45.0},
                                            {.M = 1024, .N = 1024, .K = 1024, .gflops = 49.0}};
+    db._fallback_cpu.scatter_cost       = run_cost_curve(kScatterFloorNs, kScatterPerRunNs, kReferenceBandwidthGbps / 40.0);
+    db._fallback_cpu.pack_cost          = run_cost_curve(kPackFloorNs, kPackPerRunNs, kReferenceBandwidthGbps / 40.0);
 
     db._fallback_gpu.name         = "";
     db._fallback_gpu.device_type  = DeviceType::GPU;
@@ -167,6 +398,8 @@ DeviceProfileDB DeviceProfileDB::load_defaults() {
         p.kernel_launch_overhead_us = launch_us;
         p.alloc_overhead_us         = alloc_us;
         p.gemm_efficiency           = std::move(gemm);
+        p.scatter_cost              = run_cost_curve(kScatterFloorNs, kScatterPerRunNs, kReferenceBandwidthGbps / bw);
+        p.pack_cost                 = run_cost_curve(kPackFloorNs, kPackPerRunNs, kReferenceBandwidthGbps / bw);
         return p;
     };
 
@@ -299,6 +532,20 @@ CostModel CostModel::detect_default() {
         if (model.cpu.caches.empty()) {
             model.cpu.caches = detect_cpu_caches();
         }
+        // A profile from before the scatter and pack terms were measured still has its rates and
+        // thread curves to give; the table supplies the terms it lacks, and the log says so once,
+        // since tiling choices lean on them.
+        if (model.cpu.scatter_cost.empty() || model.cpu.pack_cost.empty()) {
+            CostModel const table = built_in();
+            if (model.cpu.scatter_cost.empty()) {
+                model.cpu.scatter_cost = table.cpu.scatter_cost;
+            }
+            if (model.cpu.pack_cost.empty()) {
+                model.cpu.pack_cost = table.cpu.pack_cost;
+            }
+            EINSUMS_LOG_WARN("The hardware profile was measured before the contraction scatter and pack costs; the built-in "
+                             "table supplies them. Re-run einsums-tune to measure them on this machine.");
+        }
         return model;
     }
     return built_in();
@@ -405,9 +652,23 @@ json::Object write_profile(DeviceProfile const &p) {
         entry.set("N", pt.N);
         entry.set("K", pt.K);
         entry.set("gflops", pt.gflops);
+        entry.set("engine", std::string(to_string(pt.engine)));
         gemm.emplace_back(std::move(entry));
     }
     obj.set("gemm_efficiency", json::Value{std::move(gemm)});
+
+    auto const write_runs = [&obj](std::string_view key, std::vector<RunCostPoint> const &curve) {
+        json::Array rows;
+        for (auto const &pt : curve) {
+            json::Object entry;
+            entry.set("run", pt.run);
+            entry.set("ns_per_element", pt.ns_per_element);
+            rows.emplace_back(std::move(entry));
+        }
+        obj.set(std::string(key), json::Value{std::move(rows)});
+    };
+    write_runs("scatter", p.scatter_cost);
+    write_runs("pack", p.pack_cost);
 
     json::Array permute;
     for (auto const &pt : p.permute_efficiency) {
@@ -479,10 +740,28 @@ DeviceProfile read_profile(json::Object const &obj) {
         pt.N      = static_cast<size_t>(number_or(entry, "N", 0.0));
         pt.K      = static_cast<size_t>(number_or(entry, "K", 0.0));
         pt.gflops = number_or(entry, "gflops", 0.0);
+        // A point from before engines were told apart was measured on the routed engine. A point
+        // naming an engine this build does not know is dropped rather than priced as another.
+        if (auto const engine = string_or(entry, "engine"); !engine.empty() && !gemm_engine_from_string(engine, pt.engine)) {
+            return;
+        }
         if (pt.M > 0 && pt.gflops > 0) {
             p.gemm_efficiency.push_back(pt);
         }
     });
+
+    auto const read_runs = [&obj](std::string_view key, std::vector<RunCostPoint> &curve) {
+        for_each_object(obj, key, [&](json::Object const &entry) {
+            RunCostPoint pt;
+            pt.run            = static_cast<size_t>(number_or(entry, "run", 0.0));
+            pt.ns_per_element = number_or(entry, "ns_per_element", -1.0);
+            if (pt.run > 0 && pt.ns_per_element >= 0.0) {
+                curve.push_back(pt);
+            }
+        });
+    };
+    read_runs("scatter", p.scatter_cost);
+    read_runs("pack", p.pack_cost);
 
     for_each_object(obj, "permute_efficiency", [&](json::Object const &entry) {
         PermuteEfficiencyPoint pt;
