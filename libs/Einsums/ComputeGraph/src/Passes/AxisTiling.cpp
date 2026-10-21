@@ -3342,6 +3342,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                         price += static_cast<double>(loop.table.size()) *
                                  tile_price(graph, candidate, {loop.walks[0].length, loop.walks[1].length}, loop.mirror, pricing());
                     }
+                    report(3, fmt::format("triangle of blocks of {} priced at {:.1f} us", b, price));
                     if (!chosen.has_value() || price < candidate.price_us) {
                         chosen                  = b;
                         candidate.price_us      = price;
