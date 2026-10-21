@@ -360,8 +360,8 @@ From the declaration the optimizer proves that the ladder's contribution has the
 
 .. code-block:: text
 
-    runs 105 of 196 tile(s) of 4 x 4, writing each off-diagonal tile's mirror with sign +1
-    slicing Bvv*Bvv[0] x Bvv*Bvv[2] into 2809 slice(s), a triangle of blocks of 4 x 4 in 4 loop(s) of 105 iteration(s) in all, seed 63123848 bytes -> largest intermediate 359552 bytes
+    runs 36 of 64 tile(s) of 7 x 7, writing each off-diagonal tile's mirror with sign +1
+    slicing Bvv*Bvv[0] x Bvv*Bvv[2] into 2809 slice(s), a triangle of blocks of 7 x 7 in 4 loop(s) of 36 iteration(s) in all, seed 63123848 bytes -> largest intermediate 1101128 bytes
 
 A declaration is a promise, and the tiled loop checks it at every replay before relying on it.
 The energy is unchanged.
@@ -383,23 +383,24 @@ The ladder runs as a triangle again, now with its factor ``Bvv`` read from the f
 
 .. code-block:: text
 
-    runs 105 of 196 tile(s) of 4 x 4, writing each off-diagonal tile's mirror with sign +1
-    slicing Bvv*Bvv[0] x Bvv*Bvv[2] into 2809 slice(s), a triangle of blocks of 4 x 4 in 4 loop(s) of 105 iteration(s) in all, seed 63123848 bytes -> largest intermediate 359552 bytes
+    runs 66 of 121 tile(s) of 5 x 5, writing each off-diagonal tile's mirror with sign +1
+    slicing Bvv*Bvv[0] x Bvv*Bvv[2] into 2809 slice(s), a triangle of blocks of 5 x 5 in 4 loop(s) of 66 iteration(s) in all, seed 63123848 bytes -> largest intermediate 561800 bytes
 
 and what the replay read from the file falls with it:
 
 .. code-block:: text
 
-    the last replay held at most 12055176 bytes
-      Bvv: 47528280 bytes read in 210 read(s), 0 written
+    the last replay held at most 11857352 bytes
+      Bvv: 38022624 bytes read in 132 read(s), 0 written
       ...
 
-In stage 6, ``Bvv`` was read in 756 pieces, 130 MB a replay; here it is 210 pieces and 48 MB, because the triangle's loop has fewer, larger blocks and skips half of them.
+In stage 6, ``Bvv`` was read in 756 pieces, 130 MB a replay; here it is 132 pieces and 38 MB, because the triangle's loop has fewer, larger blocks and skips half of them.
+The blocks are smaller than stage 7's because the 16 MB budget has to hold the mirror's scratch tile beside everything else.
 
 What each stage costs
 =====================
 
-Each stage's time per iteration, measured on 2026-10-21 on an Apple M4 laptop on mains power, with the default thread count and a background load of about two.
+Each stage's time per iteration, measured on 2026-10-21 on an Apple M4 laptop on mains power, with the default thread count and no hardware profile, so the optimizer priced its choices from the built-in table.
 The programs ran interleaved, five times each, and the table gives the median; the iterations are timed, not the setup or the optimizer.
 
 .. list-table::
@@ -409,21 +410,21 @@ The programs ran interleaved, five times each, and the table gives the median; t
    * - Stage
      - ms per iteration
    * - 1. NumPy
-     - 31.0
+     - 36.8
    * - 2. Einsums, eager
-     - 30.2
+     - 34.8
    * - 3. Captured and replayed
-     - 20.3
+     - 23.8
    * - 4. Scratch and spaces declared
-     - 16.6
+     - 17.3
    * - 5. A 64 MB memory budget
-     - 16.2
+     - 16.4
    * - 6. Integrals and amplitudes in files, a 16 MB budget
-     - 75.6
+     - 74.1
    * - 7. Pair symmetry declared
-     - 19.3
+     - 13.4
    * - 8. Files and symmetry, a 16 MB budget
-     - 53.1
+     - 50.2
 
 Read it as six observations rather than a ranking.
 
@@ -432,25 +433,26 @@ The two run the same algorithm on the same BLAS, and come out even.
 Stage 2 exists to fix the semantics, not the speed.
 
 **The speed comes from capturing, and from what you declare.**
-Replaying the captured iteration is 1.5 times faster than NumPy, and declaring scratch and spaces takes that to 1.9.
+Replaying the captured iteration is 1.5 times faster than NumPy, and declaring scratch and spaces takes that to 2.1.
 None of it touched the equations.
 
 **Holding less need not cost time.**
 Stage 5 holds a 3.2 MB block of :math:`\langle ab|ef\rangle` where stage 4 holds all 63 MB, and runs no slower.
 
 **Files are bought with time.**
-Stage 6 holds a sixth of what stage 4 holds and takes four and a half times as long.
+Stage 6 holds a sixth of what stage 4 holds and takes more than four times as long.
 About half of the difference is the ladder's loop, which reads each block's box of ``Bvv`` from the file, 40 times its size in all; most of the rest is the three waits for the drive that make each commit safe.
 At a molecule whose integrals do not fit in memory, there is no faster version to compare it with.
 
-**The triangle does not pay in memory at water, at the block the optimizer picks.**
-It halves the ladder's arithmetic, and the optimizer chooses blocks of 4 x 4, small enough that the loop and the mirror's copies cost more than the arithmetic saved: stage 7 is 16% slower than stage 4.
-The optimizer prices each candidate block with its cost model, which here rates every block from 4 to 11 within 8% of the others, while in fact blocks of 9 x 9 run the ladder about 1.8 times faster than blocks of 4 x 4 for the same arithmetic.
-Pinned to 9 x 9 blocks with ``AxisTiling.set_block_extent(9)``, the triangle is 23% faster than stage 4: 13.4 ms against 17.4, interleaved in a run of their own.
+**The triangle pays at water too.**
+It halves the ladder's arithmetic, and stage 7 is 23% faster than stage 4.
+How large the blocks should be is the optimizer's choice, and it is not the arithmetic that decides it.
+A block of the ladder's output is computed by a contraction of its own, and a small block pays for more contractions, more packing of their operands, and more of the mirror's copies; a large block computes more of the diagonal twice.
+The optimizer prices each candidate block as the contraction engine would run its tiles, from the hardware profile when ``einsums tune`` has measured one and from a built-in table otherwise, and here it picks blocks of 7 x 7.
 On benzene in cc-pVDZ, where the ladder is most of an iteration, the same declaration took an iteration to 0.69 to 0.72 of the time without it.
 
-**With files, the triangle pays even so.**
-Stage 8 is 30% faster than stage 6 with the same 4 x 4 blocks, because what the ladder's loop costs with files is reading ``Bvv``, and a triangle of fewer, larger blocks reads less of it.
+**With files, the triangle pays more.**
+Stage 8 is a third faster than stage 6, because what the ladder's loop costs with files is reading ``Bvv``, and a triangle of fewer, larger blocks reads less of it.
 
 Where to go next
 ================
