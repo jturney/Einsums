@@ -63,7 +63,10 @@ def test_elementwise_ieee_passthrough():
     Bz = np.array([[0.0, 1.0], [2.0, 0.0]])
     num, den, out = einsums.asarray(np.ones((2, 2)), dtype="float64"), einsums.asarray(Bz, dtype="float64"), einsums.asarray(np.zeros((2, 2)), dtype="float64")
     einsums.linalg.direct_division(1.0, num, den, 0.0, out)
-    np.testing.assert_allclose(np.asarray(out), np.ones((2, 2)) / Bz, equal_nan=True)
+    # The oracle divides by zero on purpose: the infinities are what the case checks.
+    with np.errstate(divide="ignore"):
+        expected = np.ones((2, 2)) / Bz
+    np.testing.assert_allclose(np.asarray(out), expected, equal_nan=True)
 
 
 def test_gemm_einsum_ieee_passthrough():
