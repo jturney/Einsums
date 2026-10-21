@@ -482,10 +482,10 @@
     re-associating tier.
 
     The number is read three times. It decides *whether* to tile, since a program whose largest
-    intermediate already fits is declined and left alone. It decides *which* axes, since the pass
-    keeps the candidate set that streams the fewest bytes among those that bring the footprint
-    under the cap. And it decides *how deep*, since the chunk is the largest number of slices whose
-    intermediates still fit.
+    intermediate already fits is declined and left alone. It decides *which* axes and blocks, since
+    the pass keeps the candidate the cost model predicts fastest among those that bring the
+    footprint under the cap. And it decides *how deep*, since the chunk is the largest number of
+    slices whose intermediates still fit.
 
     Zero disables the pass. A negative value, the default, derives the cap from the machine: an
     intermediate may take whatever :option:`--einsums:max-memory` leaves after every other tensor
@@ -504,8 +504,8 @@
     the loop over a region that reads or writes a backed tensor (one annotated with a backing, held
     in storage rather than memory).
 
-    The pass prefers the loop that moves the fewest bytes, and a byte that comes from a file costs
-    more than one that comes from memory. The default of 20 is measured: on an M4 laptop memory
+    The pass prices the bytes a loop moves at memory bandwidth beside its contractions' time, and a
+    byte that comes from a file costs more than one that comes from memory. The default of 20 is measured: on an M4 laptop memory
     reads at 66.6 GB/s and an ``.etn`` entry read from the drive at 3.26 GB/s. A file the page cache
     still holds reads at 16.6 GB/s there, a weight of 4; the default takes the drive's figure,
     since a tensor is streamed because it does not fit, and a tensor that does not fit is not

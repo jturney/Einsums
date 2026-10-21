@@ -29,6 +29,7 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <cmath>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -373,7 +374,7 @@ struct Plan {
     };
     std::optional<Triangle> triangle;
 
-    /// The cost model's price of a triangle plan, in its own microseconds.
+    /// The cost model's predicted time for the plan, in its own microseconds.
     double price_us{0.0};
 };
 
@@ -550,9 +551,10 @@ class RegionAnalysis {
     [[nodiscard]] bool sums_sliced(Labelling const &labelling, std::size_t index) const;
 
     /// Bytes per slice of the largest intermediate, the bytes every intermediate's chunk holds
-    /// together, and the traffic the schedule streams.
+    /// together, and the traffic the schedule streams. Of that traffic, @p contracted is what the
+    /// loop's contractions read and write, which @ref tile_price prices with their arithmetic.
     void cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::size_t depth, std::size_t &largest,
-              std::size_t &held, long double &traffic) const;
+              std::size_t &held, long double &traffic, long double &contracted) const;
 
     /// The largest intermediate, the bytes every block buffer of the loops holds together, and the
     /// traffic of a plan that cuts each sliced axis into blocks of @p blocks (one for a point),
@@ -562,7 +564,7 @@ class RegionAnalysis {
     /// allocated for the whole replay, so the held bytes count a remainder loop's buffers beside
     /// the full block's.
     void range_cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::vector<std::size_t> const &blocks,
-                    std::size_t &largest, std::size_t &held, long double &traffic) const;
+                    std::size_t &largest, std::size_t &held, long double &traffic, long double &contracted) const;
 
     /// The bytes the intermediates the loop re-declares hold whole, before tiling.
     /// Whether a slice of @p tid is held in memory for each iteration: an intermediate the body
@@ -1152,7 +1154,7 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
 }
 
 void RegionAnalysis::cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::size_t depth, std::size_t &largest,
-                          std::size_t &held, long double &traffic) const {
+                          std::size_t &held, long double &traffic, long double &contracted) const {
     // A chunk holds @p depth SLICES, so its cost is one slice times the depth however many
     // axes the slice is cut on. Multiplying by the depth once per sliced axis would charge a
     // chunk of two pairs for four, which is a square where the schedule is linear.
@@ -1188,15 +1190,21 @@ void RegionAnalysis::cost(Labelling const &labelling, std::vector<std::size_t> c
     // Traffic is what the whole schedule streams: every read, once per iteration, times the
     // iteration count. Minimising it under the cap is the memory-constrained fusion problem;
     // minimising it alone would always prefer slicing nothing at all.
-    long double per_iteration = 0.0L;
+    long double per_iteration   = 0.0L;
+    long double per_contraction = 0.0L;
     for (std::size_t const i : _members) {
-        auto const &slots = slots_at(i);
+        auto const &slots  = slots_at(i);
+        bool const  priced = _graph.nodes()[i].kind == OpKind::Einsum && node_is_sliced(labelling, i);
         for (std::size_t s = 0; s < slots.size(); ++s) {
             auto const *labels = _written_set.contains(slots[s].tid)
                                      ? (labelling.store.tensor.contains(slots[s].tid) ? &labelling.store.tensor.at(slots[s].tid) : nullptr)
                                      : (labelling.store.use.contains({i, s}) ? &labelling.store.use.at({i, s}) : nullptr);
             static std::vector<int> const empty;
-            per_iteration += sliced_bytes(slots[s].tid, labels == nullptr ? empty : *labels);
+            long double const             bytes = sliced_bytes(slots[s].tid, labels == nullptr ? empty : *labels);
+            per_iteration += bytes;
+            if (priced) {
+                per_contraction += bytes;
+            }
         }
     }
     long double slices = 1.0L;
@@ -1205,6 +1213,7 @@ void RegionAnalysis::cost(Labelling const &labelling, std::vector<std::size_t> c
     }
     long double const iterations = slices / static_cast<long double>(depth);
     traffic                      = per_iteration * iterations;
+    contracted                   = per_contraction * iterations;
 
     // A backed operand is moved to or from its storage, one slice of it per member of a chunk: a
     // point of every sliced axis it carries, the whole of every other.
@@ -1353,7 +1362,7 @@ std::string_view RegionAnalysis::range_blocker(Labelling const &labelling) const
 }
 
 void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::vector<std::size_t> const &blocks,
-                                std::size_t &largest, std::size_t &held, long double &traffic) const {
+                                std::size_t &largest, std::size_t &held, long double &traffic, long double &contracted) const {
     // One tensor under the plan: the bytes one block of it holds, and the bytes every iteration
     // together reads of it. An axis the tensor carries is read once in all, block by block; an
     // axis it does not carry repeats the read once per block of that axis, which is the reuse a
@@ -1415,7 +1424,8 @@ void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::siz
     }
 
     // A statement carrying no sliced axis stays outside the loop and runs once.
-    traffic = 0.0L;
+    traffic    = 0.0L;
+    contracted = 0.0L;
     for (std::size_t const i : _members) {
         bool const  inside = node_is_sliced(labelling, i);
         auto const &slots  = slots_at(i);
@@ -1423,6 +1433,9 @@ void RegionAnalysis::range_cost(Labelling const &labelling, std::vector<std::siz
             std::vector<int> const *labels = inside ? slot_labels(labelling, i, s) : nullptr;
             Measure const           m      = measure(slots[s].tid, labels);
             traffic += inside ? m.streamed : m.block;
+            if (inside && _graph.nodes()[i].kind == OpKind::Einsum) {
+                contracted += m.streamed;
+            }
 
             // A backed operand is moved to or from its storage a block at a time: the block of
             // every sliced axis it carries, the whole of every other, as many times as the
@@ -1564,16 +1577,29 @@ struct BlockChoice {
     std::size_t              largest{0};
     std::size_t              held{0};
     long double              traffic{0.0L};
+    long double              contracted{0.0L};
+    double                   price_us{0.0};
 
     [[nodiscard]] std::size_t ranged() const {
         return static_cast<std::size_t>(std::ranges::count_if(blocks, [](std::size_t b) { return b > 1; }));
     }
 };
 
-/// Whether @p lhs is the better of two block choices: fewer bytes streamed, then fewer ranged
-/// axes, then the smaller footprint, then blocks on the inner axes rather than the outer ones,
-/// so a tie is broken the same way in every process.
+/// Whether two predicted times are the same. Two plans that do the same work, such as a block
+/// covering a whole axis beside the plan that leaves the axis unsliced, sum their prices in a
+/// different order and differ in the last bits; the price cannot tell them apart, so the
+/// comparisons after it must.
+bool same_price(double lhs, double rhs) {
+    return std::abs(lhs - rhs) <= 1e-6 * std::max(std::abs(lhs), std::abs(rhs));
+}
+
+/// Whether @p lhs is the better of two block choices: the lower predicted time, then fewer bytes
+/// streamed, then fewer ranged axes, then the smaller footprint, then blocks on the inner axes
+/// rather than the outer ones, so a tie is broken the same way in every process.
 bool better(BlockChoice const &lhs, BlockChoice const &rhs) {
+    if (!same_price(lhs.price_us, rhs.price_us)) {
+        return lhs.price_us < rhs.price_us;
+    }
     if (lhs.traffic != rhs.traffic) {
         return lhs.traffic < rhs.traffic;
     }
@@ -1586,17 +1612,22 @@ bool better(BlockChoice const &lhs, BlockChoice const &rhs) {
     return std::ranges::lexicographical_compare(std::views::reverse(rhs.blocks), std::views::reverse(lhs.blocks));
 }
 
-/// The block extents that stream the fewest bytes among those @p fits accepts, or nothing when no
+/// The block extents @p price predicts fastest among those @p fits accepts, or nothing when no
 /// choice that cuts some axis into blocks fits.
+///
+/// Fewer bytes streamed is not the same as faster: the bytes always favour the largest block that
+/// fits, while a larger tile can run its contractions more slowly, and a smaller one pays its
+/// calls and packing more often. The price weighs both, so a block too large to pay is declined by
+/// its price rather than by a cap on its size.
 ///
 /// Only the axes in @p reusable are cut, and at most two of them at once; every other axis stays a
 /// point. Two is the blocking a matrix product has, one block per operand the other does not
 /// carry, and it is every shape this pass has been measured on; a third ranged axis multiplies
 /// the search and the remainder loops for a reuse no program here has. Each operand in @p fully_sliced needs a block on one of its axes,
 /// since at a point it would have none left.
-template <typename Fits, typename Cost>
+template <typename Fits, typename Cost, typename Price>
 std::optional<BlockChoice> choose_blocks(std::vector<std::size_t> const &extents, std::set<int> const &reusable,
-                                         std::vector<std::set<int>> const &fully_sliced, Fits &&fits, Cost &&cost) {
+                                         std::vector<std::set<int>> const &fully_sliced, Fits &&fits, Cost &&cost, Price &&price) {
     std::vector<std::size_t> const        axes(reusable.begin(), reusable.end());
     std::vector<std::vector<std::size_t>> options(extents.size());
     for (std::size_t const k : axes) {
@@ -1614,10 +1645,11 @@ std::optional<BlockChoice> choose_blocks(std::vector<std::size_t> const &extents
             }
         }
         BlockChoice choice{.blocks = blocks};
-        cost(blocks, choice.largest, choice.held, choice.traffic);
+        cost(blocks, choice.largest, choice.held, choice.traffic, choice.contracted);
         if (!fits(choice.largest, choice.held)) {
             return;
         }
+        choice.price_us = price(blocks, choice.traffic - choice.contracted);
         if (!best.has_value() || better(choice, *best)) {
             best = std::move(choice);
         }
@@ -1750,32 +1782,42 @@ double gemm_price(Graph const &graph, NodePlan const &op, EinsumIndexLists const
 /// a tensor keeps that tensor's strides. With @p dense set - an intermediate the body re-declares
 /// at slice extents, or the scratch tile a mirrored tile is computed into - the tile is its own
 /// buffer, laid out densely in the order of the tensor's strides.
+///
+/// A sliced axis @p point marks is taken a point at a time, and the body drops it from the operand
+/// (see @ref surviving), so the tile has no position for it.
 packed_gemm::OperandLayout tile_layout(Graph const &graph, SlotPlan const &slot, std::vector<std::string> const &letters,
-                                       std::vector<std::size_t> const &length, bool dense) {
-    auto const                &handle = graph.tensor(slot.tid);
-    packed_gemm::OperandLayout out;
-    out.indices = letters;
+                                       std::vector<std::size_t> const &length, std::vector<bool> const &point, bool dense) {
+    auto const              &handle = graph.tensor(slot.tid);
+    std::vector<std::size_t> kept;
     for (std::size_t p = 0; p < letters.size(); ++p) {
         bool const sliced = p < slot.labels.size() && slot.labels[p] != kFree;
+        if (!sliced || point.empty() || !point[static_cast<std::size_t>(slot.labels[p])]) {
+            kept.push_back(p);
+        }
+    }
+    packed_gemm::OperandLayout out;
+    for (std::size_t const p : kept) {
+        bool const sliced = p < slot.labels.size() && slot.labels[p] != kFree;
+        out.indices.push_back(letters[p]);
         out.dims.push_back(static_cast<int64_t>(sliced ? length[static_cast<std::size_t>(slot.labels[p])] : handle.dims[p]));
     }
     bool const has_strides = handle.strides.size() == letters.size();
     if (!dense && has_strides) {
-        for (std::size_t const s : handle.strides) {
-            out.strides.push_back(static_cast<int64_t>(s));
+        for (std::size_t const p : kept) {
+            out.strides.push_back(static_cast<int64_t>(handle.strides[p]));
         }
         return out;
     }
-    std::vector<std::size_t> order(letters.size());
+    std::vector<std::size_t> order(kept.size());
     std::iota(order.begin(), order.end(), std::size_t{0});
     if (has_strides) {
-        std::ranges::stable_sort(order, {}, [&](std::size_t p) { return handle.strides[p]; });
+        std::ranges::stable_sort(order, {}, [&](std::size_t q) { return handle.strides[kept[q]]; });
     }
-    out.strides.assign(letters.size(), 0);
+    out.strides.assign(kept.size(), 0);
     int64_t step = 1;
-    for (std::size_t const p : order) {
-        out.strides[p] = step;
-        step *= out.dims[p];
+    for (std::size_t const q : order) {
+        out.strides[q] = step;
+        step *= out.dims[q];
     }
     return out;
 }
@@ -1786,8 +1828,10 @@ packed_gemm::OperandLayout tile_layout(Graph const &graph, SlotPlan const &slot,
 ///
 /// Each contraction is priced as the engine would run it on the tile's own layout: a tile whose
 /// output interleaves its operands' letters is scattered in runs its block sets, and its operands
-/// are packed once per tile, so a small block pays for more than its arithmetic.
-double tile_price(Graph const &graph, Plan const &plan, std::vector<std::size_t> const &length, bool mirror, DeviceProfile const &profile) {
+/// are packed once per tile, so a small block pays for more than its arithmetic. The sliced axes
+/// @p point marks (none when it is empty) are taken a point at a time.
+double tile_price(Graph const &graph, Plan const &plan, std::vector<std::size_t> const &length, bool mirror, DeviceProfile const &profile,
+                  std::vector<bool> const &point = {}) {
     double     total = 0.0;
     auto const owned = [&](TensorId tid) {
         return std::ranges::any_of(plan.body_owned, [&](auto const &entry) { return entry.first == tid; });
@@ -1799,10 +1843,10 @@ double tile_price(Graph const &graph, Plan const &plan, std::vector<std::size_t>
         }
         auto const lists   = live_index_lists(op.op_data.get<EinsumDescriptor>());
         bool const scratch = mirror && plan.triangle.has_value() && o == plan.triangle->writer;
-        auto const shape =
-            packed_gemm::describe_packed_contraction(tile_layout(graph, op.slots[0], lists.c, length, scratch || owned(op.slots[0].tid)),
-                                                     tile_layout(graph, op.slots[1], lists.a, length, owned(op.slots[1].tid)),
-                                                     tile_layout(graph, op.slots[2], lists.b, length, owned(op.slots[2].tid)), plan.dtype);
+        auto const shape   = packed_gemm::describe_packed_contraction(
+            tile_layout(graph, op.slots[0], lists.c, length, point, scratch || owned(op.slots[0].tid)),
+            tile_layout(graph, op.slots[1], lists.a, length, point, owned(op.slots[1].tid)),
+            tile_layout(graph, op.slots[2], lists.b, length, point, owned(op.slots[2].tid)), plan.dtype);
         if (shape.valid) {
             total += profile.estimate_contraction_time_us(shape, 1, graph.tensor(op.slots[0].tid).element_size);
         } else {
@@ -1820,6 +1864,47 @@ double tile_price(Graph const &graph, Plan const &plan, std::vector<std::size_t>
         }
     }
     return total;
+}
+
+/// What a loop pays on every iteration beyond its contractions' calls: the loop's own step, and
+/// one call of each other statement in the body.
+double iteration_price(Plan const &plan, DeviceProfile const &profile) {
+    auto const others = std::ranges::count_if(plan.ops, [](NodePlan const &op) { return op.kind != OpKind::Einsum; });
+    return profile.kernel_launch_overhead_us * static_cast<double>(1 + others);
+}
+
+/// The predicted time of a range plan cutting the sliced axes into @p plan's blocks, in the cost
+/// model's microseconds: every loop's tiles at their own shapes, each iteration's step, and the
+/// @p unpriced bytes the contractions' prices leave out (the other statements' traffic and the
+/// storage's surcharge) at memory bandwidth.
+double range_price(Graph const &graph, Plan const &plan, long double unpriced, DeviceProfile const &profile) {
+    std::vector<bool> point;
+    for (std::size_t const b : plan.blocks) {
+        point.push_back(b <= 1);
+    }
+    double const per_iteration = iteration_price(plan, profile);
+    double       total         = profile.estimate_memory_time_us(static_cast<std::size_t>(std::max(unpriced, 0.0L)));
+    for (auto const &walks : loop_walks(plan)) {
+        std::vector<std::size_t> length;
+        for (auto const &walk : walks) {
+            length.push_back(walk.length);
+        }
+        total += static_cast<double>(walk_iterations(walks)) * (tile_price(graph, plan, length, false, profile, point) + per_iteration);
+    }
+    return total;
+}
+
+/// The predicted time of a grouped plan, in the cost model's microseconds: each slice's statements
+/// at a point of every sliced axis, called once per member of a chunk, each iteration's step, and
+/// the @p unpriced bytes at memory bandwidth.
+double grouped_price(Graph const &graph, Plan const &plan, long double unpriced, DeviceProfile const &profile) {
+    std::vector<bool> const        point(plan.extents.size(), true);
+    std::vector<std::size_t> const length(plan.extents.size(), 1);
+    double const                   step  = profile.kernel_launch_overhead_us;
+    double const                   calls = iteration_price(plan, profile) - step;
+    return profile.estimate_memory_time_us(static_cast<std::size_t>(std::max(unpriced, 0.0L))) +
+           static_cast<double>(plan.slices) * (tile_price(graph, plan, length, false, profile, point) + calls) +
+           static_cast<double>(plan.iterations) * step;
 }
 
 /// The chunking of a plan in words, for the report and the explanation.
@@ -2382,13 +2467,13 @@ bool emit_tiled_loop(Graph &graph, Plan const &plan) {
 }
 
 /// Whether @p lhs is the better of two plans that fit. A triangle beats every plan that runs all its
-/// tiles, since it does about half the arithmetic whatever the bytes; two triangles compare by
-/// price, and two grids by the bytes they stream.
+/// tiles, since it does about half the arithmetic whatever the bytes; otherwise the lower predicted
+/// time wins, and equal prices fall to the fewer bytes streamed.
 bool preferred(Plan const &lhs, Plan const &rhs) {
     if (lhs.triangle.has_value() != rhs.triangle.has_value()) {
         return lhs.triangle.has_value();
     }
-    if (lhs.triangle.has_value()) {
+    if (!same_price(lhs.price_us, rhs.price_us)) {
         return lhs.price_us < rhs.price_us;
     }
     return lhs.traffic < rhs.traffic;
@@ -3243,11 +3328,20 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
             }
             auto const fits = [joint, room](std::size_t largest, std::size_t held) { return (joint ? held : largest) <= room; };
 
-            std::size_t unit      = 0;
-            std::size_t unit_held = 0;
-            long double traffic   = 0.0L;
-            analysis->cost(labelling, extents, 1, unit, unit_held, traffic);
-            bool const slice_fits = fits(unit, unit_held);
+            std::size_t unit       = 0;
+            std::size_t unit_held  = 0;
+            long double traffic    = 0.0L;
+            long double contracted = 0.0L;
+            analysis->cost(labelling, extents, 1, unit, unit_held, traffic, contracted);
+
+            // The statements the loop would run, which do not depend on the blocks, so each candidate
+            // can be priced at its own tile shapes before one is chosen.
+            Plan probe;
+            probe.extents = extents;
+            probe.slices  = slices;
+            std::string probe_note;
+            bool const  priced     = analysis->build(labelling, probe, probe_note);
+            bool const  slice_fits = fits(unit, unit_held);
             if (!slice_fits) {
                 ++over_cap;
                 best_effort = true;
@@ -3261,10 +3355,22 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                 if (std::string_view const blocker = analysis->range_blocker(labelling); !blocker.empty()) {
                     note_skip(blocker, detail);
                 } else {
-                    blocks =
-                        choose_blocks(extents, reusable, labelling.fully_sliced, fits,
-                                      [&](std::vector<std::size_t> const &b, std::size_t &largest, std::size_t &held,
-                                          long double &streamed) { analysis->range_cost(labelling, extents, b, largest, held, streamed); });
+                    blocks = choose_blocks(
+                        extents, reusable, labelling.fully_sliced, fits,
+                        [&](std::vector<std::size_t> const &b, std::size_t &largest, std::size_t &held, long double &streamed,
+                            long double &in_contractions) {
+                            analysis->range_cost(labelling, extents, b, largest, held, streamed, in_contractions);
+                        },
+                        [&](std::vector<std::size_t> const &b, long double unpriced) {
+                            if (!priced) {
+                                return 0.0;
+                            }
+                            probe.range        = true;
+                            probe.blocks       = b;
+                            double const price = range_price(graph, probe, unpriced, pricing());
+                            report(3, fmt::format("blocks of {} priced at {:.1f} us", fmt::join(b, " x "), price));
+                            return price;
+                        });
                 }
             }
             // A region that writes a tensor to storage is one loop. Blocks that leave a remainder add a
@@ -3305,15 +3411,21 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                 }
                 plan.largest_after = blocks->largest;
                 plan.traffic       = blocks->traffic;
+                plan.price_us      = blocks->price_us;
             } else {
                 std::size_t const depth   = slice_fits ? chunk_depth(slices, joint ? unit_held : unit, room) : 1;
                 std::size_t       largest = 0;
                 std::size_t       held    = 0;
-                analysis->cost(labelling, extents, depth, largest, held, traffic);
+                analysis->cost(labelling, extents, depth, largest, held, traffic, contracted);
                 plan.depth         = depth;
                 plan.iterations    = slices / depth;
                 plan.largest_after = largest;
                 plan.traffic       = traffic;
+                if (priced) {
+                    probe.depth      = depth;
+                    probe.iterations = plan.iterations;
+                    plan.price_us    = grouped_price(graph, probe, traffic - contracted, pricing());
+                }
             }
             plan.best_effort    = best_effort;
             plan.fits_share     = slice_fits;
@@ -3372,7 +3484,8 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                         std::size_t largest = 0;
                         std::size_t held    = 0;
                         long double moved   = 0.0L;
-                        analysis->range_cost(labelling, extents, {b, b}, largest, held, moved);
+                        long double inside  = 0.0L;
+                        analysis->range_cost(labelling, extents, {b, b}, largest, held, moved, inside);
                         // The scratch a mirrored tile is computed into, beside the loop's other buffers.
                         std::size_t scratch = graph.tensor(candidate.ops[candidate.triangle->writer].slots[0].tid).element_size;
                         for (std::size_t const d : graph.tensor(candidate.ops[candidate.triangle->writer].slots[0].tid).dims) {
@@ -3420,16 +3533,17 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
             if (allowance.triangle_only && (!plan.triangle.has_value() || best_effort)) {
                 continue;
             }
-            report(3,
-                   fmt::format("candidate {} streams {:.0f} bytes {}", fmt::join(plan.axis_names, " x "), static_cast<double>(plan.traffic),
-                               plan.range ? fmt::format("in blocks of {}", fmt::join(plan.blocks, " x "))
-                                          : fmt::format("at depth {}", plan.depth)));
+            report(3, fmt::format("candidate {} streams {:.0f} bytes {}, priced at {:.1f} us", fmt::join(plan.axis_names, " x "),
+                                  static_cast<double>(plan.traffic),
+                                  plan.range ? fmt::format("in blocks of {}", fmt::join(plan.blocks, " x "))
+                                             : fmt::format("at depth {}", plan.depth),
+                                  plan.price_us));
             if (best_effort) {
-                // One whose slices fit the share, by traffic as any plan; failing that the smallest slice.
+                // One whose slices fit the share, by price as any plan; failing that the smallest slice.
                 bool const better =
                     !fallback.has_value() || (plan.fits_share && !fallback->fits_share) ||
                     (plan.fits_share == fallback->fits_share &&
-                     (plan.fits_share ? plan.traffic < fallback->traffic
+                     (plan.fits_share ? preferred(plan, *fallback)
                                       : (plan.largest_after < fallback->largest_after ||
                                          (plan.largest_after == fallback->largest_after && plan.traffic < fallback->traffic))));
                 if (better) {

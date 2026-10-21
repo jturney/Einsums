@@ -519,10 +519,10 @@ intermediate that carries them, so the body is the same algebra at one slice.
 The cap is :option:`--einsums:graph:tiling-memory-cap`, in bytes, and it is the
 first knob that describes the **machine** rather than the program or a
 tolerance. It is read three times over: whether to tile at all, since a program
-whose largest intermediate already fits is left alone; which axes, since the
-pass keeps the candidate set that streams the fewest bytes among those that
-bring the footprint under the cap; and how deep, since a chunk of slices is the
-grouped form of the same body. Zero is the spelling for a caller who wants the
+whose largest intermediate already fits is left alone; which axes and blocks,
+since the pass keeps the candidate the cost model predicts fastest among those
+that bring the footprint under the cap; and how deep, since a chunk of slices is
+the grouped form of the same body. Zero is the spelling for a caller who wants the
 captured schedule.
 
 By default the cap is derived from the machine. An intermediate may take what

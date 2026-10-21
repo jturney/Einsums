@@ -385,22 +385,24 @@ TEST_CASE("AxisTiling does not report a backed tensor a loop body writes as a he
 }
 
 TEST_CASE("AxisTiling slices a backed operand where its blocks are the fewest runs of its storage", "[ComputeGraph][Pass][AxisTiling]") {
-    //   H[i,j]  = sum_k Bk[i,j,k] v[k]          Bk backed, stored as declared
+    //   H[i,j]  = sum_k Bk[i,j,k] v[k]          Bk backed, its storage holding j first
     //   out[m]  = sum_ij H[i,j] W[i,j,m]
-    // Slicing i or j moves the same bytes, since the two have one extent. A block of j is one run of
-    // Bk's storage per k; a block of i, the first stored axis, is one per (j, k). With a run costed
-    // the pass takes j; with runs free it has no reason to prefer either and keeps the first, i.
+    // Slicing i or j moves the same bytes, since the two have one extent. In memory i is Bk's
+    // contiguous axis, so a slice of j reads it in long runs and its contractions are priced the
+    // cheaper: with runs free the pass takes j. In the storage j comes first, so a slice of i is
+    // one run of it per k and a slice of j one per (i, k): with a run costed the pass takes i.
     std::size_t const n  = 6;
     std::size_t const nk = 4;
     auto const        v  = filled("v", {nk}, 3U);
     auto const        w  = filled("W", {n, n, 2}, 5U);
 
     cg::TensorBacking backing;
-    backing.kind      = "test.memory";
-    backing.location  = {{"name", "Bk"}};
-    backing.dims      = {n, n, nk};
-    backing.dtype     = packed_gemm::ScalarType::Float64;
-    backing.read_slab = [](void *, std::vector<std::pair<std::size_t, std::size_t>> const &) {};
+    backing.kind         = "test.memory";
+    backing.location     = {{"name", "Bk"}};
+    backing.dims         = {n, n, nk};
+    backing.dtype        = packed_gemm::ScalarType::Float64;
+    backing.read_slab    = [](void *, std::vector<std::pair<std::size_t, std::size_t>> const &) {};
+    backing.stored_order = [] { return std::vector<std::size_t>{1, 0, 2}; };
 
     auto const chosen = [&](std::int64_t run_bytes) {
         std::int64_t const previous = config::get(option::GraphStorageRunBytes);
@@ -420,8 +422,8 @@ TEST_CASE("AxisTiling slices a backed operand where its blocks are the fewest ru
         REQUIRE(tiling->num_tiled() == 1);
         return tiling->axis_letters();
     };
-    CHECK(chosen(0) == std::vector<std::string>{"i"});
-    CHECK(chosen(65536) == std::vector<std::string>{"j"});
+    CHECK(chosen(0) == std::vector<std::string>{"j"});
+    CHECK(chosen(65536) == std::vector<std::string>{"i"});
 }
 
 TEST_CASE("AxisTiling is off when the cap is zero", "[ComputeGraph][Pass][AxisTiling]") {
@@ -1220,10 +1222,12 @@ TEMPLATE_TEST_CASE("AxisTiling tiles the ladder chain of a residual whose other 
     CHECK(tiling->axis_names().front().starts_with("H["));
     INFO("sliced " << fmt::format("{}", fmt::join(tiling->axis_letters(), ",")) << " blocks "
                    << fmt::format("{}", fmt::join(tiling->block_extents(), ",")));
-    // An occupied index: one i of H is exactly the four pairs the cap allows. Slicing it labels
-    // Tau's occupied axes, which F's contraction sums over, so this is the decision a region that
-    // followed Tau into F would have had to give up.
-    CHECK(tiling->axis_letters() == std::vector<std::string>{"i"});
+    // An occupied index: one i or one j of H is exactly the four pairs the cap allows, and which of
+    // the two is the cost model's to choose. Slicing it labels Tau's occupied axes, which F's
+    // contraction sums over, so this is the decision a region that followed Tau into F would have
+    // had to give up.
+    auto const letters = tiling->axis_letters();
+    CHECK((letters == std::vector<std::string>{"i"} || letters == std::vector<std::string>{"j"}));
 
     // The loop holds the ladder's two contractions and nothing else; the other eight statements
     // run as captured, around it.
@@ -2226,6 +2230,65 @@ TEST_CASE("AxisTiling picks its triangle block from what the tile's layout costs
     std::int64_t const steep = tile(profile({{.run = 4, .ns_per_element = 20.0}, {.run = 24, .ns_per_element = 0.0}}));
     CHECK(flat == 2);
     CHECK(steep > flat);
+}
+
+TEST_CASE("AxisTiling picks its range blocks by the time the cost model predicts", "[ComputeGraph][Pass][AxisTiling]") {
+    //   H[i,j]   = sum_k A[i,k] B[k,j]
+    //   out[i,l] = sum_j H[i,j] C[j,l]
+    // H is over the cap and is cut into blocks of one of its axes. A larger block re-reads the
+    // operands that lack the axis fewer times, so by bytes alone the pass always took the largest
+    // block that fit. Priced against two
+    // hand-built profiles with memory too fast to matter, the choice must follow the time instead:
+    // large blocks when every call is dear, and small ones when large tiles run slowly.
+    constexpr std::size_t n = 24, nk = 8, nl = 8;
+    auto const            a = filled("A", {n, nk}, 3U);
+    auto const            b = filled("B", {nk, n}, 5U);
+    auto const            c = filled("C", {n, nl}, 7U);
+    RuntimeTensor<double> want("want", std::vector<std::size_t>{n, nl});
+    {
+        RuntimeTensor<double> h("Href", std::vector<std::size_t>{n, n});
+        testing::reference_einsum("i,j <- i,k ; k,j", &h, a, b);
+        testing::reference_einsum("i,l <- i,j ; j,l", &want, h, c);
+    }
+
+    auto const profile = [](std::vector<cg::GemmEfficiencyPoint> rates, double call_us) {
+        cg::CostModel model;
+        model.cpu.gemm_efficiency           = std::move(rates);
+        model.cpu.kernel_launch_overhead_us = call_us;
+        model.cpu.mem_bandwidth_gbps        = 1e6;
+        return model;
+    };
+    auto const tile = [&](cg::CostModel model) {
+        RuntimeTensor<double> out("out", std::vector<std::size_t>{n, nl});
+        cg::Graph             graph("chain");
+        {
+            auto                  &h = graph.scratch_runtime<double>("H", std::vector<std::size_t>{n, n});
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("i,j <- i,k ; k,j", &h, a, b);
+            cg::einsum("i,l <- i,j ; j,l", &out, h, c);
+        }
+        auto tiling = std::make_shared<cg::passes::AxisTiling>(std::move(model));
+        // A quarter of H: blocks of up to a quarter of either axis.
+        tiling->set_memory_cap(static_cast<std::int64_t>(n * n / 4 * sizeof(double)));
+        cg::apply_single_pass(*tiling, graph);
+        REQUIRE(tiling->num_tiled() == 1);
+        materialize_and_execute(graph);
+        require_close(out, want, static_cast<double>(n * nk));
+        std::int64_t area = 1;
+        for (std::int64_t const block : tiling->block_extents()) {
+            area *= block;
+        }
+        INFO("blocks " << fmt::format("{}", fmt::join(tiling->block_extents(), " x ")));
+        return area;
+    };
+
+    // One rate at every shape and a call worth more than any tile's arithmetic: the fewest tiles win.
+    std::int64_t const dear_calls = tile(profile({{.M = 64, .N = 64, .K = 64, .gflops = 50.0}}, 100.0));
+    // Free calls, and a rate that falls a hundredfold from small tiles to large: small tiles win.
+    std::int64_t const slow_large =
+        tile(profile({{.M = 2, .N = 2, .K = 2, .gflops = 100.0}, {.M = 64, .N = 64, .K = 64, .gflops = 1.0}}, 0.0));
+    CHECK(dear_calls == static_cast<std::int64_t>(n / 4));
+    CHECK(slow_large < dear_calls);
 }
 
 TEST_CASE("AxisTiling streams the seed alone when taking in what its labels reach leaves nothing to slice",

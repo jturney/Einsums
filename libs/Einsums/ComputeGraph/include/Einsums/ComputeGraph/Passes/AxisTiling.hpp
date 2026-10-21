@@ -47,13 +47,16 @@
  * exchanges @c a with @c b, so a slice of the permuted tensor would need a slice of its source
  * that the body is not at, while the same permutation leaves @c i and @c j where they are.
  *
- * Among the sets that survive, the one that STREAMS the fewest bytes wins, subject to the cap.
- * Both halves matter. Traffic alone always prefers slicing less, since not slicing at all
- * re-reads nothing; the cap alone would prefer slicing the smallest axes, which on MP2 is the
- * occupied pair read once per virtual pair rather than the other way round. Minimum traffic
- * under a memory cap is the memory-constrained loop fusion the tensor contraction engine
- * literature states (Lam, Cociorva, Baumgartner and Sadayappan; Hartono and others), and this
- * is that formulation over a captured graph.
+ * Among the sets that survive, the one the cost model predicts FASTEST wins, subject to the cap.
+ * Both halves matter. Time alone always prefers slicing less, since not slicing at all re-reads
+ * nothing; the cap alone would prefer slicing the smallest axes, which on MP2 is the occupied
+ * pair read once per virtual pair rather than the other way round. The prediction prices each
+ * contraction of the body at its tile's own shape and layout, once per tile, and adds the bytes
+ * the other statements move and the storage's surcharge at memory bandwidth and a call per
+ * statement per iteration; two plans it prices alike fall to the fewer bytes streamed. Minimum
+ * traffic under a memory cap is the memory-constrained loop fusion the tensor contraction
+ * engine literature states (Lam, Cociorva, Baumgartner and Sadayappan; Hartono and others), and
+ * the prediction is that formulation with the kernels' speed at each shape added.
  *
  * @par How deep
  * One slice at a time is the smallest footprint and the worst kernel efficiency. A chunk of
@@ -72,11 +75,13 @@
  * shared operand is read once per block. An axis no such operand rewards stays a point, and a
  * region with no reusable operand at all keeps the grouped chunk above.
  *
- * The block extents are chosen by the same objective as the axes, fewest bytes streamed under
- * the cap, evaluated per axis. On density-fitted MP2 that is a near-square block of occupied
- * pairs, because each factor is reused across the other index's block; where one operand is
- * reused along every sliced axis alike, only the block's area matters and the fewest axes are
- * cut. A block need not divide its axis: the remainder runs through a second body declared at
+ * The block extents are chosen by the same objective as the axes, the predicted time under the
+ * cap, evaluated per axis. Bytes alone would always take the largest block that fits, since a
+ * larger block re-reads its shared operands fewer times; the time also sees that a larger tile
+ * can run its contractions more slowly and that a smaller one pays its calls and packing more
+ * often, so a block too large to pay is declined by its price. On density-fitted MP2 the bytes
+ * favour a near-square block of occupied pairs, because each factor is reused across the other
+ * index's block. A block need not divide its axis: the remainder runs through a second body declared at
  * the remainder's extent, so a program over two ranged axes emits up to four loops, one per
  * combination of full and remainder blocks.
  *
