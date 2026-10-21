@@ -43,8 +43,11 @@ The code on this page is included from those files, so what you read is what run
    * - 7
      - ``ccsd_stage7_symmetry.py``
      - The amplitudes' pair symmetry declared.
+   * - 8
+     - ``ccsd_stage8_disk_symmetry.py``
+     - Files and symmetry together.
 
-Stages 2 through 7 share ``ccsd_equations.py``, which holds the equations, and ``ccsd_problem.py``, which loads the molecule.
+Stages 2 through 8 share ``ccsd_equations.py``, which holds the equations, and ``ccsd_problem.py``, which loads the molecule.
 **The equations do not change after stage 2.**
 Everything that makes the program faster or smaller afterwards is a statement about the program, made around the equations, never a rewrite of them.
 
@@ -363,6 +366,36 @@ From the declaration the optimizer proves that the ladder's contribution has the
 A declaration is a promise, and the tiled loop checks it at every replay before relying on it.
 The energy is unchanged.
 
+Stage 8: files and symmetry together
+====================================
+
+The declarations compose.
+Stage 8 is stage 6 with stage 7's line, made on the ``t2`` the graph declared with its file backing:
+
+.. literalinclude:: ../examples/ccsd/ccsd_stage8_disk_symmetry.py
+   :language: python
+   :start-after: # [doc:symmetry]
+   :end-before: # [doc:symmetry-end]
+   :dedent: 4
+
+A symmetry declared on a tensor the graph declared is read when the graph is optimized, so it may be set after the declaration, as here, or after the capture.
+The ladder runs as a triangle again, now with its factor ``Bvv`` read from the file a box at a time inside the loop:
+
+.. code-block:: text
+
+    runs 105 of 196 tile(s) of 4 x 4, writing each off-diagonal tile's mirror with sign +1
+    slicing Bvv*Bvv[0] x Bvv*Bvv[2] into 2809 slice(s), a triangle of blocks of 4 x 4 in 4 loop(s) of 105 iteration(s) in all, seed 63123848 bytes -> largest intermediate 359552 bytes
+
+and what the replay read from the file falls with it:
+
+.. code-block:: text
+
+    the last replay held at most 12055176 bytes
+      Bvv: 47528280 bytes read in 210 read(s), 0 written
+      ...
+
+In stage 6, ``Bvv`` was read in 756 pieces, 130 MB a replay; here it is 210 pieces and 48 MB, because the triangle's loop has fewer, larger blocks and skips half of them.
+
 What each stage costs
 =====================
 
@@ -376,21 +409,23 @@ The programs ran interleaved, five times each, and the table gives the median; t
    * - Stage
      - ms per iteration
    * - 1. NumPy
-     - 32.8
+     - 31.0
    * - 2. Einsums, eager
-     - 31.4
+     - 30.2
    * - 3. Captured and replayed
-     - 21.3
+     - 20.3
    * - 4. Scratch and spaces declared
-     - 17.4
+     - 16.6
    * - 5. A 64 MB memory budget
-     - 16.1
+     - 16.2
    * - 6. Integrals and amplitudes in files, a 16 MB budget
-     - 75.1
+     - 75.6
    * - 7. Pair symmetry declared
-     - 19.2
+     - 19.3
+   * - 8. Files and symmetry, a 16 MB budget
+     - 53.1
 
-Read it as five observations rather than a ranking.
+Read it as six observations rather than a ranking.
 
 **Eager Einsums is not faster than good NumPy.**
 The two run the same algorithm on the same BLAS, and come out even.
@@ -400,19 +435,22 @@ Stage 2 exists to fix the semantics, not the speed.
 Replaying the captured iteration is 1.5 times faster than NumPy, and declaring scratch and spaces takes that to 1.9.
 None of it touched the equations.
 
-**Holding less can be faster.**
-Stage 5 holds a 3.2 MB block of :math:`\langle ab|ef\rangle` where stage 4 holds all 63 MB, and is the fastest of the seven, most likely because a block that small is still in cache when the contraction that uses it reads it.
-The budget's share of the memory that any one intermediate may take, :option:`--einsums:graph:tiling-budget-share`, exists for this reason as much as for fitting.
+**Holding less need not cost time.**
+Stage 5 holds a 3.2 MB block of :math:`\langle ab|ef\rangle` where stage 4 holds all 63 MB, and runs no slower.
 
 **Files are bought with time.**
-Stage 6 holds a sixth of what stage 4 holds and takes four times as long.
-About half of the difference is the ladder's loop, which now reads each block's box of ``Bvv`` from the file, 40 times its size in all; most of the rest is the three waits for the drive that make each commit safe.
+Stage 6 holds a sixth of what stage 4 holds and takes four and a half times as long.
+About half of the difference is the ladder's loop, which reads each block's box of ``Bvv`` from the file, 40 times its size in all; most of the rest is the three waits for the drive that make each commit safe.
 At a molecule whose integrals do not fit in memory, there is no faster version to compare it with.
 
-**The triangle does not pay at water.**
-It halves the ladder's arithmetic, and at this size the arithmetic saved is less than the cost of running the ladder as a loop of small blocks and writing each block's mirror.
-The optimizer prices the triangle with its cost model's estimate for each block's contractions and the mirror's copies, and here that estimate is optimistic: it chose the triangle, and the triangle was 10% slower than stage 4.
+**The triangle does not pay in memory at water, at the block the optimizer picks.**
+It halves the ladder's arithmetic, and the optimizer chooses blocks of 4 x 4, small enough that the loop and the mirror's copies cost more than the arithmetic saved: stage 7 is 16% slower than stage 4.
+The optimizer prices each candidate block with its cost model, which here rates every block from 4 to 11 within 8% of the others, while in fact blocks of 9 x 9 run the ladder about 1.8 times faster than blocks of 4 x 4 for the same arithmetic.
+Pinned to 9 x 9 blocks with ``AxisTiling.set_block_extent(9)``, the triangle is 23% faster than stage 4: 13.4 ms against 17.4, interleaved in a run of their own.
 On benzene in cc-pVDZ, where the ladder is most of an iteration, the same declaration took an iteration to 0.69 to 0.72 of the time without it.
+
+**With files, the triangle pays even so.**
+Stage 8 is 30% faster than stage 6 with the same 4 x 4 blocks, because what the ladder's loop costs with files is reading ``Bvv``, and a triangle of fewer, larger blocks reads less of it.
 
 Where to go next
 ================

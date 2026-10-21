@@ -91,6 +91,7 @@ if(EINSUMS_BUILD_PYTHON
       ccsd_stage5_memory.py
       ccsd_stage6_disk.py
       ccsd_stage7_symmetry.py
+      ccsd_stage8_disk_symmetry.py
       ccsd_tiled.py
       mp2_simulation.py
       optimizer_tour.py

@@ -255,11 +255,16 @@ node before the loop runs ``check_symmetry`` on the declared tensor at every
 replay, and throws if its values no longer have the declared symmetry.
 
 Whether the triangle pays depends on how much of the iteration the
-contraction is. On benzene in cc-pVDZ, where the particle ladder dominates, it
-took a CCSD iteration to 0.69 to 0.72 of the time without it; on water in
-cc-pVTZ the loop of small blocks and the mirror's copies cost more than the
-arithmetic saved. :ref:`tutorial-ccsd` shows both the declaration and that
-measurement.
+contraction is, and on the block. On benzene in cc-pVDZ, where the particle
+ladder dominates, it took a CCSD iteration to 0.69 to 0.72 of the time without
+it. On water in cc-pVTZ the blocks of 4 x 4 the cost model picks make it 16%
+slower, and blocks of 9 x 9 make it 23% faster; with the integrals in files it
+pays even at 4 x 4, since it reads fewer blocks of them. :ref:`tutorial-ccsd`
+shows the declaration and those measurements.
+
+A symmetry declared on a tensor the graph declared, such as one backed by a
+file, may be set after the declaration or after the capture: every pass
+pipeline reads the declarations again before its first pass.
 
 Python API
 ==========
