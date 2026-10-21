@@ -545,6 +545,22 @@ void Graph::for_each_descendant(std::function<void(Graph const &)> const &visito
     });
 }
 
+void Graph::refresh_declared_symmetry() {
+    auto const refresh = [](Graph &graph) {
+        for (auto &[tid, handle] : graph._tensors) {
+            if (!handle.declared_symmetry_fn) {
+                continue;
+            }
+            if (auto declared = handle.declared_symmetry_fn();
+                declared != nullptr && (handle.symmetry_hint == nullptr || !(*handle.symmetry_hint == *declared))) {
+                handle.symmetry_hint = std::move(declared);
+            }
+        }
+    };
+    refresh(*this);
+    for_each_descendant(refresh);
+}
+
 EINSUMS_NAMESPACE_END(compute_graph)
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)

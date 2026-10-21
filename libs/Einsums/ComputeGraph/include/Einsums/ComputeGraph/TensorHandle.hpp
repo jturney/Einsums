@@ -438,11 +438,19 @@ struct TensorHandle {
     /// Declared or inferred tensor symmetry.
     ///
     /// At registration time ``make_handle()`` reads the backing tensor's
-    /// ``.symmetry()`` and stores a copy here. The ``SymmetryPropagation``
-    /// pass may later infer additional symmetry and update this hint plus
-    /// the backing tensor (via ``set_symmetry_fn``). ``nullptr`` means
-    /// "no declared symmetry", so downstream dispatch falls through.
+    /// ``.symmetry()`` and stores a copy here, and every pass pipeline reads it
+    /// again before its first pass (@ref Graph::refresh_declared_symmetry), so a
+    /// symmetry declared on a tensor the graph already holds is seen. The
+    /// ``SymmetryPropagation`` pass may later infer additional symmetry and
+    /// update this hint plus the backing tensor (via ``set_symmetry_fn``).
+    /// ``nullptr`` means "no declared symmetry", so downstream dispatch falls
+    /// through.
     std::shared_ptr<SymmetryDescriptor const> symmetry_hint;
+
+    /// Type-erased getter for the symmetry the backing tensor declares now, or
+    /// ``nullptr`` when it declares none. Populated by ``make_handle()`` for a
+    /// tensor type that carries a descriptor.
+    std::function<std::shared_ptr<SymmetryDescriptor const>()> declared_symmetry_fn;
 
     /// Type-erased setter that pushes a SymmetryDescriptor back to the
     /// backing tensor. Populated by ``make_handle()``. Called by the
@@ -944,6 +952,10 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
     if constexpr (requires { tensor.symmetry(); }) {
         if (auto const *desc = tensor.symmetry())
             h.symmetry_hint = std::make_shared<SymmetryDescriptor>(*desc);
+        h.declared_symmetry_fn = [tensor_mut]() -> std::shared_ptr<SymmetryDescriptor const> {
+            auto const *desc = tensor_mut->symmetry();
+            return desc != nullptr ? std::make_shared<SymmetryDescriptor const>(*desc) : nullptr;
+        };
     }
     if constexpr (requires(SymmetryDescriptor d) { tensor_mut->set_symmetry(std::move(d)); }) {
         h.set_symmetry_fn = [tensor_mut](SymmetryDescriptor d) { tensor_mut->set_symmetry(std::move(d)); };

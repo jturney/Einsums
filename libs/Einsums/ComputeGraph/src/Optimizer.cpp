@@ -628,6 +628,9 @@ bool run_pass_tree(OptimizerPass &pass, Graph &graph) {
 bool PassManager::run(Graph &graph) {
     WAGGLE_ZONE("PassManager::run({})", graph.name());
 
+    // What a tensor declares about its symmetry is read now, not only when it was registered.
+    graph.refresh_declared_symmetry();
+
     // Two sources of "skip this pass", and the more specific one wins. The option
     // is what a user types with no rebuild; a switch is what this program said
     // about this pipeline. A program that called enable() and silently did not get

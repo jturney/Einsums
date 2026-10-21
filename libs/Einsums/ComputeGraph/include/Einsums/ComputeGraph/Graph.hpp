@@ -2228,6 +2228,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void for_each_descendant(std::function<void(Graph const &)> const &visitor) const;
 
     /**
+     * @brief Re-read the symmetry each tensor declares, in this graph and every graph under it.
+     *
+     * A handle copies its tensor's symmetry when the tensor is registered, and a tensor the graph
+     * declared is registered by the declaration, so a symmetry set on it afterwards would never be
+     * seen. Every pass pipeline calls this before its first pass. A tensor that declares a
+     * symmetry replaces its handle's; one that declares none leaves the handle's alone, since a
+     * pass may have inferred it.
+     */
+    void refresh_declared_symmetry();
+
+    /**
      * @brief Collect the underlying tensor pointers referenced anywhere in
      *        this graph's descendant sub-graphs.
      *

@@ -138,6 +138,33 @@ TEST_CASE("SymmetryPropagation - permute of symmetric stays symmetric", "[Comput
     REQUIRE(T.symmetry()->ops[0].sign == +1);
 }
 
+TEST_CASE("SymmetryPropagation - sees a symmetry declared on a tensor the graph declared", "[ComputeGraph][Passes][Symmetry]") {
+    // A tensor the graph declares is registered by the declaration, and the handle copied its
+    // symmetry then, so a symmetry set on it afterwards, before the capture or after it, never
+    // reached a pass: a file-backed CCSD amplitude declared symmetric ran every tile of its
+    // ladder. The pipeline now reads each tensor's declaration before its first pass.
+    bool const after_capture = GENERATE(false, true);
+    CAPTURE(after_capture);
+
+    cg::Graph graph("declared_sym");
+    auto     &S = graph.declare_runtime_tensor<double>("S", std::vector<std::size_t>{4, 4});
+    auto     &T = graph.declare_runtime_tensor<double>("T", std::vector<std::size_t>{4, 4}, /*intermediate=*/true);
+    if (!after_capture) {
+        S.set_symmetry(SymmetryDescriptor::symmetric_pair(0, 1));
+    }
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("j,i <- i,j", 0.0, &T, 1.0, S);
+    }
+    if (after_capture) {
+        S.set_symmetry(SymmetryDescriptor::symmetric_pair(0, 1));
+    }
+
+    auto [_m, pass] = graph.apply<cg::passes::SymmetryPropagation>();
+    REQUIRE(pass.num_inferred() == 1);
+    REQUIRE(T.has_symmetry());
+}
+
 TEST_CASE("SymmetryPropagation - permute of general does not infer", "[ComputeGraph][Passes][Symmetry]") {
     auto A = create_random_tensor<double>("A", 4, 4);
     // No descriptor attached → permute has nothing to propagate.
