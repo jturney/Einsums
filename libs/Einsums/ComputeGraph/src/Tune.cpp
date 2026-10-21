@@ -197,24 +197,6 @@ Tensor<T, sizeof...(Dims)> random_tensor(std::string name, Dims... dims) {
     return tensor;
 }
 
-/// Generate logarithmically spaced sizes from min to max.
-std::vector<size_t> log_space(size_t min_val, size_t max_val, size_t num_points) {
-    std::vector<size_t> sizes;
-    double const        log_min = std::log2(static_cast<double>(min_val));
-    double const        log_max = std::log2(static_cast<double>(max_val));
-
-    for (size_t idx = 0; idx < num_points; idx++) {
-        double const t     = (num_points > 1) ? static_cast<double>(idx) / static_cast<double>(num_points - 1) : 0.0;
-        double const log_s = log_min + t * (log_max - log_min);
-        auto         s     = static_cast<size_t>(std::round(std::pow(2.0, log_s)));
-        // Round to nearest multiple of 4 for alignment
-        s = std::max(static_cast<size_t>(4), (s + 3) / 4 * 4);
-        if (sizes.empty() || sizes.back() != s)
-            sizes.push_back(s);
-    }
-    return sizes;
-}
-
 /// Measure memory bandwidth via a simple copy benchmark.
 double measure_bandwidth_gbps() {
     constexpr size_t BUFFER_SIZE = static_cast<long>(64 * 1024) * 1024; // 64 MB
@@ -327,10 +309,10 @@ double measure_gemm_grid(Config const &cfg, std::vector<size_t> const &sizes, cg
 
 /// The scatter's extra cost per element of C by run length: the CCSD ladder's tile a,b,e,f <-
 /// Q,a,e ; Q,b,f, whose C is scattered in runs of a x b, against the same contraction writing
-/// a,e,b,f in place. M = N = 512 and K = 256 throughout, so only the runs change.
+/// a,e,b,f in place. M = N = 480 and K = 252 throughout, so only the runs change.
 template <typename T>
 std::vector<cg::RunCostPoint> measure_scatter_cost(Config const &cfg) {
-    constexpr size_t              Q = 256, MN = 512;
+    constexpr size_t              Q = 252, MN = 480; // off the powers of two, as grid_extents explains
     std::vector<cg::RunCostPoint> curve;
     for (size_t const side : {2UL, 4UL, 8UL, 16UL, 32UL}) {
         size_t const e        = MN / side;
@@ -352,14 +334,14 @@ std::vector<cg::RunCostPoint> measure_scatter_cost(Config const &cfg) {
 
 /// The packers' extra cost per element of an operand by run length: A with its free extent
 /// split as x,k,y, contiguous in runs of x along the extent the packer walks, against the same A
-/// laid out x,y,k and read in one run. M = N = 512 and K = 256 throughout, and C keeps x and y
+/// laid out x,y,k and read in one run. M = N = 480 and K = 252 throughout, and C keeps x and y
 /// side by side, so it is written in place either way.
 template <typename T>
 std::vector<cg::RunCostPoint> measure_pack_cost(Config const &cfg) {
-    constexpr size_t              K = 256, MN = 512;
+    constexpr size_t              K = 252, MN = 480; // off the powers of two, as grid_extents explains
     std::vector<cg::RunCostPoint> curve;
     auto const                    B = random_tensor<T>("B", K, MN);
-    for (size_t run = 2; run < MN; run *= 2) {
+    for (size_t run = 2; run <= 32; run *= 2) {
         size_t const y        = MN / run;
         auto const   gathered = random_tensor<T>("A_split", run, K, y);
         auto const   flat     = random_tensor<T>("A_flat", run, y, K);
@@ -962,7 +944,7 @@ int measure(Config cfg) {
     einsums::println("Detected CPU: {}", cpu_brand);
 
     // Generate measurement sizes
-    auto sizes = log_space(cfg.min_size, cfg.max_size, cfg.num_points);
+    auto sizes = detail::grid_extents(cfg.min_size, cfg.max_size, cfg.num_points);
 
     // Everything from here to the end of the kernel-overhead block is a
     // width-1 rate by contract, so it is measured at width 1. See
@@ -1156,6 +1138,26 @@ int tune(std::vector<std::string> const &args) {
 EINSUMS_NAMESPACE_END(compute_graph)
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
+
+std::vector<size_t> grid_extents(size_t min_val, size_t max_val, size_t num_points) {
+    std::vector<size_t> sizes;
+    double const        log_min = std::log2(static_cast<double>(min_val));
+    double const        log_max = std::log2(static_cast<double>(max_val));
+
+    for (size_t idx = 0; idx < num_points; idx++) {
+        double const t     = (num_points > 1) ? static_cast<double>(idx) / static_cast<double>(num_points - 1) : 0.0;
+        double const log_s = log_min + t * (log_max - log_min);
+        auto         s     = static_cast<size_t>(std::round(std::pow(2.0, log_s)));
+        // Round to nearest multiple of 4 for alignment
+        s = std::max(static_cast<size_t>(4), (s + 3) / 4 * 4);
+        if (s >= 16 && (s & (s - 1)) == 0) {
+            s -= 4;
+        }
+        if (sizes.empty() || sizes.back() != s)
+            sizes.push_back(s);
+    }
+    return sizes;
+}
 
 Crossover find_crossover(std::vector<CrossoverPoint> const &points, double tie) {
     // The large side loses at a point when it is slower by more than the tie band.

@@ -35,6 +35,7 @@ namespace cg = einsums::compute_graph;
 using cg::detail::CrossoverBound;
 using cg::detail::CrossoverPoint;
 using cg::detail::find_crossover;
+using cg::detail::grid_extents;
 
 TEST_CASE("Tune - a crossover between two swept sizes is their geometric mean", "[ComputeGraph][Tune]") {
     std::vector<CrossoverPoint> const points{{.size = 100, .small_side = 1.0, .large_side = 2.0},
@@ -110,6 +111,23 @@ std::string decided() {
 constexpr std::int64_t never = 1'099'511'627'776;
 
 } // namespace
+
+TEST_CASE("Tune - the GEMM grid samples no power of two", "[ComputeGraph][Tune]") {
+    // The grid sat on 16, 32, ..., 2048, and at a power-of-two leading dimension the packers'
+    // strided reads collide in the cache: PackedGemm ran 512 x 512 x 128 at 245 GFLOPS on an M4
+    // against 344 at 508 x 508 x 132. Every packed rate in a profile was its worst case, and the
+    // cost model priced every packed tile 30 to 40% slow.
+    auto const extents = grid_extents(16, 2048, 8);
+    REQUIRE(extents.size() == 8);
+    for (std::size_t const e : extents) {
+        CAPTURE(e);
+        CHECK(e % 4 == 0);
+        CHECK((e & (e - 1)) != 0);
+    }
+    CHECK(extents.front() == 12);
+    CHECK(extents.back() == 2044);
+    CHECK(std::ranges::is_sorted(extents));
+}
 
 TEST_CASE("Tune - each tuned option defaults to the constant it replaced", "[ComputeGraph][Tune]") {
     // Measured on one machine each; the options exist so a tune can replace them, and an untuned

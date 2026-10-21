@@ -9,6 +9,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -81,5 +82,23 @@ struct Crossover {
  * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT Crossover find_crossover(std::vector<CrossoverPoint> const &points, double tie = 0.03);
+
+/**
+ * @brief The extents the GEMM grid samples on each axis: @p count of them spaced evenly in log size
+ *        from @p min_extent to @p max_extent, each a multiple of 4 and none a power of two from 16 up.
+ *
+ * A power-of-two extent makes every leading dimension a power-of-two stride, the one case where the
+ * packers' strided reads collide in the cache: PackedGemm ran a 512 x 512 x 128 GEMM at 245 GFLOPS
+ * on an M4 and a 508 x 508 x 132 one at 344, while the vendor GEMM barely noticed. A grid sampled
+ * on powers of two prices every packed contraction at its worst case, so each such extent is moved
+ * down to the multiple of 4 below it.
+ *
+ * @param[in] min_extent The smallest extent.
+ * @param[in] max_extent The largest extent.
+ * @param[in] count How many extents, before duplicates after rounding are dropped.
+ * @return The extents, ascending.
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT std::vector<std::size_t> grid_extents(std::size_t min_extent, std::size_t max_extent, std::size_t count);
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

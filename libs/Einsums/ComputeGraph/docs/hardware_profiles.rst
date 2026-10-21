@@ -112,7 +112,8 @@ home directories are shared, a login node can import the compute nodes'
 profile and only the compute nodes use it.
 
 It measures GEMM rates on a grid of shapes, every M, N and K from a log-spaced range (default 16 to 2048 in 8 steps, set by ``--min-size``, ``--max-size`` and ``--num-points``) up to 2\ :sup:`30` multiply-adds, once through the string einsum and once through PackedGemm pinned to its tile kernel.
-It measures the scatter's extra cost per element by timing the CCSD ladder's tile ``a,b,e,f <- Q,a,e ; Q,b,f`` against the same contraction writing ``a,e,b,f`` in place, at runs from 4 to 1024, and the packers' the same way with an operand split at runs from 2 to 256.
+Each extent is moved just below its power of two (508 rather than 512): a power-of-two leading dimension makes the packers' reads collide in the cache, and PackedGemm runs 30 to 40% slower there than at the extents around it.
+It measures the scatter's extra cost per element by timing the CCSD ladder's tile ``a,b,e,f <- Q,a,e ; Q,b,f`` against the same contraction writing ``a,e,b,f`` in place, at runs from 4 to 1024, and the packers' the same way with an operand split at runs from 2 to 32.
 It also measures copy and per-cache-level bandwidth, permute throughput, the string einsum's call overhead, per-kernel thread-efficiency curves (skipped with ``--no-thread-sweep``) and the OpenMP region cost at every team size.
 It starts from the built-in table rather than from an earlier profile, so nothing it does not measure is inherited from one.
 A profile written before the scatter and pack costs were measured keeps its own rates and takes the built-in table's curves, with a warning to measure again.
