@@ -649,6 +649,7 @@ TEST_CASE("describe_packed_contraction reports the plan the engine runs", "[pack
         CHECK(shape.M * shape.N == static_cast<int64_t>(block * v * block * v));
         CHECK(shape.K == static_cast<int64_t>(q));
         CHECK(shape.c_scattered);
+        CHECK_FALSE(shape.flat);
         // a and b sit side by side at the front of W, so the scatter writes block x block spans.
         CHECK(shape.c_run == static_cast<int64_t>(block * block));
         CHECK(shape.a_run == static_cast<int64_t>(q));
@@ -672,6 +673,22 @@ TEST_CASE("describe_packed_contraction reports the plan the engine runs", "[pack
         CHECK(shape.K == 32);
         CHECK_FALSE(shape.c_scattered);
         CHECK(shape.c_run == 0);
+        CHECK(shape.flat);
+    }
+
+    SECTION("a C written in place over a gathered operand is not flat") {
+        // The ladder's residual on a mirrored tile, r(i,j,a,b) = tau(i,j,e,f) W(a,e,b,f) with a
+        // and b cut to a block: r is a dense scratch tile, but W's slice splits e from f with b,
+        // so no single GEMM takes it and the packed engine runs it. Pricing it at the vendor's
+        // rate made small blocks look five times cheaper than they ran.
+        constexpr int64_t   o = 5, v = 12, block = 4;
+        OperandLayout const r{.indices = {"i", "j", "a", "b"}, .dims = {o, o, block, block}, .strides = {1, o, o * o, o * o * block}};
+        OperandLayout const tau{.indices = {"i", "j", "e", "f"}, .dims = {o, o, v, v}, .strides = {1, o, o * o, o * o * v}};
+        OperandLayout const w{.indices = {"a", "e", "b", "f"}, .dims = {block, v, block, v}, .strides = {1, v, v * v, v * v * v}};
+        auto const          shape = describe_packed_contraction(r, tau, w, ScalarType::Float64);
+        REQUIRE(shape.valid);
+        CHECK_FALSE(shape.c_scattered);
+        CHECK_FALSE(shape.flat);
     }
 
     SECTION("the contracted extent is cut in the shares the engine cuts it in") {

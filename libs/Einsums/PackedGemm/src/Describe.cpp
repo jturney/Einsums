@@ -113,8 +113,10 @@ PackedContractionShape describe_packed_contraction(ContractionKey const &key_in)
         out.c_scattered = plan.c_m_dims.size() > 1 || plan.c_n_dims.size() > 1 ||
                           (plan.c_m_dims[0].tensor_stride != 1 && plan.c_n_dims[0].tensor_stride != 1);
         out.c_run       = out.c_scattered ? scatter_run(plan) : 0;
-        out.a_run       = operand_run(plan.m_dims, plan.k_dims_in_a);
-        out.b_run       = operand_run(plan.n_dims, plan.k_dims_in_b);
+        out.flat  = !out.c_scattered && !plan.synthetic && plan.batch_total == 1 && plan.m_dims.size() == 1 && plan.n_dims.size() == 1 &&
+                    plan.k_dims_in_a.size() == 1 && plan.k_dims_in_b.size() == 1;
+        out.a_run = operand_run(plan.m_dims, plan.k_dims_in_a);
+        out.b_run = operand_run(plan.n_dims, plan.k_dims_in_b);
         // The split blis_contraction takes, cut for the machine's width whatever the call's.
         MicroKernelShape const shape = micro_kernel_shape<T>();
         auto const blk = compute_blocking(static_cast<int64_t>(sizeof(T)), shape.mr, shape.nr, plan.M_total, plan.N_total, plan.K_total);

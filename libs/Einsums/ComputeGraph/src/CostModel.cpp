@@ -326,7 +326,7 @@ double DeviceProfile::estimate_contraction_time_us(packed_gemm::PackedContractio
     double const gemm_speedup = gemm_parallel_speedup(M, N, K, threads);
 
     double const     flops  = 2.0 * md * nd * kd * batch;
-    GemmEngine const engine = shape.c_scattered ? GemmEngine::Packed : GemmEngine::Routed;
+    GemmEngine const engine = shape.flat ? GemmEngine::Routed : GemmEngine::Packed;
     // At the rate the GEMM curve gives for this shape, but never faster than its operands and its
     // output can stream: a low-intensity GEMM is bandwidth-bound whatever the curve says.
     double const traffic    = batch * (md * kd + kd * nd + md * nd) * static_cast<double>(element_size);

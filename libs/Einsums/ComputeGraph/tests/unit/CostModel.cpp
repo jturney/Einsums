@@ -142,20 +142,28 @@ TEST_CASE("DeviceProfile - a contraction's time adds the parts the engine runs",
     p.pack_cost                 = {{.run = 1, .ns_per_element = 1.0}, {.run = 64, .ns_per_element = 0.0}};
 
     einsums::packed_gemm::PackedContractionShape flat{
-        .valid = true, .M = 64, .N = 64, .K = 64, .c_scattered = false, .a_run = 64, .b_run = 64};
+        .valid = true, .M = 64, .N = 64, .K = 64, .c_scattered = false, .flat = true, .a_run = 64, .b_run = 64};
     double const arithmetic = 2.0 * 64 * 64 * 64 / (50.0 * 1e3);
     CHECK(p.estimate_contraction_time_us(flat) == Catch::Approx(1.0 + arithmetic));
 
     SECTION("a low-intensity GEMM costs at least its traffic") {
         // Two rows against a long K: the operands take far longer to stream than the arithmetic.
-        einsums::packed_gemm::PackedContractionShape thin{.valid = true, .M = 2, .N = 2, .K = 300000, .a_run = 300000, .b_run = 300000};
-        double const                                 traffic = p.estimate_memory_time_us((2 * 300000 + 300000 * 2 + 4) * sizeof(double));
+        einsums::packed_gemm::PackedContractionShape thin{
+            .valid = true, .M = 2, .N = 2, .K = 300000, .flat = true, .a_run = 300000, .b_run = 300000};
+        double const traffic = p.estimate_memory_time_us((2 * 300000 + 300000 * 2 + 4) * sizeof(double));
         CHECK(traffic > 2.0 * 2 * 2 * 300000 / (50.0 * 1e3));
         CHECK(p.estimate_contraction_time_us(thin) == Catch::Approx(1.0 + traffic));
     }
 
+    SECTION("a contraction no single GEMM takes pays the packed rate") {
+        auto gathered = flat;
+        gathered.flat = false;
+        CHECK(p.estimate_contraction_time_us(gathered) == Catch::Approx(1.0 + 2.0 * 64 * 64 * 64 / (40.0 * 1e3)));
+    }
+
     SECTION("a scattered C pays the packed rate and its runs") {
         auto scattered        = flat;
+        scattered.flat        = false;
         scattered.c_scattered = true;
         scattered.c_run       = 64;
         double const long_run = p.estimate_contraction_time_us(scattered);

@@ -370,8 +370,8 @@ struct DeviceProfile {
      * The parts the packed engine runs one after another on a thread, added:
      *
      * - a call overhead for each share the contracted extent is cut into;
-     * - the arithmetic, at the @ref GemmEngine::Packed rate when C is scattered and the routed rate
-     *   otherwise, scaled by the GEMM family's thread curve, and never less than the time to stream
+     * - the arithmetic, at the routed rate when one vendor GEMM can take the contraction whole and
+     *   the @ref GemmEngine::Packed rate otherwise, scaled by the GEMM family's thread curve, and never less than the time to stream
      *   the operands and the output once;
      * - the scatter's extra cost per element of C at C's run length, scaled as elementwise traffic;
      * - the packers' extra cost per element of each operand at its run length, scaled with the

@@ -33,6 +33,10 @@ struct PackedContractionShape {
     int64_t batch{1};
     /// True when C is built in a scratch block and scattered into place.
     bool c_scattered{false};
+    /// True when one vendor GEMM can take the contraction whole: C written in place, no batch, and
+    /// the M, N and K groups each one dim in every operand. Any other contraction runs the packed
+    /// engine's own loops, whichever route a caller prefers.
+    bool flat{false};
     /// Elements in one contiguous run of the scatter's inner walk over C. Zero when C is not
     /// scattered.
     int64_t c_run{0};
