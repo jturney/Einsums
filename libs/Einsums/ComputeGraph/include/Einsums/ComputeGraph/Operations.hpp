@@ -508,23 +508,25 @@ void abs(ResultType *out, AType const &A) {
 // permute
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// String-based graph-aware permute with prefactors.
-///
-/// @code
-/// cg::permute("ji <- ij", 0.0, &C, 1.0, A);       // C = A^T
-/// cg::permute("kji <- ijk", 0.0, &D, 1.0, T);      // rank-3 transpose
-/// cg::permute("mu,nu <- nu,mu", 0.0, &C, 1.0, A);  // multi-char indices
-/// @endcode
-template <typename AType, typename CType>
-    requires PermuteOperands<AType, CType>
-void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C, typename AType::ValueType alpha, AType const &A) {
-    using T = typename AType::ValueType;
+namespace detail {
 
-    auto parse_result = parse_permute_spec(static_cast<std::string_view>(spec));
+/// @p spec parsed, or std::invalid_argument carrying the parser's message.
+inline ParsedPermuteSpec parse_permute_or_throw(std::string_view spec) {
+    auto parse_result = parse_permute_spec(spec);
     if (!parse_result) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parse_result.error().message);
     }
-    auto &parsed = parse_result.value();
+    return std::move(parse_result.value());
+}
+
+/// cg::permute on a spec already in index lists.
+///
+/// The string form parses its spec and comes here. A pass that holds a node's index lists comes
+/// here directly, so the labels the algebra names axes with, which the parser refuses on purpose
+/// ('#0', '~0', 'laplace_t'), are recorded as they are instead of being spelled out and read back.
+template <typename AType, typename CType>
+void permute_parsed(ParsedPermuteSpec parsed, typename CType::ValueType beta, CType *C, typename AType::ValueType alpha, AType const &A) {
+    using T = typename AType::ValueType;
 
     // The spec must name every axis of both operands. A spec naming fewer ran over only the axes it
     // named and left the rest of C untouched: "i <- i" on two 3x4 tensors copied one column.
@@ -585,6 +587,21 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
         TensorId const c_id = ctx.get_slot(*C).first;
         detail::capture_permute<T>(ctx, parsed, beta, alpha, a_id, c_id, detail::tensor_rank(*C));
     }
+}
+
+} // namespace detail
+
+/// String-based graph-aware permute with prefactors.
+///
+/// @code
+/// cg::permute("ji <- ij", 0.0, &C, 1.0, A);       // C = A^T
+/// cg::permute("kji <- ijk", 0.0, &D, 1.0, T);      // rank-3 transpose
+/// cg::permute("mu,nu <- nu,mu", 0.0, &C, 1.0, A);  // multi-char indices
+/// @endcode
+template <typename AType, typename CType>
+    requires PermuteOperands<AType, CType>
+void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C, typename AType::ValueType alpha, AType const &A) {
+    detail::permute_parsed(detail::parse_permute_or_throw(spec), beta, C, alpha, A);
 }
 
 /// String-based permute with default prefactors (beta=0, alpha=1): C = permute(A).
@@ -3706,6 +3723,55 @@ void grouped_axpby(std::vector<double> alphas, std::vector<XType const *> x_list
 // many independent ELEMENT-WISE members as ONE node
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace detail {
+
+/// cg::grouped_permute on a spec already in index lists, for the reason @ref permute_parsed gives.
+template <typename AType, typename CType>
+void grouped_permute_parsed(ParsedPermuteSpec parsed, std::vector<CType *> c_list, std::vector<AType const *> a_list,
+                            std::vector<double> c_pfs, std::vector<double> a_pfs) {
+    using T = typename CType::ValueType;
+
+    size_t const count = c_list.size();
+    if (count == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_permute: the run is empty");
+    }
+    if (a_list.size() != count || c_pfs.size() != count || a_pfs.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "cg::grouped_permute: the C, A, c_pf and a_pf lists must be the same length; got {}, {}, {}, {}", count,
+                                a_list.size(), c_pfs.size(), a_pfs.size());
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if (c_list[i] == nullptr || a_list[i] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_permute: member {} has a null operand", i);
+        }
+        if (detail::tensor_rank(*a_list[i]) != parsed.a_indices.size() || detail::tensor_rank(*c_list[i]) != parsed.c_indices.size()) {
+            EINSUMS_THROW_EXCEPTION(RankError, "cg::grouped_permute: member {} has ranks ({}, {}) where the spec wants ({}, {})", i,
+                                    detail::tensor_rank(*c_list[i]), detail::tensor_rank(*a_list[i]), parsed.c_indices.size(),
+                                    parsed.a_indices.size());
+        }
+    }
+    detail::require_distinct_destinations(c_list, "cg::grouped_permute");
+
+    std::vector<T> c_typed(count), a_typed(count);
+    for (size_t i = 0; i < count; i++) {
+        c_typed[i] = static_cast<T>(c_pfs[i]);
+        a_typed[i] = static_cast<T>(a_pfs[i]);
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (detail::runs_eagerly(ctx, "cg::grouped_permute", c_list, a_list)) {
+        auto const c = detail::impls_of(c_list);
+        auto const a = detail::impls_of(a_list);
+        detail::eager_grouped_permute<T>(parsed, c_typed, c, a_typed, a);
+        return;
+    }
+    auto [a_refs, c_refs] = detail::slot_lists(ctx, count, {}, a_list, c_list);
+    detail::capture_grouped_permute<T>(ctx, std::move(parsed), std::move(c_typed), std::move(a_typed), a_refs, c_refs);
+}
+
+} // namespace detail
+
 /// @brief One node holding many independent permutes:
 /// ``C_i = c_pfs[i] * C_i + a_pfs[i] * permute(A_i)`` for every member, all of
 /// them under one spec.
@@ -3771,51 +3837,8 @@ APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<std::complex
 // clang-format on
 void grouped_permute(std::string const &spec, std::vector<CType *> c_list, std::vector<AType const *> a_list, std::vector<double> c_pfs,
                      std::vector<double> a_pfs) {
-    using T = typename CType::ValueType;
-
-    size_t const count = c_list.size();
-    if (count == 0) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_permute: the run is empty");
-    }
-    if (a_list.size() != count || c_pfs.size() != count || a_pfs.size() != count) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                "cg::grouped_permute: the C, A, c_pf and a_pf lists must be the same length; got {}, {}, {}, {}", count,
-                                a_list.size(), c_pfs.size(), a_pfs.size());
-    }
-
-    auto parse_result = parse_permute_spec(std::string_view{spec});
-    if (!parse_result) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parse_result.error().message);
-    }
-    auto parsed = parse_result.value();
-
-    for (size_t i = 0; i < count; i++) {
-        if (c_list[i] == nullptr || a_list[i] == nullptr) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_permute: member {} has a null operand", i);
-        }
-        if (detail::tensor_rank(*a_list[i]) != parsed.a_indices.size() || detail::tensor_rank(*c_list[i]) != parsed.c_indices.size()) {
-            EINSUMS_THROW_EXCEPTION(RankError, "cg::grouped_permute: member {} has ranks ({}, {}) where the spec wants ({}, {})", i,
-                                    detail::tensor_rank(*c_list[i]), detail::tensor_rank(*a_list[i]), parsed.c_indices.size(),
-                                    parsed.a_indices.size());
-        }
-    }
-    detail::require_distinct_destinations(c_list, "cg::grouped_permute");
-
-    std::vector<T> c_typed(count), a_typed(count);
-    for (size_t i = 0; i < count; i++) {
-        c_typed[i] = static_cast<T>(c_pfs[i]);
-        a_typed[i] = static_cast<T>(a_pfs[i]);
-    }
-
-    auto &ctx = CaptureContext::current();
-    if (detail::runs_eagerly(ctx, "cg::grouped_permute", c_list, a_list)) {
-        auto const c = detail::impls_of(c_list);
-        auto const a = detail::impls_of(a_list);
-        detail::eager_grouped_permute<T>(parsed, c_typed, c, a_typed, a);
-        return;
-    }
-    auto [a_refs, c_refs] = detail::slot_lists(ctx, count, {}, a_list, c_list);
-    detail::capture_grouped_permute<T>(ctx, std::move(parsed), std::move(c_typed), std::move(a_typed), a_refs, c_refs);
+    detail::grouped_permute_parsed(detail::parse_permute_or_throw(spec), std::move(c_list), std::move(a_list), std::move(c_pfs),
+                                   std::move(a_pfs));
 }
 
 namespace detail {
@@ -5479,20 +5502,22 @@ void validate_einsum_dims(ParsedEinsumSpec const &parsed, AType const &A, BType 
     }
 }
 
-/// The checks every cg::einsum runs before it records or computes anything: operand ranks against
-/// the spec, the parse, conjugation spelled in the spec, and one size per index name. Shared by the
-/// single-type and the mixed-precision overloads, so both reject the same mistakes the same way.
-/// Returns the parsed spec; ORs the spec's conj(...) wrappers into @p conj_a and @p conj_b, and clears
-/// the flag of a real operand in both.
-template <typename AType, typename BType, typename CType>
-ParsedEinsumSpec prepare_einsum(EinsumFormatString const &spec, AType const &A, BType const &B, CType const &C, bool &conj_a,
-                                bool &conj_b) {
-    auto parse_result = parse_einsum_spec(static_cast<std::string_view>(spec));
+/// @p spec parsed, or std::invalid_argument carrying the parser's message.
+inline ParsedEinsumSpec parse_einsum_or_throw(std::string_view spec) {
+    auto parse_result = parse_einsum_spec(spec);
     if (!parse_result) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parse_result.error().message);
     }
-    auto parsed = std::move(parse_result.value());
+    return std::move(parse_result.value());
+}
 
+/// The checks every cg::einsum runs on its index lists before it records or computes anything:
+/// operand ranks against the spec, conjugation spelled in the spec, and one size per index name.
+/// Shared by the single-type and the mixed-precision overloads and by a spec a pass hands over in
+/// lists, so all of them reject the same mistakes the same way. ORs the spec's conj(...) wrappers
+/// into @p conj_a and @p conj_b, and clears the flag of a real operand in both.
+template <typename AType, typename BType, typename CType>
+void check_einsum(ParsedEinsumSpec &parsed, AType const &A, BType const &B, CType const &C, bool &conj_a, bool &conj_b) {
     // Each operand's rank has to match its index count. Checked for every spec, however it was built: a spec
     // that arrives as data (Python, a pass) is the common case, and a rank-3 A under "ij <- ik ; kj" otherwise
     // runs to completion reading the wrong elements.
@@ -5522,7 +5547,42 @@ ParsedEinsumSpec prepare_einsum(EinsumFormatString const &spec, AType const &A, 
     parsed.conj_b = conj_b;
 
     validate_einsum_dims(parsed, A, B, C);
+}
+
+/// @ref check_einsum on @p spec, parsed. Returns the parsed spec.
+template <typename AType, typename BType, typename CType>
+ParsedEinsumSpec prepare_einsum(EinsumFormatString const &spec, AType const &A, BType const &B, CType const &C, bool &conj_a,
+                                bool &conj_b) {
+    auto parsed = parse_einsum_or_throw(spec);
+    check_einsum(parsed, A, B, C, conj_a, conj_b);
     return parsed;
+}
+
+/// cg::einsum of one element type on a spec already in index lists, for the reason
+/// @ref permute_parsed gives. The string form parses its spec and comes here.
+template <typename AType, typename BType, typename CType>
+void einsum_parsed(ParsedEinsumSpec parsed, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
+                   BType const &B, bool conj_a = false, bool conj_b = false) {
+    using T = typename AType::ValueType;
+
+    check_einsum(parsed, A, B, *C, conj_a, conj_b);
+
+    auto &ctx = CaptureContext::current();
+    if (detail::runs_eagerly(ctx, "cg::einsum", C, A, B)) {
+        WAGGLE_ZONE("einsum eager");
+        // Through the library, on the operands' TensorImpls: this file compiles no einsum engine.
+        dispatch::erased_string_einsum<T>(parsed, c_pf, C->impl(), ab_pf, A.impl(), B.impl(), conj_a, conj_b);
+        return;
+    }
+
+    WAGGLE_ZONE("einsum capture");
+    // Registering the operands is what depends on their tensor types; recording the node is done
+    // in the library, on the slots and TensorImpls, so this file compiles none of it.
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [b_id, b_slot] = ctx.get_slot(B);
+    auto [c_id, c_slot] = ctx.get_slot(*C);
+    detail::capture_string_einsum<T>(ctx, parsed, c_pf, ab_pf, conj_a, conj_b, {a_id, a_slot, &A.impl()}, {b_id, b_slot, &B.impl()},
+                                     {c_id, c_slot, &C->impl()});
 }
 
 // build_einsum_descriptor now lives in Node.hpp so Graph::make_einsum_node can
@@ -5564,26 +5624,7 @@ template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept
              std::is_same_v<typename AType::ValueType, typename CType::ValueType> && (!detail::any_tiled_v<AType, BType, CType>)
 void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
             BType const &B, bool conj_a = false, bool conj_b = false) {
-    using T = typename AType::ValueType;
-
-    auto parsed = detail::prepare_einsum(spec, A, B, *C, conj_a, conj_b);
-
-    auto &ctx = CaptureContext::current();
-    if (detail::runs_eagerly(ctx, "cg::einsum", C, A, B)) {
-        WAGGLE_ZONE("einsum eager");
-        // Through the library, on the operands' TensorImpls: this file compiles no einsum engine.
-        dispatch::erased_string_einsum<T>(parsed, c_pf, C->impl(), ab_pf, A.impl(), B.impl(), conj_a, conj_b);
-        return;
-    }
-
-    WAGGLE_ZONE("einsum capture");
-    // Registering the operands is what depends on their tensor types; recording the node is done
-    // in the library, on the slots and TensorImpls, so this file compiles none of it.
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    auto [c_id, c_slot] = ctx.get_slot(*C);
-    detail::capture_string_einsum<T>(ctx, parsed, c_pf, ab_pf, conj_a, conj_b, {a_id, a_slot, &A.impl()}, {b_id, b_slot, &B.impl()},
-                                     {c_id, c_slot, &C->impl()});
+    detail::einsum_parsed(detail::parse_einsum_or_throw(spec), c_pf, C, ab_pf, A, B, conj_a, conj_b);
 }
 
 /**

@@ -23,16 +23,11 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <fmt/format.h>
-#include <fmt/ranges.h>
 
-#include <algorithm>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -229,79 +224,31 @@ inline WalkBounds declare_table_bounds(Graph &body, std::vector<AxisWalk> const 
     return out;
 }
 
-/// The permutation operators a spec applies, each followed by a space, in the prefix position
-/// the arrow form takes them in.
-inline std::string operator_prefix(std::vector<PermutationOperator> const &operators) {
-    std::string out;
-    for (auto const &op : operators) {
-        out += op.render() + " ";
-    }
-    return out;
-}
-
-/// Rename, alike in every list, each label the spec parser would refuse.
+/// A contraction in the index lists the capture takes, with no spec text in between.
 ///
 /// A node's letters are data, and the algebra names some axes with labels no spec may hold: an
 /// elementwise op's axes by position ('#0'), a letter a rewrite renamed ('~0'), a quadrature axis
-/// ('laplace_t'). They are also the variables of the node's symbolic cost, so they stay as they are
-/// on the node, and a body that spells the node as text renames them there instead, to labels none
-/// of the lists spells.
-inline void make_spellable(std::vector<std::vector<std::string> *> const &lists, std::vector<PermutationOperator> *operators = nullptr) {
-    auto const spellable = [](std::string const &letter) {
-        return !letter.empty() && std::ranges::all_of(letter, [](unsigned char ch) { return std::isalnum(ch) != 0; });
-    };
-    std::set<std::string> used;
-    for (auto const *list : lists) {
-        used.insert(list->begin(), list->end());
-    }
-    std::map<std::string, std::string> renamed;
-    std::size_t                        fresh   = 0;
-    auto const                         respell = [&](std::string &letter) {
-        if (spellable(letter)) {
-            return;
-        }
-        auto [entry, inserted] = renamed.try_emplace(letter);
-        if (inserted) {
-            // A single letter where one is free: a list of one label is spelled without commas,
-            // and the parser reads a comma-less list a character at a time.
-            do {
-                entry->second = fresh < 52 ? std::string(1, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"[fresh])
-                                           : fmt::format("x{}", fresh - 52);
-                ++fresh;
-            } while (used.contains(entry->second));
-            used.insert(entry->second);
-        }
-        letter = entry->second;
-    };
-    for (auto *list : lists) {
-        std::ranges::for_each(*list, respell);
-    }
-    if (operators != nullptr) {
-        for (auto &op : *operators) {
-            for (auto &group : op.groups) {
-                std::ranges::for_each(group, respell);
-            }
-        }
-    }
-}
-
-/// The canonical spelling of a contraction, which is what the capture entry point parses back
-/// into the same lists, conjugation flags and operators, with every label made one it accepts.
-inline std::string einsum_spec_text(std::vector<std::string> a, std::vector<std::string> b, std::vector<std::string> c, bool conj_a,
+/// ('laplace_t'). The parser refuses them so that a user's letter can never meet one, so a body
+/// re-captures a node's lists as they are rather than spelling them and reading them back.
+inline ParsedEinsumSpec einsum_spec(std::vector<std::string> a, std::vector<std::string> b, std::vector<std::string> c, bool conj_a,
                                     bool conj_b, std::vector<PermutationOperator> operators) {
-    make_spellable({&a, &b, &c}, &operators);
-    auto const side = [](std::vector<std::string> const &indices, bool conjugated) {
-        std::string const joined = fmt::format("{}", fmt::join(indices, ","));
-        return conjugated ? fmt::format("conj({})", joined) : joined;
-    };
-    return fmt::format("{} <- {}{} ; {}", fmt::join(c, ","), operator_prefix(operators), side(a, conj_a), side(b, conj_b));
+    ParsedEinsumSpec out{.c_indices = std::move(c),
+                         .a_indices = std::move(a),
+                         .b_indices = std::move(b),
+                         .raw       = {},
+                         .conj_a    = conj_a,
+                         .conj_b    = conj_b,
+                         .operators = std::move(operators)};
+    out.raw = out.render();
+    return out;
 }
 
-/// The spelling of a permutation, with every label made one the parser accepts.
-inline std::string permute_spec_text(std::vector<std::string> c, std::vector<std::string> a,
-                                     std::vector<PermutationOperator> operators = {}) {
-    make_spellable({&c, &a}, &operators);
-    return fmt::format("{} <- {}{}", fmt::join(c, ","), operator_prefix(operators), fmt::join(a, ","));
+/// A permutation in the index lists the capture takes, as @ref einsum_spec.
+inline ParsedPermuteSpec permute_spec(std::vector<std::string> c, std::vector<std::string> a,
+                                      std::vector<PermutationOperator> operators = {}) {
+    ParsedPermuteSpec out{.c_indices = std::move(c), .a_indices = std::move(a), .raw = {}, .operators = std::move(operators)};
+    out.raw = out.render();
+    return out;
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes::detail)

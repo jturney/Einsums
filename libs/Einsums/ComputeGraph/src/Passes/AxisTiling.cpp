@@ -58,8 +58,8 @@ using detail::axis_walks;
 using detail::AxisWalk;
 using detail::combine_walks;
 using detail::declare_walk_bounds;
-using detail::einsum_spec_text;
-using detail::permute_spec_text;
+using detail::einsum_spec;
+using detail::permute_spec;
 using detail::walk_iterations;
 
 /// A position carrying no slice label.
@@ -2057,13 +2057,13 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
                 // with the contraction's own destination prefactor, so a prefactor of zero
                 // overwrites each block exactly as the captured contraction did, and every element
                 // of the output is written by exactly one of the two.
-                auto      &tile = view_runtime(*scratch, std::vector<ViewAxis>(scratch->rank(), ViewAxis::full()));
-                auto const text = einsum_spec_text(a, b, c, live_conj_a(desc), live_conj_b(desc), lists.operators);
-                einsum(EinsumFormatString(text), T{0}, &tile, as<T>(live_ab_prefactor(desc)), *operand[1][0], *operand[2][0]);
+                auto &tile = view_runtime(*scratch, std::vector<ViewAxis>(scratch->rank(), ViewAxis::full()));
+                compute_graph::detail::einsum_parsed(einsum_spec(a, b, c, live_conj_a(desc), live_conj_b(desc), lists.operators), T{0},
+                                                     &tile, as<T>(live_ab_prefactor(desc)), *operand[1][0], *operand[2][0]);
 
                 T const     beta  = as<T>(live_c_prefactor(desc));
                 auto const &sigma = plan.triangle->sigma;
-                permute(PermuteFormatString(permute_spec_text(c, c)), beta, operand[0][0], T{1}, tile);
+                compute_graph::detail::permute_parsed(permute_spec(c, c), beta, operand[0][0], T{1}, tile);
 
                 // The mirrored block at q holds the contribution at the exchanged index, which is
                 // sign times the tile at apply(sigma, q).
@@ -2073,7 +2073,8 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
                     exchanged.push_back(c[static_cast<std::size_t>(static_cast<unsigned char>(sigma.permutation[p]))]);
                 }
                 auto &mirrored = view_of(op.slots[0].tid, plan.triangle->mirror_labels, 0);
-                permute(PermuteFormatString(permute_spec_text(c, exchanged)), beta, &mirrored, T(static_cast<double>(sigma.sign)), tile);
+                compute_graph::detail::permute_parsed(permute_spec(c, exchanged), beta, &mirrored, T(static_cast<double>(sigma.sign)),
+                                                      tile);
                 break;
             }
             auto const as_gemm  = gemm_shape(c, a, b, lists.link);
@@ -2090,10 +2091,10 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
                 grouped_batched_gemm(*alpha, sources(1), sources(2), *beta, operand[0], as_gemm->trans_a, as_gemm->trans_b);
                 break;
             }
-            auto const text = einsum_spec_text(a, b, c, live_conj_a(desc), live_conj_b(desc), lists.operators);
+            auto const spec = einsum_spec(a, b, c, live_conj_a(desc), live_conj_b(desc), lists.operators);
             for (std::size_t member = 0; member < depth; ++member) {
-                einsum(EinsumFormatString(text), summing ? T{1} : as<T>(live_c_prefactor(desc)), operand[0][member],
-                       as<T>(live_ab_prefactor(desc)), *operand[1][member], *operand[2][member]);
+                compute_graph::detail::einsum_parsed(spec, summing ? T{1} : as<T>(live_c_prefactor(desc)), operand[0][member],
+                                                     as<T>(live_ab_prefactor(desc)), *operand[1][member], *operand[2][member]);
             }
             break;
         }
@@ -2104,16 +2105,17 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
             // and the snapshot only stands in for a node that has none.
             PrefactorScalar const alpha = desc.params ? desc.params->alpha : PrefactorScalar{desc.alpha};
             PrefactorScalar const beta  = desc.params ? desc.params->beta : PrefactorScalar{desc.beta};
-            auto const            text  = permute_spec_text(surviving(desc.c_indices, op.slots[0].labels, walks),
-                                                            surviving(desc.a_indices, op.slots[1].labels, walks), desc.operators);
+            auto const            spec  = permute_spec(surviving(desc.c_indices, op.slots[0].labels, walks),
+                                                       surviving(desc.a_indices, op.slots[1].labels, walks), desc.operators);
             auto const            re_a  = real_prefactor(alpha);
             auto const            re_c  = real_prefactor(beta);
             if (chunked && re_a.has_value() && re_c.has_value() && desc.operators.empty()) {
-                grouped_permute(text, operand[0], sources(1), std::vector<double>(depth, *re_c), std::vector<double>(depth, *re_a));
+                compute_graph::detail::grouped_permute_parsed(spec, operand[0], sources(1), std::vector<double>(depth, *re_c),
+                                                              std::vector<double>(depth, *re_a));
                 break;
             }
             for (std::size_t member = 0; member < depth; ++member) {
-                permute(PermuteFormatString(text), as<T>(beta), operand[0][member], as<T>(alpha), *operand[1][member]);
+                compute_graph::detail::permute_parsed(spec, as<T>(beta), operand[0][member], as<T>(alpha), *operand[1][member]);
             }
             break;
         }

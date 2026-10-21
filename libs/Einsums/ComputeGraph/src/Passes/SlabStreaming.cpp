@@ -45,7 +45,7 @@ namespace {
 using detail::AxisWalk;
 using detail::declare_walk_bounds;
 using detail::declared_order;
-using detail::einsum_spec_text;
+using detail::einsum_spec;
 using detail::runs_in;
 using detail::slice_bound;
 using detail::TileCursor;
@@ -319,9 +319,9 @@ void emit_body(Graph &body, Rewrite const &rw, AxisWalk const &walk, std::size_t
 
     // Every block of a free letter writes its own slice, so each applies the prefactor; a summed
     // letter's blocks add into one destination, which only the first may scale.
-    T const    c_prefactor = (!rw.summed || loop == 0) ? as<T>(rw.c_prefactor) : T{1};
-    auto const text        = einsum_spec_text(rw.a, rw.b, rw.c, rw.conj_a, rw.conj_b, {});
-    einsum(EinsumFormatString(text), c_prefactor, &destination, as<T>(rw.ab_prefactor), a, b);
+    T const c_prefactor = (!rw.summed || loop == 0) ? as<T>(rw.c_prefactor) : T{1};
+    compute_graph::detail::einsum_parsed(einsum_spec(rw.a, rw.b, rw.c, rw.conj_a, rw.conj_b, {}), c_prefactor, &destination,
+                                         as<T>(rw.ab_prefactor), a, b);
 }
 
 /// Everything a streamed producer's loops are built from, copied out of the graph before the
@@ -357,8 +357,8 @@ void emit_write_body(Graph &body, WriteRewrite const &rw, AxisWalk const &walk, 
     auto       &slab_view = view_runtime(slab, std::vector<ViewAxis>(slab.rank(), ViewAxis::full()));
     auto const &a         = view_over<T>(rw.in_a, lo, hi);
     auto const &b         = view_over<T>(rw.in_b, lo, hi);
-    auto const  text      = einsum_spec_text(rw.a, rw.b, rw.c, rw.conj_a, rw.conj_b, {});
-    einsum(EinsumFormatString(text), T{0}, &slab_view, as<T>(rw.ab_prefactor), a, b);
+    compute_graph::detail::einsum_parsed(einsum_spec(rw.a, rw.b, rw.c, rw.conj_a, rw.conj_b, {}), T{0}, &slab_view, as<T>(rw.ab_prefactor),
+                                         a, b);
 
     // The write follows the loop with cursors of its own, as a read does in emit_body.
     auto       &ctx     = CaptureContext::current();

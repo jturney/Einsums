@@ -2144,11 +2144,12 @@ TEST_CASE("AxisTiling leaves a ladder that fits alone when nothing proves the ex
     require_close(problem.r2, want, static_cast<double>(problem.naux * problem.v));
 }
 
-TEST_CASE("AxisTiling spells a body from letters no spec may hold", "[ComputeGraph][Pass][AxisTiling]") {
+TEST_CASE("AxisTiling builds a body from letters no spec may hold", "[ComputeGraph][Pass][AxisTiling]") {
     // A pass that lowers its algebra builds nodes straight from the algebra's letters, which name
     // an elementwise op's axes by position ('#0') and a renamed summed letter '~0'. The body this
-    // pass emits spells each contraction as text, and the parser refused those letters: "output
-    // index '#0' has a non-letter character". The letters are renamed where they are spelled.
+    // pass emitted spelled each contraction as text for the capture to parse back, and the parser
+    // refused those letters: "output index '#0' has a non-letter character". The body now hands the
+    // capture the index lists themselves, so the letters never meet the parser.
     std::size_t const     n = 6;
     std::size_t const     k = 5;
     auto const            a = filled_as<double>("A", {n, k}, 3U);
