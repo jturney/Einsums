@@ -94,6 +94,13 @@ def _peak(arrs):
 
 
 def _np_step(arrs, s):
+    # Overflow is part of what this fuzzer draws (see the comparison below), so the oracle reaching
+    # inf is expected, not a warning.
+    with np.errstate(over="ignore"):
+        _np_step_unchecked(arrs, s)
+
+
+def _np_step_unchecked(arrs, s):
     k = s[0]
     if k == "gemm":
         # beta == 0 means C is NOT read, by the BLAS contract ("when beta is
