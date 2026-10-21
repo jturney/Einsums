@@ -24,6 +24,7 @@
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp>
+#include <Einsums/ComputeGraph/Passes/MemoryPlanning.hpp>
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/TensorIO/Backing.hpp>
@@ -366,11 +367,26 @@ TEST_CASE("Random programs over backed tensors replay correctly and hold no stre
         }
     }
 
+    auto const decisions = manager.decisions();
+
+    // The plan's peak is what the passes believe the program holds, and a budget is only as good as
+    // that belief: every pass that sizes a loop by what the budget leaves trusts it. MemoryPlanning
+    // predicts the replay's own count from the lifecycle nodes, so the two agree to the byte. They
+    // disagreed twice: the planned peak left out the arena, which is held whole, and FreeInsertion
+    // left any number of small buffers held that the plan took for freed.
+    {
+        auto const peak =
+            std::ranges::find_if(decisions, [](cg::Decision const &d) { return d.code == cg::passes::MemoryPlanning::Peak.code; });
+        REQUIRE(peak != decisions.end());
+        auto const managed = std::ranges::find_if(peak->facts, [](cg::Fact const &f) { return f.name == "managed_peak"; });
+        REQUIRE(managed != peak->facts.end());
+        CHECK(static_cast<double>(graph.last_run().peak_bytes) == managed->value);
+    }
+
     // Every whole read of a backed tensor over its share, unless SlabStreaming, the pass that decides
     // what is read a slab at a time, declined to stream it and named it, or a pass that reads an
     // operand whole said it held one beside a larger tensor streamed. A whole copy some other pass
     // makes where SlabStreaming never sees the tensor has neither.
-    auto const decisions = manager.decisions();
     auto const explained = [&](std::string const &name) {
         return std::ranges::any_of(decisions, [&](cg::Decision const &d) {
             bool const says = (d.kind == cg::DecisionKind::Declined && d.pass_name == "SlabStreaming") ||

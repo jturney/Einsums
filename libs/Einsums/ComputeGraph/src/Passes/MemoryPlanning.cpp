@@ -474,9 +474,55 @@ void plan_tree(Graph &graph, NoteSkip const &note, bool apply, bool repeats, siz
     }
 }
 
+/// The replay's own count of what the graph holds, kept the way the lifecycle nodes keep it: a
+/// Materialize counts its tensor when the tensor is not held already, a Free releases it, and a
+/// tensor no Free releases stays held into the next replay. An arena's nodes count nothing; the
+/// arena is counted whole.
+struct ManagedCount {
+    std::unordered_map<void const *, std::size_t> live;
+    std::size_t                                   now{0};
+    std::size_t                                   peak{0};
+
+    void replay(Graph &graph) {
+        for (auto &node : graph.nodes()) {
+            if ((node.kind == OpKind::Materialize || node.kind == OpKind::Free) && node.estimated_bytes != 0) {
+                auto const *desc   = node.op_data.get_if<AllocDescriptor>();
+                auto const *handle = desc != nullptr ? graph.find_tensor(graph.buffer_of(desc->tensor_id)) : nullptr;
+                if (handle != nullptr && handle->tensor_ptr != nullptr && handle->is_materialized_fn) {
+                    if (node.kind == OpKind::Materialize) {
+                        if (live.try_emplace(handle->tensor_ptr, handle->total_bytes()).second) {
+                            now += handle->total_bytes();
+                            peak = std::max(peak, now);
+                        }
+                    } else if (auto const it = live.find(handle->tensor_ptr); it != live.end()) {
+                        now -= it->second;
+                        live.erase(it);
+                    }
+                }
+            }
+            // A Setup body runs on the first replay only; the replay this models is a later one.
+            for_each_child_graph(node, [&](Graph &sub) { replay(sub); }, /*include_setup=*/false);
+        }
+    }
+};
+
+/// The most a replay holds of the tensors the graph allocates and frees, plus @p arena: what
+/// Graph::last_run reports as peak_bytes. A later replay, since the first begins with nothing held.
+std::size_t managed_peak(Graph &graph, std::size_t arena) {
+    ManagedCount first;
+    first.replay(graph);
+    ManagedCount steady;
+    steady.live = first.live;
+    steady.now  = first.now;
+    steady.peak = first.now;
+    steady.replay(graph);
+    return steady.peak + arena;
+}
+
 } // namespace
 
 void MemoryPlanning::reset_stats() {
+    _managed_peak_memory  = 0;
     _planned_arena_bytes  = 0;
     _num_planned          = 0;
     _planned_tensor_bytes = 0;
@@ -504,12 +550,15 @@ bool MemoryPlanning::transform(Graph &graph) {
     if (_apply_arena) {
         _peak_memory = std::max(_peak_memory, peak_with_arena);
     }
+    _managed_peak_memory = managed_peak(graph, _apply_arena ? _planned_arena_bytes : 0);
 
     note(Peak,
-         fmt::format("peak host memory {} bytes (of {} total allocated){}", _peak_memory, _total_memory,
+         fmt::format("peak host memory {} bytes (of {} total allocated), {} of them graph-managed as a replay holds them{}", _peak_memory,
+                     _total_memory, _managed_peak_memory,
                      _device_peak_memory > 0 ? fmt::format(", device peak {} bytes", _device_peak_memory) : std::string{}),
          Decision{.graph = graph.name(),
                   .facts = {Fact{.name = "peak", .value = static_cast<double>(_peak_memory), .unit = "B"},
+                            Fact{.name = "managed_peak", .value = static_cast<double>(_managed_peak_memory), .unit = "B"},
                             Fact{.name = "total", .value = static_cast<double>(_total_memory), .unit = "B"},
                             Fact{.name = "device_peak", .value = static_cast<double>(_device_peak_memory), .unit = "B"}}},
          1);

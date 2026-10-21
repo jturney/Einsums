@@ -214,7 +214,7 @@ From level two up, each pass narrates whether it changed anything and why it dec
     [PassManager] Reorder: no change (2 -> 2 nodes, 0.00 ms)
     [ScalingAnalysis] costed 1 contraction(s), total flops 2*?i*?j*?k
     [PassManager] StreamContractionFusion: no change (2 -> 2 nodes, 0.00 ms)
-    [MemoryPlanning] peak host memory 1280 bytes (of 1280 total allocated)
+    [MemoryPlanning] peak host memory 1280 bytes (of 1280 total allocated), 0 of them graph-managed as a replay holds them
 
 Most passes decline for a stated reason rather than silently.
 A pass that wants an annotation you have not supplied says so, which is usually faster than reading the pass source.

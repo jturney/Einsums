@@ -130,6 +130,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE APIARY_GETTER("total_memory") [[nodiscard]] size_t total_memory() const { return _total_memory; }
     APIARY_EXPOSE APIARY_GETTER("peak_memory") [[nodiscard]] size_t  peak_memory() const { return _peak_memory; }
 
+    /// The most a replay holds of the tensors the graph allocates and frees, plus an applied
+    /// arena: the quantity Graph::last_run reports as peak_bytes, predicted from the lifecycle
+    /// nodes in the order a replay runs them. @ref peak_memory also counts the caller's tensors
+    /// and assumes every tensor freed after its last use; this one counts what the replay does.
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE APIARY_GETTER("managed_peak_memory") [[nodiscard]] size_t managed_peak_memory() const { return _managed_peak_memory; }
+
     /// Device memory: total across all device-resident tensors.
     APIARY_EXPOSE APIARY_GETTER("device_total_memory") [[nodiscard]] size_t device_total_memory() const { return _device_total_memory; }
 
@@ -148,6 +155,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool   _apply_arena{true};
     size_t _total_memory{0};
     size_t _peak_memory{0};
+    size_t _managed_peak_memory{0};
     size_t _device_total_memory{0};
     size_t _device_peak_memory{0};
     size_t _planned_arena_bytes{0};

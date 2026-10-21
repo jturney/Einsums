@@ -462,6 +462,46 @@ TEST_CASE("MemoryPlanning - the peak counts an applied arena held whole", "[Comp
     CHECK(with >= without + arena);
 }
 
+TEST_CASE("MemoryPlanning - the managed peak is what the replay holds", "[ComputeGraph][Passes][Arena]") {
+    // managed_peak_memory predicts Graph::last_run().peak_bytes from the lifecycle nodes, an applied
+    // arena counted whole; the out-of-core fuzz holds it to the byte on programs that get no arena.
+    MaxMemory const budget(std::size_t{1} << 30);
+    for (bool const apply : {false, true}) {
+        CAPTURE(apply);
+        ArenaAtTheEnd program;
+        cg::Graph     graph("managed_peak");
+        program.capture(graph);
+        graph.apply<cg::passes::FreeInsertion>(std::size_t{0});
+        auto [modified, mp] = graph.apply<cg::passes::MemoryPlanning>(apply);
+        REQUIRE(mp.planned_arena_bytes() > 0);
+        graph.execute();
+        graph.execute();
+        CHECK(graph.last_run().peak_bytes == mp.managed_peak_memory());
+    }
+
+    SECTION("an intermediate freed before the next is allocated is not counted twice") {
+        constexpr std::size_t n   = 64;
+        auto                  A   = create_random_tensor<double>("A", n, n);
+        auto                  out = create_zero_tensor<double>("out", n, n);
+        cg::Graph             graph("sequential");
+        auto                 &X = graph.create_tensor<double, 2>("X", n, n);
+        auto                 &Y = graph.create_tensor<double, 2>("Y", n, n);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", &X, A, A);
+            cg::einsum("ik;kj->ij", &out, X, A); // X dies here
+            cg::einsum("ik;kj->ij", &Y, out, A);
+            cg::einsum("ik;kj->ij", &out, Y, A);
+        }
+        graph.apply<cg::passes::FreeInsertion>(std::size_t{0});
+        auto [modified, mp] = graph.apply<cg::passes::MemoryPlanning>(false);
+        graph.execute();
+        graph.execute();
+        CHECK(graph.last_run().peak_bytes == n * n * sizeof(double));
+        CHECK(graph.last_run().peak_bytes == mp.managed_peak_memory());
+    }
+}
+
 TEST_CASE("MemoryPlanning - an arena that holds the plan over the budget is declined", "[ComputeGraph][Passes][Arena]") {
     // With the arena the plan is over the budget, and without it the plan is lower: each
     // intermediate is then allocated and freed on its own.
