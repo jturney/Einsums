@@ -35,6 +35,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <set>
@@ -1710,47 +1711,104 @@ DeviceProfile const &pricing_profile() {
     return model.device(Target::CPU);
 }
 
+/// The arithmetic-only price of a contraction the packed engine has no plan for (a repeated or
+/// broadcast letter): its letters sorted into batch, M, N and K at the tile lengths @p length.
+double gemm_price(Graph const &graph, NodePlan const &op, EinsumIndexLists const &lists, std::vector<std::size_t> const &length,
+                  DeviceProfile const &profile) {
+    std::map<std::string, std::size_t> extent;
+    auto const                         learn = [&](std::vector<std::string> const &letters, SlotPlan const &slot) {
+        auto const &dims = graph.tensor(slot.tid).dims;
+        for (std::size_t p = 0; p < letters.size() && p < dims.size(); ++p) {
+            bool const sliced  = p < slot.labels.size() && slot.labels[p] != kFree;
+            extent[letters[p]] = sliced ? length[static_cast<std::size_t>(slot.labels[p])] : dims[p];
+        }
+    };
+    learn(lists.c, op.slots[0]);
+    learn(lists.a, op.slots[1]);
+    learn(lists.b, op.slots[2]);
+    auto const in = [](std::vector<std::string> const &letters, std::string const &l) {
+        return std::ranges::find(letters, l) != letters.end();
+    };
+    std::size_t m = 1, n = 1, k = 1, batch = 1;
+    for (auto const &[letter, e] : extent) {
+        bool const c = in(lists.c, letter), a = in(lists.a, letter), b = in(lists.b, letter);
+        if (a && b && c) {
+            batch *= e;
+        } else if (a && b) {
+            k *= e;
+        } else if (a) {
+            m *= e;
+        } else if (b) {
+            n *= e;
+        }
+    }
+    return static_cast<double>(batch) * profile.estimate_gemm_time_us(m, n, k);
+}
+
+/// One operand of a statement as a tile at the lengths @p length (one per sliced axis) reads it:
+/// its @p letters, the tile's extent at each position, and the strides the engine sees. A slice of
+/// a tensor keeps that tensor's strides. With @p dense set - an intermediate the body re-declares
+/// at slice extents, or the scratch tile a mirrored tile is computed into - the tile is its own
+/// buffer, laid out densely in the order of the tensor's strides.
+packed_gemm::OperandLayout tile_layout(Graph const &graph, SlotPlan const &slot, std::vector<std::string> const &letters,
+                                       std::vector<std::size_t> const &length, bool dense) {
+    auto const                &handle = graph.tensor(slot.tid);
+    packed_gemm::OperandLayout out;
+    out.indices = letters;
+    for (std::size_t p = 0; p < letters.size(); ++p) {
+        bool const sliced = p < slot.labels.size() && slot.labels[p] != kFree;
+        out.dims.push_back(static_cast<int64_t>(sliced ? length[static_cast<std::size_t>(slot.labels[p])] : handle.dims[p]));
+    }
+    bool const has_strides = handle.strides.size() == letters.size();
+    if (!dense && has_strides) {
+        for (std::size_t const s : handle.strides) {
+            out.strides.push_back(static_cast<int64_t>(s));
+        }
+        return out;
+    }
+    std::vector<std::size_t> order(letters.size());
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    if (has_strides) {
+        std::ranges::stable_sort(order, {}, [&](std::size_t p) { return handle.strides[p]; });
+    }
+    out.strides.assign(letters.size(), 0);
+    int64_t step = 1;
+    for (std::size_t const p : order) {
+        out.strides[p] = step;
+        step *= out.dims[p];
+    }
+    return out;
+}
+
 /// What the cost model says one run of @p plan's statements costs at the tile shape @p length
 /// (one entry per sliced axis), in its microseconds, plus the mirror's two passes over a scratch
 /// tile when @p mirror is set.
-double tile_price(Graph const &graph, Plan const &plan, std::vector<std::size_t> const &length, bool mirror) {
-    auto const &profile = pricing_profile();
-    double      total   = 0.0;
+///
+/// Each contraction is priced as the engine would run it on the tile's own layout: a tile whose
+/// output interleaves its operands' letters is scattered in runs its block sets, and its operands
+/// are packed once per tile, so a small block pays for more than its arithmetic.
+double tile_price(Graph const &graph, Plan const &plan, std::vector<std::size_t> const &length, bool mirror, DeviceProfile const &profile) {
+    double     total = 0.0;
+    auto const owned = [&](TensorId tid) {
+        return std::ranges::any_of(plan.body_owned, [&](auto const &entry) { return entry.first == tid; });
+    };
     for (std::size_t o = 0; o < plan.ops.size(); ++o) {
         auto const &op = plan.ops[o];
         if (op.kind != OpKind::Einsum) {
             continue;
         }
-        auto const                         lists = live_index_lists(op.op_data.get<EinsumDescriptor>());
-        std::map<std::string, std::size_t> extent;
-        auto const                         learn = [&](std::vector<std::string> const &letters, SlotPlan const &slot) {
-            auto const &dims = graph.tensor(slot.tid).dims;
-            for (std::size_t p = 0; p < letters.size() && p < dims.size(); ++p) {
-                bool const sliced  = p < slot.labels.size() && slot.labels[p] != kFree;
-                extent[letters[p]] = sliced ? length[static_cast<std::size_t>(slot.labels[p])] : dims[p];
-            }
-        };
-        learn(lists.c, op.slots[0]);
-        learn(lists.a, op.slots[1]);
-        learn(lists.b, op.slots[2]);
-        auto const in = [](std::vector<std::string> const &letters, std::string const &l) {
-            return std::ranges::find(letters, l) != letters.end();
-        };
-        std::size_t m = 1, n = 1, k = 1, batch = 1;
-        for (auto const &[letter, e] : extent) {
-            bool const c = in(lists.c, letter), a = in(lists.a, letter), b = in(lists.b, letter);
-            if (a && b && c) {
-                batch *= e;
-            } else if (a && b) {
-                k *= e;
-            } else if (a) {
-                m *= e;
-            } else if (b) {
-                n *= e;
-            }
+        auto const lists   = live_index_lists(op.op_data.get<EinsumDescriptor>());
+        bool const scratch = mirror && plan.triangle.has_value() && o == plan.triangle->writer;
+        auto const shape =
+            packed_gemm::describe_packed_contraction(tile_layout(graph, op.slots[0], lists.c, length, scratch || owned(op.slots[0].tid)),
+                                                     tile_layout(graph, op.slots[1], lists.a, length, owned(op.slots[1].tid)),
+                                                     tile_layout(graph, op.slots[2], lists.b, length, owned(op.slots[2].tid)), plan.dtype);
+        if (shape.valid) {
+            total += profile.estimate_contraction_time_us(shape, 1, graph.tensor(op.slots[0].tid).element_size);
+        } else {
+            total += gemm_price(graph, op, lists, length, profile);
         }
-        total += static_cast<double>(batch) * profile.estimate_gemm_time_us(m, n, k);
-        if (mirror && plan.triangle.has_value() && o == plan.triangle->writer) {
+        if (scratch) {
             std::size_t elements = 1;
             auto const &dims     = graph.tensor(op.slots[0].tid).dims;
             for (std::size_t p = 0; p < dims.size(); ++p) {
@@ -2666,6 +2724,13 @@ std::optional<std::size_t> gather_site(std::vector<NodeIo> const &io, std::vecto
 
 } // namespace
 
+AxisTiling::AxisTiling(CostModel cost_model) : _cost_model(std::move(cost_model)) {
+}
+
+DeviceProfile const &AxisTiling::pricing() const {
+    return _cost_model.has_value() ? _cost_model->device(Target::CPU) : pricing_profile();
+}
+
 bool AxisTiling::transform(Graph &graph) {
     bool const moved = tile_graph(graph);
 
@@ -3275,7 +3340,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                     double price     = 0.0;
                     for (auto const &loop : triangle_loops(extent, b)) {
                         price += static_cast<double>(loop.table.size()) *
-                                 tile_price(graph, candidate, {loop.walks[0].length, loop.walks[1].length}, loop.mirror);
+                                 tile_price(graph, candidate, {loop.walks[0].length, loop.walks[1].length}, loop.mirror, pricing());
                     }
                     if (!chosen.has_value() || price < candidate.price_us) {
                         chosen                  = b;
@@ -3286,7 +3351,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
                 }
                 // A region with nothing to stream is tiled for the triangle alone, so the triangle
                 // has to beat the region run whole, one tile of the full extents.
-                double const whole = allowance.triangle_only ? tile_price(graph, plan, {extent, extent}, false) : 0.0;
+                double const whole = allowance.triangle_only ? tile_price(graph, plan, {extent, extent}, false, pricing()) : 0.0;
                 if (!chosen.has_value()) {
                     note_skip(_block_pin > 0 ? BlockPinned : TriangleFit, detail);
                 } else if (allowance.triangle_only && candidate.price_us >= whole) {

@@ -2130,6 +2130,73 @@ TEST_CASE("AxisTiling leaves a ladder that fits alone when its triangle does not
     require_close(problem.r2, want, static_cast<double>(problem.naux * problem.v));
 }
 
+TEST_CASE("AxisTiling picks its triangle block from what the tile's layout costs", "[ComputeGraph][Pass][AxisTiling][Triangle]") {
+    // The CCSD particle ladder over pairs of virtuals: W(a,b,e,f) = B(Q,a,e) B(Q,b,f), then
+    // r2(i,j,a,b) += tau(i,j,e,f) W(a,b,e,f). W is symmetric under (a,e) <-> (b,f) and tau is
+    // declared so, so the pair (a,b) runs as a triangle. Each tile's W interleaves B's letters, so
+    // the engine scatters it in runs of block x block elements.
+    //
+    // The pass priced tiles by their arithmetic alone, at a rate that was flat across every block
+    // it could pick, and the only difference left was the triangle's redundant diagonal: the
+    // smallest block won however slowly its short runs wrote. Priced against two hand-built
+    // profiles, the choice must follow the scatter's cost: the smallest block when it is flat,
+    // a larger one when short runs are dear.
+    constexpr std::size_t o = 2, v = 12, naux = 6;
+    auto const            bvv = filled_as<double>("Bvv", {naux, v, v}, 11U);
+    auto const            raw = filled_as<double>("raw", {o, o, v, v}, 13U);
+    RuntimeTensor<double> tau("Tau", std::vector<std::size_t>{o, o, v, v});
+    for (std::size_t i = 0; i < o; ++i)
+        for (std::size_t j = 0; j < o; ++j)
+            for (std::size_t e = 0; e < v; ++e)
+                for (std::size_t f = 0; f < v; ++f)
+                    tau(i, j, e, f) = raw(i, j, e, f) + raw(j, i, f, e);
+    tau.set_symmetry(SymmetryDescriptor{{SymmetryOp::group_swap({0, 2}, {1, 3})}});
+    RuntimeTensor<double> const r2_start = filled_as<double>("r2", {o, o, v, v}, 17U);
+
+    RuntimeTensor<double> want = r2_start;
+    {
+        RuntimeTensor<double> w_ref("Wref", std::vector<std::size_t>{v, v, v, v});
+        testing::reference_einsum("a,b,e,f <- Q,a,e ; Q,b,f", &w_ref, bvv, bvv);
+        testing::reference_einsum("i,j,a,b <- i,j,e,f ; a,b,e,f", 1.0, &want, 1.0, tau, w_ref);
+    }
+
+    // Arithmetic at one rate whatever the shape, nothing for a kernel call or a packed panel, and
+    // memory too fast to matter: only the scatter separates the blocks.
+    auto const profile = [](std::vector<cg::RunCostPoint> scatter) {
+        cg::CostModel model;
+        model.cpu.gemm_efficiency           = {{.M = 64, .N = 64, .K = 64, .gflops = 50.0}};
+        model.cpu.kernel_launch_overhead_us = 0.0;
+        model.cpu.mem_bandwidth_gbps        = 1e6;
+        model.cpu.scatter_cost              = std::move(scatter);
+        return model;
+    };
+    auto const tile = [&](cg::CostModel model) {
+        RuntimeTensor<double> r2 = r2_start;
+        cg::Graph             graph("pair_ladder");
+        {
+            auto                  &w = graph.scratch_runtime<double>("W", std::vector<std::size_t>{v, v, v, v});
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("a,b,e,f <- Q,a,e ; Q,b,f", &w, bvv, bvv);
+            cg::einsum("i,j,a,b <- i,j,e,f ; a,b,e,f", 1.0, &r2, 1.0, tau, w);
+        }
+        auto tiling = std::make_shared<cg::passes::AxisTiling>(std::move(model));
+        tiling->set_memory_cap(std::int64_t{1} << 40);
+        cg::apply_single_pass(*tiling, graph);
+        REQUIRE(tiling->num_tiled() == 1);
+        REQUIRE(tiling->emission() == "triangle");
+        materialize_and_execute(graph);
+        require_close(r2, want, static_cast<double>(naux * v));
+        return tiling->block_extents().front();
+    };
+
+    std::int64_t const flat = tile(profile({{.run = 1, .ns_per_element = 1.0}, {.run = 1024, .ns_per_element = 1.0}}));
+    // A tile of block b writes W in runs of b x b and r2 in runs of o x o x b: free from 24 up,
+    // so blocks of 6 write both for nothing while blocks of 2 pay 20 ns an element.
+    std::int64_t const steep = tile(profile({{.run = 4, .ns_per_element = 20.0}, {.run = 24, .ns_per_element = 0.0}}));
+    CHECK(flat == 2);
+    CHECK(steep > flat);
+}
+
 TEST_CASE("AxisTiling leaves a ladder that fits alone when nothing proves the exchange", "[ComputeGraph][Pass][AxisTiling][Triangle]") {
     LadderProblem<double> problem(8, 0, 16, 32);
     auto const            want = problem.expected(1.0);

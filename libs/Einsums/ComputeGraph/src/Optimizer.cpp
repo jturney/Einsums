@@ -1302,7 +1302,7 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_builtin_default_p
     // it emits. Self-gating on memory: under its default cap it declines before reading a node
     // unless the graph's tensors together exceed --einsums:max-memory, which is the case where
     // the captured schedule would not run at all.
-    list.push_back(std::make_shared<passes::AxisTiling>());
+    list.push_back(std::make_shared<passes::AxisTiling>(cost_model));
     // After AxisTiling, so a contraction it placed in a block loop is streamed there too: each
     // contraction that reads a backed tensor too large for its share of the budget reads it a slab
     // at a time. Before Materialization, which then never allocates a backed tensor no node reads

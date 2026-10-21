@@ -139,6 +139,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
@@ -146,6 +147,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -221,6 +223,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief Default-construct, reading the cap from @ref option::GraphTilingMemoryCap.
     APIARY_EXPOSE AxisTiling() = default;
+
+    /// @brief Price triangles against @p cost_model instead of the detected machine's.
+    ///
+    /// populate_default() passes the profile it shares with the other cost-model passes, so every
+    /// planning decision is made against one machine.
+    explicit AxisTiling(CostModel cost_model);
 
     /// @copydoc OptimizerPass::name
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string name() const override { return "AxisTiling"; }
@@ -428,9 +436,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return The total in bytes.
     [[nodiscard]] std::size_t footprint(Graph const &graph) const;
 
+    /// @brief The profile triangles are priced against: the supplied one, else the detected machine's.
+    [[nodiscard]] DeviceProfile const &pricing() const;
+
     std::int64_t _memory_cap{0};
     bool         _cap_explicit{false};
     std::int64_t _block_pin{0};
+
+    std::optional<CostModel> _cost_model;
 
     std::size_t               _num_tiled{0};
     std::size_t               _slice_count{0};

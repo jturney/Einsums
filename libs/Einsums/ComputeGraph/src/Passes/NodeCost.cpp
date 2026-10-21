@@ -16,7 +16,9 @@
 #include <cmath>
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <unordered_set>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
@@ -246,6 +248,42 @@ GemmShape gemm_shape_of(Graph const &graph, Node const &node) {
     return {.m = side, .n = side, .k = k};
 }
 
+/// An einsum priced as the packed engine would run it on its operands' own layouts (see
+/// DeviceProfile::estimate_contraction_time_us), or empty when it is not a two-operand einsum, a
+/// handle does not describe its layout, or the engine has no plan for it.
+std::optional<double> contraction_us(Graph const &graph, Node const &node, DeviceProfile const &profile) {
+    auto const *ein      = node.op_data.get_if<EinsumDescriptor>();
+    auto const  operands = operand_inputs(node);
+    if (ein == nullptr || operands.size() != 2 || node.outputs.size() != 1) {
+        return std::nullopt;
+    }
+    auto const lists  = live_index_lists(*ein);
+    auto const layout = [&](TensorId tid, std::vector<std::string> const &letters) -> std::optional<packed_gemm::OperandLayout> {
+        auto const *handle = graph.find_tensor(tid);
+        if (handle == nullptr || handle->dims.size() != letters.size() || handle->strides.size() != letters.size()) {
+            return std::nullopt;
+        }
+        packed_gemm::OperandLayout out{.indices = letters};
+        for (std::size_t p = 0; p < letters.size(); ++p) {
+            out.dims.push_back(static_cast<int64_t>(handle->dims[p]));
+            out.strides.push_back(static_cast<int64_t>(handle->strides[p]));
+        }
+        return out;
+    };
+    auto const c = layout(node.outputs[0], lists.c);
+    auto const a = layout(operands[0], lists.a);
+    auto const b = layout(operands[1], lists.b);
+    if (!c || !a || !b) {
+        return std::nullopt;
+    }
+    auto const *out   = graph.find_tensor(node.outputs[0]);
+    auto const  shape = packed_gemm::describe_packed_contraction(*c, *a, *b, out->dtype);
+    if (!shape.valid) {
+        return std::nullopt;
+    }
+    return profile.estimate_contraction_time_us(shape, 1, out->element_size);
+}
+
 /// The GEMM curve for a contraction of @p flops, as family_for picks it.
 KernelFamily gemm_family(double flops) {
     return flops < DeviceProfile::kGemmSmallFlops ? KernelFamily::GemmSmall : KernelFamily::GemmLarge;
@@ -300,8 +338,12 @@ ModelledCost model_cost(Graph const &graph, Node const &node, DeviceProfile cons
         // Priced by the body it runs, which only the planner walking it can do.
         break;
     case KindClass::Gemm:
-        cost.t1_us = shape.valid() ? profile.estimate_gemm_time_us(shape.m, shape.n, shape.k, 1)
-                                   : (bytes > 0 ? profile.estimate_memory_time_us(bytes, 1) : 0.0);
+        if (auto const contraction = contraction_us(graph, node, profile)) {
+            cost.t1_us = *contraction;
+        } else {
+            cost.t1_us = shape.valid() ? profile.estimate_gemm_time_us(shape.m, shape.n, shape.k, 1)
+                                       : (bytes > 0 ? profile.estimate_memory_time_us(bytes, 1) : 0.0);
+        }
         break;
     case KindClass::BatchedGemm:
         // A batch is arithmetic, not traffic. Pricing it as the bytes it
