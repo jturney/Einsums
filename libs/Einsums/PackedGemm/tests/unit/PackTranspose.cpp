@@ -17,6 +17,7 @@
 #include <complex>
 #include <cstdint>
 #include <random>
+#include <type_traits>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -88,4 +89,94 @@ TEMPLATE_TEST_CASE("pack transpose is absent for the complex types", "[packed_ge
     // pack_A keeps the scalar copy when the entry is null; complex has no
     // per-rung transpose, and must not resolve to a real one by accident.
     REQUIRE(pack_transpose_entry<TestType>() == nullptr);
+}
+
+namespace {
+
+/// A rank-2 operand at arbitrary strides, read through the same (row, k) pair a panel definition uses.
+template <typename T>
+struct StridedOperand2 {
+    int64_t        rows, k, row_stride, k_stride;
+    std::vector<T> data;
+    StridedOperand2(int64_t r, int64_t kk, int64_t rs, int64_t ks, std::mt19937 &rng) : rows{r}, k{kk}, row_stride{rs}, k_stride{ks} {
+        data.resize(static_cast<size_t>((r - 1) * rs + (kk - 1) * ks + 1));
+        std::uniform_real_distribution<double> dist(-1.0, 1.0);
+        for (auto &x : data) {
+            if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
+                x = T(static_cast<typename T::value_type>(dist(rng)), static_cast<typename T::value_type>(dist(rng)));
+            } else {
+                x = static_cast<T>(dist(rng));
+            }
+        }
+    }
+    [[nodiscard]] T at(int64_t r, int64_t kk, bool conj) const {
+        T v = data[static_cast<size_t>(r * row_stride + kk * k_stride)];
+        if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
+            if (conj) {
+                v = std::conj(v);
+            }
+        }
+        return v;
+    }
+};
+
+/// The one-index plan pack_A reads: M at position 0, K at position 1, with the operand's strides.
+PackingPlan one_index_plan(int64_t rows, int64_t k, int64_t row_stride, int64_t k_stride) {
+    PackingPlan plan;
+    plan.valid       = true;
+    plan.m_dims      = {{.tensor_pos = 0, .size = rows, .tensor_stride = row_stride}};
+    plan.n_dims      = plan.m_dims;
+    plan.k_dims_in_a = {{.tensor_pos = 1, .size = k, .tensor_stride = k_stride}};
+    plan.k_dims_in_b = plan.k_dims_in_a;
+    plan.M_total = plan.N_total = rows;
+    plan.K_total                = k;
+    return plan;
+}
+
+} // namespace
+
+TEMPLATE_TEST_CASE("pack_A and pack_B write the panels their layout defines", "[packed_gemm][pack]", float, double, std::complex<double>) {
+    // A panel holds R rows of the operand by kc_len of K, panel p at p * R * kc_len, element
+    // (i, k) at i + k * R, zero past the last row. The single-index fast paths used to handle
+    // every one-index layout themselves, a scalar gather for the strided ones, writing the panels
+    // k by k: R * kc_len elements apart, a power-of-two stride whenever kc_len is a power of two,
+    // where those writes collided in the cache and pack_A ran 5.5x and pack_B 1.9x slower. They now
+    // keep only the unit-stride copy, panel by panel, and every other layout - a contiguous K, both
+    // strided, conjugated - takes the general path. Every layout is checked against the definition.
+    using T = TestType;
+    std::mt19937 rng(20261021U);
+    struct Layout {
+        int64_t     rows, k, row_stride, k_stride;
+        char const *what;
+    };
+    for (Layout const layout :
+         {Layout{37, 29, 1, 37, "rows contiguous"}, Layout{37, 29, 29, 1, "K contiguous"}, Layout{37, 29, 2, 2 * 37 + 3, "both strided"},
+          Layout{64, 128, 1, 64, "rows contiguous, power-of-two K stride"},
+          Layout{64, 128, 128, 1, "K contiguous, power-of-two row stride"}}) {
+        StridedOperand2<T> const op(layout.rows, layout.k, layout.row_stride, layout.k_stride, rng);
+        PackingPlan const        plan = one_index_plan(layout.rows, layout.k, layout.row_stride, layout.k_stride);
+        for (int const R : {6, 16}) {
+            for (bool const conj : {false, true}) {
+                CAPTURE(layout.what, R, conj);
+                int64_t const        row_start = 3, row_len = layout.rows - 3, k_start = 2, k_len = layout.k - 2;
+                int64_t const        panels = (row_len + R - 1) / R;
+                std::vector<T> const fill(static_cast<size_t>(panels * R * k_len), T{9});
+                auto                 a_panels = fill;
+                auto                 b_panels = fill;
+                pack_A(a_panels.data(), op.data.data(), plan, row_start, row_len, k_start, k_len, R, conj);
+                pack_B(b_panels.data(), op.data.data(), plan, k_start, k_len, row_start, row_len, R, conj);
+                for (int64_t p = 0; p < panels; ++p) {
+                    for (int64_t kk = 0; kk < k_len; ++kk) {
+                        for (int64_t i = 0; i < R; ++i) {
+                            int64_t const row  = p * R + i;
+                            T const       want = row < row_len ? op.at(row_start + row, k_start + kk, conj) : T{};
+                            auto const    at   = static_cast<size_t>(p * R * k_len + kk * R + i);
+                            REQUIRE(a_panels[at] == want);
+                            REQUIRE(b_panels[at] == want);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

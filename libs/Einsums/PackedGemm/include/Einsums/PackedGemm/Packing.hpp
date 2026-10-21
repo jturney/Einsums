@@ -1024,36 +1024,21 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
         int64_t const k_stride = k_dims[0].tensor_stride;
 
         if (m_stride == 1 && !conj) {
-            for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
-                T const *src = A_data + mc_start + (kc_start + k_local) * k_stride;
-                for (int64_t p = 0; p < full_panels; ++p) {
-                    std::memcpy(Ap + p * MR * kc_len + k_local * MR, src + p * MR, static_cast<size_t>(MR) * sizeof(T));
+            T const *src = A_data + mc_start + kc_start * k_stride;
+            for (int64_t p = 0; p < full_panels; ++p) {
+                T *panel = Ap + p * MR * kc_len;
+                for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+                    std::memcpy(panel + k_local * MR, src + k_local * k_stride + p * MR, static_cast<size_t>(MR) * sizeof(T));
                 }
-                if (tail > 0) {
-                    std::memcpy(Ap + full_panels * MR * kc_len + k_local * MR, src + full_panels * MR,
-                                static_cast<size_t>(tail) * sizeof(T));
+            }
+            if (tail > 0) {
+                T *panel = Ap + full_panels * MR * kc_len;
+                for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+                    std::memcpy(panel + k_local * MR, src + k_local * k_stride + full_panels * MR, static_cast<size_t>(tail) * sizeof(T));
                 }
             }
             return;
         }
-
-        for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
-            int64_t const k_offset = (kc_start + k_local) * k_stride;
-            T const      *src      = A_data + k_offset + mc_start * m_stride;
-            for (int64_t p = 0; p < num_panels; ++p) {
-                int64_t const panel_len = (p < full_panels) ? MR : tail;
-                T            *dst       = Ap + p * MR * kc_len + k_local * MR;
-                for (int64_t i = 0; i < panel_len; ++i) {
-                    T val = src[(p * MR + i) * m_stride];
-                    if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
-                        if (conj)
-                            val = std::conj(val);
-                    }
-                    dst[i] = val;
-                }
-            }
-        }
-        return;
     }
 
     // --- General path: precompute K offsets (multi-K or single-K) ---
@@ -1343,23 +1328,6 @@ void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, i
             }
             return;
         }
-
-        for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
-            int64_t const k_offset = (kc_start + k_local) * k_stride;
-            for (int64_t p = 0; p < num_panels; ++p) {
-                int64_t const panel_len = (p < full_panels) ? static_cast<int64_t>(NR) : tail;
-                T            *dst       = Bp + p * kc_len * NR + k_local * NR;
-                for (int64_t j = 0; j < panel_len; ++j) {
-                    T val = B_data[k_offset + (nc_start + p * NR + j) * n_stride];
-                    if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
-                        if (conj)
-                            val = std::conj(val);
-                    }
-                    dst[j] = val;
-                }
-            }
-        }
-        return;
     }
 
     // --- General path: precompute K offsets ---
