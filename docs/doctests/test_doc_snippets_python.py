@@ -163,7 +163,12 @@ def test_scratch_result_is_pruned_and_reported(ab):
     g.optimize()
     g.execute()
 
-    assert np.allclose(np.asarray(c), 0.0)
+    # The graph may have freed C or reused its memory, so a read from Python is refused and names
+    # the remedy rather than handing back whatever the buffer held.
+    with pytest.raises(BufferError) as refused:
+        np.asarray(c)
+    assert "tensor 'C' is an intermediate of graph 'scratch_result'" in str(refused.value.__cause__)
+    assert "intermediate=False" in str(refused.value.__cause__)
     assert "'C'" in g.explain
     assert "intermediate=false" in g.explain
 

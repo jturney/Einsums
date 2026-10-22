@@ -805,9 +805,9 @@ as many times as you like, paying the analysis once.
 
 The tensors the graph creates for you need one piece of information you have to supply:
 ``intermediate=false`` says ``C`` is an answer rather than scratch. Without it the optimizer will
-notice that nothing inside the graph reads ``C``, remove the contraction that fills it, and leave
-you reading whatever the buffer held. It is the one mistake on this page that produces no error
-message, which is why it is worth meeting now.
+notice that nothing inside the graph reads ``C`` and remove the contraction that fills it. Python
+refuses to read ``C`` after ``execute()`` and names the remedy, but C++ element access is not
+checked and hands back whatever the buffer held, which is why the mistake is worth meeting now.
 
 Capture when the work repeats. A single contraction gains nothing from being recorded, and an
 iteration gains most of what the library has to offer.
