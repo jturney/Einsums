@@ -171,16 +171,17 @@ if(EINSUMS_WITH_DEPRECATION_WARNINGS)
   einsums_add_config_cond_define(EINSUMS_HAVE_DEPRECATION_WARNINGS 1)
 endif()
 
-# Ultimately this will be something different
-set(DEFAULT_MALLOC "system")
-einsums_option(
-  EINSUMS_WITH_MALLOC
-  STRING
-  "Define which allocator should be linked in. Options are: system and mimalloc. (default: ${DEFAULT_MALLOC})"
-  ${DEFAULT_MALLOC}
-  STRINGS "system;mimalloc"
-  CATEGORY "Build Targets" ADVANCED
-)
+# EINSUMS_WITH_MALLOC=mimalloc was meant to redirect the process's global allocator, and never
+# did: nothing linked the target it chose. A configure that asks for it is told so. "system", the
+# old default, is what every build already got, and an existing cache holds it harmlessly.
+if(EINSUMS_WITH_MALLOC STREQUAL "mimalloc")
+  message(
+    FATAL_ERROR
+      "EINSUMS_WITH_MALLOC has been removed: it never redirected the global allocator. Einsums' own "
+      "allocations always use mimalloc. Drop the option, or clear it from an existing cache with "
+      "`cmake -U EINSUMS_WITH_MALLOC`."
+  )
+endif()
 
 # Compiler related build options
 einsums_option(

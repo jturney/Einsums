@@ -18,7 +18,7 @@ A name counts as defined when it appears
     a feature test's ``DEFINITIONS``, and every other way the build emits one),
   - in a ``#define`` or ``#cmakedefine`` in a tracked source, or
   - under a prefix CMake completes from a variable, as in
-    ``EINSUMS_HAVE_MALLOC_${...}``.
+    ``EINSUMS_HAVE_MODULE_${...}``.
 
 Scans every tracked file, like the other devtools checks. Run with no arguments
 from anywhere in the repo.

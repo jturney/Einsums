@@ -149,9 +149,6 @@ constexpr std::uint64_t fnv1a_value(std::uint64_t v, std::uint64_t h) noexcept {
 #if defined(EINSUMS_HAVE_MPS)
     h = detail::fnv1a("MPS", h);
 #endif
-#if defined(EINSUMS_HAVE_MALLOC)
-    h = detail::fnv1a(EINSUMS_HAVE_MALLOC, h);
-#endif
 #if defined(EINSUMS_HAVE_CXX17_ALIGNED_NEW)
     h = detail::fnv1a("CXX17_ALIGNED_NEW", h);
 #endif
