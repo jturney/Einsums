@@ -4,13 +4,16 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/TensorBacking.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -895,6 +898,55 @@ TEST_CASE("TransferInsertion - residency updated on TensorHandle", "[ComputeGrap
             found_non_host = true;
     }
     CHECK(found_non_host);
+}
+
+TEST_CASE("TransferInsertion - uploading a backed input leaves the graph valid", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
+    // A backed input is read-only to the graph, and Graph::verify reports a node that writes one. A
+    // HostToDevice lists its tensor as an output, but what it writes is the device copy; the host
+    // copy the backing fills is unchanged. Verify used to count it as a write, so the CCSD examples
+    // that read their integrals from a file stopped at TransferInsertion under --einsums:pass:verify
+    // whenever a node reading them was placed on the device.
+    constexpr std::size_t n = 16;
+    RuntimeTensor<float>  source("B", std::vector<std::size_t>{n, n});
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        source.data()[i] = static_cast<float>(i % 7) - 3.0F;
+    }
+    RuntimeTensor<float> A("A", std::vector<std::size_t>{n, n});
+    RuntimeTensor<float> C("C", std::vector<std::size_t>{n, n});
+    A.zero();
+    C.zero();
+
+    cg::Graph graph("backed-upload");
+    auto     &B = graph.declare_runtime_tensor<float>("B", {n, n});
+    {
+        cg::TensorBacking backing;
+        backing.kind      = "gpu_test.memory";
+        backing.location  = {{"name", "B"}};
+        backing.dims      = {n, n};
+        backing.dtype     = packed_gemm::ScalarType::Float32;
+        backing.read_slab = [&source](void *destination, std::vector<std::pair<std::size_t, std::size_t>> const &) {
+            std::memcpy(destination, source.data(), source.size() * sizeof(float));
+        };
+        graph.annotate_backing(B, std::move(backing));
+    }
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+    }
+    REQUIRE(graph.verify().empty());
+
+    // Placed by hand, so the case does not depend on what GPUPlacement's cost model offloads.
+    for (auto &node : graph.nodes()) {
+        if (node.kind == cg::OpKind::Einsum) {
+            node.target = cg::Target::GPU;
+        }
+    }
+    auto [modified, pass] = graph.apply<cg::passes::TransferInsertion>();
+    REQUIRE(modified);
+    auto const tc = count_transfers(graph.nodes());
+    REQUIRE(tc.h2d_per_tensor.count(graph.find_tensor_id_by_ptr(&B)) == 1);
+    CHECK(graph.verify().empty());
 }
 
 // ===========================================================================

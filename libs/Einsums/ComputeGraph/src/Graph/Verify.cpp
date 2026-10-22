@@ -186,9 +186,11 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
         // input file that is the protection against overwriting it by mistake. Its own lifecycle
         // (the Materialize and the Initialize that fills it) is the one writer allowed. A View
         // writes nothing: its output is an alias, and a node that writes THROUGH the alias is
-        // caught here, since the alias resolves to the backed buffer underneath it. A WRITE
-        // backing names a tensor the graph produces, so its writers are expected.
-        if (!backed.empty() && !is_lifecycle(node.kind) && node.kind != OpKind::View) {
+        // caught here, since the alias resolves to the backed buffer underneath it. A HostToDevice
+        // writes nothing either: it fills the tensor's device copy and leaves the host copy the
+        // backing loaded as it was. A WRITE backing names a tensor the graph produces, so its
+        // writers are expected.
+        if (!backed.empty() && !is_lifecycle(node.kind) && node.kind != OpKind::View && node.kind != OpKind::HostToDevice) {
             for (TensorId const id : node.outputs) {
                 TensorHandle const *handle = graph.find_tensor(graph.buffer_of(id));
                 if (handle == nullptr || handle->tensor_ptr == nullptr) {
