@@ -666,7 +666,7 @@ def test_tiled_operands_are_never_gpu_placed(dtype):
     placed. GPUPlacement no longer places `dot` at all, so the dot below is now
     kept on the CPU by the dispatchable-kind gate as well as by the tiled guard. It went unnoticed because gpu::has_unified_memory makes the
     transfers no-ops on Apple Silicon and on the mock backend; a discrete
-    CUDA/HIP build would memcpy from nullptr.
+    CUDA build would memcpy from nullptr.
 
     float32 on purpose: the MPS backend's backend_supports_dtype accepts Float32
     ONLY, so a float64 graph is rejected at the dtype gate and would pass this

@@ -16,7 +16,7 @@ EINSUMS_NAMESPACE_BEGIN(gpu::solver)
 
 // ===========================================================================
 // GPU LAPACK operations.
-// CUDA: cuSOLVER, HIP: hipSOLVER, Mock: delegates to CPU LAPACK
+// CUDA: cuSOLVER, Mock: delegates to CPU LAPACK
 // ===========================================================================
 
 // --- Symmetric/Hermitian eigenvalue decomposition ---

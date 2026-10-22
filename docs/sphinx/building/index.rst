@@ -109,9 +109,8 @@ other system-level dependencies to build it on your system.
     * For the Fourier Transform abilities, you will need either `FFTW3 <https://www.fftw.org>`__
       or MKL.
 
-    * CUDA (cudart, cuBLAS, cuSolver) or HIP for GPU support. With conda, add
+    * CUDA (cudart, cuBLAS, cuSolver) for GPU support. With conda, add
       ``--gpu cuda`` to the merge script rather than installing a system toolkit.
-      HIP can also target Nvidia hardware, in which case CUDA is required too.
 
     * pybind11 for the Python extension module.
 
@@ -160,7 +159,7 @@ Then you will want to do the following:
 3. Build Einsums.
 
 To create an ``einsums-dev`` development environment with every required and
-optional dependency installed, except for HIP, perform the operations in the previous section.
+optional dependency installed, perform the operations in the previous section.
 
 To build Einsums in an activated development environment, run::
 

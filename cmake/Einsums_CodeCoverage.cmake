@@ -11,16 +11,12 @@ function(einsums_append_coverage_compiler_flags_to_target name private_interface
       ${private_interface}
       $<$<COMPILE_LANG_AND_ID:CXX,AppleClang,Clang,IntelLLVM>:-fprofile-instr-generate
       -fcoverage-mapping>
-      $<$<COMPILE_LANGUAGE:HIP>:-fprofile-instr-generate
-      -fcoverage-mapping>
       $<$<COMPILE_LANG_AND_ID:CXX,GNU>:--coverage>
     )
     target_link_options(
       ${name}
       ${private_interface}
       $<$<COMPILE_LANG_AND_ID:CXX,AppleClang,Clang,IntelLLVM>:-fprofile-instr-generate
-      -fcoverage-mapping>
-      $<$<COMPILE_LANGUAGE:HIP>:-fprofile-instr-generate
       -fcoverage-mapping>
       $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-lgcov
       --coverage>

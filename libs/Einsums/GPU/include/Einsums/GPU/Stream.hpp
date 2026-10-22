@@ -15,10 +15,6 @@
 #    include <cublas_v2.h>
 #    include <cuda_runtime_api.h>
 #    include <cusolverDn.h>
-#elif defined(EINSUMS_HAVE_HIP)
-#    include <hip/hip_runtime_api.h>
-#    include <hipblas/hipblas.h>
-#    include <hipsolver/hipsolver.h>
 #endif
 
 EINSUMS_NAMESPACE_BEGIN(gpu)
@@ -33,11 +29,6 @@ using stream_t        = cudaStream_t;
 using blas_handle_t   = cublasHandle_t;
 using solver_handle_t = cusolverDnHandle_t;
 using event_t         = cudaEvent_t;
-#elif defined(EINSUMS_HAVE_HIP)
-using stream_t        = hipStream_t;
-using blas_handle_t   = hipblasHandle_t;
-using solver_handle_t = hipsolverHandle_t;
-using event_t         = hipEvent_t;
 #else // Mock
 using stream_t        = int;
 using blas_handle_t   = int;

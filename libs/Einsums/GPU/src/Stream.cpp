@@ -13,7 +13,7 @@ EINSUMS_NAMESPACE_BEGIN(gpu)
 // Thread-local stream management
 // ===========================================================================
 
-#if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
+#if defined(EINSUMS_HAVE_CUDA)
 
 stream_t get_stream() {
     return 0;
@@ -70,10 +70,6 @@ stream_t create_stream() {
     cudaStream_t s;
     gpu_catch(cudaStreamCreate(&s));
     return s;
-#elif defined(EINSUMS_HAVE_HIP)
-    hipStream_t s;
-    gpu_catch(hipStreamCreate(&s));
-    return s;
 #else
     // MPS and mock: return sequential int handles.
     // MPS command queues are managed internally by MPSBackend.mm.
@@ -85,8 +81,6 @@ stream_t create_stream() {
 void destroy_stream(stream_t stream) {
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_catch(cudaStreamDestroy(stream));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_catch(hipStreamDestroy(stream));
 #else
     (void)stream;
 #endif
@@ -101,10 +95,6 @@ event_t create_event() {
     cudaEvent_t e;
     gpu_catch(cudaEventCreate(&e));
     return e;
-#elif defined(EINSUMS_HAVE_HIP)
-    hipEvent_t e;
-    gpu_catch(hipEventCreate(&e));
-    return e;
 #else
     static int event_counter = 0;
     return ++event_counter;
@@ -114,8 +104,6 @@ event_t create_event() {
 void destroy_event(event_t event) {
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_catch(cudaEventDestroy(event));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_catch(hipEventDestroy(event));
 #else
     (void)event;
 #endif
@@ -124,8 +112,6 @@ void destroy_event(event_t event) {
 void record_event(event_t event, stream_t stream) {
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_catch(cudaEventRecord(event, stream));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_catch(hipEventRecord(event, stream));
 #else
     (void)event;
     (void)stream;
@@ -135,8 +121,6 @@ void record_event(event_t event, stream_t stream) {
 void stream_wait_event(stream_t stream, event_t event) {
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_catch(cudaStreamWaitEvent(stream, event, 0));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_catch(hipStreamWaitEvent(stream, event, 0));
 #else
     (void)stream;
     (void)event;
@@ -147,9 +131,6 @@ bool event_completed(event_t event) {
 #if defined(EINSUMS_HAVE_CUDA)
     cudaError_t err = cudaEventQuery(event);
     return err == cudaSuccess;
-#elif defined(EINSUMS_HAVE_HIP)
-    hipError_t err = hipEventQuery(event);
-    return err == hipSuccess;
 #else
     (void)event;
     return true; // MPS and mock: synchronous execution, always complete.

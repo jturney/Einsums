@@ -4,7 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 # GPU abstraction module — always builds.
-# Uses mock (CPU) backend when no GPU is available, CUDA or HIP when enabled.
+# Uses mock (CPU) backend when no GPU is available, CUDA or MPS when enabled.
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -30,8 +30,6 @@ set(GPUSources
 # Vendor-specific dependencies and MPS Objective-C++ sources
 if(EINSUMS_WITH_CUDA)
   set(GPU_VENDOR_DEPS CUDA::cublas CUDA::cusolver CUDA::cudart)
-elseif(EINSUMS_WITH_HIP)
-  set(GPU_VENDOR_DEPS hip::host hip::device roc::hipblas roc::hipsolver)
 elseif(EINSUMS_WITH_MPS)
   list(APPEND GPUSources MPSBackend.mm)
   # Link the Apple frameworks by absolute path rather than via the

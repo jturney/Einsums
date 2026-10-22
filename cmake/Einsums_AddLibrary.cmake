@@ -9,7 +9,7 @@
 #:    Define an Einsums library target (SHARED/STATIC/OBJECT) with project‑standard setup.
 #:
 #:    A convenience wrapper around ``add_library`` that normalizes sources/headers,
-#:    applies GPU language tweaks for HIP/NVHPC, configures output directories (optionally with a
+#:    applies GPU language tweaks for NVHPC, configures output directories (optionally with a
 #:    suffix), and then delegates policy‑specific wiring to ``einsums_setup_target``.
 #:
 #:    **Signature**
@@ -64,7 +64,6 @@
 #:    3. Normalizes source lists via ``einsums_add_library_sources_noglob`` and groups
 #:       files with ``einsums_add_source_group``.
 #:    4. **GPU source handling**
-#:       - If ``EINSUMS_WITH_HIP`` is ON, ``.cu`` sources are marked ``LANGUAGE HIP``.
 #:       - With NVHPC, ``.cu`` sources receive compiler‑specific CUDA flags via
 #:         ``einsums_add_nvhpc_cuda_flags``.
 #:    5. Chooses link type: ``STATIC`` → static, ``OBJECT`` → object, otherwise **shared**.
@@ -231,15 +230,6 @@ function(einsums_add_library name)
     set(${name}_linktype OBJECT)
   else()
     set(${name}_linktype SHARED)
-  endif()
-
-  if(EINSUMS_WITH_HIP)
-    foreach(source ${${name}_SOURCES})
-      get_filename_component(extension ${source} EXT)
-      if(${extension} STREQUAL ".cu")
-        set_source_files_properties(${source} PROPERTIES LANGUAGE HIP)
-      endif()
-    endforeach()
   endif()
 
   if(CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC")

@@ -13,7 +13,7 @@
 ///   - View the graph structure with print_dot() (GPU nodes colored blue)
 ///
 /// On Apple Silicon (MPS): float32 GEMM runs on the M-series GPU cores.
-/// On CUDA/HIP: dispatches to cuBLAS/hipBLAS.
+/// On CUDA: dispatches to cuBLAS.
 /// Without a GPU: runs on CPU with mock backend (same results).
 
 #include <Einsums/ComputeGraph.hpp>

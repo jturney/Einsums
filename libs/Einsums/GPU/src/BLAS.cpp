@@ -16,8 +16,6 @@
 
 #if defined(EINSUMS_HAVE_CUDA)
 #    include <cublas_v2.h>
-#elif defined(EINSUMS_HAVE_HIP)
-#    include <hipblas/hipblas.h>
 #elif defined(EINSUMS_HAVE_MPS)
 #    include <Einsums/GPU/MPSBackend.hpp>
 // MPS only supports float32 GEMM; other types fall back to CPU BLAS
@@ -28,7 +26,7 @@
 #endif
 
 // The CPU fallback for strided batches needs BLASVendor.
-#if !defined(EINSUMS_HAVE_CUDA) && !defined(EINSUMS_HAVE_HIP) && !defined(EINSUMS_HAVE_MPS)
+#if !defined(EINSUMS_HAVE_CUDA) && !defined(EINSUMS_HAVE_MPS)
 // Already covered by the mock include above.
 #elif defined(EINSUMS_HAVE_MPS)
 // Already covered by the MPS include above.
@@ -61,10 +59,6 @@ void sgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float alph
     gpu_blas_catch(cublasSgemm_v2(get_blas_handle(), to_vendor_op(char_to_op(transa)), to_vendor_op(char_to_op(transb)), int_extent(m, "m"),
                                   int_extent(n, "n"), int_extent(k, "k"), &alpha, a, int_extent(lda, "lda"), b, int_extent(ldb, "ldb"),
                                   &beta, c, int_extent(ldc, "ldc")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasSgemm(get_blas_handle(), to_vendor_op(char_to_op(transa)), to_vendor_op(char_to_op(transb)), int_extent(m, "m"),
-                                int_extent(n, "n"), int_extent(k, "k"), &alpha, a, int_extent(lda, "lda"), b, int_extent(ldb, "ldb"), &beta,
-                                c, int_extent(ldc, "ldc")));
 #elif defined(EINSUMS_HAVE_MPS)
     if (!mps::sgemm(transa, transb, int_extent(m, "m"), int_extent(n, "n"), int_extent(k, "k"), alpha, a, int_extent(lda, "lda"), b,
                     int_extent(ldb, "ldb"), beta, c, int_extent(ldc, "ldc"))) {
@@ -84,10 +78,6 @@ void dgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, double alp
     gpu_blas_catch(cublasDgemm_v2(get_blas_handle(), to_vendor_op(char_to_op(transa)), to_vendor_op(char_to_op(transb)), int_extent(m, "m"),
                                   int_extent(n, "n"), int_extent(k, "k"), &alpha, a, int_extent(lda, "lda"), b, int_extent(ldb, "ldb"),
                                   &beta, c, int_extent(ldc, "ldc")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasDgemm(get_blas_handle(), to_vendor_op(char_to_op(transa)), to_vendor_op(char_to_op(transb)), int_extent(m, "m"),
-                                int_extent(n, "n"), int_extent(k, "k"), &alpha, a, int_extent(lda, "lda"), b, int_extent(ldb, "ldb"), &beta,
-                                c, int_extent(ldc, "ldc")));
 #else
     // MPS and mock: no GPU double precision, fall back to CPU BLAS.
     ::einsums::blas::vendor::dgemm(transa, transb, vendor_extent(m, "m"), vendor_extent(n, "n"), vendor_extent(k, "k"), alpha, a,
@@ -104,12 +94,6 @@ void cgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, std::compl
                                   reinterpret_cast<cuComplex const *>(a), int_extent(lda, "lda"), reinterpret_cast<cuComplex const *>(b),
                                   int_extent(ldb, "ldb"), reinterpret_cast<cuComplex const *>(&beta), reinterpret_cast<cuComplex *>(c),
                                   int_extent(ldc, "ldc")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasCgemm(
-        get_blas_handle(), to_vendor_op(char_to_op(transa)), to_vendor_op(char_to_op(transb)), int_extent(m, "m"), int_extent(n, "n"),
-        int_extent(k, "k"), reinterpret_cast<hipblasComplex const *>(&alpha), reinterpret_cast<hipblasComplex const *>(a),
-        int_extent(lda, "lda"), reinterpret_cast<hipblasComplex const *>(b), int_extent(ldb, "ldb"),
-        reinterpret_cast<hipblasComplex const *>(&beta), reinterpret_cast<hipblasComplex *>(c), int_extent(ldc, "ldc")));
 #elif defined(EINSUMS_HAVE_MPS)
     // MPS ComplexFloat32 GEMM is not reliably supported by MPSMatrixMultiplication.
     // Fall back to CPU BLAS for complex types.
@@ -130,12 +114,6 @@ void zgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, std::compl
         int_extent(k, "k"), reinterpret_cast<cuDoubleComplex const *>(&alpha), reinterpret_cast<cuDoubleComplex const *>(a),
         int_extent(lda, "lda"), reinterpret_cast<cuDoubleComplex const *>(b), int_extent(ldb, "ldb"),
         reinterpret_cast<cuDoubleComplex const *>(&beta), reinterpret_cast<cuDoubleComplex *>(c), int_extent(ldc, "ldc")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasZgemm(
-        get_blas_handle(), to_vendor_op(char_to_op(transa)), to_vendor_op(char_to_op(transb)), int_extent(m, "m"), int_extent(n, "n"),
-        int_extent(k, "k"), reinterpret_cast<hipblasDoubleComplex const *>(&alpha), reinterpret_cast<hipblasDoubleComplex const *>(a),
-        int_extent(lda, "lda"), reinterpret_cast<hipblasDoubleComplex const *>(b), int_extent(ldb, "ldb"),
-        reinterpret_cast<hipblasDoubleComplex const *>(&beta), reinterpret_cast<hipblasDoubleComplex *>(c), int_extent(ldc, "ldc")));
 #else
     // MPS and mock: CPU fallback.
     ::einsums::blas::vendor::zgemm(transa, transb, vendor_extent(m, "m"), vendor_extent(n, "n"), vendor_extent(k, "k"), alpha, a,
@@ -146,7 +124,7 @@ void zgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, std::compl
 // ===========================================================================
 // Strided-batched GEMM.
 //
-// One `?gemmStridedBatched` call on CUDA/HIP; elsewhere the CPU `?gemm_batch` on computed pointers.
+// One `?gemmStridedBatched` call on CUDA; elsewhere the CPU `?gemm_batch` on computed pointers.
 //
 // TODO: MPS has native batched matmul (MPSMatrixMultiplication batchStart/batchSize); it needs a
 // row-major wrapper, and float32 first, since MPS doubles go to the CPU anyway.
@@ -180,11 +158,6 @@ void sgemm_strided_batched(char transa, char transb, int64_t m, int64_t n, int64
                                              int_extent(m, "m"), int_extent(n, "n"), int_extent(k, "k"), &alpha, a, int_extent(lda, "lda"),
                                              stride_a, b, int_extent(ldb, "ldb"), stride_b, &beta, c, int_extent(ldc, "ldc"), stride_c,
                                              int_extent(batch_count, "batch_count")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasSgemmStridedBatched(get_blas_handle(), to_vendor_op(char_to_op(transa)), to_vendor_op(char_to_op(transb)),
-                                              int_extent(m, "m"), int_extent(n, "n"), int_extent(k, "k"), &alpha, a, int_extent(lda, "lda"),
-                                              stride_a, b, int_extent(ldb, "ldb"), stride_b, &beta, c, int_extent(ldc, "ldc"), stride_c,
-                                              int_extent(batch_count, "batch_count")));
 #else
     std::vector<float const *> a_arr, b_arr;
     std::vector<float *>       c_arr;
@@ -204,11 +177,6 @@ void dgemm_strided_batched(char transa, char transb, int64_t m, int64_t n, int64
                                              int_extent(m, "m"), int_extent(n, "n"), int_extent(k, "k"), &alpha, a, int_extent(lda, "lda"),
                                              stride_a, b, int_extent(ldb, "ldb"), stride_b, &beta, c, int_extent(ldc, "ldc"), stride_c,
                                              int_extent(batch_count, "batch_count")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasDgemmStridedBatched(get_blas_handle(), to_vendor_op(char_to_op(transa)), to_vendor_op(char_to_op(transb)),
-                                              int_extent(m, "m"), int_extent(n, "n"), int_extent(k, "k"), &alpha, a, int_extent(lda, "lda"),
-                                              stride_a, b, int_extent(ldb, "ldb"), stride_b, &beta, c, int_extent(ldc, "ldc"), stride_c,
-                                              int_extent(batch_count, "batch_count")));
 #else
     // MPS has no strided-batched dgemm; fall through to CPU pointer-array batch.
     std::vector<double const *> a_arr, b_arr;
@@ -231,13 +199,6 @@ void cgemm_strided_batched(char transa, char transb, int64_t m, int64_t n, int64
         int_extent(k, "k"), reinterpret_cast<cuComplex const *>(&alpha), reinterpret_cast<cuComplex const *>(a), int_extent(lda, "lda"),
         stride_a, reinterpret_cast<cuComplex const *>(b), int_extent(ldb, "ldb"), stride_b, reinterpret_cast<cuComplex const *>(&beta),
         reinterpret_cast<cuComplex *>(c), int_extent(ldc, "ldc"), stride_c, int_extent(batch_count, "batch_count")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasCgemmStridedBatched(
-        get_blas_handle(), to_vendor_op(char_to_op(transa)), to_vendor_op(char_to_op(transb)), int_extent(m, "m"), int_extent(n, "n"),
-        int_extent(k, "k"), reinterpret_cast<hipblasComplex const *>(&alpha), reinterpret_cast<hipblasComplex const *>(a),
-        int_extent(lda, "lda"), stride_a, reinterpret_cast<hipblasComplex const *>(b), int_extent(ldb, "ldb"), stride_b,
-        reinterpret_cast<hipblasComplex const *>(&beta), reinterpret_cast<hipblasComplex *>(c), int_extent(ldc, "ldc"), stride_c,
-        int_extent(batch_count, "batch_count")));
 #else
     std::vector<std::complex<float> const *> a_arr, b_arr;
     std::vector<std::complex<float> *>       c_arr;
@@ -260,13 +221,6 @@ void zgemm_strided_batched(char transa, char transb, int64_t m, int64_t n, int64
         int_extent(lda, "lda"), stride_a, reinterpret_cast<cuDoubleComplex const *>(b), int_extent(ldb, "ldb"), stride_b,
         reinterpret_cast<cuDoubleComplex const *>(&beta), reinterpret_cast<cuDoubleComplex *>(c), int_extent(ldc, "ldc"), stride_c,
         int_extent(batch_count, "batch_count")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasZgemmStridedBatched(
-        get_blas_handle(), to_vendor_op(char_to_op(transa)), to_vendor_op(char_to_op(transb)), int_extent(m, "m"), int_extent(n, "n"),
-        int_extent(k, "k"), reinterpret_cast<hipblasDoubleComplex const *>(&alpha), reinterpret_cast<hipblasDoubleComplex const *>(a),
-        int_extent(lda, "lda"), stride_a, reinterpret_cast<hipblasDoubleComplex const *>(b), int_extent(ldb, "ldb"), stride_b,
-        reinterpret_cast<hipblasDoubleComplex const *>(&beta), reinterpret_cast<hipblasDoubleComplex *>(c), int_extent(ldc, "ldc"),
-        stride_c, int_extent(batch_count, "batch_count")));
 #else
     std::vector<std::complex<double> const *> a_arr, b_arr;
     std::vector<std::complex<double> *>       c_arr;
@@ -287,9 +241,6 @@ void sgemv(char trans, int64_t m, int64_t n, float alpha, float const *a, int64_
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_blas_catch(cublasSgemv_v2(get_blas_handle(), to_vendor_op(char_to_op(trans)), int_extent(m, "m"), int_extent(n, "n"), &alpha, a,
                                   int_extent(lda, "lda"), x, int_extent(incx, "incx"), &beta, y, int_extent(incy, "incy")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasSgemv(get_blas_handle(), to_vendor_op(char_to_op(trans)), int_extent(m, "m"), int_extent(n, "n"), &alpha, a,
-                                int_extent(lda, "lda"), x, int_extent(incx, "incx"), &beta, y, int_extent(incy, "incy")));
 #elif defined(EINSUMS_HAVE_MPS)
     if (!mps::sgemv(trans, int_extent(m, "m"), int_extent(n, "n"), alpha, a, int_extent(lda, "lda"), x, int_extent(incx, "incx"), beta, y,
                     int_extent(incy, "incy"))) {
@@ -308,9 +259,6 @@ void dgemv(char trans, int64_t m, int64_t n, double alpha, double const *a, int6
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_blas_catch(cublasDgemv_v2(get_blas_handle(), to_vendor_op(char_to_op(trans)), int_extent(m, "m"), int_extent(n, "n"), &alpha, a,
                                   int_extent(lda, "lda"), x, int_extent(incx, "incx"), &beta, y, int_extent(incy, "incy")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasDgemv(get_blas_handle(), to_vendor_op(char_to_op(trans)), int_extent(m, "m"), int_extent(n, "n"), &alpha, a,
-                                int_extent(lda, "lda"), x, int_extent(incx, "incx"), &beta, y, int_extent(incy, "incy")));
 #else
     ::einsums::blas::vendor::dgemv(trans, vendor_extent(m, "m"), vendor_extent(n, "n"), alpha, a, vendor_extent(lda, "lda"), x,
                                    vendor_extent(incx, "incx"), beta, y, vendor_extent(incy, "incy"));
@@ -334,7 +282,7 @@ EINSUMS_EXPORT void gemv<double>(char trans, int64_t m, int64_t n, double alpha,
 // ===========================================================================
 // BLAS Level 1: element-wise operations on device memory.
 //
-// On CUDA/HIP these are device pointers, so host BLAS would segfault. The host fallback is right
+// On CUDA these are device pointers, so host BLAS would segfault. The host fallback is right
 // only on MPS (unified memory) and the mock (malloc).
 // ===========================================================================
 
@@ -343,8 +291,6 @@ EINSUMS_EXPORT void scal<float>(int64_t n, float alpha, float *x, int64_t incx) 
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_blas_catch(cublasSscal_v2(get_blas_handle(), int_extent(n, "n"), &alpha, x, int_extent(incx, "incx")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasSscal(get_blas_handle(), int_extent(n, "n"), &alpha, x, int_extent(incx, "incx")));
 #else
     ::einsums::blas::vendor::sscal(vendor_extent(n, "n"), alpha, x, vendor_extent(incx, "incx"));
 #endif
@@ -355,8 +301,6 @@ EINSUMS_EXPORT void scal<double>(int64_t n, double alpha, double *x, int64_t inc
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_blas_catch(cublasDscal_v2(get_blas_handle(), int_extent(n, "n"), &alpha, x, int_extent(incx, "incx")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasDscal(get_blas_handle(), int_extent(n, "n"), &alpha, x, int_extent(incx, "incx")));
 #else
     ::einsums::blas::vendor::dscal(vendor_extent(n, "n"), alpha, x, vendor_extent(incx, "incx"));
 #endif
@@ -367,8 +311,6 @@ EINSUMS_EXPORT void axpy<float>(int64_t n, float alpha, float const *x, int64_t 
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_blas_catch(cublasSaxpy_v2(get_blas_handle(), int_extent(n, "n"), &alpha, x, int_extent(incx, "incx"), y, int_extent(incy, "incy")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasSaxpy(get_blas_handle(), int_extent(n, "n"), &alpha, x, int_extent(incx, "incx"), y, int_extent(incy, "incy")));
 #else
     ::einsums::blas::vendor::saxpy(vendor_extent(n, "n"), alpha, x, vendor_extent(incx, "incx"), y, vendor_extent(incy, "incy"));
 #endif
@@ -379,14 +321,12 @@ EINSUMS_EXPORT void axpy<double>(int64_t n, double alpha, double const *x, int64
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_blas_catch(cublasDaxpy_v2(get_blas_handle(), int_extent(n, "n"), &alpha, x, int_extent(incx, "incx"), y, int_extent(incy, "incy")));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_blas_catch(hipblasDaxpy(get_blas_handle(), int_extent(n, "n"), &alpha, x, int_extent(incx, "incx"), y, int_extent(incy, "incy")));
 #else
     ::einsums::blas::vendor::daxpy(vendor_extent(n, "n"), alpha, x, vendor_extent(incx, "incx"), y, vendor_extent(incy, "incy"));
 #endif
 }
 
-// axpby has no single cuBLAS/hipBLAS entry point: scale y by beta, then axpy.
+// axpby has no single cuBLAS entry point: scale y by beta, then axpy.
 // Both calls are enqueued on the same stream, so the ordering is guaranteed.
 template <>
 EINSUMS_EXPORT void axpby<float>(int64_t n, float alpha, float const *x, int64_t incx, float beta, float *y, int64_t incy) {
@@ -410,10 +350,6 @@ EINSUMS_EXPORT float dot<float>(int64_t n, float const *x, int64_t incx, float c
     float result = 0.0F;
     gpu_blas_catch(cublasSdot_v2(get_blas_handle(), int_extent(n, "n"), x, int_extent(incx, "incx"), y, int_extent(incy, "incy"), &result));
     return result;
-#elif defined(EINSUMS_HAVE_HIP)
-    float result = 0.0F;
-    gpu_blas_catch(hipblasSdot(get_blas_handle(), int_extent(n, "n"), x, int_extent(incx, "incx"), y, int_extent(incy, "incy"), &result));
-    return result;
 #else
     return ::einsums::blas::vendor::sdot(vendor_extent(n, "n"), x, vendor_extent(incx, "incx"), y, vendor_extent(incy, "incy"));
 #endif
@@ -425,10 +361,6 @@ EINSUMS_EXPORT double dot<double>(int64_t n, double const *x, int64_t incx, doub
 #if defined(EINSUMS_HAVE_CUDA)
     double result = 0.0;
     gpu_blas_catch(cublasDdot_v2(get_blas_handle(), int_extent(n, "n"), x, int_extent(incx, "incx"), y, int_extent(incy, "incy"), &result));
-    return result;
-#elif defined(EINSUMS_HAVE_HIP)
-    double result = 0.0;
-    gpu_blas_catch(hipblasDdot(get_blas_handle(), int_extent(n, "n"), x, int_extent(incx, "incx"), y, int_extent(incy, "incy"), &result));
     return result;
 #else
     return ::einsums::blas::vendor::ddot(vendor_extent(n, "n"), x, vendor_extent(incx, "incx"), y, vendor_extent(incy, "incy"));
@@ -442,10 +374,6 @@ EINSUMS_EXPORT float nrm2<float>(int64_t n, float const *x, int64_t incx) {
     float result = 0.0F;
     gpu_blas_catch(cublasSnrm2_v2(get_blas_handle(), int_extent(n, "n"), x, int_extent(incx, "incx"), &result));
     return result;
-#elif defined(EINSUMS_HAVE_HIP)
-    float result = 0.0F;
-    gpu_blas_catch(hipblasSnrm2(get_blas_handle(), int_extent(n, "n"), x, int_extent(incx, "incx"), &result));
-    return result;
 #else
     return ::einsums::blas::vendor::snrm2(vendor_extent(n, "n"), x, vendor_extent(incx, "incx"));
 #endif
@@ -457,10 +385,6 @@ EINSUMS_EXPORT double nrm2<double>(int64_t n, double const *x, int64_t incx) {
 #if defined(EINSUMS_HAVE_CUDA)
     double result = 0.0;
     gpu_blas_catch(cublasDnrm2_v2(get_blas_handle(), int_extent(n, "n"), x, int_extent(incx, "incx"), &result));
-    return result;
-#elif defined(EINSUMS_HAVE_HIP)
-    double result = 0.0;
-    gpu_blas_catch(hipblasDnrm2(get_blas_handle(), int_extent(n, "n"), x, int_extent(incx, "incx"), &result));
     return result;
 #else
     return ::einsums::blas::vendor::dnrm2(vendor_extent(n, "n"), x, vendor_extent(incx, "incx"));
@@ -547,8 +471,6 @@ void hgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float alph
 #if defined(EINSUMS_HAVE_CUDA)
     // TODO: cublasLtMatmul. FP16 wants CUDA_R_16F in / CUBLAS_COMPUTE_32F; FP8 E4M3
     // additionally needs sm_89+. Throws until then rather than leaving C untouched.
-    not_implemented("gpu::blas::hgemm");
-#elif defined(EINSUMS_HAVE_HIP)
     not_implemented("gpu::blas::hgemm");
 #elif defined(EINSUMS_HAVE_MPS)
     // MPS pure FP16 GEMM: C_fp16 = alpha * A_fp16 * B_fp16 + beta * C_fp16.
@@ -639,7 +561,7 @@ void bfgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float alp
         gpu::device_free(b_f32);
     }
 #else
-    // No BFloat16 support on CUDA/HIP/mock.
+    // No BFloat16 support on CUDA/mock.
     (void)transa;
     (void)transb;
     (void)m;
@@ -662,8 +584,6 @@ void fp8gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float al
 #if defined(EINSUMS_HAVE_CUDA)
     // TODO: cublasLtMatmul. FP16 wants CUDA_R_16F in / CUBLAS_COMPUTE_32F; FP8 E4M3
     // additionally needs sm_89+. Throws until then rather than leaving C untouched.
-    not_implemented("gpu::blas::fp8gemm");
-#elif defined(EINSUMS_HAVE_HIP)
     not_implemented("gpu::blas::fp8gemm");
 #else
     // Mock: no FP8 hardware

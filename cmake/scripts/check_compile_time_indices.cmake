@@ -62,7 +62,6 @@ set(_ci_globs
     *.inl
     *.ipp
     *.cu
-    *.hip
     *.rst
     *.md
 )

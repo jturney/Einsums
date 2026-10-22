@@ -54,7 +54,6 @@ void *test_malloc(size_t bytes) {
 
 TEST_CASE("Platform detection", "[gpu]") {
     INFO("has_cuda = " << has_cuda);
-    INFO("has_hip  = " << has_hip);
     INFO("has_gpu  = " << has_gpu);
     INFO("is_mock  = " << is_mock);
 
@@ -1235,7 +1234,7 @@ TEMPLATE_TEST_CASE("gpu backend routines reject extents their integer cannot hol
     EINSUMS_SKIP_WITHOUT_GPU();
     using T = TestType;
 
-#if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
+#if defined(EINSUMS_HAVE_CUDA)
     constexpr bool narrows = true;
 #elif defined(EINSUMS_HAVE_MPS)
     // MPS runs float32 GEMM itself and takes int; everything else falls back to the CPU vendor.

@@ -13,7 +13,7 @@ On top of the eager API, a deferred-execution ComputeGraph records whole workflo
 The eager API targets the host CPU; GPU offload and distributed execution are delivered through graph passes, so they apply only to captured workflows.
 SIMD kernels are compiled for several x86-64 instruction-set levels and selected at runtime, so one binary runs everywhere and still uses the fastest kernels the CPU supports.
 A NumPy-style Python package wraps the same engine.
-CUDA and HIP GPU backends and MPI distributed execution are works in progress.
+The CUDA GPU backend and MPI distributed execution are works in progress.
 
 ## Requirements
 
@@ -41,7 +41,7 @@ Optional requirements:
 
 * A Fast Fourier Transform library, either FFTW3 or DFT from MKL.
 * Python, for the `einsums` Python package (`-DEINSUMS_BUILD_PYTHON=ON`; pybind11 >= 2.11 must be installed, and the conda environment provides it).
-* CUDA or HIP for GPU support (work in progress).
+* CUDA for GPU support (work in progress).
 * MPI (Open MPI or MPICH) for distributed execution (work in progress).
 * cpptrace for backtraces.
 

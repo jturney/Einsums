@@ -305,7 +305,7 @@ TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: a conjugated real operand keeps the
 TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: forcing Target::GPU routes through gpu::blas dispatcher",
                         "[ComputeGraph][StridedBatchedGemm][GPU]", testing::AllScalarTypes) {
     using T = TestType;
-    // Exercises the GPU dispatch path end-to-end. On CUDA/HIP builds this
+    // Exercises the GPU dispatch path end-to-end. On CUDA builds this
     // hits cublas/hipblas ?gemmStridedBatched directly; on mock / MPS
     // builds it transparently falls back to the CPU pointer-array
     // gemm_batch inside gpu::blas::?gemm_strided_batched. Either way the

@@ -4,14 +4,14 @@
 #----------------------------------------------------------------------------------------------
 
 #
-# Add test sources to JsonTests below. C++ tests use a .cpp, .hip, or
+# Add test sources to JsonTests below. C++ tests use a .cpp or
 # .cu extension. Python tests use the name test_<snake>_python.py and run through
 # pytest. For example, Example1.cpp registers as a C++ unit test and
 # test_mixed_ops_python.py registers as the Python test MixedOpsPython.
 #
 # Per-test options follow the same convention, for example
 # set(Example1_cpp_FLAGS DEPENDENCIES SomeOtherGreatLibrary)
-# set(Example2_hip_PARAMETERS THREADS 1)
+# set(Example2_cu_PARAMETERS THREADS 1)
 #
 
 # Derive a CamelCase name from the <snake> part of a test_<snake>_python.py
@@ -56,7 +56,7 @@ foreach(test ${JsonTests})
   string(REPLACE "." "_" TestExtension ${EXT_NO_DOT})
 
   # Skip GPU tests when GPU support is off.
-  if(NOT EINSUMS_WITH_GPU_SUPPORT AND (TestExtension STREQUAL "cu" OR TestExtension STREQUAL "hip"))
+  if(NOT EINSUMS_WITH_GPU_SUPPORT AND TestExtension STREQUAL "cu")
     continue()
   endif()
 

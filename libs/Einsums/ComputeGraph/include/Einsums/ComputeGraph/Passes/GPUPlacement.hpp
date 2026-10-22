@@ -72,7 +72,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - Compiled out entirely on CPU-only builds; a no-op when `--einsums:gpu:disable` is set,
  *   so on the CI default (no GPU, no mock) the pass never fires.
  * - The **MPS** backend supports only `float32`; `float64`/complex nodes are rejected by the
- *   dtype guard and left on CPU. CUDA/HIP/mock accept `float32`/`float64`/complex64/complex128.
+ *   dtype guard and left on CPU. CUDA/mock accept `float32`/`float64`/complex64/complex128.
  * - Budget placement is greedy by descending byte footprint, not globally optimal: a node
  *   larger than the remaining budget is skipped even if reordering could have fit it.
  * - The budget accounting double-counts residency — a tensor shared by several placed nodes

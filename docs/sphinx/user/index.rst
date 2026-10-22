@@ -209,7 +209,7 @@ As of right now, Einsums is capable of the following:
   algebra, and the ComputeGraph. NumPy arrays cross the boundary through ``einsums.asarray``,
   which copies them into a tensor; the operations themselves take Einsums tensors rather than
   raw NumPy arrays.
-* GPU acceleration through CUDA, HIP, or Apple's Metal Performance Shaders.
+* GPU acceleration through CUDA or Apple's Metal Performance Shaders.
 * Simple arithmetic between tensors. The tensors all need to have the same dimensions, though, and this does not yet work on GPU.
 * Tensors representing functions of their indices.
 

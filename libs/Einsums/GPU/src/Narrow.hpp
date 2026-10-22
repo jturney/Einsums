@@ -36,7 +36,7 @@ template <std::integral From>
     return narrow_extent<::einsums::blas::int_t>(value, name);
 }
 
-/// An extent for a routine that takes int: cuBLAS, cuSOLVER, hipBLAS, hipSOLVER and MPS.
+/// An extent for a routine that takes int: cuBLAS, cuSOLVER and MPS.
 template <std::integral From>
 int int_extent(From value, char const *name) {
     return narrow_extent<int>(value, name);

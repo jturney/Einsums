@@ -449,7 +449,7 @@ Requirements
 ------------
 
 - On MPS, use ``float`` tensors (MPS only supports float32 GEMM; double stays on
-  CPU). CUDA and HIP also take double.
+  CPU). CUDA also takes double.
 - The operation must be expensive enough to beat transfer and launch overhead
   under ``GPUPlacement``'s cost model. A node with no flop estimate falls back to
   a size threshold (default 64 KB of memory traffic).

@@ -25,11 +25,6 @@ EINSUMS_NAMESPACE_BEGIN()
 template <typename T, size_t Rank, size_t BaseRank>
 struct FunctionTensorView;
 
-#ifdef __HIP__
-template <typename T, size_t Rank, size_t BaseRank>
-struct DeviceFunctionTensorView;
-#endif
-
 namespace tensor_base {
 
 /**

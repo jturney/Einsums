@@ -233,7 +233,7 @@ TODO / future work
   matmul via ``MPSMatrixMultiplication`` (``batchStart`` /
   ``batchSize``) or ``MPSNDArrayMatrixMultiplication`` (macOS 13+).
   Wiring either into the MPS branch would give Apple Silicon users
-  the same benefit CUDA/HIP users get from the vendor strided-batched
+  the same benefit CUDA users get from the vendor strided-batched
   primitive. Caveats: MPS's double-precision is weak (may still
   round-trip to CPU inside Metal), and ``MPSMatrix`` expects
   row-major storage, so the col-major-batch-last layout path needs

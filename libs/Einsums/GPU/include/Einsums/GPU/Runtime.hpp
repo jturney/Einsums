@@ -25,13 +25,12 @@ EINSUMS_NAMESPACE_BEGIN(gpu)
  */
 struct GpuError {
     std::string message;
-    int         code{0}; ///< Vendor error code (cudaError_t, hipError_t, etc.)
+    int         code{0}; ///< Vendor error code (cudaError_t, etc.)
 };
 
 // ===========================================================================
 // Device memory operations.
 // CUDA: cudaMalloc/cudaFree/cudaMemcpy
-// HIP:  hipMalloc/hipFree/hipMemcpy
 // Mock: std::malloc/std::free/std::memcpy
 // ===========================================================================
 

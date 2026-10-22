@@ -92,10 +92,10 @@ CMake when configuring.
 Building for GPU
 ================
 
-Einsums has two GPU backends, CUDA and HIP. They are mutually exclusive: turning both
-``EINSUMS_WITH_CUDA`` and ``EINSUMS_WITH_HIP`` on is a configure error. When neither is
-enabled, the GPU module still builds against a *mock* backend that runs every operation
-on the CPU, so GPU-facing code compiles and tests everywhere.
+Einsums has two GPU backends: CUDA, and Apple's Metal Performance Shaders (MPS), which is
+on by default on macOS. When neither is enabled, the GPU module still builds against a
+*mock* backend that runs every operation on the CPU, so GPU-facing code compiles and tests
+everywhere.
 
 Building for CUDA
 -----------------
@@ -164,18 +164,3 @@ are still swapped to device shadows.
 It is POSIX-only (``mmap``/``mprotect``) and mutually exclusive with a real
 backend. CI runs it as the ``mock-discrete`` variant; locally,
 ``./devtools/docker/run-ci-leg.sh mock-discrete``.
-
-Building for HIP
-----------------
-
-Set ``-DEINSUMS_WITH_HIP=ON`` and specify a HIP-compatible compiler; AMD's fork of Clang
-that ships with HIP is a good choice. For CMake to find the appropriate libraries,
-``-DCMAKE_HIP_COMPILER_ROCM_ROOT`` needs to be set to the root directory of the ROCm
-installation. On Linux this is often ``/opt/rocm``. Since that flag has a long name,
-Einsums provides an alias: ``-DHIP_ROCM_ROOT``. You may set either one and the other will
-be populated. If you get configuration errors about being unable to find certain
-HIP/ROCm libraries, set the variables CMake is asking for; the CMake files can be found
-under ``${HIP_ROCM_ROOT}/lib/cmake``.
-
-HIP can also target NVIDIA hardware, in which case CUDA is required as well. That is
-still the ``EINSUMS_WITH_HIP`` path, not ``EINSUMS_WITH_CUDA``.

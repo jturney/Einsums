@@ -17,9 +17,6 @@
 #    include <cuComplex.h>
 #    include <cublas_v2.h>
 #    include <cuda_fp16.h>
-#elif defined(EINSUMS_HAVE_HIP)
-#    include <hip/hip_complex.h>
-#    include <hipblas/hipblas.h>
 #endif
 
 EINSUMS_NAMESPACE_BEGIN(gpu)
@@ -44,19 +41,10 @@ template <>
 struct DeviceComplexType<std::complex<double>> {
     using type = cuDoubleComplex;
 };
-#elif defined(EINSUMS_HAVE_HIP)
-template <>
-struct DeviceComplexType<std::complex<float>> {
-    using type = hipFloatComplex;
-};
-template <>
-struct DeviceComplexType<std::complex<double>> {
-    using type = hipDoubleComplex;
-};
 #endif
 // NOLINTEND
 
-/// Alias: device_complex_t<std::complex<float>> → cuFloatComplex (CUDA) or hipFloatComplex (HIP)
+/// Alias: device_complex_t<std::complex<float>> → cuFloatComplex (CUDA)
 template <typename T>
 using device_complex_t = typename DeviceComplexType<T>::type; // NOLINT(readability-identifier-naming)
 
@@ -75,10 +63,6 @@ enum class Operation : std::uint8_t { None, Transpose, ConjTranspose };
 using half_t     = __half;   ///< CUDA FP16
 using bfloat16_t = uint16_t; ///< CUDA BFloat16 storage (interpret via cublasLt)
 using fp8_t      = uint8_t;  ///< FP8 E4M3 storage (interpret via cublasLt)
-#elif defined(EINSUMS_HAVE_HIP)
-using half_t     = uint16_t; ///< HIP FP16 (storage, cast to _Float16 for ops)
-using bfloat16_t = uint16_t; ///< HIP BFloat16 storage
-using fp8_t      = uint8_t;  ///< FP8 storage (vendor-specific interpretation)
 #elif defined(EINSUMS_HAVE_MPS)
 using half_t     = __fp16;  ///< MPS FP16 (ARM native __fp16)
 using bfloat16_t = __bf16;  ///< MPS BFloat16 (ARM native __bf16, macOS 14+)
@@ -105,18 +89,6 @@ inline cublasOperation_t to_vendor_op(Operation op) {
         return CUBLAS_OP_C;
     }
     return CUBLAS_OP_N;
-}
-#elif defined(EINSUMS_HAVE_HIP)
-inline hipblasOperation_t to_vendor_op(Operation op) {
-    switch (op) {
-    case Operation::None:
-        return HIPBLAS_OP_N;
-    case Operation::Transpose:
-        return HIPBLAS_OP_T;
-    case Operation::ConjTranspose:
-        return HIPBLAS_OP_C;
-    }
-    return HIPBLAS_OP_N;
 }
 #else
 inline int to_vendor_op(Operation) {

@@ -26,7 +26,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - **Outputs**: if a later CPU node reads the result, append a DeviceToHost node.
  *
  * After the main loop it appends a final D2H for any user-visible (non-intermediate) tensor left
- * Device-resident, so results are readable after `execute()` on discrete GPUs (CUDA/HIP) without an
+ * Device-resident, so results are readable after `execute()` on discrete GPUs (CUDA) without an
  * implicit flush. On unified memory (MPS) these D2H nodes stay in the structure but execution skips
  * the physical copy. `TensorHandle::residency` is updated as transfers are inserted (H2D → Both,
  * D2H → Both, GPU output → Device).

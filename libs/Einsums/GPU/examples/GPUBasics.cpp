@@ -30,7 +30,6 @@ int einsums_main() {
     // ── 1. Platform detection ───────────────────────────────────────────────
     std::cout << "GPU Backend Detection:\n";
     std::cout << "  has_cuda:           " << gpu::has_cuda << "\n";
-    std::cout << "  has_hip:            " << gpu::has_hip << "\n";
     std::cout << "  has_mps:            " << gpu::has_mps << "\n";
     std::cout << "  has_gpu:            " << gpu::has_gpu << "\n";
     std::cout << "  is_mock:            " << gpu::is_mock << "\n";

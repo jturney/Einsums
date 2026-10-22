@@ -156,7 +156,7 @@ TEST_CASE("GPUPlacement - double precision rejected on MPS", "[ComputeGraph][GPU
         CHECK(pass.num_placed() == 0);
         CHECK(graph.nodes()[0].target == cg::Target::CPU);
     }
-    // On CUDA/HIP/mock, double is supported and would be placed.
+    // On CUDA/mock, double is supported and would be placed.
 }
 
 TEST_CASE("GPUPlacement - small operation stays on CPU", "[ComputeGraph][GPU]") {

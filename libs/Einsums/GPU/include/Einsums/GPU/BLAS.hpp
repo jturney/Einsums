@@ -18,7 +18,7 @@ EINSUMS_NAMESPACE_BEGIN(gpu::blas)
 
 // ===========================================================================
 // Standard precision GEMM: matches CPU BLAS signatures.
-// CUDA: cuBLAS, HIP: hipBLAS, Mock: delegates to CPU einsums::blas::vendor
+// CUDA: cuBLAS, Mock: delegates to CPU einsums::blas::vendor
 // ===========================================================================
 
 EINSUMS_EXPORT void sgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, float alpha, float const *a, int64_t lda,
@@ -41,7 +41,7 @@ EINSUMS_EXPORT void gemm(char transa, char transb, int64_t m, int64_t n, int64_t
                          int64_t ldb, T beta, T *c, int64_t ldc);
 
 // ===========================================================================
-// Strided-batched GEMM: N GEMMs at a uniform stride. cuBLAS/hipBLAS strided-batched on GPUs; the
+// Strided-batched GEMM: N GEMMs at a uniform stride. cuBLAS strided-batched on GPUs; the
 // CPU gemm_batch with computed pointers elsewhere.
 // ===========================================================================
 

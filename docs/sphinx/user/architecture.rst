@@ -381,7 +381,7 @@ The :ref:`GPU <modules_Einsums_GPU>` module is a thin abstraction over the
 device-side primitives, including memory allocation, streams, copies, and device-side
 BLAS. On Apple Silicon the MPS backend is built by default and runs
 single-precision GEMM and GEMV on the GPU, leaving double and complex types
-to Accelerate; the CUDA and HIP backends are in place with validation on real
+to Accelerate; the CUDA backend is in place with validation on real
 hardware pending. The production GPU path will land alongside the planned
 Ozaki mixed-precision tile-GEMM work. The same
 :ref:`PackedGemm <modules_Einsums_PackedGemm>` plan abstraction is intended
@@ -403,8 +403,8 @@ A handful of CMake options gate the optional layers:
   machine's; set it to ``1`` to turn sharding off.
 * ``EINSUMS_WITH_MPI`` replaces ``Comm``'s mock backend with a real
   Open MPI or MPICH integration.
-* ``EINSUMS_WITH_CUDA`` / ``EINSUMS_WITH_HIP`` enable the GPU
-  backends, which are pending validation work.
+* ``EINSUMS_WITH_CUDA`` enables the CUDA backend, which is pending
+  validation work.
 * ``EINSUMS_WITH_MPS`` enables the Metal Performance Shaders backend; it is
   on by default on macOS.
 * ``EINSUMS_WITH_PROFILER`` enables the

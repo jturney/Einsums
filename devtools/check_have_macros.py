@@ -36,7 +36,7 @@ COMPUTED_PREFIX = re.compile(r"\b(EINSUMS_HAVE_[A-Z0-9_]*)\$\{")
 CONDITION = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef|elif|elifdef|elifndef)\b")
 DEFINE = re.compile(r"^\s*#\s*(?:define|cmakedefine)\s+(EINSUMS_HAVE_[A-Z0-9_]+)\b")
 
-SOURCE_SUFFIXES = (".hpp", ".cpp", ".h", ".hip", ".cu", ".cuh", ".mm", ".inl", ".in", ".fstring")
+SOURCE_SUFFIXES = (".hpp", ".cpp", ".h", ".cu", ".cuh", ".mm", ".inl", ".in", ".fstring")
 
 EXEMPT = {"devtools/check_have_macros.py"}
 

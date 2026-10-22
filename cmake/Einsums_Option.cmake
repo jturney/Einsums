@@ -63,7 +63,7 @@ set(EINSUMS_OPTION_CATEGORIES "Generic" "Build Targets" "Profiling" "Debugging")
 #:
 #:       # String option with choices, marked advanced, categorized under "Build Targets"
 #:       einsums_option(EINSUMS_BACKEND STRING "Select default backend" "cpu"
-#:         STRINGS "cpu;cuda;hip" CATEGORY "Build Targets" ADVANCED)
+#:         STRINGS "cpu;cuda" CATEGORY "Build Targets" ADVANCED)
 macro(einsums_option option type description default)
   set(options ADVANCED)
   set(one_value_args CATEGORY DEPENDS)

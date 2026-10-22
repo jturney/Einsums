@@ -8,7 +8,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 // The sink must be callable from GPU kernels under a device compiler.
-#if defined(__CUDACC__) || defined(__HIPCC__)
+#if defined(__CUDACC__)
 #    define EINSUMS_DETAIL_UNUSED_HD __host__ __device__
 #else
 #    define EINSUMS_DETAIL_UNUSED_HD

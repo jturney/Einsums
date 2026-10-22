@@ -247,15 +247,8 @@ if (@EINSUMS_BUILD_PYTHON@)
   endif()
 endif ()
 
-# If using hip...then dependencies need to be found and listed here.
-if(@EINSUMS_WITH_HIP@)
-  set(HIP_ROCM_ROOT "@CMAKE_HIP_COMPILER_ROCM_ROOT@")
-  include(Einsums_SetupHIP)
-elseif(@EINSUMS_WITH_CUDA@)
-  # No HIP_ROCM_ROOT here: this branch used to set it and then include a
-  # Einsums_SetupCUDA that did find_package(hip REQUIRED), so every downstream
-  # consumer of a CUDA-built Einsums needed a ROCm install. Einsums_SetupCUDA now
-  # uses find_package(CUDAToolkit) and needs nothing from ROCm.
+# A CUDA build's consumers need the CUDA toolkit's imported targets.
+if(@EINSUMS_WITH_CUDA@)
   set(EINSUMS_WITH_CUDA_ARCHITECTURES "@EINSUMS_WITH_CUDA_ARCHITECTURES@")
   include(Einsums_SetupCUDA)
 endif()

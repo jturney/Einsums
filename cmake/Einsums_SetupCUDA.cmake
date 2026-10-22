@@ -11,20 +11,10 @@
 # there is no ROCm to find - and it never provided the CUDA::cublas / CUDA::cusolver
 # / CUDA::cudart imported targets that libs/Einsums/GPU/CMakeLists.txt links against.
 # Those targets come from CUDAToolkit and nothing else.
-#
-# Building with HIP on an NVIDIA card is still possible: set EINSUMS_WITH_HIP=ON
-# with a ROCm install configured for the nvidia platform. That is Einsums_SetupHIP's
-# job, not this file's.
 
 if(EINSUMS_WITH_CUDA AND NOT TARGET CUDA::cudart)
   include(Einsums_Utils)
   include(Einsums_AddDefinitions)
-
-  if(EINSUMS_WITH_HIP)
-    einsums_error(
-      "Both EINSUMS_WITH_CUDA and EINSUMS_WITH_HIP are ON. Please choose one of them for einsums to work properly"
-    )
-  endif()
 
   # ------------------------------------------------------------------------------
   # CUDA language standard

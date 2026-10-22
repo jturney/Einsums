@@ -36,17 +36,17 @@ file(GLOB __data_files data/water_sto3g/*)
 file(COPY ${__data_files} DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/data/water_sto3g)
 
 foreach(test ${TensorAlgebraTests})
-  # Extract base name of test Example1.cpp -> Example1, Example.2.hip -> Example
+  # Extract base name of test Example1.cpp -> Example1, Example.2.cu -> Example
   get_filename_component(TestName ${test} NAME_WE)
-  # Extract extension of the test Example1.cpp -> .cpp, Example.2.hip -> .2.hip
+  # Extract extension of the test Example1.cpp -> .cpp, Example.2.cu -> .2.cu
   get_filename_component(Extension ${test} EXT)
 
   # Remove the leading dot and replace any periods with underscores
   string(SUBSTRING ${Extension} 1 -1 EXT_NO_DOT) # Remove the leading dot
   string(REPLACE "." "_" TestExtension ${EXT_NO_DOT})
 
-  # Check if the cleaned extension is "cu" or "hip"
-  if(NOT EINSUMS_WITH_GPU_SUPPORT AND (TestExtension STREQUAL "cu" OR TestExtension STREQUAL "hip"))
+  # Check if the cleaned extension is "cu"
+  if(NOT EINSUMS_WITH_GPU_SUPPORT AND TestExtension STREQUAL "cu")
     # Skip this iteration
     continue()
   endif()

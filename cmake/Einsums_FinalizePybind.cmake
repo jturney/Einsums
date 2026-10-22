@@ -109,7 +109,7 @@ function(einsums_finalize_pybind)
         get_property(_deps         GLOBAL PROPERTY EINSUMS_PYBIND_DEPS_${_mod})
         get_property(_extdeps      GLOBAL PROPERTY EINSUMS_PYBIND_EXTDEPS_${_mod})
 
-        # Non-module dependencies (CUDA::cublas, HDF5, hip::host, Apple
+        # Non-module dependencies (CUDA::cublas, HDF5, Apple
         # frameworks ...) contribute include directories through the same
         # DEPENDS_TARGETS channel. Filter to real targets: DEPENDENCIES may also
         # hold bare library paths (the MPS backend passes ${METAL_FRAMEWORK} and

@@ -14,8 +14,6 @@
 
 #if defined(EINSUMS_HAVE_CUDA)
 #    include <cusolverDn.h>
-#elif defined(EINSUMS_HAVE_HIP)
-#    include <hipsolver/hipsolver.h>
 #else
 // Mock backend: delegate to CPU BLAS/LAPACK
 #    include <Einsums/BLAS.hpp>
@@ -23,7 +21,7 @@
 #    include <Einsums/BLASVendor/Vendor.hpp>
 #endif
 
-#if !defined(EINSUMS_HAVE_CUDA) && !defined(EINSUMS_HAVE_HIP)
+#if !defined(EINSUMS_HAVE_CUDA)
 namespace {
 using int_t = ::einsums::blas::int_t;
 }
@@ -140,8 +138,6 @@ EINSUMS_EXPORT int syev<float>(char jobz, char uplo, int64_t n, float *A, int64_
     gpu_solver_catch(
         cusolverDnSsyevd(handle, mode, fill, int_extent(n, "n"), A, int_extent(lda, "lda"), W, work.as<float>(), lwork, info.as<int>()));
     return read_dev_info(info);
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::syev<float>");
 #else
     return static_cast<int>(::einsums::blas::vendor::ssyevd(jobz, uplo, vendor_extent(n, "n"), A, vendor_extent(lda, "lda"), W));
 #endif
@@ -161,8 +157,6 @@ EINSUMS_EXPORT int syev<double>(char jobz, char uplo, int64_t n, double *A, int6
     gpu_solver_catch(
         cusolverDnDsyevd(handle, mode, fill, int_extent(n, "n"), A, int_extent(lda, "lda"), W, work.as<double>(), lwork, info.as<int>()));
     return read_dev_info(info);
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::syev<double>");
 #else
     return static_cast<int>(::einsums::blas::vendor::dsyevd(jobz, uplo, vendor_extent(n, "n"), A, vendor_extent(lda, "lda"), W));
 #endif
@@ -187,8 +181,6 @@ EINSUMS_EXPORT int heev<float>(char jobz, char uplo, int64_t n, std::complex<flo
     gpu_solver_catch(cusolverDnCheevd(handle, mode, fill, int_extent(n, "n"), a_dev, int_extent(lda, "lda"), W, work.as<cuComplex>(), lwork,
                                       info.as<int>()));
     return read_dev_info(info);
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::heev<float>");
 #else
     std::complex<float> lwork_query;
     std::vector<float>  rwork(std::max(int64_t(1), 3 * n - 2));
@@ -217,8 +209,6 @@ EINSUMS_EXPORT int heev<double>(char jobz, char uplo, int64_t n, std::complex<do
     gpu_solver_catch(cusolverDnZheevd(handle, mode, fill, int_extent(n, "n"), a_dev, int_extent(lda, "lda"), W, work.as<cuDoubleComplex>(),
                                       lwork, info.as<int>()));
     return read_dev_info(info);
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::heev<double>");
 #else
     std::complex<double> lwork_query;
     std::vector<double>  rwork(std::max(int64_t(1), 3 * n - 2));
@@ -262,8 +252,6 @@ EINSUMS_EXPORT int gesv<float>(int64_t n, int64_t nrhs, float *A, int64_t lda, i
                                       dev_ipiv.as<int>(), B, int_extent(ldb, "ldb"), info.as<int>()));
     pivots_to_host(dev_ipiv, ipiv, n);
     return read_dev_info(info);
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::gesv<float>");
 #else
     // CPU gesv uses int* for ipiv, need to convert
     int_t const        vn = vendor_extent(n, "n");
@@ -302,8 +290,6 @@ EINSUMS_EXPORT int gesv<double>(int64_t n, int64_t nrhs, double *A, int64_t lda,
                                       dev_ipiv.as<int>(), B, int_extent(ldb, "ldb"), info.as<int>()));
     pivots_to_host(dev_ipiv, ipiv, n);
     return read_dev_info(info);
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::gesv<double>");
 #else
     int_t const        vn = vendor_extent(n, "n");
     std::vector<int_t> ipiv32(vn);
@@ -334,8 +320,6 @@ EINSUMS_EXPORT int getrf<float>(int64_t m, int64_t n, float *A, int64_t lda, int
                                       dev_ipiv.as<int>(), info.as<int>()));
     pivots_to_host(dev_ipiv, ipiv, npiv);
     return read_dev_info(info);
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::getrf<float>");
 #else
     int_t const        vm = vendor_extent(m, "m");
     int_t const        vn = vendor_extent(n, "n");
@@ -362,8 +346,6 @@ EINSUMS_EXPORT int getrf<double>(int64_t m, int64_t n, double *A, int64_t lda, i
                                       dev_ipiv.as<int>(), info.as<int>()));
     pivots_to_host(dev_ipiv, ipiv, npiv);
     return read_dev_info(info);
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::getrf<double>");
 #else
     int_t const        vm = vendor_extent(m, "m");
     int_t const        vn = vendor_extent(n, "n");
@@ -410,8 +392,6 @@ EINSUMS_EXPORT int getri<float>(int64_t n, float *A, int64_t lda, int64_t const 
         gpu::memcpy_device_to_device(A + col * lda, rhs.as<float>() + col * n, static_cast<std::size_t>(n) * sizeof(float));
     }
     return 0;
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::getri<float>");
 #else
     int_t const        vn = vendor_extent(n, "n");
     std::vector<int_t> ipiv32(vn);
@@ -453,8 +433,6 @@ EINSUMS_EXPORT int getri<double>(int64_t n, double *A, int64_t lda, int64_t cons
         gpu::memcpy_device_to_device(A + col * lda, rhs.as<double>() + col * n, static_cast<std::size_t>(n) * sizeof(double));
     }
     return 0;
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::getri<double>");
 #else
     int_t const        vn = vendor_extent(n, "n");
     std::vector<int_t> ipiv32(vn);
@@ -488,8 +466,6 @@ EINSUMS_EXPORT int gesvd<float>(char jobu, char jobvt, int64_t m, int64_t n, flo
                                       int_extent(ldu, "ldu"), VT, int_extent(ldvt, "ldvt"), work.as<float>(), lwork, nullptr,
                                       info.as<int>()));
     return read_dev_info(info);
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::gesvd<float>");
 #else
     std::vector<float> superb(std::min(m, n));
     int info = ::einsums::blas::vendor::sgesvd(jobu, jobvt, vendor_extent(m, "m"), vendor_extent(n, "n"), A, vendor_extent(lda, "lda"), S,
@@ -517,8 +493,6 @@ EINSUMS_EXPORT int gesvd<double>(char jobu, char jobvt, int64_t m, int64_t n, do
                                       int_extent(ldu, "ldu"), VT, int_extent(ldvt, "ldvt"), work.as<double>(), lwork, nullptr,
                                       info.as<int>()));
     return read_dev_info(info);
-#elif defined(EINSUMS_HAVE_HIP)
-    not_implemented("gpu::solver::gesvd<double>");
 #else
     std::vector<double> superb(std::min(m, n));
     int info = ::einsums::blas::vendor::dgesvd(jobu, jobvt, vendor_extent(m, "m"), vendor_extent(n, "n"), A, vendor_extent(lda, "lda"), S,

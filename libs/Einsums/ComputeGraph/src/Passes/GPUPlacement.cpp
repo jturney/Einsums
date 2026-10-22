@@ -122,7 +122,7 @@ bool einsum_is_dispatchable(Node const &node, Graph const &graph) {
 
 /// Check if the backend supports GPU BLAS for the given element type.
 ///
-/// MPS only supports float32. For CUDA/HIP/mock this reports the dtypes the
+/// MPS only supports float32. For CUDA/mock this reports the dtypes the
 /// executor's dispatch helpers actually handle: of those, only the
 /// strided-batched GEMM path takes complex - try_gpu_gemm, try_gpu_gemv,
 /// try_gpu_scale and try_gpu_axpy all return false for anything but
@@ -180,7 +180,7 @@ bool node_dtypes_supported(Node const &node, Graph const &graph) {
 /// ``TensorHandle::total_bytes`` reports the honest GLOBAL size regardless of tile
 /// sparsity. It went unnoticed on Apple Silicon only because
 /// ``gpu::has_unified_memory`` makes the transfers no-ops there; on a discrete
-/// CUDA or HIP build the same graph memcpys from nullptr. @ref node_is_dispatchable
+/// CUDA build the same graph memcpys from nullptr. @ref node_is_dispatchable
 /// no longer admits ``dot``, and the guard stays for every kind it does admit.
 bool node_touches_tiled(Node const &node, Graph const &graph) {
     for (auto tid : node.inputs) {

@@ -242,7 +242,7 @@ endif()
 # distcc, or nothing at all sets CMAKE_<LANG>_COMPILER_LAUNCHER (or EINSUMS_WITH_CCACHE=OFF) and is
 # left alone.
 #
-# C and CXX only. The CUDA and HIP drivers cache poorly enough to be worth an explicit decision
+# C and CXX only. The CUDA driver caches poorly enough to be worth an explicit decision
 # rather than a default.
 einsums_option(
   EINSUMS_WITH_CCACHE BOOL "Route C and C++ compiles through ccache when it is installed (default: ON)"
@@ -329,33 +329,23 @@ einsums_option(
 )
 
 # ##################################################################################################
-# CUDA/HIP configuration
+# CUDA configuration
 # ##################################################################################################
 set(CUDA_OPTION_STRING "Enable support for CUDA (default: OFF)")
-set(HIP_OPTION_STRING "Enable support for HIP (default: OFF)")
 einsums_option(EINSUMS_WITH_CUDA BOOL "${CUDA_OPTION_STRING}" OFF ADVANCED CATEGORY "Build Targets")
 
-# No need for the user to specify the option explicitly
-einsums_option(EINSUMS_WITH_HIP BOOL "${HIP_OPTION_STRING}" OFF ADVANCED CATEGORY "Build Targets")
-if("${CMAKE_CXX_COMPILER}" MATCHES "hipcc$")
-  set(EINSUMS_WITH_HIP
-      ON
-      CACHE BOOL "${HIP_OPTION_STRING}" FORCE
+# The HIP backend was never built by CI and was removed. A configure that still asks for it, or
+# that runs hipcc, is told so rather than quietly building without a GPU backend.
+if(EINSUMS_WITH_HIP OR "${CMAKE_CXX_COMPILER}" MATCHES "hipcc$")
+  message(
+    FATAL_ERROR
+      "The HIP backend has been removed. Drop EINSUMS_WITH_HIP, or clear it from an existing cache "
+      "with `cmake -U EINSUMS_WITH_HIP`; CUDA and MPS remain."
   )
 endif()
 
-if(EINSUMS_WITH_CUDA AND EINSUMS_WITH_HIP)
-  einsums_error(
-    "EINSUMS_WITH_CUDA=ON and EINSUMS_WITH_HIP=ON. Only one of them can be on at the same time.\
- Note: EINSUMS_WITH_HIP is automatically enabled when compiling with hipcc."
-  )
-endif()
-
-# MPS (Metal Performance Shaders) — auto-enabled on Apple when no CUDA/HIP
-if(APPLE
-   AND NOT EINSUMS_WITH_CUDA
-   AND NOT EINSUMS_WITH_HIP
-)
+# MPS (Metal Performance Shaders): auto-enabled on Apple when CUDA is off
+if(APPLE AND NOT EINSUMS_WITH_CUDA)
   einsums_option(
     EINSUMS_WITH_MPS BOOL "Enable Metal Performance Shaders GPU backend (default: ON on macOS)" ON
     CATEGORY "Build Targets"
@@ -386,9 +376,9 @@ einsums_option(
   OFF ADVANCED CATEGORY "Build Targets"
 )
 if(EINSUMS_WITH_GPU_MOCK_DISCRETE)
-  if(EINSUMS_WITH_CUDA OR EINSUMS_WITH_HIP OR EINSUMS_WITH_MPS)
+  if(EINSUMS_WITH_CUDA OR EINSUMS_WITH_MPS)
     einsums_error(
-      "EINSUMS_WITH_GPU_MOCK_DISCRETE only applies to the mock GPU backend, but a real backend (CUDA/HIP/MPS) is enabled."
+      "EINSUMS_WITH_GPU_MOCK_DISCRETE only applies to the mock GPU backend, but a real backend (CUDA/MPS) is enabled."
     )
   endif()
   # The poisoned-pointer allocator is built on mmap/mprotect. Windows would need
@@ -402,7 +392,7 @@ if(EINSUMS_WITH_GPU_MOCK_DISCRETE)
   einsums_add_config_define(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
 endif()
 
-if(EINSUMS_WITH_CUDA OR EINSUMS_WITH_HIP)
+if(EINSUMS_WITH_CUDA)
   einsums_add_config_define(EINSUMS_HAVE_GPU_SUPPORT)
   set(EINSUMS_WITH_GPU_SUPPORT ON)
   set(EINSUMS_WITH_GPU_SUPPORT
@@ -585,9 +575,8 @@ einsums_check_for_omp_tools_h(DEFINITIONS EINSUMS_HAVE_OMP_TOOLS_H)
 # ##################################################################################################
 # C++ feature tests
 # ##################################################################################################
-# Need to set up CUDA/HIP before feature tests to enable the respective languages
+# Need to set up CUDA before feature tests to enable the language
 include(Einsums_SetupCUDA)
-include(Einsums_SetupHIP)
 include(Einsums_SetupFFT)
 include(Einsums_PerformCXXFeatureTests)
 einsums_perform_cxx_feature_tests()

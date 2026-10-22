@@ -433,33 +433,6 @@
      // clang compiling CUDA code, device mode.
 #    define EINSUMS_COMPUTE_DEVICE_CODE
 #  endif
-// Detecting HIPCC
-#elif defined(__HIPCC__)
-#  include <hip/hip_version.h>
-/**
- * @def EINSUMS_HIP_VERSION
- *
- * The version of HIP used to compile Einsums.
- *
- * @versionadded{1.0.0}
- */
-#  define EINSUMS_HIP_VERSION HIP_VERSION
-#  if defined(__clang__)
-#    pragma clang diagnostic push
-#    pragma clang diagnostic ignored "-Wdeprecated-copy"
-#    pragma clang diagnostic ignored "-Wunused-parameter"
-#  endif
-   // Not like nvcc, the __device__ __host__ function decorators are not defined
-   // by the compiler
-#  include <hip/hip_runtime_api.h>
-#  if defined(__clang__)
-#    pragma clang diagnostic pop
-#  endif
-#  define EINSUMS_COMPUTE_CODE
-#  if defined(__HIP_DEVICE_COMPILE__) && __HIP_DEVICE_COMPILE__ != 0
-     // hipclang compiling CUDA/HIP code, device mode.
-#    define EINSUMS_COMPUTE_DEVICE_CODE
-#  endif
 #endif
 
 #if !defined(EINSUMS_COMPUTE_DEVICE_CODE)

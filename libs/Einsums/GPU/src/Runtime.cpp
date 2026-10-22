@@ -9,8 +9,6 @@
 
 #if defined(EINSUMS_HAVE_CUDA)
 #    include <cuda_runtime_api.h>
-#elif defined(EINSUMS_HAVE_HIP)
-#    include <hip/hip_runtime_api.h>
 #elif defined(EINSUMS_HAVE_MPS)
 #    include <Einsums/GPU/MPSBackend.hpp>
 #else
@@ -125,10 +123,6 @@ expected<void *, GpuError> device_malloc(size_t bytes) {
     auto err = cudaMalloc(&ptr, bytes);
     if (err != cudaSuccess)
         return unexpected(GpuError{fmt::format("cudaMalloc({} bytes) failed: {}", bytes, cudaGetErrorString(err)), static_cast<int>(err)});
-#elif defined(EINSUMS_HAVE_HIP)
-    auto err = hipMalloc(&ptr, bytes);
-    if (err != hipSuccess)
-        return unexpected(GpuError{fmt::format("hipMalloc({} bytes) failed: {}", bytes, hipGetErrorString(err)), static_cast<int>(err)});
 #elif defined(EINSUMS_HAVE_MPS)
     ptr = mps::device_malloc(bytes);
     if (!ptr && bytes > 0)
@@ -166,8 +160,6 @@ void device_free(void *ptr) {
         return;
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_catch(cudaFree(ptr));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_catch(hipFree(ptr));
 #elif defined(EINSUMS_HAVE_MPS)
     mps::device_free(ptr);
 #elif defined(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
@@ -184,8 +176,6 @@ void device_free(void *ptr) {
 void memcpy_host_to_device(void *dst, void const *src, size_t bytes) {
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_catch(cudaMemcpy(dst, src, bytes, cudaMemcpyHostToDevice));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_catch(hipMemcpy(dst, src, bytes, hipMemcpyHostToDevice));
 #elif defined(EINSUMS_HAVE_MPS)
     mps::memcpy_host_to_device(dst, src, bytes);
 #elif defined(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
@@ -201,8 +191,6 @@ void memcpy_host_to_device(void *dst, void const *src, size_t bytes) {
 void memcpy_device_to_host(void *dst, void const *src, size_t bytes) {
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_catch(cudaMemcpy(dst, src, bytes, cudaMemcpyDeviceToHost));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_catch(hipMemcpy(dst, src, bytes, hipMemcpyDeviceToHost));
 #elif defined(EINSUMS_HAVE_MPS)
     mps::memcpy_device_to_host(dst, src, bytes);
 #elif defined(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
@@ -218,8 +206,6 @@ void memcpy_device_to_host(void *dst, void const *src, size_t bytes) {
 void memcpy_device_to_device(void *dst, void const *src, size_t bytes) {
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_catch(cudaMemcpy(dst, src, bytes, cudaMemcpyDeviceToDevice));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_catch(hipMemcpy(dst, src, bytes, hipMemcpyDeviceToDevice));
 #elif defined(EINSUMS_HAVE_MPS)
     mps::memcpy_device_to_device(dst, src, bytes);
 #elif defined(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
@@ -236,8 +222,6 @@ void memcpy_device_to_device(void *dst, void const *src, size_t bytes) {
 void device_memset(void *ptr, int value, size_t bytes) {
 #if defined(EINSUMS_HAVE_CUDA)
     gpu_catch(cudaMemset(ptr, value, bytes));
-#elif defined(EINSUMS_HAVE_HIP)
-    gpu_catch(hipMemset(ptr, value, bytes));
 #elif defined(EINSUMS_HAVE_MPS)
     mps::device_memset(ptr, value, bytes);
 #elif defined(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
@@ -257,11 +241,6 @@ void device_synchronize() {
         return;
     }
     gpu_catch(cudaDeviceSynchronize());
-#elif defined(EINSUMS_HAVE_HIP)
-    if (!gpu_available()) {
-        return;
-    }
-    gpu_catch(hipDeviceSynchronize());
 #elif defined(EINSUMS_HAVE_MPS)
     mps::device_synchronize();
 #else
@@ -275,7 +254,7 @@ namespace {
 /// Works on all backends for testing budget-constrained placement.
 std::atomic<size_t> g_memory_override{0};
 
-#if !defined(EINSUMS_HAVE_CUDA) && !defined(EINSUMS_HAVE_HIP) && !defined(EINSUMS_HAVE_MPS)
+#if !defined(EINSUMS_HAVE_CUDA) && !defined(EINSUMS_HAVE_MPS)
 /// Mock device memory limit (0 = use default: system RAM / 2).
 std::atomic<size_t> mock_memory_limit{0};
 
@@ -313,16 +292,6 @@ size_t available_device_memory() {
     size_t free_mem = 0, total_mem = 0;
     if (cudaMemGetInfo(&free_mem, &total_mem) != cudaSuccess) {
         (void)cudaGetLastError();
-        return 0;
-    }
-    return free_mem;
-#elif defined(EINSUMS_HAVE_HIP)
-    if (!gpu_available()) {
-        return 0;
-    }
-    size_t free_mem = 0, total_mem = 0;
-    if (hipMemGetInfo(&free_mem, &total_mem) != hipSuccess) {
-        (void)hipGetLastError();
         return 0;
     }
     return free_mem;
@@ -379,25 +348,6 @@ DeviceCaps detect_capabilities() {
     caps.fp16_gemm = cc >= 70;
     caps.bf16_gemm = cc >= 80;
     caps.fp8_gemm  = cc >= 89;
-
-#elif defined(EINSUMS_HAVE_HIP)
-    int count = 0;
-    if (hipGetDeviceCount(&count) != hipSuccess || count <= 0) {
-        (void)hipGetLastError();
-        return caps;
-    }
-    hipDeviceProp_t props{};
-    if (hipGetDeviceProperties(&props, 0) != hipSuccess) {
-        (void)hipGetLastError();
-        return caps;
-    }
-    caps.available      = true;
-    caps.device_count   = count;
-    caps.compute_major  = props.major;
-    caps.compute_minor  = props.minor;
-    caps.unified_memory = props.unifiedAddressing != 0;
-    caps.total_memory   = props.totalGlobalMem;
-    caps.name           = props.name;
 
 #elif defined(EINSUMS_HAVE_MPS)
     caps.available      = true;

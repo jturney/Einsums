@@ -26,13 +26,6 @@ inline constexpr bool has_cuda =
     false;
 #endif
 
-inline constexpr bool has_hip =
-#if defined(EINSUMS_HAVE_HIP)
-    true;
-#else
-    false;
-#endif
-
 inline constexpr bool has_mps =
 #if defined(EINSUMS_HAVE_MPS)
     true;
@@ -41,7 +34,7 @@ inline constexpr bool has_mps =
 #endif
 
 /// True if any real GPU backend is available.
-inline constexpr bool has_gpu = has_cuda || has_hip || has_mps;
+inline constexpr bool has_gpu = has_cuda || has_mps;
 
 /// True if running with the mock CPU backend, meaning no real GPU.
 inline constexpr bool is_mock = !has_gpu;
@@ -58,7 +51,7 @@ inline constexpr bool has_mock_discrete =
     false;
 #endif
 
-/// True if host and device share memory: MPS and the plain mock, not CUDA/HIP or mock-discrete.
+/// True if host and device share memory: MPS and the plain mock, not CUDA or mock-discrete.
 /// The executor then skips device shadows.
 inline constexpr bool has_unified_memory = has_mps || (is_mock && !has_mock_discrete);
 
@@ -70,7 +63,7 @@ inline constexpr bool has_unified_memory = has_mps || (is_mock && !has_mock_disc
 
 /// True if the active backend implements FP16 GEMM (gpu::blas::hgemm).
 ///
-/// MPS only; the CUDA and HIP bodies throw.
+/// MPS only; the CUDA bodies throw.
 inline constexpr bool has_fp16_gemm = has_mps;
 
 /// True if the active backend implements FP8 E4M3 GEMM (gpu::blas::fp8gemm).

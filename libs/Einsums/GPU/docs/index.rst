@@ -11,10 +11,9 @@ GPU
 ===
 
 The ``GPU`` module provides a portable abstraction layer for GPU-accelerated
-linear algebra. It supports four backends:
+linear algebra. It supports three backends:
 
 - CUDA: NVIDIA GPUs via cuBLAS/cuSOLVER.
-- HIP: AMD GPUs via hipBLAS/hipSOLVER.
 - MPS: Apple Silicon GPUs via Metal Performance Shaders, auto-detected on macOS.
 - Mock: CPU implementation used when Einsums is built without a GPU backend.
 
@@ -58,17 +57,17 @@ buffer instead. Final D2H nodes
 ensure user-visible results are available after ``execute()`` on discrete GPUs
 without relying on implicit flushes.
 
-CUDA and HIP
-------------
+CUDA
+----
 
-On systems with NVIDIA or AMD GPUs, the CUDA or HIP backend is selected.
+On systems with NVIDIA GPUs, the CUDA backend is selected.
 These use discrete device memory with explicit H2D/D2H transfers managed
 by the ComputeGraph pipeline.
 
 Mock Backend
 ------------
 
-When Einsums is configured without CUDA, HIP, or MPS, the ``gpu::``
+When Einsums is configured without CUDA or MPS, the ``gpu::``
 functions are built on CPU implementations (``std::malloc``,
 ``std::memcpy``, ``blas::vendor::*``). This is a configure-time choice, not
 a runtime fallback. It lets code using the GPU API compile and run on any
@@ -126,7 +125,7 @@ BLAS API
     einsums::gpu::blas::bfgemm('n', 'n', M, N, K,
         1.0f, A_bf16, M, B_bf16, K, 0.0f, C_fp32, M);
 
-The reduced-precision GEMMs are implemented only on MPS. On CUDA and HIP,
+The reduced-precision GEMMs are implemented only on MPS. On CUDA,
 ``hgemm`` throws a not-implemented error, while ``bfgemm`` returns without
 doing anything. On the mock backend both return without doing anything.
 Where they do nothing, ``C`` is left unchanged and no error is raised.
@@ -135,7 +134,7 @@ Check ``has_fp16_gemm`` before calling them.
 BLAS Level 1 (Element-wise)
 ----------------------------
 
-On CUDA and HIP these operations execute on device memory, avoiding
+On CUDA these operations execute on device memory, avoiding
 unnecessary D2H/H2D transfers when data is already on the GPU from a
 previous operation. On MPS and the mock backend they run on the CPU through
 the vendor BLAS, since the memory is already host-visible:

@@ -9,7 +9,7 @@
 #:    Define an Einsums executable target with rich options (install/layout, GPU language, flags, unity, etc.).
 #:
 #:    A convenience wrapper around ``add_executable`` plus project‑standard setup:
-#:    source/headers discovery, GPU language handling (CUDA/HIP/NVHPC), macOS dSYM generation,
+#:    source/headers discovery, GPU language handling (CUDA/NVHPC), macOS dSYM generation,
 #:    custom output names/suffixes, optional install rules, and forwarding of build policy flags to
 #:    ``einsums_setup_target``.
 #:
@@ -30,7 +30,7 @@
 #:        [OUTPUT_NAME <basename>]
 #:        [OUTPUT_SUFFIX <subdir>]
 #:        [INSTALL_SUFFIX <dir>]
-#:        [LANGUAGE <C|CXX|CUDA|HIP>]
+#:        [LANGUAGE <C|CXX|CUDA>]
 #:        [SOURCES <...>] [HEADERS <...>] [AUXILIARY <...>]
 #:        [DEPENDENCIES <targets...>]
 #:        [COMPILE_FLAGS <...>] [LINK_FLAGS <...>]
@@ -40,7 +40,7 @@
 #:    - ``name`` *(required)*: Target name.
 #:
 #:    **Boolean options**
-#:    - ``GPU``: Mark the target as GPU code. Sets target language to CUDA/HIP (or NVHPC CUDA link).
+#:    - ``GPU``: Mark the target as GPU code. Sets target language to CUDA (or NVHPC CUDA link).
 #:    - ``EXCLUDE_FROM_ALL``: Do not build by default (opt‑in only).
 #:    - ``EXCLUDE_FROM_DEFAULT_BUILD``: Exclude from default config build on multi‑config generators.
 #:    - ``INTERNAL_FLAGS``: Forwarded to ``einsums_setup_target`` to enable internal policy flags.
@@ -72,18 +72,16 @@
 #:       to normalize provided ``SOURCES`` (and attach headers); groups files with
 #:       ``einsums_add_source_group`` under ``FOLDER``/roots for IDEs.
 #:    3. **GPU language tweaks**
-#:       - When ``EINSUMS_WITH_HIP``: `.cu` sources are coerced to ``LANGUAGE HIP``.
 #:       - With NVHPC: `.cu` sources get compiler‑specific flags via
 #:         ``einsums_add_nvhpc_cuda_flags``; if GPU content is present, link with ``-cuda``.
 #:       - With ``GPU`` option:
-#:         * HIP available → target ``LANGUAGE HIP``,
 #:         * NVHPC → set link flags ``-cuda``,
 #:         * otherwise → target ``LANGUAGE CUDA``.
 #:    4. **Target creation** — Calls ``add_executable`` with sources/headers/auxiliary.
 #:    5. **macOS dSYM** — On Apple with Debug/RelWithDebInfo, post‑build ``dsymutil`` runs
 #:       to generate a `.dSYM` bundle.
 #:    6. **Output naming/layout**
-#:       - ``OUTPUT_NAME`` sets the runtime name (prefixed).
+#:       - ``OUTPUT_NAME`` sets the runtime name.
 #:       - ``OUTPUT_SUFFIX`` adjusts runtime output directories per‑config (MSVC) or single‑config.
 #:    7. **Install rules**
 #:       - Skipped if ``NOINSTALL`` **or** ``EXCLUDE_FROM_ALL`` is set.
@@ -97,8 +95,6 @@
 #:         ``einsums_setup_target(<name> TYPE EXECUTABLE FOLDER <...> COMPILE_FLAGS <...> LINK_FLAGS <...> DEPENDENCIES <...> <_target_flags>)``.
 #:
 #:    **Notes**
-#:    - If ``EINSUMS_WITH_HIP`` is enabled, `.cu` files can be compiled as HIP sources; this allows
-#:      mixed codebases to compile under HIP toolchains.
 #:    - NVHPC CUDA linkage is handled by setting target ``LINK_FLAGS`` to ``-cuda`` when GPU sources are detected.
 #:    - File grouping/log output is produced via project helpers (`einsums_print_list`) for traceability.
 #:
@@ -123,15 +119,14 @@
 #:         COMPILE_FLAGS -DUSE_FAST_MATH
 #:       )
 #:
-#:    HIP build, IDE grouping:
+#:    IDE grouping:
 #:    .. code-block:: cmake
 #:
 #:       einsums_add_executable(bench
 #:         FOLDER "Apps/Benchmarks"
 #:         SOURCE_ROOT "${CMAKE_SOURCE_DIR}/apps/bench"
 #:         HEADER_ROOT "${CMAKE_SOURCE_DIR}/apps/bench"
-#:         SOURCES apps/bench/main.cpp apps/bench/kernels.cu
-#:         DEPENDENCIES Einsums::einsums_hip
+#:         SOURCES apps/bench/main.cpp
 #:       )
 #:
 #:    **See also**
@@ -225,15 +220,6 @@ function(einsums_add_executable name)
     set(exclude_from_all ${exclude_from_all} EXCLUDE_FROM_DEFAULT_BUILD TRUE)
   endif()
 
-  if(EINSUMS_WITH_HIP)
-    foreach(source ${${name}_SOURCES})
-      get_filename_component(extension ${source} EXT)
-      if(${extension} STREQUAL ".cu")
-        set_source_files_properties(${source} PROPERTIES LANGUAGE HIP)
-      endif()
-    endforeach()
-  endif()
-
   set(target_has_gpu_sources FALSE)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC")
     foreach(source ${${name}_SOURCES})
@@ -284,9 +270,7 @@ function(einsums_add_executable name)
   endif()
 
   if(${name}_GPU)
-    if(EINSUMS_WITH_HIP)
-      set_target_properties(${name} PROPERTIES LANGUAGE HIP)
-    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC")
       set_target_properties(${name} PROPERTIES LINK_FLAGS "-cuda")
     else()
       set_target_properties(${name} PROPERTIES LANGUAGE CUDA)

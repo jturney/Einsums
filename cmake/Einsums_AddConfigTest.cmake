@@ -110,7 +110,7 @@ include(CheckLibraryExists)
 #:    **Side effects**
 #:    - Creates files under ``${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/config_tests``.
 #:    - May update/consume Einsums global properties of compile flags.
-#:    - Adjusts ``CMAKE_CXX_FLAGS`` (and ``CMAKE_CUDA_FLAGS`` / ``CMAKE_HIP_FLAGS`` stanzas) for
+#:    - Adjusts ``CMAKE_CXX_FLAGS`` (and ``CMAKE_CUDA_FLAGS``) for
 #:      the duration of the probe invocation.
 #:
 #:    **Examples**
@@ -292,10 +292,8 @@ function(einsums_add_config_test variable)
       )
         set(cuda_parameters CUDA_STANDARD ${CMAKE_CUDA_STANDARD})
       endif()
-      # if(EINSUMS_WITH_HIP) set(hip_parameters HIP_STANDARD "${CMAKE_HIP_STANDARD}") endif()
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${additional_cmake_flags} ${${variable}_CXXFLAGS}")
       set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} ${additional_cmake_flags} ${${variable}_CXXFLAGS}")
-      set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} ${additional_cmake_flags} ${${variable}_CXXFLAGS}")
       # cmake-format: off
       try_compile(
           ${variable}_RESULT
@@ -311,7 +309,6 @@ function(einsums_add_config_test variable)
           CXX_STANDARD_REQUIRED ON
           CXX_EXTENSIONS FALSE
           ${cuda_parameters}
-          ${hip_parameters}
           COPY_FILE ${test_binary}
       )
       # cmake-format: on
@@ -569,8 +566,6 @@ function(einsums_check_for_cxx23_static_call_operator_gpu)
     set(static_call_operator_test_extension "cpp")
     if(EINSUMS_WITH_CUDA AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC")
       set(static_call_operator_test_extension "cu")
-    elseif(EINSUMS_WITH_HIP)
-      set(static_call_operator_test_extension "hip")
     endif()
 
     set(extra_cxxflags)

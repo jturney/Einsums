@@ -32,9 +32,9 @@ if(EINSUMS_WITH_PROFILER)
 endif()
 
 foreach(test ${profile_tests})
-  # Extract base name of test Example1.cpp -> Example1, Example.2.hip -> Example
+  # Extract base name of test Example1.cpp -> Example1, Example.2.cu -> Example
   get_filename_component(TestName ${test} NAME_WE)
-  # Extract extension of the test Example1.cpp -> .cpp, Example.2.hip -> .2.hip
+  # Extract extension of the test Example1.cpp -> .cpp, Example.2.cu -> .2.cu
   get_filename_component(Extension ${test} EXT)
 
   if(Extension STREQUAL ".py")
@@ -61,8 +61,8 @@ foreach(test ${profile_tests})
   string(SUBSTRING ${Extension} 1 -1 EXT_NO_DOT) # Remove the leading dot
   string(REPLACE "." "_" TestExtension ${EXT_NO_DOT})
 
-  # Check if the cleaned extension is "cu" or "hip"
-  if(NOT EINSUMS_WITH_GPU_SUPPORT AND (TestExtension STREQUAL "cu" OR TestExtension STREQUAL "hip"))
+  # Check if the cleaned extension is "cu"
+  if(NOT EINSUMS_WITH_GPU_SUPPORT AND TestExtension STREQUAL "cu")
     # Skip this iteration
     continue()
   endif()

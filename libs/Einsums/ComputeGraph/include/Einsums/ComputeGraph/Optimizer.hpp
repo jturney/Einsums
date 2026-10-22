@@ -1117,7 +1117,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * 36. TransferInsertion (structural-resource): insert HostToDevice / DeviceToHost nodes
      * 37. TransferElimination (structural-resource): drop redundant transfers
      * 38. GPUDiagnostics (diagnostic): log placement decisions
-     * 39. StreamAssignment (tuning): assign CUDA/HIP streams for overlap
+     * 39. StreamAssignment (tuning): assign CUDA streams for overlap
      *
      * Distributed block (when MPI or its mock is available):
      * 40. InputSlicing (structural-resource): create per-rank views of distributed inputs
