@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <type_traits>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -62,6 +63,42 @@ TEST_CASE("FreeInsertion - frees a flat-graph intermediate after last use", "[Co
     CHECK(count_nodes(g, cg::OpKind::Free) == 1);
 
     REQUIRE_NOTHROW(g.execute());
+}
+
+TEST_CASE("FreeInsertion - a Free and a Materialize at one position release before they allocate", "[ComputeGraph][FreeInsertion]") {
+    // Each link of the chain is last read by the node that writes the next, so the Free of one and
+    // the Materialize of the next go in at the same position. Either order there is valid, and only
+    // release-first keeps two links alive at a time. The order used to be whatever the standard
+    // library's unstable sort left at a tie: MSVC's held three links and Pass_MemoryPlanning's
+    // sequential peak failed on Windows only. Forty links take the sort past the small-range
+    // insertion sort that happened to keep the order on the other platforms.
+    constexpr std::size_t n = 8, links = 40;
+    auto                  A = create_random_tensor<double>("A", n, n);
+    auto                  C = create_zero_tensor<double>("C", n, n);
+
+    cg::Graph                                                                                  graph("chain");
+    std::vector<std::remove_reference_t<decltype(graph.create_tensor<double, 2>("", n, n))> *> chain;
+    chain.reserve(links);
+    for (std::size_t k = 0; k < links; ++k) {
+        chain.push_back(&graph.create_tensor<double, 2>(fmt::format("T{}", k), n, n));
+    }
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", chain[0], A, A);
+        for (std::size_t k = 1; k < links; ++k) {
+            cg::einsum("ik;kj->ij", chain[k], *chain[k - 1], A);
+        }
+        cg::einsum("ik;kj->ij", &C, *chain[links - 1], A);
+    }
+
+    cg::passes::FreeInsertion fi(/*min_bytes=*/0);
+    REQUIRE(fi.run(graph));
+    REQUIRE(count_nodes(graph, cg::OpKind::Free) == links);
+    REQUIRE(count_nodes(graph, cg::OpKind::Materialize) == links);
+
+    graph.execute();
+    graph.execute();
+    CHECK(graph.last_run().peak_bytes == 2 * n * n * sizeof(double));
 }
 
 // The default floor was 1 MiB, which kept every T2-shaped intermediate of a small CCSD (o^2 v^2 of

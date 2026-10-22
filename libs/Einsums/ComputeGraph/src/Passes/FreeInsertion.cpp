@@ -338,7 +338,17 @@ bool FreeInsertion::transform(Graph &graph) {
         }
     }
 
-    std::ranges::sort(insertions, [](Insertion const &a, Insertion const &b) { return a.index > b.index; });
+    // A Free after one tensor's last reader and a Materialize before another's first writer can
+    // share a position, and either order there is valid. Release goes first so the two are never
+    // held together: a later insertion at a position lands in front of an earlier one, so the
+    // Materialize goes in first. The order at a tie is spelled out rather than left to the sort,
+    // which left it to the standard library and held one more tensor at a time under MSVC.
+    std::ranges::stable_sort(insertions, [](Insertion const &a, Insertion const &b) {
+        if (a.index != b.index) {
+            return a.index > b.index;
+        }
+        return a.node.kind == OpKind::Materialize && b.node.kind != OpKind::Materialize;
+    });
     for (auto &ins : insertions) {
         nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(ins.index), std::move(ins.node));
     }
