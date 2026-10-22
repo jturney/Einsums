@@ -915,3 +915,55 @@ TEST_CASE("LoopInvariantHoisting - a hoisted node re-seats only the stand-ins it
     second.execute();
     CHECK(stand_in->impl().data() == big2.data());
 }
+
+// The same hazard at the body's own execute(), which re-seated every stand-in the body held. Once
+// hoisting takes every node of the body that reads a tensor, the parent orders the loop node
+// against nothing of it, so the loop ran beside the tensor's Free and its body read the storage
+// block the Free was clearing: the ThreadSanitizer race in the resource-pass fuzz census. A
+// body re-seats only the stand-ins its nodes name.
+TEST_CASE("LoopInvariantHoisting - a body re-seats only the stand-ins its nodes still name", "[ComputeGraph][Passes][Loop]") {
+    using RT           = RuntimeTensor<double>;
+    constexpr size_t m = 4;
+    RT               A("A", std::vector<size_t>{m, 1});
+    RT               B("B", std::vector<size_t>{1, m});
+    RT               x("x", std::vector<size_t>{m});
+    RT               w("w", std::vector<size_t>{m});
+    RT               v("v", std::vector<size_t>{m});
+    A = 1.0;
+    B = 2.0;
+    x = 1.0;
+    w.zero();
+    v.zero();
+
+    cg::Graph graph("lih_body_reseat_scope");
+    auto     &gone = graph.create_zero_runtime_tensor<double>("gone", {m, m});
+    auto     &kept = graph.create_zero_runtime_tensor<double>("kept", {m, m});
+    auto     &body = graph.add_loop("loop", 2, [](size_t it) { return it == 0; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ij <- ik ; kj", &gone, A, B);
+        cg::einsum("i <- ij ; j", &w, gone, x); // invariant: leaves with its producer
+        cg::einsum("ij <- ik ; kj", &kept, A, B);
+        cg::einsum("i <- ij ; j", 1.0, &v, 1.0, kept, x); // accumulates: stays in the body
+    }
+    auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
+    REQUIRE(pass.num_hoisted() == 3);
+
+    auto const loop       = std::ranges::find_if(graph.nodes(), [](cg::Node const &n) { return n.op_data.get_if<cg::LoopDescriptor>(); });
+    cg::Graph &body_graph = *loop->op_data.get_if<cg::LoopDescriptor>()->body;
+    auto const stand_in   = [&body_graph](RT const &tensor) {
+        cg::TensorSlot const *slot = body_graph.find_slot(body_graph.find_tensor_id_by_ptr(&tensor));
+        REQUIRE(slot != nullptr);
+        REQUIRE(slot->ptr != &tensor);
+        return static_cast<RT const *>(slot->ptr);
+    };
+    RT const *gone_in_body = stand_in(gone);
+    RT const *kept_in_body = stand_in(kept);
+
+    double const *before = gone_in_body->impl().data();
+    gone.release();
+    kept.release();
+    body_graph.resync_slot_storage();
+    CHECK(gone_in_body->impl().data() == before);
+    CHECK(kept_in_body->impl().data() == kept.impl().data());
+}

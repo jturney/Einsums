@@ -370,11 +370,6 @@ expected<void, GraphError> Graph::validate_tensors() const {
 
     for (auto const &[id, handle] : _tensors) {
         if (handle.alloc_state == AllocState::Deferred) {
-            // The snapshot says "deferred", but the user may have called
-            // tensor.materialize() directly since registration - ask the
-            // tensor itself when possible.
-            if (handle.is_materialized_fn && handle.is_materialized_fn())
-                continue;
             if (!materialize_targets_built) {
                 materialize_targets_built = true;
                 for (auto const &node : _nodes) {
@@ -416,6 +411,16 @@ expected<void, GraphError> Graph::validate_tensors() const {
             // (the body's own handle gets the hoisted Materialize; the parent
             // orphan is just an id anchor for dependency edges).
             if (!referenced_tids.contains(id))
+                continue;
+            // The snapshot says "deferred", but the user may have called
+            // tensor.materialize() directly since registration - ask the
+            // tensor itself when possible. Only once a node is known to
+            // reference it: a body validates at its first replay, inside its
+            // loop node, and the parent orders that node against the tensors
+            // the body's nodes name and no others. Asking a tensor none of
+            // them names read its storage while a Materialize on another
+            // branch of the parent was allocating it.
+            if (handle.is_materialized_fn && handle.is_materialized_fn())
                 continue;
             // A redirected id's slot reads another tensor's storage, so its own deferred shell is
             // never touched; the tensor it was redirected to is the one that needs storage, and

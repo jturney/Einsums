@@ -115,24 +115,40 @@ void Graph::resync_slot_storage() {
     // A slot a redirect points at a stand-in is reached through the stand-in's
     // OWN slot, which is where the adoption is recorded; the object is one
     // object, so fixing it once fixes every slot naming it.
+    //
+    // Only the slots this graph's nodes name. A body replays inside its loop
+    // node, and the parent orders that node against what the body's nodes
+    // touch and nothing else. A stand-in the body adopted at capture can
+    // outlive every node of the body that read it, when LoopInvariantHoisting
+    // lifts them out; re-seating it read the storage block of a tensor that
+    // a Free on another branch of the parent was releasing at the same time.
+    // A sub-graph's nodes are re-seated by its own execute, through its own
+    // slots.
     std::scoped_lock const lock(resync_mutex());
-    for (auto const &[id, slot] : _slot_map) {
-        if (slot && slot->owner && slot->ptr != nullptr && slot->resync_of != nullptr) {
-            slot->resync_of(slot->ptr);
+    for (Node const &node : _nodes) {
+        for (TensorId const id : node.inputs) {
+            resync_slot(id);
+        }
+        for (TensorId const id : node.outputs) {
+            resync_slot(id);
         }
     }
 }
 
 void Graph::resync_slot_storage(std::span<TensorId const> ids) {
     std::scoped_lock const lock(resync_mutex());
-    for (TensorId id : ids) {
-        if (auto const redirect = _slot_redirects.find(id); redirect != _slot_redirects.end()) {
-            id = redirect->second;
-        }
-        TensorSlot const *slot = find_slot(id);
-        if (slot != nullptr && slot->owner && slot->ptr != nullptr && slot->resync_of != nullptr) {
-            slot->resync_of(slot->ptr);
-        }
+    for (TensorId const id : ids) {
+        resync_slot(id);
+    }
+}
+
+void Graph::resync_slot(TensorId id) {
+    if (auto const redirect = _slot_redirects.find(id); redirect != _slot_redirects.end()) {
+        id = redirect->second;
+    }
+    TensorSlot const *slot = find_slot(id);
+    if (slot != nullptr && slot->owner && slot->ptr != nullptr && slot->resync_of != nullptr) {
+        slot->resync_of(slot->ptr);
     }
 }
 

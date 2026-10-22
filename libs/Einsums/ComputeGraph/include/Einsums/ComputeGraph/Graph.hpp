@@ -858,7 +858,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_EXPOSE void link_alias_storage();
 
     /**
-     * @brief Re-seat every slot's cached data pointer on its tensor's current buffer.
+     * @brief Re-seat the cached data pointer of every slot this graph's nodes name on its tensor's current buffer.
      *
      * ``Graph::adopt_operand`` gives a graph a STAND-IN for an operand it does not own: a
      * wrapper that shares the caller's storage block so the caller's own wrapper may die
@@ -876,6 +876,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * A stand-in is shared by every graph that adopted the same tensor, so every re-seat in the
      * process is serialized: two graphs, or two nodes of one, may reach one stand-in at once.
+     *
+     * A slot no node names is left alone. The node that replays a body is ordered against the
+     * tensors the body's nodes touch, so a stand-in that outlived its readers (a hoisted node
+     * took them) may belong to a tensor another thread is freeing.
      *
      * @see TensorSlot::resync_of
      */
@@ -4624,6 +4628,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// head of both linking passes, because a declaration is an INPUT to the
     /// derivation and has to survive a relink that starts from a cleared state.
     void apply_declared_aliases();
+
+    /// Re-seat the stand-in behind @p id, through its redirect; the caller holds the re-seat lock.
+    void resync_slot(TensorId id);
 
     // ── rebind() internals ──────────────────────────────────────────────────
 
