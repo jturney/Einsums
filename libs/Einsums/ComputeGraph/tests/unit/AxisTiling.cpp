@@ -210,9 +210,11 @@ Expected<double> batched_reference(BatchedProblem &problem) {
     return out;
 }
 
-/// Run the pass alone at @p cap bytes and hand back what it decided.
-std::shared_ptr<cg::passes::AxisTiling> decide(cg::Graph &graph, std::int64_t cap) {
-    auto tiling = std::make_shared<cg::passes::AxisTiling>();
+/// Run the pass alone at @p cap bytes, pricing with @p model, and hand back what it decided. The
+/// default model is fixed constants rather than the machine's profile, because which axes and
+/// blocks win is the cost model's choice and a runner with a different profile chooses differently.
+std::shared_ptr<cg::passes::AxisTiling> decide(cg::Graph &graph, std::int64_t cap, cg::CostModel model = {}) {
+    auto tiling = std::make_shared<cg::passes::AxisTiling>(std::move(model));
     tiling->set_memory_cap(cap);
     cg::apply_single_pass(*tiling, graph);
     return tiling;
@@ -417,7 +419,10 @@ TEST_CASE("AxisTiling slices a backed operand where its blocks are the fewest ru
             cg::einsum("i,j <- i,j,k ; k", &half, bk, v);
             cg::einsum("m <- i,j ; i,j,m", &out, half, w);
         }
-        auto const tiling = decide(graph, static_cast<std::int64_t>(n * sizeof(double)));
+        // Packing an operand costs less the longer its runs, and nothing else separates the slices.
+        cg::CostModel model;
+        model.cpu.pack_cost = {{.run = 1, .ns_per_element = 10.0}, {.run = 64, .ns_per_element = 0.0}};
+        auto const tiling   = decide(graph, static_cast<std::int64_t>(n * sizeof(double)), std::move(model));
         config::set(option::GraphStorageRunBytes, previous);
         REQUIRE(tiling->num_tiled() == 1);
         return tiling->axis_letters();
@@ -1222,8 +1227,8 @@ TEMPLATE_TEST_CASE("AxisTiling tiles the ladder chain of a residual whose other 
     CHECK(tiling->axis_names().front().starts_with("H["));
     INFO("sliced " << fmt::format("{}", fmt::join(tiling->axis_letters(), ",")) << " blocks "
                    << fmt::format("{}", fmt::join(tiling->block_extents(), ",")));
-    // An occupied index: one i or one j of H is exactly the four pairs the cap allows, and which of
-    // the two is the cost model's to choose. Slicing it labels Tau's occupied axes, which F's
+    // An occupied index: one i or one j of H is exactly the four pairs the cap allows, and the two
+    // price the same. Slicing it labels Tau's occupied axes, which F's
     // contraction sums over, so this is the decision a region that followed Tau into F would have
     // had to give up.
     auto const letters = tiling->axis_letters();
