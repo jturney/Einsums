@@ -318,6 +318,62 @@ function(einsums_add_unit_test subcategory name)
   einsums_set_test_properties("Tests.Unit.${subcategory}.${name}" "UNIT_ONLY")
 endfunction(einsums_add_unit_test)
 
+# A Python test process's environment: the package on PYTHONPATH, the runtime's signal handler
+# and debugger prompt off, the fixed hardware profile, and under a sanitizer build the runtime
+# preloaded with its suppression files. Every test that starts an interpreter importing einsums
+# needs all of it; one registered by hand with ``add_test`` that sets only PYTHONPATH aborts at
+# start-up under ThreadSanitizer, whose interceptors arrive too late through _core's dlopen.
+function(einsums_python_test_environment out)
+  set(_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib" "PYTHONUNBUFFERED=1" "PYTHONFAULTHANDLER=1")
+  # The C++ test executables disable the runtime's signal handler and
+  # debugger-attach prompt via ``--einsums:debug:no-{install-signal-handlers,
+  # attach-debugger}`` (see einsums_add_unit_test). The Python tests have no
+  # such command line — pytest's argv stops at the test file — so a
+  # crashing test would hang ctest with "ready for attaching debugger".
+  # Set the environment variables the runtime derives from those same option
+  # names instead; einsums::cl reads them directly during parse.
+  list(APPEND _env
+    "EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1"
+    "EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1"
+  )
+  set(_profile_env "")
+  einsums_profile_test_environment(_profile_env)
+  list(APPEND _env ${_profile_env})
+  # Windows still defaults stdout to the ANSI code page (cp1252 on the CI
+  # image), so printing any non-ASCII character - a Greek letter in a test's
+  # progress line, say - raises UnicodeEncodeError and fails a test that has
+  # nothing to do with encodings. UTF-8 mode is what CPython 3.15 makes the
+  # default anyway; the other platforms are already there.
+  if(WIN32)
+    list(APPEND _env "PYTHONUTF8=1")
+  endif()
+
+  # Under a sanitizer build the interpreter dlopens the instrumented _core too
+  # late for the runtime's interceptors. Preload the runtime on the child env
+  # (discovered once in the root CMakeLists). Delivering it here via ctest's
+  # ENVIRONMENT is the only thing that works: an exported var is stripped from
+  # ctest's own hardened environment before it can reach the test process.
+  if(EINSUMS_PYTEST_SANITIZER_PRELOAD)
+    list(APPEND _env "${EINSUMS_PYTEST_SANITIZER_PRELOAD}")
+    # Deliver the same suppression files the C++ tests get. Without them the
+    # Python process runs the sanitizer with no suppressions, so the benign
+    # libomp/HPTT/spdlog false positives surface as 30+ warnings and bump the exit
+    # code - ctest then reports the (passing) pytest run as "Subprocess aborted".
+    # A genuine race/leak in our own code still fails, being uncovered by the
+    # suppression files. The TSan/LSan vars are inert under the other sanitizer.
+    set(_san_env "") # out-param, populated by the helper below
+    einsums_sanitizer_test_environment(_san_env)
+    list(APPEND _env ${_san_env})
+    if(EINSUMS_WITH_SANITIZERS MATCHES "address")
+      # CPython intentionally leaks at shutdown; LeakSanitizer would drown real
+      # findings, so disable it for the Python test processes.
+      list(APPEND _env "ASAN_OPTIONS=detect_leaks=0:abort_on_error=1")
+    endif()
+  endif()
+
+  set(${out} "${_env}" PARENT_SCOPE)
+endfunction()
+
 #:
 #: einsums_add_python_unit_test
 #:
@@ -359,52 +415,8 @@ function(einsums_add_python_unit_test subcategory name)
   # keeps the progress already made, and faulthandler names the Python frame
   # that was running when a fatal signal arrived.
   set(_pyt_args -m pytest -q --tb=short --capture=sys)
-  set(_pyt_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib" "PYTHONUNBUFFERED=1" "PYTHONFAULTHANDLER=1")
-  # The C++ test executables disable the runtime's signal handler and
-  # debugger-attach prompt via ``--einsums:debug:no-{install-signal-handlers,
-  # attach-debugger}`` (see einsums_add_unit_test). The Python tests have no
-  # such command line — pytest's argv stops at the test file — so a
-  # crashing test would hang ctest with "ready for attaching debugger".
-  # Set the environment variables the runtime derives from those same option
-  # names instead; einsums::cl reads them directly during parse.
-  list(APPEND _pyt_env
-    "EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1"
-    "EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1"
-  )
-  set(_profile_env "")
-  einsums_profile_test_environment(_profile_env)
-  list(APPEND _pyt_env ${_profile_env})
-  # Windows still defaults stdout to the ANSI code page (cp1252 on the CI
-  # image), so printing any non-ASCII character - a Greek letter in a test's
-  # progress line, say - raises UnicodeEncodeError and fails a test that has
-  # nothing to do with encodings. UTF-8 mode is what CPython 3.15 makes the
-  # default anyway; the other platforms are already there.
-  if(WIN32)
-    list(APPEND _pyt_env "PYTHONUTF8=1")
-  endif()
-
-  # Under a sanitizer build the interpreter dlopens the instrumented _core too
-  # late for the runtime's interceptors. Preload the runtime on the child env
-  # (discovered once in the root CMakeLists). Delivering it here via ctest's
-  # ENVIRONMENT is the only thing that works: an exported var is stripped from
-  # ctest's own hardened environment before it can reach the test process.
-  if(EINSUMS_PYTEST_SANITIZER_PRELOAD)
-    list(APPEND _pyt_env "${EINSUMS_PYTEST_SANITIZER_PRELOAD}")
-    # Deliver the same suppression files the C++ tests get. Without them the
-    # Python process runs the sanitizer with no suppressions, so the benign
-    # libomp/HPTT/spdlog false positives surface as 30+ warnings and bump the exit
-    # code - ctest then reports the (passing) pytest run as "Subprocess aborted".
-    # A genuine race/leak in our own code still fails, being uncovered by the
-    # suppression files. The TSan/LSan vars are inert under the other sanitizer.
-    set(_san_env "") # out-param, populated by the helper below
-    einsums_sanitizer_test_environment(_san_env)
-    list(APPEND _pyt_env ${_san_env})
-    if(EINSUMS_WITH_SANITIZERS MATCHES "address")
-      # CPython intentionally leaks at shutdown; LeakSanitizer would drown real
-      # findings, so disable it for the Python test processes.
-      list(APPEND _pyt_env "ASAN_OPTIONS=detect_leaks=0:abort_on_error=1")
-    endif()
-  endif()
+  set(_pyt_env "")
+  einsums_python_test_environment(_pyt_env)
 
   # Python-side coverage gathering was removed: the pytest-cov + parallel-
   # SQLite combine path proved more fragile (lock races, stale-file ingest,

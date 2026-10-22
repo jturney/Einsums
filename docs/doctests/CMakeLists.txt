@@ -53,10 +53,11 @@ if(EINSUMS_BUILD_PYTHON)
       --repo-root "${PROJECT_SOURCE_DIR}"
       --cxx-standard "${EINSUMS_WITH_CXX_STANDARD}"
   )
-  # Not the machine's hardware profile, so a doctest runs the same tuned or not.
-  einsums_profile_test_environment(_doctest_profile_env)
+  # It imports einsums, so it runs in the environment the pytest modules get: under a sanitizer
+  # build that preloads the runtime, without which the interpreter aborts before the first check.
+  einsums_python_test_environment(_claims_env)
   set_tests_properties(
     Tests.Unit.Docs.Claims
-    PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/lib;${_doctest_profile_env}" LABELS "UNIT_ONLY"
+    PROPERTIES ENVIRONMENT "${_claims_env}" LABELS "UNIT_ONLY;PYTHON"
   )
 endif()
