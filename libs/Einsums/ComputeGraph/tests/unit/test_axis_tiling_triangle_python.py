@@ -90,6 +90,8 @@ class _Ladder:
 def _tile(graph, block, dtype="float64"):
     """AxisTiling alone, at a cap that holds a tile of H and not the whole of it, block pinned."""
     tiling = _G.AxisTiling()
+    # Priced with the built-in rates: the runner's own would move a close choice between machines.
+    tiling.use_reference_cost_model()
     tiling.set_memory_cap(_Q * _V * _V * _O * _O * np.dtype(dtype).itemsize // 2)
     tiling.set_block_extent(block)
     manager = cg.PassManager()

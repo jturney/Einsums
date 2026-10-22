@@ -303,6 +303,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      */
     APIARY_EXPOSE void set_block_extent(std::int64_t extent);
 
+    /**
+     * @brief Price against the cost model's built-in rates instead of the detected machine's.
+     *
+     * The pass prices each candidate from the machine's measured kernel rates, so where two
+     * candidates are close the one it chooses moves between machines. With the built-in rates the
+     * decision is the same on every machine, which is what a test that checks the choice needs.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void use_reference_cost_model();
+
     /// @brief How many regions the last apply tiled.
     ///
     /// The other getters describe the first of them, the region around the largest intermediate;

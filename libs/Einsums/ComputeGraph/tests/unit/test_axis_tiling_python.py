@@ -133,6 +133,8 @@ def _capture(graph, water, denominator, energy):
 def _tiled(graph, cap):
     """Apply the pass alone at @p cap and hand back what it decided."""
     tiling = _G.AxisTiling()
+    # Priced with the built-in rates: the runner's own would move a close choice between machines.
+    tiling.use_reference_cost_model()
     tiling.set_memory_cap(cap)
     manager = cg.PassManager()
     manager.add(tiling)

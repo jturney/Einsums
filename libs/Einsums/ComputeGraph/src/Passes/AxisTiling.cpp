@@ -2691,6 +2691,10 @@ void AxisTiling::set_block_extent(std::int64_t extent) {
     _block_pin = extent;
 }
 
+void AxisTiling::use_reference_cost_model() {
+    _cost_model = CostModel{};
+}
+
 void AxisTiling::set_memory_cap(std::int64_t bytes) {
     _memory_cap   = bytes;
     _cap_explicit = true;
