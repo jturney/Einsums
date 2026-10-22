@@ -316,6 +316,8 @@ struct PackedBlocking {
     int64_t mc{0};
     int64_t nc{0};
     int64_t kc{0};
+    /// The kernel tile's N width, the narrowest NC a budget can cut to.
+    int64_t nr{0};
     /// True when C was built in a scratch block and scattered into place, false when the tile
     /// kernel wrote C directly.
     bool c_scattered{false};
@@ -1668,18 +1670,18 @@ void blis_contraction_body(PackingPlan const &plan, CType &C, AType const &A, BT
         // the element size. An oversized temporary evicts the vendor GEMM's own packed buffers; too
         // small a one shrinks NC until A is re-packed many more times. The budget is c_temp_budget
         // above. It lives here rather than in compute_blocking because only this strategy allocates
-        // the temporary.
+        // the temporary. A budget below one tile column still gets one: NR is the narrowest block
+        // the kernel can run.
         if (block_strategy) {
             int64_t const max_nc = ((c_temp_budget / (MC_blk * static_cast<int64_t>(sizeof(ValueType)))) / NR) * NR;
-            if (max_nc >= NR && max_nc < NC_blk) {
-                NC_blk = max_nc;
-            }
+            NC_blk               = std::min(NC_blk, std::max<int64_t>(max_nc, NR));
         }
         // The thread grid (see @ref choose_thread_grid): N cut into equal blocks, a whole number
-        // per N group, no wider than the cache model's blk.NC, and each N block's M extent cut into
-        // grid.tm groups. M groups start at whole MC blocks when a block's position matters (the
-        // A-ordered write-back and the C-segment alignment assume it), and at any MR row otherwise,
-        // which lets M be cut evenly where MC blocks do not divide it.
+        // per N group, no wider than the cache model's blk.NC (for the block strategy, than the NC
+        // its C temporary's budget allows, since every thread allocates one), and each N block's
+        // M extent cut into grid.tm groups. M groups start at whole MC blocks when a block's
+        // position matters (the A-ordered write-back and the C-segment alignment assume it), and
+        // at any MR row otherwise, which lets M be cut evenly where MC blocks do not divide it.
         //
         // Teams share a panel only when each member has four M blocks to claim; below that the
         // imbalance costs more than the shared panel saves, and every thread works alone on N
@@ -1698,7 +1700,7 @@ void blis_contraction_body(PackingPlan const &plan, CType &C, AType const &A, BT
                 grid   = choose_thread_grid(nthreads / team_size, M, N, m_unit * team_size, NR, panel_nc);
                 NC_blk = grid.nc_blk;
             } else if (nthreads > 1) {
-                grid   = choose_thread_grid(nthreads, M, N, m_unit, NR, blk.NC);
+                grid   = choose_thread_grid(nthreads, M, N, m_unit, NR, block_strategy ? NC_blk : blk.NC);
                 NC_blk = grid.nc_blk;
             }
         }
@@ -1714,7 +1716,7 @@ void blis_contraction_body(PackingPlan const &plan, CType &C, AType const &A, BT
         auto const    ap_buf_elems  = static_cast<size_t>(mc_panels_max * MR * KC_blk);
         auto const    bp_buf_elems  = static_cast<size_t>(nc_panels_max * NR * KC_blk);
 
-        last_packed_blocking() = PackedBlocking{.mc = MC_blk, .nc = NC_blk, .kc = KC_blk, .c_scattered = needs_c_scatter};
+        last_packed_blocking() = PackedBlocking{.mc = MC_blk, .nc = NC_blk, .kc = KC_blk, .nr = NR, .c_scattered = needs_c_scatter};
 
         // Dump the plan and blocking on request, out of line to keep formatting off the hot path.
         if (config::get(option::PackedGemmDumpPlan)) {

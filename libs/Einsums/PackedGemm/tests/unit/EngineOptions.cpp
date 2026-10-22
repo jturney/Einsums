@@ -20,6 +20,7 @@
 #include <Einsums/TensorAlgebra/Detail/PackedGemmIndices.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
+#include <algorithm>
 #include <complex>
 #include <cstdint>
 #include <string>
@@ -83,4 +84,11 @@ TEST_CASE("engine options: c-temp-budget resizes the caller's block strategy", "
     REQUIRE(tiny.mc > 0);
     // One KiB is far below the derived budget of at least 512 KiB, so the blocks must shrink.
     CHECK(tiny.mc * tiny.nc < derived.mc * derived.nc);
+    // And the temporary must fit the budget, or be one MC by NR column of tiles where even that
+    // does not fit. Two ways past it have broken this: a cap below NR was dropped instead of
+    // floored at NR, which left NC at the cache model's widest on an AVX-512 machine (MR = 16
+    // complex rows leave the KiB room for 4 columns, NR is 6); and the thread grid cut NC from the
+    // cache model's width, not the budget's, whenever the contraction ran on more than one thread.
+    constexpr auto elem = static_cast<std::int64_t>(sizeof(std::complex<double>));
+    CHECK(tiny.mc * tiny.nc * elem <= std::max<std::int64_t>(std::int64_t{1} << 10, tiny.mc * tiny.nr * elem));
 }
