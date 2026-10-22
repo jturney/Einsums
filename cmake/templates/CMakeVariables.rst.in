@@ -26,27 +26,3 @@ Variables that influence how |einsums| is built
 The options are split into these categories:
 
 @EINSUMS_CMAKE_OPTIONS_RST@
-
-.. _cmake_additional_tools:
-
-Additional tools and libraries used by |einsums|
-------------------------------------------------
-
-Here is a list of additional libraries and tools that are either optionally
-supported by the build system or are optionally required for certain examples or
-tests. These libraries and tools can be detected by the |einsums| build system.
-
-Each of the tools or libraries listed here will be automatically detected if
-they are installed in some standard location. If a tool or library is installed
-in a different location, you can specify its base directory by appending
-``_ROOT`` to the variable name as listed below. For instance, to configure a
-custom directory for ``Amplifier``, specify ``Amplifier_ROOT=/custom/amplifier/root``.
-
-.. option:: Amplifier_ROOT:PATH
-
-   Specifies where to look for one of the tools of the Intel Parallel Studio
-   product, either Intel Amplifier or Intel Inspector. This should be
-   set if the CMake variable ``EINSUMS_USE_ITT_NOTIFY`` is set to ``ON``. Enabling
-   ITT support in |einsums| will integrate any application with the mentioned Intel
-   tools, which customizes the generated information for your application and
-   improves the generated diagnostics.

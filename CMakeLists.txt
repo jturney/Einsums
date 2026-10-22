@@ -194,13 +194,6 @@ einsums_option(
 )
 
 einsums_option(
-  EINSUMS_WITH_EXECUTABLE_PREFIX STRING
-  "Sets a string to be prepended to executable names (default: none)." ""
-  CATEGORY "Build Targets" ADVANCED
-  CATEGORY "Build Targets"
-)
-
-einsums_option(
   EINSUMS_WITH_DOCUMENTATION BOOL "Build the Einsums documentation (default OFF)." OFF
   CATEGORY "Build Targets"
 )
@@ -282,20 +275,6 @@ if(EINSUMS_WITH_CCACHE)
     einsums_info("ccache: not found, compiles will not be cached")
   endif()
 endif()
-
-einsums_option(
-  EINSUMS_WITH_UNITY_BUILD BOOL "Enable unity build for certain build targets (default: OFF)" OFF
-  ADVANCED CATEGORY "Build Targets"
-)
-if(EINSUMS_WITH_UNITY_BUILD)
-  set(EINSUMS_WITH_UNITY_BUILD_OPTION UNITY_BUILD)
-endif()
-
-einsums_option(
-  EINSUMS_WITH_PRECOMPILED_HEADERS BOOL
-  "Enabled precompiled headers for certain build targets (experimental) (default: OFF)" OFF ADVANCED
-  CATEGORY "Build Targets"
-)
 
 # ##################################################################################################
 einsums_option(
@@ -519,11 +498,6 @@ if(EINSUMS_WITH_PROFILER)
   endif()
 endif()
 
-einsums_option(
-  EINSUMS_WITH_ITTNOTIFY BOOL "Enable Amplifier (ITT) instrumentation support." OFF
-  CATEGORY "Profiling" ADVANCED
-)
-
 # Debugging related build options
 einsums_option(
   EINSUMS_WITH_TESTS_VALGRIND BOOL "Run selected tests with valgrind." OFF CATEGORY "Debugging"
@@ -552,13 +526,6 @@ einsums_option(
 # place to wire it.
 
 # ##################################################################################################
-# Special diagnostic flags, do not enable by default, only if needed
-einsums_option(
-  EINSUMS_WITH_CHECK_MODULE_DEPENDENCIES BOOL
-  "Verify that no modules are cross-referenced from a different module category (default: OFF)" OFF
-  ADVANCED CATEGORY "Debugging"
-)
-
 einsums_option(
   EINSUMS_BUILD_PYTHON
   STRING
@@ -575,18 +542,6 @@ einsums_option(
   0
   CATEGORY "Build Targets" ADVANCED
 )
-
-if(EINSUMS_WITH_ITTNOTIFY)
-  find_package(Amplifier)
-
-  if(NOT AMPLIFIER_FOUND)
-    einsums_error(
-      "Intel Amplifier could not be found and EINSUMS_WITH_ITTNOTIFY=On, please specify AMPLIFIER_ROOT to point to the root of your Amplifier installation"
-    )
-  endif()
-
-  einsums_add_config_define(EINSUMS_HAVE_ITTNOTIFY)
-endif()
 
 # ##################################################################################################
 # Detect BLAS/LAPACK
@@ -864,20 +819,13 @@ include(Einsums_SetupHDF5)
 # that happens to be harmless on 64-bit Linux (off_t is already 64-bit) and
 # would not be elsewhere. Uniform is simply correct.
 #
-# It also lets every module share one precompiled header. A PCH is discarded by
-# any TU whose macros differ from it, and before this the low-level modules that
-# do not use HDF5 - Assertion, Config, Logging, Print, Version, HPTT, Profile -
-# were the ones left out.
-#
 # Directory scope, NOT einsums_base_libraries: that target is exported
 # (see install(TARGETS einsums_base_libraries ...) below), so definitions placed
 # on it would be inherited by every downstream consumer of the installed
 # package. This is a property of how einsums is built, not of its interface.
 #
-# The list mirrors tgt::hdf5's INTERFACE_COMPILE_DEFINITIONS. It is duplicated
-# rather than queried, but it is self-checking: the PCH targets below link
-# tgt::hdf5 directly, so if HDF5 ever adds a macro this list misses, the PCH
-# stops matching and GCC says so on the next build.
+# The list mirrors tgt::hdf5's INTERFACE_COMPILE_DEFINITIONS, duplicated rather
+# than queried.
 add_compile_definitions(
   H5_BUILT_AS_DYNAMIC_LIB _POSIX_C_SOURCE=200809L _LARGEFILE_SOURCE _FILE_OFFSET_BITS=64
 )
@@ -891,76 +839,6 @@ add_compile_definitions(
 # headers declare without changing what anything compiles to.
 if(APPLE)
   add_compile_definitions(_DARWIN_C_SOURCE)
-endif()
-
-# Precompiled headers are defined HERE, after every setup module, not near the
-# top of this file. A PCH is only used by a translation unit whose compile
-# settings match it exactly, and the settings are not final until the setup
-# modules have run: Einsums_SetupFmt turns CMAKE_POSITION_INDEPENDENT_CODE on
-# (so executables get -fPIE) and Einsums_SetupHDF5 brings _FILE_OFFSET_BITS=64
-# and friends in through tgt::hdf5. Defined before them, the PCH targets missed
-# both, and GCC discarded the result in 413 of 454 consumers with
-#   warning: ... .gch: not used because '_FILE_OFFSET_BITS' is defined
-#   warning: ... .gch: created and used with different settings of '-fpie'
-# - the PCH cost its own build and returned nothing.
-if(EINSUMS_WITH_PRECOMPILED_HEADERS)
-  set(EINSUMS_WITH_PRECOMPILED_HEADERS_INTERNAL ON)
-
-  # PCH target for library modules (OBJECT library)
-  add_library(einsums_precompiled_headers OBJECT libs/src/dummy.cpp)
-  target_link_libraries(
-    einsums_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags
-  )
-  if(TARGET tgt::hdf5)
-    target_link_libraries(einsums_precompiled_headers PRIVATE tgt::hdf5)
-  endif()
-  target_precompile_headers(
-    einsums_precompiled_headers
-    PRIVATE
-    # Standard library headers used across most modules
-    <algorithm>
-    <complex>
-    <cstddef>
-    <cstdint>
-    <functional>
-    <memory>
-    <string>
-    <string_view>
-    <tuple>
-    <type_traits>
-    <utility>
-    <vector>
-    # fmt (used via spdlog/logging throughout)
-    <fmt/format.h>
-  )
-  set_target_properties(einsums_precompiled_headers PROPERTIES FOLDER "Core")
-
-  # PCH target for test/example executables
-  add_executable(einsums_exe_precompiled_headers libs/src/dummy_main.cpp)
-  target_link_libraries(
-    einsums_exe_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags
-  )
-  if(TARGET tgt::hdf5)
-    target_link_libraries(einsums_exe_precompiled_headers PRIVATE tgt::hdf5)
-  endif()
-  target_precompile_headers(
-    einsums_exe_precompiled_headers
-    PRIVATE
-    <algorithm>
-    <complex>
-    <cstddef>
-    <cstdint>
-    <functional>
-    <memory>
-    <string>
-    <string_view>
-    <tuple>
-    <type_traits>
-    <utility>
-    <vector>
-    <fmt/format.h>
-  )
-  set_target_properties(einsums_exe_precompiled_headers PROPERTIES FOLDER "Core")
 endif()
 
 

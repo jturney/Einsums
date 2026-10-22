@@ -177,7 +177,3 @@ configure_file(
   "${PROJECT_SOURCE_DIR}/cmake/templates/ModulesEnabled.hpp.in"
   "${PROJECT_BINARY_DIR}/libs/Einsums/Config/include/Einsums/Config/ModulesEnabled.hpp" @ONLY
 )
-
-if(EINSUMS_WITH_ITTNOTIFY)
-  target_link_libraries(Einsums PUBLIC einsums_internal::amplifier)
-endif()

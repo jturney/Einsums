@@ -20,7 +20,6 @@
 #:        [EXCLUDE_FROM_DEFAULT_BUILD]
 #:        [INTERNAL_FLAGS]
 #:        [NOLIBS]
-#:        [UNITY_BUILD]
 #:        [NOINSTALL]
 #:        [INI <file>]
 #:        [FOLDER <ide-folder>]
@@ -46,7 +45,6 @@
 #:    - ``EXCLUDE_FROM_DEFAULT_BUILD``: Exclude from default config build on multi‑config generators.
 #:    - ``INTERNAL_FLAGS``: Forwarded to ``einsums_setup_target`` to enable internal policy flags.
 #:    - ``NOLIBS``: Forwarded to `einsums_setup_target`; avoid linking standard Einsums libs.
-#:    - ``UNITY_BUILD``: Forwarded to `einsums_setup_target` to opt into unity builds.
 #:    - ``NOINSTALL``: Suppress install rules for this executable.
 #:
 #:    **One‑value keywords**
@@ -55,7 +53,7 @@
 #:    - ``SOURCE_ROOT``: Base path for source grouping (default ``"."``).
 #:    - ``HEADER_ROOT``: Base path for header grouping (default ``"."``).
 #:    - ``SOURCE_GLOB``, ``HEADER_GLOB``: (reserved) Glob patterns—actual expansion handled upstream.
-#:    - ``OUTPUT_NAME``: Basename of produced artifact (prefixed by `EINSUMS_WITH_EXECUTABLE_PREFIX`).
+#:    - ``OUTPUT_NAME``: Basename of produced artifact.
 #:    - ``OUTPUT_SUFFIX``: Extra path component under the runtime output directory (e.g., ``tools``).
 #:    - ``INSTALL_SUFFIX``: Override install destination (defaults to ``CMAKE_INSTALL_BINDIR``).
 #:    - ``LANGUAGE``: Nominal language (default ``CXX``). GPU/compilers may override per‑file.
@@ -94,7 +92,7 @@
 #:    8. **Exclusion controls**
 #:       - Applies ``EXCLUDE_FROM_ALL`` and/or ``EXCLUDE_FROM_DEFAULT_BUILD`` properties to the target.
 #:    9. **Forwarding to project policy**
-#:       - Constructs `_target_flags` from ``NOLIBS``, ``INTERNAL_FLAGS``, ``UNITY_BUILD`` and calls
+#:       - Constructs `_target_flags` from ``NOLIBS`` and ``INTERNAL_FLAGS`` and calls
 #:         ``einsums_setup_target``:
 #:         ``einsums_setup_target(<name> TYPE EXECUTABLE FOLDER <...> COMPILE_FLAGS <...> LINK_FLAGS <...> DEPENDENCIES <...> <_target_flags>)``.
 #:
@@ -125,7 +123,7 @@
 #:         COMPILE_FLAGS -DUSE_FAST_MATH
 #:       )
 #:
-#:    HIP build, IDE grouping, unity:
+#:    HIP build, IDE grouping:
 #:    .. code-block:: cmake
 #:
 #:       einsums_add_executable(bench
@@ -133,7 +131,6 @@
 #:         SOURCE_ROOT "${CMAKE_SOURCE_DIR}/apps/bench"
 #:         HEADER_ROOT "${CMAKE_SOURCE_DIR}/apps/bench"
 #:         SOURCES apps/bench/main.cpp apps/bench/kernels.cu
-#:         UNITY_BUILD
 #:         DEPENDENCIES Einsums::einsums_hip
 #:       )
 #:
@@ -149,7 +146,6 @@ function(einsums_add_executable name)
       EXCLUDE_FROM_DEFAULT_BUILD
       INTERNAL_FLAGS
       NOLIBS
-      UNITY_BUILD
       NOINSTALL
   )
   set(one_value_args
@@ -299,10 +295,10 @@ function(einsums_add_executable name)
 
   if(${name}_OUTPUT_NAME)
     set_target_properties(
-      ${name} PROPERTIES OUTPUT_NAME "${EINSUMS_WITH_EXECUTABLE_PREFIX}${${name}_OUTPUT_NAME}"
+      ${name} PROPERTIES OUTPUT_NAME "${${name}_OUTPUT_NAME}"
     )
   else()
-    set_target_properties(${name} PROPERTIES OUTPUT_NAME "${EINSUMS_WITH_EXECUTABLE_PREFIX}${name}")
+    set_target_properties(${name} PROPERTIES OUTPUT_NAME "${name}")
   endif()
 
   if(exclude_from_all)
@@ -315,10 +311,6 @@ function(einsums_add_executable name)
 
   if(${name}_INTERNAL_FLAGS)
     set(_target_flags ${_target_flags} INTERNAL_FLAGS)
-  endif()
-
-  if(${name}_UNITY_BUILD)
-    set(_target_flags ${_target_flags} UNITY_BUILD)
   endif()
 
   einsums_setup_target(

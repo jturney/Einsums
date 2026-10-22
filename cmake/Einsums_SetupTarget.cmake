@@ -20,7 +20,6 @@ function(einsums_setup_target target)
       NOLIBS
       NONAMEPREFIX
       NOLLKEYWORD
-      UNITY_BUILD
   )
   set(one_value_args TYPE FOLDER NAME SOVERSION VERSION HEADER_ROOT)
   set(multi_value_args DEPENDENCIES COMPILE_FLAGS LINK_FLAGS INSTALL_FLAGS INSTALL_PDB)
@@ -105,29 +104,12 @@ function(einsums_setup_target target)
 
   if(NOT target_NOLIBS)
     target_link_libraries(${target} ${__tll_public} Einsums::Einsums)
-    if(EINSUMS_WITH_PRECOMPILED_HEADERS_INTERNAL)
-      if("${_type}" STREQUAL "EXECUTABLE")
-        target_precompile_headers(${target} REUSE_FROM einsums_exe_precompiled_headers)
-      endif()
-    endif()
   endif()
 
   target_link_libraries(${target} ${__tll_public} ${target_DEPENDENCIES})
 
   if(target_INTERNAL_FLAGS AND TARGET einsums_private_flags)
     target_link_libraries(${target} ${__tll_private} einsums_private_flags)
-  endif()
-
-  if(target_UNITY_BUILD)
-    set_target_properties(${target} PROPERTIES UNITY_BUILD ON)
-    set_target_properties(
-      ${target} PROPERTIES UNITY_BUILD_CODE_BEFORE_INCLUDE
-                           "// NOLINTBEGIN(bugprone-suspicious-include)"
-    )
-    set_target_properties(
-      ${target} PROPERTIES UNITY_BUILD_CODE_AFTER_INCLUDE
-                           "// NOLINTEND(bugprone-suspicious-include)"
-    )
   endif()
 
   get_target_property(target_EXCLUDE_FROM_ALL ${target} EXCLUDE_FROM_ALL)

@@ -56,8 +56,7 @@ einsums_add_module(
   CMAKE_SUBDIRS examples tests
 )
 
-# MPS: Objective-C++ files cannot use C++ precompiled headers.
-# Disable PCH for the .mm file and enable ObjC compilation.
+# MPS: compile the .mm file as Objective-C++ with ARC.
 #
 # The visibility flags here are load-bearing — without them, MPSBackend.mm
 # ends up exporting libc++ weak symbols (e.g. ``std::piecewise_construct``)
@@ -73,7 +72,6 @@ if(EINSUMS_WITH_MPS)
   set_source_files_properties(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/MPSBackend.mm
     PROPERTIES
-      SKIP_PRECOMPILE_HEADERS ON
       COMPILE_FLAGS "-fobjc-arc -fvisibility=hidden -fvisibility-inlines-hidden"
   )
 endif()

@@ -3,4 +3,4 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// This file is intended for use in precompiled header targets.
+// The one source of each top-level library target, which is otherwise assembled from its modules.

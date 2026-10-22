@@ -21,7 +21,6 @@
 #:        [STATIC]
 #:        [OBJECT]
 #:        [NONAMEPREFIX]
-#:        [UNITY_BUILD]
 #:        [FOLDER <ide-folder>]
 #:        [SOURCE_ROOT <dir>] [HEADER_ROOT <dir>]
 #:        [SOURCE_GLOB <pattern>] [HEADER_GLOB <pattern>]
@@ -43,7 +42,6 @@
 #:    - ``STATIC``: Build as a static library.
 #:    - ``OBJECT``: Build as an object library.
 #:    - ``NONAMEPREFIX``: (Reserved) Request no name prefix (toolchain‑specific).
-#:    - ``UNITY_BUILD``: Opt into unity builds via `einsums_setup_target`.
 #:
 #:    **One‑value keywords**
 #:    - ``FOLDER``: IDE grouping (e.g., “Libs/Core”).
@@ -76,7 +74,7 @@
 #:       ``RUNTIME/LIBRARY/ARCHIVE_OUTPUT_DIRECTORY`` (per‑config on MSVC; single‑config otherwise)
 #:       under ``${EINSUMS_WITH_BINARY_DIR}``.
 #:    8. Accumulates target policy flags (``NOLIBS``, export on by default unless ``NOEXPORT``,
-#:       ``INTERNAL_FLAGS``, ``UNITY_BUILD``) and calls:
+#:       ``INTERNAL_FLAGS``) and calls:
 #:       ::
 #:          einsums_setup_target(
 #:            <name>
@@ -108,13 +106,12 @@
 #:         DEPENDENCIES fmt::fmt
 #:       )
 #:
-#:    Static lib into a custom output tree, unity build:
+#:    Static lib into a custom output tree:
 #:    .. code-block:: cmake
 #:
 #:       einsums_add_library(einsums_utils
 #:         STATIC
 #:         OUTPUT_SUFFIX "tools"
-#:         UNITY_BUILD
 #:         SOURCES src/utils/x.cpp src/utils/y.cpp
 #:       )
 #:
@@ -142,7 +139,6 @@ function(einsums_add_library name)
       STATIC
       OBJECT
       NONAMEPREFIX
-      UNITY_BUILD
   )
   set(one_value_args
       FOLDER
@@ -313,10 +309,6 @@ function(einsums_add_library name)
 
   if(${name}_INTERNAL_FLAGS)
     set(_target_flags ${_target_flags} INTERNAL_FLAGS)
-  endif()
-
-  if(${name}_UNITY_BUILD)
-    set(_target_flags ${_target_flags} UNITY_BUILD)
   endif()
 
   einsums_setup_target(

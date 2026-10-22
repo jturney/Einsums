@@ -63,8 +63,7 @@ include(Einsums_CodeCoverage)
 #:      Targets linked with module’s public keyword (``PUBLIC`` for object modules, ``INTERFACE`` for
 #:      header‑only modules).
 #:    - ``MODULE_DEPENDENCIES <libname_foo ...>``:
-#:      Other *modules* this one depends on. When ``EINSUMS_WITH_CHECK_MODULE_DEPENDENCIES``
-#:      is ON, the function validates that listed modules belong to the same category set.
+#:      Other *modules* this one depends on.
 #:
 #:    - ``CMAKE_SUBDIRS <dirs...>``:
 #:      Subdirectories to add via ``add_subdirectory`` (e.g., nested components/tests).
@@ -100,8 +99,6 @@ include(Einsums_CodeCoverage)
 #:        public/interface keyword; if the module is **OBJECT**, also links
 #:        ``einsums_private_flags`` privately.
 #:    - Sets include dirs (build + install interfaces), including the generated include tree.
-#:    - If precompiled headers are enabled (``EINSUMS_WITH_PRECOMPILED_HEADERS``), reuses
-#:      ``einsums_precompiled_headers``.
 #:    - For **OBJECT** modules, defines an export macro:
 #:      Derives ``<MACRO_LIB_NAME>_EXPORTS`` from ``<libname>`` and applies it privately to the module.
 #:
@@ -111,7 +108,6 @@ include(Einsums_CodeCoverage)
 #:    - For non‑interface modules:
 #:      - Places target under folder ``Core/Modules/<LibnameCapitalized>``.
 #:      - Enables ``POSITION_INDEPENDENT_CODE``.
-#:      - Enables Unity build/markers when ``EINSUMS_WITH_UNITY_BUILD`` is ON.
 #:      - On MSVC, configures compile PDB name/output directories for Debug/RelWithDebInfo.
 #:
 #:    **Install & export**
@@ -130,10 +126,6 @@ include(Einsums_CodeCoverage)
 #:      ``EINSUMS_ENABLED_MODULES``.
 #:    - Optionally adds extra subdirectories from ``CMAKE_SUBDIRS``.
 #:    - Prints a configuration summary via ``einsums_create_configuration_summary``.
-#:
-#:    **Environment/toggles referenced**
-#:    - ``EINSUMS_WITH_CHECK_MODULE_DEPENDENCIES``, ``EINSUMS_WITH_UNITY_BUILD``,
-#:      ``EINSUMS_WITH_PRECOMPILED_HEADERS``.
 #:
 #:    **Example**
 #:    .. code-block:: cmake
@@ -309,25 +301,6 @@ function(einsums_add_module libname modulename)
     ${libname}_${modulename} ${module_public_keyword}
   )
 
-  if(EINSUMS_WITH_CHECK_MODULE_DEPENDENCIES)
-    # verify that all dependencies are from the same module category
-    foreach(dep ${${modulename}_MODULE_DEPENDENCIES})
-      # consider only module dependencies, not other targets
-      string(FIND ${dep} "${libname}_" find_index)
-      if(${find_index} EQUAL 0)
-        string(LENGTH "${libname}_" lib_length)
-        string(SUBSTRING ${dep} ${lib_length} -1 dep) # cut off leading "einsums_"
-        list(FIND _${libname}_modules ${dep} dep_index)
-        if(${dep_index} EQUAL -1)
-          einsums_error(
-            "The module ${dep} should not be be listed in MODULE_DEPENDENCIES "
-            "for module Einsums_${modulename}"
-          )
-        endif()
-      endif()
-    endforeach()
-  endif()
-
   target_link_libraries(
     ${libname}_${modulename} ${module_public_keyword} ${${modulename}_MODULE_DEPENDENCIES}
   )
@@ -348,10 +321,6 @@ function(einsums_add_module libname modulename)
 
   if(NOT module_is_interface_library)
     target_link_libraries(${libname}_${modulename} PRIVATE einsums_private_flags)
-  endif()
-
-  if(EINSUMS_WITH_PRECOMPILED_HEADERS AND NOT module_is_interface_library)
-    target_precompile_headers(${libname}_${modulename} REUSE_FROM einsums_precompiled_headers)
   endif()
 
   if(NOT module_is_interface_library)
@@ -403,18 +372,6 @@ function(einsums_add_module libname modulename)
     set_target_properties(
       ${libname}_${modulename} PROPERTIES FOLDER "Core/Modules/${libname_cap}"
                                           POSITION_INDEPENDENT_CODE ON
-    )
-  endif()
-
-  if(EINSUMS_WITH_UNITY_BUILD AND NOT module_is_interface_library)
-    set_target_properties(${libname}_${modulename} PROPERTIES UNITY_BUILD ON)
-    set_target_properties(
-      ${libname}_${modulename} PROPERTIES UNITY_BUILD_CODE_BEFORE_INCLUDE
-                                          "// NOLINTBEGIN(bugprone-suspicious-include)"
-    )
-    set_target_properties(
-      ${libname}_${modulename} PROPERTIES UNITY_BUILD_CODE_AFTER_INCLUDE
-                                          "// NOLINTEND(bugprone-suspicious-include)"
     )
   endif()
 
