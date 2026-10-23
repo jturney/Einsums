@@ -306,12 +306,23 @@ ResolvedRegionCost const &region_cost_for_current_team() {
     int const threads = 1;
 #endif
 
-    std::lock_guard<std::mutex> const guard(memo_mutex);
-    auto const                        it = memo.find(threads);
-    if (it != memo.end()) {
-        return it->second;
+    // Elementwise kernels ask on every call, often from many threads at once, so the answer for the
+    // team size this thread last asked about is kept per thread and the lock is taken only for a new
+    // one. The memo is never erased and a map's entries do not move, so the pointer stays valid.
+    thread_local int                       cached_threads = -1;
+    thread_local ResolvedRegionCost const *cached         = nullptr;
+    if (threads == cached_threads) {
+        return *cached;
     }
-    return memo.emplace(threads, resolve_omp_region_cost_ns()).first->second;
+
+    std::lock_guard<std::mutex> const guard(memo_mutex);
+    auto                              it = memo.find(threads);
+    if (it == memo.end()) {
+        it = memo.emplace(threads, resolve_omp_region_cost_ns()).first;
+    }
+    cached_threads = threads;
+    cached         = &it->second;
+    return it->second;
 }
 
 } // namespace
