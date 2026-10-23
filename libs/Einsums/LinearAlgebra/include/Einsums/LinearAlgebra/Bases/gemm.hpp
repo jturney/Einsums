@@ -9,6 +9,7 @@
 #include <Einsums/Config/CompilerSpecific.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/LinearAlgebra/Bases/layout_flag.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
 
@@ -125,35 +126,19 @@ void impl_gemm_noncontiguous(char transA, char transB, CType alpha, einsums::det
     }
 }
 
-/// The flag column-major BLAS needs for an operand whose layout differs from C's.
-///
-/// Such an operand's memory holds its transpose as BLAS sees it, so 'n' and 't' trade places. A 'c'
-/// would need the conjugate without the transpose, which BLAS has no flag for: that returns 0. A
-/// real operand's 'c' is a 't'.
-template <typename T>
-char gemm_flip_flag(char flag) {
-    if (flag == 'n') {
-        return 't';
-    }
-    if (flag == 'c' && IsComplexV<T>) {
-        return 0;
-    }
-    return 'n';
-}
-
 /// C = alpha op(A) op(B) + beta C on operands each row- or column-major, in one column-major BLAS call.
 ///
 /// A row-major matrix is its transpose to BLAS. A row-major C is therefore computed as
 /// C^T = op(B)^T op(A)^T, with A and B trading places and m and n with them. Either way an operand
-/// whose layout differs from C's has its flag flipped (see gemm_flip_flag); one that matches keeps it.
+/// whose layout differs from C's has its flag flipped (see flipped_layout_flag); one that matches keeps it.
 /// An operand needing a conjugate without a transpose goes to the loop kernel.
 template <typename T>
 void impl_gemm_contiguous(char transA, char transB, T alpha, einsums::detail::TensorImpl<T> const &A,
                           einsums::detail::TensorImpl<T> const &B, T beta, einsums::detail::TensorImpl<T> *C) {
     char const tA = std::tolower(transA), tB = std::tolower(transB);
     bool const row_c  = C->is_row_major();
-    char const flag_a = A.is_row_major() != row_c ? gemm_flip_flag<T>(tA) : tA;
-    char const flag_b = B.is_row_major() != row_c ? gemm_flip_flag<T>(tB) : tB;
+    char const flag_a = A.is_row_major() != row_c ? flipped_layout_flag<T>(tA) : tA;
+    char const flag_b = B.is_row_major() != row_c ? flipped_layout_flag<T>(tB) : tB;
 
     if (flag_a == 0 || flag_b == 0) {
         impl_gemm_noncontiguous(transA, transB, alpha, A, B, beta, C);

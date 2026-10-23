@@ -3,8 +3,18 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/LinearAlgebra.hpp>
+#include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorUtilities/CreateIncrementedTensor.hpp>
+
+#include <algorithm>
+#include <array>
+#include <complex>
+#include <cstddef>
+#include <limits>
+#include <random>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 #include <catch2/catch_all.hpp>
@@ -250,5 +260,152 @@ TEST_CASE("gemv noncontiguous view") {
     }
     SECTION("complex<float>") {
         test_gemv_noncontiguous_view<std::complex<float>>();
+    }
+}
+
+namespace {
+
+template <typename T>
+T test_value(double re, double im) {
+    if constexpr (einsums::IsComplexV<T>) {
+        using R = einsums::RemoveComplexT<T>;
+        return T(static_cast<R>(re), static_cast<R>(im));
+    } else {
+        return static_cast<T>(re);
+    }
+}
+
+/// A strided vector in a buffer whose gaps hold a sentinel, so a write through the wrong increment shows.
+template <typename T>
+struct StridedVector {
+    StridedVector(size_t n, size_t inc, unsigned seed) : n{n}, inc{inc}, data(n == 0 ? 1 : n * inc, sentinel()) {
+        std::mt19937                     gen(seed);
+        std::uniform_real_distribution<> dist(-1.0, 1.0);
+        for (size_t i = 0; i < n; i++) {
+            at(i) = test_value<T>(dist(gen), dist(gen));
+        }
+    }
+
+    static T sentinel() { return T(1234); }
+
+    T       &at(size_t i) { return data[i * inc]; }
+    T const &at(size_t i) const { return data[i * inc]; }
+
+    einsums::detail::TensorImpl<T> impl() { return {data.data(), std::array{n}, std::array{inc}}; }
+
+    size_t         n, inc;
+    std::vector<T> data;
+};
+
+} // namespace
+
+// impl_gemv_contiguous maps a row-major A onto column-major BLAS by flipping its transpose flag, and
+// any A without a unit stride takes the loop kernel. Every layout meets every flag here, with x and
+// y strided, on shapes with distinct extents so a swapped m and n shows, and with extent-1 axes. A
+// real 'c' is a 't', so a row-major real A takes BLAS for it too.
+TEMPLATE_TEST_CASE("gemv on every layout of A with every transpose flag", "[linear-algebra][gemv]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    using T = TestType;
+    using R = einsums::RemoveComplexT<T>;
+
+    T const alpha = test_value<T>(0.75, -0.5), beta = test_value<T>(-0.25, 0.5);
+
+    struct Layout {
+        char const *name;
+        bool        row_major;
+        size_t      step; // 1 pads the leading dimension; 2 also doubles the minor stride, leaving no unit stride
+    };
+    struct Shape {
+        size_t rows, cols;
+    };
+    unsigned seed = 0;
+    for (auto const [rows, cols] : {Shape{5, 3}, Shape{1, 3}, Shape{5, 1}}) {
+        for (auto const &[name, row_major, step] : {Layout{"column-major", false, 1}, Layout{"row-major", true, 1},
+                                                    Layout{"strided column-major", false, 2}, Layout{"strided row-major", true, 2}}) {
+            for (char const ta : {'n', 't', 'c'}) {
+                INFO(rows << "x" << cols << " " << name << " A, transA " << ta);
+                size_t const                ld      = step * ((row_major ? cols : rows) + 2);
+                std::array<size_t, 2> const strides = row_major ? std::array<size_t, 2>{ld, step} : std::array<size_t, 2>{step, ld};
+                std::vector<T>              a_data((row_major ? rows : cols) * ld);
+                for (size_t i = 0; i < rows; i++) {
+                    for (size_t j = 0; j < cols; j++) {
+                        a_data[i * strides[0] + j * strides[1]] = test_value<T>(double(i) - 0.5 * double(j), 0.25 * double(i + j));
+                    }
+                }
+                einsums::detail::TensorImpl<T> const A(a_data.data(), std::array{rows, cols}, strides);
+                if (step == 2 && rows > 1 && cols > 1) {
+                    REQUIRE_FALSE(A.is_gemmable());
+                }
+
+                size_t const         out = ta == 'n' ? rows : cols, link = ta == 'n' ? cols : rows;
+                StridedVector<T>     x(link, 2, ++seed), y(out, 3, ++seed);
+                std::vector<T> const y0     = y.data;
+                auto                 x_impl = x.impl(), y_impl = y.impl();
+                einsums::linear_algebra::detail::gemv(ta, alpha, A, x_impl, beta, &y_impl);
+
+                double const eps = std::numeric_limits<R>::epsilon();
+                for (size_t i = 0; i < out; i++) {
+                    std::complex<double> want = std::complex<double>(beta) * std::complex<double>(y0[i * 3]);
+                    double               mag  = std::abs(want);
+                    for (size_t l = 0; l < link; l++) {
+                        T a = ta == 'n' ? a_data[i * strides[0] + l * strides[1]] : a_data[l * strides[0] + i * strides[1]];
+                        if constexpr (einsums::IsComplexV<T>) {
+                            a = ta == 'c' ? std::conj(a) : a;
+                        }
+                        std::complex<double> const term =
+                            std::complex<double>(alpha) * std::complex<double>(a) * std::complex<double>(x.at(l));
+                        want += term;
+                        mag += std::abs(term);
+                    }
+                    INFO("y(" << i << ")");
+                    CHECK(std::abs(std::complex<double>(y.at(i)) - want) <= 16 * eps * mag);
+                }
+                auto const untouched = std::count(y.data.begin(), y.data.end(), StridedVector<T>::sentinel());
+                CHECK(static_cast<size_t>(untouched) == y.data.size() - out);
+            }
+        }
+    }
+}
+
+// A zero beta is BLAS's "do not read the output", and the loop kernel scaled y by it instead, keeping
+// any NaN already there. An empty link extent still applies beta to y: the entry returned early when
+// any extent was zero, leaving y unscaled.
+TEMPLATE_TEST_CASE("gemv applies beta to y once whatever the operands hold", "[linear-algebra][gemv]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    using T          = TestType;
+    using R          = einsums::RemoveComplexT<T>;
+    T const      nan = test_value<T>(std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN());
+    size_t const m = 4, n = 3;
+
+    SECTION("zero beta discards y, through BLAS and through the loop kernel") {
+        for (size_t const step : {1, 2}) {
+            INFO("A strides (" << step << ", " << step * m << ")");
+            std::vector<T>                       a_data(step * m * n, T(1));
+            einsums::detail::TensorImpl<T> const A(a_data.data(), std::array{m, n}, std::array{step, step * m});
+            std::vector<T>                       x_data(n, T(2)), y_data(m, nan);
+            einsums::detail::TensorImpl<T>       x(x_data.data(), std::array{n}, std::array<size_t, 1>{1});
+            einsums::detail::TensorImpl<T>       y(y_data.data(), std::array{m}, std::array<size_t, 1>{1});
+            einsums::linear_algebra::detail::gemv('n', T(1), A, x, T(0), &y);
+            for (size_t i = 0; i < m; i++) {
+                CHECK(y_data[i] == T(R(2 * n)));
+            }
+        }
+    }
+
+    SECTION("an empty link extent scales y by beta") {
+        for (char const ta : {'n', 't'}) {
+            INFO("transA " << ta);
+            std::vector<T>                       a_data(1);
+            einsums::detail::TensorImpl<T> const A(a_data.data(), ta == 'n' ? std::array<size_t, 2>{m, 0} : std::array<size_t, 2>{0, m});
+            std::vector<T>                       x_data(1), y_data(m, T(3)), z_data(m, nan);
+            einsums::detail::TensorImpl<T>       x(x_data.data(), std::array<size_t, 1>{0});
+            einsums::detail::TensorImpl<T>       y(y_data.data(), std::array{m}), z(z_data.data(), std::array{m});
+            einsums::linear_algebra::detail::gemv(ta, T(1), A, x, T(2), &y);
+            einsums::linear_algebra::detail::gemv(ta, T(1), A, x, T(0), &z);
+            for (size_t i = 0; i < m; i++) {
+                CHECK(y_data[i] == T(6));
+                CHECK(z_data[i] == T(0));
+            }
+        }
     }
 }

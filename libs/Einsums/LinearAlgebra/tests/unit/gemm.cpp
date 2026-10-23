@@ -415,3 +415,29 @@ TEMPLATE_TEST_CASE("gemm on every layout of A, B and C with every transpose flag
         }
     }
 }
+
+// An empty link extent still applies beta to C, as every empty contraction does. The entry returned
+// early when any extent was zero, so C kept its old values.
+TEMPLATE_TEST_CASE("gemm with an empty link extent scales C by beta", "[linear-algebra][gemm]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    using T        = TestType;
+    using R        = einsums::RemoveComplexT<T>;
+    size_t const m = 3, n = 2;
+    T const      nan(std::numeric_limits<R>::quiet_NaN());
+
+    for (char const ta : {'n', 't'}) {
+        for (char const tb : {'n', 't'}) {
+            INFO("transA " << ta << ", transB " << tb);
+            std::vector<T>                       a_data(1), b_data(1), c_data(m * n, T(3)), d_data(m * n, nan);
+            einsums::detail::TensorImpl<T> const A(a_data.data(), ta == 'n' ? std::array<size_t, 2>{m, 0} : std::array<size_t, 2>{0, m});
+            einsums::detail::TensorImpl<T> const B(b_data.data(), tb == 'n' ? std::array<size_t, 2>{0, n} : std::array<size_t, 2>{n, 0});
+            einsums::detail::TensorImpl<T>       C(c_data.data(), std::array{m, n}), D(d_data.data(), std::array{m, n});
+            einsums::linear_algebra::detail::gemm(ta, tb, T(1), A, B, T(2), &C);
+            einsums::linear_algebra::detail::gemm(ta, tb, T(1), A, B, T(0), &D);
+            for (size_t i = 0; i < m * n; i++) {
+                CHECK(c_data[i] == T(6));
+                CHECK(d_data[i] == T(0));
+            }
+        }
+    }
+}

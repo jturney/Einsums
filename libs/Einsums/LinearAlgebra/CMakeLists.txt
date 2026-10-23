@@ -11,7 +11,11 @@ set(LinearAlgebraHeaders
     Einsums/LinearAlgebra/Bases/direct_product.hpp Einsums/LinearAlgebra/Bases/gemm.hpp Einsums/LinearAlgebra/Bases/gemv.hpp
     Einsums/LinearAlgebra/Bases/ger.hpp Einsums/LinearAlgebra/Bases/compensated_sum.hpp Einsums/LinearAlgebra/Bases/norm.hpp Einsums/LinearAlgebra/Bases/sum_square.hpp
     Einsums/LinearAlgebra/Bases/syev.hpp
+    Einsums/LinearAlgebra/Bases/direct_division.hpp
+    Einsums/LinearAlgebra/Bases/layout_flag.hpp
+    Einsums/LinearAlgebra/Bases/triangular.hpp
     Einsums/LinearAlgebra/DiskAlgebra.hpp
+    Einsums/LinearAlgebra/SymmetryDispatch.hpp
 )
 
 set(LinearAlgebraSources LinearAlgebra.cpp ForwardDeclarations.cpp)

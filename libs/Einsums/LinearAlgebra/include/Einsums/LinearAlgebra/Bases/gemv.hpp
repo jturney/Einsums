@@ -7,6 +7,8 @@
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/LinearAlgebra/Bases/layout_flag.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
 
@@ -35,16 +37,18 @@ void impl_gemv_noncontiguous(char transA, YType alpha, einsums::detail::TensorIm
 
     constexpr YType zero = einsums::detail::convert<int, YType>(0);
 
-    // Scale the output.
-    blas::scal(Y->dim(0), beta, Y_data, incy);
+    // Scale the output. A zero beta assigns zero, so a NaN already in Y is discarded as BLAS does.
+    einsums::detail::impl_scal(beta, *Y);
 
     // Do the matrix multiplication.
     //
     // Parallel over outputs only, so each Y element has one owner; collapsing the link loop too
-    // would race on Y.
+    // would race on Y. Gated on the library's element threshold over the whole product, as gemm's
+    // loop kernel is.
+    bool const product_par = target_dim > 1 && target_dim * link_dim >= ::einsums::hardware::omp_min_parallel_elements();
     if constexpr (IsComplexV<YType>) {
         if (tA == 'c') {
-            EINSUMS_OMP_PRAGMA(parallel for)
+            EINSUMS_OMP_PRAGMA(parallel for if (product_par))
             for (size_t target = 0; target < target_dim; target++) {
                 YType acc = zero;
                 for (size_t link = 0; link < link_dim; link++) {
@@ -53,7 +57,7 @@ void impl_gemv_noncontiguous(char transA, YType alpha, einsums::detail::TensorIm
                 Y_data[target * incy] += alpha * acc;
             }
         } else {
-            EINSUMS_OMP_PRAGMA(parallel for)
+            EINSUMS_OMP_PRAGMA(parallel for if (product_par))
             for (size_t target = 0; target < target_dim; target++) {
                 YType acc = zero;
                 for (size_t link = 0; link < link_dim; link++) {
@@ -63,7 +67,7 @@ void impl_gemv_noncontiguous(char transA, YType alpha, einsums::detail::TensorIm
             }
         }
     } else {
-        EINSUMS_OMP_PRAGMA(parallel for)
+        EINSUMS_OMP_PRAGMA(parallel for if (product_par))
         for (size_t target = 0; target < target_dim; target++) {
             YType acc = zero;
             for (size_t link = 0; link < link_dim; link++) {
@@ -74,32 +78,24 @@ void impl_gemv_noncontiguous(char transA, YType alpha, einsums::detail::TensorIm
     }
 }
 
+/// Y = alpha op(A) X + beta Y on a row- or column-major A, in one column-major BLAS call.
+///
+/// A row-major A is its transpose to BLAS, so its extents swap and its flag flips (see
+/// flipped_layout_flag); a conjugate without a transpose goes to the loop kernel.
 template <typename T>
 void impl_gemv_contiguous(char transA, T alpha, einsums::detail::TensorImpl<T> const &A, einsums::detail::TensorImpl<T> const &X, T beta,
                           einsums::detail::TensorImpl<T> *Y) {
-    bool   colA = A.is_column_major();
-    size_t m, n;
-    char   tA = transA;
+    char const tA        = std::tolower(transA);
+    bool const row_major = A.is_row_major();
+    char const flag      = row_major ? flipped_layout_flag<T>(tA) : tA;
 
-    if (colA) {
-        m = A.dim(0);
-        n = A.dim(1);
-    } else {
-        if (transA == 'c' || transA == 'C') {
-            impl_gemv_noncontiguous(transA, alpha, A, X, beta, Y);
-            return;
-        }
-        m = A.dim(1);
-        n = A.dim(0);
-
-        if (transA == 'n' || transA == 'N') {
-            tA = 't';
-        } else {
-            tA = 'n';
-        }
+    if (flag == 0) {
+        impl_gemv_noncontiguous(transA, alpha, A, X, beta, Y);
+        return;
     }
 
-    blas::gemv(tA, m, n, alpha, A.data(), A.get_lda(), X.data(), X.get_incx(), beta, Y->data(), Y->get_incx());
+    auto const m = row_major ? A.dim(1) : A.dim(0), n = row_major ? A.dim(0) : A.dim(1);
+    blas::gemv(flag, m, n, alpha, A.data(), A.get_lda(), X.data(), X.get_incx(), beta, Y->data(), Y->get_incx());
 }
 
 template <typename AType, typename XType, typename YType, typename AlphaType, typename BetaType>

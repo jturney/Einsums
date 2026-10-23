@@ -112,7 +112,12 @@ void gemm(char transA, char transB, AlphaType const alpha, einsums::detail::Tens
         }
     }
 
-    if (A.dim(0) == 0 || A.dim(1) == 0 || B.dim(0) == 0 || B.dim(1) == 0 || C->dim(0) == 0 || C->dim(1) == 0) {
+    if (C->dim(0) == 0 || C->dim(1) == 0) {
+        return;
+    }
+    // An empty link extent still applies beta to C, as every empty contraction does.
+    if ((tA == 'n' ? A.dim(1) : A.dim(0)) == 0) {
+        einsums::detail::impl_scal(beta, *C);
         return;
     }
 
@@ -169,27 +174,23 @@ void gemv(char transA, AlphaType alpha, einsums::detail::TensorImpl<AType> const
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "The transpose character is invalid! Expected either 'c', 'n', or 't'. Got {:?}.",
                                 transA);
     }
-    if (std::tolower(transA) == 'n') {
-        if (A.dim(0) != Y->dim(0)) {
-            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the input matrix and output tensor do not match! Got {} and {}.",
-                                    A.dim(1), Y->dim(0));
-        }
-        if (A.dim(1) != X.dim(0)) {
-            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the input matrix and input tensor do not match! Got {} and {}.",
-                                    A.dim(0), X.dim(0));
-        }
-    } else {
-        if (A.dim(1) != Y->dim(0)) {
-            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the input matrix and output tensor do not match! Got {} and {}.",
-                                    A.dim(0), Y->dim(0));
-        }
-        if (A.dim(0) != X.dim(0)) {
-            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the input matrix and input tensor do not match! Got {} and {}.",
-                                    A.dim(1), X.dim(0));
-        }
+    bool const   trans = std::tolower(transA) != 'n';
+    size_t const out = trans ? A.dim(1) : A.dim(0), link = trans ? A.dim(0) : A.dim(1);
+    if (out != Y->dim(0)) {
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the input matrix and output tensor do not match! Got {} and {}.", out,
+                                Y->dim(0));
+    }
+    if (link != X.dim(0)) {
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the input matrix and input tensor do not match! Got {} and {}.", link,
+                                X.dim(0));
     }
 
-    if (A.dim(0) == 0 || A.dim(1) == 0 || X.dim(0) == 0 || Y->dim(0) == 0) {
+    if (out == 0) {
+        return;
+    }
+    // An empty link extent still applies beta to Y, as every empty contraction does.
+    if (link == 0) {
+        einsums::detail::impl_scal(beta, *Y);
         return;
     }
     impl_gemv(transA, alpha, A, X, beta, Y);
