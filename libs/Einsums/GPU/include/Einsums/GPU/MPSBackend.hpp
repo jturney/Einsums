@@ -46,6 +46,11 @@ EINSUMS_EXPORT bool hgemm(char transa, char transb, int m, int n, int k, float a
 EINSUMS_EXPORT bool sgemv(char trans, int m, int n, float alpha, float const *a, int lda, float const *x, int incx, float beta, float *y,
                           int incy);
 
+/// How many MTLBuffers wrapping caller memory without a copy are alive. Each BLAS call above
+/// releases its wrappers before it returns, so this is zero between calls: a wrapper that outlived
+/// its call would still map memory the caller is free to release and reuse.
+EINSUMS_EXPORT size_t live_host_wrappers();
+
 EINSUMS_NAMESPACE_END(gpu::mps)
 
 #endif // EINSUMS_HAVE_MPS

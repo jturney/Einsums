@@ -7,6 +7,7 @@
 // This file is compiled as Objective-C++ (.mm) to access the Metal API.
 
 #include <Einsums/Config.hpp>
+#include <Einsums/GPU/MPSBackend.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/Profile/Profile.hpp>
 
@@ -19,6 +20,7 @@
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 
 #include <cstddef>
+#include <atomic>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -42,6 +44,7 @@ std::once_flag      g_init_flag;
 
 /// Map from raw pointer (.contents) → MTLBuffer for lookup during GEMM.
 std::mutex                                    g_buffer_mutex;
+std::atomic<size_t>                           g_live_host_wrappers{0};
 std::unordered_map<void *, id<MTLBuffer>>     g_buffer_map;
 
 void ensure_initialized() {
@@ -175,9 +178,11 @@ id<MTLBuffer> wrap_or_copy(void const *ptr, size_t bytes, bool /*is_const*/) {
         buf = [g_device newBufferWithBytesNoCopy:const_cast<void *>(ptr)
                                           length:alignedLen
                                          options:MTLResourceStorageModeShared
-                                     deallocator:nil];
-        if (buf)
+                                     deallocator:^(void *, NSUInteger) { g_live_host_wrappers.fetch_sub(1); }];
+        if (buf) {
+            g_live_host_wrappers.fetch_add(1);
             return buf;
+        }
     }
 
     // Fallback: allocate a new buffer and copy data into it.
@@ -203,8 +208,8 @@ bool execute_and_check(id<MTLCommandBuffer> cmdBuf, char const *operation) {
     return true;
 }
 
-/// Generic MPS GEMM: works for Float32, Float16, BFloat16.
-bool mps_gemm_impl(char transa, char transb, int m, int n, int k,
+/// Generic MPS GEMM: works for Float32, Float16, BFloat16. Run only through mps_gemm_impl.
+bool mps_gemm_body(char transa, char transb, int m, int n, int k,
                     double alpha, void const *a, int lda,
                     void const *b, int ldb,
                     double beta, void *c, int ldc,
@@ -286,6 +291,18 @@ bool mps_gemm_impl(char transa, char transb, int m, int n, int k,
     return ok;
 }
 
+/// The body inside its own autorelease pool. The command buffer comes back autoreleased and holds
+/// every MTLBuffer it encoded, the ones wrapping the caller's A, B and C without a copy included.
+/// No pool drains on a thread Einsums does not own, Python's main thread among them, so without
+/// this one those wrappers lived as long as the process: they mapped memory the caller had since
+/// freed and reused, which newBufferWithBytesNoCopy forbids, and accumulated with every call.
+bool mps_gemm_impl(char transa, char transb, int m, int n, int k, double alpha, void const *a, int lda, void const *b, int ldb,
+                   double beta, void *c, int ldc, MPSDataType dataType, size_t elementSize) {
+    @autoreleasepool {
+        return mps_gemm_body(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc, dataType, elementSize);
+    }
+}
+
 // --- Type-specific wrappers ---
 
 bool sgemm(char transa, char transb, int m, int n, int k,
@@ -313,7 +330,8 @@ bool hgemm(char transa, char transb, int m, int n, int k,
 // GEMV via MPSMatrixVectorMultiplication
 // ===========================================================================
 
-bool sgemv(char trans, int m, int n,
+/// Run only through sgemv, which gives it the autorelease pool mps_gemm_impl explains.
+bool sgemv_body(char trans, int m, int n,
             float alpha, float const *a, int lda,
             float const *x, int incx,
             float beta, float *y, int incy) {
@@ -400,6 +418,16 @@ bool sgemv(char trans, int m, int n,
         std::memcpy(y, bufY.contents, sizeY);
     }
     return ok;
+}
+
+bool sgemv(char trans, int m, int n, float alpha, float const *a, int lda, float const *x, int incx, float beta, float *y, int incy) {
+    @autoreleasepool {
+        return sgemv_body(trans, m, n, alpha, a, lda, x, incx, beta, y, incy);
+    }
+}
+
+size_t live_host_wrappers() {
+    return g_live_host_wrappers.load();
 }
 
 // ===========================================================================
