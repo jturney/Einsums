@@ -230,12 +230,6 @@ void ignore_broken_pipe() {
 void shutdown_profiler_and_report() noexcept {
 #if defined(EINSUMS_HAVE_PROFILER)
     try {
-        // Only the server writes session files, so name the option that starts it. An error, since
-        // release builds suppress warnings.
-        if (!waggle::settings().save.empty() && !waggle::server_running()) {
-            EINSUMS_LOG_ERROR("--einsums:profile:save was given without --einsums:profile:server, so no session "
-                              "file was written. The text report is unaffected.");
-        }
         // Einsums' release. Whichever library releases last writes the session file and the report.
         waggle::finalize("einsums");
         // The profiler outlives this runtime's logger and output hooks, so hand its messages back

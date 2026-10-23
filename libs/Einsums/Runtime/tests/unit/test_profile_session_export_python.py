@@ -123,35 +123,39 @@ def test_session_export_covers_teardown(tmp_path):
     )
 
 
-def test_session_export_without_a_server_is_reported(tmp_path):
-    """A session that cannot be served must be refused out loud, naming what would fix it.
+@needs_profiler
+def test_session_export_without_a_server_is_written(tmp_path):
+    """A session is saved at exit whether or not the server ran, and runs append to one file.
 
-    There are two ways it cannot be served and they want different diagnostics. With the
-    profiler compiled in, the export is a Server method and the server was not started, so the
-    message names ``--einsums:profile:server``. With EINSUMS_WITH_PROFILER off there is no
-    profiler to start and naming that option would be a false lead, so the message names the
-    build option instead. Either way the one thing being tested is that it is not silent.
+    Only the server used to write session files, and the runtime refused the request out loud.
+    Waggle now writes the session itself, so that refusal became false: it said no file was
+    written while the file was there. Nothing about the save may be reported as an error.
     """
+    out = tmp_path / "runs.json"
+    for _ in range(2):
+        proc = _run(tmp_path, f"--einsums:profile:save={out}")
+        assert proc.returncode == 0, proc.stderr
+        assert "no session file was written" not in proc.stdout + proc.stderr
+
+    assert out.exists(), "no session file was written without a server"
+    sessions = json.loads(out.read_text()).get("sessions")
+    assert sessions is not None and len(sessions) == 2, "two runs did not append two sessions"
+
+
+@pytest.mark.skipif(PROFILER == "1", reason="EINSUMS_WITH_PROFILER is on, so the session is written")
+def test_session_export_without_the_profiler_is_reported(tmp_path):
+    """With EINSUMS_WITH_PROFILER off nothing is recorded, and a save request says so, naming the
+    build option, rather than leaving the user to wonder where the file went."""
     out = tmp_path / "session.json"
     proc = _run(tmp_path, f"--einsums:profile:save={out}")
 
     assert proc.returncode == 0, proc.stderr
-    assert not out.exists(), "a session was written without a server"
-
-    if PROFILER == "1":
-        wanted = ("profile:server",)
-        named = "the missing server option"
-    elif PROFILER == "0":
-        wanted = ("einsums_with_profiler",)
-        named = "the build option that leaves out the profiler"
-    else:
-        wanted = ("profile:server", "einsums_with_profiler")
-        named = "either the missing server option or the build option that leaves out the profiler"
-
+    if PROFILER is None and out.exists():
+        pytest.skip("run by hand in a profiler build; nothing to refuse")
+    assert not out.exists(), "a session was written without the profiler"
     combined = (proc.stdout + proc.stderr).lower()
-    assert any(text in combined for text in wanted), (
-        f"no diagnostic named {named}; the request was refused silently. "
-        f"stdout/stderr was: {combined[:400]!r}"
+    assert "einsums_with_profiler" in combined, (
+        f"no diagnostic named the build option that leaves out the profiler; stdout/stderr was: {combined[:400]!r}"
     )
 
 

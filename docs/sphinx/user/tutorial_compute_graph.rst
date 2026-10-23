@@ -712,18 +712,17 @@ ComputeGraph structure) to a JSON file for offline analysis:
 
 .. code-block:: bash
 
-    ./my_program --einsums:profile:server --einsums:profile:save=session.json
+    ./my_program --einsums:profile:save=session.json
 
-The export goes through the profile server, so ``--einsums:profile:save`` writes
-nothing without ``--einsums:profile:server``. ``einsums profiler --load``
-opens the file. Multiple runs
-append to the same file, creating a multi-session comparison:
+The file is written as the program exits, with or without ``--einsums:profile:server``.
+``einsums profiler --load`` opens it.
+Multiple runs append to the same file, creating a multi-session comparison:
 
 .. code-block:: bash
 
     # Run multiple times; sessions accumulate
-    ./program --einsums:profile:server --einsums:profile:save=runs.json
-    ./program --einsums:profile:server --einsums:profile:save=runs.json
+    ./program --einsums:profile:save=runs.json
+    ./program --einsums:profile:save=runs.json
 
     # Load all in the viewer
     einsums profiler --load runs.json
