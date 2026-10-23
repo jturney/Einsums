@@ -91,6 +91,11 @@ jobs:
       - name: ccache statistics
         run: ccache -sv 2>/dev/null || ccache -s
 
+      - name: Enable developer tools for xctrace
+        # Waggle's signposts test records the program with xctrace, which otherwise waits for an
+        # authorization nobody on a runner can give.
+        run: sudo DevToolsSecurity -enable
+
       - name: Test (CTest) - Unit Tests
         working-directory: "${{ github.workspace }}/build"
         env:
