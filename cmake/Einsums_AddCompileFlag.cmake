@@ -64,7 +64,7 @@ function(einsums_add_target_compile_option FLAG)
     set(_configurations ${target_compile_option_CONFIGURATIONS})
   endif()
 
-  set(_languages "CXX" "C" "ASM")
+  set(_languages "CXX" "C")
   if(target_compile_option_LANGUAGES)
     set(_languages ${target_compile_option_LANGUAGES})
   endif()

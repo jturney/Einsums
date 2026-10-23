@@ -1918,20 +1918,24 @@ inline int_t lascl<double>(char type, int_t kl, int_t ku, double cfrom, double c
 }
 
 namespace detail {
-void EINSUMS_EXPORT sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float *z, int_t incz);
-void EINSUMS_EXPORT ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *y, int_t incy, double *z, int_t incz);
+void EINSUMS_EXPORT sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float beta, float *z,
+                             int_t incz);
+void EINSUMS_EXPORT ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *y, int_t incy, double beta, double *z,
+                             int_t incz);
 void EINSUMS_EXPORT cdirprod(int_t n, std::complex<float> alpha, std::complex<float> const *x, int_t incx, std::complex<float> const *y,
-                             int_t incy, std::complex<float> *z, int_t incz);
+                             int_t incy, std::complex<float> beta, std::complex<float> *z, int_t incz);
 void EINSUMS_EXPORT zdirprod(int_t n, std::complex<double> alpha, std::complex<double> const *x, int_t incx, std::complex<double> const *y,
-                             int_t incy, std::complex<double> *z, int_t incz);
+                             int_t incy, std::complex<double> beta, std::complex<double> *z, int_t incz);
 } // namespace detail
 
 /**
- * Computes the direct product between two vectors.
+ * Computes the direct product between two vectors, scaling the vector it is added to.
  *
  * @f[
- * z_i := z_i + \alpha x_i y_i
+ * z_i := \alpha x_i y_i + \beta z_i
  * @f]
+ *
+ * One pass over z. When @p beta is zero, z is not read, so it may hold anything, NaN included.
  *
  * @tparam T The type this function handles.
  * @param[in] n The number of elements in the vectors.
@@ -1940,34 +1944,38 @@ void EINSUMS_EXPORT zdirprod(int_t n, std::complex<double> alpha, std::complex<d
  * @param[in] incx The skip value for the first vector.
  * @param[in] y The second input vector.
  * @param[in] incy The skip value for the second vector.
- * @param[inout] z The accumulation vector.
+ * @param[in] beta The scale factor for the accumulation vector.
+ * @param[inout] z The accumulation vector. It must not overlap x or y.
  * @param[in] incz The skip value for the accumulation vector.
  *
  * @versionadded{2.0.0}
  */
 template <typename T>
-void dirprod(int_t n, T alpha, T const *x, int_t incx, T const *y, int_t incy, T *z, int_t incz);
+void dirprod(int_t n, T alpha, T const *x, int_t incx, T const *y, int_t incy, T beta, T *z, int_t incz);
 
 template <>
-inline void dirprod<float>(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float *z, int_t incz) {
-    detail::sdirprod(n, alpha, x, incx, y, incy, z, incz);
+inline void dirprod<float>(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float beta, float *z, int_t incz) {
+    detail::sdirprod(n, alpha, x, incx, y, incy, beta, z, incz);
 }
 
 template <>
-inline void dirprod<double>(int_t n, double alpha, double const *x, int_t incx, double const *y, int_t incy, double *z, int_t incz) {
-    detail::ddirprod(n, alpha, x, incx, y, incy, z, incz);
+inline void dirprod<double>(int_t n, double alpha, double const *x, int_t incx, double const *y, int_t incy, double beta, double *z,
+                            int_t incz) {
+    detail::ddirprod(n, alpha, x, incx, y, incy, beta, z, incz);
 }
 
 template <>
 inline void dirprod<std::complex<float>>(int_t n, std::complex<float> alpha, std::complex<float> const *x, int_t incx,
-                                         std::complex<float> const *y, int_t incy, std::complex<float> *z, int_t incz) {
-    detail::cdirprod(n, alpha, x, incx, y, incy, z, incz);
+                                         std::complex<float> const *y, int_t incy, std::complex<float> beta, std::complex<float> *z,
+                                         int_t incz) {
+    detail::cdirprod(n, alpha, x, incx, y, incy, beta, z, incz);
 }
 
 template <>
 inline void dirprod<std::complex<double>>(int_t n, std::complex<double> alpha, std::complex<double> const *x, int_t incx,
-                                          std::complex<double> const *y, int_t incy, std::complex<double> *z, int_t incz) {
-    detail::zdirprod(n, alpha, x, incx, y, incy, z, incz);
+                                          std::complex<double> const *y, int_t incy, std::complex<double> beta, std::complex<double> *z,
+                                          int_t incz) {
+    detail::zdirprod(n, alpha, x, incx, y, incy, beta, z, incz);
 }
 
 namespace detail {

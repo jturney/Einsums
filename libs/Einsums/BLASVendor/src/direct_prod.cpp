@@ -14,79 +14,7 @@
 #include <complex>
 #include <cstddef>
 
-// ---------------------------------------------------------------------------
-// Direct-product kernels (operate on a unit-stride block of 64 elements).
-//
-// std::complex, not `_Complex`, whose multiply calls __mulsc3/__muldc3, unavailable to clang-cl. The
-// ABI is shared, so the AVX2 assembly kernels are called unchanged.
-//
-// The fallbacks use EINSUMS_OMP_SIMD, not EINSUMS_OMP_SIMD_PRAGMA(for): they run inside the
-// caller's parallel for, and nested worksharing deadlocks.
-// ---------------------------------------------------------------------------
-#if defined(__AVX2__) && defined(__FMA3__) && !defined(__ICC) && !defined(__INTEL_COMPILER)
-// The AVX2 kernels are hand-written assembly, so these keep C linkage.
-extern "C" {
-extern int sdirprod_kernel_avx2(size_t n, float alpha, float const *x, float const *y, float *z);
-extern int ddirprod_kernel_avx2(size_t n, double alpha, double const *x, double const *y, double *z);
-extern int cdirprod_kernel_avx2(size_t n, std::complex<float> alpha, std::complex<float> const *x, std::complex<float> const *y,
-                                std::complex<float> *z);
-extern int zdirprod_kernel_avx2(size_t n, std::complex<double> alpha, std::complex<double> const *x, std::complex<double> const *y,
-                                std::complex<double> *z);
-} // extern "C"
-#endif
-
 EINSUMS_NAMESPACE_BEGIN(blas::vendor)
-
-#if defined(__AVX2__) && defined(__FMA3__) && !defined(__ICC) && !defined(__INTEL_COMPILER)
-
-void sdirprod_kernel(size_t n, float alpha, float const *__restrict x, float const *__restrict y, float *__restrict z) {
-    sdirprod_kernel_avx2(n, alpha, x, y, z);
-}
-
-void ddirprod_kernel(size_t n, double alpha, double const *__restrict x, double const *__restrict y, double *__restrict z) {
-    ddirprod_kernel_avx2(n, alpha, x, y, z);
-}
-
-void cdirprod_kernel(size_t n, std::complex<float> alpha, std::complex<float> const *__restrict x, std::complex<float> const *__restrict y,
-                     std::complex<float> *__restrict z) {
-    cdirprod_kernel_avx2(n, alpha, x, y, z);
-}
-
-void zdirprod_kernel(size_t n, std::complex<double> alpha, std::complex<double> const *__restrict x,
-                     std::complex<double> const *__restrict y, std::complex<double> *__restrict z) {
-    zdirprod_kernel_avx2(n, alpha, x, y, z);
-}
-#else
-void sdirprod_kernel(size_t n, float alpha, float const *__restrict x, float const *__restrict y, float *__restrict z) {
-    EINSUMS_OMP_SIMD
-    for (size_t i = 0; i < n; i++) {
-        z[i] = z[i] + alpha * x[i] * y[i];
-    }
-}
-
-void ddirprod_kernel(size_t n, double alpha, double const *__restrict x, double const *__restrict y, double *__restrict z) {
-    EINSUMS_OMP_SIMD
-    for (size_t i = 0; i < n; i++) {
-        z[i] = z[i] + alpha * x[i] * y[i];
-    }
-}
-
-void cdirprod_kernel(size_t n, std::complex<float> alpha, std::complex<float> const *__restrict x, std::complex<float> const *__restrict y,
-                     std::complex<float> *__restrict z) {
-    EINSUMS_OMP_SIMD
-    for (size_t i = 0; i < n; i++) {
-        z[i] = z[i] + alpha * x[i] * y[i];
-    }
-}
-
-void zdirprod_kernel(size_t n, std::complex<double> alpha, std::complex<double> const *__restrict x,
-                     std::complex<double> const *__restrict y, std::complex<double> *__restrict z) {
-    EINSUMS_OMP_SIMD
-    for (size_t i = 0; i < n; i++) {
-        z[i] = z[i] + alpha * x[i] * y[i];
-    }
-}
-#endif
 
 namespace {
 
@@ -97,112 +25,134 @@ size_t parallel_threshold() {
     return ::einsums::hardware::omp_min_parallel_elements();
 }
 
-} // namespace
+// ---------------------------------------------------------------------------
+// Unit-stride kernels, z = beta z + alpha x y over one block.
+//
+// One pass over z: scaling z first and accumulating the product second reads and writes all of z
+// twice, which measured 1.3 to 1.6 times slower once the vectors leave cache. A zero beta never
+// reads z, as BLAS never reads an output scaled by zero, so an output carved from fresh or reused
+// memory that holds NaN still comes out finite.
+//
+// The kernels use EINSUMS_OMP_SIMD, not EINSUMS_OMP_SIMD_PRAGMA(for): they run inside the caller's
+// parallel for, and nested worksharing deadlocks.
+// ---------------------------------------------------------------------------
 
-void sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float *z, int_t incz) {
-    WAGGLE_ZONE_FUNC();
-
-    if (incx == 1 && incy == 1 && incz == 1) {
-        auto blocks    = n / 64;
-        auto remaining = n % 64;
-        auto offset    = 64 * blocks;
-
-        if (blocks != 0) {
-            EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
-            for (int_t i = 0; i < blocks; i++) {
-                sdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
-            }
-        }
-
-        if (remaining != 0) {
-            sdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
+template <typename T>
+void block(size_t n, T alpha, T const *__restrict x, T const *__restrict y, T beta, T *__restrict z) {
+    if (beta == T{0}) {
+        EINSUMS_OMP_SIMD
+        for (size_t i = 0; i < n; i++) {
+            z[i] = alpha * x[i] * y[i];
         }
     } else {
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
-        for (int_t i = 0; i < n; i++) {
-            z[i * incz] += alpha * x[i * incx] * y[i * incy];
+        EINSUMS_OMP_SIMD
+        for (size_t i = 0; i < n; i++) {
+            z[i] = beta * z[i] + alpha * x[i] * y[i];
         }
     }
 }
 
-void ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *y, int_t incy, double *z, int_t incz) {
+// Complex, with the multiply written out on the interleaved real and imaginary parts.
+// std::complex's operator* follows C Annex G, recovering an infinity from a NaN result through a
+// call per element, which keeps the loop from vectorizing: it ran 1.4 to 2.9 times slower. Finite
+// operands give the same result either way.
+template <typename R>
+void block(size_t n, std::complex<R> alpha, std::complex<R> const *__restrict xc, std::complex<R> const *__restrict yc,
+           std::complex<R> beta, std::complex<R> *__restrict zc) {
+    auto const *x  = reinterpret_cast<R const *>(xc);
+    auto const *y  = reinterpret_cast<R const *>(yc);
+    auto       *z  = reinterpret_cast<R *>(zc);
+    R const     ar = alpha.real(), ai = alpha.imag(), br = beta.real(), bi = beta.imag();
+    if (beta == std::complex<R>{0}) {
+        EINSUMS_OMP_SIMD
+        for (size_t i = 0; i < n; i++) {
+            R const pr   = x[2 * i] * y[2 * i] - x[2 * i + 1] * y[2 * i + 1];
+            R const pi   = x[2 * i] * y[2 * i + 1] + x[2 * i + 1] * y[2 * i];
+            z[2 * i]     = ar * pr - ai * pi;
+            z[2 * i + 1] = ar * pi + ai * pr;
+        }
+    } else {
+        EINSUMS_OMP_SIMD
+        for (size_t i = 0; i < n; i++) {
+            R const pr = x[2 * i] * y[2 * i] - x[2 * i + 1] * y[2 * i + 1];
+            R const pi = x[2 * i] * y[2 * i + 1] + x[2 * i + 1] * y[2 * i];
+            R const zr = z[2 * i], zi = z[2 * i + 1];
+            z[2 * i]     = br * zr - bi * zi + ar * pr - ai * pi;
+            z[2 * i + 1] = br * zi + bi * zr + ar * pi + ai * pr;
+        }
+    }
+}
+
+/// a b, with a complex product written out for the reason the complex block gives.
+template <typename T>
+T mul(T a, T b) {
+    return a * b;
+}
+
+template <typename R>
+std::complex<R> mul(std::complex<R> a, std::complex<R> b) {
+    return {a.real() * b.real() - a.imag() * b.imag(), a.real() * b.imag() + a.imag() * b.real()};
+}
+
+template <typename T>
+void dirprod(int_t n, T alpha, T const *x, int_t incx, T const *y, int_t incy, T beta, T *z, int_t incz) {
     WAGGLE_ZONE_FUNC();
 
+    if (n <= 0) {
+        return;
+    }
+
     if (incx == 1 && incy == 1 && incz == 1) {
-        auto blocks    = n / 64;
-        auto remaining = n % 64;
-        auto offset    = 64 * blocks;
+        auto const blocks    = n / 64;
+        auto const remaining = n % 64;
+        auto const offset    = 64 * blocks;
 
         if (blocks != 0) {
             EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
             for (int_t i = 0; i < blocks; i++) {
-                ddirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
+                block(64, alpha, x + i * 64, y + i * 64, beta, z + i * 64);
             }
         }
 
         if (remaining != 0) {
-            ddirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
+            block(remaining, alpha, x + offset, y + offset, beta, z + offset);
         }
-    } else {
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
-        for (int_t i = 0; i < n; i++) {
-            z[i * incz] += alpha * x[i * incx] * y[i * incy];
-        }
+        return;
     }
+
+    // Offsets in ptrdiff_t: int_t can be 32 bits, and n times a stride overflows it long before the
+    // vectors fill memory. A negative increment walks its vector backwards from the far end, as in BLAS.
+    std::ptrdiff_t const sx = incx, sy = incy, sz = incz, len = n;
+    x += sx < 0 ? (1 - len) * sx : 0;
+    y += sy < 0 ? (1 - len) * sy : 0;
+    z += sz < 0 ? (1 - len) * sz : 0;
+
+    bool const discard = beta == T{0};
+    EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
+    for (std::ptrdiff_t i = 0; i < len; i++) {
+        T const product = mul(alpha, mul(x[i * sx], y[i * sy]));
+        z[i * sz]       = discard ? product : mul(beta, z[i * sz]) + product;
+    }
+}
+
+} // namespace
+
+void sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float beta, float *z, int_t incz) {
+    dirprod(n, alpha, x, incx, y, incy, beta, z, incz);
+}
+
+void ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *y, int_t incy, double beta, double *z, int_t incz) {
+    dirprod(n, alpha, x, incx, y, incy, beta, z, incz);
 }
 
 void cdirprod(int_t n, std::complex<float> alpha, std::complex<float> const *x, int_t incx, std::complex<float> const *y, int_t incy,
-              std::complex<float> *z, int_t incz) {
-    WAGGLE_ZONE_FUNC();
-
-    if (incx == 1 && incy == 1 && incz == 1) {
-        auto blocks    = n / 64;
-        auto remaining = n % 64;
-        auto offset    = 64 * blocks;
-
-        if (blocks != 0) {
-            EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
-            for (int_t i = 0; i < blocks; i++) {
-                cdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
-            }
-        }
-
-        if (remaining != 0) {
-            cdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
-        }
-    } else {
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
-        for (int_t i = 0; i < n; i++) {
-            z[i * incz] += alpha * x[i * incx] * y[i * incy];
-        }
-    }
+              std::complex<float> beta, std::complex<float> *z, int_t incz) {
+    dirprod(n, alpha, x, incx, y, incy, beta, z, incz);
 }
 
 void zdirprod(int_t n, std::complex<double> alpha, std::complex<double> const *x, int_t incx, std::complex<double> const *y, int_t incy,
-              std::complex<double> *z, int_t incz) {
-    WAGGLE_ZONE_FUNC();
-
-    if (incx == 1 && incy == 1 && incz == 1) {
-        auto blocks    = n / 64;
-        auto remaining = n % 64;
-        auto offset    = 64 * blocks;
-
-        if (blocks != 0) {
-            EINSUMS_OMP_PARALLEL_FOR_IF(n >= parallel_threshold())
-            for (int_t i = 0; i < blocks; i++) {
-                zdirprod_kernel(64, alpha, x + i * 64, y + i * 64, z + i * 64);
-            }
-        }
-
-        if (remaining != 0) {
-            zdirprod_kernel(remaining, alpha, x + offset, y + offset, z + offset);
-        }
-    } else {
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(n >= parallel_threshold())
-        for (int_t i = 0; i < n; i++) {
-            z[i * incz] += alpha * x[i * incx] * y[i * incy];
-        }
-    }
+              std::complex<double> beta, std::complex<double> *z, int_t incz) {
+    dirprod(n, alpha, x, incx, y, incy, beta, z, incz);
 }
 
 EINSUMS_NAMESPACE_END(blas::vendor)

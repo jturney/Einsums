@@ -16,6 +16,21 @@
 
 using namespace einsums;
 
+namespace {
+
+/// The direct product's element against one computed here. A complex product's error is bounded by
+/// the magnitudes of its factors, not by its own: when the two terms of a real or imaginary part
+/// nearly cancel, that part is far smaller than the rounding it carries, and a bound relative to it
+/// fails for a kernel that rounds a fused multiply-add once where this reference rounds twice.
+template <typename T>
+void check_product(T got, T want, T a, T b) {
+    double const eps = std::numeric_limits<RemoveComplexT<T>>::epsilon();
+    // The largest prefactor these cases use is 1 + i, of magnitude sqrt(2).
+    REQUIRE(std::abs(got - want) <= 8 * eps * 1.5 * std::abs(a) * std::abs(b));
+}
+
+} // namespace
+
 TEMPLATE_TEST_CASE("direct product", "[linear-algebra]", float, double, std::complex<float>, std::complex<double>) {
     using namespace einsums;
     using namespace einsums::linear_algebra;
@@ -44,12 +59,7 @@ TEMPLATE_TEST_CASE("direct product", "[linear-algebra]", float, double, std::com
         }
 
         for (int i = 0; i < size; i++) {
-            if constexpr (IsComplexV<TestType>) {
-                REQUIRE_THAT(std::real(C_test(i)), Catch::Matchers::WithinRel(std::real(C(i))));
-                REQUIRE_THAT(std::imag(C_test(i)), Catch::Matchers::WithinRel(std::imag(C(i))));
-            } else {
-                REQUIRE_THAT(C_test(i), Catch::Matchers::WithinRel(C(i)));
-            }
+            check_product(C(i), C_test(i), A(i), B(i));
         }
     }
 
@@ -69,12 +79,7 @@ TEMPLATE_TEST_CASE("direct product", "[linear-algebra]", float, double, std::com
         direct_product(TestType{1.0}, A, B, TestType{0.0}, &C);
 
         for (int i = 0; i < size; i++) {
-            if constexpr (IsComplexV<TestType>) {
-                REQUIRE_THAT(std::real(C_test(i)), Catch::Matchers::WithinRel(std::real(C(i))));
-                REQUIRE_THAT(std::imag(C_test(i)), Catch::Matchers::WithinRel(std::imag(C(i))));
-            } else {
-                REQUIRE_THAT(C_test(i), Catch::Matchers::WithinRel(C(i)));
-            };
+            check_product(C(i), C_test(i), A(i), B(i));
         }
     }
 
@@ -98,12 +103,7 @@ TEMPLATE_TEST_CASE("direct product", "[linear-algebra]", float, double, std::com
         direct_product(TestType{1.0}, A_view, B_view, TestType{0.0}, &C_view);
 
         for (int i = 0; i < size; i++) {
-            if constexpr (IsComplexV<TestType>) {
-                REQUIRE_THAT(std::real(C_test(i)), Catch::Matchers::WithinRel(std::real(C(i, 0))));
-                REQUIRE_THAT(std::imag(C_test(i)), Catch::Matchers::WithinRel(std::imag(C(i, 0))));
-            } else {
-                REQUIRE_THAT(C_test(i), Catch::Matchers::WithinRel(C(i, 0)));
-            }
+            check_product(C(i, 0), C_test(i), A(i, 0), B(i, 0));
         }
     }
 
@@ -127,12 +127,7 @@ TEMPLATE_TEST_CASE("direct product", "[linear-algebra]", float, double, std::com
         direct_product(TestType{1.0}, A_view, B_view, TestType{0.0}, &C_view);
 
         for (int i = 0; i < size; i++) {
-            if constexpr (IsComplexV<TestType>) {
-                REQUIRE_THAT(std::real(C_test(i)), Catch::Matchers::WithinRel(std::real(C(i, 0))));
-                REQUIRE_THAT(std::imag(C_test(i)), Catch::Matchers::WithinRel(std::imag(C(i, 0))));
-            } else {
-                REQUIRE_THAT(C_test(i), Catch::Matchers::WithinRel(C(i, 0)));
-            }
+            check_product(C(i, 0), C_test(i), A(i, 0), B(i, 0));
         }
     }
 
@@ -236,12 +231,7 @@ TEMPLATE_TEST_CASE("Disk direct products", "[linear-algebra]", float, double, st
         C = C_disk(All).get();
 
         for (int i = 0; i < size; i++) {
-            if constexpr (IsComplexV<TestType>) {
-                REQUIRE_THAT(std::real(C_test(i)), Catch::Matchers::WithinAbs(std::real(C(i)), (RemoveComplexT<TestType>)1e-6));
-                REQUIRE_THAT(std::imag(C_test(i)), Catch::Matchers::WithinAbs(std::imag(C(i)), (RemoveComplexT<TestType>)1e-6));
-            } else {
-                REQUIRE_THAT(C_test(i), Catch::Matchers::WithinRel(C(i), (TestType)1.0e-6));
-            }
+            check_product(C(i), C_test(i), A(i), B(i));
         }
     }
 }
@@ -297,5 +287,58 @@ TEMPLATE_TEST_CASE("elementwise ops on a dense tensor beside a strided view", "[
         each([&](size_t i, size_t j, size_t k) { C_ref(i, j, k) = C(i, j, k) + alpha * A(i, j, k); });
         axpy(alpha, A, &C);
         check();
+    }
+}
+
+// A zero beta discards C on every layout path: the dense one, the loops over blocks of a shared
+// strided layout, and the fully strided one. Each scaled C by zero before adding the product, so a C
+// carved from reused memory kept its NaN wherever the layout sent it.
+TEMPLATE_TEST_CASE("direct product with a zero beta discards C on every layout path", "[linear-algebra]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using namespace einsums::linear_algebra;
+    using T          = TestType;
+    auto const   nan = std::numeric_limits<RemoveComplexT<T>>::quiet_NaN();
+    T const      poison{nan};
+    T const      alpha = T{0.75};
+    double const tol   = 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
+
+    auto const check = [&](auto const &A, auto const &B, auto const &C) {
+        for (size_t i = 0; i < 4; ++i) {
+            for (size_t j = 0; j < 7; ++j) {
+                for (size_t k = 0; k < 4; ++k) {
+                    T const want = alpha * A(i, j, k) * B(i, j, k);
+                    REQUIRE(std::abs(C(i, j, k) - want) <= tol * (1.0 + std::abs(want)));
+                }
+            }
+        }
+    };
+
+    SECTION("dense") {
+        auto const A = create_random_tensor<T>("A", 4, 7, 4);
+        auto const B = create_random_tensor<T>("B", 4, 7, 4);
+        auto       C = create_tensor<T>("C", 4, 7, 4);
+        C.set_all(poison);
+        direct_product(alpha, A, B, T{0}, &C);
+        check(A, B, C);
+    }
+    SECTION("blocks of a shared strided layout") {
+        auto P = create_random_tensor<T>("P", 6, 7, 8);
+        auto Q = create_random_tensor<T>("Q", 6, 7, 8);
+        auto R = create_tensor<T>("R", 6, 7, 8);
+        R.set_all(poison);
+        auto const A = P(Range{1, 5}, All, Range{2, 6});
+        auto const B = Q(Range{1, 5}, All, Range{2, 6});
+        auto       C = R(Range{1, 5}, All, Range{2, 6});
+        direct_product(alpha, A, B, T{0}, &C);
+        check(A, B, C);
+    }
+    SECTION("fully strided") {
+        auto       P = create_random_tensor<T>("P", 6, 7, 8);
+        auto const A = P(Range{1, 5}, All, Range{2, 6});
+        auto const B = create_random_tensor<T>("B", 4, 7, 4);
+        auto       C = create_tensor<T>("C", 4, 7, 4);
+        C.set_all(poison);
+        direct_product(alpha, A, B, T{0}, &C);
+        check(A, B, C);
     }
 }

@@ -13,34 +13,6 @@
 
 EINSUMS_NAMESPACE_BEGIN(blas::vendor)
 /**
- * Internal kernel for performing the direct product. The direct product function is not in BLAS, so we have to write our own.
- *
- * @param[in] n The number of elements in the vectors.
- * @param[in] alpha The scale factor for the product.
- * @param[in] x The first input vector.
- * @param[in] y The second input vector.
- * @param[out] z The output vector.
- *
- * @versionadded{2.0.0}
- *
- * @versionchangeddesc{2.0.0}
- *  Added AVX2 vectorized kernels and default unvectorized kernels.
- * @endversion
- */
-EINSUMS_EXPORT void sdirprod_kernel(size_t n, float alpha, float const *x, float const *y, float *z);
-
-/// @copydoc sdirprod_kernel
-EINSUMS_EXPORT void ddirprod_kernel(size_t n, double alpha, double const *x, double const *y, double *z);
-
-/// @copydoc sdirprod_kernel
-EINSUMS_EXPORT void cdirprod_kernel(size_t n, std::complex<float> alpha, std::complex<float> const *x, std::complex<float> const *y,
-                                    std::complex<float> *z);
-
-/// @copydoc sdirprod_kernel
-EINSUMS_EXPORT void zdirprod_kernel(size_t n, std::complex<double> alpha, std::complex<double> const *x, std::complex<double> const *y,
-                                    std::complex<double> *z);
-
-/**
  * @brief Initializes the BLAS library.
  *
  * @versionadded{1.0.0}
@@ -976,7 +948,7 @@ EINSUMS_EXPORT int_t slascl(char type, int_t kl, int_t ku, float cfrom, float ct
 EINSUMS_EXPORT int_t dlascl(char type, int_t kl, int_t ku, double cfrom, double cto, int_t m, int_t n, double *vec, int_t lda);
 
 /**
- * Perform the direct product between two vectors and add it to another.
+ * Perform the direct product between two vectors, scaling the vector it is added to: @f$z_i := \alpha x_i y_i + \beta z_i@f$.
  *
  * @param[in] n The number of elements in the vectors.
  * @param[in] alpha The scale factor for the product.
@@ -984,20 +956,23 @@ EINSUMS_EXPORT int_t dlascl(char type, int_t kl, int_t ku, double cfrom, double 
  * @param[in] incx The skip value for the first vector. If negative, then it will be traversed backwards.
  * @param[in] y The second vector.
  * @param[in] incy The skip value for the second vector. If negative, then it will be traversed backwards.
- * @param[inout] z The vector to accumulate to.
+ * @param[in] beta The scale factor for z. When zero, z is not read, so it may hold anything, NaN included.
+ * @param[inout] z The vector to accumulate to. It must not overlap x or y.
  * @param[in] incz The skip value for the accumulation vector. If negative, then it will be traversed backwards.
  *
  * @versionadded{2.0.0}
  */
-EINSUMS_EXPORT void sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float *z, int_t incz);
+EINSUMS_EXPORT void sdirprod(int_t n, float alpha, float const *x, int_t incx, float const *y, int_t incy, float beta, float *z,
+                             int_t incz);
 /// @copydoc sdirprod
-EINSUMS_EXPORT void ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *y, int_t incy, double *z, int_t incz);
+EINSUMS_EXPORT void ddirprod(int_t n, double alpha, double const *x, int_t incx, double const *y, int_t incy, double beta, double *z,
+                             int_t incz);
 /// @copydoc sdirprod
 EINSUMS_EXPORT void cdirprod(int_t n, std::complex<float> alpha, std::complex<float> const *x, int_t incx, std::complex<float> const *y,
-                             int_t incy, std::complex<float> *z, int_t incz);
+                             int_t incy, std::complex<float> beta, std::complex<float> *z, int_t incz);
 /// @copydoc sdirprod
 EINSUMS_EXPORT void zdirprod(int_t n, std::complex<double> alpha, std::complex<double> const *x, int_t incx, std::complex<double> const *y,
-                             int_t incy, std::complex<double> *z, int_t incz);
+                             int_t incy, std::complex<double> beta, std::complex<double> *z, int_t incz);
 
 /**
  * Computes the sum of the absolute values of the input vector. If the vector is complex,

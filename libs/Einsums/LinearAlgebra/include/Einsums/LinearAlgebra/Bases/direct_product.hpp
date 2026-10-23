@@ -25,13 +25,12 @@ template <typename AType, typename BType, typename CType>
 void impl_direct_product_contiguous(CType alpha, einsums::detail::TensorImpl<AType> const &a, einsums::detail::TensorImpl<BType> const &b,
                                     CType beta, einsums::detail::TensorImpl<CType> *c) {
     if constexpr (std::is_same_v<AType, BType> && std::is_same_v<AType, CType> && blas::IsBlasableV<AType>) {
-        // The scal-then-dirprod path scales c before reading a and b, so only when neither aliases c;
-        // the scalar pass below is alias-safe.
+        // dirprod requires c to overlap neither input, so only when neither aliases c; the scalar
+        // pass below is alias-safe.
         bool const aliased = static_cast<void const *>(a.data()) == static_cast<void const *>(c->data()) ||
                              static_cast<void const *>(b.data()) == static_cast<void const *>(c->data());
         if (!aliased) {
-            blas::scal(c->size(), beta, c->data(), c->get_incx());
-            blas::dirprod(a.size(), alpha, a.data(), a.get_incx(), b.data(), b.get_incx(), c->data(), c->get_incx());
+            blas::dirprod(a.size(), alpha, a.data(), a.get_incx(), b.data(), b.get_incx(), beta, c->data(), c->get_incx());
             return;
         }
     }
@@ -42,9 +41,12 @@ void impl_direct_product_contiguous(CType alpha, einsums::detail::TensorImpl<ATy
 
         size_t const inca = a.get_incx(), incb = b.get_incx(), incc = c->get_incx(), elems = a.size();
 
+        // A zero beta discards c, as dirprod does: what c held, NaN included, does not survive.
+        bool const discard = beta == CType{0};
         EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(elems >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < elems; i++) {
-            c_data[i * incc] = c_data[i * incc] * beta + alpha * a_data[i * inca] * b_data[i * incb];
+            CType const product = alpha * a_data[i * inca] * b_data[i * incb];
+            c_data[i * incc]    = discard ? product : c_data[i * incc] * beta + product;
         }
     }
 }
@@ -55,8 +57,7 @@ void impl_direct_product_noncontiguous_vectorable(int depth, int hard_rank, size
                                                   BStrides const &b_strides, size_t incb, CType beta, CType *c_data,
                                                   CStrides const &c_strides, size_t incc) {
     if (depth == hard_rank) {
-        blas::scal(easy_size, beta, c_data, incc);
-        blas::dirprod(easy_size, alpha, a_data, inca, b_data, incb, c_data, incc);
+        blas::dirprod(easy_size, alpha, a_data, inca, b_data, incb, beta, c_data, incc);
     } else {
         for (int i = 0; i < dims[depth]; i++) {
             impl_direct_product_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, alpha, a_data + i * a_strides[depth],
@@ -70,8 +71,14 @@ template <typename AType, typename BType, typename CType, Container Dims, Contai
 void impl_direct_product_noncontiguous(Dims const &dims, CType alpha, AType const *a_data, AStrides const &a_strides, BType const *b_data,
                                        BStrides const &b_strides, CType beta, CType *c_data, CStrides const &c_strides) {
     using einsums::detail::StridedOperand;
+    // A zero beta discards c, as dirprod does: what c held, NaN included, does not survive.
+    bool const discard = beta == CType{0};
     einsums::detail::strided_for_each(
-        dims, [alpha, beta](CType &c, AType const &a, BType const &b) { c = beta * c + alpha * a * b; },
+        dims,
+        [alpha, beta, discard](CType &c, AType const &a, BType const &b) {
+            CType const product = alpha * a * b;
+            c                   = discard ? product : beta * c + product;
+        },
         StridedOperand<CType, CStrides>{.data = c_data, .strides = &c_strides},
         StridedOperand<AType const, AStrides>{.data = a_data, .strides = &a_strides},
         StridedOperand<BType const, BStrides>{.data = b_data, .strides = &b_strides});
@@ -90,16 +97,17 @@ void impl_direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not combine tensors with different sizes!");
     }
 
-    // An input overlapping C is read through a copy, except an input that is C on a single-pass path
-    // (the contiguous path's scalar loop and the fully strided loop).
-    bool const same_layout        = A.strides() == B.strides() && A.strides() == C->strides();
-    bool const all_vectorable     = A.is_totally_vectorable() && B.is_totally_vectorable() && C->is_totally_vectorable();
-    bool const scales_before_read = same_layout && !all_vectorable;
-    auto const needs_copy         = [&](auto const &in) {
+    // An input overlapping C is read through a copy, except an input that is C on an element-by-element
+    // path (the contiguous path's scalar loop and the fully strided loop). The loops over blocks hand
+    // each block to dirprod, which requires C to overlap neither input.
+    bool const same_layout    = A.strides() == B.strides() && A.strides() == C->strides();
+    bool const all_vectorable = A.is_totally_vectorable() && B.is_totally_vectorable() && C->is_totally_vectorable();
+    bool const block_loops    = same_layout && !all_vectorable;
+    auto const needs_copy     = [&](auto const &in) {
         if (!einsums::detail::impl_storage_overlaps(in, *C)) {
             return false;
         }
-        return scales_before_read || !einsums::detail::impl_same_operand(in, *C);
+        return block_loops || !einsums::detail::impl_same_operand(in, *C);
     };
     if (needs_copy(A)) {
         einsums::detail::impl_with_snapshot(A, [&](auto const &a) { impl_direct_product(alpha, a, B, beta, C); });

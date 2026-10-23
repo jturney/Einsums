@@ -25,7 +25,7 @@ if(NOT CMAKE_BUILD_TYPE)
   )
 endif()
 
-project(Einsums LANGUAGES C CXX ASM)
+project(Einsums LANGUAGES C CXX)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
