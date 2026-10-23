@@ -14,6 +14,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -617,11 +618,10 @@ TEST_CASE("MemoryPlanning - an arena that holds the plan over the budget is decl
             acc_ref(i, j) = sum;
         }
     }
-    for (std::size_t i = 0; i < m / 2; ++i) {
-        for (std::size_t j = 0; j < m; ++j) {
-            REQUIRE(acc(i, j) == Catch::Approx(acc_ref(i, j)).epsilon(1e-10));
-        }
-    }
+    // Entries are O(10) sums of 128 terms, and one can cancel to near zero, where a bound relative
+    // to the entry alone fails on the terms' rounding (a CI draw gave -1.0e-4 off by 1.5e-14), so
+    // the bound has a floor at the terms' scale.
+    testing::require_tensors_close(acc, acc_ref, {.rtol = 1e-10, .atol = 1e-10});
 }
 
 TEST_CASE("MemoryPlanning - arena packs intermediates of different element sizes", "[ComputeGraph][Passes][Arena]") {

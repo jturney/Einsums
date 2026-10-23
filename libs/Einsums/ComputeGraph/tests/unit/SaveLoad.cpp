@@ -1700,11 +1700,10 @@ TEST_CASE("SaveLoad - a graph that creates its own intermediate round-trips", "[
     auto expected = create_zero_tensor<double>("E", 3, 3);
     reference_einsum("i,j <- i,k ; k,j", &T_ref, A, B);
     reference_einsum("i,j <- i,k ; k,j", &expected, T_ref, C);
-    for (size_t i = 0; i < 3; ++i) {
-        for (size_t j = 0; j < 3; ++j) {
-            CHECK_THAT(result(i, j), Catch::Matchers::WithinRel(expected(i, j), 1e-13));
-        }
-    }
+    // The terms are O(1) and an entry can cancel to almost nothing, where a bound relative to the
+    // entry alone fails on rounding the terms carry (a CI draw gave -1.95e-6), so the bound has a
+    // floor at the terms' scale.
+    testing::require_tensors_close(result, expected, {.rtol = 1e-13, .atol = 1e-13});
 
     SECTION("an alloc node that reads a tensor is refused") {
         std::string text = saved;
