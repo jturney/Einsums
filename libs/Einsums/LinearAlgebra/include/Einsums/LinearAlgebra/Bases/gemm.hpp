@@ -125,138 +125,46 @@ void impl_gemm_noncontiguous(char transA, char transB, CType alpha, einsums::det
     }
 }
 
+/// The flag column-major BLAS needs for an operand whose layout differs from C's.
+///
+/// Such an operand's memory holds its transpose as BLAS sees it, so 'n' and 't' trade places. A 'c'
+/// would need the conjugate without the transpose, which BLAS has no flag for: that returns 0. A
+/// real operand's 'c' is a 't'.
+template <typename T>
+char gemm_flip_flag(char flag) {
+    if (flag == 'n') {
+        return 't';
+    }
+    if (flag == 'c' && IsComplexV<T>) {
+        return 0;
+    }
+    return 'n';
+}
+
+/// C = alpha op(A) op(B) + beta C on operands each row- or column-major, in one column-major BLAS call.
+///
+/// A row-major matrix is its transpose to BLAS. A row-major C is therefore computed as
+/// C^T = op(B)^T op(A)^T, with A and B trading places and m and n with them. Either way an operand
+/// whose layout differs from C's has its flag flipped (see gemm_flip_flag); one that matches keeps it.
+/// An operand needing a conjugate without a transpose goes to the loop kernel.
 template <typename T>
 void impl_gemm_contiguous(char transA, char transB, T alpha, einsums::detail::TensorImpl<T> const &A,
                           einsums::detail::TensorImpl<T> const &B, T beta, einsums::detail::TensorImpl<T> *C) {
-    char tA = std::tolower(transA), tB = std::tolower(transB);
-    bool colA = A.is_column_major(), colB = B.is_column_major(), colC = C->is_column_major();
-    bool rowA = A.is_row_major(), rowB = B.is_row_major(), rowC = C->is_row_major();
+    char const tA = std::tolower(transA), tB = std::tolower(transB);
+    bool const row_c  = C->is_row_major();
+    char const flag_a = A.is_row_major() != row_c ? gemm_flip_flag<T>(tA) : tA;
+    char const flag_b = B.is_row_major() != row_c ? gemm_flip_flag<T>(tB) : tB;
 
-    // So many cases...
-    if (colA && colB && colC) {
-        auto m = C->dim(0), n = C->dim(1), k = (tA == 'n') ? A.dim(1) : A.dim(0);
-        blas::gemm(transA, transB, m, n, k, alpha, A.data(), A.get_lda(), B.data(), B.get_lda(), beta, C->data(), C->get_lda());
-    } else if (rowA && colB && colC) {
-        if (tA == 'c') {
-            if constexpr (IsComplexV<T>) {
-                impl_gemm_noncontiguous(transA, transB, alpha, A, B, beta, C);
-            } else {
-                auto m = C->dim(0), n = C->dim(1), k = A.dim(0);
-                blas::gemm('n', transB, m, n, k, alpha, A.data(), A.get_lda(), B.data(), B.get_lda(), beta, C->data(), C->get_lda());
-            }
-        } else if (tA == 't') {
-            auto m = C->dim(0), n = C->dim(1), k = A.dim(0);
-            blas::gemm('n', transB, m, n, k, alpha, A.data(), A.get_lda(), B.data(), B.get_lda(), beta, C->data(), C->get_lda());
-        } else {
-            auto m = C->dim(0), n = C->dim(1), k = A.dim(1);
-            blas::gemm('t', transB, m, n, k, alpha, A.data(), A.get_lda(), B.data(), B.get_lda(), beta, C->data(), C->get_lda());
-        }
-    } else if (colA && rowB && colC) {
-        if (tB == 'c') {
-            if constexpr (IsComplexV<T>) {
-                impl_gemm_noncontiguous(transA, transB, alpha, A, B, beta, C);
-            } else {
-                auto m = C->dim(0), n = C->dim(1), k = (tA == 'n') ? A.dim(1) : A.dim(0);
-                blas::gemm(transA, 'n', m, n, k, alpha, A.data(), A.get_lda(), B.data(), B.get_lda(), beta, C->data(), C->get_lda());
-            }
-        } else if (tB == 't') {
-            auto m = C->dim(0), n = C->dim(1), k = (tA == 'n') ? A.dim(1) : A.dim(0);
-            blas::gemm(transA, 'n', m, n, k, alpha, A.data(), A.get_lda(), B.data(), B.get_lda(), beta, C->data(), C->get_lda());
-        } else {
-            auto m = C->dim(0), n = C->dim(1), k = (tA == 'n') ? A.dim(1) : A.dim(0);
-            blas::gemm(transA, 't', m, n, k, alpha, A.data(), A.get_lda(), B.data(), B.get_lda(), beta, C->data(), C->get_lda());
-        }
-    } else if (rowA && rowB && colC) {
-        auto m = C->dim(0), n = C->dim(1), k = (tA == 'n') ? A.dim(1) : A.dim(0);
-        if (tA == 'c') {
-            if constexpr (IsComplexV<T>) {
-                impl_gemm_noncontiguous(transA, transB, alpha, A, B, beta, C);
-                return;
-            } else {
-                tA = 'n';
-            }
-        } else if (tA == 't') {
-            tA = 'n';
-        } else {
-            tA = 't';
-        }
+    if (flag_a == 0 || flag_b == 0) {
+        impl_gemm_noncontiguous(transA, transB, alpha, A, B, beta, C);
+        return;
+    }
 
-        if (tB == 'c') {
-            if constexpr (IsComplexV<T>) {
-                impl_gemm_noncontiguous(transA, transB, alpha, A, B, beta, C);
-                return;
-            } else {
-                tB = 'n';
-            }
-        } else if (tB == 't') {
-            tB = 'n';
-        } else {
-            tB = 't';
-        }
-
-        blas::gemm(tA, tB, m, n, k, alpha, A.data(), A.get_lda(), B.data(), B.get_lda(), beta, C->data(), C->get_lda());
-    } else if (colA && colB && rowC) {
-        auto m = C->dim(0), n = C->dim(1), k = (tA == 'n') ? A.dim(1) : A.dim(0);
-        if (tA == 'c') {
-            if constexpr (IsComplexV<T>) {
-                impl_gemm_noncontiguous(transA, transB, alpha, A, B, beta, C);
-                return;
-            } else {
-                tA = 'n';
-            }
-        } else if (tA == 't') {
-            tA = 'n';
-        } else {
-            tA = 't';
-        }
-
-        if (tB == 'c') {
-            if constexpr (IsComplexV<T>) {
-                impl_gemm_noncontiguous(transA, transB, alpha, A, B, beta, C);
-                return;
-            } else {
-                tB = 'n';
-            }
-        } else if (tB == 't') {
-            tB = 'n';
-        } else {
-            tB = 't';
-        }
-
-        blas::gemm(tB, tA, n, m, k, alpha, B.data(), B.get_lda(), A.data(), A.get_lda(), beta, C->data(), C->get_lda());
-    } else if (rowA && colB && rowC) {
-        if (tB == 'c') {
-            if constexpr (IsComplexV<T>) {
-                impl_gemm_noncontiguous(transA, transB, alpha, A, B, beta, C);
-            } else {
-                auto m = C->dim(0), n = C->dim(1), k = (tA == 'n') ? A.dim(1) : A.dim(0);
-                blas::gemm('n', transA, n, m, k, alpha, B.data(), B.get_lda(), A.data(), A.get_lda(), beta, C->data(), C->get_lda());
-            }
-        } else if (tB == 't') {
-            auto m = C->dim(0), n = C->dim(1), k = (tA == 'n') ? A.dim(1) : A.dim(0);
-            blas::gemm('n', transA, n, m, k, alpha, B.data(), B.get_lda(), A.data(), A.get_lda(), beta, C->data(), C->get_lda());
-        } else {
-            auto m = C->dim(0), n = C->dim(1), k = (tA == 'n') ? A.dim(1) : A.dim(0);
-            blas::gemm('t', transA, n, m, k, alpha, B.data(), B.get_lda(), A.data(), A.get_lda(), beta, C->data(), C->get_lda());
-        }
-    } else if (colA && rowB && rowC) {
-        if (tA == 'c') {
-            if constexpr (IsComplexV<T>) {
-                impl_gemm_noncontiguous(transA, transB, alpha, A, B, beta, C);
-            } else {
-                auto m = C->dim(0), n = C->dim(1), k = A.dim(0);
-                blas::gemm(transB, 'n', n, m, k, alpha, B.data(), B.get_lda(), A.data(), A.get_lda(), beta, C->data(), C->get_lda());
-            }
-        } else if (tA == 't') {
-            auto m = C->dim(0), n = C->dim(1), k = A.dim(0);
-            blas::gemm(transB, 'n', n, m, k, alpha, B.data(), B.get_lda(), A.data(), A.get_lda(), beta, C->data(), C->get_lda());
-        } else {
-            auto m = C->dim(0), n = C->dim(1), k = A.dim(1);
-            blas::gemm(transB, 't', n, m, k, alpha, B.data(), B.get_lda(), A.data(), A.get_lda(), beta, C->data(), C->get_lda());
-        }
+    auto const m = C->dim(0), n = C->dim(1), k = (tA == 'n') ? A.dim(1) : A.dim(0);
+    if (row_c) {
+        blas::gemm(flag_b, flag_a, n, m, k, alpha, B.data(), B.get_lda(), A.data(), A.get_lda(), beta, C->data(), C->get_lda());
     } else {
-        auto m = C->dim(0), n = C->dim(1), k = (tA == 'n') ? A.dim(1) : A.dim(0);
-        blas::gemm(transB, transA, n, m, k, alpha, B.data(), B.get_lda(), A.data(), A.get_lda(), beta, C->data(), C->get_lda());
+        blas::gemm(flag_a, flag_b, m, n, k, alpha, A.data(), A.get_lda(), B.data(), B.get_lda(), beta, C->data(), C->get_lda());
     }
 }
 

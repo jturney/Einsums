@@ -4,9 +4,19 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/BufferAllocator/Options.hpp>
+#include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/LinearAlgebra.hpp>
+#include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorUtilities/CreateIncrementedTensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+
+#include <algorithm>
+#include <array>
+#include <complex>
+#include <cstddef>
+#include <limits>
+#include <random>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -282,6 +292,125 @@ TEMPLATE_TEST_CASE("Disk gemm", "[linear-algebra]", double, std::complex<double>
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
                 REQUIRE_THAT(C_tens(i, j), einsums::CheckWithinRel(C(i, j)));
+            }
+        }
+    }
+}
+
+namespace {
+
+/// A rank-2 operand in a padded buffer: the leading dimension exceeds the minor extent by two, so a
+/// leading dimension taken from the wrong operand or axis reads or writes the padding.
+template <typename T>
+struct PaddedMatrix {
+    PaddedMatrix(size_t rows, size_t cols, bool row_major, unsigned seed) : rows{rows}, cols{cols}, row_major{row_major} {
+        size_t const ld = (row_major ? cols : rows) + 2;
+        data.assign((row_major ? rows : cols) * ld, sentinel());
+        if (row_major) {
+            strides = {ld, 1};
+        } else {
+            strides = {1, ld};
+        }
+        std::mt19937                     gen(seed);
+        std::uniform_real_distribution<> dist(-1.0, 1.0);
+        for (size_t i = 0; i < rows; i++) {
+            for (size_t j = 0; j < cols; j++) {
+                if constexpr (einsums::IsComplexV<T>) {
+                    at(i, j) = T(static_cast<einsums::RemoveComplexT<T>>(dist(gen)), static_cast<einsums::RemoveComplexT<T>>(dist(gen)));
+                } else {
+                    at(i, j) = static_cast<T>(dist(gen));
+                }
+            }
+        }
+    }
+
+    static T sentinel() { return T(1234); }
+
+    T       &at(size_t i, size_t j) { return data[i * strides[0] + j * strides[1]]; }
+    T const &at(size_t i, size_t j) const { return data[i * strides[0] + j * strides[1]]; }
+
+    /// Element (i, j) of op(this), for op 'n', 't' or 'c'.
+    T op(char flag, size_t i, size_t j) const {
+        if (flag == 'n') {
+            return at(i, j);
+        }
+        if constexpr (einsums::IsComplexV<T>) {
+            if (flag == 'c') {
+                return std::conj(at(j, i));
+            }
+        }
+        return at(j, i);
+    }
+
+    einsums::detail::TensorImpl<T> impl() { return {data.data(), std::array{rows, cols}, strides}; }
+
+    size_t                rows, cols;
+    bool                  row_major;
+    std::array<size_t, 2> strides{};
+    std::vector<T>        data;
+};
+
+} // namespace
+
+// impl_gemm_contiguous maps each combination of row- and column-major A, B and C onto a column-major
+// BLAS call, rewriting the transpose flags per operand and swapping A and B for a row-major C. Every
+// layout meets every flag pair here, on shapes with distinct extents so a swapped m, n or k shows,
+// and with extent-1 axes, whose strides the layout inference ignores.
+TEMPLATE_TEST_CASE("gemm on every layout of A, B and C with every transpose flag", "[linear-algebra][gemm]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using T = TestType;
+    using R = einsums::RemoveComplexT<T>;
+
+    T alpha, beta;
+    if constexpr (einsums::IsComplexV<T>) {
+        alpha = T(R(0.75), R(-0.5));
+        beta  = T(R(-0.25), R(0.5));
+    } else {
+        alpha = T(0.75);
+        beta  = T(-0.25);
+    }
+
+    struct Shape {
+        size_t m, n, k;
+    };
+    unsigned seed = 0;
+    for (auto const [m, n, k] : {Shape{5, 7, 3}, Shape{1, 7, 3}, Shape{5, 1, 3}, Shape{5, 7, 1}}) {
+        for (int layout = 0; layout < 8; layout++) {
+            bool const row_a = (layout & 1) != 0, row_b = (layout & 2) != 0, row_c = (layout & 4) != 0;
+            for (char const ta : {'n', 't', 'c'}) {
+                for (char const tb : {'n', 't', 'c'}) {
+                    INFO("m = " << m << ", n = " << n << ", k = " << k << ", A " << (row_a ? "row" : "column") << "-major, B "
+                                << (row_b ? "row" : "column") << "-major, C " << (row_c ? "row" : "column") << "-major, transA " << ta
+                                << ", transB " << tb);
+
+                    PaddedMatrix<T>       A(ta == 'n' ? m : k, ta == 'n' ? k : m, row_a, ++seed);
+                    PaddedMatrix<T>       B(tb == 'n' ? k : n, tb == 'n' ? n : k, row_b, ++seed);
+                    PaddedMatrix<T>       C(m, n, row_c, ++seed);
+                    PaddedMatrix<T> const C0 = C;
+
+                    auto A_impl = A.impl(), B_impl = B.impl(), C_impl = C.impl();
+                    einsums::linear_algebra::detail::gemm(ta, tb, alpha, A_impl, B_impl, beta, &C_impl);
+
+                    double const eps = std::numeric_limits<R>::epsilon();
+                    for (size_t i = 0; i < m; i++) {
+                        for (size_t j = 0; j < n; j++) {
+                            std::complex<double> want = std::complex<double>(beta) * std::complex<double>(C0.at(i, j));
+                            double               mag  = std::abs(std::complex<double>(beta)) * std::abs(C0.at(i, j));
+                            for (size_t l = 0; l < k; l++) {
+                                std::complex<double> const term = std::complex<double>(alpha) * std::complex<double>(A.op(ta, i, l)) *
+                                                                  std::complex<double>(B.op(tb, l, j));
+                                want += term;
+                                mag += std::abs(term);
+                            }
+                            INFO("C(" << i << ", " << j << ")");
+                            CHECK(std::abs(std::complex<double>(C.at(i, j)) - want) <= 16 * eps * mag);
+                        }
+                    }
+
+                    // The padding past each column or row of C stays as written.
+                    auto const untouched = std::count(C.data.begin(), C.data.end(), PaddedMatrix<T>::sentinel());
+                    CHECK(static_cast<size_t>(untouched) == C.data.size() - m * n);
+                }
             }
         }
     }
