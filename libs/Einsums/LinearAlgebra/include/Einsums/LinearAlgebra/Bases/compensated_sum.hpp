@@ -79,6 +79,18 @@ inline std::complex<T> combine_accum(std::complex<T> big_sum, std::complex<T> me
                            combine_accum(big_sum.imag(), medium_sum.imag(), small_sum.imag())};
 }
 
+/// A sum kept in three scaled accumulators (see add_scale and combine_accum), so partial sums near
+/// overflow or underflow combine without losing the rest.
+template <typename T>
+struct ScaledSum {
+    T    big{}, medium{}, small{};
+    bool not_big_re = true, not_big_im = true;
+
+    void add(T value) { add_scale(value, big, medium, small, not_big_re, not_big_im); }
+
+    [[nodiscard]] T total() const { return combine_accum(big, medium, small); }
+};
+
 } // namespace detail
 } // namespace linear_algebra
 EINSUMS_NAMESPACE_END()

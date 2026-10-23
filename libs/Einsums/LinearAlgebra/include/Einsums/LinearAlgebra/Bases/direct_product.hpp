@@ -22,69 +22,6 @@ namespace linear_algebra {
 namespace detail {
 
 template <typename AType, typename BType, typename CType>
-void impl_direct_product_contiguous(CType alpha, einsums::detail::TensorImpl<AType> const &a, einsums::detail::TensorImpl<BType> const &b,
-                                    CType beta, einsums::detail::TensorImpl<CType> *c) {
-    if constexpr (std::is_same_v<AType, BType> && std::is_same_v<AType, CType> && blas::IsBlasableV<AType>) {
-        // dirprod requires c to overlap neither input, so only when neither aliases c; the scalar
-        // pass below is alias-safe.
-        bool const aliased = static_cast<void const *>(a.data()) == static_cast<void const *>(c->data()) ||
-                             static_cast<void const *>(b.data()) == static_cast<void const *>(c->data());
-        if (!aliased) {
-            blas::dirprod(a.size(), alpha, a.data(), a.get_incx(), b.data(), b.get_incx(), beta, c->data(), c->get_incx());
-            return;
-        }
-    }
-    {
-        AType const *a_data = a.data();
-        BType const *b_data = b.data();
-        CType       *c_data = c->data();
-
-        size_t const inca = a.get_incx(), incb = b.get_incx(), incc = c->get_incx(), elems = a.size();
-
-        // A zero beta discards c, as dirprod does: what c held, NaN included, does not survive.
-        bool const discard = beta == CType{0};
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(elems >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < elems; i++) {
-            CType const product = alpha * a_data[i * inca] * b_data[i * incb];
-            c_data[i * incc]    = discard ? product : c_data[i * incc] * beta + product;
-        }
-    }
-}
-
-template <typename AType, typename BType, typename CType, Container HardDims, Container AStrides, Container BStrides, Container CStrides>
-void impl_direct_product_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, CType alpha,
-                                                  AType const *a_data, AStrides const &a_strides, size_t inca, BType const *b_data,
-                                                  BStrides const &b_strides, size_t incb, CType beta, CType *c_data,
-                                                  CStrides const &c_strides, size_t incc) {
-    if (depth == hard_rank) {
-        blas::dirprod(easy_size, alpha, a_data, inca, b_data, incb, beta, c_data, incc);
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_direct_product_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, alpha, a_data + i * a_strides[depth],
-                                                         a_strides, inca, b_data + i * b_strides[depth], b_strides, incb, beta,
-                                                         c_data + i * c_strides[depth], c_strides, incc);
-        }
-    }
-}
-
-template <typename AType, typename BType, typename CType, Container Dims, Container AStrides, Container BStrides, Container CStrides>
-void impl_direct_product_noncontiguous(Dims const &dims, CType alpha, AType const *a_data, AStrides const &a_strides, BType const *b_data,
-                                       BStrides const &b_strides, CType beta, CType *c_data, CStrides const &c_strides) {
-    using einsums::detail::StridedOperand;
-    // A zero beta discards c, as dirprod does: what c held, NaN included, does not survive.
-    bool const discard = beta == CType{0};
-    einsums::detail::strided_for_each(
-        dims,
-        [alpha, beta, discard](CType &c, AType const &a, BType const &b) {
-            CType const product = alpha * a * b;
-            c                   = discard ? product : beta * c + product;
-        },
-        StridedOperand<CType, CStrides>{.data = c_data, .strides = &c_strides},
-        StridedOperand<AType const, AStrides>{.data = a_data, .strides = &a_strides},
-        StridedOperand<BType const, BStrides>{.data = b_data, .strides = &b_strides});
-}
-
-template <typename AType, typename BType, typename CType>
 void impl_direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &A, einsums::detail::TensorImpl<BType> const &B, CType beta,
                          einsums::detail::TensorImpl<CType> *C) {
     WAGGLE_ZONE_FUNC();
@@ -97,17 +34,10 @@ void impl_direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not combine tensors with different sizes!");
     }
 
-    // An input overlapping C is read through a copy, except an input that is C on an element-by-element
-    // path (the contiguous path's scalar loop and the fully strided loop). The loops over blocks hand
-    // each block to dirprod, which requires C to overlap neither input.
-    bool const same_layout    = A.strides() == B.strides() && A.strides() == C->strides();
-    bool const all_vectorable = A.is_totally_vectorable() && B.is_totally_vectorable() && C->is_totally_vectorable();
-    bool const block_loops    = same_layout && !all_vectorable;
-    auto const needs_copy     = [&](auto const &in) {
-        if (!einsums::detail::impl_storage_overlaps(in, *C)) {
-            return false;
-        }
-        return block_loops || !einsums::detail::impl_same_operand(in, *C);
+    // An input that is C, element for element, is safe for the element loop, which reads each element
+    // before writing it. Any other overlap is read through a copy.
+    auto const needs_copy = [&](auto const &in) {
+        return einsums::detail::impl_storage_overlaps(in, *C) && !einsums::detail::impl_same_operand(in, *C);
     };
     if (needs_copy(A)) {
         einsums::detail::impl_with_snapshot(A, [&](auto const &a) { impl_direct_product(alpha, a, B, beta, C); });
@@ -118,74 +48,31 @@ void impl_direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &
         return;
     }
 
-    // Lock-step paths need identical strides (see impl_axpy).
-    if (A.strides() != B.strides() || A.strides() != C->strides()) {
-        EINSUMS_LOG_DEBUG("Operands have different memory layouts. Using the fully-general strided fallback.");
-
-        impl_direct_product_noncontiguous(A.dims(), alpha, A.data(), A.strides(), B.data(), B.strides(), beta, C->data(), C->strides());
-    } else if (A.is_totally_vectorable() && B.is_totally_vectorable() && C->is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using direct product.");
-
-        impl_direct_product_contiguous(alpha, A, B, beta, C);
-    } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over direct product.");
-
-        size_t easy_size, A_easy_size, B_easy_size, C_easy_size, A_hard_size, B_hard_size, C_hard_size, easy_rank, A_easy_rank, B_easy_rank,
-            C_easy_rank, inca, incb, incc;
-        ShapeVector<size_t> hard_dims, A_strides, B_strides, C_strides;
-
-        A.query_vectorable_params(&A_easy_size, &A_hard_size, &A_easy_rank, &inca);
-        B.query_vectorable_params(&B_easy_size, &B_hard_size, &B_easy_rank, &incb);
-        C->query_vectorable_params(&C_easy_size, &C_hard_size, &C_easy_rank, &incc);
-
-        if (A_easy_rank < B_easy_rank) {
-            if (C_easy_rank < A_easy_rank) {
-                easy_rank = C_easy_rank;
-                easy_size = C_easy_size;
-            } else {
-                easy_rank = A_easy_rank;
-                easy_size = A_easy_size;
+    // dirprod requires C to overlap neither input. A zero beta discards C, in dirprod and in the
+    // loop: what C held, NaN included, does not survive.
+    bool const                         c_is_input = einsums::detail::impl_same_operand(A, *C) || einsums::detail::impl_same_operand(B, *C);
+    bool const                         discard    = beta == CType{0};
+    einsums::detail::ParallelThreshold par;
+    size_t const                       total = C->size();
+    using einsums::detail::RunOperand;
+    einsums::detail::strided_for_each_run(
+        C->dims(),
+        [&](size_t n, RunOperand<CType> c, RunOperand<AType const> a, RunOperand<BType const> b) {
+            if constexpr (std::is_same_v<AType, BType> && std::is_same_v<AType, CType> && blas::IsBlasableV<AType>) {
+                if (!c_is_input && einsums::detail::use_vector_routine(n, total, c, a, b)) {
+                    blas::dirprod(n, alpha, a.data, a.inc, b.data, b.inc, beta, c.data, c.inc);
+                    return;
+                }
             }
-        } else {
-            if (C_easy_rank < B_easy_rank) {
-                easy_rank = C_easy_rank;
-                easy_size = C_easy_size;
-            } else {
-                easy_rank = B_easy_rank;
-                easy_size = B_easy_size;
-            }
-        }
-
-        hard_dims.resize(A.rank() - easy_rank);
-
-        // Split by the layout flag, as query_vectorable_params does (see impl_axpy).
-        if (A.is_column_major()) {
-            A_strides.resize(A.rank() - easy_rank);
-            B_strides.resize(B.rank() - easy_rank);
-            C_strides.resize(C->rank() - easy_rank);
-
-            for (int i = 0; i < A.rank() - easy_rank; i++) {
-                A_strides[i] = A.stride(i + easy_rank);
-                B_strides[i] = B.stride(i + easy_rank);
-                C_strides[i] = C->stride(i + easy_rank);
-                hard_dims[i] = A.dim(i + easy_rank);
-            }
-        } else {
-            A_strides.resize(A.rank() - easy_rank);
-            B_strides.resize(B.rank() - easy_rank);
-            C_strides.resize(C->rank() - easy_rank);
-
-            for (int i = 0; i < A.rank() - easy_rank; i++) {
-                A_strides[i] = A.stride(i);
-                B_strides[i] = B.stride(i);
-                C_strides[i] = C->stride(i);
-                hard_dims[i] = A.dim(i);
-            }
-        }
-
-        impl_direct_product_noncontiguous_vectorable(0, A.rank() - easy_rank, easy_size, hard_dims, alpha, A.data(), A_strides, inca,
-                                                     B.data(), B_strides, incb, beta, C->data(), C_strides, incc);
-    }
+            einsums::detail::run_elements(
+                n, par,
+                [alpha, beta, discard](CType &c_v, AType const &a_v, BType const &b_v) {
+                    CType const product = alpha * a_v * b_v;
+                    c_v                 = discard ? product : beta * c_v + product;
+                },
+                c, a, b);
+        },
+        einsums::detail::strided(*C), einsums::detail::strided(A), einsums::detail::strided(B));
 }
 
 extern template EINSUMS_EXTERN_TEMPLATE_EXPORT void

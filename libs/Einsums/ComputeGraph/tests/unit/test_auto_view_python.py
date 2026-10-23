@@ -317,4 +317,4 @@ def test_eager_element_access_after_capture(dtype):
     # Outside capture again, element read works.
     val = e[0]
     expected = np.asarray(np.dot(np.asarray(A), np.asarray(B))).item()
-    assert_close(val, expected)
+    assert_close(val, expected, dtype=dtype)

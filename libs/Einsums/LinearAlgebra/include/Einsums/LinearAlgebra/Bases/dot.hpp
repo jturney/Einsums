@@ -6,247 +6,72 @@
 #pragma once
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/LinearAlgebra/Bases/compensated_sum.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
+#include <Einsums/TensorImpl/TensorImplOperations.hpp>
+
+#include <complex>
+#include <tuple>
+#include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN()
 namespace linear_algebra {
 namespace detail {
 
-template <typename T, typename TOther>
-BiggestTypeT<T, TOther> impl_dot_contiguous(einsums::detail::TensorImpl<T> const &in, einsums::detail::TensorImpl<TOther> const &out) {
-    if constexpr (std::is_same_v<T, TOther> && blas::IsBlasableV<T>) {
-        return blas::dot(in.size(), in.data(), in.get_incx(), out.data(), out.get_incx());
-    } else {
-        T const      *in_data  = in.data();
-        TOther const *out_data = out.data();
-        size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-
-        BiggestTypeT<T, TOther> sum{0.0};
-
-        EINSUMS_OMP_PRAGMA(parallel for reduction(+: sum))
-        for (size_t i = 0; i < size; i++) {
-            sum += in_data[i * incx] * out_data[i * incy];
-        }
-
-        return sum;
-    }
+/// The sum over every element of @p term applied to the operands' elements.
+///
+/// The operands are walked in stretches (see einsums::detail::strided_for_each_run). Each stretch is
+/// one call to @p vector, when it returns a value for the stretch and the stretch is long enough, or a
+/// parallel reduction of @p term; the stretches' sums combine through ScaledSum.
+template <typename R, typename Term, typename Vector, typename... Ts>
+R impl_sum_of_products(Term const &term, Vector const &vector, einsums::detail::TensorImpl<Ts> const &...ops) {
+    ScaledSum<R>                       total;
+    einsums::detail::ParallelThreshold par;
+    size_t const                       total_size = std::get<0>(std::forward_as_tuple(ops...)).size();
+    einsums::detail::strided_for_each_run(
+        std::get<0>(std::forward_as_tuple(ops...)).dims(),
+        [&](size_t n, auto const &...r) {
+            if constexpr (!std::is_same_v<decltype(vector(n, r...)), void>) {
+                if (einsums::detail::use_vector_routine(n, total_size, r...)) {
+                    total.add(vector(n, r...));
+                    return;
+                }
+            }
+            // A short stretch sums without a parallel region, which costs more to enter than it saves.
+            R sum{0.0};
+            if (n >= par()) {
+                EINSUMS_OMP_PRAGMA(parallel for reduction(+: sum))
+                for (size_t i = 0; i < n; i++) {
+                    sum += term(r.data[i * r.inc]...);
+                }
+            } else {
+                for (size_t i = 0; i < n; i++) {
+                    sum += term(r.data[i * r.inc]...);
+                }
+            }
+            total.add(sum);
+        },
+        einsums::detail::strided(ops)...);
+    return total.total();
 }
 
-template <typename T, typename TOther, Container HardDims, Container InStrides, Container OutStrides>
-BiggestTypeT<T, TOther> impl_dot_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, T const *in,
-                                                          InStrides const &in_strides, size_t inc_in, TOther const *out,
-                                                          OutStrides const &out_strides, size_t inc_out) {
-
-    using U = BiggestTypeT<T, TOther>;
-
-    if (depth == hard_rank) {
-        if constexpr (std::is_same_v<T, TOther> && blas::IsBlasableV<T>) {
-            return blas::dot(easy_size, in, inc_in, out, inc_out);
-        } else {
-            BiggestTypeT<T, TOther> sum{0.0};
-
-            EINSUMS_OMP_PRAGMA(parallel for reduction(+: sum))
-            for (size_t i = 0; i < easy_size; i++) {
-                sum += in[i * inc_in] * out[i * inc_out];
-            }
-            return sum;
-        }
-    } else {
-        if constexpr (IsComplexV<U>) {
-            BiggestTypeT<T, TOther> big_sum{0.0}, medium_sum{0.0}, small_sum{0.0};
-
-            bool not_big_re = true, not_big_im = true;
-
-            for (int i = 0; i < dims[depth]; i++) {
-                auto ret = impl_dot_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, in + i * in_strides[depth], in_strides,
-                                                             inc_in, out + i * out_strides[depth], out_strides, inc_out);
-
-                add_scale(ret, big_sum, medium_sum, small_sum, not_big_re, not_big_im);
-            }
-            return combine_accum(big_sum, medium_sum, small_sum);
-        } else {
-            BiggestTypeT<T, TOther> big_sum{0.0}, medium_sum{0.0}, small_sum{0.0};
-
-            bool not_big = true;
-
-            for (int i = 0; i < dims[depth]; i++) {
-                auto ret = impl_dot_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, in + i * in_strides[depth], in_strides,
-                                                             inc_in, out + i * out_strides[depth], out_strides, inc_out);
-
-                add_scale(ret, big_sum, medium_sum, small_sum, not_big);
-            }
-            return combine_accum(big_sum, medium_sum, small_sum);
-        }
-    }
-}
-
-template <typename T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-BiggestTypeT<T, TOther> impl_dot_noncontiguous(int depth, int rank, Dims const &dims, T const *in, InStrides const &in_strides,
-                                               TOther const *out, OutStrides const &out_strides) {
-
-    using U = BiggestTypeT<T, TOther>;
-
-    if (depth == rank) {
-        return *in * *out;
-    } else {
-        if constexpr (IsComplexV<U>) {
-            BiggestTypeT<T, TOther> big_sum{0.0}, medium_sum{0.0}, small_sum{0.0};
-
-            bool not_big_re = true, not_big_im = true;
-
-            for (int i = 0; i < dims[depth]; i++) {
-                auto ret = impl_dot_noncontiguous(depth + 1, rank, dims, in + i * in_strides[depth], in_strides,
-                                                  out + i * out_strides[depth], out_strides);
-
-                add_scale(ret, big_sum, medium_sum, small_sum, not_big_re, not_big_im);
-            }
-            return combine_accum(big_sum, medium_sum, small_sum);
-        } else {
-            BiggestTypeT<T, TOther> big_sum{0.0}, medium_sum{0.0}, small_sum{0.0};
-
-            bool not_big = true;
-
-            for (int i = 0; i < dims[depth]; i++) {
-                auto ret = impl_dot_noncontiguous(depth + 1, rank, dims, in + i * in_strides[depth], in_strides,
-                                                  out + i * out_strides[depth], out_strides);
-
-                add_scale(ret, big_sum, medium_sum, small_sum, not_big);
-            }
-            return combine_accum(big_sum, medium_sum, small_sum);
-        }
-    }
-}
+/// A stand-in for "no vector routine": impl_sum_of_products sees its void result and always loops.
+inline constexpr auto no_vector_routine = [](size_t, auto const &...) {};
 
 template <typename T, typename TOther>
 BiggestTypeT<T, TOther> impl_dot(einsums::detail::TensorImpl<T> const &in, einsums::detail::TensorImpl<TOther> const &out) {
     WAGGLE_ZONE_FUNC();
+    einsums::detail::require_same_shape(in, out, "dot");
 
-    if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(RankError, "Can not dot two tensors of different ranks!");
-    }
-
-    if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not add two tensors with different sizes!");
-    }
-
-    // Lock-step traversal needs identical memory layouts; the is_column_major()
-    // flag is too coarse for permuted views (see impl_axpy). Compare strides.
-    if (in.strides() != out.strides()) {
-        EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
-
-        return impl_dot_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
-    } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using dot.");
-
-        return impl_dot_contiguous(in, out);
-    } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over dot.");
-
-        size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
-            out_incx;
-        ShapeVector<size_t> hard_dims, in_strides, out_strides;
-
-        in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
-        out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
-
-        if (in_easy_rank < out_easy_rank) {
-            easy_rank = in_easy_rank;
-            easy_size = in_easy_size;
-        } else {
-            easy_rank = out_easy_rank;
-            easy_size = out_easy_size;
-        }
-
-        hard_dims.resize(in.rank() - easy_rank);
-
-        // Layout flag (not a stride(0)<stride(-1) proxy, which ties on size-1
-        // extents) to match query_vectorable_params' split direction.
-        if (in.is_column_major()) {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i + easy_rank);
-                out_strides[i] = out.stride(i + easy_rank);
-                hard_dims[i]   = in.dim(i + easy_rank);
-            }
-        } else {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i);
-                out_strides[i] = out.stride(i);
-                hard_dims[i]   = in.dim(i);
-            }
-        }
-
-        return impl_dot_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, hard_dims, in.data(), in_strides, in_incx, out.data(),
-                                                 out_strides, out_incx);
-    }
-}
-
-template <Complex T, typename TOther>
-BiggestTypeT<T, TOther> impl_true_dot_contiguous(einsums::detail::TensorImpl<T> const &in, einsums::detail::TensorImpl<TOther> const &out) {
+    using R         = BiggestTypeT<T, TOther>;
+    auto const term = [](T const &a, TOther const &b) -> R { return a * b; };
     if constexpr (std::is_same_v<T, TOther> && blas::IsBlasableV<T>) {
-        return blas::dotc(in.size(), in.data(), in.get_incx(), out.data(), out.get_incx());
+        return impl_sum_of_products<R>(
+            term, [](size_t n, auto const &a, auto const &b) { return blas::dot(n, a.data, a.inc, b.data, b.inc); }, in, out);
     } else {
-        T const      *in_data  = in.data();
-        TOther const *out_data = out.data();
-        size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-
-        BiggestTypeT<T, TOther> sum{0.0};
-
-        EINSUMS_OMP_PRAGMA(parallel for reduction(+: sum))
-        for (size_t i = 0; i < size; i++) {
-            sum += std::conj(in_data[i * incx]) * out_data[i * incy];
-        }
-
-        return sum;
-    }
-}
-
-template <Complex T, typename TOther, Container HardDims, Container InStrides, Container OutStrides>
-BiggestTypeT<T, TOther> impl_true_dot_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims,
-                                                               T const *in, InStrides const &in_strides, size_t inc_in, TOther const *out,
-                                                               OutStrides const &out_strides, size_t inc_out) {
-    if (depth == hard_rank) {
-        if constexpr (blas::IsBlasableV<T>) {
-            return blas::dotc(easy_size, in, inc_in, out, inc_out);
-        } else {
-            BiggestTypeT<T, TOther> sum{0.0};
-
-            EINSUMS_OMP_PRAGMA(parallel for reduction(+: sum))
-            for (size_t i = 0; i < easy_size; i++) {
-                sum += std::conj(in[i * inc_in]) * out[i * inc_out];
-            }
-            return sum;
-        }
-    } else {
-        BiggestTypeT<T, TOther> sum{0.0};
-
-        for (int i = 0; i < dims[depth]; i++) {
-            sum += impl_true_dot_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, in + i * in_strides[depth], in_strides,
-                                                          inc_in, out + i * out_strides[depth], out_strides, inc_out);
-        }
-        return sum;
-    }
-}
-
-template <Complex T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-BiggestTypeT<T, TOther> impl_true_dot_noncontiguous(int depth, int rank, Dims const &dims, T const *in, InStrides const &in_strides,
-                                                    TOther const *out, OutStrides const &out_strides) {
-    if (depth == rank) {
-        return std::conj(*in) * *out;
-    } else {
-        BiggestTypeT<T, TOther> sum{0.0};
-        for (int i = 0; i < dims[depth]; i++) {
-            sum += impl_true_dot_noncontiguous(depth + 1, rank, dims, in + i * in_strides[depth], in_strides, out + i * out_strides[depth],
-                                               out_strides);
-        }
-        return sum;
+        return impl_sum_of_products<R>(term, no_vector_routine, in, out);
     }
 }
 
@@ -254,138 +79,19 @@ template <typename T, typename TOther>
 BiggestTypeT<T, TOther> impl_true_dot(einsums::detail::TensorImpl<T> const &in, einsums::detail::TensorImpl<TOther> const &out) {
     WAGGLE_ZONE_FUNC();
 
-    if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(RankError, "Can not dot two tensors of different ranks!");
-    }
-
-    if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not add two tensors with different sizes!");
-    }
-
-    // Lock-step traversal needs identical memory layouts; the is_column_major()
-    // flag is too coarse for permuted views (see impl_axpy). Compare strides.
-    if (in.strides() != out.strides()) {
-        EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
-
-        if constexpr (IsComplexV<T>) {
-            return impl_true_dot_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
-        } else {
-            return impl_dot_noncontiguous(0, in.rank(), in.dims(), in.data(), in.strides(), out.data(), out.strides());
-        }
-    } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using dot.");
-
-        if constexpr (IsComplexV<T>) {
-            return impl_true_dot_contiguous(in, out);
-        } else {
-            return impl_dot_contiguous(in, out);
-        }
+    if constexpr (!IsComplexV<T>) {
+        return impl_dot(in, out);
     } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over dot.");
+        einsums::detail::require_same_shape(in, out, "dot");
 
-        size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
-            out_incx;
-        ShapeVector<size_t> hard_dims, in_strides, out_strides;
-
-        in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
-        out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
-
-        if (in_easy_rank < out_easy_rank) {
-            easy_rank = in_easy_rank;
-            easy_size = in_easy_size;
+        using R         = BiggestTypeT<T, TOther>;
+        auto const term = [](T const &a, TOther const &b) -> R { return std::conj(a) * b; };
+        if constexpr (std::is_same_v<T, TOther> && blas::IsBlasableV<T>) {
+            return impl_sum_of_products<R>(
+                term, [](size_t n, auto const &a, auto const &b) { return blas::dotc(n, a.data, a.inc, b.data, b.inc); }, in, out);
         } else {
-            easy_rank = out_easy_rank;
-            easy_size = out_easy_size;
+            return impl_sum_of_products<R>(term, no_vector_routine, in, out);
         }
-
-        hard_dims.resize(in.rank() - easy_rank);
-
-        // Layout flag (not a stride(0)<stride(-1) proxy, which ties on size-1
-        // extents) to match query_vectorable_params' split direction.
-        if (in.is_column_major()) {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i + easy_rank);
-                out_strides[i] = out.stride(i + easy_rank);
-                hard_dims[i]   = in.dim(i + easy_rank);
-            }
-        } else {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i);
-                out_strides[i] = out.stride(i);
-                hard_dims[i]   = in.dim(i);
-            }
-        }
-
-        if constexpr (IsComplexV<T>) {
-            return impl_true_dot_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, hard_dims, in.data(), in_strides, in_incx,
-                                                          out.data(), out_strides, out_incx);
-        } else {
-            return impl_dot_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, hard_dims, in.data(), in_strides, in_incx,
-                                                     out.data(), out_strides, out_incx);
-        }
-    }
-}
-
-template <typename A, typename B, typename C>
-BiggestTypeT<A, B, C> impl_dot_contiguous(einsums::detail::TensorImpl<A> const &a, einsums::detail::TensorImpl<B> const &b,
-                                          einsums::detail::TensorImpl<C> const &c) {
-    A const     *a_data = a.data();
-    B const     *b_data = b.data();
-    C const     *c_data = c.data();
-    size_t const inca = a.get_incx(), incb = b.get_incx(), incc = c.get_incx(), size = a.size();
-
-    BiggestTypeT<A, B, C> sum{0.0};
-
-    EINSUMS_OMP_PRAGMA(parallel for reduction(+: sum))
-    for (size_t i = 0; i < size; i++) {
-        sum += a_data[i * inca] * b_data[i * incb] * c_data[i * incc];
-    }
-
-    return sum;
-}
-
-template <typename A, typename B, typename C, Container HardDims, Container AStrides, Container BStrides, Container CStrides>
-BiggestTypeT<A, B, C> impl_dot_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, A const *a,
-                                                        AStrides const &a_strides, size_t inca, B const *b, BStrides const &b_strides,
-                                                        size_t incb, C const *c, CStrides const &c_strides, size_t incc) {
-    if (depth == hard_rank) {
-        BiggestTypeT<A, B, C> sum{0.0};
-
-        EINSUMS_OMP_PRAGMA(parallel for reduction(+: sum))
-        for (size_t i = 0; i < easy_size; i++) {
-            sum += a[i * inca] * b[i * incb] * c[i * incc];
-        }
-
-        return sum;
-    } else {
-        BiggestTypeT<A, B, C> sum{0.0};
-
-        for (int i = 0; i < dims[depth]; i++) {
-            sum += impl_dot_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, a + i * a_strides[depth], a_strides, inca,
-                                                     b + i * b_strides[depth], b_strides, incb, c + i * c_strides[depth], c_strides, incc);
-        }
-        return sum;
-    }
-}
-
-template <typename A, typename B, typename C, Container Dims, Container AStrides, Container BStrides, Container CStrides>
-BiggestTypeT<A, B, C> impl_dot_noncontiguous(int depth, int rank, Dims const &dims, A const *a, AStrides const &a_strides, B const *b,
-                                             BStrides const &b_strides, C const *c, CStrides const &c_strides) {
-    if (depth == rank) {
-        return *a * *b * *c;
-    } else {
-        BiggestTypeT<A, B, C> sum{0.0};
-        for (int i = 0; i < dims[depth]; i++) {
-            sum += impl_dot_noncontiguous(depth + 1, rank, dims, a + i * a_strides[depth], a_strides, b + i * b_strides[depth], b_strides,
-                                          c + i * c_strides[depth], c_strides);
-        }
-        return sum;
     }
 }
 
@@ -393,85 +99,11 @@ template <typename A, typename B, typename C>
 BiggestTypeT<A, B, C> impl_dot(einsums::detail::TensorImpl<A> const &a, einsums::detail::TensorImpl<B> const &b,
                                einsums::detail::TensorImpl<C> const &c) {
     WAGGLE_ZONE_FUNC();
+    einsums::detail::require_same_shape(a, b, "dot");
+    einsums::detail::require_same_shape(a, c, "dot");
 
-    if (a.rank() != b.rank() || a.rank() != c.rank()) {
-        EINSUMS_THROW_EXCEPTION(RankError, "Can not dot three tensors of different ranks!");
-    }
-
-    if (a.dims() != b.dims() || a.dims() != c.dims()) {
-        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not add three tensors with different sizes!");
-    }
-
-    // Lock-step traversal needs identical memory layouts; flags are too coarse
-    // for permuted views (see impl_axpy). Compare actual strides.
-    if (a.strides() != b.strides() || a.strides() != c.strides()) {
-        EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
-
-        return impl_dot_noncontiguous(0, a.rank(), a.dims(), a.data(), a.strides(), b.data(), b.strides(), c.data(), c.strides());
-    } else if (a.is_totally_vectorable() && b.is_totally_vectorable() && c.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using dot.");
-
-        return impl_dot_contiguous(a, b, c);
-    } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over dot.");
-
-        size_t easy_size, a_easy_size, b_easy_size, c_easy_size, a_hard_size, b_hard_size, c_hard_size, easy_rank, a_easy_rank, b_easy_rank,
-            c_easy_rank, a_incx, b_incx, c_incx;
-        ShapeVector<size_t> hard_dims, a_strides, b_strides, c_strides;
-
-        a.query_vectorable_params(&a_easy_size, &a_hard_size, &a_easy_rank, &a_incx);
-        b.query_vectorable_params(&b_easy_size, &b_hard_size, &b_easy_rank, &b_incx);
-        c.query_vectorable_params(&c_easy_size, &c_hard_size, &c_easy_rank, &c_incx);
-
-        if (a_easy_rank < b_easy_rank) {
-            if (c_easy_rank < a_easy_rank) {
-                easy_rank = c_easy_rank;
-                easy_size = c_easy_size;
-            } else {
-                easy_rank = a_easy_rank;
-                easy_size = a_easy_size;
-            }
-        } else {
-            if (c_easy_rank < b_easy_rank) {
-                easy_rank = c_easy_rank;
-                easy_size = c_easy_size;
-            } else {
-                easy_rank = b_easy_rank;
-                easy_size = b_easy_size;
-            }
-        }
-
-        hard_dims.resize(a.rank() - easy_rank);
-
-        // Layout flag (not a stride proxy that ties on size-1 extents) to match
-        // query_vectorable_params' split direction.
-        if (a.is_column_major()) {
-            a_strides.resize(a.rank() - easy_rank);
-            b_strides.resize(b.rank() - easy_rank);
-            c_strides.resize(c.rank() - easy_rank);
-
-            for (int i = 0; i < a.rank() - easy_rank; i++) {
-                a_strides[i] = a.stride(i + easy_rank);
-                b_strides[i] = b.stride(i + easy_rank);
-                c_strides[i] = c.stride(i + easy_rank);
-                hard_dims[i] = a.dim(i + easy_rank);
-            }
-        } else {
-            a_strides.resize(a.rank() - easy_rank);
-            b_strides.resize(b.rank() - easy_rank);
-            c_strides.resize(c.rank() - easy_rank);
-
-            for (int i = 0; i < a.rank() - easy_rank; i++) {
-                a_strides[i] = a.stride(i);
-                b_strides[i] = b.stride(i);
-                c_strides[i] = c.stride(i);
-                hard_dims[i] = a.dim(i);
-            }
-        }
-
-        return impl_dot_noncontiguous_vectorable(0, a.rank() - easy_rank, easy_size, hard_dims, a.data(), a_strides, a_incx, b.data(),
-                                                 b_strides, b_incx, c.data(), c_strides, c_incx);
-    }
+    using R = BiggestTypeT<A, B, C>;
+    return impl_sum_of_products<R>([](A const &x, B const &y, C const &z) -> R { return x * y * z; }, no_vector_routine, a, b, c);
 }
 
 extern template EINSUMS_EXTERN_TEMPLATE_EXPORT float  impl_dot<float, float>(einsums::detail::TensorImpl<float> const &a,

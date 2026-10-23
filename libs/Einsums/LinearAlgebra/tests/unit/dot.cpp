@@ -9,6 +9,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/Testing/Layouts.hpp>
 
+#include <array>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <complex>
 #include <limits>
@@ -231,5 +232,27 @@ TEMPLATE_TEST_CASE("dot on every combination of layouts", "[linear-algebra][dot]
         check_every_layout_reduction<T, T, T, T>(
             [](auto const &a, auto const &b, auto const &c) { return linear_algebra::detail::impl_dot(a, b, c); },
             [](auto a, auto b, auto c) { return a * b * c; });
+    }
+}
+
+// A tensor that is one vector is one call to the vector routine whatever its size, so its dot is the
+// BLAS dot of the same data to the bit. The run walk sent stretches shorter than its cutoff to an
+// element loop, which rounds differently: a 4-element float dot drifted by an ulp from numpy's, and
+// two DIIS implementations meant to agree bitwise stopped agreeing.
+TEMPLATE_TEST_CASE("dot of a single vector is the BLAS dot to the bit", "[linear-algebra][dot]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    using T = TestType;
+    for (size_t const n : {1, 3, 4, 15, 16, 17, 64}) {
+        INFO("n = " << n);
+        std::vector<T> a(n), b(n);
+        for (size_t i = 0; i < n; i++) {
+            a[i] = einsums::testing::layout_value<T>(1, i);
+            b[i] = einsums::testing::layout_value<T>(2, i);
+        }
+        einsums::detail::TensorImpl<T> const A(a.data(), std::array{n}), B(b.data(), std::array{n});
+        CHECK(linear_algebra::detail::impl_dot(A, B) == blas::dot(static_cast<blas::int_t>(n), a.data(), 1, b.data(), 1));
+        if constexpr (IsComplexV<T>) {
+            CHECK(linear_algebra::detail::impl_true_dot(A, B) == blas::dotc(static_cast<blas::int_t>(n), a.data(), 1, b.data(), 1));
+        }
     }
 }

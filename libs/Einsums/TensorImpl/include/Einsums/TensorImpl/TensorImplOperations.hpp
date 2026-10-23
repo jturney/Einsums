@@ -33,459 +33,160 @@ constexpr To convert(From from) noexcept {
     }
 }
 
-template <typename T>
-void impl_real_contiguous(TensorImpl<std::complex<T>> const &in, TensorImpl<T> &out) {
-    if constexpr (blas::IsBlasableV<T>) {
-        blas::copy(in.size(), reinterpret_cast<T const *>(in.data()), 2 * in.get_incx(), out.data(), out.get_incx());
+// ---------------------------------------------------------------------------
+// Every elementwise operation walks its operands with strided_for_each_run, which hands over each
+// maximal stretch the operands step through with fixed increments: the whole tensor when the operands
+// are one vector in the same order, a stretch per column of a padded view, and a stretch along the
+// written operand's fastest axis when the layouts differ. A long enough stretch goes to the BLAS
+// routine where the types allow one; any other runs the element loop.
+// ---------------------------------------------------------------------------
+
+/// Stretches shorter than this take the element loop even where a vector routine applies: a call per
+/// few elements costs more than the loop.
+inline constexpr size_t vector_run_min = 16;
+
+/// Whether a stretch of a walk over @p total elements goes to a vector routine: every operand stepping
+/// alike, and the stretch long enough or the whole walk. Operands that step differently are laid out
+/// differently, such as a transposed input beside its output, and there a call per stretch costs more
+/// than the loop does. A stretch that is the whole walk is one call either way, and taking the vector
+/// routine for it keeps a small tensor's result identical to the vector routine's on the same data.
+template <typename R0, typename... Rs>
+bool use_vector_routine(size_t n, size_t total, R0 const &first, Rs const &...rest) {
+    return (n >= vector_run_min || n == total) && ((rest.inc == first.inc) && ...);
+}
+
+/// The library's element threshold for parallel loops, read on first use: a walk whose stretches all
+/// go to vector routines, as a small dense tensor's single stretch does, never pays for the read.
+class ParallelThreshold {
+  public:
+    size_t operator()() {
+        if (!_known) {
+            _value = ::einsums::hardware::omp_min_parallel_elements();
+            _known = true;
+        }
+        return _value;
+    }
+
+  private:
+    size_t _value = 0;
+    bool   _known = false;
+};
+
+/// The parallel element loop over one stretch, apart from run_elements so that the parallel region's
+/// outlined code does not keep the serial loop from inlining into every stretch.
+template <typename F, typename... Rs>
+void run_elements_parallel(size_t n, F const &f, Rs const &...r) {
+    EINSUMS_OMP_PARALLEL_FOR_SIMD
+    for (size_t i = 0; i < n; i++) {
+        f(r.data[i * r.inc]...);
+    }
+}
+
+/// The element loop over one stretch: @p f on element i of every operand, in parallel once the stretch
+/// reaches the library's element threshold.
+///
+/// A shorter stretch runs a plain loop with no parallel region at all: entering one, even with a false
+/// if clause, costs tens of nanoseconds, which dominates a walk of many short stretches. For the same
+/// reason this is inlined into each stretch's handler: a call per stretch shows on short stretches.
+template <typename F, typename... Rs>
+EINSUMS_ALWAYS_INLINE void run_elements(size_t n, ParallelThreshold &parallel_min, F const &f, Rs const &...r) {
+    if (n >= parallel_min()) [[unlikely]] {
+        run_elements_parallel(n, f, r...);
+    } else if (((r.inc == 1) && ...)) {
+        EINSUMS_OMP_SIMD
+        for (size_t i = 0; i < n; i++) {
+            f(r.data[i]...);
+        }
     } else {
-        T const     *in_data  = reinterpret_cast<T const *>(in.data());
-        T           *out_data = out.data();
-        size_t const incx = 2 * in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < size; i++) {
-            out_data[i * incy] = in_data[i * incx];
+        for (size_t i = 0; i < n; i++) {
+            f(r.data[i * r.inc]...);
         }
     }
 }
 
-template <typename T, Container HardDims, Container InStrides, Container OutStrides>
-void impl_real_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, std::complex<T> const *in,
-                                        InStrides const &in_strides, size_t twice_inc_in, T *out, OutStrides const &out_strides,
-                                        size_t inc_out) {
-    // inc_in needs to be multiplied by 2 before entry.
-    if (depth == hard_rank) {
-        if constexpr (blas::IsBlasableV<T>) {
-            blas::copy(easy_size, reinterpret_cast<T const *>(in), twice_inc_in, out, inc_out);
-        } else {
-            T const *in_data = reinterpret_cast<T const *>(in);
-            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-            for (size_t i = 0; i < easy_size; i++) {
-                out[i * inc_out] = in_data[i * twice_inc_in];
+/// Throws unless @p a and @p b have the same rank and extents; @p verb names the operation.
+template <typename T, typename U>
+void require_same_shape(TensorImpl<T> const &a, TensorImpl<U> const &b, char const *verb) {
+    if (a.rank() != b.rank()) {
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not {} two tensors of different ranks!", verb);
+    }
+    if (a.dims() != b.dims()) {
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not {} two tensors with different sizes!", verb);
+    }
+}
+
+[[noreturn]] inline void throw_complex_to_real() {
+    EINSUMS_THROW_EXCEPTION(ComplexConversionError,
+                            "Can not convert complex to real! Please extract the components you want to use before operating.");
+}
+
+/// out = the real (@p Part 0) or imaginary (@p Part 1) part of in.
+///
+/// A complex value is its real part followed by its imaginary part, so the parts of a stretch are every
+/// other real value: a strided copy.
+template <int Part, typename T, typename TOther>
+void impl_complex_part(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
+    require_same_shape(in, out, "copy");
+    ParallelThreshold par;
+    size_t const      total = out.size();
+    strided_for_each_run(
+        out.dims(),
+        [&par, total](size_t n, RunOperand<T> o, RunOperand<TOther const> i) {
+            if constexpr (blas::IsBlasableV<T> && std::is_same_v<std::remove_cv_t<TOther>, std::complex<T>>) {
+                if (use_vector_routine(n, total, o, i)) {
+                    blas::copy(n, reinterpret_cast<T const *>(i.data) + Part, 2 * i.inc, o.data, o.inc);
+                    return;
+                }
             }
-        }
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_real_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, in + i * in_strides[depth], in_strides, twice_inc_in,
-                                               out + i * out_strides[depth], out_strides, inc_out);
-        }
-    }
-}
-
-template <typename T, Container Dims, Container InStrides, Container OutStrides>
-void impl_real_noncontiguous(Dims const &dims, std::complex<T> const *in, InStrides const &in_strides, T *out,
-                             OutStrides const &out_strides) {
-    strided_for_each(
-        dims, [](T &o, std::complex<T> const &i) { o = std::real(i); }, StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
-        StridedOperand<std::complex<T> const, InStrides>{.data = in, .strides = &in_strides});
+            run_elements(n, par, [](T &out_v, TOther const &in_v) { out_v = Part == 0 ? std::real(in_v) : std::imag(in_v); }, o, i);
+        },
+        strided(out), strided(in));
 }
 
 template <typename T, typename TOther>
 void impl_real(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     WAGGLE_ZONE_FUNC();
-
-    if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
-    }
-
-    if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
-    }
-
-    // Lock-step paths need identical strides (see impl_axpy).
-    if (in.strides() != out.strides()) {
-        EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
-
-        impl_real_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
-    } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
-
-        impl_real_contiguous(in, out);
-    } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over axpy.");
-
-        size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
-            out_incx;
-        ShapeVector<size_t> hard_dims, in_strides, out_strides;
-
-        in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
-        out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
-
-        if (in_easy_rank < out_easy_rank) {
-            easy_rank = in_easy_rank;
-            easy_size = in_easy_size;
-        } else {
-            easy_rank = out_easy_rank;
-            easy_size = out_easy_size;
-        }
-
-        hard_dims.resize(in.rank() - easy_rank);
-
-        if (in.is_column_major()) {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i + easy_rank);
-                out_strides[i] = out.stride(i + easy_rank);
-                hard_dims[i]   = in.dim(i + easy_rank);
-            }
-        } else {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i);
-                out_strides[i] = out.stride(i);
-                hard_dims[i]   = in.dim(i);
-            }
-        }
-
-        impl_real_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, hard_dims, in.data(), in_strides, 2 * in_incx, out.data(),
-                                           out_strides, out_incx);
-    }
-}
-
-template <typename T>
-void impl_imag_contiguous(TensorImpl<std::complex<T>> const &in, TensorImpl<T> &out) {
-    if constexpr (blas::IsBlasableV<T>) {
-        blas::copy(in.size(), reinterpret_cast<T const *>(in.data()) + 1, 2 * in.get_incx(), out.data(), out.get_incx());
-    } else {
-        T const     *in_data  = reinterpret_cast<T const *>(in.data()) + 1;
-        T           *out_data = out.data();
-        size_t const incx = 2 * in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < size; i++) {
-            out_data[i * incy] = in_data[i * incx];
-        }
-    }
-}
-
-template <typename T, Container HardDims, Container InStrides, Container OutStrides>
-void impl_imag_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, std::complex<T> const *in,
-                                        InStrides const &in_strides, size_t twice_inc_in, T *out, OutStrides const &out_strides,
-                                        size_t inc_out) {
-    // inc_in needs to be multiplied by 2 before entry.
-    if (depth == hard_rank) {
-        if constexpr (blas::IsBlasableV<T>) {
-            blas::copy(easy_size, reinterpret_cast<T const *>(in) + 1, twice_inc_in, out, inc_out);
-        } else {
-            T const *in_data = reinterpret_cast<T const *>(in) + 1;
-            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-            for (size_t i = 0; i < easy_size; i++) {
-                out[i * inc_out] = in_data[i * twice_inc_in];
-            }
-        }
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_imag_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, in + i * in_strides[depth], in_strides, twice_inc_in,
-                                               out + i * out_strides[depth], out_strides, inc_out);
-        }
-    }
-}
-
-template <typename T, Container Dims, Container InStrides, Container OutStrides>
-void impl_imag_noncontiguous(Dims const &dims, std::complex<T> const *in, InStrides const &in_strides, T *out,
-                             OutStrides const &out_strides) {
-    strided_for_each(
-        dims, [](T &o, std::complex<T> const &i) { o = std::imag(i); }, StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
-        StridedOperand<std::complex<T> const, InStrides>{.data = in, .strides = &in_strides});
+    impl_complex_part<0>(in, out);
 }
 
 template <typename T, typename TOther>
 void impl_imag(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     WAGGLE_ZONE_FUNC();
-
-    if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
-    }
-
-    if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
-    }
-
-    // Lock-step paths need identical strides (see impl_axpy).
-    if (in.strides() != out.strides()) {
-        EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
-
-        impl_imag_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
-    } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
-
-        impl_imag_contiguous(in, out);
-    } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over axpy.");
-
-        size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
-            out_incx;
-        ShapeVector<size_t> hard_dims, in_strides, out_strides;
-
-        in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
-        out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
-
-        if (in_easy_rank < out_easy_rank) {
-            easy_rank = in_easy_rank;
-            easy_size = in_easy_size;
-        } else {
-            easy_rank = out_easy_rank;
-            easy_size = out_easy_size;
-        }
-
-        hard_dims.resize(in.rank() - easy_rank);
-
-        if (in.is_column_major()) {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i + easy_rank);
-                out_strides[i] = out.stride(i + easy_rank);
-                hard_dims[i]   = in.dim(i + easy_rank);
-            }
-        } else {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i);
-                out_strides[i] = out.stride(i);
-                hard_dims[i]   = in.dim(i);
-            }
-        }
-
-        impl_imag_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, hard_dims, in.data(), in_strides, 2 * in_incx, out.data(),
-                                           out_strides, out_incx);
-    }
-}
-
-template <typename T, typename TOther>
-void impl_abs_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
-    TOther const *in_data  = in.data();
-    T            *out_data = out.data();
-    size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-    EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-    for (size_t i = 0; i < size; i++) {
-        out_data[i * incy] = std::abs(in_data[i * incx]);
-    }
-}
-
-template <typename TIn, typename TOut, Container HardDims, Container InStrides, Container OutStrides>
-void impl_abs_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, TIn const *in,
-                                       InStrides const &in_strides, size_t inc_in, TOut *out, OutStrides const &out_strides,
-                                       size_t inc_out) {
-    if (depth == hard_rank) {
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < easy_size; i++) {
-            out[i * inc_out] = std::abs(in[i * inc_in]);
-        }
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_abs_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, in + i * in_strides[depth], in_strides, inc_in,
-                                              out + i * out_strides[depth], out_strides, inc_out);
-        }
-    }
-}
-
-template <typename T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-void impl_abs_noncontiguous(Dims const &dims, TOther const *in, InStrides const &in_strides, T *out, OutStrides const &out_strides) {
-    strided_for_each(
-        dims, [](T &o, TOther const &i) { o = std::abs(i); }, StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
-        StridedOperand<TOther const, InStrides>{.data = in, .strides = &in_strides});
+    impl_complex_part<1>(in, out);
 }
 
 template <typename T, typename TOther>
 void impl_abs(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     WAGGLE_ZONE_FUNC();
-
-    if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
-    }
-
-    if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
-    }
-
-    // Lock-step paths need identical strides (see impl_axpy).
-    if (in.strides() != out.strides()) {
-        EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
-
-        impl_abs_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
-    } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
-
-        impl_abs_contiguous(in, out);
-    } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over axpy.");
-
-        size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
-            out_incx;
-        ShapeVector<size_t> hard_dims, in_strides, out_strides;
-
-        in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
-        out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
-
-        if (in_easy_rank < out_easy_rank) {
-            easy_rank = in_easy_rank;
-            easy_size = in_easy_size;
-        } else {
-            easy_rank = out_easy_rank;
-            easy_size = out_easy_size;
-        }
-
-        hard_dims.resize(in.rank() - easy_rank);
-
-        if (in.is_column_major()) {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i + easy_rank);
-                out_strides[i] = out.stride(i + easy_rank);
-                hard_dims[i]   = in.dim(i + easy_rank);
-            }
-        } else {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i);
-                out_strides[i] = out.stride(i);
-                hard_dims[i]   = in.dim(i);
-            }
-        }
-
-        impl_abs_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, hard_dims, in.data(), in_strides, in_incx, out.data(),
-                                          out_strides, out_incx);
-    }
-}
-
-template <typename T>
-void impl_conj_contiguous(TensorImpl<std::complex<T>> &x) {
-    if constexpr (blas::IsBlasableV<T>) {
-        blas::lacgv(x.size(), x.data(), x.get_incx());
-    } else {
-        T           *x_data = x.data();
-        size_t const incx = x.get_incx(), size = x.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < size; i++) {
-            x_data[i * incx] = std::conj(x_data[i * incx]);
-        }
-    }
-}
-
-template <typename T, Container HardDims, Container InStrides>
-void impl_conj_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, std::complex<T> *x,
-                                        InStrides const &x_strides, size_t incx) {
-    // inc_in needs to be multiplied by 2 before entry.
-    if (depth == hard_rank) {
-        if constexpr (blas::IsBlasableV<T>) {
-            blas::lacgv(easy_size, x, incx);
-        } else {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-            for (size_t i = 0; i < easy_size; i++) {
-                x[i * incx] = std::conj(x[i * incx]);
-            }
-        }
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_conj_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, x + i * x_strides[depth], x_strides, incx);
-        }
-    }
+    require_same_shape(in, out, "copy");
+    ParallelThreshold par;
+    strided_for_each_run(
+        out.dims(),
+        [&par](size_t n, RunOperand<T> o, RunOperand<TOther const> i) {
+            run_elements(n, par, [](T &out_v, TOther const &in_v) { out_v = std::abs(in_v); }, o, i);
+        },
+        strided(out), strided(in));
 }
 
 template <typename T>
 void impl_conj(TensorImpl<T> &x) {
     WAGGLE_ZONE_FUNC();
 
-    if constexpr (!IsComplexV<T>) {
-        return;
-    } else {
-        if (x.is_totally_vectorable()) {
-            EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using lacgv.");
-
-            impl_conj_contiguous(x);
-        } else {
-            EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over lacgv.");
-
-            size_t              easy_size, easy_rank, incx, hard_size;
-            ShapeVector<size_t> hard_dims, x_strides;
-
-            x.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &incx);
-
-            hard_dims.resize(x.rank() - easy_rank);
-
-            if (x.is_column_major()) {
-                x_strides.resize(x.rank() - easy_rank);
-
-                for (int i = 0; i < x.rank() - easy_rank; i++) {
-                    x_strides[i] = x.stride(i + easy_rank);
-                    hard_dims[i] = x.dim(i + easy_rank);
+    if constexpr (IsComplexV<T>) {
+        ParallelThreshold par;
+        size_t const      total = x.size();
+        strided_for_each_run(
+            x.dims(),
+            [&par, total](size_t n, RunOperand<T> r) {
+                if constexpr (blas::IsBlasableV<T>) {
+                    if (n >= vector_run_min || n == total) {
+                        blas::lacgv(n, r.data, r.inc);
+                        return;
+                    }
                 }
-            } else {
-                x_strides.resize(x.rank() - easy_rank);
-
-                for (int i = 0; i < x.rank() - easy_rank; i++) {
-                    x_strides[i] = x.stride(i);
-                    hard_dims[i] = x.dim(i);
-                }
-            }
-
-            impl_conj_noncontiguous_vectorable(0, x.rank() - easy_rank, easy_size, hard_dims, x.data(), x_strides, incx);
-        }
-    }
-}
-
-template <typename T, typename TOther>
-void impl_axpy_contiguous(T alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
-    if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>> && blas::IsBlasableV<T>) {
-        blas::axpy(in.size(), alpha, in.data(), in.get_incx(), out.data(), out.get_incx());
-    } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
-    } else {
-        TOther const *in_data  = in.data();
-        T            *out_data = out.data();
-        size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < size; i++) {
-            out_data[i * incy] += alpha * convert<TOther, T>(in_data[i * incx]);
-        }
-    }
-}
-
-template <typename T, typename TOther, Container HardDims, Container InStrides, Container OutStrides>
-void impl_axpy_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, T alpha, HardDims const &dims, TOther const *in,
-                                        InStrides const &in_strides, size_t inc_in, T *out, OutStrides const &out_strides, size_t inc_out) {
-    if (depth == hard_rank) {
-        if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>> && blas::IsBlasableV<T>) {
-            blas::axpy(easy_size, alpha, in, inc_in, out, inc_out);
-        } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-            EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                    "Can not convert complex to real! Please extract the components you want to use before operating.");
-        } else {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-            for (size_t i = 0; i < easy_size; i++) {
-                out[i * inc_out] += alpha * convert<TOther, T>(in[i * inc_in]);
-            }
-        }
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_axpy_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, alpha, dims, in + i * in_strides[depth], in_strides, inc_in,
-                                               out + i * out_strides[depth], out_strides, inc_out);
-        }
-    }
-}
-
-template <typename T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-void impl_axpy_noncontiguous(T alpha, Dims const &dims, TOther const *in, InStrides const &in_strides, T *out,
-                             OutStrides const &out_strides) {
-    if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
-    } else {
-        strided_for_each(
-            dims, [alpha](T &o, TOther const &i) { o += alpha * convert<TOther, T>(i); },
-            StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
-            StridedOperand<TOther const, InStrides>{.data = in, .strides = &in_strides});
+                run_elements(n, par, [](T &v) { v = std::conj(v); }, r);
+            },
+            strided(x));
     }
 }
 
@@ -537,14 +238,7 @@ void impl_with_snapshot(TensorImpl<T> const &in, F &&f) {
 template <typename T, typename TOther, typename U>
 void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     WAGGLE_ZONE_FUNC();
-
-    if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(RankError, "Can not add two tensors of different ranks!");
-    }
-
-    if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not add two tensors with different sizes!");
-    }
+    require_same_shape(in, out, "add");
 
     // An operand that is its destination: out = (1 + alpha) * out, since ?axpy forbids the overlap.
     if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>>) {
@@ -560,103 +254,24 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         return;
     }
 
-    if (in.strides() != out.strides()) {
-        // The vectorized paths walk both operands in lock-step, which needs identical strides; equal
-        // layout flags are not enough for permuted views.
-        EINSUMS_LOG_DEBUG("Operands have different memory layouts. Using the fully-general strided fallback.");
-
-        impl_axpy_noncontiguous(static_cast<T>(alpha), in.dims(), in.data(), in.strides(), out.data(), out.strides());
-    } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
-
-        impl_axpy_contiguous(static_cast<T>(alpha), in, out);
+    if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
+        throw_complex_to_real();
     } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over axpy.");
-
-        size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
-            out_incx;
-        ShapeVector<size_t> hard_dims, in_strides, out_strides;
-
-        in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
-        out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
-
-        if (in_easy_rank < out_easy_rank) {
-            easy_rank = in_easy_rank;
-            easy_size = in_easy_size;
-        } else {
-            easy_rank = out_easy_rank;
-            easy_size = out_easy_size;
-        }
-
-        hard_dims.resize(in.rank() - easy_rank);
-
-        if (in.is_column_major()) {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i + easy_rank);
-                out_strides[i] = out.stride(i + easy_rank);
-                hard_dims[i]   = in.dim(i + easy_rank);
-            }
-        } else {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i);
-                out_strides[i] = out.stride(i);
-                hard_dims[i]   = in.dim(i);
-            }
-        }
-
-        // The split keys off is_column_major(), as query_vectorable_params does, not a stride
-        // comparison, which ties on degenerate extents (here and throughout this file).
-        impl_axpy_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, static_cast<T>(alpha), hard_dims, in.data(), in_strides,
-                                           in_incx, out.data(), out_strides, out_incx);
-    }
-}
-
-template <typename T, typename TOther>
-void impl_scal_contiguous(TOther alpha, TensorImpl<T> &out) {
-    if constexpr (blas::IsBlasableV<T> && std::is_same_v<RemoveComplexT<T>, RemoveComplexT<TOther>> &&
-                  !(IsComplexV<TOther> && !IsComplexV<T>)) {
-        blas::scal(out.size(), alpha, out.data(), out.get_incx());
-    } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
-    } else {
-        T           *out_data = out.data();
-        size_t const size = out.size(), incx = out.get_incx();
-
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < size; i++) {
-            out_data[i * incx] *= convert<TOther, T>(alpha);
-        }
-    }
-}
-
-template <typename T, typename TOther, Container HardDims, Container OutStrides>
-void impl_scal_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, TOther alpha, HardDims const &dims, T *out,
-                                        OutStrides const &out_strides, size_t inc_out) {
-    if (depth == hard_rank) {
-        if constexpr (blas::IsBlasableV<T> && std::is_same_v<RemoveComplexT<T>, RemoveComplexT<TOther>> &&
-                      !(IsComplexV<TOther> && !IsComplexV<T>)) {
-            blas::scal(easy_size, alpha, out, inc_out);
-        } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-            EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                    "Can not convert complex to real! Please extract the components you want to use before operating.");
-        } else {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-            for (size_t i = 0; i < easy_size; i++) {
-                out[i * inc_out] *= convert<TOther, T>(alpha);
-            }
-        }
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_scal_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, alpha, dims, out + i * out_strides[depth], out_strides,
-                                               inc_out);
-        }
+        T const           a = static_cast<T>(alpha);
+        ParallelThreshold par;
+        size_t const      total = out.size();
+        strided_for_each_run(
+            out.dims(),
+            [a, &par, total](size_t n, RunOperand<T> o, RunOperand<TOther const> i) {
+                if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>> && blas::IsBlasableV<T>) {
+                    if (use_vector_routine(n, total, o, i)) {
+                        blas::axpy(n, a, i.data, i.inc, o.data, o.inc);
+                        return;
+                    }
+                }
+                run_elements(n, par, [a](T &out_v, TOther const &in_v) { out_v += a * convert<TOther, T>(in_v); }, o, i);
+            },
+            strided(out), strided(in));
     }
 }
 
@@ -665,428 +280,91 @@ void impl_scal(U alpha, TensorImpl<T> &out) {
     WAGGLE_ZONE_FUNC();
 
     // Scaling by zero assigns zero, as gemm's beta = 0 does, so NaN in an uninitialized destination
-    // cannot survive.
+    // does not survive.
     if (alpha == U{}) {
         impl_scalar_copy(alpha, out);
         return;
     }
 
-    if (out.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using scal.");
-
-        impl_scal_contiguous(static_cast<T>(alpha), out);
-    } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over scal.");
-
-        size_t              easy_size, hard_size, easy_rank, out_incx;
-        ShapeVector<size_t> hard_dims, out_strides;
-
-        out.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &out_incx);
-
-        hard_dims.resize(out.rank() - easy_rank);
-
-        if (out.is_column_major()) {
-            out_strides.resize(out.rank() - easy_rank);
-
-            for (int i = 0; i < out.rank() - easy_rank; i++) {
-                out_strides[i] = out.stride(i + easy_rank);
-                hard_dims[i]   = out.dim(i + easy_rank);
+    T const           a = static_cast<T>(alpha);
+    ParallelThreshold par;
+    size_t const      total = out.size();
+    strided_for_each_run(
+        out.dims(),
+        [a, &par, total](size_t n, RunOperand<T> o) {
+            if constexpr (blas::IsBlasableV<T>) {
+                if (n >= vector_run_min || n == total) {
+                    blas::scal(n, a, o.data, o.inc);
+                    return;
+                }
             }
-        } else {
-            out_strides.resize(out.rank() - easy_rank);
-
-            for (int i = 0; i < out.rank() - easy_rank; i++) {
-                out_strides[i] = out.stride(i);
-                hard_dims[i]   = out.dim(i);
-            }
-        }
-
-        impl_scal_noncontiguous_vectorable(0, out.rank() - easy_rank, easy_size, static_cast<T>(alpha), hard_dims, out.data(), out_strides,
-                                           out_incx);
-    }
-}
-
-template <typename T, typename TOther>
-void impl_div_scalar_contiguous(TOther alpha, TensorImpl<T> &out) {
-    if constexpr (std::is_same_v<RemoveComplexT<T>, RemoveComplexT<TOther>> && !(IsComplexV<TOther> && !IsComplexV<T>) &&
-                  blas::IsBlasableV<T>) {
-        blas::rscl(out.size(), alpha, out.data(), out.get_incx());
-    } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
-    } else {
-        T           *out_data = out.data();
-        size_t const size = out.size(), incx = out.get_incx();
-
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < size; i++) {
-            out_data[i * incx] /= convert<TOther, T>(alpha);
-        }
-    }
-}
-
-template <typename T, typename TOther, Container HardDims, Container OutStrides>
-void impl_div_scalar_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, TOther alpha, HardDims const &dims, T *out,
-                                              OutStrides const &out_strides, size_t inc_out) {
-    if (depth == hard_rank) {
-        if constexpr (std::is_same_v<RemoveComplexT<T>, RemoveComplexT<TOther>> && !(IsComplexV<TOther> && !IsComplexV<T>) &&
-                      blas::IsBlasableV<T>) {
-            blas::rscl(easy_size, alpha, out, inc_out);
-        } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-            EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                    "Can not convert complex to real! Please extract the components you want to use before operating.");
-        } else {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-            for (size_t i = 0; i < easy_size; i++) {
-                out[i * inc_out] /= convert<TOther, T>(alpha);
-            }
-        }
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_div_scalar_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, alpha, dims, out + i * out_strides[depth],
-                                                     out_strides, inc_out);
-        }
-    }
+            run_elements(n, par, [a](T &v) { v *= a; }, o);
+        },
+        strided(out));
 }
 
 template <typename T, typename U>
 void impl_div_scalar(U alpha, TensorImpl<T> &out) {
     WAGGLE_ZONE_FUNC();
 
-    if (out.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using scal.");
-
-        impl_div_scalar_contiguous(static_cast<T>(alpha), out);
-    } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over scal.");
-
-        size_t              easy_size, hard_size, easy_rank, out_incx;
-        ShapeVector<size_t> hard_dims, out_strides;
-
-        out.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &out_incx);
-
-        hard_dims.resize(out.rank() - easy_rank);
-
-        if (out.is_column_major()) {
-            out_strides.resize(out.rank() - easy_rank);
-
-            for (int i = 0; i < out.rank() - easy_rank; i++) {
-                out_strides[i] = out.stride(i + easy_rank);
-                hard_dims[i]   = out.dim(i + easy_rank);
+    T const           a = static_cast<T>(alpha);
+    ParallelThreshold par;
+    size_t const      total = out.size();
+    strided_for_each_run(
+        out.dims(),
+        [a, &par, total](size_t n, RunOperand<T> o) {
+            if constexpr (blas::IsBlasableV<T>) {
+                if (n >= vector_run_min || n == total) {
+                    blas::rscl(n, a, o.data, o.inc);
+                    return;
+                }
             }
-        } else {
-            out_strides.resize(out.rank() - easy_rank);
-
-            for (int i = 0; i < out.rank() - easy_rank; i++) {
-                out_strides[i] = out.stride(i);
-                hard_dims[i]   = out.dim(i);
-            }
-        }
-
-        impl_div_scalar_noncontiguous_vectorable(0, out.rank() - easy_rank, easy_size, static_cast<T>(alpha), hard_dims, out.data(),
-                                                 out_strides, out_incx);
-    }
-}
-
-template <typename T, typename TOther>
-void impl_mult_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
-    if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
-    } else {
-        TOther const *in_data  = in.data();
-        T            *out_data = out.data();
-        size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < size; i++) {
-            out_data[i * incy] *= convert<TOther, T>(in_data[i * incx]);
-        }
-    }
-}
-
-template <typename T, typename TOther, Container HardDims, Container InStrides, Container OutStrides>
-void impl_mult_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, TOther const *in,
-                                        InStrides const &in_strides, size_t inc_in, T *out, OutStrides const &out_strides, size_t inc_out) {
-    if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
-    } else {
-        if (depth == hard_rank) {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-            for (size_t i = 0; i < easy_size; i++) {
-                out[i * inc_out] *= convert<TOther, T>(in[i * inc_in]);
-            }
-        } else {
-            for (int i = 0; i < dims[depth]; i++) {
-                impl_mult_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, in + i * in_strides[depth], in_strides, inc_in,
-                                                   out + i * out_strides[depth], out_strides, inc_out);
-            }
-        }
-    }
-}
-
-template <typename T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-void impl_mult_noncontiguous(Dims const &dims, TOther const *in, InStrides const &in_strides, T *out, OutStrides const &out_strides) {
-    if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
-    } else {
-        strided_for_each(
-            dims, [](T &o, TOther const &i) { o *= convert<TOther, T>(i); },
-            StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
-            StridedOperand<TOther const, InStrides>{.data = in, .strides = &in_strides});
-    }
+            run_elements(n, par, [a](T &v) { v /= a; }, o);
+        },
+        strided(out));
 }
 
 template <typename T, typename TOther>
 void impl_mult(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     WAGGLE_ZONE_FUNC();
+    require_same_shape(in, out, "multiply");
 
-    if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(RankError, "Can not multiply two tensors of different ranks!");
-    }
-
-    if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not multiply two tensors with different sizes!");
-    }
-
-    // Lock-step paths need identical strides (see impl_axpy).
-    if (in.strides() != out.strides()) {
-        EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
-
-        impl_mult_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
-    } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
-
-        impl_mult_contiguous(in, out);
-    } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over axpy.");
-
-        size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
-            out_incx;
-        ShapeVector<size_t> hard_dims, in_strides, out_strides;
-
-        in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
-        out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
-
-        if (in_easy_rank < out_easy_rank) {
-            easy_rank = in_easy_rank;
-            easy_size = in_easy_size;
-        } else {
-            easy_rank = out_easy_rank;
-            easy_size = out_easy_size;
-        }
-
-        hard_dims.resize(in.rank() - easy_rank);
-
-        if (in.is_column_major()) {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i + easy_rank);
-                out_strides[i] = out.stride(i + easy_rank);
-                hard_dims[i]   = in.dim(i + easy_rank);
-            }
-        } else {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i);
-                out_strides[i] = out.stride(i);
-                hard_dims[i]   = in.dim(i);
-            }
-        }
-
-        impl_mult_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, hard_dims, in.data(), in_strides, in_incx, out.data(),
-                                           out_strides, out_incx);
-    }
-}
-
-template <typename T, typename TOther>
-void impl_div_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
+        throw_complex_to_real();
     } else {
-        TOther const *in_data  = in.data();
-        T            *out_data = out.data();
-        size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < size; i++) {
-            out_data[i * incy] /= convert<TOther, T>(in_data[i * incx]);
-        }
-    }
-}
-
-template <typename T, typename TOther, Container HardDims, Container InStrides, Container OutStrides>
-void impl_div_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, TOther const *in,
-                                       InStrides const &in_strides, size_t inc_in, T *out, OutStrides const &out_strides, size_t inc_out) {
-    if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
-    } else {
-        if (depth == hard_rank) {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-            for (size_t i = 0; i < easy_size; i++) {
-                out[i * inc_out] /= in[i * inc_in];
-            }
-        } else {
-            for (int i = 0; i < dims[depth]; i++) {
-                impl_div_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, in + i * in_strides[depth], in_strides, inc_in,
-                                                  out + i * out_strides[depth], out_strides, inc_out);
-            }
-        }
-    }
-}
-
-template <typename T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-void impl_div_noncontiguous(Dims const &dims, TOther const *in, InStrides const &in_strides, T *out, OutStrides const &out_strides) {
-    if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
-    } else {
-        strided_for_each(
-            dims, [](T &o, TOther const &i) { o /= convert<TOther, T>(i); },
-            StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
-            StridedOperand<TOther const, InStrides>{.data = in, .strides = &in_strides});
+        ParallelThreshold par;
+        strided_for_each_run(
+            out.dims(),
+            [&par](size_t n, RunOperand<T> o, RunOperand<TOther const> i) {
+                run_elements(n, par, [](T &out_v, TOther const &in_v) { out_v *= convert<TOther, T>(in_v); }, o, i);
+            },
+            strided(out), strided(in));
     }
 }
 
 template <typename T, typename TOther>
 void impl_div(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     WAGGLE_ZONE_FUNC();
+    require_same_shape(in, out, "divide");
 
-    if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(RankError, "Can not divide two tensors of different ranks!");
-    }
-
-    if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not divide two tensors with different sizes!");
-    }
-
-    // Lock-step paths need identical strides (see impl_axpy).
-    if (in.strides() != out.strides()) {
-        EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
-
-        impl_div_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
-    } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using a flat loop.");
-
-        impl_div_contiguous(in, out);
-    } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over axpy.");
-
-        size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
-            out_incx;
-        ShapeVector<size_t> hard_dims, in_strides, out_strides;
-
-        in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
-        out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
-
-        if (in_easy_rank < out_easy_rank) {
-            easy_rank = in_easy_rank;
-            easy_size = in_easy_size;
-        } else {
-            easy_rank = out_easy_rank;
-            easy_size = out_easy_size;
-        }
-
-        hard_dims.resize(in.rank() - easy_rank);
-
-        if (in.is_column_major()) {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i + easy_rank);
-                out_strides[i] = out.stride(i + easy_rank);
-                hard_dims[i]   = in.dim(i + easy_rank);
-            }
-        } else {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i);
-                out_strides[i] = out.stride(i);
-                hard_dims[i]   = in.dim(i);
-            }
-        }
-
-        impl_div_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, hard_dims, in.data(), in_strides, in_incx, out.data(),
-                                          out_strides, out_incx);
-    }
-}
-
-template <typename T, typename TOther>
-void impl_copy_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
-    if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>> && blas::IsBlasableV<T>) {
-        blas::copy(in.size(), in.data(), in.get_incx(), out.data(), out.get_incx());
-    } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
-    } else {
-        TOther const *in_data  = in.data();
-        T            *out_data = out.data();
-        size_t const  incx = in.get_incx(), incy = out.get_incx(), size = in.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < size; i++) {
-            out_data[i * incy] = convert<TOther, T>(in_data[i * incx]);
-        }
-    }
-}
-
-template <typename T, typename TOther, Container HardDims, Container InStrides, Container OutStrides>
-void impl_copy_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, TOther const *in,
-                                        InStrides const &in_strides, size_t inc_in, T *out, OutStrides const &out_strides, size_t inc_out) {
-    if (depth == hard_rank) {
-        if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>> && blas::IsBlasableV<T>) {
-            blas::copy(easy_size, in, inc_in, out, inc_out);
-        } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-            EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                    "Can not convert complex to real! Please extract the components you want to use before operating.");
-        } else {
-            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-            for (size_t i = 0; i < easy_size; i++) {
-                out[i * inc_out] = convert<TOther, T>(in[i * inc_in]);
-            }
-        }
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_copy_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, dims, in + i * in_strides[depth], in_strides, inc_in,
-                                               out + i * out_strides[depth], out_strides, inc_out);
-        }
-    }
-}
-
-template <typename T, typename TOther, Container Dims, Container InStrides, Container OutStrides>
-void impl_copy_noncontiguous(Dims const &dims, TOther const *in, InStrides const &in_strides, T *out, OutStrides const &out_strides) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
+        throw_complex_to_real();
     } else {
-        strided_for_each(
-            dims, [](T &o, TOther const &i) { o = convert<TOther, T>(i); },
-            StridedOperand<T, OutStrides>{.data = out, .strides = &out_strides},
-            StridedOperand<TOther const, InStrides>{.data = in, .strides = &in_strides});
+        ParallelThreshold par;
+        strided_for_each_run(
+            out.dims(),
+            [&par](size_t n, RunOperand<T> o, RunOperand<TOther const> i) {
+                run_elements(n, par, [](T &out_v, TOther const &in_v) { out_v /= convert<TOther, T>(in_v); }, o, i);
+            },
+            strided(out), strided(in));
     }
 }
 
 template <typename T, typename TOther>
 void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     WAGGLE_ZONE_FUNC();
+    require_same_shape(in, out, "copy");
 
-    if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
-    }
-
-    if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
-    }
-
-    // A copy onto itself does nothing; any other overlap reads through a copy (see impl_axpy).
     if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>>) {
         if (impl_same_operand(in, out)) {
             return;
@@ -1097,219 +375,75 @@ void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
         return;
     }
 
-    // Lock-step paths need identical strides (see impl_axpy).
-    if (in.strides() != out.strides()) {
-        EINSUMS_LOG_DEBUG("Can't necessarily combine row major and column major tensors. Using the fallback algorithm.");
-
-        impl_copy_noncontiguous(in.dims(), in.data(), in.strides(), out.data(), out.strides());
-    } else if (in.is_totally_vectorable() && out.is_totally_vectorable()) {
-        EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using axpy.");
-
-        impl_copy_contiguous(in, out);
+    if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
+        throw_complex_to_real();
     } else {
-        EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over axpy.");
-
-        size_t easy_size, in_easy_size, out_easy_size, in_hard_size, out_hard_size, easy_rank, in_easy_rank, out_easy_rank, in_incx,
-            out_incx;
-        ShapeVector<size_t> hard_dims, in_strides, out_strides;
-
-        in.query_vectorable_params(&in_easy_size, &in_hard_size, &in_easy_rank, &in_incx);
-        out.query_vectorable_params(&out_easy_size, &out_hard_size, &out_easy_rank, &out_incx);
-
-        if (in_easy_rank < out_easy_rank) {
-            easy_rank = in_easy_rank;
-            easy_size = in_easy_size;
-        } else {
-            easy_rank = out_easy_rank;
-            easy_size = out_easy_size;
-        }
-
-        hard_dims.resize(in.rank() - easy_rank);
-
-        if (in.is_column_major()) {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i + easy_rank);
-                out_strides[i] = out.stride(i + easy_rank);
-                hard_dims[i]   = in.dim(i + easy_rank);
-            }
-        } else {
-            in_strides.resize(in.rank() - easy_rank);
-            out_strides.resize(in.rank() - easy_rank);
-
-            for (int i = 0; i < in.rank() - easy_rank; i++) {
-                in_strides[i]  = in.stride(i);
-                out_strides[i] = out.stride(i);
-                hard_dims[i]   = in.dim(i);
-            }
-        }
-
-        impl_copy_noncontiguous_vectorable(0, in.rank() - easy_rank, easy_size, hard_dims, in.data(), in_strides, in_incx, out.data(),
-                                           out_strides, out_incx);
-    }
-}
-
-template <typename T>
-void impl_scalar_add_contiguous(T alpha, TensorImpl<T> &out) {
-    if constexpr (blas::IsBlasableV<T>) {
-        // Use a trick here. If the increment is zero, then it will operate the same value to all outputs.
-        blas::axpy(out.size(), T{1.0}, &alpha, 0, out.data(), out.get_incx());
-    } else {
-        T           *out_data = out.data();
-        size_t const incy = out.get_incx(), size = out.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < size; i++) {
-            out_data[i * incy] += alpha;
-        }
-    }
-}
-
-template <typename T, Container HardDims, Container OutStrides>
-void impl_scalar_add_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, T alpha, HardDims const &dims, T *out,
-                                              OutStrides const &out_strides, size_t inc_out) {
-    if (depth == hard_rank) {
-        if constexpr (blas::IsBlasableV<T>) {
-            // Use a trick here. If the increment is zero, then it will operate the same value to all outputs.
-            blas::axpy(easy_size, T{1.0}, &alpha, 0, out, inc_out);
-        } else {
-
-            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-            for (size_t i = 0; i < easy_size; i++) {
-                out[i * inc_out] += alpha;
-            }
-        }
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_scalar_add_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, alpha, dims, out + i * out_strides[depth],
-                                                     out_strides, inc_out);
-        }
+        ParallelThreshold par;
+        size_t const      total = out.size();
+        strided_for_each_run(
+            out.dims(),
+            [&par, total](size_t n, RunOperand<T> o, RunOperand<TOther const> i) {
+                if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>> && blas::IsBlasableV<T>) {
+                    if (use_vector_routine(n, total, o, i)) {
+                        blas::copy(n, i.data, i.inc, o.data, o.inc);
+                        return;
+                    }
+                }
+                run_elements(n, par, [](T &out_v, TOther const &in_v) { out_v = convert<TOther, T>(in_v); }, o, i);
+            },
+            strided(out), strided(in));
     }
 }
 
 template <typename T, typename U>
 void impl_scalar_add(U alpha, TensorImpl<T> &out) {
     if constexpr (IsComplexV<U> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
+        throw_complex_to_real();
     } else {
         WAGGLE_ZONE_FUNC();
 
-        if (out.is_totally_vectorable()) {
-            EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using scal.");
-
-            impl_scalar_add_contiguous(convert<U, T>(alpha), out);
-        } else {
-            EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over scal.");
-
-            size_t              easy_size, hard_size, easy_rank, out_incx;
-            ShapeVector<size_t> hard_dims, out_strides;
-
-            out.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &out_incx);
-
-            hard_dims.resize(out.rank() - easy_rank);
-
-            if (out.is_column_major()) {
-                out_strides.resize(out.rank() - easy_rank);
-
-                for (int i = 0; i < out.rank() - easy_rank; i++) {
-                    out_strides[i] = out.stride(i + easy_rank);
-                    hard_dims[i]   = out.dim(i + easy_rank);
+        T const           a = convert<U, T>(alpha);
+        ParallelThreshold par;
+        size_t const      total = out.size();
+        strided_for_each_run(
+            out.dims(),
+            [a, &par, total](size_t n, RunOperand<T> o) {
+                if constexpr (blas::IsBlasableV<T>) {
+                    if (n >= vector_run_min || n == total) {
+                        // An increment of zero adds the one value to every output.
+                        blas::axpy(n, T{1}, &a, 0, o.data, o.inc);
+                        return;
+                    }
                 }
-            } else {
-                out_strides.resize(out.rank() - easy_rank);
-
-                for (int i = 0; i < out.rank() - easy_rank; i++) {
-                    out_strides[i] = out.stride(i);
-                    hard_dims[i]   = out.dim(i);
-                }
-            }
-
-            impl_scalar_add_noncontiguous_vectorable(0, out.rank() - easy_rank, easy_size, convert<U, T>(alpha), hard_dims, out.data(),
-                                                     out_strides, out_incx);
-        }
-    }
-}
-
-template <typename T>
-void impl_scalar_copy_contiguous(T alpha, TensorImpl<T> &out) {
-    if constexpr (blas::IsBlasableV<T>) {
-        // Use a trick here. If the increment is zero, then it will operate the same value to all outputs.
-        blas::copy(out.size(), &alpha, 0, out.data(), out.get_incx());
-    } else {
-        T           *out_data = out.data();
-        size_t const incy = out.get_incx(), size = out.size();
-        EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(size >= ::einsums::hardware::omp_min_parallel_elements())
-        for (size_t i = 0; i < size; i++) {
-            out_data[i * incy] = alpha;
-        }
-    }
-}
-
-template <typename T, Container HardDims, Container OutStrides>
-void impl_scalar_copy_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, T alpha, HardDims const &dims, T *out,
-                                               OutStrides const &out_strides, size_t inc_out) {
-    if (depth == hard_rank) {
-        if constexpr (blas::IsBlasableV<T>) {
-            // Use a trick here. If the increment is zero, then it will operate the same value to all outputs.
-            blas::copy(easy_size, &alpha, 0, out, inc_out);
-        } else {
-
-            EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
-            for (size_t i = 0; i < easy_size; i++) {
-                out[i * inc_out] = alpha;
-            }
-        }
-    } else {
-        for (int i = 0; i < dims[depth]; i++) {
-            impl_scalar_copy_noncontiguous_vectorable(depth + 1, hard_rank, easy_size, alpha, dims, out + i * out_strides[depth],
-                                                      out_strides, inc_out);
-        }
+                run_elements(n, par, [a](T &v) { v += a; }, o);
+            },
+            strided(out));
     }
 }
 
 template <typename T, typename U>
 void impl_scalar_copy(U alpha, TensorImpl<T> &out) {
     if constexpr (IsComplexV<U> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
-                                "Can not convert complex to real! Please extract the components you want to use before operating.");
+        throw_complex_to_real();
     } else {
         WAGGLE_ZONE_FUNC();
 
-        if (out.is_totally_vectorable()) {
-            EINSUMS_LOG_DEBUG("Inputs were able to be treated as vector inputs and have the same memory layout. Using scal.");
-
-            impl_scalar_copy_contiguous(convert<U, T>(alpha), out);
-        } else {
-            EINSUMS_LOG_DEBUG("Inputs were not contiguous, but have the same layout. Using loops over scal.");
-
-            size_t              easy_size, hard_size, easy_rank, out_incx;
-            ShapeVector<size_t> hard_dims, out_strides;
-
-            out.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &out_incx);
-
-            hard_dims.resize(out.rank() - easy_rank);
-
-            if (out.is_column_major()) {
-                out_strides.resize(out.rank() - easy_rank);
-
-                for (int i = 0; i < out.rank() - easy_rank; i++) {
-                    out_strides[i] = out.stride(i + easy_rank);
-                    hard_dims[i]   = out.dim(i + easy_rank);
+        T const           a = convert<U, T>(alpha);
+        ParallelThreshold par;
+        size_t const      total = out.size();
+        strided_for_each_run(
+            out.dims(),
+            [a, &par, total](size_t n, RunOperand<T> o) {
+                if constexpr (blas::IsBlasableV<T>) {
+                    if (n >= vector_run_min || n == total) {
+                        // An increment of zero copies the one value to every output.
+                        blas::copy(n, &a, 0, o.data, o.inc);
+                        return;
+                    }
                 }
-            } else {
-                out_strides.resize(out.rank() - easy_rank);
-
-                for (int i = 0; i < out.rank() - easy_rank; i++) {
-                    out_strides[i] = out.stride(i);
-                    hard_dims[i]   = out.dim(i);
-                }
-            }
-
-            impl_scalar_copy_noncontiguous_vectorable(0, out.rank() - easy_rank, easy_size, convert<U, T>(alpha), hard_dims, out.data(),
-                                                      out_strides, out_incx);
-        }
+                run_elements(n, par, [a](T &v) { v = a; }, o);
+            },
+            strided(out));
     }
 }
 
