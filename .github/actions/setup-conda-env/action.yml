@@ -46,7 +46,9 @@ runs:
     - name: Setup Miniforge
       uses: conda-incubator/setup-miniconda@v4
       with:
-        miniforge-version: latest
+        # 26.9.4-0's `conda init` fails on Windows ("needs sudo" for Scripts\conda.exe).
+        # Back to latest once conda-forge/miniforge#913 is fixed.
+        miniforge-version: ${{ runner.os == 'Windows' && '26.7.2-1' || 'latest' }}
         activate-environment: ${{ inputs.environment-name }}
         conda-remove-defaults: "true"
 
