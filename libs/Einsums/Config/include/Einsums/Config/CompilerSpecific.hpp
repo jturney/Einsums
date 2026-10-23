@@ -220,9 +220,10 @@
 #        include <complex> // IWYU pragma: keep
 #    endif
 
-// gcc does not have reductions for complex values.
-#    pragma omp declare reduction(+ : std::complex<float> : omp_out += omp_in) initializer(omp_priv = omp_orig)
-#    pragma omp declare reduction(+ : std::complex<double> : omp_out += omp_in) initializer(omp_priv = omp_orig)
+// gcc does not have reductions for complex values. Each thread's private sum starts at zero, the
+// identity of +: starting from the variable's value (omp_orig) would add that value once per thread.
+#    pragma omp declare reduction(+ : std::complex<float> : omp_out += omp_in) initializer(omp_priv = std::complex<float>{})
+#    pragma omp declare reduction(+ : std::complex<double> : omp_out += omp_in) initializer(omp_priv = std::complex<double>{})
 
 #endif
 

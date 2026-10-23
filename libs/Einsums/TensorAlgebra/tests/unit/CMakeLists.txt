@@ -6,6 +6,7 @@
 set(TensorAlgebraTests
     ConcurrentPermute.cpp
     Batched.cpp
+    BlockAlgebra.cpp
     DispatchCoverage.cpp
     Dot.cpp
     EagerSemantics.cpp

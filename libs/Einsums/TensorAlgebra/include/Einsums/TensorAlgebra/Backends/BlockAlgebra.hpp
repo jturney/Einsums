@@ -108,7 +108,8 @@ auto einsum_special_dispatch(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
     } else {
         *C *= C_prefactor;
     }
-    CDataType temp = *C;
+    // The reduction starts from zero: C, already scaled, takes the blocks' total once, below.
+    CDataType temp{0.0};
 
     // Loop through and perform einsums.
 #pragma omp parallel for reduction(+ : temp)
@@ -197,7 +198,8 @@ auto einsum_special_dispatch(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
     } else {
         *C *= C_prefactor;
     }
-    CDataType temp = *C;
+    // The reduction starts from zero: C, already scaled, takes the blocks' total once, below.
+    CDataType temp{0.0};
 
     // Loop through and perform einsums.
 #pragma omp parallel for reduction(+ : temp)
@@ -287,7 +289,8 @@ auto einsum_special_dispatch(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
     } else {
         *C *= C_prefactor;
     }
-    CDataType temp = *C;
+    // The reduction starts from zero: C, already scaled, takes the blocks' total once, below.
+    CDataType temp{0.0};
 
     // Loop through and perform einsums.
 #pragma omp parallel for reduction(+ : temp)

@@ -4,7 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 # Name of test file. Include .cpp, .cu, etc. extension.
-set(ConfigTests ABI.cpp)
+set(ConfigTests ABI.cpp OmpComplexReduction.cpp)
 
 foreach(test ${ConfigTests})
   # Extract base name of test Example1.cpp -> Example1, Example.2.cu -> Example
