@@ -34,7 +34,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraphTypes/Spaces.hpp>
-#include <Einsums/Config/Namespace.hpp>
 
 #include <compare>
 #include <cstddef>

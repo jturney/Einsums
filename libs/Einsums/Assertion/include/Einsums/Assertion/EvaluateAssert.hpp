@@ -7,8 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
 #include <source_location>
 #include <string>
 

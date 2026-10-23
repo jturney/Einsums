@@ -6,7 +6,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Assert.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>

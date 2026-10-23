@@ -7,7 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging/Defines.hpp>
 #include <Einsums/Python/Annotations.hpp>
 

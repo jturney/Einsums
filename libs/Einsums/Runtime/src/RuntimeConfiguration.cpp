@@ -5,7 +5,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Hardware/Profile.hpp>
 #include <Einsums/Logging.hpp>

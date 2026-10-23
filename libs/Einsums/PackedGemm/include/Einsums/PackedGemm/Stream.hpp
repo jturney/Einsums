@@ -7,8 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
 #include <cstdint>
 #include <vector>
 

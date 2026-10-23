@@ -7,8 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
 #include <string>
 
 EINSUMS_NAMESPACE_BEGIN(util)

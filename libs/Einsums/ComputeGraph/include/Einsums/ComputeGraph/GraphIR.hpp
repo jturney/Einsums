@@ -262,7 +262,6 @@
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <string>

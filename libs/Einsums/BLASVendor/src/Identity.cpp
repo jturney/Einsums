@@ -11,7 +11,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/Profile.hpp>
 
 #include <filesystem>

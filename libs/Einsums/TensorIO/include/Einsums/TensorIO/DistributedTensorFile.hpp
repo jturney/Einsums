@@ -34,7 +34,6 @@
 
 #include <Einsums/Comm/Collectives.hpp>
 #include <Einsums/Comm/Runtime.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorIO/Format.hpp>
 

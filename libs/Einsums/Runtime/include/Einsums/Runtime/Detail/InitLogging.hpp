@@ -7,7 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Runtime/RuntimeConfiguration.hpp>
 
 EINSUMS_NAMESPACE_BEGIN(detail)

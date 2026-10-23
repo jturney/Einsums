@@ -9,7 +9,6 @@
 
 #include <Einsums/BLAS/Types.hpp>
 #include <Einsums/Concepts/Complex.hpp>
-#include <Einsums/Config/Namespace.hpp>
 
 EINSUMS_NAMESPACE_BEGIN(blas)
 

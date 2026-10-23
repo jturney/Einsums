@@ -9,7 +9,6 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/LinearAlgebra/Base.hpp>

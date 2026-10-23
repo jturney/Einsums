@@ -5,7 +5,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Debugging/Backtrace.hpp>
 
 #if defined(EINSUMS_HAVE_BACKTRACES)

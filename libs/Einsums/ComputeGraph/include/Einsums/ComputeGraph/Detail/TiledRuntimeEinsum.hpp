@@ -8,7 +8,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp> // ParsedEinsumSpec + dispatch::erased_string_einsum
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 

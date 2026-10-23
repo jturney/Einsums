@@ -10,7 +10,6 @@
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>

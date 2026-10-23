@@ -8,7 +8,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Assertion/EvaluateAssert.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Preprocessor/Stringify.hpp>
 
 #include <fmt/format.h>

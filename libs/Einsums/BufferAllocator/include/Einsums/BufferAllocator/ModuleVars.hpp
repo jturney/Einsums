@@ -8,7 +8,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BufferAllocator/InitModule.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/TypeSupport/Lockable.hpp>
 #include <Einsums/TypeSupport/Singleton.hpp>

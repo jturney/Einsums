@@ -8,7 +8,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Concepts/Complex.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TypeSupport/TypeName.hpp>
 

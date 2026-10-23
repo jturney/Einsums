@@ -5,7 +5,6 @@
 
 #pragma once
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config.hpp>
 
 #include <Einsums/TypeSupport/Singleton.hpp>

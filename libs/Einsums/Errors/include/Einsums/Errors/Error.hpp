@@ -7,7 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TypeSupport/StringLiteral.hpp>
 
 #include <source_location>

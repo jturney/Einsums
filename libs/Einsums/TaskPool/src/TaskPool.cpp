@@ -6,7 +6,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLAS/ThreadControl.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Runtime/ShutdownFunction.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>

@@ -60,7 +60,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/CXX23/Expected.hpp>
-#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 #include <cstdint>

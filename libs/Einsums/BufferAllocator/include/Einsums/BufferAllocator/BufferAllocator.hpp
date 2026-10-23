@@ -12,7 +12,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BufferAllocator/ModuleVars.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors.hpp>
 
 #include <complex>

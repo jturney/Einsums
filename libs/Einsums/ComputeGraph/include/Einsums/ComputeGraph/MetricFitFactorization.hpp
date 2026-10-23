@@ -64,7 +64,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph/Factorization.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 

@@ -11,7 +11,6 @@
 #include <Einsums/ComputeGraph/Decision.hpp>
 #include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <chrono>

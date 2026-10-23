@@ -7,8 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
 EINSUMS_NAMESPACE_BEGIN(util)
 
 /// Tries to break an attached debugger, if not supported a loop is

@@ -9,7 +9,6 @@
 
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/HPTT/Options.hpp>
 #include <Einsums/LinearAlgebra.hpp>

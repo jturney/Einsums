@@ -7,7 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Options/Get.hpp>
 
 // The buffer allocator's options: memory sizes such as "4MB", parsed by string_util::memory_string.

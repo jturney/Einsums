@@ -13,7 +13,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 
 #define EINSUMS_PACKED_GEMM_KERNEL_NS arch_ambient

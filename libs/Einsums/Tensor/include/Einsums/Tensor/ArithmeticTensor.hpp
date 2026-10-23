@@ -9,7 +9,6 @@
 
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorBase/TensorBase.hpp>
 
 #include <cstddef>

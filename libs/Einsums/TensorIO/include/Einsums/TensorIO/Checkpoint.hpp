@@ -7,8 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
 /// @file Checkpoint.hpp
 /// @brief Save/restore tensor state to .etn files.
 ///

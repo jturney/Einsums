@@ -13,8 +13,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
 // Included so `__cpp_lib_expected` is decided the same way in every TU, whatever was included
 // first; otherwise einsums::expected differs between TUs and links fail on mangled names.
 #include <version>

@@ -11,7 +11,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 // Decided here, by a header every user of Einsums' headers includes, so that Einsums' own sources
@@ -25,12 +24,6 @@
 #endif
 
 #include <Waggle/Waggle.hpp>
-
-#include <cstdint>
-#include <iostream>
-#include <optional>
-#include <string>
-#include <string_view>
 
 // Every zone written in namespace einsums, in its headers too, belongs to the einsums domain.
 EINSUMS_NAMESPACE_BEGIN()

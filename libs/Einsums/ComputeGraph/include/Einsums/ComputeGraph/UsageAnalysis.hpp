@@ -9,7 +9,6 @@
 
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
-#include <Einsums/Config/Namespace.hpp>
 
 #include <cstdint>
 #include <limits>

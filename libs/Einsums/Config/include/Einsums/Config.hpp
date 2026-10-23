@@ -12,6 +12,7 @@
 #include <Einsums/Config/Defines.hpp>
 #include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Config/ForceInline.hpp>
+#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Version.hpp>
 
 #if !defined(EINSUMS_ZERO)

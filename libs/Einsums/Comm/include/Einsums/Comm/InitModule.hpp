@@ -7,8 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
 /*
  * The static initializer below makes every including TU reference setup_Einsums_Comm(), so the
  * linker keeps it and the registration runs at load. Without it the pre-startup hook that sets

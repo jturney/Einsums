@@ -31,7 +31,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 
 #include <optional>

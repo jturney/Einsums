@@ -7,8 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
 EINSUMS_NAMESPACE_BEGIN(comm)
 
 /// True when MPI support is compiled in.

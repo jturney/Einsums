@@ -9,7 +9,6 @@
 
 #include <Einsums/Assert.hpp>
 #include <Einsums/BLAS/Types.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
 

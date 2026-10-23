@@ -20,7 +20,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraphTypes/Spaces.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)

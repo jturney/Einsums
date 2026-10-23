@@ -9,7 +9,6 @@
 
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
-#include <Einsums/Config/Namespace.hpp>
 
 /**
  * @file EinsumSpec.hpp

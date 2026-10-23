@@ -104,7 +104,6 @@
 
 #include <Einsums/ComputeGraph/Passes/RegionRewrite.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>

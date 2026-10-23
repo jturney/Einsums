@@ -31,8 +31,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
 #include <cstdint>
 
 EINSUMS_NAMESPACE_BEGIN(packed_gemm)

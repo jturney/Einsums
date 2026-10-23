@@ -5,7 +5,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Debugging/AttachDebugger.hpp>
 
 #include <array>

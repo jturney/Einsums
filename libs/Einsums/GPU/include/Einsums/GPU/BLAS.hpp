@@ -7,7 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Types.hpp>
 

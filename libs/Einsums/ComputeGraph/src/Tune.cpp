@@ -14,7 +14,6 @@
 #include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Tune.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Hardware/Machine.hpp>
 #include <Einsums/Hardware/Options.hpp>

@@ -133,7 +133,6 @@
 
 #include <Einsums/ComputeGraph/Factorization.hpp>
 #include <Einsums/ComputeGraphTypes/Spaces.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 

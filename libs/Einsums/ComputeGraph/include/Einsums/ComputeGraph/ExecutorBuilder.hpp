@@ -102,7 +102,6 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>

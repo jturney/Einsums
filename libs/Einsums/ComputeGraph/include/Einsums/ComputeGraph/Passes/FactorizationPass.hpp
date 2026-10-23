@@ -11,7 +11,6 @@
 #include <Einsums/ComputeGraph/Passes/LaplaceTransform.hpp>
 #include <Einsums/ComputeGraph/Passes/RegionRewrite.hpp>
 #include <Einsums/ComputeGraph/SymbolicCost.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstddef>

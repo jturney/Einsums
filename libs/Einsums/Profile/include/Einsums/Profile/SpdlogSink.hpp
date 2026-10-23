@@ -7,8 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
 #if defined(EINSUMS_HAVE_PROFILER)
 
 #    include <Einsums/Profile/Profile.hpp>

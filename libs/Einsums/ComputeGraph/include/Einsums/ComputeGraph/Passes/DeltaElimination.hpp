@@ -97,7 +97,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph/Passes/RegionRewrite.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstddef>

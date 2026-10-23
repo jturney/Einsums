@@ -6,7 +6,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
 
 #include <algorithm>

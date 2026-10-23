@@ -61,7 +61,6 @@
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraphTypes/Spaces.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>

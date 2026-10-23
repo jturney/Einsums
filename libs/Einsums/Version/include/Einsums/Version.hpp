@@ -7,7 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Version.hpp>
 #include <Einsums/Preprocessor/Stringify.hpp>
 #include <Einsums/Python/Annotations.hpp>

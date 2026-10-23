@@ -8,7 +8,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Concepts/File.hpp>
-#include <Einsums/Config/Namespace.hpp>
 
 #include <fmt/color.h>
 #include <fmt/format.h>

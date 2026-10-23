@@ -11,7 +11,6 @@
 #include <Einsums/Comm/Communicator.hpp>
 #include <Einsums/Comm/Error.hpp>
 #include <Einsums/Comm/Platform.hpp>
-#include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
 #include <cstdint>

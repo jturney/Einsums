@@ -5,7 +5,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>

@@ -9,7 +9,6 @@
 
 #include <Einsums/BufferAllocator.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/DeviceVector.hpp>
 
 #include <cstddef>

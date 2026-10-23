@@ -7,8 +7,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
-
 EINSUMS_NAMESPACE_BEGIN()
 
 EINSUMS_EXPORT int init_Einsums_Utilities(); // NOLINT(readability-identifier-naming)

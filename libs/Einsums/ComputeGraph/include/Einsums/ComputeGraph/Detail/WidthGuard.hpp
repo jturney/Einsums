@@ -11,7 +11,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLAS/ThreadControl.hpp>
-#include <Einsums/Config/Namespace.hpp>
 
 #include <algorithm>
 

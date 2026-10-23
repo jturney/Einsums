@@ -6,7 +6,6 @@
 // Metal Performance Shaders backend for Apple Silicon GPU.
 // This file is compiled as Objective-C++ (.mm) to access the Metal API.
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/Profile/Profile.hpp>

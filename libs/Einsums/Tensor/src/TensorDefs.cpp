@@ -5,7 +5,6 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/DeviceVector.hpp>
 #include <Einsums/Tensor/BlockTensor.hpp>
 #include <Einsums/Tensor/DiskTensor.hpp>

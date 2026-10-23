@@ -6,7 +6,6 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Config/ConfigStrings.hpp>
-#include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Config/Version.hpp>
 #include <Einsums/Version.hpp>
 
