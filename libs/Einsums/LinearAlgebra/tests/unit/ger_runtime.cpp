@@ -3,15 +3,16 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Phase D.1: runtime-tensor coverage for linear_algebra::ger (rank-1 update
-// A := A + alpha * x * y^T). LinearAlgebra has no existing CPU unit test
-// for ger of any kind; this file establishes baseline coverage for the
-// runtime overload added in C.10.
+// Unit tests for the rank-1 updates ger (A += alpha x y^T) and gerc (A += alpha x y^H), through
+// the runtime-tensor overloads and on every layout of A.
 
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
+#include <array>
+#include <complex>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -75,4 +76,72 @@ TEST_CASE("RuntimeTensor ger — rank mismatch surfaces a clean error", "[linear
     RuntimeTensor<double> A("A", {3, 3});
 
     REQUIRE_THROWS(linear_algebra::ger(1.0, x, y, &A));
+}
+
+// Column-major BLAS sees a row-major A as A^T = alpha conj(y) x^T, so the row-major branch cannot
+// swap x and y and call gerc, which would conjugate x instead of y. ger and gerc meet A in column-
+// and row-major order, contiguous for BLAS and with every stride doubled for the loop kernel, with
+// strided x and y and m != n, so a swapped vector, a misplaced conjugate or a wrong stride shows.
+TEMPLATE_TEST_CASE("ger and gerc on every layout of A", "[linear-algebra][ger]", float, double, std::complex<float>, std::complex<double>) {
+    using T        = TestType;
+    using R        = RemoveComplexT<T>;
+    size_t const m = 3, n = 4;
+
+    auto const value = [](double re, double im) {
+        if constexpr (IsComplexV<T>) {
+            return T(static_cast<R>(re), static_cast<R>(im));
+        } else {
+            return static_cast<T>(re);
+        }
+    };
+
+    // x and y step by 2 and 3.
+    std::vector<T> x_data(2 * m), y_data(3 * n);
+    for (size_t i = 0; i < m; i++) {
+        x_data[2 * i] = value(i + 1.0, 0.5 - i);
+    }
+    for (size_t j = 0; j < n; j++) {
+        y_data[3 * j] = value(0.25 * j, j - 1.5);
+    }
+    detail::TensorImpl<T> const x(x_data.data(), std::array{m}, std::array<size_t, 1>{2});
+    detail::TensorImpl<T> const y(y_data.data(), std::array{n}, std::array<size_t, 1>{3});
+    T const                     alpha = value(0.75, -1.25);
+
+    struct Layout {
+        char const           *name;
+        std::array<size_t, 2> strides;
+    };
+    for (auto const &[name, strides] : {Layout{"column-major", {1, m}}, Layout{"row-major", {n, 1}},
+                                        Layout{"strided column-major", {2, 2 * m}}, Layout{"strided row-major", {2 * n, 2}}}) {
+        for (bool const conjugate : {false, true}) {
+            INFO(name << " A, " << (conjugate ? "gerc" : "ger"));
+            std::vector<T>        a_data(4 * m * n);
+            detail::TensorImpl<T> A(a_data.data(), std::array{m, n}, strides);
+            REQUIRE(A.is_gemmable() == (strides[0] == 1 || strides[1] == 1));
+            for (size_t i = 0; i < m; i++) {
+                for (size_t j = 0; j < n; j++) {
+                    A.subscript(i, j) = value(double(i) - double(j), 0.5 * double(i * j));
+                }
+            }
+            std::vector<T> const a0 = a_data;
+
+            if (conjugate) {
+                linear_algebra::detail::gerc(alpha, x, y, &A);
+            } else {
+                linear_algebra::detail::ger(alpha, x, y, &A);
+            }
+
+            for (size_t i = 0; i < m; i++) {
+                for (size_t j = 0; j < n; j++) {
+                    INFO("A(" << i << ", " << j << ")");
+                    T y_j = y_data[3 * j];
+                    if constexpr (IsComplexV<T>) {
+                        y_j = conjugate ? std::conj(y_j) : y_j;
+                    }
+                    T const want = a0[i * strides[0] + j * strides[1]] + alpha * x_data[2 * i] * y_j;
+                    CHECK(std::abs(A.subscript(i, j) - want) <= 16 * std::numeric_limits<R>::epsilon() * (1 + std::abs(want)));
+                }
+            }
+        }
+    }
 }

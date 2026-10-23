@@ -72,18 +72,21 @@ def test_hyp_gemv_transpose(ta, p, q, cplx, va, graph, seed):
         err_msg=f"ta={ta} p={p} q={q} cplx={cplx} va={va} graph={graph} s={seed}")
 
 
-@given(m=_SZ, n=_SZ, alpha_re=st.sampled_from([1.0, -2.0, 0.5]), graph=st.booleans(),
+# va draws A as a permuted view, row-major to BLAS: gerc once swapped x and y for it and
+# conjugated x instead of y.
+@given(m=_SZ, n=_SZ, alpha_re=st.sampled_from([1.0, -2.0, 0.5]), va=st.booleans(), graph=st.booleans(),
        seed=st.integers(0, 2**31 - 1))
 @settings(max_examples=sanitizer_examples(250), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
-def test_hyp_gerc(m, n, alpha_re, graph, seed):
+def test_hyp_gerc(m, n, alpha_re, va, graph, seed):
     rng = np.random.default_rng(seed)
     alpha = alpha_re + 0.5j
     X0 = _rnd((m,), True, rng)
     Y0 = _rnd((n,), True, rng)
     A0 = _rnd((m, n), True, rng)
     oracle = A0 + alpha * np.outer(X0, Y0.conj())
-    Xt, Yt, At = einsums.asarray(X0, dtype="complex128"), einsums.asarray(Y0, dtype="complex128"), einsums.asarray(A0, dtype="complex128")
+    Xt, Yt = einsums.asarray(X0, dtype="complex128"), einsums.asarray(Y0, dtype="complex128")
+    At = _mkv(A0, va, "complex128", rng)
     if graph:
         g = cg.Graph(f"gg{next(_ctr)}")
         with cg.capture(g):
@@ -92,4 +95,4 @@ def test_hyp_gerc(m, n, alpha_re, graph, seed):
     else:
         einsums.linalg.gerc(alpha, Xt, Yt, At)
     np.testing.assert_allclose(np.asarray(At), oracle, rtol=1e-7, atol=1e-9,
-        err_msg=f"m={m} n={n} alpha={alpha} graph={graph} s={seed}")
+        err_msg=f"m={m} n={n} alpha={alpha} va={va} graph={graph} s={seed}")
