@@ -7,7 +7,6 @@
 
 #include <Einsums/BLASVendor/Defines.hpp>
 #include <Einsums/BLASVendor/Vendor.hpp>
-#include <Einsums/Config/CompilerSpecific.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>

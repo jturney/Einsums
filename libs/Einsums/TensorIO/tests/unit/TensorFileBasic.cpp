@@ -6,9 +6,15 @@
 /// @file TensorFileBasic.cpp
 /// @brief Unit tests for the .etn tensor file format and TensorFile class.
 
+#include <Einsums/Comm/Collectives.hpp>
 #include <Einsums/Comm/Runtime.hpp>
+#include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorAlgebra/Detail/Index.hpp>
+#include <Einsums/TensorIO/Checkpoint.hpp>
+#include <Einsums/TensorIO/DistributedTensorFile.hpp>
+#include <Einsums/TensorIO/GraphIO.hpp>
 #include <Einsums/TensorIO/TensorFile.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -19,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -560,12 +567,6 @@ TEST_CASE("TensorFile - a damaged entry record is refused when the file is opene
 // Distributed I/O (works with both mock and real MPI)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#include <Einsums/Comm/Collectives.hpp>
-#include <Einsums/Comm/Runtime.hpp>
-#include <Einsums/TensorIO/DistributedTensorFile.hpp>
-
-#include <span>
-
 TEST_CASE("DistributedTensorFile - write and read replicated", "[TensorIO][Distributed]") {
     TempFile const tmp("dist_repl.etn", true);
 
@@ -685,10 +686,6 @@ TEST_CASE("DistributedTensorFile - reads reject dtype and rank mismatches", "[Te
 // Checkpoint (ComputeGraph integration)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#include <Einsums/ComputeGraph.hpp>
-#include <Einsums/TensorAlgebra/Detail/Index.hpp>
-#include <Einsums/TensorIO/Checkpoint.hpp>
-
 namespace cg = einsums::compute_graph;
 using namespace einsums::index;
 
@@ -778,8 +775,6 @@ TEST_CASE("Checkpoint - restore rejects a checkpoint of another dtype", "[Tensor
 // ═══════════════════════════════════════════════════════════════════════════════
 // GraphIO integration (read_etn/write_etn in ComputeGraph capture)
 // ═══════════════════════════════════════════════════════════════════════════════
-
-#include <Einsums/TensorIO/GraphIO.hpp>
 
 TEMPLATE_LIST_TEST_CASE("GraphIO - read_etn and write_etn in graph", "[TensorIO][GraphIO]", testing::AllScalarTypes) {
     TempFile const tmp_in("graphio_in.etn");
