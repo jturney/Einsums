@@ -5,8 +5,14 @@
 
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
+#include <Einsums/Testing/Layouts.hpp>
 
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <complex>
+#include <limits>
+#include <string>
+#include <type_traits>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -806,5 +812,138 @@ TEMPLATE_TEST_CASE("Block into a window", "[tensor]", float, double, int) {
         for (size_t i = 0; i < out_data.size(); i++) {
             REQUIRE(out_data[i] == (i % 2 == 0 ? block_data[i / 2] : T{0}));
         }
+    }
+}
+
+namespace {
+
+using einsums::testing::for_each_index;
+using einsums::testing::for_each_layout_combination;
+using einsums::testing::Layout;
+using einsums::testing::layout_close;
+using einsums::testing::layout_value;
+using einsums::testing::logical_index;
+using einsums::testing::shape_name;
+
+/// Applies @p op(in, out) on every pair of layouts of every shape and compares each element of out
+/// against @p ref(out before, in), and every gap of out against the sentinel.
+template <typename Out, typename In, typename Op, typename Ref>
+void check_every_layout_pair(Op op, Ref ref) {
+    for_each_layout_combination<Out, In>([&](std::vector<size_t> const &dims, Layout<Out> out, Layout<In> in) {
+        INFO("shape " << shape_name(dims) << ", out " << out.name << ", in " << in.name);
+        auto       out_impl = out.impl();
+        auto const in_impl  = in.impl();
+        op(in_impl, out_impl);
+
+        size_t      wrong = 0;
+        std::string first;
+        for_each_index(dims, [&](std::vector<size_t> const &index) {
+            size_t const k    = logical_index(dims, index);
+            Out const    want = ref(layout_value<Out>(1, k), layout_value<In>(2, k));
+            if (!layout_close(out.at(index), want) && wrong++ == 0) {
+                first = fmt::format("element {} is {}, want {}", k, out.at(index), want);
+            }
+        });
+        INFO(first);
+        CHECK(wrong == 0);
+        CHECK(out.gaps_untouched());
+    });
+}
+
+/// As @ref check_every_layout_pair for an operation on one tensor in place.
+template <typename T, typename Op, typename Ref>
+void check_every_layout(Op op, Ref ref) {
+    check_every_layout_pair<T, T>([&](auto const &, auto &out) { op(out); }, [&](T out, T) { return ref(out); });
+}
+
+template <typename T>
+T layout_scalar(double re, double im) {
+    if constexpr (IsComplexV<T>) {
+        return T(static_cast<RemoveComplexT<T>>(re), static_cast<RemoveComplexT<T>>(im));
+    } else {
+        return static_cast<T>(re);
+    }
+}
+
+} // namespace
+
+// Each elementwise operation picks one of three paths by layout: one vector call when both operands
+// are a single vector with the same strides, loops over vector calls when they share strides but are
+// not one vector, and an element walk otherwise. Every layout of the output meets every layout of the
+// input here, on shapes with extent-1 axes, rank 0 and an empty extent, and on a type BLAS does not take.
+TEMPLATE_TEST_CASE("elementwise operations on every pair of layouts", "[tensor][layouts]", float, double, std::complex<float>,
+                   std::complex<double>, int) {
+    using T       = TestType;
+    T const alpha = std::is_integral_v<T> ? T(3) : layout_scalar<T>(1.5, -0.5);
+
+    SECTION("axpy") {
+        check_every_layout_pair<T, T>([&](auto const &in, auto &out) { detail::impl_axpy(alpha, in, out); },
+                                      [&](T out, T in) { return out + alpha * in; });
+    }
+    SECTION("mult") {
+        check_every_layout_pair<T, T>([](auto const &in, auto &out) { detail::impl_mult(in, out); }, [](T out, T in) { return out * in; });
+    }
+    SECTION("div") {
+        check_every_layout_pair<T, T>([](auto const &in, auto &out) { detail::impl_div(in, out); }, [](T out, T in) { return out / in; });
+    }
+    SECTION("copy") {
+        check_every_layout_pair<T, T>([](auto const &in, auto &out) { detail::impl_copy(in, out); }, [](T, T in) { return in; });
+    }
+    SECTION("scal") {
+        check_every_layout<T>([&](auto &out) { detail::impl_scal(alpha, out); }, [&](T out) { return alpha * out; });
+    }
+    SECTION("scal by zero") {
+        check_every_layout<T>([](auto &out) { detail::impl_scal(T(0), out); }, [](T) { return T(0); });
+    }
+    SECTION("div_scalar") {
+        check_every_layout<T>([&](auto &out) { detail::impl_div_scalar(alpha, out); }, [&](T out) { return out / alpha; });
+    }
+    SECTION("scalar_add") {
+        check_every_layout<T>([&](auto &out) { detail::impl_scalar_add(alpha, out); }, [&](T out) { return out + alpha; });
+    }
+    SECTION("scalar_copy") {
+        check_every_layout<T>([&](auto &out) { detail::impl_scalar_copy(alpha, out); }, [&](T) { return alpha; });
+    }
+    SECTION("conj") {
+        check_every_layout<T>([](auto &out) { detail::impl_conj(out); },
+                              [](T out) {
+                                  if constexpr (IsComplexV<T>) {
+                                      return std::conj(out);
+                                  } else {
+                                      return out;
+                                  }
+                              });
+    }
+}
+
+TEMPLATE_TEST_CASE("complex-to-real operations on every pair of layouts", "[tensor][layouts]", float, double) {
+    using R = TestType;
+    using C = std::complex<R>;
+
+    SECTION("real") {
+        check_every_layout_pair<R, C>([](auto const &in, auto &out) { detail::impl_real(in, out); }, [](R, C in) { return std::real(in); });
+    }
+    SECTION("imag") {
+        check_every_layout_pair<R, C>([](auto const &in, auto &out) { detail::impl_imag(in, out); }, [](R, C in) { return std::imag(in); });
+    }
+    SECTION("abs") {
+        check_every_layout_pair<R, C>([](auto const &in, auto &out) { detail::impl_abs(in, out); }, [](R, C in) { return std::abs(in); });
+    }
+}
+
+// An input of another type converts on the way, so these never reach a same-type vector call.
+TEST_CASE("mixed-type elementwise operations on every pair of layouts", "[tensor][layouts]") {
+    SECTION("copy float into double") {
+        check_every_layout_pair<double, float>([](auto const &in, auto &out) { detail::impl_copy(in, out); },
+                                               [](double, float in) { return double(in); });
+    }
+    SECTION("axpy double into complex double") {
+        using Z = std::complex<double>;
+        check_every_layout_pair<Z, double>([](auto const &in, auto &out) { detail::impl_axpy(2.0, in, out); },
+                                           [](Z out, double in) { return out + 2.0 * in; });
+    }
+    SECTION("mult by int into double") {
+        check_every_layout_pair<double, int>([](auto const &in, auto &out) { detail::impl_mult(in, out); },
+                                             [](double out, int in) { return out * in; });
     }
 }

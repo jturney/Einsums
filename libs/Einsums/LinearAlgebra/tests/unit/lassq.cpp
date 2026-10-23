@@ -7,8 +7,13 @@
 #include <Einsums/Tensor/BlockTensor.hpp>
 #include <Einsums/Tensor/TiledTensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+#include <Einsums/Testing/Layouts.hpp>
 
+#include <complex>
+#include <limits>
 #include <random>
+#include <string>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -109,4 +114,33 @@ TEST_CASE("sum_square over a type without a vendor lassq", "[linear-algebra]") {
     // Accumulating onto a prior total, as lassq does.
     linear_algebra::sum_square(A, &scale, &sumsq);
     REQUIRE(scale * scale * sumsq == 60);
+}
+
+// sum_square takes one vector call when the tensor is a single vector and loops over vector calls
+// otherwise; each call adds to the scale and sum it is handed. Every layout meets it here, starting
+// from a nonzero sum, with extent-1 axes, rank 0 and an empty extent.
+TEMPLATE_TEST_CASE("sum_square on every layout", "[linear-algebra][lassq][layouts]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    using T = TestType;
+    using R = RemoveComplexT<T>;
+    using einsums::testing::Layout;
+
+    for (auto const &dims : einsums::testing::layout_shapes()) {
+        for (auto layout : einsums::testing::layouts<T>(dims, 1)) {
+            INFO("shape " << einsums::testing::shape_name(dims) << ", " << layout.name);
+            double want = 0.5 * 0.5 * 3.0;
+            size_t size = 0;
+            einsums::testing::for_each_index(dims, [&](std::vector<size_t> const &index) {
+                want += std::norm(std::complex<double>(einsums::testing::layout_value<T>(1, einsums::testing::logical_index(dims, index))));
+                size++;
+            });
+
+            R          scale = 0.5, sumsq = 3;
+            auto const impl = layout.impl();
+            linear_algebra::detail::impl_sum_square(impl, &scale, &sumsq);
+            double const got = double(scale) * double(scale) * double(sumsq);
+            INFO("got " << got << ", want " << want);
+            CHECK(std::abs(got - want) <= (8.0 + 2.0 * size) * std::numeric_limits<R>::epsilon() * want);
+        }
+    }
 }
