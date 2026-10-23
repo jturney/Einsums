@@ -11,11 +11,12 @@
 #include <cstdlib>
 #include <memory>
 #include <thread>
-#include <unistd.h>
 
 #include <Einsums/Testing.hpp>
 
 #if defined(EINSUMS_HAVE_MPS)
+
+#    include <unistd.h>
 
 using namespace einsums::gpu;
 
