@@ -15,6 +15,8 @@
 
 #include <algorithm>
 #include <complex>
+#include <cstddef>
+#include <iterator>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -305,8 +307,23 @@ bool StreamContractionFusion::transform(Graph &graph) {
             auto const *h = handle_of(m.out_id);
             return h == nullptr ? size_t{0} : h->total_elems();
         };
-        auto const covered_by = [](StreamMember const &m, size_t axis) {
-            return std::ranges::find(m.c_indices, m.s_indices[axis]) != m.c_indices.end();
+        // Where the axis lands in a member's output, or -1.
+        auto const place_in_output = [](StreamMember const &m, size_t axis) -> std::ptrdiff_t {
+            auto const it = std::ranges::find(m.c_indices, m.s_indices[axis]);
+            return it == m.c_indices.end() ? -1 : std::distance(m.c_indices.begin(), it);
+        };
+        // A block of the axis is a slice of the member's output only when every member writing that
+        // output puts the axis in the same place. Members accumulating into one output through
+        // transposed patterns would give each thread a row stripe and a column stripe, and the
+        // stripes of different threads cross.
+        auto const covered_by = [&](StreamMember const &m, size_t axis) {
+            std::ptrdiff_t const place = place_in_output(m, axis);
+            if (place < 0) {
+                return false;
+            }
+            return std::ranges::all_of(members, [&](StreamMember const &other) {
+                return graph.buffer_of(other.out_id) != graph.buffer_of(m.out_id) || place_in_output(other, axis) == place;
+            });
         };
 
         std::vector<int> allowed_axes;

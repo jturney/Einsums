@@ -188,10 +188,32 @@ void stream_walk(T const *s, StreamLayout const &s_layout, std::vector<StreamTer
     // private copy and no reduction - and the blocks are the product of the
     // prefix extents, fine enough to balance where one axis is not (an extent
     // of 32 over ten threads leaves four threads a third more work).
+    //
+    // Carrying the axis is not enough when terms share an output: one that puts it on the output's
+    // rows and another on its columns hand each thread a row stripe and a column stripe, and the
+    // stripes of different threads cross. A thread owns a slice of an output only when every term
+    // writing that output puts the axis in the same place.
+    auto const agrees_on = [&](int axis, size_t k) {
+        int const place = terms[k].c_axis[static_cast<size_t>(axis)];
+        for (size_t l = 0; l < terms.size(); l++) {
+            if (slot_of[l] == slot_of[k] && terms[l].c_axis[static_cast<size_t>(axis)] >= 0 &&
+                terms[l].c_axis[static_cast<size_t>(axis)] != place) {
+                return false;
+            }
+        }
+        return true;
+    };
+    auto const owns_slices = [&](int axis) {
+        for (size_t k = 0; k < terms.size(); k++) {
+            if (terms[k].c_axis[static_cast<size_t>(axis)] < 0 || !agrees_on(axis, k)) {
+                return false;
+            }
+        }
+        return true;
+    };
     int     prefix       = 0;
     int64_t prefix_total = 1;
-    while (prefix < rank - 1 &&
-           std::ranges::all_of(terms, [&](StreamTerm<T> const &t) { return t.c_axis[static_cast<size_t>(axes[prefix])] >= 0; })) {
+    while (prefix < rank - 1 && owns_slices(axes[prefix])) {
         prefix_total *= dims[prefix];
         prefix++;
     }
@@ -232,10 +254,13 @@ void stream_walk(T const *s, StreamLayout const &s_layout, std::vector<StreamTer
     for (size_t k = 0; k < terms.size(); k++) {
         auto const &t = terms[k];
         Plan        p;
-        p.alpha  = t.alpha;
-        p.w      = t.w;
-        p.out    = t.c;
-        p.direct = requested == 1 || prefix_split || (part_axis >= 0 && t.c_axis[static_cast<size_t>(part_axis)] >= 0);
+        p.alpha = t.alpha;
+        p.w     = t.w;
+        p.out   = t.c;
+        // In place under a partition only when the term's output carries the axis where every other
+        // term on that output does too; otherwise the threads' slices cross and it is privatized.
+        p.direct =
+            requested == 1 || prefix_split || (part_axis >= 0 && t.c_axis[static_cast<size_t>(part_axis)] >= 0 && agrees_on(part_axis, k));
         p.cdelta.assign(static_cast<size_t>(rank), 0);
         p.wdelta.assign(static_cast<size_t>(rank), 0);
         // A direct writer addresses C itself; a privatized term addresses its

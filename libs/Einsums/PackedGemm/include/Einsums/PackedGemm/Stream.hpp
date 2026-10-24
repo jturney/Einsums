@@ -60,8 +60,10 @@ struct StreamTerm {
  * reduces them at the end, unless @p partition_axes names axes of @f$S@f$ the walk may split between
  * threads instead: the kernel partitions one of them (preferring an axis with a block for every
  * thread, then the largest stride), and each term whose output carries that axis writes its own
- * disjoint slice directly. Every term whose output does not carry the chosen axis is still privatized,
- * so the caller must keep those outputs small enough for a copy per thread to stay in cache.
+ * disjoint slice directly. Terms sharing an output must put the axis in the same place in it: one on
+ * the rows and another on the columns would hand each thread crossing stripes, so such a term is
+ * privatized instead. Every term whose output does not carry the chosen axis is privatized too, so
+ * the caller must keep those outputs small enough for a copy per thread to stay in cache.
  *
  * Each output's @c c_pf is applied once, before any accumulation, even when @f$S@f$ is empty. The work
  * is split over the threads the parallel region actually receives, so a call from inside another

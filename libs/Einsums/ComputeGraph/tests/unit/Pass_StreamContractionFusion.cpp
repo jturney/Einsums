@@ -261,6 +261,46 @@ TEST_CASE("StreamContractionFusion - cost_model-derived output cap", "[ComputeGr
         REQUIRE(pass.num_groups() == 0);
     }
 
+    SECTION("an over-cap output two members write through transposed patterns stays unfused") {
+        // Defends the race in owner-computes chunking: J(i,j) += S(i,j,k,l) D(k,l) and
+        // J(i,j) += S(j,i,k,l) D(k,l) both carry S's axes 0 and 1, so either looked like an axis
+        // that hands each thread a slice of J. But the first member puts axis 0 on J's rows and the
+        // second on its columns, so a thread owning a block of it wrote a row stripe and a column
+        // stripe, and the stripes of different threads crossed. No axis covers both members in the
+        // same place, so the over-cap output has no safe chunking and the members stay ordinary
+        // einsums.
+        cg::CostModel cost_model{};
+        cost_model.cpu.caches = {cg::CacheLevel{.size_bytes = 4096}};
+
+        Tensor<double, 2> J_ref("J_ref", kN, kN);
+        reference_einsum("ij <- ijkl ; kl", 0.0, &J_ref, 2.0, TEI, D);
+        reference_einsum("ij <- jikl ; kl", 1.0, &J_ref, -1.0, TEI, D);
+
+        RuntimeTensor<double> TEI_rt(TEI), D_rt(D);
+        RuntimeTensor<double> J_rt("J", std::vector<size_t>{kN, kN});
+        J_rt.zero();
+
+        cg::Graph graph("stream_transposed_shared_output");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("i,j <- i,j,k,l ; k,l", 0.0, &J_rt, 2.0, TEI_rt, D_rt);
+            cg::einsum("i,j <- j,i,k,l ; k,l", 1.0, &J_rt, -1.0, TEI_rt, D_rt);
+        }
+
+        cg::passes::StreamContractionFusion pass(cost_model);
+        REQUIRE(pass.max_output_elems(sizeof(double)) < static_cast<size_t>(kN) * kN);
+        REQUIRE_FALSE(pass.run(graph));
+        REQUIRE(pass.num_groups() == 0);
+
+        graph.execute();
+        for (size_t ii = 0; ii < kN; ii++) {
+            for (size_t jj = 0; jj < kN; jj++) {
+                std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
+                REQUIRE_THAT(J_rt(idx), Catch::Matchers::WithinAbs(J_ref(ii, jj), 1e-9));
+            }
+        }
+    }
+
     SECTION("mixed mode: chunked large output plus privatized small output") {
         // J(i,j) is over the tiny cap, so the group chunks one of J's axes
         // (the kernel picks the higher-stride j); Y(k) does not contain the

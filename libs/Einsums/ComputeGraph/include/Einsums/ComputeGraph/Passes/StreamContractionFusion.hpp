@@ -60,8 +60,12 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * chunking instead of declining: partitioning a physical @f$S@f$ axis whose
  * label lands in the output pins one output coordinate, so threads owning
  * disjoint blocks of that axis write disjoint output slices directly - no
- * private copy, no reduction, no size cap. The pass records every axis that
- * covers all over-cap members; the kernel partitions the highest-stride one
+ * private copy, no reduction, no size cap. An axis covers a member only when
+ * every member writing the same output puts its label in the same place
+ * there: members accumulating into one output through transposed patterns
+ * would hand each thread a row stripe and a column stripe, and the stripes of
+ * different threads cross. The pass records every axis that covers all
+ * over-cap members; the kernel partitions the highest-stride one
  * (a low-stride partition turns each thread's read into a strided comb,
  * measured ~5x slower than contiguous slabs). Under-cap members not covered
  * by the chosen axis keep their private buffers inside the same stream. An

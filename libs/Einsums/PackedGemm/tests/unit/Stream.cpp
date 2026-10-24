@@ -9,14 +9,18 @@
 ///        call from inside a parallel region, and the route pins.
 
 #include <Einsums/BLAS/ThreadControl.hpp>
+#include <Einsums/Options/Get.hpp>
+#include <Einsums/PackedGemm/Options.hpp>
 #include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/PackedGemm/Stream.hpp>
 #include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
+#include <cstdint>
 #include <random>
 #include <string>
 #include <vector>
@@ -189,6 +193,100 @@ TEST_CASE("stream_contract - terms sharing an output accumulate", "[PackedGemm][
     SECTION("a later term that rescales the output is rejected") {
         j_term.c_pf = 0.5;
         REQUIRE_THROWS_AS(pg::stream_contract<double>(k.s.data(), k.s_layout, {k.term(), j_term}, {}), std::invalid_argument);
+    }
+}
+
+namespace {
+
+/// Forks the stream for any length, on a team of @p threads, for one scope.
+class ForcedStreamTeam {
+  public:
+    explicit ForcedStreamTeam(int threads)
+        : _elems_per_thread{config::get(option::PackedGemmStreamElemsPerThread)}
+#ifdef _OPENMP
+          ,
+          _threads{omp_get_max_threads()}
+#endif
+    {
+        config::set(option::PackedGemmStreamElemsPerThread, std::int64_t{1});
+#ifdef _OPENMP
+        omp_set_num_threads(threads);
+#else
+        (void)threads;
+#endif
+    }
+    ~ForcedStreamTeam() {
+        config::set(option::PackedGemmStreamElemsPerThread, _elems_per_thread);
+#ifdef _OPENMP
+        omp_set_num_threads(_threads);
+#endif
+    }
+
+    ForcedStreamTeam(ForcedStreamTeam const &)            = delete;
+    ForcedStreamTeam &operator=(ForcedStreamTeam const &) = delete;
+
+  private:
+    std::int64_t _elems_per_thread;
+#ifdef _OPENMP
+    int _threads{1};
+#endif
+};
+
+} // namespace
+
+// Defends the race in the parallel walk when two terms accumulate into one output through transposed
+// patterns: out(i,j) = 2 sum_k a(k) S(k,i,j) - sum_k a(k) S(k,j,i). Both terms carry S's i and j, so
+// the walk took them as axes that split every output into per-thread slices; but the first term puts
+// j on the output's columns and the second on its rows, so a thread owning a block of j wrote a column
+// stripe and a row stripe, and the stripes of different threads crossed. Entries came out wrong in
+// most runs on a many-core machine and never on one thread. The team is forced so the split is taken
+// on any machine, and the call repeats because a lost update needs two threads at one element at once.
+TEST_CASE("stream_contract - terms sharing an output through transposed patterns", "[PackedGemm][Stream]") {
+    int64_t const k = 8;
+    int64_t const n = 48;
+
+    auto const          s = random_values<double>(static_cast<size_t>(k * n * n), 11);
+    auto const          a = random_values<double>(static_cast<size_t>(k), 12);
+    std::vector<double> expected(static_cast<size_t>(n * n), 0.0);
+    for (int64_t j = 0; j < n; j++) {
+        for (int64_t i = 0; i < n; i++) {
+            double direct = 0, transposed = 0;
+            for (int64_t q = 0; q < k; q++) {
+                direct += a[q] * s[q + k * (i + n * j)];
+                transposed += a[q] * s[q + k * (j + n * i)];
+            }
+            expected[i + n * j] = 2.0 * direct - transposed;
+        }
+    }
+
+    // S is (k, i, j); the output is (i, j) for the first term and (j, i) for the second.
+    std::vector<double>          c(static_cast<size_t>(n * n));
+    pg::StreamTerm<double> const first{.c        = c.data(),
+                                       .c_layout = column_major({n, n}),
+                                       .w        = a.data(),
+                                       .w_layout = column_major({k}),
+                                       .c_axis   = {-1, 0, 1},
+                                       .w_axis   = {0, -1, -1},
+                                       .alpha    = 2.0,
+                                       .c_pf     = 0.0};
+    auto                         second = first;
+    second.c_axis                       = {-1, 1, 0};
+    second.alpha                        = -1.0;
+    second.c_pf                         = 1.0;
+
+    ForcedStreamTeam const team(8);
+    // No axes offered is the walk's own outer split; both output axes offered is the partition that
+    // writes in place.
+    for (auto const &partition : {std::vector<int>{}, std::vector<int>{1, 2}}) {
+        INFO("partition axes offered: " << partition.size());
+        for (int rep = 0; rep < 25; rep++) {
+            std::ranges::fill(c, 1.0);
+            pg::stream_contract<double>(s.data(), column_major({k, n, n}), {first, second}, partition);
+            for (size_t e = 0; e < c.size(); e++) {
+                INFO("rep " << rep << ", element " << e);
+                REQUIRE_THAT(c[e], Catch::Matchers::WithinAbs(expected[e], 1e-12));
+            }
+        }
     }
 }
 
