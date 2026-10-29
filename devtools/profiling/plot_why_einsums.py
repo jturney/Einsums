@@ -133,7 +133,7 @@ def main():
     ax.set_ylim(bottom, max(top, 10.0 ** (ys[-1] + 0.08)))
     ax.set_xlabel("orbitals", fontsize=10, color=INK_2)
     ax.set_ylabel("Fock-build time, G = 2J − K (ms)", fontsize=10, color=INK_2)
-    ax.set_title("One Fock build, five execution strategies — Apple M4", fontsize=12, color=INK, loc="left", pad=12)
+    ax.set_title("One Fock build on an Apple M4, five execution strategies", fontsize=12, color=INK, loc="left", pad=12)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     for side in ("left", "bottom"):

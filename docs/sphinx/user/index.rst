@@ -172,10 +172,10 @@ The gray family in the figure is hand-written C++: the straightforward unfused l
 The serial pair shows that fusion alone buys almost nothing on one core, because a single core cannot saturate memory bandwidth and so halving the traffic does not help.
 The fused OpenMP nest, which is what a careful programmer writes by hand, is the baseline to beat.
 
-Writing the same two contractions as :cpp:func:`~einsums::tensor_algebra::einsum` calls trades that hand fusion for notation.
-That line was measured with the compile-time-index API; the string form, which ComputeGraph and the Python bindings use, sends both contractions to PackedGemm instead.
-Each contraction still runs on the best engine available for it, but the integrals are streamed twice, so eager einsum lands near serial hand code on this workload.
-Capturing the same two calls into a :doc:`ComputeGraph <tutorial_compute_graph>` recovers the difference: the ``StreamContractionFusion`` pass sees that both contractions read the same tensor and fuses them into one storage-order pass that feeds both accumulators, matching the hand-fused loops at small sizes and beating them at large ones, with no fusion written by the programmer.
+Writing the same two contractions as :cpp:func:`~einsums::tensor_algebra::einsum` calls trades that hand fusion for notation and still comes out ahead.
+That line was measured with the compile-time-index API, which at these sizes sends both contractions to PackedGemm, as the string form that ComputeGraph and the Python bindings use does.
+The integrals are streamed twice, yet the eager pair is 1.6 to 2.5 times faster than the fused OpenMP nest.
+Capturing the same two calls into a :doc:`ComputeGraph <tutorial_compute_graph>` halves the time again: the ``StreamContractionFusion`` pass sees that both contractions read the same tensor and fuses them into one storage-order pass that feeds both accumulators, so the integrals are read once, and the build runs three to four and a half times faster than the fused OpenMP nest with no fusion written by the programmer.
 
 .. image:: ../_static/index-images/why_einsums.png
     :alt: A Fock build through five execution strategies, from unfused loops to a stream-fused graph.

@@ -8,10 +8,11 @@
 | **Connect With Us** | [![Discord](https://img.shields.io/discord/1357368862512906360?logo=discord&label=Discord)](https://discord.gg/8GvtkyWZUv) |
 
 Einsums is a C++20 tensor algebra library.
-It analyzes contraction patterns at compile time to dispatch each `einsum` call to the best available implementation: a direct BLAS call, a packed-GEMM backend, or a generic contraction algorithm.
+It analyzes the index pattern of each `einsum` call to dispatch it to the best available implementation: a direct BLAS call, a packed-GEMM backend, or a generic contraction algorithm.
+Two einsum engines make that choice: the templated `tensor_algebra::einsum` takes compile-time indices and picks its route at compile time, while the string-spec `einsum` used by ComputeGraph and Python parses its spec at run time, so the optimizer can rewrite it.
 On top of the eager API, a deferred-execution ComputeGraph records whole workflows, optimizes them with a pass pipeline, and replays them; this is the preferred mechanism for performance-critical code.
 The eager API targets the host CPU; GPU offload and distributed execution are delivered through graph passes, so they apply only to captured workflows.
-SIMD kernels are compiled for several x86-64 instruction-set levels and selected at runtime, so one binary runs everywhere and still uses the fastest kernels the CPU supports.
+SIMD kernels are compiled for several instruction-set levels (x86-64 v2 through v4, and Arm SME) and selected at runtime, so one binary runs everywhere and still uses the fastest kernels the CPU supports.
 A NumPy-style Python package wraps the same engine.
 The CUDA GPU backend and MPI distributed execution are works in progress.
 
@@ -260,6 +261,20 @@ cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,e ; m,b,e,j", 0.0, &R, 1.0, t2, W);
 
 Captured, those operators are the pipeline's to discharge: it folds one against antisymmetry it can establish in the data, collapses an antisymmetrized contraction that is identically a scalar multiple of the base term, and expands the remaining terms only when it has to.
 
+### Beyond one contraction at a time
+
+A captured graph is also where the library handles whole programs that would not otherwise fit or run well:
+
+* **Several operands.** A spec may name three or more operands, `cg::einsum("ij;jk;kl->il", &D, A, B, C)`, and the graph contracts them pairwise in the cheapest order.
+* **A memory budget.** `AxisTiling` slices axes of the program and streams every intermediate that carries them, so a program larger than memory runs under a cap (`--einsums:graph:tiling-memory-cap`, derived from the machine by default), with blocks chosen by predicted time.
+* **Tensors that live in a file.** A tensor declared with a backing lives in an entry of an `.etn` file; the graph reads and writes it a slab or a box at a time, and its commits leave the last complete state behind if a run crashes.
+* **Symmetry.** From a tensor's declared symmetry the optimizer proves which contributions share it, and computes only the blocks on and above the diagonal, writing each mirror from them.
+* **Saving and loading.** `save_graph` writes a graph's structure; anything that depends on the machine, such as the memory plan and the tiling schedule, is derived again on load.
+* **Seeing what happened.** Every pass records what it applied, declined, and noted as `Decision` records with stable codes; `graph.last_run()` reports what the last replay did per node, per file entry, and in peak memory, and an observer can write the replay as a Chrome trace.
+* **Knowing the machine.** `einsums tune` measures the machine once, and every later program on it finds that hardware profile at start-up and feeds it to the cost model.
+
+The [optimizer guide](https://einsums.github.io/Einsums/user/optimizer.html) covers each of these, and the [CCSD tutorial](https://einsums.github.io/Einsums/user/tutorial_ccsd.html) takes one program through the memory budget, files, and symmetry.
+
 ## Performance
 
 Four figures follow: how Einsums compares to hand-written code, what capturing a workflow buys over running it eagerly, how the contraction engine has changed across three generations, and how it stands against the two established tensor-contraction libraries.
@@ -270,8 +285,8 @@ The last is the summary measurement: across all 48 contractions of the Tensor Co
 This figure answers "why Einsums?": one Fock build (G = 2J − K from the two-electron integrals and the density matrix) through five execution strategies.
 The gray family is hand code: straightforward unfused serial loops, the same loops fused into a single cache-ordered nest, and that fused nest parallelized with OpenMP.
 The serial pair shows that fusion alone buys almost nothing on one core (a single core cannot saturate memory bandwidth, so halving the traffic does not help); the fused OpenMP nest - the way a careful C programmer would write it - is the strong baseline.
-Writing the same math as two `einsum` calls trades that hand fusion for notation: each contraction runs on the measured-best engine, but the integrals are streamed twice, so eager einsum lands near serial hand code on this bandwidth-bound workload, a few-fold above the fused OpenMP nest.
-Capturing the two calls as a ComputeGraph closes the gap and then some: the StreamContractionFusion pass sees that both contractions read the same tensor and fuses them into one storage-order pass feeding both accumulators - matching the hand-fused loops at small sizes and beating them at large ones, with no fusion written by the programmer.
+Writing the same math as two `einsum` calls trades that hand fusion for notation and still comes out ahead: each contraction runs on PackedGemm, so the eager pair is 1.6 to 2.5 times faster than the fused OpenMP nest even though it streams the integrals twice.
+Capturing the two calls as a ComputeGraph halves the time again: the StreamContractionFusion pass sees that both contractions read the same tensor and fuses them into one storage-order pass feeding both accumulators, so the integrals are read once, and the build runs three to four and a half times faster than the fused OpenMP nest with no fusion written by the programmer.
 
 The "einsum (eager)" line in the figure below is exactly this code, written with the compile-time-index API it was measured with:
 
@@ -284,8 +299,7 @@ einsum(0.0, Indices{mu, nu}, &G, 2.0, Indices{mu, nu, lambda, sigma}, TEI, Indic
 einsum(1.0, Indices{mu, nu}, &G, -1.0, Indices{mu, lambda, nu, sigma}, TEI, Indices{lambda, sigma}, D);
 ```
 
-These two einsums get executed as a call to BLAS gemv (the J) and a generic contraction algorithm (the K).
-The string form, `cg::einsum`, which ComputeGraph and the Python bindings use, sends both to PackedGemm instead.
+At the sizes in the figure, both contractions go to PackedGemm, in this templated form and in the string form `cg::einsum` that ComputeGraph and the Python bindings use; the templated engine keeps a vendor gemv for the J only when it is small enough that the gemv is faster.
 
 The stream-fused line is the same two contractions captured into a graph; the default optimization pipeline does the fusion.
 
