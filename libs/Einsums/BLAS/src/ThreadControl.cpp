@@ -6,6 +6,7 @@
 #include <Einsums/BLAS/Defines.hpp>
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/BLASVendor/Defines.hpp>
+#include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include <string_view>
@@ -19,13 +20,6 @@
 extern "C" {
 int MKL_Set_Num_Threads_Local(int nthreads);
 int MKL_Get_Max_Threads(void);
-}
-#endif
-
-#if defined(EINSUMS_HAVE_OPENBLAS)
-// Declared, as openblas's header may not be on the path; the build verified the symbol links.
-extern "C" {
-char *openblas_get_config(void);
 }
 #endif
 
@@ -59,17 +53,15 @@ int get_num_threads_this_thread() {
 }
 
 bool threads_with_openmp() {
-#if defined(EINSUMS_HAVE_OPENBLAS)
+    // Asked of the loaded library rather than decided at configure time: a cached negative probe
+    // once compiled this to false against an OpenMP OpenBLAS, which disarmed VendorWidthFence.
     // The config string lists build flags, e.g. "OpenBLAS 0.3.32 NO_AFFINITY USE_OPENMP VORTEX";
     // USE_OPENMP is a bare token, not "USE_OPENMP=1".
     static bool const built_with_openmp = []() {
-        char const *config = openblas_get_config();
+        char const *config = vendor::openblas_config();
         return config != nullptr && std::string_view(config).find("USE_OPENMP") != std::string_view::npos;
     }();
     return built_with_openmp;
-#else
-    return false;
-#endif
 }
 
 namespace {

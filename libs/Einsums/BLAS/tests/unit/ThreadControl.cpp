@@ -14,11 +14,16 @@
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 #ifdef _OPENMP
 #    include <omp.h>
+#endif
+
+#if !defined(_WIN32)
+#    include <dlfcn.h>
 #endif
 
 #include <Einsums/Testing.hpp>
@@ -116,6 +121,41 @@ TEST_CASE("blas thread control only affects the calling thread", "[blas][threads
         REQUIRE_THAT(value, Catch::Matchers::WithinAbs(2.0 * n, 1.0e-12));
     }
 }
+
+#if defined(_OPENMP) && !defined(_WIN32)
+TEST_CASE("the width fence engages whenever an OpenMP OpenBLAS is loaded", "[blas][threads]") {
+    // The defect this pins: whether the vendor threads through OpenMP used to be decided by a
+    // configure-time link probe, cached in CMakeCache.txt. A build whose cache held a negative
+    // from an earlier configure compiled the answer to false against a library that said
+    // USE_OPENMP, which disarmed VendorWidthFence. Nothing warned; the first symptom was
+    // MixedWidthVendorSafety deadlocking inside OpenBLAS's inner_thread.
+    //
+    // The oracle asks the process, not the build: a global symbol lookup is a different route
+    // from the dgemm-owner lookup the library uses, and it knows nothing of CMake.
+    using OpenBlasConfig = char *(*)();
+    auto const config    = reinterpret_cast<OpenBlasConfig>(dlsym(RTLD_DEFAULT, "openblas_get_config"));
+    if (config == nullptr) {
+        REQUIRE_FALSE(einsums::blas::threads_with_openmp());
+        SUCCEED("linked BLAS is not OpenBLAS; the fence has nothing to clamp");
+        return;
+    }
+    bool const openmp_build = std::string_view(config()).find("USE_OPENMP") != std::string_view::npos;
+    INFO("openblas_get_config(): " << config());
+    REQUIRE(einsums::blas::threads_with_openmp() == openmp_build);
+    if (!openmp_build) {
+        return;
+    }
+
+    // And the consequence that matters: under a node-scoped width the fence clamps.
+    int const prior_omp = omp_get_max_threads();
+    omp_set_num_threads(4);
+    einsums::blas::set_moldable_width_scope(true);
+    bool const fenced = einsums::blas::vendor_call_is_fenced();
+    einsums::blas::set_moldable_width_scope(false);
+    omp_set_num_threads(prior_omp);
+    REQUIRE(fenced);
+}
+#endif
 
 #ifdef _OPENMP
 TEST_CASE("a vendor call inside our own parallel region is bit-reproducible", "[blas][threads]") {

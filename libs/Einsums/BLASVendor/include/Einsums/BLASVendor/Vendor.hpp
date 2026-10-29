@@ -27,6 +27,19 @@ EINSUMS_EXPORT void initialize();
 EINSUMS_EXPORT void finalize();
 
 /**
+ * @brief The build configuration of the OpenBLAS that provides this process's dgemm.
+ *
+ * For example "OpenBLAS 0.3.34 NO_AFFINITY USE_OPENMP VORTEX". Asked of the library that actually
+ * resolved dgemm, not of the build, since a conda environment can swap the implementation behind
+ * libblas without a rebuild. Resolved once; the pointer lives as long as the library.
+ *
+ * @return The string from @c openblas_get_config, or nullptr when the BLAS is not OpenBLAS.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT char const *openblas_config();
+
+/**
  * Performs matrix multiplication for general square matrices.
  *
  * @param[in] transa Whether to transpose the left matrix. Case insensitive. Can be 'c', 't', or 'n'.

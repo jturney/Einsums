@@ -3,14 +3,16 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Which BLAS this process uses, for the hardware profile: measurements taken against one BLAS do
-// not describe another. The answer comes from the library that actually provides dgemm, found
+// Which BLAS this process uses, for the hardware profile (measurements taken against one BLAS do
+// not describe another) and for the thread fence, which must know whether OpenMP reaches the
+// vendor. The answer comes from the library that actually provides dgemm, found
 // from that function's address, not from the vendor the build was configured with: a conda
 // environment can swap the implementation behind libblas without rebuilding anything, and a name
 // lookup in the global scope finds nothing when Python loads Einsums with RTLD_LOCAL.
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/Hardware/Profile.hpp>
 
 #include <filesystem>
@@ -77,39 +79,52 @@ std::string library_name(std::string const &path) {
     return (ec ? std::filesystem::path(path) : real).filename().string();
 }
 
-std::string identify() {
-    auto const *symbol = reinterpret_cast<void const *>(&FC_GLOBAL(dgemm, DGEMM));
-    std::string library;
-    std::string version;
+/// The library that provides dgemm, and the vendor entry points it exports.
+struct DgemmProvider {
+    std::string    path;
+    OpenBlasConfig openblas{nullptr};
+    MklVersion     mkl{nullptr};
+};
+
+DgemmProvider find_dgemm_provider() {
+    auto const   *symbol = reinterpret_cast<void const *>(&FC_GLOBAL(dgemm, DGEMM));
+    DgemmProvider provider;
 #if defined(_WIN32)
     HMODULE module = nullptr;
     if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                            static_cast<LPCSTR>(symbol), &module) != 0) {
         char path[MAX_PATH] = {}; // NOLINT
         if (GetModuleFileNameA(module, path, MAX_PATH) != 0) {
-            library = library_name(path);
+            provider.path = path;
         }
-        if (auto const config = reinterpret_cast<OpenBlasConfig>(GetProcAddress(module, "openblas_get_config")); config != nullptr) {
-            version = openblas_version(config());
-        } else if (auto const mkl = reinterpret_cast<MklVersion>(GetProcAddress(module, "MKL_Get_Version_String")); mkl != nullptr) {
-            version = mkl_version(mkl);
-        }
+        provider.openblas = reinterpret_cast<OpenBlasConfig>(GetProcAddress(module, "openblas_get_config"));
+        provider.mkl      = reinterpret_cast<MklVersion>(GetProcAddress(module, "MKL_Get_Version_String"));
     }
 #else
     Dl_info info{};
     if (dladdr(symbol, &info) != 0 && info.dli_fname != nullptr) {
-        library = library_name(info.dli_fname);
-        // The library is already loaded; this only obtains a handle to look its version up in.
+        provider.path = info.dli_fname;
+        // The library is already loaded; this only obtains a handle to look its entry points up in.
+        // Closing it again leaves the process's own reference, so the pointers stay valid.
         if (void *handle = dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD); handle != nullptr) {
-            if (auto const config = reinterpret_cast<OpenBlasConfig>(dlsym(handle, "openblas_get_config")); config != nullptr) {
-                version = openblas_version(config());
-            } else if (auto const mkl = reinterpret_cast<MklVersion>(dlsym(handle, "MKL_Get_Version_String")); mkl != nullptr) {
-                version = mkl_version(mkl);
-            }
+            provider.openblas = reinterpret_cast<OpenBlasConfig>(dlsym(handle, "openblas_get_config"));
+            provider.mkl      = reinterpret_cast<MklVersion>(dlsym(handle, "MKL_Get_Version_String"));
             dlclose(handle);
         }
     }
 #endif
+    return provider;
+}
+
+std::string identify() {
+    DgemmProvider const provider = find_dgemm_provider();
+    std::string const   library  = provider.path.empty() ? std::string{} : library_name(provider.path);
+    std::string         version;
+    if (provider.openblas != nullptr) {
+        version = openblas_version(provider.openblas());
+    } else if (provider.mkl != nullptr) {
+        version = mkl_version(provider.mkl);
+    }
     if (library.empty()) {
         return version.empty() ? std::string{"unidentified"} : version;
     }
@@ -119,5 +134,13 @@ std::string identify() {
 [[maybe_unused]] int const registered = (hardware::set_blas_identity_provider(&identify), 0);
 
 } // namespace
+
+char const *openblas_config() {
+    static char const *const config = []() -> char const * {
+        OpenBlasConfig const get = find_dgemm_provider().openblas;
+        return get != nullptr ? get() : nullptr;
+    }();
+    return config;
+}
 
 EINSUMS_NAMESPACE_END(blas::vendor)

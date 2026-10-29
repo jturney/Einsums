@@ -27,6 +27,9 @@ endforeach()
 # when it is not found and the test skips itself - so a green run would say
 # nothing about whether the mechanism works on the one platform that needs it.
 # FindTargetLAPACK records the vendor it settled on.
+# The fence test looks the vendor up with dlsym, in libdl on glibc older than 2.34.
+target_link_libraries(ThreadControl_test PRIVATE ${CMAKE_DL_LIBS})
+
 if(TARGET tgt::lapack)
   get_target_property(_einsums_blas_vendor tgt::lapack VENDOR)
   if(_einsums_blas_vendor STREQUAL "MKL")
