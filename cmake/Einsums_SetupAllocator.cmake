@@ -54,7 +54,7 @@ if(NOT TARGET einsums_dependencies_mimalloc)
   # MI_MALLOC_VERSION carries the full number (30402 == 3.4.2), so the header is
   # the only source precise enough to express the rule.
   #
-  # The rule is >=3.3, <3.6, excluding 3.4.0 and 3.4.1. Each bound was measured
+  # The rule is >=3.3, <3.7, excluding 3.4.0 and 3.4.1. Each bound was measured
   # against the full test suite, one mimalloc source build per release:
   #
   # * Below 3.3 the arena entry points MemoryPool is written against
@@ -75,6 +75,12 @@ if(NOT TARGET einsums_dependencies_mimalloc)
   #   ours rather than upstream's, and is fixed: the alignment constrains an
   #   arena's BASE, not its size, so MemoryPool no longer rounds the size to it
   #   (see arena_size_for). 3.5 passes the suite.
+  #
+  # * 3.6 reorganized the heap and arena layers but kept the macOS TLS slots at
+  #   108/109, the arena alignment, and the signatures of every mi_ call made
+  #   here. mi_heap_visit_blocks now runs its visitor under the heap's lock, so
+  #   a visitor must not allocate or free; heap_live_bytes only sums. 3.6.0
+  #   (conda-forge) passes the suite.
   #
   # * The ceiling is a minor version above the newest series tested, not a
   #   known failure. Both breakages so far arrived on a minor bump and both
@@ -99,13 +105,13 @@ if(NOT TARGET einsums_dependencies_mimalloc)
   endif()
 
   if(_einsums_mi_ver AND (_einsums_mi_ver LESS 30300
-                          OR _einsums_mi_ver GREATER_EQUAL 30600
+                          OR _einsums_mi_ver GREATER_EQUAL 30700
                           OR (_einsums_mi_ver GREATER_EQUAL 30400 AND _einsums_mi_ver LESS 30402)))
     einsums_error(
       "Found mimalloc ${_einsums_mi_ver} (MI_MALLOC_VERSION), which Einsums cannot use. "
-      "Supported: >=3.3 and <3.6, excluding 3.4.0 and 3.4.1 (macOS TLS slot collision, "
+      "Supported: >=3.3 and <3.7, excluding 3.4.0 and 3.4.1 (macOS TLS slot collision, "
       "mimalloc issue #1333, fixed in 3.4.2). "
-      "In a conda environment: conda install 'mimalloc>=3.3,<3.6,!=3.4.0,!=3.4.1'."
+      "In a conda environment: conda install 'mimalloc>=3.3,<3.7,!=3.4.0,!=3.4.1'."
     )
   endif()
   if(NOT _einsums_mi_ver)

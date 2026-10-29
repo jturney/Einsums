@@ -42,7 +42,7 @@ dependencies:
  # * zlib brings headers; hdf5 package only bring libzlib
  - hdf5
  - zlib
- - mimalloc >=3.3,<3.6,!=3.4.0,!=3.4.1
+ - mimalloc >=3.3,<3.7,!=3.4.0,!=3.4.1
  # Python
  - pybind11
  - pytest
