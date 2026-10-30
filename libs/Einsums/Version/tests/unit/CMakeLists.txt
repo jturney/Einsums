@@ -12,7 +12,7 @@
 # set(Example1_cpp_FLAGS DEPENDENCIES SomeOtherGreatLibrary) set(Example2_cu_PARAMETERS THREADS 1)
 
 # Name of test file. Include .cpp, .cu, etc. extension.
-set(VersionTests)
+set(VersionTests Version.cpp)
 
 foreach(test ${VersionTests})
   # Extract base name of test Example1.cpp -> Example1, Example.2.cu -> Example
@@ -41,6 +41,9 @@ foreach(test ${VersionTests})
   )
 
   einsums_add_unit_test(
-    "Modules.Einsums.Version" ${test} ${${TestName}_${TestExtension}_PARAMETERS}
+    "Modules.Einsums.Version" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS}
   )
 endforeach()
+
+# einsums.__version__ against the C++ version and PEP 440.
+einsums_add_python_unit_test("Modules.Einsums.Version" VersionPython SCRIPT test_version_python.py)

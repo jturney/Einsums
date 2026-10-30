@@ -36,7 +36,8 @@ APIARY_EXPOSE APIARY_MODULE("_version") constexpr std::uint32_t full_version() {
     return EINSUMS_VERSION_FULL;
 }
 
-/// Returns the full einsums version.
+/// Returns the full einsums version with its tag, as in ``2.0.0a1``: the release's PEP 440 version,
+/// which Python reports as ``einsums.__version__``.
 APIARY_EXPOSE APIARY_MODULE("_version") EINSUMS_EXPORT std::string full_version_as_string();
 
 /// Returns the tag.
