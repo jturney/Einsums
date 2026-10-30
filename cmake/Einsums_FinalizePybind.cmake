@@ -450,8 +450,17 @@ function(einsums_finalize_pybind)
     # build tree's package directory so the generated files (rc.py, the .pyi stubs) come
     # with the checked-in ones. _core is installed as a target rather than copied, so it
     # gets an install RPATH reaching libEinsums in ${CMAKE_INSTALL_LIBDIR}.
+    #
+    # All of it is the EinsumsPy component, so a packager can install the Python package by
+    # itself (`cmake --install <build> --component EinsumsPy`) beside a C++ package that holds
+    # the rest. Not "Python": einsums_add_module names each module's component after the module,
+    # so that one already holds the Python module's C++ headers, which belong to the C++ package.
     set(_py_install_dir "${EINSUMS_INSTALL_PYMODDIR}/einsums")
-    install(TARGETS PyEinsums LIBRARY DESTINATION "${_py_install_dir}" RUNTIME DESTINATION "${_py_install_dir}")
+    install(
+        TARGETS PyEinsums
+        LIBRARY DESTINATION "${_py_install_dir}" COMPONENT EinsumsPy
+        RUNTIME DESTINATION "${_py_install_dir}" COMPONENT EinsumsPy
+    )
     file(RELATIVE_PATH _core_to_libdir "${CMAKE_INSTALL_PREFIX}/${_py_install_dir}"
          "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
     if(APPLE)
@@ -460,11 +469,12 @@ function(einsums_finalize_pybind)
         set_property(TARGET PyEinsums APPEND PROPERTY INSTALL_RPATH "\$ORIGIN/${_core_to_libdir}")
     else()
         # No RPATH on Windows: the DLLs go beside _core.pyd, as the build tree has them.
-        install(FILES "$<TARGET_RUNTIME_DLLS:PyEinsums>" DESTINATION "${_py_install_dir}")
+        install(FILES "$<TARGET_RUNTIME_DLLS:PyEinsums>" DESTINATION "${_py_install_dir}" COMPONENT EinsumsPy)
     endif()
     install(
         DIRECTORY "${_pkg_dir}/"
         DESTINATION "${_py_install_dir}"
+        COMPONENT EinsumsPy
         FILES_MATCHING
         PATTERN "*.py"
         PATTERN "*.pyi"
@@ -480,10 +490,14 @@ function(einsums_finalize_pybind)
     configure_file(
       "${CMAKE_SOURCE_DIR}/libs/Einsums/Python/tools/einsums.in" "${CMAKE_BINARY_DIR}/install-launcher/einsums" @ONLY
     )
-    install(PROGRAMS "${CMAKE_BINARY_DIR}/install-launcher/einsums" DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    install(PROGRAMS "${CMAKE_BINARY_DIR}/install-launcher/einsums" DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT EinsumsPy)
     if(WIN32)
         file(WRITE "${CMAKE_BINARY_DIR}/install-launcher/einsums.cmd" "${_einsums_cmd}")
-        install(PROGRAMS "${CMAKE_BINARY_DIR}/install-launcher/einsums.cmd" DESTINATION "${CMAKE_INSTALL_BINDIR}")
+        install(
+            PROGRAMS "${CMAKE_BINARY_DIR}/install-launcher/einsums.cmd"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}"
+            COMPONENT EinsumsPy
+        )
     endif()
 
     list(LENGTH _modules _count)
