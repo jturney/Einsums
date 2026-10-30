@@ -19,31 +19,39 @@
 # branch below takes that install when it is there and falls back to building the tagged release
 # from source when it is not - the same shape as the other Einsums_Setup*.cmake modules.
 #
-# The source fallback is where APIARY_BUILD_TOOL matters: a from-source build would otherwise drag
-# Clang/LLVM into a configuration that only wants the macros. An installed package ships whatever it
-# was built with (conda-forge's has the tool), so the option is simply ignored on that path. Our
-# 3.25 floor means CMP0077 is NEW, so this normal variable drives Apiary's option() directly.
+# APIARY_BUILD_TOOL decides both paths. An installed Apiary is two components, and conda-forge ships
+# them as two packages: apiary-annotations (the macros, no Clang/LLVM) and apiary (the tool, on top).
+# A configuration that generates code asks find_package for the tool component, so an install of the
+# annotations alone is passed over for the source build rather than accepted and then failing in
+# codegen. On the source fallback the option keeps Clang/LLVM out of a configuration that only wants
+# the macros. Our 3.25 floor means CMP0077 is NEW, so this normal variable drives Apiary's option()
+# directly.
 
 include(FetchContent)
 
+# Apiary's emitted C++ is tied to the Clang type printer it was built against, and its CMake helper
+# API is what einsums_finalize_pybind() calls into, so the range is bounded on both sides to stay on
+# 1.x. The floor is 1.3.1: 1.3 introduced the tool component and the annotations-only package, and
+# 1.3.1 fixed both for consumers (1.3.0 exported apiary::annotations with include directories that
+# do not exist, and left it defined after refusing a find_package for the tool). Since 1.2 it builds against LLVM 22 and 23, parses with the Clang
+# builtin headers of its own LLVM, and its C++ docs driver takes --exclude-header, which
+# docs/CMakeLists.txt passes; since 1.2.1 it gives a template kwarg its C++ default in Python, which
+# syev and heev rely on.
+set(_einsums_apiary_find_args 1.3.1...<2 CONFIG)
 if(EINSUMS_BUILD_PYTHON OR EINSUMS_WITH_DOCUMENTATION)
   set(APIARY_BUILD_TOOL ON)
+  list(APPEND _einsums_apiary_find_args COMPONENTS tool)
 else()
   set(APIARY_BUILD_TOOL OFF)
 endif()
 
 fetchcontent_declare(
   Apiary
-  URL https://github.com/Einsums/Apiary/archive/refs/tags/v1.2.1.tar.gz
-  URL_HASH SHA256=965be965aea3cc98ce0ceb706ae0a6d6780e3e5a4c0867d6008bdd360bb5c3db
-  # Apiary's emitted C++ is tied to the Clang type printer it was built against, and its CMake
-  # helper API is what einsums_finalize_pybind() calls into, so the range is bounded on both sides
-  # to stay on 1.x. The floor is 1.2.1: 1.2 builds against LLVM 22 and 23 (this fallback compiles
-  # against whatever LLVM the environment provides), parses with the Clang builtin headers of its
-  # own LLVM, and its C++ docs driver takes --exclude-header, which docs/CMakeLists.txt passes; 1.2.1
-  # gives a template kwarg its C++ default in Python, which syev and heev rely on. An older
-  # installed apiary is passed over, so the fallback builds 1.2.1 instead.
-  FIND_PACKAGE_ARGS 1.2.1...<2 CONFIG
+  URL https://github.com/Einsums/Apiary/archive/refs/tags/v1.3.1.tar.gz
+  URL_HASH SHA256=3edcd792091825280127e886774b808dfa84d2d2ec08d56b51dbff1976fe9918
+  # An installed apiary outside the range, or without the tool when it is needed, is passed over,
+  # and this builds 1.3.1 instead, against whatever LLVM the environment provides.
+  FIND_PACKAGE_ARGS ${_einsums_apiary_find_args}
 )
 
 fetchcontent_makeavailable(Apiary)
