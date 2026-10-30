@@ -87,16 +87,25 @@ function(einsums_finalize_pybind)
         endif()
     endforeach()
 
-    # spdlog is built from source (FetchContent) because conda ships no
-    # fmt-12-compatible spdlog, so its headers live in the build tree rather
-    # than the env include apiary already sees. Modules whose public headers
-    # include <spdlog/...> (e.g. Logging) would otherwise fail codegen with
-    # "spdlog/sinks/sink.h not found". Hand apiary that include dir and
-    # SPDLOG_FMT_EXTERNAL so it parses spdlog against the external fmt rather
-    # than spdlog's bundled copy.
+    # Modules whose public headers include <spdlog/...> (e.g. Logging) fail
+    # codegen with "spdlog/sinks/sink.h not found" unless apiary is told where
+    # spdlog is: in the build tree when it was built from source (FetchContent),
+    # or wherever the installed package's target says. Hand apiary that include
+    # dir and SPDLOG_FMT_EXTERNAL (an installed spdlog carries it as a usage
+    # requirement) so it parses spdlog against the external fmt rather than
+    # spdlog's bundled copy.
     set(_apiary_spdlog_flags "")
     if(spdlog_SOURCE_DIR)
         list(APPEND _apiary_spdlog_flags "-DSPDLOG_FMT_EXTERNAL" "-I${spdlog_SOURCE_DIR}/include")
+    elseif(TARGET spdlog::spdlog)
+        get_target_property(_spdlog_defs spdlog::spdlog INTERFACE_COMPILE_DEFINITIONS)
+        get_target_property(_spdlog_incs spdlog::spdlog INTERFACE_INCLUDE_DIRECTORIES)
+        foreach(_d IN LISTS _spdlog_defs)
+            list(APPEND _apiary_spdlog_flags "-D${_d}")
+        endforeach()
+        foreach(_i IN LISTS _spdlog_incs)
+            list(APPEND _apiary_spdlog_flags "-I${_i}")
+        endforeach()
     endif()
 
     # Emit one add_custom_command per opted-in module producing its

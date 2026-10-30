@@ -15,10 +15,10 @@ fetchcontent_declare(
   # older series: fmt 11.0.x trips a consteval FMT_STRING error under the new
   # clang, and fmt 11.1-11.2 added a detail::allocator that calls bare
   # malloc/free that fails against the libc++ which no longer exposes ::malloc
-  # through <cstdlib>. fmt 12 fixes both. spdlog is built from source against
-  # this external fmt (see Einsums_SetupSpdlog), because conda has no
-  # fmt-12-compatible spdlog. fmt ships an AnyNewerVersion config, so the range
-  # is bounded on both sides to stay on 12.x.
+  # through <cstdlib>. fmt 12 fixes both. spdlog uses this external fmt
+  # whether installed or built from source (see Einsums_SetupSpdlog). fmt ships
+  # an AnyNewerVersion config, so the range is bounded on both sides to stay on
+  # 12.x.
   # SYSTEM for the same reason as spdlog: when this falls back to a source
   # build, fmt's headers would otherwise be compiled at Einsums' warning level.
   # An fmt found through find_package is an imported target and already system.

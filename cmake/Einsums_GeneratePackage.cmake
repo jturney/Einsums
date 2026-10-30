@@ -57,8 +57,8 @@ install(
   COMPONENT cmake
 )
 
-# Install dir - SPDLOG_INSTALL lands the vendored spdlog under the Einsums root,
-# which EinsumsConfig locates relative to itself so the tree stays relocatable.
+# Install dir - spdlog is under the Einsums root, put there by SPDLOG_INSTALL or by the package
+# that provided it, which EinsumsConfig locates relative to itself so the tree stays relocatable.
 set(EINSUMS_BUILD_TREE_SPDLOG_DIR "")
 set(EINSUMS_BUILD_TREE_STRIPES_DIR "")
 set(EINSUMS_BUILD_TREE_WAGGLE_DIR "")
@@ -66,12 +66,17 @@ configure_file(
   cmake/templates/EinsumsConfig.cmake.in
   "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/EinsumsConfig.cmake" ESCAPE_QUOTES @ONLY
 )
-# ... and the build dir, where that same spdlog is off in FetchContent's _deps
-# instead. Nothing puts _deps on a consumer's search path, so without this the
-# build-tree export falls through to whatever spdlog the surrounding environment
-# ships - which is how an out-of-tree stage module ends up compiling against a
-# different spdlog than the one already inside the libEinsums it links.
-set(EINSUMS_BUILD_TREE_SPDLOG_DIR "${spdlog_BINARY_DIR}")
+# ... and the build dir, where a spdlog built from source is off in FetchContent's
+# _deps instead, and an installed one is wherever find_package found it. Nothing
+# puts _deps on a consumer's search path, so without this the build-tree export
+# falls through to whatever spdlog the surrounding environment ships - which is
+# how an out-of-tree stage module ends up compiling against a different spdlog
+# than the one libEinsums was built with.
+if(spdlog_BINARY_DIR)
+  set(EINSUMS_BUILD_TREE_SPDLOG_DIR "${spdlog_BINARY_DIR}")
+else()
+  set(EINSUMS_BUILD_TREE_SPDLOG_DIR "${spdlog_DIR}")
+endif()
 # Stripes likewise: a fetched one's config is in its binary directory, an installed one's where
 # find_package found it.
 if(stripes_BINARY_DIR)

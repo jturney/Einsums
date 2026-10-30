@@ -35,9 +35,10 @@ dependencies:
  - fftw
  # clang 22 / macOS libc++ needs fmt 12 (11.0.x fails consteval, 11.1+ fails the malloc allocator)
  - fmt >=12,<13
- # No spdlog: Einsums builds it from source against fmt 12 (Einsums_SetupSpdlog), because conda has
- # none that is fmt-12-compatible. Installing one anyway is actively harmful - the conda compiler
- # wrapper puts $PREFIX/include on the search path, so its headers shadow the ones Einsums vendored.
+ # The exact version Einsums_SetupSpdlog pins (EINSUMS_SPDLOG_VERSION): any other is passed over
+ # and spdlog is quietly built from source instead. conda-forge builds it against fmt 12.1, which
+ # holds fmt there too.
+ - spdlog 1.17.0
  # HDF5
  # * zlib brings headers; hdf5 package only bring libzlib
  - hdf5

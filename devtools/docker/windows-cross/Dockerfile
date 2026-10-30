@@ -47,6 +47,10 @@ RUN arch="$(uname -m)" \
 # filter, because the fetch takes the newest build and the newest is currently
 # 3.4.1 - one of the two releases Einsums_SetupAllocator refuses outright. A
 # sysroot resolving to a refused version fails this leg at configure time.
+#
+# fmt is held to 12.1 for spdlog, which Einsums now takes from here: conda-forge
+# builds spdlog 1.17.0 against fmt 12.1, and the newest fmt would put 12.2
+# headers in front of a spdlog import library that links 12.1.
 COPY fetch-conda-win64.sh gen-implibs.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/fetch-conda-win64.sh /usr/local/bin/gen-implibs.sh \
     && fetch-conda-win64.sh /opt/winlibs \
@@ -57,7 +61,7 @@ RUN chmod +x /usr/local/bin/fetch-conda-win64.sh /usr/local/bin/gen-implibs.sh \
         hdf5 \
         llvm-openmp \
         zlib \
-        fmt \
+        fmt:-12.1. \
         spdlog \
         catch2 \
         mimalloc:-3.3. \

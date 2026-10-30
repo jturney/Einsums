@@ -18,16 +18,15 @@ set(EINSUMS_SPDLOG_VERSION 1.17.0)
 set(SPDLOG_INSTALL TRUE)
 set(SPDLOG_FMT_EXTERNAL TRUE)
 
-# Build spdlog as a STATIC library folded into libEinsums instead of shipping a
-# separate shared spdlog. A shared spdlog on Windows lands in
-# build/_deps/spdlog-build/, which is neither beside the test executables nor on
-# PATH, so every test exe fails to start with 0xC0000135 (STATUS_DLL_NOT_FOUND).
-# Static removes that runtime dependency entirely.
+# An installed spdlog of exactly this version is used when there is one (FIND_PACKAGE_ARGS below).
+# A package build needs that: conda-forge ships spdlog, and a package that installed its own copy
+# of spdlog's headers and config would clobber it. conda-forge's spdlog is shared and built against
+# its fmt 12, and is the copy every other package in the environment links.
 #
-# spdlog is always built from source (no FIND_PACKAGE_ARGS): conda-forge ships
-# only a shared spdlog, so preferring the system package would defeat the static
-# choice on the platforms that have it. Building from source keeps the
-# static/shared decision ours on every platform.
+# Otherwise it is built from source as a STATIC library folded into libEinsums. A shared spdlog
+# built here on Windows lands in build/_deps/spdlog-build/, which is neither beside the test
+# executables nor on PATH, so every test exe fails to start with 0xC0000135
+# (STATUS_DLL_NOT_FOUND). Static removes that runtime dependency entirely.
 set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 block()
   # spdlog's add_library() honors BUILD_SHARED_LIBS; force it off inside this
@@ -69,6 +68,9 @@ block()
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
     GIT_TAG v${EINSUMS_SPDLOG_VERSION}
     SYSTEM
+    # EXACT for the reason EinsumsConfig.cmake demands it of consumers: Logging.hpp is a public
+    # header, so the spdlog Einsums compiles against is part of its interface.
+    FIND_PACKAGE_ARGS ${EINSUMS_SPDLOG_VERSION} EXACT CONFIG
   )
   fetchcontent_makeavailable(spdlog)
 endblock()
