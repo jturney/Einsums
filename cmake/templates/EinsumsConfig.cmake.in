@@ -126,7 +126,7 @@ else()
   set(Waggle_ROOT "${_einsums_root_dir}")
 endif()
 unset(_einsums_waggle_dir)
-einsums_find_package(Waggle 0.1 REQUIRED)
+einsums_find_package(Waggle 1.0 REQUIRED)
 
 # Einsums/Logging.hpp is a PUBLIC header that includes <spdlog/...>, so a
 # consumer compiles spdlog calls of its own - and those have to be compiled

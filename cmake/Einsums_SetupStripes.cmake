@@ -53,7 +53,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 fetchcontent_declare(
   Stripes
   GIT_REPOSITORY https://github.com/Einsums/Stripes.git
-  GIT_TAG bc02978f33a902e233b2333c80ab1d6724ad9608 # main, 2026-10-02
+  GIT_TAG 00c5eafa205c8b9993bdaced3af80e54827d13f7 # v1.0.0
   # Its headers are compiled at Stripes' own warning level, not Einsums'.
   SYSTEM
   FIND_PACKAGE_ARGS
