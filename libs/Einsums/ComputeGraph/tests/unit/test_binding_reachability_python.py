@@ -119,15 +119,16 @@ def _exposed_classes():
 def _constructible(cls):
     """Whether a caller can build one, whatever arguments it takes.
 
-    pybind says "No constructor defined!" for a class with no exposed init and
-    "incompatible constructor arguments" for one whose init wants something
-    else, and only the first is unreachable.
+    The binding library says "no constructor defined!" for a class with no
+    exposed init (pybind11 capitalizes it, nanobind does not) and something
+    else - "incompatible constructor arguments" - for one whose init wants
+    other arguments, and only the first is unreachable.
     """
     try:
         cls()
         return True
     except TypeError as error:
-        return "No constructor defined" not in str(error)
+        return "no constructor defined" not in str(error).lower()
     except Exception:
         return True
 

@@ -48,13 +48,4 @@ if(EINSUMS_BUILD_PYTHON)
             "Einsums_SetupApiary build it from source."
         )
     endif()
-
-    if(NOT TARGET pybind11::module)
-        message(FATAL_ERROR "EINSUMS_BUILD_PYTHON=ON requires pybind11.")
-    endif()
-
-    # Phase 5 ships per-module Python extensions: each einsums_add_module that
-    # passes ``PYBIND`` produces a target ``PyEinsums_<modulename>`` linking
-    # the codegen output. Phase 7 will add a hand-written EinsumAdapter.cpp
-    # here for the einsum runtime adapter.
 endif()

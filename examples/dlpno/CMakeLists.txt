@@ -94,7 +94,16 @@ endif()
 #
 # Not under cross-compilation: the module must import into the build host's
 # Python, which a cross-compiled binary cannot.
-if(EINSUMS_BUILD_PYTHON AND NOT CMAKE_CROSSCOMPILING)
+#
+# Not under APIARY_BACKEND=nanobind either: cpp/ is the output of
+# 'einsums stages promote', which writes pybind11 casters and bindings, and a
+# stage module has to be bound with the library _core was. dlpno.stages falls
+# back to its Python backends when the module is absent, so the example and its
+# tests still run.
+if(EINSUMS_BUILD_PYTHON AND NOT CMAKE_CROSSCOMPILING AND NOT APIARY_BACKEND STREQUAL "pybind11")
+  message(STATUS "examples/dlpno: not building the compiled stage module; 'einsums stages promote' "
+                 "writes pybind11 and this build binds _core with ${APIARY_BACKEND}")
+elseif(EINSUMS_BUILD_PYTHON AND NOT CMAKE_CROSSCOMPILING)
   include(ExternalProject)
 
   # CMAKE_ARGS entries are split on semicolons, so a list-valued prefix path

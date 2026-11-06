@@ -355,6 +355,9 @@ function(einsums_finalize_pybind)
 
     apiary_aggregate_extension(
         NAME PyEinsums
+        # The build type's optimization level, not nanobind's default of size: the binding TUs
+        # instantiate Einsums kernels (the dtype-dispatched einsum, the element-wise transforms).
+        NOMINSIZE
         MAIN "${_main_cpp}"
         BINDINGS ${_generated_tus}
         MODULES ${_modules}
@@ -436,10 +439,11 @@ function(einsums_finalize_pybind)
     target_link_libraries(PyEinsums PRIVATE Einsums)
     # ``einsums_private_flags`` carries project-wide compile-time switches the
     # per-module targets pick up via einsums_add_module. pybind11_add_module
-    # creates a fresh target that does not link against it transitively, so
-    # without this PyEinsums compiles with raw conda flags and trips warnings
-    # our private-flags target was set up to silence. Adding it here mirrors
-    # what einsums_add_executable does for ordinary in-tree targets.
+    # and nanobind_add_module create a fresh target that does not link against
+    # it transitively, so without this PyEinsums compiles with raw conda flags
+    # and trips warnings our private-flags target was set up to silence. Adding
+    # it here mirrors what einsums_add_executable does for ordinary in-tree
+    # targets.
     if(TARGET einsums_private_flags)
         target_link_libraries(PyEinsums PRIVATE einsums_private_flags)
     endif()

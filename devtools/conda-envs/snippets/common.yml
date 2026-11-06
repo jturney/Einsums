@@ -31,11 +31,11 @@ dependencies:
   # cmake/Einsums_SetupApiary.cmake builds it from source when it is absent,
   # which drags in the whole Clang/LLVM dev stack - so the entry is what keeps
   # a plain build cheap. Bounded on both sides: apiary's emitted C++ and its
-  # CMake helper API are 1.x contracts. 1.3.1 is the floor because the Python
-  # and docs builds ask find_package(Apiary) for its tool component, which 1.3
-  # introduced and 1.3.1 fixed; an older apiary is passed over for a source
-  # build.
-  - apiary >=1.3.1,<2
+  # CMake helper API are 1.x contracts. 1.4 is the floor, as in
+  # cmake/Einsums_SetupApiary.cmake: it finds the Python-binding library
+  # (apiary_find_backend) and provides <apiary/Python.hpp>, which the Python
+  # build relies on; an older apiary is passed over for a source build.
+  - apiary >=1.4,<2
   - catch2
   - fftw
   - fmt >=12,<13  # clang 22 / macOS libc++ needs fmt 12 (11.0.x fails consteval, 11.1+ fails the malloc allocator)
@@ -68,6 +68,9 @@ dependencies:
   # `COMPONENTS Interpreter Development`, which is where the fallback comes from.
   - python 3.14.* *_cp314
   - pybind11
+  # The other binding library, for -DAPIARY_BACKEND=nanobind; 3.0 is the floor
+  # apiary enforces.
+  - nanobind >=3
   - pytest
   - pytest-xdist
   - hypothesis >=6

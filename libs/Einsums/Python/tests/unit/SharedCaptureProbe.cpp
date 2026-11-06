@@ -18,10 +18,9 @@
 #include <Einsums/Python/StageModule.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
-#include <pybind11/pybind11.h>
 #include <string>
 
-namespace py = pybind11;
+namespace py = apiary::python::py;
 namespace cg = einsums::compute_graph;
 
 namespace {
@@ -46,7 +45,7 @@ void stage_shared_capture_einsum(einsums::RuntimeTensor<double> const &A, einsum
 
 } // namespace
 
-PYBIND11_MODULE(einsums_shared_capture_probe, m) {
+APIARY_EXTENSION_MODULE(einsums_shared_capture_probe, m) {
     EINSUMS_STAGE_MODULE(m, "einsums_shared_capture_probe");
 
     m.def("stage_shared_capture_einsum", &stage_shared_capture_einsum, py::arg("A"), py::arg("B"), py::arg("C"),

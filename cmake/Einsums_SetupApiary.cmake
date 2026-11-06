@@ -31,13 +31,16 @@ include(FetchContent)
 
 # Apiary's emitted C++ is tied to the Clang type printer it was built against, and its CMake helper
 # API is what einsums_finalize_pybind() calls into, so the range is bounded on both sides to stay on
-# 1.x. The floor is 1.3.1: 1.3 introduced the tool component and the annotations-only package, and
-# 1.3.1 fixed both for consumers (1.3.0 exported apiary::annotations with include directories that
-# do not exist, and left it defined after refusing a find_package for the tool). Since 1.2 it builds against LLVM 22 and 23, parses with the Clang
+# 1.x. The floor is 1.4.0, the first release that finds the Python-binding library for its consumers
+# (apiary_find_backend, APIARY_BACKEND) and gives hand-written binding code <apiary/Python.hpp>,
+# which einsums_finalize_pybind and the Python module's sources rely on. 1.3 introduced the tool
+# component and the annotations-only package, and 1.3.1 fixed both for consumers (1.3.0 exported
+# apiary::annotations with include directories that do not exist, and left it defined after refusing
+# a find_package for the tool). Since 1.2 it builds against LLVM 22 and 23, parses with the Clang
 # builtin headers of its own LLVM, and its C++ docs driver takes --exclude-header, which
 # docs/CMakeLists.txt passes; since 1.2.1 it gives a template kwarg its C++ default in Python, which
 # syev and heev rely on.
-set(_einsums_apiary_find_args 1.3.1...<2 CONFIG)
+set(_einsums_apiary_find_args 1.4.0...<2 CONFIG)
 if(EINSUMS_BUILD_PYTHON OR EINSUMS_WITH_DOCUMENTATION)
   set(APIARY_BUILD_TOOL ON)
   list(APPEND _einsums_apiary_find_args COMPONENTS tool)
@@ -47,10 +50,10 @@ endif()
 
 fetchcontent_declare(
   Apiary
-  URL https://github.com/Einsums/Apiary/archive/refs/tags/v1.3.1.tar.gz
-  URL_HASH SHA256=3edcd792091825280127e886774b808dfa84d2d2ec08d56b51dbff1976fe9918
+  URL https://github.com/Einsums/Apiary/archive/refs/tags/v1.4.1.tar.gz
+  URL_HASH SHA256=a1c857b2219db536bcd4ccf85a50d6ed11e18bfbef10788ef79e66cf7b4431d9
   # An installed apiary outside the range, or without the tool when it is needed, is passed over,
-  # and this builds 1.3.1 instead, against whatever LLVM the environment provides.
+  # and this builds 1.4.1 instead, against whatever LLVM the environment provides.
   FIND_PACKAGE_ARGS ${_einsums_apiary_find_args}
 )
 

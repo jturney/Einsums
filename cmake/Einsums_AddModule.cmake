@@ -445,15 +445,14 @@ function(einsums_add_module libname modulename)
   endif()
 
   # ----------------------------------------------------------------------
-  # Python autogen hook (Phase 5).
+  # Python autogen hook.
   #
   # When the module opts in via ``PYBIND`` and EINSUMS_BUILD_PYTHON is
-  # set, run apiary on the module's HEADERS to emit a pybind11
-  # binding TU into ``${BIN}/generated/pybind/<libname>_<modulename>_pybind.cpp``,
-  # then build that into a Python extension named
-  # ``PyEinsums_<modulename>`` linked against the module's library so the
-  # bound symbols resolve. This runs at build time (not configure time)
-  # so editing a header retriggers regeneration on the next build.
+  # set, record the module's HEADERS for einsums_finalize_pybind, which
+  # runs apiary on them to emit binding TUs for the library apiary_find_backend
+  # chose into ``${BIN}/generated/pybind/`` and builds every module's TUs into
+  # the one ``einsums._core`` extension. The codegen runs at build time (not
+  # configure time), so editing a header retriggers it on the next build.
   # ----------------------------------------------------------------------
   if(${modulename}_PYBIND AND EINSUMS_BUILD_PYTHON)
     if(NOT TARGET apiary::apiary)

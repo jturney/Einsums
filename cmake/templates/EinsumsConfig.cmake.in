@@ -223,13 +223,18 @@ if (@EINSUMS_BUILD_PYTHON@)
           COMPONENTS Interpreter Development
           REQUIRED
   )
-  # EXACT, and exported so a stage module's own CMakeLists can ask for the same
-  # one: an out-of-tree module receives RuntimeTensors that einsums._core
-  # created, and pybind11 only shares types between modules that agree on their
-  # internals blob. Disagree and the module gets a private type registry, so the
-  # failure surfaces as "incompatible function arguments" at call time rather
-  # than as anything diagnosable at load time.
-  set(Einsums_PYBIND11_VERSION "@EINSUMS_PYBIND11_VERSION@")
+  # The binding library einsums._core was built with, its exact release, and
+  # whether it was built against the stable ABI, exported so a stage module is
+  # built the same way: an out-of-tree module receives RuntimeTensors that
+  # einsums._core created, and both pybind11 and nanobind share types only
+  # between modules whose internals agree. nanobind's internals identifier
+  # includes the stable-ABI mode, so that has to match too. Disagree and the
+  # module gets a private type registry, and the failure surfaces as
+  # "incompatible function arguments" at call time rather than as anything
+  # diagnosable at load time.
+  set(Einsums_PYTHON_BACKEND "@APIARY_BACKEND@")
+  set(Einsums_PYTHON_BACKEND_VERSION "@APIARY_BACKEND_VERSION@")
+  set(Einsums_PYTHON_STABLE_ABI @APIARY_STABLE_ABI@)
   # The language level Einsums itself was compiled at, exported so a stage
   # module can match it without guessing. Not cosmetic: a module compiled at a
   # different standard folds a different __cplusplus into config_fingerprint()
@@ -237,11 +242,15 @@ if (@EINSUMS_BUILD_PYTHON@)
   # dlopen outright on a template instantiation this library never emitted,
   # which happens before any handshake gets to explain itself.
   set(Einsums_CXX_STANDARD "@EINSUMS_WITH_CXX_STANDARD@")
-  if(Einsums_PYBIND11_VERSION)
-    find_package(pybind11 ${Einsums_PYBIND11_VERSION} EXACT REQUIRED)
-  else()
-    find_package(pybind11 REQUIRED)
+  # apiary finds the library and builds stage modules with it
+  # (einsums_add_stage_module); the Apiary found above may be one that only
+  # provides the annotations, but 1.4 ships these helpers with them.
+  if(NOT COMMAND apiary_find_backend)
+    message(FATAL_ERROR "Einsums: building against its Python package needs Apiary 1.4 or newer, "
+                        "which finds the binding library; the Apiary found (${Apiary_DIR}) predates it.")
   endif()
+  set(APIARY_STABLE_ABI ${Einsums_PYTHON_STABLE_ABI})
+  apiary_find_backend(BACKEND ${Einsums_PYTHON_BACKEND} VERSION ${Einsums_PYTHON_BACKEND_VERSION} EXACT)
 endif ()
 
 # A CUDA build's consumers need the CUDA toolkit's imported targets.

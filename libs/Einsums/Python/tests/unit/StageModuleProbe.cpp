@@ -29,14 +29,13 @@
 
 #include <Einsums/Python/StageModule.hpp>
 
-#include <pybind11/pybind11.h>
 #include <string>
 
 #if !defined(STAGE_PROBE_NAME)
 #    error "STAGE_PROBE_NAME must name the module"
 #endif
 
-namespace py = pybind11;
+namespace py = apiary::python::py;
 
 #define STAGE_PROBE_STR2(x) #x
 #define STAGE_PROBE_STR(x)  STAGE_PROBE_STR2(x)
@@ -52,7 +51,7 @@ int stage_probe_add(int a, int b) {
 
 } // namespace
 
-PYBIND11_MODULE(STAGE_PROBE_NAME, m) {
+APIARY_EXTENSION_MODULE(STAGE_PROBE_NAME, m) {
     EINSUMS_STAGE_MODULE(m, STAGE_PROBE_STR(STAGE_PROBE_NAME));
 
     m.def("stage_probe_add", &stage_probe_add, "Trivial stage entry point.");

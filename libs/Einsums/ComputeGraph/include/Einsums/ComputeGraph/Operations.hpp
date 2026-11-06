@@ -32,11 +32,12 @@
 #include <fmt/format.h>
 
 // When this header is compiled into the Python bindings (PyEinsums target),
-// pull in pybind11 so element_transform_python can translate a Python callback's
-// exception under the GIL. The generated binding TU includes pybind11 only after
-// this header, so we can't rely on PYBIND11_VERSION_MAJOR being defined here.
+// pull in the binding library so element_transform_python can translate a
+// Python callback's exception under the GIL. The generated binding TU includes
+// that library only after this header, so we can't rely on its version macros
+// being defined here.
 #if defined(PyEinsums_EXPORTS)
-#    include <pybind11/pybind11.h>
+#    include <apiary/Python.hpp>
 #endif
 
 #include <algorithm>
@@ -1390,19 +1391,19 @@ void element_transform_python(TensorType *C, std::function<typename TensorType::
         size_t const n    = target->size();
 #if defined(PyEinsums_EXPORTS)
         // The callback is a Python callable. Hold the GIL across the whole loop
-        // (cheaper than pybind's per-call acquire) and, crucially, translate any
-        // Python exception to a plain C++ exception *while the GIL is held*. If a
-        // pybind11::error_already_set were allowed to escape onto a parallel
+        // (cheaper than the binding's per-call acquire) and, crucially, translate
+        // any Python exception to a plain C++ exception *while the GIL is held*. If
+        // a python::PythonError were allowed to escape onto a parallel
         // executor's worker thread, its later off-GIL destruction corrupts the
         // CPython thread state and crashes at interpreter finalization. A
         // std::runtime_error carries safely across threads (the executors then
         // propagate it to the waiter, which re-raises it as a Python RuntimeError).
-        pybind11::gil_scoped_acquire const gil;
+        ::apiary::python::py::gil_scoped_acquire const gil;
         try {
             for (size_t i = 0; i < n; ++i) {
                 data[i] = unary_op(data[i]);
             }
-        } catch (pybind11::error_already_set const &e) {
+        } catch (::apiary::python::PythonError const &e) {
             throw std::runtime_error(std::string("element_transform callback raised: ") + e.what());
         }
 #else

@@ -81,12 +81,15 @@ endfunction()
 #:    Three things it does that are worth knowing rather than reproducing by
 #:    hand.
 #:
-#:    **pybind11 is already found.** ``find_package(Einsums)`` locates it at the
-#:    exact version ``einsums._core`` was built with, because pybind11 only
-#:    shares types between modules whose internals blob agrees; disagree and the
-#:    module gets a private type registry and the failure surfaces as
+#:    **The binding library is already found.** ``find_package(Einsums)``
+#:    locates the one ``einsums._core`` was built with (``Einsums_PYTHON_BACKEND``,
+#:    pybind11 or nanobind) at the exact version, and in the stable-ABI mode,
+#:    it was built with, because
+#:    both only share types between modules whose internals agree; disagree and
+#:    the module gets a private type registry and the failure surfaces as
 #:    "incompatible function arguments" at call time. A stage module repeating
-#:    the ``find_package(pybind11 ... EXACT)`` line is harmless but redundant.
+#:    that ``find_package(... EXACT)`` line is harmless but redundant. Write the
+#:    module against ``<apiary/Python.hpp>`` and it builds under either.
 #:
 #:    **The language standard is matched to the library's, not inherited from
 #:    the compiler default.** A mismatch folds a different ``__cplusplus`` into
@@ -122,12 +125,11 @@ function(einsums_add_stage_module name)
     )
   endif()
 
-  if(NOT COMMAND pybind11_add_module)
+  if(NOT Einsums_PYTHON_BACKEND)
     message(
       FATAL_ERROR
-        "einsums_add_stage_module(${name}): pybind11_add_module is not defined. Call "
-        "find_package(Einsums) first - it locates pybind11 at the exact version einsums._core "
-        "was built with."
+        "einsums_add_stage_module(${name}): this Einsums was built without its Python package. "
+        "Call find_package(Einsums) on one built with EINSUMS_BUILD_PYTHON=ON."
     )
   endif()
 
@@ -148,7 +150,10 @@ function(einsums_add_stage_module name)
         CACHE STRING "Defaulted by einsums_add_stage_module; set explicitly to override" FORCE)
   endif()
 
-  pybind11_add_module(${name} MODULE ${_sm_SOURCES})
+  # With the library, release and ABI mode einsums._core was built with, which find_package(Einsums)
+  # selected. NOMINSIZE: a stage module exists to be fast, and nanobind would otherwise build it for
+  # size.
+  apiary_add_extension_module(${name} BACKEND ${Einsums_PYTHON_BACKEND} NOMINSIZE ${_sm_SOURCES})
   target_link_libraries(${name} PRIVATE Einsums::Einsums ${_sm_LINK_LIBRARIES})
 
   if(_sm_INCLUDE_DIRS)

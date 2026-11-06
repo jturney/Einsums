@@ -839,10 +839,6 @@ if(EINSUMS_BUILD_PYTHON OR EINSUMS_BUILD_PYTHON MATCHES "3(\.[0-9]+)*")
     find_package(Python 3.10 COMPONENTS Interpreter Development REQUIRED)
   endif()
 
-  include(Einsums_SetupPybind11)
-
-  find_package(pybind11)
-
   einsums_option(
     EINSUMS_INSTALL_PYMODDIR
     STRING
@@ -1025,6 +1021,9 @@ set(CMAKE_DEBUG_POSTFIX "d")
 # unit, including in a pure-C++ (EINSUMS_BUILD_PYTHON=OFF) build. See cmake/Einsums_SetupApiary.cmake
 # for the split between the header-only contract and the codegen executable.
 include(Einsums_SetupApiary)
+# The Python-binding library, found with apiary's helpers now that they are here; before libs/,
+# whose test probes and _core are built with it.
+include(Einsums_SetupPythonBackend)
 
 # libs/Einsums/Python is now in the regular _Einsums_modules list in libs/Einsums/CMakeLists.txt —
 # it's a header-only module that must be installed unconditionally (its Annotations.hpp is
