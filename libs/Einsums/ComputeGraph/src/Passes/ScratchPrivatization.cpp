@@ -154,16 +154,7 @@ bool ScratchPrivatization::transform(Graph &graph) {
 
 void ScratchPrivatization::run_recursive(Graph &graph) {
     for (auto &node : graph.nodes()) {
-        if (auto *loop = node.op_data.get_if<LoopDescriptor>(); loop != nullptr && loop->body) {
-            run_recursive(*loop->body);
-        } else if (auto *cond = node.op_data.get_if<ConditionalDescriptor>(); cond != nullptr) {
-            if (cond->then_branch) {
-                run_recursive(*cond->then_branch);
-            }
-            if (cond->else_branch) {
-                run_recursive(*cond->else_branch);
-            }
-        }
+        for_each_child_graph(node, [this](Graph &child) { run_recursive(child); }, /*include_setup=*/false);
     }
     privatize_one_graph(graph);
 }

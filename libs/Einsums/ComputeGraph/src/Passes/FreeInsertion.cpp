@@ -80,11 +80,10 @@ struct DescendantFreeable {
 // belongs in the parent *after* the outermost enclosing loop, never inside the
 // body, which would free-then-reuse each iteration.
 //
-// The descent is written out rather than delegated to ``Graph::for_each_subgraph``,
-// which visits every sub-graph including a Setup body. A setup body's storage must
-// not be reclaimed here for the reason the Part B comment gives, and the visitor
-// cannot see which node handed it the graph, so the exclusion has to happen where
-// the descent is chosen.
+// The descent skips Setup bodies, which ``Graph::for_each_subgraph`` would visit. A
+// setup body's storage must not be reclaimed here for the reason the Part B comment
+// gives, and a whole-tree visitor cannot see which node handed it the graph, so the
+// exclusion happens one level at a time, where the descent is chosen.
 void collect_freeable(Graph &graph, std::vector<DescendantFreeable> &out) {
     for (auto const &[tid, handle] : graph.tensors_map()) {
         if (!handle.is_intermediate || !handle.release_fn || handle.aliases != 0) {
@@ -102,18 +101,7 @@ void collect_freeable(Graph &graph, std::vector<DescendantFreeable> &out) {
     }
 
     for (auto &node : graph.nodes()) {
-        if (auto *loop = node.op_data.get_if<LoopDescriptor>()) {
-            if (loop->body) {
-                collect_freeable(*loop->body, out);
-            }
-        } else if (auto *cond = node.op_data.get_if<ConditionalDescriptor>()) {
-            if (cond->then_branch) {
-                collect_freeable(*cond->then_branch, out);
-            }
-            if (cond->else_branch) {
-                collect_freeable(*cond->else_branch, out);
-            }
-        }
+        for_each_child_graph(node, [&out](Graph &child) { collect_freeable(child, out); }, /*include_setup=*/false);
     }
 }
 
@@ -226,7 +214,7 @@ bool FreeInsertion::transform(Graph &graph) {
     // intermediate reachable inside it (at any nesting depth) gets a single
     // Free emitted in the parent immediately after the owning node.
     for (size_t i = 0; i < nodes.size(); i++) {
-        Node const &node = nodes[i];
+        Node &node = nodes[i];
 
         auto collect_from = [&](Graph &child) {
             std::vector<DescendantFreeable> found;
@@ -252,18 +240,7 @@ bool FreeInsertion::transform(Graph &graph) {
         // never fills. Leaving a setup body's own scratch alone costs one allocation that
         // outlives the fitting and buys the guarantee that nothing a skipped node was
         // supposed to write is missing.
-        if (auto const *loop = node.op_data.get_if<LoopDescriptor>()) {
-            if (loop->body) {
-                collect_from(*loop->body);
-            }
-        } else if (auto const *cond = node.op_data.get_if<ConditionalDescriptor>()) {
-            if (cond->then_branch) {
-                collect_from(*cond->then_branch);
-            }
-            if (cond->else_branch) {
-                collect_from(*cond->else_branch);
-            }
-        }
+        for_each_child_graph(node, collect_from, /*include_setup=*/false);
     }
 
     // The size floor bounds what is held, not what each tensor saves. One tensor under it saves a

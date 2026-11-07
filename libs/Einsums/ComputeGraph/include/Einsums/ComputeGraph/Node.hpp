@@ -1672,9 +1672,10 @@ inline constexpr std::string_view any_named_key = "*";
  * @param[in] node The node to look inside. A node holding any other descriptor has no child
  *            graph and is visited zero times.
  * @param[in] visit Called once per child graph that exists.
- * @param[in] include_setup False to skip a @c Setup body. For the one caller whose walk order
- *            has to agree with a component that descends into loops and conditionals only;
- *            see @ref Graph::finish_replay_thread_plan.
+ * @param[in] include_setup False to skip a @c Setup body, visiting only loop bodies and
+ *            conditional branches. For a walk whose order has to agree with a component that
+ *            descends into those only (see @ref Graph::finish_replay_thread_plan), or one that
+ *            must not touch what a setup body owns, since a replay may skip that body.
  *
  * Which descriptors carry a sub-graph, and in what order, was written out at seven sites
  * across three files. The order is part of the contract rather than a detail: the graph-IR

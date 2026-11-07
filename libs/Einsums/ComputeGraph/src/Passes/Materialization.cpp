@@ -151,22 +151,13 @@ void collect_deferred(Graph &graph, std::vector<DeferredEntry> &out, std::vector
         }
     }
     for (auto &node : graph.nodes()) {
-        if (auto *loop = node.op_data.get_if<LoopDescriptor>()) {
-            if (loop->body) {
-                collect_deferred(*loop->body, out, nested_setups);
-            }
-        } else if (auto *cond = node.op_data.get_if<ConditionalDescriptor>()) {
-            if (cond->then_branch) {
-                collect_deferred(*cond->then_branch, out, nested_setups);
-            }
-            if (cond->else_branch) {
-                collect_deferred(*cond->else_branch, out, nested_setups);
-            }
-        } else if (auto *setup = node.op_data.get_if<SetupDescriptor>()) {
+        if (auto *setup = node.op_data.get_if<SetupDescriptor>()) {
             if (setup->body) {
                 nested_setups.emplace_back(setup->body.get(), node.label);
             }
+            continue;
         }
+        for_each_child_graph(node, [&](Graph &child) { collect_deferred(child, out, nested_setups); }, /*include_setup=*/false);
     }
 }
 
@@ -482,9 +473,9 @@ bool Materialization::transform(Graph &graph) {
     // setup-body arm rather than hoisted, see collect_deferred.
     std::vector<std::pair<Graph *, std::string>> nested_setups;
 
-    auto const &parent_nodes = graph.nodes();
+    auto &parent_nodes = graph.nodes();
     for (size_t i = 0; i < parent_nodes.size(); i++) {
-        Node const &node = parent_nodes[i];
+        Node &node = parent_nodes[i];
 
         auto collect_from = [&](Graph &child) {
             std::vector<DeferredEntry> found;
@@ -497,18 +488,7 @@ bool Materialization::transform(Graph &graph) {
             }
         };
 
-        if (auto const *loop = node.op_data.get_if<LoopDescriptor>()) {
-            if (loop->body) {
-                collect_from(*loop->body);
-            }
-        } else if (auto const *cond = node.op_data.get_if<ConditionalDescriptor>()) {
-            if (cond->then_branch) {
-                collect_from(*cond->then_branch);
-            }
-            if (cond->else_branch) {
-                collect_from(*cond->else_branch);
-            }
-        }
+        for_each_child_graph(node, collect_from, /*include_setup=*/false);
     }
 
     if (own_deferred.empty() && hoists.empty()) {
@@ -669,26 +649,18 @@ bool Materialization::transform(Graph &graph) {
         if (auto const *desc = node.op_data.get_if<SetupDescriptor>()) {
             return (desc->body && body_writes(*desc->body, ptr)) ? desc->body.get() : nullptr;
         }
-        auto search = [&](Graph &child) -> Graph * {
-            for (auto const &inner : child.nodes()) {
-                if (Graph *found = setup_below(inner, ptr); found != nullptr) {
-                    return found;
+        Graph *found = nullptr;
+        for_each_child_graph(
+            node,
+            [&](Graph const &child) {
+                for (auto const &inner : child.nodes()) {
+                    if (found == nullptr) {
+                        found = setup_below(inner, ptr);
+                    }
                 }
-            }
-            return nullptr;
-        };
-        if (auto const *loop = node.op_data.get_if<LoopDescriptor>()) {
-            return loop->body ? search(*loop->body) : nullptr;
-        }
-        if (auto const *cond = node.op_data.get_if<ConditionalDescriptor>()) {
-            if (cond->then_branch) {
-                if (Graph *found = search(*cond->then_branch); found != nullptr) {
-                    return found;
-                }
-            }
-            return cond->else_branch ? search(*cond->else_branch) : nullptr;
-        }
-        return nullptr;
+            },
+            /*include_setup=*/false);
+        return found;
     };
     //
     // The setup is found by SCANNING the node list in order rather than by looking at the node at

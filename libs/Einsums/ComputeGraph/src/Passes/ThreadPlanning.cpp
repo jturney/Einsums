@@ -231,23 +231,14 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
     // nodes need their own widths whether or not the container earns one.
     std::vector<double> body_serial_us(n, 0.0);
     for (std::size_t i = 0; i < n; i++) {
-        if (auto *loop = nodes[i].op_data.get_if<LoopDescriptor>(); loop != nullptr && loop->body) {
-            // Planned as though it owned the whole machine. It does not have to
-            // share P with the parent here, because the one process-wide
-            // WidthBudget composes the two at run time: the container's own
-            // unit is lent back for the duration of the nested replay, so the
-            // body is admitted against a budget nobody else is holding.
-            body_serial_us[i] += plan_graph(*loop->body, p).serial_us;
-        } else if (auto *cond = nodes[i].op_data.get_if<ConditionalDescriptor>(); cond != nullptr) {
-            if (cond->then_branch) {
-                body_serial_us[i] += plan_graph(*cond->then_branch, p).serial_us;
-            }
-            if (cond->else_branch) {
-                // Only one branch runs, so the cost of the node is the worse of
-                // the two rather than their sum.
-                body_serial_us[i] = std::max(body_serial_us[i], plan_graph(*cond->else_branch, p).serial_us);
-            }
-        }
+        // Each child is planned as though it owned the whole machine. It does not have to share P
+        // with the parent here, because the one process-wide WidthBudget composes the two at run
+        // time: the container's own unit is lent back for the duration of the nested replay, so the
+        // child is admitted against a budget nobody else is holding. A conditional runs only one
+        // branch, so its cost is the worse of the two rather than their sum.
+        for_each_child_graph(
+            nodes[i], [&](Graph &child) { body_serial_us[i] = std::max(body_serial_us[i], plan_graph(child, p).serial_us); },
+            /*include_setup=*/false);
     }
 
     // Recorded medians, keyed by node id. A replay writes one sample per node
