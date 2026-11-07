@@ -218,20 +218,17 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             // computing it once before the loop would change what the earlier
             // reader sees. Reads by *later* body nodes are fine, they consume
             // this iteration's value, which is loop-invariant once hoisted.
+            //
+            // Asked of BUFFERS and of EFFECTIVE reads (buffer_io). A view made outside the capture
+            // reads the output under its own id, with no View node in the body naming the parent,
+            // so an id comparison saw no earlier reader and the hoist made every iteration read
+            // this iteration's value. And an earlier control-flow node (a nested loop or
+            // conditional) that reads the output inside its subtree lists nothing of it itself.
             bool output_read_earlier = false;
-            for (auto out_tid : bnode.outputs) {
-                for (size_t bj = 0; bj < bi && !output_read_earlier; bj++) {
-                    // Use *effective* reads so an earlier control-flow node (a
-                    // nested loop / conditional) that reads the output inside its
-                    // subtree counts, its own raw input list is empty.
-                    auto [ein, eout] = loop_desc->body->effective_io(body_nodes[bj]);
-                    if (std::ranges::find(ein, out_tid) != ein.end()) {
-                        output_read_earlier = true;
-                    }
-                }
-                if (output_read_earlier) {
-                    break;
-                }
+            for (size_t bj = 0; bj < bi && !output_read_earlier; bj++) {
+                BufferIo const earlier = buffer_io(*loop_desc->body, body_nodes[bj]);
+                output_read_earlier    = std::ranges::any_of(
+                    bnode.outputs, [&](TensorId out_tid) { return earlier.reads.contains(loop_desc->body->buffer_of(out_tid)); });
             }
             if (output_read_earlier) {
                 // Loop-carried through this producer: an earlier reader sees the

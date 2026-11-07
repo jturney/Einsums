@@ -967,3 +967,51 @@ TEST_CASE("LoopInvariantHoisting - a body re-seats only the stand-ins its nodes 
     CHECK(gone_in_body->impl().data() == before);
     CHECK(kept_in_body->impl().data() == kept.impl().data());
 }
+
+// The loop-carried guard asks whether an EARLIER body node reads the producer's output. A read
+// through a view made outside the capture names the view's id, not the parent's, and no View node
+// in the body lists the parent either, so an id comparison sees no earlier reader.
+TEST_CASE("LoopInvariantHoisting - an earlier read through a view keeps the producer in the loop", "[ComputeGraph][Passes][Loop][Alias]") {
+    constexpr size_t      N = 3;
+    RuntimeTensor<double> A("A", std::vector<size_t>{N, N});
+    RuntimeTensor<double> B("B", std::vector<size_t>{N, N});
+    RuntimeTensor<double> T("T", std::vector<size_t>{N, N});
+    RuntimeTensor<double> acc("acc", std::vector<size_t>{2, N});
+    for (size_t i = 0; i < N; ++i) {
+        for (size_t j = 0; j < N; ++j) {
+            A(i, j) = 1.0 + static_cast<double>(i + 2 * j);
+            B(i, j) = 0.5 - static_cast<double>(i) + static_cast<double>(j);
+        }
+    }
+    T.zero();
+    acc.zero();
+    RuntimeTensorView<double> top = T(Range{0, 2}, Range{0, N}); // rows 0-1 of T
+
+    cg::Graph graph("lih_view_read_earlier");
+    auto     &body = graph.add_loop("twice", 2, [](size_t iter) { return iter < 2; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::axpby(1.0, top, 1.0, &acc);              // acc += T[0:2, :] from the previous iteration
+        cg::einsum("ik;kj->ij", 0.0, &T, 1.0, A, B); // T = A·B, invariant inputs, sole writer of T
+    }
+
+    bool const optimize = GENERATE(false, true);
+    CAPTURE(optimize);
+    if (optimize) {
+        auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
+        CHECK(pass.num_hoisted() == 0);
+    }
+
+    graph.execute();
+
+    // Iteration 0 reads T's initial zeros, iteration 1 reads A·B: acc = (A·B)[0:2, :] once.
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < N; ++j) {
+            double ab = 0.0;
+            for (size_t k = 0; k < N; ++k) {
+                ab += A(i, k) * B(k, j);
+            }
+            CHECK(std::abs(acc(i, j) - ab) <= 1e-12 * (1.0 + std::abs(ab)));
+        }
+    }
+}
