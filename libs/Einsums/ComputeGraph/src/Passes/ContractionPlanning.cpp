@@ -504,14 +504,7 @@ bool ContractionPlanning::transform(Graph &graph) {
         // an untouched chain once per fixpoint iteration; see the harvest below.
         std::vector<ChainReport> scan_reports;
 
-        auto chains = find_contraction_chains(graph, [&](Node const &node) {
-            if (understands(graph, node)) {
-                return true;
-            }
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
-            return false;
-        });
+        auto chains = find_contraction_chains(graph, [&](Node const &node) { return admits(graph, node); });
         if (chains.empty())
             break;
 

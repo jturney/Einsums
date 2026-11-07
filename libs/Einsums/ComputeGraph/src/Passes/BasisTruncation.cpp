@@ -843,8 +843,7 @@ bool BasisTruncation::transform(Graph &graph) {
             }
             if (touches) {
                 Node const &node = graph.nodes()[i];
-                note_skip("the node carries a feature this pass does not understand",
-                          fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+                decline_unknown_features(graph, node);
                 return false;
             }
         }

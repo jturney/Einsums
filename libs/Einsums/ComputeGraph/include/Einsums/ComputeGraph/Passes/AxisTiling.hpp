@@ -193,7 +193,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     static constexpr Reason FitsCap{"axis-tiling.fits-cap", "the largest intermediate already fits the cap, so there is nothing to stream"};
     static constexpr Reason NoSliceableWriter{"axis-tiling.no-sliceable-writer",
                                               "every intermediate over the cap is written by a statement this pass cannot slice"};
-    static constexpr Reason UnknownFeature{"axis-tiling.unknown-feature", "the node carries a feature this pass does not understand"};
     static constexpr Reason OperandWithoutAxes{"axis-tiling.operand-without-axes",
                                                "every axis of one operand is sliced, so the body would name an operand with no axes left"};
     static constexpr Reason StatementBetween{"axis-tiling.statement-between",

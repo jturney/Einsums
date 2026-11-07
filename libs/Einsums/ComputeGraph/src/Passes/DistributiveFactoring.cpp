@@ -245,9 +245,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         }
         auto const ab_pf_d = as_real<double>(live_ab_prefactor(*desc));
 
-        if (!understands(graph, node)) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+        if (!admits(graph, node)) {
             continue;
         }
 

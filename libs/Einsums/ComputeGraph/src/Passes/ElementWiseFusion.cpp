@@ -93,14 +93,7 @@ bool ElementWiseFusion::transform(Graph &graph) {
     graph.topological_sort();
 
     // Every node a fusion rewrites or removes is asked this first.
-    auto const declines = [&](Node const &node) {
-        if (understands(graph, node)) {
-            return false;
-        }
-        note_skip("the node carries a feature this pass does not understand",
-                  fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
-        return true;
-    };
+    auto const declines = [&](Node const &node) { return !admits(graph, node); };
 
     auto &nodes = graph.nodes();
     if (nodes.size() < 2) {

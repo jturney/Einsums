@@ -516,6 +516,23 @@ bool OptimizerPass::understands(Graph const &graph, Node const &node) const {
     return !understood.has_value() || understood->covers(features_of(graph, node));
 }
 
+bool OptimizerPass::admits(Graph const &graph, Node const &node) const {
+    if (understands(graph, node)) {
+        return true;
+    }
+    decline_unknown_features(graph, node);
+    return false;
+}
+
+void OptimizerPass::decline_unknown_features(Graph const &graph, Node const &node) const {
+    // Name only what is missing: the features the pass does understand say nothing about why it stopped.
+    NodeFeatures const features   = features_of(graph, node);
+    auto const         understood = understood_features();
+    NodeFeatures const unknown    = understood.has_value() ? understood->missing_from(features) : features;
+    note_skip(UnknownFeature, fmt::format("node '{}': {}", node.label, describe_features(unknown)),
+              Decision{.graph = graph.name(), .node = node.id, .node_label = node.label});
+}
+
 namespace {
 
 /// One node a pass promised to leave alone, and what it looked like before.

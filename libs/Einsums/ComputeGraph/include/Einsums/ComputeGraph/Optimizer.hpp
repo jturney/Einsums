@@ -481,6 +481,45 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      */
     [[nodiscard]] EINSUMS_EXPORT bool understands(Graph const &graph, Node const &node) const;
 
+    /// Why @ref admits declined a node: the one decline every pass shares, under one code.
+    static constexpr Reason UnknownFeature{"pass.unknown-feature", "the node carries a feature this pass does not understand"};
+
+    /**
+     * @brief @ref understands, recording the decline when the answer is no.
+     *
+     * The form a pass asks where it picks its candidates. A node it does not understand is
+     * declined under @ref UnknownFeature, with the node and the features it lacks in the record,
+     * so the caller only moves on:
+     *
+     * @code
+     * if (!admits(graph, node)) {
+     *     continue;
+     * }
+     * @endcode
+     *
+     * A pass for which leaving such a node alone is not sound (one that must place every device
+     * node, say) asks @ref understands and reports the failure its own way.
+     *
+     * @param[in] graph The graph @p node belongs to.
+     * @param[in] node  The node.
+     * @return The same as @ref understands.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] EINSUMS_EXPORT bool admits(Graph const &graph, Node const &node) const;
+
+    /**
+     * @brief The recording half of @ref admits: decline @p node under @ref UnknownFeature.
+     *
+     * For a pass that asks @ref understands for more than the decline, such as one that pins a
+     * node's buffers or forgets what it had proven across it, or that reports only some of the
+     * nodes it leaves alone.
+     *
+     * @param[in] graph The graph @p node belongs to.
+     * @param[in] node  A node @ref understands said no to.
+     * @versionadded{2.0.0}
+     */
+    EINSUMS_EXPORT void decline_unknown_features(Graph const &graph, Node const &node) const;
+
     /**
      * @brief Zero this pass's per-apply statistics.
      *

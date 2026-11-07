@@ -300,8 +300,7 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
             }
         }
         if (not_understood != nullptr) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", not_understood->label, describe_features(features_of(graph, *not_understood))));
+            decline_unknown_features(graph, *not_understood);
             continue;
         }
         if (!ok) {

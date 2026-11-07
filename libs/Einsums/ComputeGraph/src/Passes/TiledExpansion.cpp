@@ -605,8 +605,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
             // the sweep that reports.
             if (!understands(graph, src)) {
                 if (planning) {
-                    note_skip("the node carries a feature this pass does not understand",
-                              fmt::format("node '{}': {}", src.label, describe_features(features_of(graph, src))));
+                    decline_unknown_features(graph, src);
                 }
                 continue;
             }

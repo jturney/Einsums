@@ -402,9 +402,7 @@ bool LaplaceTransform::transform(Graph &graph) {
                     writes = writes || graph.buffer_of(out) == owner;
                 }
                 // The writers sit outside every region, so the region barrier never saw them.
-                if (writes && !understands(graph, node)) {
-                    note_skip("the node carries a feature this pass does not understand",
-                              fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+                if (writes && !admits(graph, node)) {
                     continue;
                 }
                 if (writes) {

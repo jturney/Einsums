@@ -118,9 +118,7 @@ bool TransferElimination::transform(Graph &graph) {
                 // A transfer this pass does not understand stays and leaves both copies current,
                 // as any kept upload does; the tensor already holds its device bytes, so the
                 // budget has nothing new to count.
-                if (!understands(graph, node)) {
-                    note_skip("the node carries a feature this pass does not understand",
-                              fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+                if (!admits(graph, node)) {
                     residency[tid] = Residency::Both;
                     continue;
                 }
@@ -187,9 +185,7 @@ bool TransferElimination::transform(Graph &graph) {
             if (res == Residency::Host || res == Residency::Both) {
                 // A transfer this pass does not understand stays and leaves both copies current,
                 // as any kept download does.
-                if (!understands(graph, node)) {
-                    note_skip("the node carries a feature this pass does not understand",
-                              fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+                if (!admits(graph, node)) {
                     residency[tid] = Residency::Both;
                     continue;
                 }

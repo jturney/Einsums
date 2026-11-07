@@ -41,8 +41,7 @@ bool CommunicationElimination::transform(Graph &graph) {
         // runs any number of times and writes what it likes.
         if (!understands(graph, node) || is_control_flow(node.kind)) {
             if (node.kind == OpKind::Allreduce) {
-                note_skip("the node carries a feature this pass does not understand",
-                          fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+                decline_unknown_features(graph, node);
             }
             already_reduced.clear();
             continue;

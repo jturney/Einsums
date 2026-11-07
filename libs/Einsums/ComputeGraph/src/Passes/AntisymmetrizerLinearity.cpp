@@ -94,14 +94,7 @@ bool AntisymmetrizerLinearity::transform(Graph &graph) {
 
     // Every node the merge rewrites or deletes: the operator write, the
     // accumulate, and the operator write behind the accumulated operand.
-    auto const declines = [&](Node const &node) {
-        if (understands(graph, node)) {
-            return false;
-        }
-        note_skip("the node carries a feature this pass does not understand",
-                  fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
-        return true;
-    };
+    auto const declines = [&](Node const &node) { return !admits(graph, node); };
 
     for (auto const &[tid, list] : writers) {
         if (list.size() != 2) {

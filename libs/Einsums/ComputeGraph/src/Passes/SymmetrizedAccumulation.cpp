@@ -142,9 +142,7 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
         if (permute.kind != OpKind::Permute) {
             continue;
         }
-        if (!understands(graph, permute)) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", permute.label, describe_features(features_of(graph, permute))));
+        if (!admits(graph, permute)) {
             continue;
         }
         auto const *pd = permute.op_data.get_if<PermuteDescriptor>();
@@ -231,9 +229,7 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
             note_skip("the permute source shares storage with the output", fmt::format("permute #{}", pi));
             continue;
         }
-        if (!understands(graph, axpby2)) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", axpby2.label, describe_features(features_of(graph, axpby2))));
+        if (!admits(graph, axpby2)) {
             continue;
         }
 

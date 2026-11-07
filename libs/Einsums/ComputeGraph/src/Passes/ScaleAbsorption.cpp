@@ -135,9 +135,7 @@ bool ScaleAbsorption::transform(Graph &graph) {
         if (scale_node.kind != OpKind::Scale) {
             continue;
         }
-        if (!understands(graph, scale_node)) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", scale_node.label, describe_features(features_of(graph, scale_node))));
+        if (!admits(graph, scale_node)) {
             continue;
         }
         auto *scale_desc = scale_node.op_data.get_if<ScaleDescriptor>();
@@ -253,11 +251,7 @@ bool ScaleAbsorption::transform(Graph &graph) {
         // A reader carrying a feature this pass does not understand cannot be
         // rewritten, so it disqualifies the whole scale just as an unfoldable
         // one does.
-        auto const not_understood = std::ranges::find_if(readers, [&](size_t r) { return !understands(graph, nodes[r]); });
-        if (not_understood != readers.end()) {
-            Node const &reader = nodes[*not_understood];
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", reader.label, describe_features(features_of(graph, reader))));
+        if (!std::ranges::all_of(readers, [&](size_t r) { return admits(graph, nodes[r]); })) {
             continue;
         }
         std::vector<std::pair<size_t, FoldSite>> folds;

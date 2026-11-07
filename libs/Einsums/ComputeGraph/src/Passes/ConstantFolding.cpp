@@ -138,9 +138,7 @@ bool ConstantFolding::transform(Graph &graph) {
             continue;
         }
 
-        if (!understands(graph, node)) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+        if (!admits(graph, node)) {
             continue;
         }
 

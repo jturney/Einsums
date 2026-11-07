@@ -175,9 +175,7 @@ bool PermuteFusion::transform(Graph &graph) {
     for (size_t nd = 0; nd < nodes.size(); nd++) {
         if (nodes[nd].kind != OpKind::Einsum)
             continue;
-        if (!understands(graph, nodes[nd])) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", nodes[nd].label, describe_features(features_of(graph, nodes[nd]))));
+        if (!admits(graph, nodes[nd])) {
             continue;
         }
 
@@ -196,9 +194,7 @@ bool PermuteFusion::transform(Graph &graph) {
 
             _num_candidates++;
 
-            if (!understands(graph, nodes[prod_idx])) {
-                note_skip("the node carries a feature this pass does not understand",
-                          fmt::format("node '{}': {}", nodes[prod_idx].label, describe_features(features_of(graph, nodes[prod_idx]))));
+            if (!admits(graph, nodes[prod_idx])) {
                 continue;
             }
 

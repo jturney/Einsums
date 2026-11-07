@@ -259,9 +259,7 @@ bool GPUPlacement::transform(Graph &graph) {
             if (!node_is_dispatchable(node, g))
                 continue;
 
-            if (!understands(g, node)) {
-                note_skip("the node carries a feature this pass does not understand",
-                          fmt::format("node '{}': {}", node.label, describe_features(features_of(g, node))));
+            if (!admits(g, node)) {
                 continue;
             }
 

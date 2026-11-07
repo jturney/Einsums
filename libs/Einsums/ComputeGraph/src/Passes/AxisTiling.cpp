@@ -3203,11 +3203,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         if (!tileable_kind(nodes[i].kind) && !registered_sliceable(nodes[i])) {
             return false;
         }
-        if (!understands(graph, nodes[i])) {
-            note_skip(UnknownFeature, fmt::format("node '{}': {}", nodes[i].label, describe_features(features_of(graph, nodes[i]))));
-            return false;
-        }
-        return true;
+        return admits(graph, nodes[i]);
     };
 
     std::optional<Plan> best;

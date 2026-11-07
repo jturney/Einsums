@@ -152,9 +152,7 @@ bool AntisymmetrizerFolding::transform(Graph &graph) {
         if (dot.kind != OpKind::Dot || dot.inputs.size() != 2 || dot.outputs.size() != 1) {
             continue;
         }
-        if (!understands(graph, dot)) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", dot.label, describe_features(features_of(graph, dot))));
+        if (!admits(graph, dot)) {
             continue;
         }
 
@@ -191,9 +189,7 @@ bool AntisymmetrizerFolding::transform(Graph &graph) {
             }
             // The fold reads the producer's operators and source, so a producer
             // carrying a feature this pass does not know is not one it can reason about.
-            if (Node const &producer_node = graph.nodes()[*producer_index]; !understands(graph, producer_node)) {
-                note_skip("the node carries a feature this pass does not understand",
-                          fmt::format("node '{}': {}", producer_node.label, describe_features(features_of(graph, producer_node))));
+            if (Node const &producer_node = graph.nodes()[*producer_index]; !admits(graph, producer_node)) {
                 continue;
             }
 

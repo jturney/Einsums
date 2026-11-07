@@ -96,9 +96,7 @@ bool GEMMBatching::transform(Graph &graph) {
     for (size_t nd = 0; nd < n_nodes; ++nd) {
         if (nodes[nd].kind != OpKind::Einsum)
             continue;
-        if (!understands(graph, nodes[nd])) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", nodes[nd].label, describe_features(features_of(graph, nodes[nd]))));
+        if (!admits(graph, nodes[nd])) {
             continue;
         }
         auto *desc = nodes[nd].op_data.get_if<EinsumDescriptor>();

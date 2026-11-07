@@ -355,9 +355,7 @@ bool LayoutAssignment::transform(Graph &graph) {
 
         // A node carrying a feature this pass does not understand is left alone, and so are its
         // operands: re-laying one out would change what the node reads underneath it.
-        if (!understands(graph, node)) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+        if (!admits(graph, node)) {
             for (auto id : node.inputs) {
                 pin(id);
             }

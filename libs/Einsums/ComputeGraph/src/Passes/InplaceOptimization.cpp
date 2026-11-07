@@ -357,14 +357,7 @@ void InplaceOptimization::reset_stats() {
 bool InplaceOptimization::transform(Graph &graph) {
     PassCounter const merged{_num_merged};
     PassCounter const candidates{_num_candidates};
-    Accepts const     accepts = [this, &graph](Node const &node) {
-        if (understands(graph, node)) {
-            return true;
-        }
-        note_skip("the node carries a feature this pass does not understand",
-                  fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
-        return false;
-    };
+    Accepts const     accepts = [this, &graph](Node const &node) { return admits(graph, node); };
     process(graph, accepts, _num_candidates, _num_merged);
 
     if (merged.moved()) {

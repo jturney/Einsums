@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <complex>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -53,7 +54,7 @@ class EinsumRemover : public cg::OptimizerPass {
         bool              any = false;
         for (std::size_t i = 0; i < graph.nodes().size(); i++) {
             auto const &node = graph.nodes()[i];
-            if (node.kind == cg::OpKind::Einsum && (!_asks || understands(graph, node))) {
+            if (node.kind == cg::OpKind::Einsum && (!_asks || admits(graph, node))) {
                 remove[i] = true;
                 any       = true;
             }
@@ -218,6 +219,27 @@ TEST_CASE("a pass that touches a node it does not understand is caught", "[Compu
         CHECK(manager.run(graph));
         REQUIRE(graph.nodes().size() == 1);
         CHECK(cg::features_of(graph, graph.nodes()[0]) == cg::NodeFeature::PermutationOperators);
+    }
+
+    SECTION("asking records the decline under its code, naming the node and what it lacks") {
+        cg::Graph graph("recorded");
+        capture_plain_and_antisymmetrized(graph, C, X, A);
+        std::string const operator_label = graph.nodes()[1].label;
+        auto const        pass           = std::make_shared<EinsumRemover>(cg::NodeFeatures{}, /*asks=*/true);
+        cg::PassManager   manager;
+        manager.add(pass);
+        (void)manager.run(graph);
+
+        std::vector<cg::Decision> declines;
+        std::ranges::copy_if(pass->decisions(), std::back_inserter(declines),
+                             [](cg::Decision const &d) { return d.code == cg::OptimizerPass::UnknownFeature.code; });
+        REQUIRE(declines.size() == 1);
+        CHECK(declines[0].kind == cg::DecisionKind::Declined);
+        CHECK(declines[0].reason == cg::OptimizerPass::UnknownFeature.text);
+        CHECK(declines[0].node == graph.nodes()[0].id);
+        CHECK(declines[0].node_label == operator_label);
+        CHECK(declines[0].graph == "recorded");
+        CHECK_THAT(declines[0].detail, Catch::Matchers::ContainsSubstring("permutation operators"));
     }
 
     SECTION("a pass that declares the feature may touch it") {

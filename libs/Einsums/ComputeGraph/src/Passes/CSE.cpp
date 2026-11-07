@@ -375,9 +375,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
         // Neither a survivor nor a candidate: a merge either removes the node or keys every later
         // match on its reading of the operands, and a node carrying a feature this pass does not
         // understand is one it cannot read.
-        if (!understands(graph, nodes[j])) {
-            note_skip("the node carries a feature this pass does not understand",
-                      fmt::format("node '{}': {}", nodes[j].label, describe_features(features_of(graph, nodes[j]))));
+        if (!admits(graph, nodes[j])) {
             continue;
         }
 
@@ -592,9 +590,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
                         continue;
                     bool const reads =
                         std::ranges::any_of(nodes[k].inputs, [&](TensorId in) { return outputs.contains(graph.buffer_of(in)); });
-                    if (reads && !understands(graph, nodes[k])) {
-                        note_skip("the node carries a feature this pass does not understand",
-                                  fmt::format("node '{}': {}", nodes[k].label, describe_features(features_of(graph, nodes[k]))));
+                    if (reads && !admits(graph, nodes[k])) {
                         readers_understood = false;
                     }
                     // Every reader must name the output itself. The merge repoints j's own slots,

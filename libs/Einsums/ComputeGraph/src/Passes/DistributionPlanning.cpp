@@ -175,8 +175,7 @@ bool DistributionPlanning::transform(Graph &graph) {
                 pinned_buffers.insert(graph.buffer_of(tid));
             }
             if (node.kind == OpKind::Einsum || node.kind == OpKind::Permute || node.kind == OpKind::Transpose) {
-                note_skip("the node carries a feature this pass does not understand",
-                          fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+                decline_unknown_features(graph, node);
             }
             continue;
         }

@@ -199,8 +199,9 @@ Writing Custom Passes
        bool recurse_into_subgraphs() const override { return true; }
 
        // The node features this rewrite models. In transform(), skip any node for
-       // which understands(graph, node) is false and leave it exactly as found.
-       // A pass that does not override this is left unchecked.
+       // which admits(graph, node) is false and leave it exactly as found;
+       // admits() records the decline for explain(). A pass that does not
+       // override this is left unchecked.
        std::optional<cg::NodeFeatures> understood_features() const override {
            return cg::NodeFeatures::all().without(cg::NodeFeature::Views);
        }
@@ -222,9 +223,11 @@ Three things bite when writing a rewrite:
 - **Declare what you understand.** A node can carry features a rewrite was not
   written for: permutation operators, views, conjugation, complex prefactors,
   mixed precision, tiled operands and more. A pass that declares
-  ``understood_features()`` and checks ``understands()`` leaves those nodes
-  alone, and ``--einsums:pass:verify`` fails the run, naming the pass, if it
-  changed one anyway.
+  ``understood_features()`` and checks ``admits()`` leaves those nodes alone,
+  each recorded as a decline under the ``pass.unknown-feature`` code, and
+  ``--einsums:pass:verify`` fails the run, naming the pass, if it changed one
+  anyway. ``understands()`` asks the same question without recording anything,
+  for a pass that reports the node its own way.
 
 Graph-Transforming Passes
 =========================
