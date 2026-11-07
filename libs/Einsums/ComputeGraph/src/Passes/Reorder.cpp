@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Detail/BackedWrites.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
@@ -74,18 +75,17 @@ bool Reorder::transform(Graph &graph) {
         }
     }
 
+    // Effective I/O so Loop/Conditional nodes (whose own input/output lists are empty) carry
+    // dependency edges for the tensors their bodies touch, and resolved to buffers so a write
+    // through a view of T is not unrelated to a read of T. Either gap would let the memory-aware
+    // reorder below float a node past one it depends on. The liveness scores further down read
+    // the same table.
+    std::vector<BufferIo> const io = buffer_io(graph);
+
     for (size_t i = 0; i < n; i++) {
         std::vector<std::string> reads = named_reads(nodes[i]);
-        // Use effective I/O so Loop/Conditional nodes (whose own input/output
-        // lists are empty) carry dependency edges for the tensors their bodies
-        // touch: otherwise the memory-aware reorder below can float a loop
-        // past a producer or consumer of one of those tensors.
-        auto [eff_in, eff_out] = graph.effective_io(nodes[i]);
-        for (auto const raw_tid : eff_in) {
-            // Resolve view aliases to the owning buffer, or a write through a
-            // view of T looks unrelated to a read of T and gets reordered past it.
-            TensorId const tid = graph.buffer_of(raw_tid);
-            auto const     it  = last_writer.find(tid);
+        for (TensorId const tid : io[i].reads) {
+            auto const it = last_writer.find(tid);
             if (it != last_writer.end() && it->second != i) {
                 adj_set[it->second].insert(i); // RAW: writer → reader
             }
@@ -94,9 +94,8 @@ bool Reorder::transform(Graph &graph) {
                 reads.push_back(stored->second);
             }
         }
-        for (auto const raw_tid : eff_out) {
-            TensorId const tid = graph.buffer_of(raw_tid);
-            auto const     it  = last_writer.find(tid);
+        for (TensorId const tid : io[i].writes) {
+            auto const it = last_writer.find(tid);
             if (it != last_writer.end() && it->second != i) {
                 adj_set[it->second].insert(i); // WAW: previous writer → this writer
             }
@@ -128,18 +127,15 @@ bool Reorder::transform(Graph &graph) {
     // Compute "memory freed" for each node:
     // A tensor's last consumer is the last node that reads it.
     // When a node is the last consumer of a tensor, scheduling it frees that memory.
-    // Use the same effective-I/O + alias resolution as the hazard scan above:
-    // a raw inputs/outputs scan double-counts a view against its parent buffer
-    // and misses tensors a Loop/Conditional body touches, so the freed-bytes
-    // heuristic would attribute the wrong bytes to the wrong node.
+    // From the same buffer table as the hazard scan above: a raw inputs/outputs scan
+    // double-counts a view against its parent buffer and misses tensors a Loop/Conditional body
+    // touches, so the freed-bytes heuristic would attribute the wrong bytes to the wrong node.
     std::unordered_map<TensorId, size_t> last_consumer;
     for (size_t i = 0; i < n; i++) {
-        auto [eff_in, eff_out] = graph.effective_io(nodes[i]);
-        for (auto const raw_tid : eff_in) {
-            last_consumer[graph.buffer_of(raw_tid)] = i;
-        }
-        for (auto const raw_tid : eff_out) {
-            last_consumer[graph.buffer_of(raw_tid)] = i; // Also counts as "using" it
+        for (auto const *buffers : {&io[i].reads, &io[i].writes}) { // a write also counts as a use
+            for (TensorId const tid : *buffers) {
+                last_consumer[tid] = i;
+            }
         }
     }
 
@@ -151,14 +147,11 @@ bool Reorder::transform(Graph &graph) {
     std::unordered_map<TensorId, size_t>              first_use;
     std::unordered_map<TensorId, std::vector<size_t>> uses;
     for (size_t i = 0; i < n; i++) {
-        auto [eff_in, eff_out] = graph.effective_io(nodes[i]);
-        for (auto const raw_tid : eff_in) {
-            first_use.try_emplace(graph.buffer_of(raw_tid), i);
-            uses[graph.buffer_of(raw_tid)].push_back(i);
-        }
-        for (auto const raw_tid : eff_out) {
-            first_use.try_emplace(graph.buffer_of(raw_tid), i);
-            uses[graph.buffer_of(raw_tid)].push_back(i);
+        for (auto const *buffers : {&io[i].reads, &io[i].writes}) {
+            for (TensorId const tid : *buffers) {
+                first_use.try_emplace(tid, i);
+                uses[tid].push_back(i);
+            }
         }
     }
     auto const freed_by_graph = [](TensorHandle const &h) {

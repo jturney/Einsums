@@ -6,6 +6,8 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 
+#include <algorithm>
+#include <span>
 #include <unordered_set>
 #include <vector>
 
@@ -25,35 +27,80 @@ std::map<TensorId, std::vector<std::size_t>> value_writes_by_buffer(Graph const 
     return writes;
 }
 
-bool span_interferes(Graph const &graph, std::size_t first, std::size_t last, std::vector<bool> const &is_member,
+namespace {
+
+/// Call @p visit with (buffer, is_write) for every effective access of @p node, reads first.
+///
+/// The one walk behind @ref buffer_io and @ref span_interferes. An ordinary node's own lists ARE
+/// its effective lists, so only a control-flow node pays for the sub-graph walk and the copy;
+/// the interference gate runs over every node of a span and must not allocate per node.
+/// @p visit returns true to stop the walk, and the walk returns whether it was stopped.
+template <typename F>
+bool for_each_buffer_access(Graph &graph, Node const &node, F &&visit) {
+    auto const walk = [&](std::span<TensorId const> ins, std::span<TensorId const> outs) {
+        for (TensorId const tid : ins) {
+            if (visit(graph.buffer_of(tid), false)) {
+                return true;
+            }
+        }
+        for (TensorId const tid : outs) {
+            if (visit(graph.buffer_of(tid), true)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (!is_control_flow(node.kind)) {
+        return walk(node.inputs, node.outputs);
+    }
+    auto const [ins, outs] = graph.effective_io(node);
+    return walk(ins, outs);
+}
+
+} // namespace
+
+BufferIo buffer_io(Graph &graph, Node const &node) {
+    BufferIo io;
+    (void)for_each_buffer_access(graph, node, [&io](TensorId buffer, bool is_write) {
+        (is_write ? io.writes : io.reads).insert(buffer);
+        return false;
+    });
+    return io;
+}
+
+std::vector<BufferIo> buffer_io(Graph &graph) {
+    std::vector<BufferIo> out;
+    out.reserve(graph.nodes().size());
+    for (Node const &node : graph.nodes()) {
+        out.push_back(buffer_io(graph, node));
+    }
+    return out;
+}
+
+bool conflicts(BufferIo const &lhs, BufferIo const &rhs) {
+    return std::ranges::any_of(rhs.reads, [&lhs](TensorId buffer) { return lhs.orders(buffer, false); }) ||
+           std::ranges::any_of(rhs.writes, [&lhs](TensorId buffer) { return lhs.orders(buffer, true); });
+}
+
+bool span_interferes(Graph &graph, std::size_t first, std::size_t last, std::vector<bool> const &is_member,
                      std::unordered_set<TensorId> const &writes, std::unordered_set<TensorId> const &reads, bool reject_control_flow) {
-    std::unordered_set<TensorId> written;
-    std::unordered_set<TensorId> read;
+    BufferIo group;
     for (TensorId const id : writes) {
-        written.insert(graph.buffer_of(id));
+        group.writes.insert(graph.buffer_of(id));
     }
     for (TensorId const id : reads) {
-        read.insert(graph.buffer_of(id));
+        group.reads.insert(graph.buffer_of(id));
     }
-    auto const &nodes = graph.nodes();
     for (std::size_t n = first + 1; n < last; ++n) {
         if (is_member[n]) {
             continue;
         }
-        Node const &other = nodes[n];
+        Node const &other = graph.nodes()[n];
         if (reject_control_flow && is_control_flow(other.kind)) {
             return true;
         }
-        for (auto const out : other.outputs) {
-            TensorId const buffer = graph.buffer_of(out);
-            if (written.contains(buffer) || read.contains(buffer)) {
-                return true;
-            }
-        }
-        for (auto const in : other.inputs) {
-            if (written.contains(graph.buffer_of(in))) {
-                return true;
-            }
+        if (for_each_buffer_access(graph, other, [&group](TensorId buffer, bool is_write) { return group.orders(buffer, is_write); })) {
+            return true;
         }
     }
     return false;

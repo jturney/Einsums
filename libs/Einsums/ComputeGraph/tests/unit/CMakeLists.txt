@@ -108,6 +108,7 @@ set(ComputeGraphTests
     AliasOrderSharedScratch.cpp
     Pass_MemoryPlanning.cpp
     Pass_ProgramOrderGuard.cpp
+    PassUtil.cpp
     Pass_Reorder.cpp
     Pass_ScaleAbsorption.cpp
     Pass_TiledExpansion.cpp

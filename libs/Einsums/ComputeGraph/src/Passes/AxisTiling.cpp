@@ -2747,34 +2747,9 @@ std::vector<std::string> AxisTiling::explain() const {
 
 namespace {
 
-/// What one node reads and writes, by the buffer underneath each tensor.
-struct NodeIo {
-    std::set<TensorId> reads;
-    std::set<TensorId> writes;
-};
-
-/// Every node's buffers read and written. Effective rather than listed, so a loop or a
-/// conditional answers for its body.
-std::vector<NodeIo> buffer_io(Graph &graph) {
-    std::vector<NodeIo> out;
-    out.reserve(graph.nodes().size());
-    for (auto const &node : graph.nodes()) {
-        auto const [reads, writes] = graph.effective_io(node);
-        NodeIo io;
-        for (TensorId const tid : reads) {
-            io.reads.insert(graph.buffer_of(tid));
-        }
-        for (TensorId const tid : writes) {
-            io.writes.insert(graph.buffer_of(tid));
-        }
-        out.push_back(std::move(io));
-    }
-    return out;
-}
-
 /// The first and last position of @p io that reads or writes @p tid's buffer in @p graph, or every
 /// position when none does.
-std::pair<std::size_t, std::size_t> held_span(Graph const &graph, std::vector<NodeIo> const &io, TensorId tid) {
+std::pair<std::size_t, std::size_t> held_span(Graph const &graph, std::vector<BufferIo> const &io, TensorId tid) {
     TensorId const buffer = tid == 0 ? 0 : graph.buffer_of(tid);
     std::size_t    first  = io.size();
     std::size_t    last   = 0;
@@ -2790,16 +2765,6 @@ std::pair<std::size_t, std::size_t> held_span(Graph const &graph, std::vector<No
     return {first, last};
 }
 
-bool intersects(std::set<TensorId> const &lhs, std::set<TensorId> const &rhs) {
-    return std::ranges::any_of(lhs, [&rhs](TensorId tid) { return rhs.contains(tid); });
-}
-
-/// Whether @p later has to run after @p earlier: it reads what @p earlier writes, writes what
-/// @p earlier reads, or writes what @p earlier writes.
-bool depends(NodeIo const &earlier, NodeIo const &later) {
-    return intersects(earlier.writes, later.reads) || intersects(earlier.writes, later.writes) || intersects(earlier.reads, later.writes);
-}
-
 /// Where the loop can stand in for the statements it replaces, or nothing when it cannot.
 ///
 /// A region need not be contiguous: a statement of another term may sit between two of its
@@ -2807,7 +2772,7 @@ bool depends(NodeIo const &earlier, NodeIo const &later) {
 /// an earlier one, so every earlier one can move down to it, and of the FIRST when no later one
 /// depends on anything in between, so every later one can move up. A node in between that
 /// depends on one statement while another depends on it allows neither.
-std::optional<std::size_t> gather_site(std::vector<NodeIo> const &io, std::vector<std::size_t> const &replaced) {
+std::optional<std::size_t> gather_site(std::vector<BufferIo> const &io, std::vector<std::size_t> const &replaced) {
     std::set<std::size_t> const moving(replaced.begin(), replaced.end());
     bool                        sink  = true;
     bool                        hoist = true;
@@ -2816,8 +2781,8 @@ std::optional<std::size_t> gather_site(std::vector<NodeIo> const &io, std::vecto
             continue;
         }
         for (std::size_t const m : replaced) {
-            sink  = sink && !(m < n && depends(io[m], io[n]));
-            hoist = hoist && !(m > n && depends(io[n], io[m]));
+            sink  = sink && !(m < n && conflicts(io[m], io[n]));
+            hoist = hoist && !(m > n && conflicts(io[n], io[m]));
         }
     }
     if (sink) {
@@ -2895,29 +2860,14 @@ AxisTiling::Footprint AxisTiling::footprint(Graph &graph) const {
         if (!holds) {
             continue;
         }
-        auto const buffers = [&](std::vector<TensorId> const &ids) {
-            std::set<TensorId> out;
-            for (TensorId const tid : ids) {
-                out.insert(outer->buffer_of(tid));
-            }
-            return out;
-        };
-        auto const meets = [](std::set<TensorId> const &lhs, std::set<TensorId> const &rhs) {
-            return std::ranges::any_of(lhs, [&](TensorId tid) { return rhs.contains(tid); });
-        };
-        auto const [own_reads, own_writes] = outer->effective_io(nodes[own]);
-        auto const reads_here              = buffers(own_reads);
-        auto const writes_here             = buffers(own_writes);
+        BufferIo const here = buffer_io(*outer, nodes[own]);
         for (std::size_t j = 0; j < nodes.size(); ++j) {
             bool has_body = false;
             for_each_child_graph(nodes[j], [&](Graph const &) { has_body = true; });
             if (j == own || !has_body) {
                 continue;
             }
-            auto const [reads, writes] = outer->effective_io(nodes[j]);
-            auto const reads_there     = buffers(reads);
-            auto const writes_there    = buffers(writes);
-            if (meets(writes_there, reads_here) || meets(writes_there, writes_here) || meets(writes_here, reads_there)) {
+            if (conflicts(here, buffer_io(*outer, nodes[j]))) {
                 for_each_child_graph(nodes[j], [&](Graph const &child) { apart.insert(&child); });
             }
         }
@@ -3044,7 +2994,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
         graph.topological_sort();
         Footprint const   fp   = derived ? footprint(graph) : Footprint{};
         std::size_t const peak = fp.peak();
-        auto const        io   = derived ? buffer_io(graph) : std::vector<NodeIo>{};
+        auto const        io   = derived ? buffer_io(graph) : std::vector<BufferIo>{};
 
         // A program over its budget streams because it must, and a loop it streams in may take
         // whatever the budget leaves; the share caps only what a program that fits streams for the
@@ -3200,7 +3150,7 @@ bool AxisTiling::tile_graph(Graph &graph) {
     while (true) {
         graph.topological_sort();
         Footprint const fp      = derived ? footprint(graph) : Footprint{};
-        auto const      io      = derived ? buffer_io(graph) : std::vector<NodeIo>{};
+        auto const      io      = derived ? buffer_io(graph) : std::vector<BufferIo>{};
         bool            rewrote = false;
         for (auto const &[bytes, seed] : symmetric_seeds(graph, scope, declined)) {
             std::size_t limit = static_cast<std::size_t>(std::max<std::int64_t>(cap, 0));

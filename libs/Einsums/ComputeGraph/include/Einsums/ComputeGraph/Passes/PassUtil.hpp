@@ -226,9 +226,66 @@ inline void hash_range(std::size_t &h, Range const &range) {
 using ::einsums::compute_graph::reads_destination;
 
 /**
+ * @brief The buffers one node reads and writes.
+ *
+ * Every id is resolved with @ref Graph::buffer_of (through a view to its parent, and through a
+ * slot redirect to the storage it now shares), so two nodes touching one buffer under different
+ * names meet here. The lists are EFFECTIVE (@ref Graph::effective_io): a loop or a conditional
+ * answers for what its sub-graphs touch, which its own node lists do not record.
+ *
+ * Buffer-level and therefore conservative: two accesses through views of provably disjoint
+ * slices of one parent still conflict. The executor's dependency scan is the one that proves
+ * slices apart; a pass deciding whether it may move a node past another asks this instead.
+ */
+struct BufferIo {
+    std::unordered_set<TensorId> reads;  ///< Buffers the node reads.
+    std::unordered_set<TensorId> writes; ///< Buffers the node writes.
+
+    /**
+     * @brief Whether one access of @p buffer has to stay ordered against this I/O.
+     *
+     * A write is ordered against every read or write of its buffer (WAR, WAW) and a read
+     * against every write of it (RAW). Two reads commute.
+     *
+     * @param[in] buffer   A buffer id, already resolved with @ref Graph::buffer_of.
+     * @param[in] is_write Whether the access writes @p buffer.
+     */
+    [[nodiscard]] bool orders(TensorId buffer, bool is_write) const {
+        return writes.contains(buffer) || (is_write && reads.contains(buffer));
+    }
+};
+
+/**
+ * @brief The buffers @p node reads and writes; see @ref BufferIo.
+ *
+ * Takes the graph mutably because a control-flow node's effective I/O registers the buffers its
+ * sub-graphs touch in @p graph (@ref Graph::effective_io).
+ *
+ * @param[in,out] graph The graph @p node belongs to.
+ * @param[in]     node  The node whose I/O to collect.
+ */
+[[nodiscard]] EINSUMS_EXPORT BufferIo buffer_io(Graph &graph, Node const &node);
+
+/**
+ * @brief @ref buffer_io for every node of @p graph, indexed by position.
+ *
+ * @param[in,out] graph The graph to scan.
+ */
+[[nodiscard]] EINSUMS_EXPORT std::vector<BufferIo> buffer_io(Graph &graph);
+
+/**
+ * @brief Whether two nodes have to keep their relative order: one writes a buffer the other
+ *        reads or writes.
+ *
+ * Symmetric, so it answers for either order of @p lhs and @p rhs; which of the two runs first is
+ * the caller's to know.
+ */
+[[nodiscard]] EINSUMS_EXPORT bool conflicts(BufferIo const &lhs, BufferIo const &rhs);
+
+/**
  * @brief Interference gate shared by the passes that collapse a run of nodes
  *        into one (DistributiveFactoring, LinearCombinationContractionFolding,
- *        GEMMBatching).
+ *        GEMMBatching, StreamContractionFusion).
  *
  * These passes move a combined op into the FIRST member's slot, because position
  * is program order in this IR and the combined node has to stay ahead of every
@@ -240,29 +297,23 @@ using ::einsums::compute_graph::reads_destination;
  *     partial result, mid-collapse),
  *   - reads anything the group writes (observing a partial result before it is
  *     complete), or
- *   - when @p reject_control_flow is set, is a control-flow node whose hidden
- *     sub-graph I/O cannot be inspected.
+ *   - when @p reject_control_flow is set, is a control-flow node at all.
  *
- * @p reject_control_flow lets DistributiveFactoring and GEMMBatching disqualify
- * a span containing a Loop/Conditional while
- * LinearCombinationContractionFolding keeps its existing (control-flow-agnostic)
- * behavior.
+ * The first two are the @ref conflicts rule over @ref buffer_io, so a control-flow
+ * node is judged by what its sub-graphs touch. @p reject_control_flow refuses one
+ * regardless, for a pass that does not move nodes past a loop or a branch.
  *
- * Tensors are compared by the buffer they occupy (@ref Graph::buffer_of), so a
- * write through a view or a redirected slot of something the group touches
- * counts: comparing ids let one slip between two batched members unseen.
- *
- * @param[in] graph               The graph whose node list the positions index.
- * @param[in] first               Position of the first group member.
- * @param[in] last                Position of the last group member.
- * @param[in] is_member           Membership mask over @p nodes.
- * @param[in] writes              Every tensor the group writes.
- * @param[in] reads               Every tensor the group reads.
- * @param[in] reject_control_flow Whether a control-flow node in the span disqualifies it.
+ * @param[in,out] graph               The graph whose node list the positions index.
+ * @param[in]     first               Position of the first group member.
+ * @param[in]     last                Position of the last group member.
+ * @param[in]     is_member           Membership mask over @p nodes.
+ * @param[in]     writes              Every tensor the group writes.
+ * @param[in]     reads               Every tensor the group reads.
+ * @param[in]     reject_control_flow Whether a control-flow node in the span disqualifies it.
  */
-[[nodiscard]] EINSUMS_EXPORT bool span_interferes(Graph const &graph, std::size_t first, std::size_t last,
-                                                  std::vector<bool> const &is_member, std::unordered_set<TensorId> const &writes,
-                                                  std::unordered_set<TensorId> const &reads, bool reject_control_flow);
+[[nodiscard]] EINSUMS_EXPORT bool span_interferes(Graph &graph, std::size_t first, std::size_t last, std::vector<bool> const &is_member,
+                                                  std::unordered_set<TensorId> const &writes, std::unordered_set<TensorId> const &reads,
+                                                  bool reject_control_flow);
 
 /// Where a scale of some tensor can be folded inside a consumer.
 enum class FoldSite : std::uint8_t {
