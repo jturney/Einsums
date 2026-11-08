@@ -258,6 +258,38 @@ TEMPLATE_LIST_TEST_CASE("PermuteFusion: skip when permute output has multiple co
     REQUIRE(graph.num_nodes() == 3);
 }
 
+TEMPLATE_LIST_TEST_CASE("PermuteFusion: skip when one einsum reads the permute output in both slots",
+                        "[ComputeGraph][Optimizer][PermuteFusion]", testing::AllScalarTypes) {
+    using T = TestType;
+    // One consumer node, but two reads: the fusion rewrites one slot, so removing the permute
+    // would leave the other slot reading a buffer nothing writes.
+    auto A     = create_random_tensor<T>("A", 3, 3);
+    auto A_ref = create_zero_tensor<T>("A_ref", 3, 3);
+    auto C_ref = create_zero_tensor<T>("C_ref", 3, 3);
+    reference_permute("ji <- ij", T{0}, &A_ref, T{1}, A);
+    reference_einsum("ij;jk->ik", &C_ref, A_ref, A_ref);
+
+    auto      C = create_zero_tensor<T>("C", 3, 3);
+    cg::Graph graph("both_slots");
+    auto     &A_T = graph.scratch<T, 2>("A_T", 3, 3);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("ji <- ij", &A_T, A);
+        cg::einsum("ij;jk->ik", &C, A_T, A_T);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::PermuteFusion>();
+    REQUIRE_FALSE(modified);
+    REQUIRE(pass.num_rewrites() == 0);
+    REQUIRE(graph.num_nodes() == 2);
+
+    // The whole pipeline, which materializes the scratch the permute still writes.
+    cg::PassManager pipeline = cg::PassManager::create_default();
+    graph.apply(pipeline);
+    graph.execute();
+    require_close(C, C_ref);
+}
+
 TEMPLATE_LIST_TEST_CASE("PermuteFusion: skip when permute has non-trivial alpha", "[ComputeGraph][Optimizer][PermuteFusion]",
                         testing::AllScalarTypes) {
     using T = TestType;

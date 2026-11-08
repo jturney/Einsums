@@ -79,9 +79,19 @@ struct EINSUMS_EXPORT TensorUsage {
  * @brief Graph-wide reader/writer/liveness index: one forward scan, shared by
  *        every pass, with one alias convention. Build once, query everywhere.
  *
- * Canonical semantics: TensorIds are resolved through Graph::resolve_alias,
- * control-flow nodes contribute their sub-graphs' IO via effective-IO
- * expansion (marked @c via_subtree). Positions refer to the node order at
+ * Canonical semantics: TensorIds are resolved through Graph::buffer_of (through
+ * a view to its parent, and through a slot redirect to the storage it now
+ * shares), control-flow nodes contribute their sub-graphs' IO via effective-IO
+ * expansion (marked @c via_subtree). Each node counts once per buffer and
+ * direction, however many of its operands name that buffer; a pass that cares
+ * how many slots of one node read it counts those itself.
+ *
+ * This table answers "where is this buffer used": first and last use, writer
+ * positions, how many nodes touch it. The per-node question, "may this node
+ * move past that one", is passes::buffer_io and passes::conflicts, which apply
+ * the same resolution and expansion node by node.
+ *
+ * Positions refer to the node order at
  * build time - the table is invalidated by the same mutation-declaration
  * points as DependencyInfo (add_node / mark_sorted / topological_sort), so
  * the cached copy on Graph is only valid until the next declared mutation.

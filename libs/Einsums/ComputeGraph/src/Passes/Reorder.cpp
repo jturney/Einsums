@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
+#include <Einsums/ComputeGraph/UsageAnalysis.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include <fmt/format.h>
@@ -78,8 +79,7 @@ bool Reorder::transform(Graph &graph) {
     // Effective I/O so Loop/Conditional nodes (whose own input/output lists are empty) carry
     // dependency edges for the tensors their bodies touch, and resolved to buffers so a write
     // through a view of T is not unrelated to a read of T. Either gap would let the memory-aware
-    // reorder below float a node past one it depends on. The liveness scores further down read
-    // the same table.
+    // reorder below float a node past one it depends on.
     std::vector<BufferIo> const io = buffer_io(graph);
 
     for (size_t i = 0; i < n; i++) {
@@ -124,47 +124,32 @@ bool Reorder::transform(Graph &graph) {
         }
     }
 
-    // Compute "memory freed" for each node:
-    // A tensor's last consumer is the last node that reads it.
-    // When a node is the last consumer of a tensor, scheduling it frees that memory.
-    // From the same buffer table as the hazard scan above: a raw inputs/outputs scan
-    // double-counts a view against its parent buffer and misses tensors a Loop/Conditional body
-    // touches, so the freed-bytes heuristic would attribute the wrong bytes to the wrong node.
-    std::unordered_map<TensorId, size_t> last_consumer;
-    for (size_t i = 0; i < n; i++) {
-        for (auto const *buffers : {&io[i].reads, &io[i].writes}) { // a write also counts as a use
-            for (TensorId const tid : *buffers) {
-                last_consumer[tid] = i;
-            }
-        }
-    }
-
-    // Each node's score is the bytes the graph frees after it, less the bytes it first touches.
+    // Each node's score is the bytes the graph frees after it, less the bytes it first touches:
+    // a tensor dies at its last use and is born at its first, a write counting as a use. The
+    // uses come from the shared UsageAnalysis, which keys them by buffer and counts what a
+    // Loop/Conditional body touches, as the hazard scan above does; a raw inputs/outputs scan
+    // double-counts a view against its parent buffer and misses tensors a body touches, so the
+    // freed-bytes heuristic would attribute the wrong bytes to the wrong node.
+    //
     // Only tensors the graph frees count: a caller's tensor or a write-backed one stays allocated
     // whatever the order, and counting it pulled the last reader of a large caller input ahead of
     // a consumer that frees an intermediate. Charging a producer for what it allocates keeps a
     // ready producer behind a ready consumer.
-    std::unordered_map<TensorId, size_t>              first_use;
-    std::unordered_map<TensorId, std::vector<size_t>> uses;
-    for (size_t i = 0; i < n; i++) {
-        for (auto const *buffers : {&io[i].reads, &io[i].writes}) {
-            for (TensorId const tid : *buffers) {
-                first_use.try_emplace(tid, i);
-                uses[tid].push_back(i);
-            }
-        }
-    }
     auto const freed_by_graph = [](TensorHandle const &h) {
         return h.is_intermediate || (h.backing != nullptr && !h.backing->write && h.ownership == TensorOwnership::Graph);
     };
-    std::vector<std::int64_t> bytes_freed(n, 0);
-    for (auto const &[tid, last_idx] : last_consumer) {
+    std::vector<std::pair<TensorUsage const *, std::int64_t>> freed; // each freed buffer's uses and bytes
+    for (auto const &[tid, usage] : graph.usage().table()) {
         auto const &tensors = graph.tensors_map();
         auto const  it      = tensors.find(tid);
         if (it != tensors.end() && freed_by_graph(it->second)) {
-            bytes_freed[last_idx] += static_cast<std::int64_t>(it->second.total_bytes());
-            bytes_freed[first_use.at(tid)] -= static_cast<std::int64_t>(it->second.total_bytes());
+            freed.emplace_back(&usage, static_cast<std::int64_t>(it->second.total_bytes()));
         }
+    }
+    std::vector<std::int64_t> bytes_freed(n, 0);
+    for (auto const &[usage, bytes] : freed) {
+        bytes_freed[usage->last_use()] += bytes;
+        bytes_freed[usage->first_use()] -= bytes;
     }
 
     // Memory-aware Kahn's algorithm: among ready nodes, prefer the highest score, and among equal
@@ -215,19 +200,14 @@ bool Reorder::transform(Graph &graph) {
             position[seq[p]] = p;
         }
         std::vector<std::int64_t> delta(n + 1, 0);
-        for (auto const &[tid, node_uses] : uses) {
-            auto const &tensors = graph.tensors_map();
-            auto const  it      = tensors.find(tid);
-            if (it == tensors.end() || !freed_by_graph(it->second)) {
-                continue;
-            }
+        for (auto const &[usage, bytes] : freed) {
             size_t lo = n, hi = 0;
-            for (size_t const node : node_uses) {
-                lo = std::min(lo, position[node]);
-                hi = std::max(hi, position[node]);
+            for (TensorUse const &use : usage->uses) {
+                lo = std::min(lo, position[use.pos]);
+                hi = std::max(hi, position[use.pos]);
             }
-            delta[lo] += static_cast<std::int64_t>(it->second.total_bytes());
-            delta[hi + 1] -= static_cast<std::int64_t>(it->second.total_bytes());
+            delta[lo] += bytes;
+            delta[hi + 1] -= bytes;
         }
         std::int64_t live = 0, peak = 0;
         for (size_t p = 0; p < n; ++p) {

@@ -236,6 +236,8 @@ using ::einsums::compute_graph::reads_destination;
  * Buffer-level and therefore conservative: two accesses through views of provably disjoint
  * slices of one parent still conflict. The executor's dependency scan is the one that proves
  * slices apart; a pass deciding whether it may move a node past another asks this instead.
+ * Where a buffer is used across the whole graph (its first and last use, how many nodes read
+ * it) is @ref UsageAnalysis, built on the same resolution.
  */
 struct BufferIo {
     std::unordered_set<TensorId> reads;  ///< Buffers the node reads.

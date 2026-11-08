@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/PermuteFusion.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
+#include <Einsums/ComputeGraph/UsageAnalysis.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -154,20 +155,13 @@ bool PermuteFusion::transform(Graph &graph) {
     // earlier version fused a permute whose output another node still wrote under a different name.
     auto const buffer_of = [&graph](TensorId id) { return graph.buffer_of(id); };
 
-    // Readers and value writers of every buffer, by node position. The permute's output has to
-    // have exactly one of each, the permute and its consumer: removing the permute leaves the
-    // buffer unwritten, and the redirect below hands the source's storage to EVERY id sharing it,
-    // so another writer would write into the caller's tensor and another reader would read it.
-    std::unordered_map<TensorId, std::vector<size_t>> readers;
-    std::unordered_map<TensorId, std::vector<size_t>> writers;
-    for (size_t nd = 0; nd < nodes.size(); nd++) {
-        for (auto tid : nodes[nd].inputs)
-            readers[buffer_of(tid)].push_back(nd);
-        if (is_lifecycle(nodes[nd].kind))
-            continue;
-        for (auto tid : nodes[nd].outputs)
-            writers[buffer_of(tid)].push_back(nd);
-    }
+    // Readers and value writers of every buffer, taken before any fusion rewrites a node. The
+    // permute's output has to have exactly one of each, the permute and its consumer: removing
+    // the permute leaves the buffer unwritten, and the redirect below hands the source's storage
+    // to EVERY id sharing it, so another writer would write into the caller's tensor and another
+    // reader would read it.
+    UsageAnalysis const usage   = UsageAnalysis::build(graph);
+    auto const          writers = value_writes_by_buffer(graph);
 
     auto const        guard = EscapeAnalysis::over(graph);
     std::vector<bool> remove(nodes.size(), false);
@@ -212,11 +206,15 @@ bool PermuteFusion::transform(Graph &graph) {
                 continue;
             }
 
-            // Safety: exactly one consumer. If the permuted tensor is
-            // read by multiple downstream nodes, removing the permute
-            // would break them.
+            // Safety: exactly one consumer, naming the permuted tensor once. Removing the permute
+            // breaks any other reader, and the fusion rewrites only this slot, so a consumer that
+            // reads the tensor in both slots would still read the unwritten buffer in the other.
             TensorId const permuted     = buffer_of(input_tid);
-            auto const     reader_count = readers[permuted].size();
+            auto const    *permuted_use = usage.find_owner(permuted); // never null: the consumer reads it
+            size_t const   other_nodes  = permuted_use->reads() - 1;  // readers besides the consumer
+            auto const     slots =
+                static_cast<size_t>(std::ranges::count_if(nodes[nd].inputs, [&](TensorId tid) { return buffer_of(tid) == permuted; }));
+            size_t const reader_count = other_nodes + slots;
             if (reader_count != 1) {
                 EINSUMS_LOG_INFO("PermuteFusion: skip {} (node {}): {} consumers, need exactly 1", nodes[prod_idx].label,
                                  nodes[prod_idx].id, reader_count);
@@ -224,10 +222,11 @@ bool PermuteFusion::transform(Graph &graph) {
                           fmt::format("permute node {} has {} consumers", nodes[prod_idx].id, reader_count));
                 continue;
             }
-            if (writers[permuted].size() != 1) {
+            auto const writer = writers.find(permuted);
+            if (auto const writer_count = writer != writers.end() ? writer->second.size() : 0; writer_count != 1) {
                 note_skip("something besides the permute writes the permuted tensor, and the redirect would send that write into the "
                           "permute's source",
-                          fmt::format("permute node {}: {} writers", nodes[prod_idx].id, writers[permuted].size()));
+                          fmt::format("permute node {}: {} writers", nodes[prod_idx].id, writer_count));
                 continue;
             }
 
