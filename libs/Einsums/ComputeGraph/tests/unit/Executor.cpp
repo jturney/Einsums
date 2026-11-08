@@ -750,6 +750,48 @@ TEST_CASE("IOPrefetch - empty graph", "[ComputeGraph][Passes][IO]") {
     CHECK_FALSE(modified);
 }
 
+TEST_CASE("IOPrefetch - a read stays behind a loop whose body reads its destination", "[ComputeGraph][Passes][IO][Loop]") {
+    // A Loop node lists none of what its body touches, so a scan of the nodes' own lists sees
+    // nothing between the read and the loop that reads the destination's old value. Moving the
+    // read ahead of the loop hands the body the loaded data instead.
+    bool const optimize = GENERATE(false, true);
+    CAPTURE(optimize);
+
+    auto data   = create_zero_tensor<double>("data", 4, 4);
+    auto acc    = create_zero_tensor<double>("acc", 4, 4);
+    auto result = create_zero_tensor<double>("result", 4, 4);
+    data.set_all(1.0);
+
+    cg::Graph g("read_after_loop");
+    auto     &body = g.add_loop("iter", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::axpy(1.0, data, &acc); // acc += data, the value before the read
+    }
+    {
+        cg::CaptureGuard const guard(g);
+        cg::read("load", "fake.h5", "/d", &data, [&]() {
+            for (size_t k = 0; k < data.size(); ++k)
+                data.data()[k] = 5.0;
+        });
+        cg::axpy(1.0, data, &result);
+    }
+
+    if (optimize) {
+        cg::PassManager pipeline = cg::PassManager::create_default();
+        g.apply(pipeline);
+    } else {
+        cg::passes::IOPrefetch ioprefetch;
+        (void)ioprefetch.run(g);
+    }
+    g.execute();
+
+    for (size_t k = 0; k < acc.size(); ++k) {
+        CHECK(acc.data()[k] == 1.0);
+        CHECK(result.data()[k] == 5.0);
+    }
+}
+
 TEST_CASE("IOPrefetch - hoists a loop-invariant DiskRead out of the loop body", "[ComputeGraph][Passes][IO][Loop]") {
     // A DiskRead whose destination is read-only in the body produces the
     // same data every iteration. Hoisting it before the loop means the file

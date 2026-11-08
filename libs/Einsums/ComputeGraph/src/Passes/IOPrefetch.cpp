@@ -7,13 +7,13 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/IOPrefetch.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
 #include <ranges>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -41,6 +41,9 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
     if (read_positions.empty())
         return false;
 
+    // Each node's buffer reads and writes, kept in step with the node list as reads move.
+    std::vector<BufferIo> io = buffer_io(graph);
+
     bool moved_any = false;
 
     for (unsigned long pos : std::views::reverse(read_positions)) {
@@ -53,31 +56,14 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
         // Earliest legal slot.
         size_t earliest = 0;
 
-        // (a) after producers of the read's inputs.
-        std::unordered_map<TensorId, size_t> last_writer;
-        for (size_t idx = 0; idx < nodes.size(); idx++) {
-            for (auto tid : nodes[idx].outputs) {
-                last_writer[tid] = idx;
-            }
-        }
-        for (auto tid : nodes[pos].inputs) {
-            auto wit = last_writer.find(tid);
-            if (wit != last_writer.end() && wit->second < pos) {
-                earliest = std::max(earliest, wit->second + 1);
-            }
-        }
-
-        // (b) after any prior node that reads or writes the read's outputs, by buffer: a view or
-        // a redirected slot of the destination is the destination.
-        for (auto out_tid : nodes[pos].outputs) {
-            TensorId const buffer  = graph.buffer_of(out_tid);
-            auto const     touches = [&](std::vector<TensorId> const &ids) {
-                return std::ranges::any_of(ids, [&](TensorId tid) { return graph.buffer_of(tid) == buffer; });
-            };
-            for (size_t idx = 0; idx < pos; idx++) {
-                if (touches(nodes[idx].inputs) || touches(nodes[idx].outputs)) {
-                    earliest = std::max(earliest, idx + 1);
-                }
+        // (a) and (b): after every prior node that writes what the read reads, or reads or writes
+        // what it writes. Asked of buffers, so a view or a redirected slot of the destination is
+        // the destination, and of effective I/O, so a Loop or Conditional counts for what its
+        // body touches: its own lists are empty, and the read floated ahead of a loop that still
+        // read the destination's old value.
+        for (size_t idx = 0; idx < pos; idx++) {
+            if (conflicts(io[idx], io[pos])) {
+                earliest = std::max(earliest, idx + 1);
             }
         }
 
@@ -97,6 +83,8 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
                              pos - earliest);
             std::rotate(nodes.begin() + static_cast<ptrdiff_t>(earliest), nodes.begin() + static_cast<ptrdiff_t>(pos),
                         nodes.begin() + static_cast<ptrdiff_t>(pos) + 1);
+            std::rotate(io.begin() + static_cast<ptrdiff_t>(earliest), io.begin() + static_cast<ptrdiff_t>(pos),
+                        io.begin() + static_cast<ptrdiff_t>(pos) + 1);
             num_prefetched++;
             moved_any = true;
         }
