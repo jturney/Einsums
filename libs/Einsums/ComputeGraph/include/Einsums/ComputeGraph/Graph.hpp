@@ -44,6 +44,7 @@
 #include <iosfwd>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -2328,6 +2329,25 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * inside a body gets a parent handle minted for it on first sight.
      */
     std::pair<std::vector<TensorId>, std::vector<TensorId>> subtree_io(Node const &node);
+
+    /// The storage a control-flow node's subtree reads and writes, before any of it is given an
+    /// id in this graph: one representative handle per buffer pointer, view aliases resolved,
+    /// lifecycle nodes left out, and a View's output not counted as a write.
+    struct SubtreeBuffers {
+        std::set<void const *>                         reads;
+        std::set<void const *>                         writes;
+        std::unordered_map<void const *, TensorHandle> handles; ///< A representative handle per pointer.
+    };
+
+    /**
+     * @brief The read-only half of @ref subtree_io: the buffer pointers the subtree touches.
+     *
+     * @ref subtree_io maps these to ids of this graph and mints an id for a buffer only the
+     * subtree names. A reader that may not change the graph (the JSON snapshot, which the
+     * profiler's server thread takes) looks them up with @ref find_tensor_id_by_ptr instead,
+     * which finds every buffer once the graph has been sorted, since the sort mints them.
+     */
+    [[nodiscard]] SubtreeBuffers subtree_buffers(Node const &node) const;
 
     /**
      * @brief Write each Setup node's own input/output lists from what its body touches.

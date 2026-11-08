@@ -141,16 +141,17 @@ void Graph::collect_subtree_referenced_ptrs(std::unordered_set<void const *> &ou
     });
 }
 
-std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::subtree_io(Node const &node) {
+Graph::SubtreeBuffers Graph::subtree_buffers(Node const &node) const {
     // Walk the node's subtree (body / branches, recursively) and collect the
     // buffer pointers it reads and writes, keeping one representative handle per
     // buffer. Each sub-graph resolves its own TensorIds, so we key on the stable
-    // tensor_ptr; the handle lets us register the buffer in the parent below if
+    // tensor_ptr; the handle lets subtree_io register the buffer in the parent if
     // it isn't already known there.
-    std::set<void const *>                         read_ptrs;
-    std::set<void const *>                         write_ptrs;
-    std::unordered_map<void const *, TensorHandle> rep_handle;
-    std::function<void(Graph const &)>             collect = [&](Graph const &sub) {
+    SubtreeBuffers                     found;
+    auto                              &read_ptrs  = found.reads;
+    auto                              &write_ptrs = found.writes;
+    auto                              &rep_handle = found.handles;
+    std::function<void(Graph const &)> collect    = [&](Graph const &sub) {
         for (auto const &nd : sub._nodes) {
             if (is_lifecycle(nd.kind)) {
                 continue;
@@ -183,6 +184,11 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::subtree_io(Node c
     };
 
     for_each_child_graph(node, collect);
+    return found;
+}
+
+std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::subtree_io(Node const &node) {
+    auto const [read_ptrs, write_ptrs, rep_handle] = subtree_buffers(node);
 
     // Map subtree buffer pointers back to this graph's TensorIds. A buffer used
     // only inside sub-graphs has no parent TensorId yet; register one (a stable

@@ -575,16 +575,32 @@ std::string Graph::to_json() const {
 
     // Dependency edges
     {
-        // Key by the owning buffer: a write through a view of T and a read of T
-        // (or of another view of it) share storage, so their dependency edge is
-        // only found once aliases resolve to the same id -- the same reason the
-        // schedulers resolve_alias before deriving edges.
+        // Key by the buffer (Graph::buffer_of: through a view to its parent, and through a slot
+        // redirect to the storage it now shares), so a write through a view of T and a read of T
+        // meet, and count what a Loop or Conditional body touches, which the node's own lists do
+        // not record: the edges are the ones the schedulers order by, not a picture of the lists.
+        // The snapshot may not change the graph, so a body's buffers are looked up rather than
+        // registered (see subtree_buffers); a buffer no sort has yet given a parent id is left out.
         std::unordered_map<TensorId, std::vector<size_t>> writers, readers;
         for (size_t i = 0; i < _nodes.size(); i++) {
+            std::set<TensorId> node_reads, node_writes; // one entry per node and buffer
             for (auto in_tid : _nodes[i].inputs)
-                readers[resolve_alias(in_tid)].push_back(i);
+                node_reads.insert(buffer_of(in_tid));
             for (auto out_tid : _nodes[i].outputs)
-                writers[resolve_alias(out_tid)].push_back(i);
+                node_writes.insert(buffer_of(out_tid));
+            if (is_control_flow(_nodes[i].kind)) {
+                auto const sub = subtree_buffers(_nodes[i]);
+                for (auto const [ptrs, into] : {std::pair{&sub.reads, &node_reads}, std::pair{&sub.writes, &node_writes}}) {
+                    for (void const *ptr : *ptrs) {
+                        if (TensorId const id = find_tensor_id_by_ptr(ptr); id != 0)
+                            into->insert(buffer_of(id));
+                    }
+                }
+            }
+            for (TensorId const buffer : node_reads)
+                readers[buffer].push_back(i);
+            for (TensorId const buffer : node_writes)
+                writers[buffer].push_back(i);
         }
 
         std::set<std::pair<size_t, size_t>> emitted;

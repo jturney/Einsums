@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/Json/Json.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -16,6 +17,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <set>
 #include <thread>
 
 #include <Einsums/Testing.hpp>
@@ -1227,6 +1229,40 @@ TEMPLATE_LIST_TEST_CASE("DataflowExecutor - wide fan-out", "[ComputeGraph][Execu
     for (size_t idx = 0; idx < N; idx++) {
         require_close(outputs[idx], A_scaled);
     }
+}
+
+TEST_CASE("Graph - to_json draws the edges a loop body's reads and writes make", "[ComputeGraph][Graph][Loop]") {
+    // A Loop node lists none of what its body touches, so edges drawn from the nodes' own lists
+    // left the loop unconnected: no edge from the node writing what the body reads, none to the
+    // node reading what the body writes.
+    auto data = create_random_tensor<double>("data", 4, 4);
+    auto acc  = create_zero_tensor<double>("acc", 4, 4);
+
+    cg::Graph g("json_loop_edges");
+    {
+        cg::CaptureGuard const guard(g);
+        cg::scale(2.0, &data); // 0: writes data
+    }
+    auto &body = g.add_loop("iter", 1, [](size_t) { return false; }); // 1: reads data, writes acc
+    {
+        cg::CaptureGuard const guard(body);
+        cg::axpy(1.0, data, &acc);
+    }
+    {
+        cg::CaptureGuard const guard(g);
+        cg::scale(3.0, &acc); // 2: reads and writes acc
+    }
+
+    auto const parsed = json::parse(g.to_json());
+    REQUIRE(parsed.has_value());
+    auto const *edges = parsed->as_object().peek("edges");
+    REQUIRE(edges != nullptr);
+    std::set<std::pair<std::int64_t, std::int64_t>> drawn;
+    for (json::Value const &edge : edges->as_array()) {
+        drawn.emplace(edge.as_object().peek("from")->as_int(), edge.as_object().peek("to")->as_int());
+    }
+    CHECK(drawn.contains({0, 1}));
+    CHECK(drawn.contains({1, 2}));
 }
 
 TEST_CASE("Graph - to_json is safe against concurrent graph mutation", "[ComputeGraph][Graph][Threads]") {
