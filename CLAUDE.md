@@ -34,10 +34,9 @@ cmake --build build --target Einsum1_test
 # Run all tests / a single test / a Catch2 case directly
 ctest --test-dir build -j4
 ctest --test-dir build -j4 -R "Einsum1"
-./build/libs/Einsums/TensorAlgebra/tests/unit/Einsum1_test "[test-case-name]" --einsums:debug:no-attach-debugger
+./build/libs/Einsums/TensorAlgebra/tests/unit/Einsum1_test "[test-case-name]"
 ```
 
-Run test binaries interactively with `--einsums:debug:no-attach-debugger`.
 Never run two builds or a build plus ctest concurrently against one build directory; verify with `ps aux | grep -E 'ninja|clang'` that a stopped build's compilers actually exited before starting the next.
 Header-compile tests invoke the compiler at ctest time; under heavy system load they time out spuriously, so check `uptime` before believing mass COMPILE_ONLY failures and rerun with `ctest --rerun-failed`.
 
