@@ -495,4 +495,31 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") SerializabilityBlocker {
                                                                   OpData const &desc, Graph &graph, std::span<TensorId const> inputs,
                                                                   std::span<TensorId const> outputs);
 
+/**
+ * @brief The executor @ref build_executor derives for @p node from its own fields.
+ *
+ * The element type and rank are read off the tensor that fixes them, the destination or, for a
+ * node that writes none, its first input; a node naming neither (control flow, a publish) has
+ * neither, and its kind reads neither.
+ * @param[in] node  The node.
+ * @param[in] graph The graph that resolves its operands.
+ * @return The executor.
+ * @throws std::invalid_argument As @ref build_executor does.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] EINSUMS_EXPORT std::function<void()> build_executor(Node const &node, Graph &graph);
+
+/**
+ * @brief Whether @ref build_executor can have an entry for nodes of @p kind at all.
+ *
+ * False means no node of the kind is ever built from its fields, so its executor is the one its
+ * capture site or pass wrote. True does not promise that every node of the kind builds: a
+ * reconstructible kind captured without its descriptor, or a transfer whose executor is the
+ * caller's, still does not.
+ * @param[in] kind The operation kind.
+ * @return True for a reconstructible, rebuild-only or codec-dispatched kind.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] EINSUMS_EXPORT bool may_build(OpKind kind) noexcept;
+
 EINSUMS_NAMESPACE_END(compute_graph)

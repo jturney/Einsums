@@ -1244,6 +1244,18 @@ TensorHandle const &lifecycle_handle(Graph &graph, DeclaredTensor const &declare
 
 } // namespace
 
+std::function<void()> build_executor(Node const &node, Graph &graph) {
+    TensorId const      typed  = !node.outputs.empty() ? node.outputs.front() : (!node.inputs.empty() ? node.inputs.front() : 0);
+    TensorHandle const *handle = typed != 0 ? graph.find_tensor(typed) : nullptr;
+    auto const          dtype  = handle != nullptr ? handle->dtype : packed_gemm::ScalarType::Unknown;
+    auto const          rank   = handle != nullptr ? handle->rank : std::size_t{0};
+    return build_executor(node.kind, dtype, rank, node.op_data, graph, node.inputs, node.outputs);
+}
+
+bool may_build(OpKind kind) noexcept {
+    return kind == OpKind::Custom || is_reconstructible(kind) || is_rebuild_only(kind);
+}
+
 bool is_rebuild_only(OpKind kind) noexcept {
     return is_grouped_raisable(kind) || kind == OpKind::Materialize || kind == OpKind::Free || kind == OpKind::Initialize ||
            kind == OpKind::DiskRead || kind == OpKind::DiskWrite;

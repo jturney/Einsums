@@ -274,3 +274,27 @@ TEST_CASE("NodeEdit - a pass-written executor keeps its own state through edits"
     p.graph.execute();
     CHECK(seen == 3);
 }
+
+TEST_CASE("NodeEdit - a captured executor the builder cannot make is kept as the node's own", "[ComputeGraph][NodeEdit][Capture]") {
+    // cg::custom records a Custom node with the caller's functor and no codec. Capture marks it as
+    // the capture site's own, so an edit keeps it, state and all, rather than refusing the node.
+    auto      T    = create_zero_tensor<double>("T", n, n);
+    int       seen = 0;
+    cg::Graph graph("captured_custom");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::custom("count", [count = 0, &seen]() mutable { seen = ++count; }, &T);
+    }
+    std::size_t const at = position_of(graph, cg::OpKind::Custom);
+    REQUIRE(graph.nodes()[at].custom_execute != nullptr);
+    graph.execute();
+    CHECK(seen == 1);
+    graph.edit(at, [](cg::NodeEdit &e) { e->label = "renamed"; });
+    graph.execute();
+    CHECK(seen == 2);
+}
+
+TEST_CASE("NodeEdit - a captured executor the builder can make is not marked", "[ComputeGraph][NodeEdit][Capture]") {
+    TwoProducts p;
+    CHECK(p.graph.nodes()[0].custom_execute == nullptr);
+}

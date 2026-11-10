@@ -261,6 +261,11 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
     }
 
   private:
+    /// Add @p node to the graph. Unless @p built says the builder made its executor, one the
+    /// builder could not have made is marked as the capture site's own (Node::custom_execute), so
+    /// an edit keeps it rather than refusing the node.
+    void add_recorded(Node node, bool built);
+
     /// A cached address→id mapping, plus the liveness token that says whether
     /// the tensor at that address is still the one the id was minted for.
     struct CachedId {

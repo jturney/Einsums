@@ -73,9 +73,30 @@ void CaptureContext::record(OpKind kind, std::string label, std::vector<TensorId
     node.outputs = std::move(outputs);
     node.op_data = std::move(op_data);
     node.effects = effects;
+    add_recorded(std::move(node), /*built=*/false);
+}
+
+void CaptureContext::add_recorded(Node node, bool built) {
     // A capture site lists the operands it reads; whether the destination is read too is the
     // prefactor's to say.
     sync_destination_input(node);
+
+    if (!built && node.execute) {
+        bool builds = may_build(node.kind);
+        if (builds) {
+            // A kind with an entry can still be recorded in a form the builder refuses: without
+            // its descriptor, or as a transfer the caller runs. The builder is the one to ask.
+            try {
+                (void)build_executor(node, *_graph);
+            } catch (std::exception const &) {
+                builds = false;
+            }
+        }
+        if (!builds) {
+            auto executor = std::move(node.execute);
+            use_custom_executor(node, std::move(executor));
+        }
+    }
 
     _graph->add_node(std::move(node));
 }
@@ -87,8 +108,14 @@ void CaptureContext::record_built(OpKind kind, std::string label, packed_gemm::S
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext::record_built called outside of capture");
     }
 
-    auto executor = build_executor(kind, dtype, rank, op_data, *_graph, build_inputs, build_outputs);
-    record(kind, std::move(label), std::move(inputs), std::move(outputs), std::move(executor), std::move(op_data));
+    Node node;
+    node.kind    = kind;
+    node.label   = std::move(label);
+    node.execute = build_executor(kind, dtype, rank, op_data, *_graph, build_inputs, build_outputs);
+    node.inputs  = std::move(inputs);
+    node.outputs = std::move(outputs);
+    node.op_data = std::move(op_data);
+    add_recorded(std::move(node), /*built=*/true);
 }
 
 void CaptureContext::record_async(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs,
@@ -107,6 +134,16 @@ void CaptureContext::record_async(OpKind kind, std::string label, std::vector<Te
     node.inputs       = std::move(inputs);
     node.outputs      = std::move(outputs);
     node.op_data      = std::move(op_data);
+    // Every half of an asynchronous transfer is the caller's: kept once, so an edit wraps the
+    // same callables rather than copies of them.
+    if (node.async_start) {
+        node.custom_async_start = std::make_shared<std::function<void()>>(std::move(node.async_start));
+        node.async_start        = [shared = node.custom_async_start]() { (*shared)(); };
+    }
+    if (node.execute) {
+        auto executor = std::move(node.execute);
+        use_custom_executor(node, std::move(executor));
+    }
 
     _graph->add_node(std::move(node));
 }

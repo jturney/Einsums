@@ -95,14 +95,8 @@ void Graph::edit(std::size_t index, std::function<void(NodeEdit &)> const &chang
             }
             core = calling(node.custom_execute);
         } else {
-            // The operand that fixes the executor's element type: the destination, else the
-            // first input. A node naming neither (control flow, a publish) has none.
-            TensorId const      typed  = !node.outputs.empty() ? node.outputs.front() : (!node.inputs.empty() ? node.inputs.front() : 0);
-            TensorHandle const *handle = typed != 0 ? find_tensor(typed) : nullptr;
-            auto const          dtype  = handle != nullptr ? handle->dtype : packed_gemm::ScalarType::Unknown;
-            auto const          rank   = handle != nullptr ? handle->rank : std::size_t{0};
             try {
-                core = build_executor(node.kind, dtype, rank, node.op_data, *this, node.inputs, node.outputs);
+                core = build_executor(node, *this);
             } catch (std::exception const &e) {
                 EINSUMS_THROW_EXCEPTION(std::logic_error,
                                         "Graph '{}': node '{}' cannot be given an executor from its fields ({}); a pass that writes "
