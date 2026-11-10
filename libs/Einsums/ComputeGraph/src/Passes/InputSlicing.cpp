@@ -137,8 +137,11 @@ bool InputSlicing::transform(Graph &graph) {
     std::ranges::sort(insertions, [](SliceInsertion const &a, SliceInsertion const &b) { return a.einsum_idx > b.einsum_idx; });
 
     for (auto const &ins : insertions) {
-        auto  tokens     = std::make_shared<std::vector<std::pair<TensorId, size_t>>>();
-        auto &tensor_map = graph.tensors_map();
+        auto tokens = std::make_shared<std::vector<std::pair<TensorId, size_t>>>();
+        // The executors look the hooks up through the anchor, never a reference into this graph:
+        // the graph may be moved after the pass, and a reference to its tensor table would then
+        // name the moved-from object.
+        auto const anchor = graph.anchor();
 
         // EndSlice AFTER the node
         Node end_node;
@@ -146,7 +149,8 @@ bool InputSlicing::transform(Graph &graph) {
         end_node.label = "end_slice";
         // Ends the local views begin_slice opened, state the node's (empty) tensor lists do not show.
         end_node.effects = opaque_effects;
-        end_node.execute = [tokens, &tensor_map]() {
+        end_node.execute = [tokens, anchor]() {
+            auto const &tensor_map = anchor->graph().tensors_map();
             for (auto const &[tid, token] : *tokens) {
                 auto it = tensor_map.find(tid);
                 if (it != tensor_map.end() && it->second.end_local_view_fn) {
@@ -163,7 +167,8 @@ bool InputSlicing::transform(Graph &graph) {
         begin_node.label = "begin_slice";
         // Opens local views of its tensors, state the node's (empty) tensor lists do not show.
         begin_node.effects = opaque_effects;
-        begin_node.execute = [slices_copy, tokens, &tensor_map]() {
+        begin_node.execute = [slices_copy, tokens, anchor]() {
+            auto const &tensor_map = anchor->graph().tensors_map();
             tokens->clear();
             for (auto const &s : slices_copy) {
                 auto it = tensor_map.find(s.tid);
