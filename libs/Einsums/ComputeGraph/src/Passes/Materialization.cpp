@@ -5,6 +5,7 @@
 
 #include <Einsums/ComputeGraph/Detail/BackedWrites.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
@@ -33,40 +34,12 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
-/// The executor that fills a backed tensor whole from its backing, after its Materialize.
-///
-/// Reads the tensor's storage through @ref TensorHandle::impl_fn at run time rather than any
-/// pointer known now, since the memory planner may place it anywhere. The backing writes its
-/// storage's column-major order, and a tensor laid out otherwise (row-major, as Python declares
-/// one) is filled through a scatter by its strides.
-std::function<void()> load_whole(TensorHandle const &handle) {
-    if (!handle.backing) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "Materialization: tensor '{}' is initialized from a backing but carries none",
-                                handle.name);
-    }
-    if (!handle.impl_fn) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "Materialization: backed tensor '{}' has no storage accessor to fill", handle.name);
-    }
-    return [backing = handle.backing, impl_fn = handle.impl_fn, dtype = handle.dtype, name = handle.name]() {
-        compute_graph::detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-            auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(impl_fn());
-            if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
-                EINSUMS_THROW_EXCEPTION(std::logic_error, "backed tensor '{}' has no storage to fill from {}", name, backing->describe());
-            }
-            std::vector<std::pair<std::size_t, std::size_t>> ranges;
-            ranges.reserve(backing->dims.size());
-            for (std::size_t const extent : backing->dims) {
-                ranges.emplace_back(0, extent);
-            }
-            detail::fill_from_backing(*backing, impl->data(), *impl, ranges);
-        });
-    };
-}
-
 // Build the Materialize (and optional Initialize) node for a single
 // deferred tensor. The returned vector either has size 1 (Materialize
 // only) or 2 (Materialize + Initialize).
 //
+// @param graph          The graph the nodes land in, which resolves ``emit_tid``.
+// @param owner          The graph that declares the tensor, whose registry holds ``handle``.
 // @param handle         Mutable handle whose ``materialize_fn`` /
 //                       ``init_kind`` / distribution metadata drives the
 //                       node's execute closure.
@@ -78,12 +51,11 @@ std::function<void()> load_whole(TensorHandle const &handle) {
 //                       For a hoisted body tensor this is a parent id
 //                       minted via Graph::find_or_register_tensor_ptr,
 //                       not the body's own id.
-std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid, InitKind init,
-                                        std::shared_ptr<compute_graph::detail::RunContext> const &context) {
+std::vector<Node> build_lifecycle_nodes(Graph &graph, Graph &owner, TensorHandle &handle, TensorId emit_tid, InitKind init) {
     std::vector<Node> out;
 
     // ── Materialize ────────────────────────────────────────────────────
-    out.push_back(lifecycle::make_materialize_node(handle, emit_tid, context));
+    out.push_back(lifecycle::make_materialize_node(graph, owner, handle, emit_tid));
 
     // ── Initialize (optional) ──────────────────────────────────────────
     if (init != InitKind::None) {
@@ -94,32 +66,22 @@ std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid,
         InitializeDescriptor desc;
         desc.tensor_id    = handle.id;
         desc.kind         = init;
+        desc.declared     = lifecycle::declared_tensor(graph, owner, handle, emit_tid);
         init_node.op_data = desc;
 
         if (init == InitKind::Zero) {
-            init_node.label   = fmt::format("init_zero({})", handle.name);
-            auto zero_fn      = handle.zero_fn;
-            init_node.execute = [zero_fn]() {
-                if (zero_fn) {
-                    zero_fn();
-                }
-            };
+            init_node.label = fmt::format("init_zero({})", handle.name);
         } else if (init == InitKind::Random) {
-            init_node.label   = fmt::format("init_random({})", handle.name);
-            auto random_fn    = handle.random_fn;
-            init_node.execute = [random_fn]() {
-                if (random_fn) {
-                    random_fn();
-                }
-            };
+            init_node.label = fmt::format("init_random({})", handle.name);
         } else if (init == InitKind::FromDisk) {
             // Carries the storage's name, so the scheduler orders it after every node that writes
             // the storage: a tensor produced a slab at a time into storage is read back here.
             desc.source_path  = handle.backing ? handle.backing->describe() : std::string{};
             init_node.op_data = desc;
-            init_node.execute = load_whole(handle);
             init_node.label   = fmt::format("init_from_backing({})", handle.name);
         }
+        init_node.execute =
+            build_executor(init_node.kind, handle.dtype, handle.rank, init_node.op_data, graph, init_node.inputs, init_node.outputs);
 
         out.push_back(std::move(init_node));
     }
@@ -725,9 +687,9 @@ bool Materialization::transform(Graph &graph) {
     // build_lifecycle_nodes plus the two counters that always move with it: every
     // lifecycle this pass emits materializes one tensor, and initializes it as well
     // when the handle asks for it. Kept together so the three cannot drift.
-    auto lifecycle_for = [this, &init_of, &graph](TensorHandle &handle, TensorId emit_tid) {
+    auto lifecycle_for = [this, &init_of](Graph &target, Graph &owner, TensorHandle &handle, TensorId emit_tid) {
         InitKind const init  = init_of(handle);
-        auto           built = build_lifecycle_nodes(handle, emit_tid, init, graph.run_context());
+        auto           built = build_lifecycle_nodes(target, owner, handle, emit_tid, init);
         _num_materialized++;
         if (init != InitKind::None) {
             _num_initialized++;
@@ -769,7 +731,7 @@ bool Materialization::transform(Graph &graph) {
 
         if (Graph *body = setup_body_writing(handle.tensor_ptr); body != nullptr) {
             if (auto const body_tid = body_tid_for(*body, handle.tensor_ptr); body_tid.has_value()) {
-                auto body_nodes = lifecycle_for(handle, *body_tid);
+                auto body_nodes = lifecycle_for(*body, *r.owner, handle, *body_tid);
                 // Named after the body the search FOUND, not the node at the request's position.
                 applied(Materialized, fmt::format("materialize deferred tensor '{}' inside setup body '{}'", handle.name, body->name()),
                         Decision{.graph = body->name(), .tensors = {handle.name}}, 2);
@@ -783,7 +745,7 @@ bool Materialization::transform(Graph &graph) {
         // has not yet), so the Loop / Conditional node gets a RAW edge after
         // these lifecycle nodes instead of floating as an edgeless root.
         TensorId const emit_tid  = r.owns_tid ? r.tid : graph.find_or_register_tensor_ptr(handle);
-        auto           new_nodes = lifecycle_for(handle, emit_tid);
+        auto           new_nodes = lifecycle_for(graph, *r.owner, handle, emit_tid);
         EINSUMS_LOG_INFO("Materialization: materialize({}) at position {} (owns_tid={})", handle.name, r.position, r.owns_tid);
         applied(Materialized,
                 fmt::format("materialize deferred tensor '{}' at position {}{}", handle.name, r.position,
@@ -848,7 +810,7 @@ bool Materialization::transform(Graph &graph) {
                      Decision{.tensors = {handle.name}});
                 continue;
             }
-            for (auto &node : lifecycle_for(handle, tid)) {
+            for (auto &node : lifecycle_for(body, body, handle, tid)) {
                 body_lifecycle.push_back(std::move(node));
             }
             applied(Materialized, fmt::format("materialize setup-body scratch '{}' inside '{}'", handle.name, setup_label),

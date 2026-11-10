@@ -25,6 +25,7 @@
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 #include <Einsums/Testing/TensorCompare.hpp>
 
 #include <complex>
@@ -207,21 +208,18 @@ TEST_CASE("ExecutorBuilder - the predicate and the builder's dispatch agree", "[
     // refuses a node it could actually reconstruct. Walk EVERY kind and require
     // the two to answer the same.
     //
-    // The grouped family is exempt, and the exemption is a decision rather than
-    // a hole: it has a builder entry, because a region rewrite that raised one
-    // rebuilds its shape parameters from the live operands, and it deliberately
-    // has no bit, because a group table is a function of one problem's extents
-    // and a file holding it would be wrong at the next geometry. That is the
-    // only pair of answers this walk is allowed to see disagree, and naming the
-    // set here is what keeps a genuinely forgotten bit from hiding behind it.
+    // The rebuild-only kinds are exempt, and the exemption is a decision rather
+    // than a hole: each has a builder entry and deliberately has no bit. The
+    // grouped family's group table is a function of one problem's extents, and
+    // a file holding it would be wrong at the next geometry; the lifecycle
+    // kinds are placed by the resource phase for one machine. Those are the
+    // only answers this walk is allowed to see disagree, and they are required
+    // to disagree in exactly that direction: an entry, and no bit. Naming the
+    // set is what keeps a genuinely forgotten bit from hiding behind it.
     cg::Graph graph("agreement");
 
     for (int raw = 0; raw <= static_cast<int>(cg::OpKind::Custom); ++raw) {
         auto const kind = static_cast<cg::OpKind>(raw);
-        if (cg::is_grouped_raisable(kind)) {
-            REQUIRE_FALSE(cg::is_reconstructible(kind));
-            continue;
-        }
         INFO("kind: " << cg::op_kind_name(kind));
 
         // Called with no operands and no descriptor, so a kind WITH an entry
@@ -237,6 +235,11 @@ TEST_CASE("ExecutorBuilder - the predicate and the builder's dispatch agree", "[
         REQUIRE_FALSE(message.empty());
 
         bool const says_no_entry = message.find("has no builder entry") != std::string::npos;
+        if (cg::is_rebuild_only(kind)) {
+            REQUIRE_FALSE(says_no_entry);
+            REQUIRE_FALSE(cg::is_reconstructible(kind));
+            continue;
+        }
         REQUIRE(says_no_entry == !cg::is_reconstructible(kind));
     }
 }
@@ -2527,4 +2530,145 @@ TEST_CASE("ExecutorBuilder - a callback write_param runs and reports its arm", "
     }
     graph.execute();
     REQUIRE(graph.params_ptr()->get("n") == 4);
+}
+
+// ── Lifecycle kinds ─────────────────────────────────────────────────────────
+
+TEST_CASE("ExecutorBuilder - rebuilt lifecycle executors run a hoisted scratch's lifecycle on every replay",
+          "[ComputeGraph][ExecutorBuilder][Lifecycle][Loop]") {
+    // A scratch declared in a loop body has its Materialize, Initialize and Free hoisted to the
+    // parent, where they name the parent's id for it while their descriptors keep the body's. The
+    // rebuilt executors must reach the tensor through the node's operand lists. The body ADDS into
+    // the scratch, so a missing zero-initialization is a wrong answer, and the graph runs twice, so
+    // the second replay must allocate the scratch again after the Free and zero it again.
+    constexpr std::size_t n   = 6;
+    auto                  A   = create_random_tensor<double>("A", n, n);
+    auto                  acc = create_zero_tensor<double>("acc", n, n);
+
+    cg::Graph graph("hoisted_lifecycle");
+    auto     &body = graph.add_loop("iter", 2, [](std::size_t it) { return it < 2; });
+    {
+        cg::CaptureGuard const guard(body);
+        auto                  &W = body.scratch_zero<double, 2>("W", n, n);
+        cg::einsum("ik;kj->ij", 1.0, &W, 1.0, A, A);   // W += A A, so W is A A then 2 A A
+        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, W, A); // acc += W A
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::Materialization>();
+    pm.add<cg::passes::FreeInsertion>(std::size_t{0});
+    graph.apply(pm);
+
+    std::size_t rebuilt = 0;
+    for (auto &node : graph.nodes()) {
+        if (!cg::is_rebuild_only(node.kind) || cg::is_grouped_raisable(node.kind)) {
+            continue;
+        }
+        cg::TensorId const tid    = node.outputs.empty() ? node.inputs.front() : node.outputs.front();
+        auto const        &handle = graph.tensor(tid);
+        node.execute = cg::build_executor(node.kind, handle.dtype, handle.rank, node.op_data, graph,
+                                          std::span<cg::TensorId const>{node.inputs}, std::span<cg::TensorId const>{node.outputs});
+        ++rebuilt;
+    }
+    REQUIRE(rebuilt == 3); // Materialize, Initialize, Free
+
+    // Over one replay acc gains A A A + 2 A A A.
+    Tensor<double, 2> AA("AA", n, n);
+    Tensor<double, 2> AAA("AAA", n, n);
+    testing::reference_einsum("ij <- ik ; kj", 0.0, &AA, 1.0, A, A);
+    testing::reference_einsum("ij <- ik ; kj", 0.0, &AAA, 1.0, AA, A);
+
+    for (int replay = 1; replay <= 2; ++replay) {
+        INFO("replay " << replay);
+        acc.zero();
+        graph.execute();
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t j = 0; j < n; ++j) {
+                CHECK_THAT(acc(i, j), Catch::Matchers::WithinRel(3.0 * AAA(i, j), 1e-12));
+            }
+        }
+    }
+}
+
+TEST_CASE("ExecutorBuilder - a scalar's lifecycle and Alloc nodes rebuild", "[ComputeGraph][ExecutorBuilder][Lifecycle]") {
+    // A rank-0 tensor is a real destination (a dot's result), and its Alloc node used to be refused
+    // on rebuild as if a rank-0 operand were malformed. No lifecycle kind does anything that depends
+    // on its tensor's rank.
+    cg::Graph graph("scalar_lifecycle");
+    auto     &E = graph.create_zero_runtime_tensor<double>("E", std::vector<std::size_t>{}, false);
+    (void)E;
+    cg::Node const *alloc = find_node(graph, cg::OpKind::Alloc);
+    REQUIRE(alloc != nullptr);
+    auto const &handle = graph.tensor(alloc->outputs.front());
+    REQUIRE(handle.rank == 0);
+    for (auto const kind : {cg::OpKind::Alloc, cg::OpKind::Materialize}) {
+        INFO("kind: " << cg::op_kind_name(kind));
+        auto const executor = cg::build_executor(kind, handle.dtype, 0, alloc->op_data, graph, std::span<cg::TensorId const>{alloc->inputs},
+                                                 std::span<cg::TensorId const>{alloc->outputs});
+        REQUIRE(static_cast<bool>(executor));
+    }
+}
+
+TEST_CASE("ExecutorBuilder - an Initialize node that initializes nothing is refused", "[ComputeGraph][ExecutorBuilder][Lifecycle]") {
+    cg::Graph graph("init_none");
+    auto     &T = graph.create_zero_runtime_tensor<double>("T", std::vector<std::size_t>{2, 2}, false);
+    (void)T;
+    cg::Node const *alloc = find_node(graph, cg::OpKind::Alloc);
+    REQUIRE(alloc != nullptr);
+    cg::InitializeDescriptor desc;
+    desc.kind = cg::InitKind::None;
+    REQUIRE_THROWS_WITH(cg::build_executor(cg::OpKind::Initialize, packed_gemm::ScalarType::Float64, 2, cg::OpData{desc}, graph, {},
+                                           std::span<cg::TensorId const>{alloc->outputs}),
+                        Catch::Matchers::ContainsSubstring("initializes nothing"));
+}
+
+TEST_CASE("ExecutorBuilder - a setup body's Initialize reaches the parent's declaration",
+          "[ComputeGraph][ExecutorBuilder][Lifecycle][Setup]") {
+    // A tensor the parent declares and a setup body fills gets its lifecycle inside the body, where
+    // the body's copy of its handle, registered when capture first named it there, carries no
+    // zeroing hook. Built from that copy, the Initialize zeroed nothing, and the body's addition
+    // landed on whatever the allocation held; only fresh memory being zero hid it.
+    auto ones = create_zero_tensor<double>("ones", 2, 2);
+    auto out  = create_zero_tensor<double>("out", 2, 2);
+    for (std::size_t i = 0; i < 2; ++i) {
+        for (std::size_t j = 0; j < 2; ++j) {
+            ones(i, j) = 1.0;
+        }
+    }
+
+    cg::Graph  graph("setup_initialize");
+    auto      &fit  = graph.scratch_zero<double, 2>("fit", 2, 2);
+    cg::Graph *body = nullptr;
+    {
+        body = &graph.add_setup("fit");
+        cg::CaptureGuard const guard(*body);
+        cg::axpy(1.0, ones, &fit); // adds into fit
+    }
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("ij <- ij", 0.0, &out, 1.0, fit);
+    }
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+
+    cg::Node const *init = find_node(*body, cg::OpKind::Initialize);
+    REQUIRE(init != nullptr);
+    auto const *desc = init->op_data.get_if<cg::InitializeDescriptor>();
+    REQUIRE(desc != nullptr);
+    REQUIRE(desc->kind == cg::InitKind::Zero);
+    // The shape this case pins: the node and a hook-less copy in the body, the declaration in the
+    // parent.
+    REQUIRE_FALSE(static_cast<bool>(body->tensor(init->outputs.front()).zero_fn));
+    REQUIRE(desc->declared.graph != nullptr);
+    REQUIRE(&desc->declared.graph->graph() == &graph);
+
+    graph.execute();
+    REQUIRE(out(0, 0) == 1.0);
+
+    // fit holds the body's sum now; the Initialize, rebuilt, must clear it.
+    auto const zero = cg::build_executor(cg::OpKind::Initialize, packed_gemm::ScalarType::Float64, 2, init->op_data, *body,
+                                         std::span<cg::TensorId const>{init->inputs}, std::span<cg::TensorId const>{init->outputs});
+    zero();
+    CHECK(fit(0, 0) == 0.0);
+    CHECK(fit(1, 1) == 0.0);
 }

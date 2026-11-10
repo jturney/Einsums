@@ -372,7 +372,8 @@ EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
  * @note The GROUPED kinds are deliberately false although @ref build_executor
  *       handles them: a group table is a function of one problem's extents,
  *       and saving it would freeze that problem into the file. Saving one
- *       means saving the algebraic form and re-grouping on load.
+ *       means saving the algebraic form and re-grouping on load. They and the
+ *       lifecycle kinds are the @ref is_rebuild_only set.
  */
 [[nodiscard]] constexpr bool is_reconstructible(OpKind kind) noexcept {
     switch (kind) {
@@ -399,6 +400,22 @@ EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
         return false;
     }
 }
+
+/**
+ * @brief Whether @ref build_executor handles @p kind although a save refuses it by design.
+ *
+ * Two families. The grouped kinds (@ref is_grouped_raisable): a group table is a
+ * function of one problem's extents, so a file holds the algebraic form and the
+ * load groups it again. The lifecycle kinds Materialize, Free and Initialize:
+ * the resource phase places them for one machine, so a file holds the graph
+ * before that phase, and the phase runs again after a load. A node of either
+ * family still rebuilds in this process, which is what an edit to it needs.
+ *
+ * @param[in] kind The operation kind.
+ * @return True when a builder entry exists and @ref is_reconstructible is false on purpose.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] EINSUMS_EXPORT bool is_rebuild_only(OpKind kind) noexcept;
 
 /**
  * @brief One node that blocks a graph from being saved, and what blocks it.

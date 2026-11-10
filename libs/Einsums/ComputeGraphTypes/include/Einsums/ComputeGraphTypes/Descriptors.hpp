@@ -10,6 +10,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <complex>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -124,6 +125,27 @@ struct GroupedBatchedGemmDescriptor {
     bool blocked{false};
 };
 
+class GraphAnchor;
+
+/**
+ * @brief Where a lifecycle node's tensor is declared, when that is a graph other than the node's.
+ *
+ * A loop body's scratch is materialized in the parent, and a parent's tensor can be materialized
+ * inside a setup body. The node's own graph then holds only a copy of the tensor's handle,
+ * registered when the tensor was first named there, and the copy need not carry the hooks the
+ * declaration does. The node's executor therefore reads the declaration, through the declaring
+ * graph's anchor, which follows that graph through moves.
+ *
+ * Held only in memory: the kinds that carry one are placed by the resource phase, which runs
+ * again after a load, so no saved graph holds one.
+ *
+ * @versionadded{2.0.0}
+ */
+struct DeclaredTensor {
+    std::shared_ptr<GraphAnchor const> graph; ///< The declaring graph; null when it is the node's own.
+    TensorId                           id{0}; ///< The tensor's id in the declaring graph.
+};
+
 /**
  * @brief Metadata for memory allocation/deallocation nodes.
  *
@@ -135,6 +157,8 @@ struct AllocDescriptor {
     TensorId                          tensor_id{0};  ///< Which tensor this alloc/free refers to
     size_t                            size_bytes{0}; ///< Size of the allocation in bytes
     std::string                       tensor_name;   ///< Name for debugging
+    /// Where the tensor is declared, for a Materialize or Free placed in another graph.
+    DeclaredTensor declared;
 };
 
 /**
@@ -177,6 +201,8 @@ struct InitializeDescriptor {
     TensorId                          tensor_id{0};
     InitKind                          kind{InitKind::Zero};
     std::string                       source_path; ///< File path for FromDisk initialization
+    /// Where the tensor is declared, for an Initialize placed in another graph.
+    DeclaredTensor declared;
 };
 
 /**

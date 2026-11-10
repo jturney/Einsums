@@ -16,6 +16,7 @@
 #include <Einsums/ComputeGraph/InterfaceManifest.hpp>
 #include <Einsums/ComputeGraph/LaplaceQuadrature.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
+#include <Einsums/ComputeGraph/TensorExpr.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra.hpp>
@@ -44,6 +45,7 @@
 #include <variant>
 #include <vector>
 
+#include "LifecycleExecutors.hpp"
 #include "StridedBatchedEinsum.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -1228,6 +1230,23 @@ void refresh_gemm_hint(Graph &graph, Node &node) {
     desc->gemm_hint = derive_gemm_hint(destination->dtype, desc->spec, graph, node.inputs[0], node.inputs[1], node.outputs[0]);
 }
 
+namespace {
+
+/// The handle a lifecycle node's executor reads: the declaration, wherever it lives. A copy
+/// registered in the node's own graph need not carry the declaration's hooks.
+TensorHandle const &lifecycle_handle(Graph &graph, DeclaredTensor const &declared, TensorId operand) {
+    if (declared.graph) {
+        return declared.graph->graph().tensor(declared.id);
+    }
+    return graph.tensor(operand);
+}
+
+} // namespace
+
+bool is_rebuild_only(OpKind kind) noexcept {
+    return is_grouped_raisable(kind) || kind == OpKind::Materialize || kind == OpKind::Free || kind == OpKind::Initialize;
+}
+
 std::string reconstruction_blocker(Node const &node) {
     // A Custom node carrying a registered descriptor is rebuilt by its codec.
     if (node.kind == OpKind::Custom && find_descriptor_codec(node.op_data.name()) != nullptr) {
@@ -1247,6 +1266,11 @@ std::string reconstruction_blocker(Node const &node) {
         case OpKind::GroupedBatchedGemm:
             return "batched forms are a resource decision and are deliberately not saved; capture the "
                    "per-member operations and let the resource phase group them";
+        case OpKind::Materialize:
+        case OpKind::Free:
+        case OpKind::Initialize:
+            return "lifecycle nodes are placed by the resource phase for one machine and are deliberately not saved; "
+                   "save before that phase and run it again after loading";
         default:
             break;
         }
@@ -1457,9 +1481,10 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
     // a trace writing a registered scalar, a write_param, whose destination is a
     // ParamTable entry that no tensor names at all, and the two control-flow
     // kinds, which have no tensor destination of any rank. Rank is not
-    // dispatched on anyway; see the header.
-    bool const scalar_destination_ok =
-        kind == OpKind::Einsum || kind == OpKind::Dot || kind == OpKind::Trace || kind == OpKind::WriteParam || is_control_flow(kind);
+    // dispatched on anyway; see the header. The lifecycle kinds name a tensor of any rank,
+    // a registered scalar included, and do nothing that depends on it.
+    bool const scalar_destination_ok = kind == OpKind::Einsum || kind == OpKind::Dot || kind == OpKind::Trace ||
+                                       kind == OpKind::WriteParam || is_control_flow(kind) || is_lifecycle(kind);
     if (rank == 0 && !scalar_destination_ok) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): rank must be at least 1", kind);
     }
@@ -1594,6 +1619,23 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
         need(kind, "outputs", outputs, 1);
         (void)expect<AllocDescriptor>(kind, desc, "AllocDescriptor");
         return [] {};
+    // The resource kinds read the tensor's declaration: the one the descriptor names when the
+    // node sits in another graph than the declaring one, else the operand's own handle.
+    case OpKind::Materialize: {
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<AllocDescriptor>(kind, desc, "AllocDescriptor");
+        return detail::build_materialize(lifecycle_handle(graph, d.declared, outputs[0]), graph.run_context());
+    }
+    case OpKind::Free: {
+        need(kind, "inputs", inputs, 1);
+        auto const &d = expect<AllocDescriptor>(kind, desc, "AllocDescriptor");
+        return detail::build_free(lifecycle_handle(graph, d.declared, inputs[0]), graph.run_context());
+    }
+    case OpKind::Initialize: {
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<InitializeDescriptor>(kind, desc, "InitializeDescriptor");
+        return detail::build_initialize(d.kind, lifecycle_handle(graph, d.declared, outputs[0]));
+    }
     default:
         break;
     }

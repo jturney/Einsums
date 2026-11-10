@@ -151,6 +151,7 @@ set(ComputeGraphSources
     Operations/Shape.cpp
     Operations/Unary.cpp
     ExecutorBuilder.cpp
+    LifecycleExecutors.cpp
     ABILayout.cpp
     Graph.cpp
     Graph/GpuDispatch.cpp

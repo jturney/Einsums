@@ -5,12 +5,11 @@
 
 #pragma once
 
-#include <Einsums/ComputeGraph/Detail/RunContext.hpp>
+#include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
-#include <memory>
 #include <span>
 #include <string_view>
 
@@ -21,16 +20,18 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes::lifecycle)
  *
  * Allocates the tensor through its handle; a distributed tensor is first resized to its local
  * partition. Carries an @ref AllocDescriptor naming the tensor, which is how a later pass asks
- * whether one already exists. The id is left for the caller, which knows which graph the node
- * lands in.
- * @param[in] handle   The tensor's handle.
+ * whether one already exists. The id is left for the caller. The executor is the one
+ * @ref build_executor gives the node, so it rebuilds after an edit like any other, and it counts
+ * the bytes it allocates on @p graph's run context for @ref Graph::last_run: only when it
+ * allocates, since a replay that finds the tensor still held does nothing.
+ * @param[in] graph    The graph the node lands in, which resolves @p emit_tid.
+ * @param[in] owner    The graph that declares the tensor, whose registry holds @p handle. When it is
+ *                     not @p graph, the node's descriptor names it, since the copy of the handle in
+ *                     @p graph need not carry the hooks the executor reads.
+ * @param[in] handle   The tensor's handle, as @p owner declares it.
  * @param[in] emit_tid The id the node writes: the handle's own, or a parent id for a hoisted body tensor.
- * @param[in] context  The run context of the graph the node lands in, which counts the bytes the
- *            node allocates for @ref Graph::last_run. Counted only when the node allocates: on a
- *            replay that finds the tensor still held, it does nothing and counts nothing.
  */
-[[nodiscard]] Node make_materialize_node(TensorHandle const &handle, TensorId emit_tid,
-                                         std::shared_ptr<compute_graph::detail::RunContext> context);
+[[nodiscard]] Node make_materialize_node(Graph &graph, Graph &owner, TensorHandle const &handle, TensorId emit_tid);
 
 /**
  * @brief A Free node for @p handle, releasing it through its handle.
@@ -38,12 +39,23 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes::lifecycle)
  * The tensor is both an input and an output: the input orders the Free after the last writer, and
  * the output makes it a writer itself, so the dependency builder orders it after every prior reader
  * too. With only the input a concurrent executor could release the buffer under a reader.
- * @param[in] handle   The tensor's handle.
+ * @param[in] graph    The graph the node lands in, which resolves @p emit_tid; its run context
+ *                     counts the bytes the node releases, as for make_materialize_node.
+ * @param[in] owner    The graph that declares the tensor; see make_materialize_node.
+ * @param[in] handle   The tensor's handle, as @p owner declares it.
  * @param[in] emit_tid The id the node writes.
- * @param[in] context  The run context that counts the bytes it releases; see make_materialize_node.
  */
-[[nodiscard]] Node make_free_node(TensorHandle const &handle, TensorId emit_tid,
-                                  std::shared_ptr<compute_graph::detail::RunContext> context);
+[[nodiscard]] Node make_free_node(Graph &graph, Graph &owner, TensorHandle const &handle, TensorId emit_tid);
+
+/**
+ * @brief Where a lifecycle node placed in @p graph finds its tensor's declaration.
+ * @param[in] graph    The graph the node lands in.
+ * @param[in] owner    The graph that declares the tensor.
+ * @param[in] handle   The tensor's handle, as @p owner declares it.
+ * @param[in] emit_tid The id the node names the tensor by in @p graph.
+ * @return Empty when the node's own operand names the declaration, else @p owner and its id.
+ */
+[[nodiscard]] DeclaredTensor declared_tensor(Graph &graph, Graph &owner, TensorHandle const &handle, TensorId emit_tid);
 
 /// The tensor a lifecycle node (Alloc, Materialize, Free) allocates or releases, or empty for any other node.
 [[nodiscard]] std::string_view lifecycle_tensor_name(Node const &node) noexcept;
