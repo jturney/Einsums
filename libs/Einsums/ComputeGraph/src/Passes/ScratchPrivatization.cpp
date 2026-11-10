@@ -92,37 +92,39 @@ bool rebuildable(Graph &graph, Node const &nd) {
     }
 }
 
-/// Replace @p old_id with @p new_id in @p nd's operand lists and rebuild its
+/// Replace @p old_id with @p new_id in the operand lists of node @p index; the edit rebuilds its
 /// executor so the computation follows. Caller guarantees rebuildable().
-void rebuild_node(Graph &graph, Node &nd, TensorId old_id, TensorId new_id) {
+void rebuild_node(Graph &graph, std::size_t index, TensorId old_id, TensorId new_id) {
     auto const sub = [&](TensorId tid) { return tid == old_id ? new_id : tid; };
 
+    Node const &nd = graph.nodes()[index];
     if (nd.kind == OpKind::Einsum) {
-        auto const    *d = nd.op_data.get_if<EinsumDescriptor>();
-        TensorId const a = sub(nd.inputs[0]);
-        TensorId const b = sub(nd.inputs[1]);
-        TensorId const c = sub(nd.outputs[0]);
-        // The live indices/params are what the executor reads each call, so
-        // the rebuild starts from them, not from the capture-time snapshots.
-        Node rebuilt = graph.make_einsum_node(a, b, c, d->indices->spec, d->params->c_pf, d->params->ab_pf, d->params->conj_a,
-                                              d->params->conj_b, nd.label);
-        rebuilt.id   = nd.id; // keep NodeId-keyed state (profiler payloads) attached
-        nd           = std::move(rebuilt);
+        // The descriptor is re-derived for the new operands: its letter spaces and GEMM hint name
+        // them. The live indices/params are what the executor reads each call, so the rebuild
+        // starts from them, not from the capture-time snapshots.
+        auto const *d = nd.op_data.get_if<EinsumDescriptor>();
+        Node rebuilt  = graph.make_einsum_node(sub(nd.inputs[0]), sub(nd.inputs[1]), sub(nd.outputs[0]), d->indices->spec, d->params->c_pf,
+                                               d->params->ab_pf, d->params->conj_a, d->params->conj_b, nd.label);
+        graph.edit(index, [&](NodeEdit &e) {
+            e->inputs  = std::move(rebuilt.inputs);
+            e->outputs = std::move(rebuilt.outputs);
+            e->op_data = std::move(rebuilt.op_data);
+        });
         return;
     }
 
     // Permute and Axpby: the descriptor already says everything the executor does, its live
-    // params included, so the node keeps it and only the operand ids change. The executor comes
-    // from build_executor, as for a captured node. Only the ids change in the operand
-    // lists, so an accumulating axpby or permute keeps listing its destination as an input.
-    for (auto &tid : nd.inputs) {
-        tid = sub(tid);
-    }
-    for (auto &tid : nd.outputs) {
-        tid = sub(tid);
-    }
-    auto const &out = graph.tensor(nd.outputs.front());
-    nd.execute      = build_executor(nd.kind, out.dtype, out.rank, nd.op_data, graph, nd.inputs, nd.outputs);
+    // params included, so the node keeps it and only the operand ids change. Only the ids change
+    // in the operand lists, so an accumulating axpby or permute keeps listing its destination as
+    // an input.
+    graph.edit(index, [&](NodeEdit &e) {
+        for (auto &tid : e->inputs) {
+            tid = sub(tid);
+        }
+        for (auto &tid : e->outputs) {
+            tid = sub(tid);
+        }
+    });
 }
 
 /// Declare one clone of @p handle on @p graph: a graph-owned deferred
@@ -163,7 +165,7 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
     // Under the built-in sequential replay the clones cost cache locality and
     // buy no width, so only graphs that will actually run on a parallel
     // executor are rewritten (Graph::set_executor, installed before apply()).
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
     if (nodes.empty()) {
         return;
     }
@@ -330,7 +332,7 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
         for (size_t j = 0; j < interior; ++j) {
             TensorId const target = clones[j % num_clones];
             for (size_t const idx : gens[j]) {
-                rebuild_node(graph, nodes[idx], tid, target);
+                rebuild_node(graph, idx, tid, target);
                 ++_num_nodes_rebuilt;
             }
         }
