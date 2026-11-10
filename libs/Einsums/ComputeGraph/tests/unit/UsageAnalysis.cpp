@@ -104,6 +104,47 @@ TEST_CASE("UsageAnalysis - loop body uses surface via subtree flag", "[ComputeGr
     CHECK(a_use->uses.front().kind == cg::OpKind::Loop);
 }
 
+// refresh_setup_io copies a Setup body's I/O onto the Setup node's own lists. It used to do so
+// without declaring the edit, so a usage() cached before it kept reporting those buffers as used
+// only through the subtree, and an own-list query (MemoryPlanning's include_subtree=false) said the
+// Setup node did not touch them. PassManager::run calls it before every pass, which is how a cache
+// built outside the pipeline (test_laplace_mp2_python's save-then-apply) reached Reorder stale.
+TEST_CASE("UsageAnalysis - refreshing a setup node's lists invalidates the cache", "[ComputeGraph][UsageAnalysis]") {
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto S = create_zero_tensor<double>("S", 4, 4);
+
+    cg::Graph graph("ua_setup_refresh");
+    {
+        auto                  &setup = graph.add_setup("fit"); // this overload leaves the node's lists for later
+        cg::CaptureGuard const guard(setup);
+        cg::axpy(1.0, A, &S);
+    }
+    // Cached while the Setup node's own lists are still empty: S is used only through the subtree.
+    // No sort first, because the sort itself refreshes the lists. Building the cache walks the
+    // subtree, which is also what gives the body's S an id in this graph.
+    (void)graph.usage();
+    cg::TensorId const s_id   = tid_of(graph, S);
+    auto const        *before = graph.usage().find(graph, s_id);
+    REQUIRE(before != nullptr);
+    REQUIRE(before->first_use(/*include_subtree=*/false) == cg::TensorUsage::npos);
+
+    graph.refresh_setup_io();
+
+    // After the refresh S is on the node's own output list, so an own-list query finds it at 0.
+    auto const fresh = cg::UsageAnalysis::build(graph);
+    REQUIRE(fresh.find(graph, s_id) != nullptr);
+    REQUIRE(fresh.find(graph, s_id)->first_use(/*include_subtree=*/false) == 0);
+
+    auto const *after = graph.usage().find(graph, s_id);
+    REQUIRE(after != nullptr);
+    CHECK(after->first_use(/*include_subtree=*/false) == 0);
+
+    // A second refresh changes nothing and must not invalidate anything.
+    auto const version = graph.analysis_version();
+    graph.refresh_setup_io();
+    CHECK(graph.analysis_version() == version);
+}
+
 TEST_CASE("UsageAnalysis - lifecycle filters (Alloc creation, Free scheduling edge)", "[ComputeGraph][UsageAnalysis]") {
     constexpr size_t N   = 400; // clears FreeInsertion's min-bytes threshold
     auto             A   = create_random_tensor<double>("A", N, N);

@@ -250,13 +250,25 @@ void Graph::refresh_setup_io() {
     // body is the graph whose sort has to place it.
     for_each_subgraph([](Graph &sub) { sub.refresh_setup_io(); });
 
+    // Rewriting a node's lists is a node edit, and the cached analyses key on the version, not on
+    // the lists: an undeclared rewrite left usage() reporting the body's buffers as subtree-only,
+    // which an own-list query reads as "this node does not touch them". Declared only when a list
+    // actually moves, because PassManager::run calls this before every pass and an unchanged graph
+    // must keep its caches.
+    bool changed = false;
     for (auto &node : _nodes) {
         if (node.kind != OpKind::Setup) {
             continue;
         }
         auto [ins, outs] = subtree_io(node);
-        node.inputs      = std::move(ins);
-        node.outputs     = std::move(outs);
+        if (ins != node.inputs || outs != node.outputs) {
+            node.inputs  = std::move(ins);
+            node.outputs = std::move(outs);
+            changed      = true;
+        }
+    }
+    if (changed) {
+        note_node_edit();
     }
 }
 

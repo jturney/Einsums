@@ -2365,7 +2365,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * is no moment at which they could be final. This is called at the declaration points that
      * already say the node list may have moved (@ref topological_sort, each pass in
      * @ref PassManager::run) and after the capturing @ref add_setup overload closes its guard.
-     * It is idempotent and costs a walk of the setup bodies.
+     * Rewriting a list is itself a node edit, so a call that changes one declares it
+     * (@ref analysis_version moves and cached analyses rebuild); a call that changes nothing
+     * declares nothing. It is idempotent and costs a walk of the setup bodies.
      *
      * A Loop or Conditional node is deliberately left alone. Its body runs a variable number
      * of times against its neighbours, so a pass reading its outputs as "produced once, here"
