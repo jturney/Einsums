@@ -260,8 +260,6 @@ bool AntisymmetrizerFolding::transform(Graph &graph) {
         if (operand_handle == nullptr) {
             continue;
         }
-        auto const operand_dtype = operand_handle->dtype;
-        auto const operand_rank  = operand_handle->rank;
 
         auto const *result_handle = graph.find_tensor(graph.buffer_of(site.result));
         if (result_handle == nullptr) {
@@ -299,19 +297,16 @@ bool AntisymmetrizerFolding::transform(Graph &graph) {
         PrefactorScalar const factor =
             complex_result ? multiply_prefactors(PrefactorScalar{terms}, alpha) : PrefactorScalar{terms * as_real<double>(alpha)};
 
-        Node &dot             = graph.nodes()[site.dot_index];
-        dot.inputs[site.slot] = site.producer.source;
-        dot.label             = fmt::format("{} (antisymmetrizer folded, x{})", dot.label, site.producer.terms);
-
-        // REBUILD the executor. Rewriting node.inputs alone changes what the
-        // dataflow says and not what the replay does: the closure build_executor
-        // returned resolved its operands when it was built, so the contraction
-        // went on reading the antisymmetrized operand and the scale below then
-        // multiplied an already-complete answer by N. The test caught it because
-        // it compares NUMBERS against an unfolded run; a structural check would
+        // The edit rebuilds the executor from the new operand list. Rewriting node.inputs alone
+        // changes what the dataflow says and not what the replay does: the closure resolved its
+        // operands when it was built, so the contraction went on reading the antisymmetrized
+        // operand and the scale below then multiplied an already-complete answer by N. The test
+        // caught it because it compares NUMBERS against an unfolded run; a structural check would
         // have passed.
-        dot.execute = build_executor(OpKind::Dot, operand_dtype, operand_rank, dot.op_data, graph, std::span<TensorId const>{dot.inputs},
-                                     std::span<TensorId const>{dot.outputs});
+        graph.edit(site.dot_index, [&](NodeEdit &e) {
+            e->inputs[site.slot] = site.producer.source;
+            e->label             = fmt::format("{} (antisymmetrizer folded, x{})", e->label, site.producer.terms);
+        });
 
         ScaleDescriptor desc;
         desc.factor        = factor;
