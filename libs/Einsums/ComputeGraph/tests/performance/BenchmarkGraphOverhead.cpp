@@ -18,6 +18,7 @@
 /// fold them and the dependency scans see real edges.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/Performance.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
@@ -296,4 +297,71 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: CSE scan over 500/1000/2000 distinct nod
     bench_at(500);
     bench_at(1000);
     bench_at(2000);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Executor rebuild cost: what one build_executor call costs for each kind a pass
+// edits most. A field edit made through the graph rebuilds the node's executor
+// when the edit is committed, so this per-call cost, times the edits a pipeline
+// makes, is what that rebuild adds to optimize time. Compare it with the apply
+// case above. Each rep times a batch of calls, since one call is far below the
+// clock's useful resolution.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+EINSUMS_TEST_CASE("Bench GraphOverhead: build_executor per call", "[ComputeGraph][Overhead][benchmark]") {
+    WAGGLE_ZONE_FUNC();
+    constexpr size_t kBatch = 1000;
+    constexpr size_t kOcc   = 8;
+    constexpr size_t kVir   = 16;
+
+    cg::Graph graph("rebuild_bench");
+    // Operand values do not reach a rebuild, only shapes and descriptors, so zero tensors serve.
+    auto const mat = std::vector<size_t>{kDim, kDim};
+    auto const t2  = std::vector<size_t>{kOcc, kOcc, kVir, kVir};
+    auto const v4  = std::vector<size_t>{kVir, kVir, kVir, kVir};
+    auto      &A   = graph.create_zero_runtime_tensor<double>("A", mat, false);
+    auto      &B   = graph.create_zero_runtime_tensor<double>("B", mat, false);
+    auto      &C   = graph.create_zero_runtime_tensor<double>("C", mat, false);
+    auto      &D   = graph.create_zero_runtime_tensor<double>("D", mat, false);
+    auto      &T2  = graph.create_zero_runtime_tensor<double>("T2", t2, false);
+    auto      &V4  = graph.create_zero_runtime_tensor<double>("V4", v4, false);
+    auto      &R2  = graph.create_zero_runtime_tensor<double>("R2", t2, false);
+    auto      &P2  = graph.create_zero_runtime_tensor<double>("P2", t2, false);
+    auto      &E   = graph.create_zero_runtime_tensor<double>("E", std::vector<size_t>{}, false);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+        cg::einsum("ijef;efab->ijab", 1.0, &R2, 0.5, T2, V4);
+        cg::permute(cg::PermuteFormatString("jiab <- ijab"), 0.0, &P2, 1.0, R2);
+        cg::axpby(2.0, C, 0.5, &D);
+        cg::scale(0.99, &D);
+        cg::gemm(1.0, A, B, 0.0, &C);
+        cg::direct_product(1.0, A, B, 0.0, &D);
+        cg::dot_python(&E, A, B);
+    }
+
+    std::vector<double> per_call_us;
+    for (auto const &node : graph.nodes()) {
+        // Creating a graph-owned tensor records an Alloc node; it is bookkeeping, not an operation
+        // a pass edits.
+        if (node.kind == cg::OpKind::Alloc || node.outputs.empty()) {
+            continue;
+        }
+        cg::TensorHandle const &out = graph.tensor(node.outputs.front());
+        auto const              t   = time_us(
+            node.label.c_str(),
+            [&]() {
+                for (size_t n = 0; n < kBatch; n++) {
+                    auto executor = cg::build_executor(node.kind, out.dtype, out.rank, node.op_data, graph, node.inputs, node.outputs);
+                    (void)executor;
+                }
+            },
+            kReps);
+        double const us = t.min / static_cast<double>(kBatch);
+        per_call_us.push_back(us);
+        fmt::println("[GraphOverhead build_executor] {:<16} {:>8.3f} us/call (min over {} batches of {})", fmt::format("{}", node.kind), us,
+                     kReps, kBatch);
+        publish_benchmark_result("GraphOverhead build_executor", fmt::format("{}", node.kind).c_str(), static_cast<int>(kBatch), t);
+    }
+    REQUIRE(per_call_us.size() == 8);
 }
