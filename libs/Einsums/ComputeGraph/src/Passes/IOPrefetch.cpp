@@ -28,7 +28,7 @@ namespace {
 /// DiskRead has no inputs it always slid to position 0, even past a writer
 /// of its destination. Returns true if anything moved.
 bool prefetch_within(Graph &graph, size_t &num_prefetched) {
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
     if (nodes.size() < 2)
         return false;
 
@@ -81,8 +81,7 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
         if (earliest < pos) {
             EINSUMS_LOG_INFO("IOPrefetch: moved '{}' from position {} to {} (prefetched by {} nodes)", nodes[pos].label, pos, earliest,
                              pos - earliest);
-            std::rotate(nodes.begin() + static_cast<ptrdiff_t>(earliest), nodes.begin() + static_cast<ptrdiff_t>(pos),
-                        nodes.begin() + static_cast<ptrdiff_t>(pos) + 1);
+            graph.move_node(pos, earliest);
             std::rotate(io.begin() + static_cast<ptrdiff_t>(earliest), io.begin() + static_cast<ptrdiff_t>(pos),
                         io.begin() + static_cast<ptrdiff_t>(pos) + 1);
             num_prefetched++;
@@ -90,8 +89,6 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
         }
     }
 
-    if (moved_any)
-        graph.mark_sorted();
     return moved_any;
 }
 
@@ -132,11 +129,10 @@ bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t 
     // block the hoist; lifecycle nodes do not count either.
     EscapeAnalysis const writers = EscapeAnalysis::over(child);
 
-    auto       &body_nodes = child.nodes();
+    auto const &body_nodes = child.nodes();
     auto const &body_map   = child.tensors_map();
 
-    std::vector<Node>   hoisted;
-    std::vector<size_t> remove_idx;
+    std::vector<size_t> picks;
 
     for (size_t idx = 0; idx < body_nodes.size(); idx++) {
         Node const &n = body_nodes[idx];
@@ -164,38 +160,21 @@ bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t 
         if (dest->second.alloc_state != AllocState::Materialized)
             continue;
 
-        Node copy   = n;                  // keep the executor (it captures the tensor ptr)
-        copy.id     = unassigned_node_id; // the body's id, not the parent's: the parent mints its own
-        copy.inputs = {};
-        // Register the destination BUFFER in the parent so the hoisted read
-        // owns the same TensorId the body's reads resolve to via effective_io.
-        // That id, not the read's position, is what gives the Loop a RAW
-        // dependency on this read under a concurrent executor.
-        copy.outputs = {parent.find_or_register_tensor_ptr(dest->second)};
-        copy.label   = fmt::format("prefetch_hoisted({})", n.label);
-        hoisted.push_back(std::move(copy));
-        remove_idx.push_back(idx);
+        picks.push_back(idx);
     }
 
-    if (hoisted.empty())
+    if (picks.empty())
         return false;
 
-    for (auto it = remove_idx.rbegin(); it != remove_idx.rend(); ++it) {
-        body_nodes.erase(body_nodes.begin() + static_cast<ptrdiff_t>(*it));
+    // The parent names each destination BUFFER by the id the body's reads resolve to through
+    // effective_io, which hoist gives it. That id, not the read's position, is what gives the
+    // Loop a RAW dependency on the read under a concurrent executor.
+    for (std::size_t const at : parent.hoist(child, picks, loop_idx)) {
+        parent.edit(at, [](NodeEdit &e) { e->label = fmt::format("prefetch_hoisted({})", e->label); });
     }
-    // Both node vectors were edited in place rather than through the Graph
-    // helpers, so each graph's node-set counter has to be moved by hand.
-    child.note_structural_change();
-    child.mark_sorted();
+    num_prefetched += picks.size();
 
-    auto &pnodes = parent.nodes();
-    pnodes.insert(pnodes.begin() + static_cast<ptrdiff_t>(loop_idx), std::make_move_iterator(hoisted.begin()),
-                  std::make_move_iterator(hoisted.end()));
-    parent.note_structural_change();
-    parent.mark_sorted();
-    num_prefetched += remove_idx.size();
-
-    EINSUMS_LOG_INFO("IOPrefetch: hoisted {} loop-invariant DiskRead(s) out of loop body before position {}", remove_idx.size(), loop_idx);
+    EINSUMS_LOG_INFO("IOPrefetch: hoisted {} loop-invariant DiskRead(s) out of loop body before position {}", picks.size(), loop_idx);
     return true;
 }
 

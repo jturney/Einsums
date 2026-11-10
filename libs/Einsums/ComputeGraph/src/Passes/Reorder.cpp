@@ -27,7 +27,7 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 bool Reorder::transform(Graph &graph) {
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
     if (nodes.size() < 2) {
         return false;
     }
@@ -235,20 +235,7 @@ bool Reorder::transform(Graph &graph) {
     }
 
     if (changed) {
-        // Move nodes into the new order.
-        // Verify all nodes have valid executors before and after.
-        std::vector<Node> sorted;
-        sorted.reserve(n);
-        for (size_t const idx : order) {
-            if (!nodes[idx].execute) {
-                // Node already has an empty executor, don't corrupt the graph.
-                // This can happen for structural nodes (Loop, Conditional) that
-                // don't have an execute lambda.
-            }
-            sorted.push_back(std::move(nodes[idx]));
-        }
-        nodes = std::move(sorted);
-        graph.mark_sorted();
+        graph.reorder(order);
 
         if (_verbosity >= 1) {
             size_t moved = 0;

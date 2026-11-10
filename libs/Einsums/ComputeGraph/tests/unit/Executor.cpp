@@ -1319,3 +1319,41 @@ TEST_CASE("Graph - to_json is safe against concurrent graph mutation", "[Compute
     CHECK(polls.load() > 0);
     CHECK(graph.num_nodes() == iters);
 }
+
+TEST_CASE("IOPrefetch - a loop-invariant read is hoisted out of the body and runs once", "[ComputeGraph][Passes][IO][Loop]") {
+    // The read's destination is written by nothing else in the loop, so reading it on every
+    // iteration reads the same thing; it moves before the loop, under the label that says so.
+    auto source = create_random_tensor<double>("source", 4, 4);
+    auto data   = create_zero_tensor<double>("data", 4, 4);
+    auto acc    = create_zero_tensor<double>("acc", 4, 4);
+    int  reads  = 0;
+
+    cg::Graph graph("prefetch_hoist");
+    auto     &body = graph.add_loop("iter", 3, [](size_t it) { return it < 3; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::read("load data", "fake.h5", "/data", &data, [&]() {
+            ++reads;
+            std::memcpy(data.data(), source.data(), 16 * sizeof(double));
+        });
+        cg::axpy(1.0, data, &acc);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::IOPrefetch>();
+    REQUIRE(modified);
+    CHECK(pass.num_prefetched() == 1);
+    CHECK(std::ranges::none_of(body.nodes(), [](cg::Node const &n) { return n.kind == cg::OpKind::DiskRead; }));
+    auto const read = std::ranges::find_if(graph.nodes(), [](cg::Node const &n) { return n.kind == cg::OpKind::DiskRead; });
+    REQUIRE(read != graph.nodes().end());
+    CHECK(read->label == "prefetch_hoisted(load data)");
+    auto const loop = std::ranges::find_if(graph.nodes(), [](cg::Node const &n) { return n.kind == cg::OpKind::Loop; });
+    CHECK(read < loop);
+
+    graph.execute();
+    CHECK(reads == 1);
+    for (size_t i = 0; i < 4; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            CHECK_THAT(acc(i, j), Catch::Matchers::WithinRel(3.0 * source(i, j), 1e-12));
+        }
+    }
+}
