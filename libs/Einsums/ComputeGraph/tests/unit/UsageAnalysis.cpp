@@ -104,6 +104,41 @@ TEST_CASE("UsageAnalysis - loop body uses surface via subtree flag", "[ComputeGr
     CHECK(a_use->uses.front().kind == cg::OpKind::Loop);
 }
 
+// Known bug: the parent's cached usage() keys only on its own _analysis_version and node count,
+// but a Loop node's effective I/O is its body's. A declared edit to the body (here erase_nodes,
+// which is how a pass edits a body when run_pass_tree hands it the sub-graph) moves the body's
+// counter and not the parent's, so the parent keeps reporting the body's old reads to every later
+// query, including the next pass's. Drop [!shouldfail] when the cache check covers sub-graphs.
+TEST_CASE("UsageAnalysis - parent cache sees a declared edit to a loop body", "[ComputeGraph][UsageAnalysis][!shouldfail]") {
+    auto A   = create_random_tensor<double>("A", 4, 4);
+    auto B   = create_random_tensor<double>("B", 4, 4);
+    auto acc = create_zero_tensor<double>("acc", 4, 4);
+
+    cg::Graph graph("ua_body_edit");
+    auto     &body = graph.add_loop("iter", 3, [](size_t i) { return i < 3; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::axpy(1.0, A, &acc); // body node 0: the only reader of A
+        cg::axpy(1.0, B, &acc); // body node 1
+    }
+    graph.topological_sort();
+    cg::TensorId const a_id = tid_of(graph, A);
+
+    // Prime the parent's cache, as an earlier pass would.
+    REQUIRE(graph.usage().find(graph, a_id) != nullptr);
+
+    // A pass running on the body removes A's only reader and declares it on the body.
+    REQUIRE(body.erase_nodes({true, false}) == 1);
+    REQUIRE(body.num_nodes() == 1);
+
+    // The truth, from a fresh build: nothing in the tree reads A any more.
+    auto const fresh = cg::UsageAnalysis::build(graph);
+    CHECK(fresh.find(graph, a_id) == nullptr);
+
+    // The cached answer must agree with it.
+    CHECK(graph.usage().find(graph, a_id) == nullptr);
+}
+
 // refresh_setup_io copies a Setup body's I/O onto the Setup node's own lists. It used to do so
 // without declaring the edit, so a usage() cached before it kept reporting those buffers as used
 // only through the subtree, and an own-list query (MemoryPlanning's include_subtree=false) said the
