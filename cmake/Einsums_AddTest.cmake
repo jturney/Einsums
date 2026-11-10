@@ -336,6 +336,10 @@ function(einsums_python_test_environment out)
     "EINSUMS_DEBUG_NO_INSTALL_SIGNAL_HANDLERS=1"
     "EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1"
   )
+  # Every test checks the graph after every optimization pass. The C++ paths get
+  # this from einsums_sanitizer_test_environment, which this function only calls
+  # under a sanitizer build, so it is set here as well for the ordinary build.
+  list(APPEND _env "EINSUMS_PASS_VERIFY=1")
   set(_profile_env "")
   einsums_profile_test_environment(_profile_env)
   list(APPEND _env ${_profile_env})
