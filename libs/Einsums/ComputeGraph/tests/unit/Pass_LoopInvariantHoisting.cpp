@@ -850,8 +850,10 @@ TEST_CASE("LoopInvariantHoisting - hoists a custom node declared pure", "[Comput
 // A hoisted node used to re-seat every stand-in of the body it came from before it ran. Hoisted
 // nodes run concurrently in the parent, so one rewrote the stand-in another was reading, and read a
 // storage block a Materialize it is not ordered after was relocating: the ThreadSanitizer race in
-// the parallel-executor stress shard. A node re-seats only the operands it touches.
-TEST_CASE("LoopInvariantHoisting - a hoisted node re-seats only the stand-ins it touches", "[ComputeGraph][Passes][Loop]") {
+// the parallel-executor stress shard. A hoisted node the builder can make is now rebuilt against
+// the parent's ids, so it reaches its operands through the parent's slots and touches no stand-in
+// of the body at all; the body re-seats the stand-ins its own nodes name when it runs (next case).
+TEST_CASE("LoopInvariantHoisting - a hoisted node leaves the body's stand-ins to the body", "[ComputeGraph][Passes][Loop]") {
     using RT           = RuntimeTensor<double>;
     constexpr size_t m = 4;
     RT               A("A", std::vector<size_t>{m, 1});
@@ -903,17 +905,21 @@ TEST_CASE("LoopInvariantHoisting - a hoisted node re-seats only the stand-ins it
     REQUIRE(stand_in->impl().data() == big2.data());
 
     // The address kernels read is the one the stand-in caches, which only a re-seat changes:
-    // released, a re-seat moves it to the sentinel. The producer of big1 does not touch big2, so
-    // running it must leave big2's stand-in as it was.
+    // released, a re-seat moves it to the sentinel. Running either producer must leave it as it was.
     double const *before = stand_in->impl().data();
     big2.release();
     first.execute();
     CHECK(stand_in->impl().data() == before);
 
-    // The producer of big2 does touch it, and re-seats it on the block it writes.
+    // The producer of big2 writes big2 itself, through the parent, with nothing to re-seat first.
+    CHECK(second.custom_execute == nullptr);
+    CHECK(second.pre_run.empty());
     big2.materialize();
     second.execute();
-    CHECK(stand_in->impl().data() == big2.data());
+    CHECK(stand_in->impl().data() == before);
+    for (size_t i = 0; i < m * m; ++i) {
+        CHECK(big2.data()[i] == 3.0); // A B2, a 1 times a 3 summed over one index
+    }
 }
 
 // The same hazard at the body's own execute(), which re-seated every stand-in the body held. Once

@@ -263,96 +263,27 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
         if (!any_invariant)
             continue;
 
-        // Move invariant nodes from body to parent graph. Hoisted nodes
-        // reference TensorIds from the body graph's tensor table, but those
-        // IDs are not registered in the parent graph, naively appending the
-        // node to the parent leaves later passes (and the executor) unable
-        // to resolve its tensors. So for each TensorId the hoisted node
-        // touches, we register the corresponding TensorHandle in the parent
-        // and rewrite the node's input/output IDs to use the parent's ID.
-        // The body's tensor table is left untouched so non-hoisted body
-        // nodes still see their original IDs.
-        std::unordered_map<TensorId, TensorId> id_remap;
-        auto                                   remap_or_register = [&](TensorId body_tid) -> TensorId {
-            auto it = id_remap.find(body_tid);
-            if (it != id_remap.end())
-                return it->second;
-            TensorHandle const handle = loop_desc->body->tensor(body_tid);
-            // If the parent already has a TensorId for this underlying buffer,
-            // reuse it rather than minting a fresh one. The buffer's identity is
-            // its pointer; registering a *new* id for an already-known buffer
-            // would hide the write-after-write / read-after-write relationship
-            // between the hoisted node and the parent nodes that touch the same
-            // tensor (the scheduler keys on TensorId), so a later pass like
-            // Reorder could swap them and the wrong write would win.
-            //
-            // That reuse-or-mint rule is exactly Graph::find_or_register_tensor_ptr,
-            // which states the same orphan-parent-handle convention effective_io uses.
-            TensorId const parent_tid = graph.find_or_register_tensor_ptr(handle);
-            id_remap[body_tid]        = parent_tid;
-
-            // A deferred intermediate the body declared moves out with its writer. The parent's
-            // handle becomes the declaration, and the body's a stand-in for a parent tensor, as
-            // for any parent tensor a body names. Left the body's, a pass run on the body alone
-            // would see only the body's readers and treat the tensor as its own to change:
-            // LayoutAssignment re-ordered LCCF's hoisted combined operand under the builder that
-            // writes it in the parent, which still wrote the captured order.
-            if (handle.alloc_state == AllocState::Deferred && handle.is_intermediate) {
-                TensorHandle &declared          = graph.tensor(parent_tid);
-                declared.is_intermediate        = true;
-                declared.materialize_on_execute = handle.materialize_on_execute;
-                TensorHandle &stand_in          = loop_desc->body->tensor(body_tid);
-                stand_in.is_intermediate        = false;
-                stand_in.materialize_on_execute = false;
-            }
-            return parent_tid;
-        };
-
-        std::vector<Node> hoisted;
-        std::vector<Node> remaining;
+        // Move the invariant nodes out, directly BEFORE the loop. ``topological_sort`` (Kahn's
+        // algorithm) processes nodes in their current order when building dataflow edges and again
+        // when ties exist in the ready queue, so producers placed after the loop would neither get
+        // their edge recorded nor sort ahead of it. ``Graph::hoist`` gives each moved node the
+        // parent's id for every tensor it names, reusing an id the parent already has for a buffer
+        // so the scheduler sees each hazard between a hoisted node and the parent's own (minting a
+        // fresh one would hide them, and a later pass like Reorder could swap the two writes), and
+        // hands a body-declared deferred intermediate's declaration out with its writer.
+        //
+        // Held as a reference to the body itself: loop_desc points into this graph's node list,
+        // which the hoist may reallocate.
+        Graph              &body = *loop_desc->body;
+        std::vector<size_t> picks;
         for (size_t bi = 0; bi < body_nodes.size(); bi++) {
-            if (invariant[bi]) {
-                Node h = std::move(body_nodes[bi]);
-                // The body numbered this node; the parent issues its own id when the pass hands
-                // the graph back, or the two counters would name two nodes with one id.
-                h.id = unassigned_node_id;
-                // The executor still reaches its operands through the BODY's slots, and a body
-                // re-seats its adopted stand-ins only when the body itself executes. Hoisted, the
-                // node runs before that, right after the parent's Materialize may have moved a
-                // scratch buffer, and it wrote through the stand-in's stale address while the body
-                // then read the new, unwritten one. So the slots this node reaches are re-seated
-                // first; one comparison per slot when nothing moved. Only those: hoisted nodes run
-                // concurrently in the parent, and re-seating the whole body rewrote stand-ins
-                // another hoisted node was reading and read blocks a Materialize this node is not
-                // ordered after was relocating. The ids are the body's, taken before the remap
-                // below. The anchor, not the body's address, in case the body is ever held
-                // elsewhere.
-                auto const            body_anchor = loop_desc->body->anchor();
-                std::vector<TensorId> touched(h.inputs);
-                touched.insert(touched.end(), h.outputs.begin(), h.outputs.end());
-                auto const reseat = [body_anchor, touched](std::function<void()> inner) -> std::function<void()> {
-                    if (!inner) {
-                        return inner;
-                    }
-                    return [body_anchor, touched, inner = std::move(inner)]() {
-                        body_anchor->graph().resync_slot_storage(touched);
-                        inner();
-                    };
-                };
-                h.execute     = reseat(std::move(h.execute));
-                h.async_start = reseat(std::move(h.async_start));
-                for (auto &tid : h.inputs)
-                    tid = remap_or_register(tid);
-                for (auto &tid : h.outputs)
-                    tid = remap_or_register(tid);
-                EINSUMS_LOG_INFO("LoopInvariantHoisting: hoisting '{}' out of loop '{}'", h.label, nodes[loop_idx].label);
-                report(2, fmt::format("hoist '{}' out of loop '{}': its inputs are invariant across iterations", h.label,
-                                      nodes[loop_idx].label));
-                hoisted.push_back(std::move(h));
-                _num_hoisted++;
-            } else {
-                remaining.push_back(std::move(body_nodes[bi]));
+            if (!invariant[bi]) {
+                continue;
             }
+            picks.push_back(bi);
+            EINSUMS_LOG_INFO("LoopInvariantHoisting: hoisting '{}' out of loop '{}'", body_nodes[bi].label, nodes[loop_idx].label);
+            report(2, fmt::format("hoist '{}' out of loop '{}': its inputs are invariant across iterations", body_nodes[bi].label,
+                                  nodes[loop_idx].label));
         }
 
         // The outputs the body still reads become inputs of the Loop node below: without that
@@ -361,54 +292,39 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
         // an intermediate whose reader was hoisted with its writer, would make the Loop node a
         // reader of a tensor it never touches, and a pass that slices that tensor declines a
         // statement it cannot slice: AxisTiling left a hoisted 79 MB ladder intermediate whole.
+        // Asked of the nodes that stay, before they are the only ones left.
         std::unordered_set<void const *> body_reads;
-        for (auto const &bnode : remaining) {
-            auto const [reads, writes] = loop_desc->body->effective_io(bnode);
+        for (size_t bi = 0; bi < body_nodes.size(); bi++) {
+            if (invariant[bi]) {
+                continue;
+            }
+            auto const [reads, writes] = body.effective_io(body_nodes[bi]);
             for (TensorId const tid : reads) {
-                if (TensorHandle const *read = loop_desc->body->find_tensor(loop_desc->body->buffer_of(tid)); read != nullptr) {
+                if (TensorHandle const *read = body.find_tensor(body.buffer_of(tid)); read != nullptr) {
                     body_reads.insert(read->tensor_ptr);
                 }
             }
         }
+
+        auto const moved = graph.hoist(body, picks, loop_idx);
+        _num_hoisted += moved.size();
+        loop_idx += moved.size(); // The loop has shifted; keep the outer index in sync.
+
         std::vector<TensorId> hoisted_output_ids;
-        for (auto const &h : hoisted) {
-            for (auto tid : h.outputs) {
+        for (size_t const at : moved) {
+            for (auto tid : nodes[at].outputs) {
                 TensorHandle const *written = graph.find_tensor(graph.buffer_of(tid));
                 if (written == nullptr || written->tensor_ptr == nullptr || body_reads.contains(written->tensor_ptr)) {
                     hoisted_output_ids.push_back(tid);
                 }
             }
         }
-
-        // Update body to only contain remaining (non-hoisted) nodes.
-        // Removing nodes keeps the body's relative order valid, but its
-        // position-keyed dependency lists are stale; declare that.
-        body_nodes = std::move(remaining);
-        // Both node vectors were rebuilt in place, so each graph's node-set
-        // counter has to be moved by hand: the body lost the hoisted nodes and
-        // the parent gains them a few lines below.
-        loop_desc->body->note_structural_change();
-        loop_desc->body->mark_sorted();
-
-        // Insert hoisted nodes directly BEFORE the loop in the parent's
-        // ``nodes`` vector. ``topological_sort`` (Kahn's algorithm)
-        // processes nodes in their current order when building dataflow
-        // edges and again when ties exist in the ready queue. Appending
-        // at the end leaves the loop ahead of its newly-introduced
-        // producers, which both prevents the edge from being recorded
-        // (the writer is seen after the reader) and biases the queue
-        // toward the wrong order.
-        size_t const n_hoisted = hoisted.size();
-        graph.note_structural_change();
-        nodes.insert(nodes.begin() + static_cast<std::ptrdiff_t>(loop_idx), std::make_move_iterator(hoisted.begin()),
-                     std::make_move_iterator(hoisted.end()));
-        loop_idx += n_hoisted; // The loop has shifted; keep the outer index in sync.
-
-        // Wire the loop's data-flow dependency on the hoisted nodes' outputs.
-        // With the hoisted nodes placed before the loop, the topo sort will
-        // now build the writer→reader edge correctly.
-        for (auto tid : hoisted_output_ids) {
-            nodes[loop_idx].inputs.push_back(tid);
+        if (!hoisted_output_ids.empty()) {
+            graph.edit(loop_idx, [&](NodeEdit &e) {
+                for (auto tid : hoisted_output_ids) {
+                    e->inputs.push_back(tid);
+                }
+            });
         }
     }
 
