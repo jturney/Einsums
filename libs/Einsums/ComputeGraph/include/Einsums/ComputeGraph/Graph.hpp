@@ -565,10 +565,18 @@ struct GraphState {
     /// Structural-resource and tuning passes that changed this graph. @see note_machine_dependent_pass
     std::vector<std::string> _machine_dependent_passes;
     /// Version _usage was built at (UINT64_MAX = never built).
-    std::uint64_t  _usage_version{std::numeric_limits<std::uint64_t>::max()};
-    UsageAnalysis  _usage;
-    bool           _executed{false}; ///< True after first successful execute (caching)
-    DependencyInfo _deps;            ///< Populated by topological_sort()
+    std::uint64_t _usage_version{std::numeric_limits<std::uint64_t>::max()};
+    UsageAnalysis _usage;
+    /// Sub-graph stamp _usage was built at. @see Graph::subtree_stamp
+    std::uint64_t _usage_subtree_stamp{0};
+    /// Positions of the nodes that hold a sub-graph, and the version and node count they were
+    /// found at. Positions rather than pointers: a body is re-read from the node each time, so a
+    /// body swapped in a node's descriptor is never held past its life.
+    std::vector<std::uint32_t> _subgraph_positions;
+    std::uint64_t              _subgraph_positions_version{std::numeric_limits<std::uint64_t>::max()};
+    std::size_t                _subgraph_positions_count{0};
+    bool                       _executed{false}; ///< True after first successful execute (caching)
+    DependencyInfo             _deps;            ///< Populated by topological_sort()
 
     /// Serializes structural reads/writes of _nodes / _tensors / _timing_report
     /// so the profiler server thread's to_json() cannot observe a torn or
@@ -2506,7 +2514,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Rebuilt lazily when a mutation-declaration point (add_node,
      * mark_sorted, topological_sort, rebind) has been hit since the last
      * build, with a node-count defense for undeclared mutations (same
-     * contract as DependencyInfo). Do NOT hold the reference across graph
+     * contract as DependencyInfo). A control-flow node's entries come from
+     * its bodies, so a declared edit in any graph below this one rebuilds it
+     * too (@ref subtree_stamp). Do NOT hold the reference across graph
      * mutations.
      */
     [[nodiscard]] UsageAnalysis const &usage();
@@ -4645,6 +4655,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// mark the graph as not executed. The one place that says what a node edit makes stale, called
     /// by every function that adds, removes or reorders nodes.
     void note_node_edit() noexcept;
+
+    /// A value that moves whenever any graph below this one has a declared edit: each
+    /// descendant's analysis version and node count, folded in walk order. A body edit moves the
+    /// body's own counter and not this graph's, while this graph's control-flow entries in
+    /// @ref usage come from that body, so the cache keys on this as well. Visits only the nodes
+    /// that hold a sub-graph, whose positions are re-found when this graph's own version moves.
+    [[nodiscard]] std::uint64_t subtree_stamp();
 
     /// Reapply every @ref declare_alias declaration onto the handles. Run at the
     /// head of both linking passes, because a declaration is an INPUT to the

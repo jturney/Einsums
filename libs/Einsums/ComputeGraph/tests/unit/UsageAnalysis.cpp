@@ -104,12 +104,12 @@ TEST_CASE("UsageAnalysis - loop body uses surface via subtree flag", "[ComputeGr
     CHECK(a_use->uses.front().kind == cg::OpKind::Loop);
 }
 
-// Known bug: the parent's cached usage() keys only on its own _analysis_version and node count,
-// but a Loop node's effective I/O is its body's. A declared edit to the body (here erase_nodes,
-// which is how a pass edits a body when run_pass_tree hands it the sub-graph) moves the body's
-// counter and not the parent's, so the parent keeps reporting the body's old reads to every later
-// query, including the next pass's. Drop [!shouldfail] when the cache check covers sub-graphs.
-TEST_CASE("UsageAnalysis - parent cache sees a declared edit to a loop body", "[ComputeGraph][UsageAnalysis][!shouldfail]") {
+// The parent's cached usage() once keyed only on its own _analysis_version and node count, but a
+// Loop node's entries come from its body. A declared edit to the body (here erase_nodes, which is
+// how a pass edits a body when run_pass_tree hands it the sub-graph) moved the body's counter and
+// not the parent's, so the parent kept reporting the body's old reads to every later query,
+// including the next pass's. The cache now also keys on Graph::subtree_stamp.
+TEST_CASE("UsageAnalysis - parent cache sees a declared edit to a loop body", "[ComputeGraph][UsageAnalysis]") {
     auto A   = create_random_tensor<double>("A", 4, 4);
     auto B   = create_random_tensor<double>("B", 4, 4);
     auto acc = create_zero_tensor<double>("acc", 4, 4);
@@ -136,6 +136,34 @@ TEST_CASE("UsageAnalysis - parent cache sees a declared edit to a loop body", "[
     CHECK(fresh.find(graph, a_id) == nullptr);
 
     // The cached answer must agree with it.
+    CHECK(graph.usage().find(graph, a_id) == nullptr);
+}
+
+// The same through two levels: the stamp folds each body's own stamp in, so an edit two graphs
+// down reaches the outermost cache, not only the loop that holds the edited body.
+TEST_CASE("UsageAnalysis - outer cache sees a declared edit two levels down", "[ComputeGraph][UsageAnalysis]") {
+    auto A   = create_random_tensor<double>("A", 4, 4);
+    auto B   = create_random_tensor<double>("B", 4, 4);
+    auto acc = create_zero_tensor<double>("acc", 4, 4);
+
+    cg::Graph graph("ua_nested_edit");
+    auto     &outer = graph.add_loop("outer", 2, [](size_t i) { return i < 2; });
+    auto     &inner = outer.add_loop("inner", 2, [](size_t i) { return i < 2; });
+    {
+        cg::CaptureGuard const guard(inner);
+        cg::axpy(1.0, A, &acc); // inner node 0: the only reader of A
+        cg::axpy(1.0, B, &acc); // inner node 1
+    }
+    graph.topological_sort();
+    cg::TensorId const a_id = tid_of(graph, A);
+
+    REQUIRE(graph.usage().find(graph, a_id) != nullptr);
+    auto const outer_version = graph.analysis_version();
+
+    REQUIRE(inner.erase_nodes({true, false}) == 1);
+    REQUIRE(graph.analysis_version() == outer_version); // nothing told the outermost graph
+
+    CHECK(cg::UsageAnalysis::build(graph).find(graph, a_id) == nullptr);
     CHECK(graph.usage().find(graph, a_id) == nullptr);
 }
 

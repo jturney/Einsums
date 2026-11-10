@@ -665,10 +665,41 @@ void Graph::execute(Executor &executor) {
     finish_replay_thread_plan(replay_ms);
 }
 
+// NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest, so the stamp does too.
+std::uint64_t Graph::subtree_stamp() {
+    if (_subgraph_positions_version != _analysis_version || _subgraph_positions_count != _nodes.size()) {
+        _subgraph_positions.clear();
+        for (std::size_t i = 0; i < _nodes.size(); ++i) {
+            bool holds = false;
+            for_each_child_graph(_nodes[i], [&holds](Graph &) { holds = true; });
+            if (holds) {
+                _subgraph_positions.push_back(static_cast<std::uint32_t>(i));
+            }
+        }
+        _subgraph_positions_version = _analysis_version;
+        _subgraph_positions_count   = _nodes.size();
+    }
+
+    // FNV-1a over (version, node count, its own subtree) per child, in walk order, so a body
+    // edited back to an earlier count still moves the stamp through its version.
+    std::uint64_t stamp = 14695981039346656037ULL;
+    auto const    mix   = [&stamp](std::uint64_t value) { stamp = (stamp ^ value) * 1099511628211ULL; };
+    for (std::uint32_t const pos : _subgraph_positions) {
+        for_each_child_graph(_nodes[pos], [&mix](Graph &child) {
+            mix(child._analysis_version);
+            mix(child._nodes.size());
+            mix(child.subtree_stamp());
+        });
+    }
+    return stamp;
+}
+
 UsageAnalysis const &Graph::usage() {
-    if (_usage_version != _analysis_version || _usage.node_count() != _nodes.size()) {
-        _usage         = UsageAnalysis::build(*this);
-        _usage_version = _analysis_version;
+    std::uint64_t const stamp = subtree_stamp();
+    if (_usage_version != _analysis_version || _usage.node_count() != _nodes.size() || _usage_subtree_stamp != stamp) {
+        _usage               = UsageAnalysis::build(*this);
+        _usage_version       = _analysis_version;
+        _usage_subtree_stamp = stamp;
     }
     return _usage;
 }
