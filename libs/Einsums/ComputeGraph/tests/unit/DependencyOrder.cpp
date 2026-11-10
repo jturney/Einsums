@@ -450,3 +450,44 @@ TEST_CASE("Dependency - a slice after a loop waits for the loop's parameter writ
     REQUIRE(graph.nodes().size() == 2);
     CHECK(has_edge(graph, 0, 1));
 }
+
+// A Loop node's edges come from its body. The parent's lists used to be trusted while the parent's
+// own _sorted and _deps_valid said so, and a declared edit inside the body moves neither, so a body
+// that started reading what a parent node writes replayed with no edge between them and a
+// threading executor was free to run the loop beside its producer. The lists now also key on
+// the sub-graph stamp.
+TEST_CASE("Dependency - a declared edit in a loop body reaches the parent's edges", "[ComputeGraph][Dependency]") {
+    auto X   = create_random_tensor<double>("X", 4, 4);
+    auto B   = create_random_tensor<double>("B", 4, 4);
+    auto acc = create_zero_tensor<double>("acc", 4, 4);
+
+    cg::Graph graph("dep_body_edit");
+    {
+        cg::CaptureGuard const capture(graph);
+        cg::scale(2.0, &X); // node 0: writes X
+    }
+    auto &body = graph.add_loop("iter", 1, [](size_t) { return false; }); // node 1
+    {
+        cg::CaptureGuard const capture(body);
+        cg::axpy(1.0, B, &acc); // the body does not touch X yet
+    }
+    graph.execute();
+    REQUIRE(graph.nodes().size() == 2);
+    REQUIRE(std::ranges::find(graph.dependencies().predecessors[1], std::size_t{0}) == graph.dependencies().predecessors[1].end());
+
+    // Replays of an unchanged tree leave every counter alone, so the check below costs a stamp
+    // and no rebuild once the body has run.
+    graph.execute();
+    auto const body_version = body.analysis_version();
+    graph.execute();
+    CHECK(body.analysis_version() == body_version);
+
+    // Declared on the body (capture goes through add_node), invisible to the parent's flags.
+    {
+        cg::CaptureGuard const capture(body);
+        cg::axpy(1.0, X, &acc); // now the loop reads X, which node 0 writes
+    }
+    graph.execute();
+    auto const &preds = graph.dependencies().predecessors[1];
+    CHECK(std::ranges::find(preds, std::size_t{0}) != preds.end());
+}

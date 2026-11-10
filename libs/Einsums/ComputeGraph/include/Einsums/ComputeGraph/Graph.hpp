@@ -500,6 +500,10 @@ struct GraphState {
     /// topological_sort() can skip the Kahn pass but must refresh the lists.
     bool _deps_valid{false};
 
+    /// Sub-graph stamp _deps was built at: a control-flow node's edges come from its bodies, so a
+    /// declared edit below this graph makes them stale too. @see Graph::subtree_stamp
+    std::uint64_t _deps_subtree_stamp{0};
+
     /// Pre-interned profiler payloads for one node: the zone name plus every
     /// annotation whose value is invariant across replays. Built once per
     /// graph mutation instead of fmt::format-ing per node per execute() -
@@ -4662,6 +4666,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// @ref usage come from that body, so the cache keys on this as well. Visits only the nodes
     /// that hold a sub-graph, whose positions are re-found when this graph's own version moves.
     [[nodiscard]] std::uint64_t subtree_stamp();
+
+    /// Whether the node order and the dependency lists describe the graph as it stands, bodies
+    /// included: what the replay entry points check before deciding to sort.
+    [[nodiscard]] bool deps_current();
 
     /// Reapply every @ref declare_alias declaration onto the handles. Run at the
     /// head of both linking passes, because a declaration is an INPUT to the

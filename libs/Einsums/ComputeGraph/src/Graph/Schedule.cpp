@@ -948,6 +948,11 @@ void Graph::topological_sort() {
     if (_deps.successors.size() != _nodes.size()) {
         _deps_valid = false;
     }
+    // A control-flow node's edges come from its bodies, and a declared edit in a body moves the
+    // body's counters, not this graph's flags. The order stands; only the lists are rebuilt.
+    if (_deps_valid && _deps_subtree_stamp != subtree_stamp()) {
+        _deps_valid = false;
+    }
 
     if (_sorted && _deps_valid) {
         // Node order and dependency lists both current; the ~20-pass default
@@ -959,8 +964,9 @@ void Graph::topological_sort() {
         _deps.successors.clear();
         _deps.predecessors.clear();
         _deps.levels.clear();
-        _sorted     = true;
-        _deps_valid = true;
+        _sorted             = true;
+        _deps_valid         = true;
+        _deps_subtree_stamp = subtree_stamp();
         return;
     }
 
@@ -975,7 +981,8 @@ void Graph::topological_sort() {
         // schedule) survives instead of being re-derived by a fresh Kahn.
         EffectiveIoCache cache;
         rebuild_deps(cache);
-        _deps_valid = true;
+        _deps_valid         = true;
+        _deps_subtree_stamp = subtree_stamp();
         return;
     }
 
@@ -1068,8 +1075,9 @@ void Graph::topological_sort() {
         rebuild_levels();
     }
 
-    _sorted     = true;
-    _deps_valid = true;
+    _sorted             = true;
+    _deps_valid         = true;
+    _deps_subtree_stamp = subtree_stamp();
     // Positions changed but the node COUNT did not, so cached position-keyed
     // analyses (UsageAnalysis) must be invalidated explicitly - the count
     // defense in usage() cannot see a same-size reorder.

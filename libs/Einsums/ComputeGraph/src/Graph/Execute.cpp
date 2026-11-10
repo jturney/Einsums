@@ -204,7 +204,7 @@ void Graph::execute() {
     // mark_sorted() but left the position-keyed _deps stale (_deps_valid
     // false). topological_sort() takes the cheap rebuild_deps path in that
     // second case, keeping the pass-chosen order.
-    if (!_sorted || !_deps_valid) {
+    if (!deps_current()) {
         topological_sort();
     }
 
@@ -617,7 +617,7 @@ void Graph::execute(Executor &executor) {
     // mark_sorted() but left the position-keyed _deps stale (_deps_valid
     // false). Concurrent executors read _deps directly, so stale lists here
     // would drop storage-reuse and lifecycle edges a serial run never needed.
-    if (!_sorted || !_deps_valid) {
+    if (!deps_current()) {
         topological_sort();
     }
 
@@ -692,6 +692,10 @@ std::uint64_t Graph::subtree_stamp() {
         });
     }
     return stamp;
+}
+
+bool Graph::deps_current() {
+    return _sorted && _deps_valid && _deps_subtree_stamp == subtree_stamp();
 }
 
 UsageAnalysis const &Graph::usage() {
