@@ -15,6 +15,7 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <map>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -69,7 +70,7 @@ bool TransferInsertion::transform(Graph &graph) {
     PassCounter const transfers{_num_transfers};
     graph.topological_sort();
 
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
 
     // Track residency per tensor (start from TensorHandle state).
     std::unordered_map<TensorId, Residency> residency;
@@ -77,12 +78,12 @@ bool TransferInsertion::transform(Graph &graph) {
         residency[tid] = handle.residency;
     }
 
-    // We'll build a new node list with transfers inserted.
-    std::vector<Node> new_nodes;
-    new_nodes.reserve(nodes.size() * 2); // generous estimate
+    // The transfers each position gains, in the order they run there: the downloads after the node
+    // before it, then the uploads before the node at it.
+    std::map<std::size_t, std::vector<Node>> inserted;
 
     for (size_t idx = 0; idx < nodes.size(); ++idx) {
-        auto &node = nodes[idx];
+        auto const &node = nodes[idx];
 
         if (node.target == Target::GPU) {
             // A device node this pass does not understand has no sound way to be declined: left
@@ -105,7 +106,7 @@ bool TransferInsertion::transform(Graph &graph) {
                 auto res = residency[tid];
                 if (res != Residency::Device && res != Residency::Both) {
                     auto &handle = graph.tensor(tid);
-                    new_nodes.push_back(make_h2d_node(handle));
+                    inserted[idx].push_back(make_h2d_node(handle));
                     _num_transfers++;
                     residency[tid] = Residency::Both;
 
@@ -114,24 +115,20 @@ bool TransferInsertion::transform(Graph &graph) {
                 }
             }
 
-            // The GPU node itself.
-            new_nodes.push_back(std::move(node));
-
             // GPU outputs are now on device.
-            for (auto tid : new_nodes.back().outputs) {
+            for (auto tid : node.outputs) {
                 residency[tid] = Residency::Device;
             }
 
             // Insert D2H for each output that a later CPU node reads.
-            for (auto tid : new_nodes.back().outputs) {
+            for (auto tid : node.outputs) {
                 if (cpu_node_reads_later(nodes, idx + 1, tid)) {
                     auto &handle = graph.tensor(tid);
-                    new_nodes.push_back(make_d2h_node(handle));
+                    inserted[idx + 1].push_back(make_d2h_node(handle));
                     _num_transfers++;
                     residency[tid] = Residency::Both;
 
-                    EINSUMS_LOG_INFO("TransferInsertion: D2H for tensor '{}' (id={}) after {} node", handle.name, tid,
-                                     new_nodes[new_nodes.size() - 2].kind);
+                    EINSUMS_LOG_INFO("TransferInsertion: D2H for tensor '{}' (id={}) after {} node", handle.name, tid, node.kind);
                 }
             }
         } else if (node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
@@ -144,7 +141,6 @@ bool TransferInsertion::transform(Graph &graph) {
             for (TensorId const tid : node.inputs) {
                 residency[tid] = Residency::Both;
             }
-            new_nodes.push_back(std::move(node));
         } else {
             // A CPU node that writes a tensor leaves the device copy stale, so it is on the host
             // alone again: a later GPU reader needs an upload, and the final download must not copy
@@ -159,7 +155,6 @@ bool TransferInsertion::transform(Graph &graph) {
                     }
                 }
             }
-            new_nodes.push_back(std::move(node));
         }
     }
 
@@ -171,7 +166,7 @@ bool TransferInsertion::transform(Graph &graph) {
             if (res == Residency::Device) {
                 auto &handle = graph.tensor(tid);
                 if (!handle.is_intermediate) {
-                    new_nodes.push_back(make_d2h_node(handle));
+                    inserted[nodes.size()].push_back(make_d2h_node(handle));
                     _num_transfers++;
                     residency[tid] = Residency::Both;
 
@@ -181,23 +176,20 @@ bool TransferInsertion::transform(Graph &graph) {
         }
     }
 
-    // Always assign new_nodes back, we moved all nodes into it during the loop.
-    nodes = std::move(new_nodes);
-
     if (!transfers.moved())
         return false;
 
-    // Rebuilt in place, so the node-set counter has to be moved by hand, and
-    // only on the path where transfer nodes were actually added.
-    graph.note_structural_change();
+    // Only inserted between existing nodes, so the order stays topological.
+    std::vector<std::pair<std::size_t, std::vector<Node>>> groups;
+    for (auto &[at, transfers_here] : inserted) {
+        groups.emplace_back(at, std::move(transfers_here));
+    }
+    graph.insert_node_groups(std::move(groups));
 
     // Update TensorHandle residency to match final state.
     for (auto const &[tid, res] : residency) {
         graph.tensor(tid).residency = res;
     }
-
-    // The new node list is in topological order (we only inserted between existing nodes).
-    graph.mark_sorted();
 
     EINSUMS_LOG_INFO("TransferInsertion: inserted {} transfer nodes", _num_transfers);
     if (transfers.moved()) {

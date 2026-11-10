@@ -326,12 +326,23 @@ bool FreeInsertion::transform(Graph &graph) {
         }
         return a.node.kind == OpKind::Materialize && b.node.kind != OpKind::Materialize;
     });
-    for (auto &ins : insertions) {
-        nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(ins.index), std::move(ins.node));
+    // Each position's nodes as one group, in the order the list above gives them once a later
+    // insertion has landed in front of an earlier one: the run, reversed.
+    std::vector<std::pair<std::size_t, std::vector<Node>>> groups;
+    for (std::size_t first = 0; first < insertions.size();) {
+        std::size_t last = first;
+        while (last < insertions.size() && insertions[last].index == insertions[first].index) {
+            ++last;
+        }
+        std::vector<Node> group;
+        group.reserve(last - first);
+        for (std::size_t k = last; k > first; --k) {
+            group.push_back(std::move(insertions[k - 1].node));
+        }
+        groups.emplace_back(insertions[first].index, std::move(group));
+        first = last;
     }
-    if (!insertions.empty()) {
-        graph.note_structural_change();
-    }
+    graph.insert_node_groups(std::move(groups));
 
     if (freed.moved()) {
         graph.mark_sorted();

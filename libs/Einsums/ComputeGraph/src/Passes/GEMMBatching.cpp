@@ -71,7 +71,7 @@ bool GEMMBatching::transform(Graph &graph) {
     PassCounter const batches{_num_batches};
     graph.topological_sort();
 
-    auto        &nodes   = graph.nodes();
+    auto const  &nodes   = graph.nodes();
     auto const  &deps    = graph.dependencies();
     size_t const n_nodes = nodes.size();
 
@@ -284,19 +284,20 @@ bool GEMMBatching::transform(Graph &graph) {
         // node cannot drift; see ComputeGraph/Detail/BatchedGemm.hpp.
         auto executor = detail::make_batched_gemm_executor(d, std::move(a_ops), std::move(b_ops), std::move(c_ops));
 
-        // Construct the new node and mark originals for removal.
-        Node batched;
-        batched.kind  = OpKind::BatchedGemm;
-        batched.label = fmt::format("gemm_batch x{} ({}x{}x{}, trans={}{})", d.batch_count, d.m, d.k, d.n, d.trans_a, d.trans_b);
-        use_custom_executor(batched, std::move(executor));
-        batched.inputs  = std::move(batched_inputs);
-        batched.outputs = std::move(batched_outputs);
-        batched.op_data = d;
-        // Occupy the first member's slot (and reuse its id) so the batch stays
-        // scan-before every consumer of a member's output; see the placement
-        // gate above for why appending is unsound.
-        batched.id       = nodes[first_pos].id;
-        nodes[first_pos] = std::move(batched);
+        // The batch takes the first member's place, and its id, so it stays scan-before every
+        // consumer of a member's output; see the placement gate above for why appending is
+        // unsound. It replaces that member outright, so nothing of the member's carries over.
+        graph.edit(first_pos, [&](NodeEdit &e) {
+            NodeId const id = e->id;
+            e.node()        = Node{};
+            e->id           = id;
+            e->kind         = OpKind::BatchedGemm;
+            e->label        = fmt::format("gemm_batch x{} ({}x{}x{}, trans={}{})", d.batch_count, d.m, d.k, d.n, d.trans_a, d.trans_b);
+            e->inputs       = std::move(batched_inputs);
+            e->outputs      = std::move(batched_outputs);
+            e->op_data      = d;
+            e.set_executor(std::move(executor));
+        });
 
         for (size_t const idx : group)
             if (idx != first_pos)

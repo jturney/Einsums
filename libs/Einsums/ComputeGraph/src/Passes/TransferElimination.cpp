@@ -66,7 +66,7 @@ bool TransferElimination::transform(Graph &graph) {
     PassCounter const eliminated{_num_eliminated};
     graph.topological_sort();
 
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
     if (nodes.empty()) {
         return false;
     }
@@ -229,40 +229,27 @@ bool TransferElimination::transform(Graph &graph) {
     // Sort insertions by position (descending) so we can insert without shifting indices.
     std::ranges::sort(insertions, [](Insertion const &a, Insertion const &b) { return a.before_idx > b.before_idx; });
 
-    // First, mark removals and build filtered list.
-    std::vector<Node> result;
-    result.reserve(nodes.size() + insertions.size());
-
-    // Build insertion map, then walk once.
+    // Each eviction goes in ahead of the node at its position, whether that node stays or goes.
     std::unordered_map<size_t, std::vector<size_t>> insert_before; // position → insertion indices
     for (size_t i = 0; i < insertions.size(); ++i) {
         insert_before[insertions[i].before_idx].push_back(i);
     }
-
-    result.clear();
-    for (size_t idx = 0; idx < nodes.size(); ++idx) {
-        // Insert eviction nodes before this position.
-        auto it = insert_before.find(idx);
-        if (it != insert_before.end()) {
-            for (auto ins_i : it->second) {
-                result.push_back(std::move(insertions[ins_i].node));
-            }
+    std::vector<std::pair<std::size_t, std::vector<Node>>> inserts;
+    inserts.reserve(insert_before.size());
+    for (auto &[at, which] : insert_before) {
+        std::vector<Node> group;
+        group.reserve(which.size());
+        for (size_t const i : which) {
+            group.push_back(std::move(insertions[i].node));
         }
-
-        if (!remove[idx]) {
-            result.push_back(std::move(nodes[idx]));
-        }
+        inserts.emplace_back(at, std::move(group));
     }
-
-    nodes = std::move(result);
-    graph.note_structural_change();
+    graph.replace_nodes(remove, std::move(inserts));
 
     // Update TensorHandle residency.
     for (auto const &[tid, res] : residency) {
         graph.tensor(tid).residency = res;
     }
-
-    graph.mark_sorted();
 
     if (eliminated.moved() || !insertions.empty()) {
         EINSUMS_LOG_INFO("TransferElimination: eliminated {} redundant transfers, inserted {} evictions", _num_eliminated,
