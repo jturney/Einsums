@@ -298,3 +298,68 @@ TEST_CASE("NodeEdit - a captured executor the builder can make is not marked", "
     TwoProducts p;
     CHECK(p.graph.nodes()[0].custom_execute == nullptr);
 }
+
+// ── Node order ──────────────────────────────────────────────────────────────
+
+namespace {
+
+/// Three independent scales, so any order of them is a valid one.
+struct ThreeScales {
+    Tensor<double, 2> A = create_random_tensor<double>("A", n, n);
+    Tensor<double, 2> B = create_random_tensor<double>("B", n, n);
+    Tensor<double, 2> C = create_random_tensor<double>("C", n, n);
+    cg::Graph         graph{"three_scales"};
+
+    ThreeScales() {
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::scale(2.0, &A);
+            cg::scale(3.0, &B);
+            cg::scale(4.0, &C);
+        }
+        for (std::size_t i = 0; i < graph.nodes().size(); ++i) {
+            graph.edit(i, [i](cg::NodeEdit &e) { e->label = std::string(1, static_cast<char>('a' + i)); });
+        }
+    }
+
+    [[nodiscard]] std::string labels() const {
+        std::string out;
+        for (auto const &node : graph.nodes()) {
+            out += node.label;
+        }
+        return out;
+    }
+};
+
+} // namespace
+
+TEST_CASE("Graph - reorder puts the nodes in the order given", "[ComputeGraph][NodeEdit][Order]") {
+    ThreeScales s;
+    REQUIRE(s.labels() == "abc");
+    cg::NodeId const               first = s.graph.nodes()[0].id;
+    std::vector<std::size_t> const order{2, 0, 1};
+    s.graph.reorder(order);
+    CHECK(s.labels() == "cab");
+    CHECK(s.graph.nodes()[1].id == first); // a node keeps its id when it moves
+    s.graph.execute();
+
+    // Position-keyed answers follow the new order.
+    cg::TensorId const c = s.graph.nodes()[0].outputs.front();
+    CHECK(s.graph.usage().find_owner(c)->first_use() == 0);
+
+    CHECK_THROWS_AS(s.graph.reorder(std::vector<std::size_t>{0, 0, 1}), std::invalid_argument);
+    CHECK_THROWS_AS(s.graph.reorder(std::vector<std::size_t>{0, 1}), std::invalid_argument);
+    CHECK_THROWS_AS(s.graph.reorder(std::vector<std::size_t>{0, 1, 3}), std::invalid_argument);
+    CHECK(s.labels() == "cab");
+}
+
+TEST_CASE("Graph - move_node moves one node and keeps the rest in order", "[ComputeGraph][NodeEdit][Order]") {
+    ThreeScales s;
+    s.graph.move_node(0, 2);
+    CHECK(s.labels() == "bca");
+    s.graph.move_node(2, 0);
+    CHECK(s.labels() == "abc");
+    s.graph.move_node(1, 1);
+    CHECK(s.labels() == "abc");
+    CHECK_THROWS_AS(s.graph.move_node(0, 3), std::out_of_range);
+}

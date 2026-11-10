@@ -2273,6 +2273,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void edit(std::size_t index, std::function<void(NodeEdit &)> const &change);
 
     /**
+     * @brief Put the nodes in a new order: position @c k takes the node that was at @c order[k].
+     *
+     * The caller vouches that the order respects every dependency, as @ref mark_sorted has it
+     * do; the node set is unchanged, so @ref structure_version does not move, and the analysis
+     * version does, since every position-keyed answer may have changed.
+     * @param[in] order A permutation of the node positions.
+     * @throws std::invalid_argument If @p order is not a permutation of ``0 .. num_nodes() - 1``.
+     * @versionadded{2.0.0}
+     */
+    void reorder(std::span<std::size_t const> order);
+
+    /**
+     * @brief Move the node at @p from to position @p to, keeping every other node's order.
+     *
+     * The caller vouches for the new order as for @ref reorder.
+     * @param[in] from The node's position now.
+     * @param[in] to   Its position after the move.
+     * @throws std::out_of_range If either position is past the last node.
+     * @versionadded{2.0.0}
+     */
+    void move_node(std::size_t from, std::size_t to);
+
+    /**
      * @brief Splice groups of nodes into the list. Each entry inserts its nodes
      *        immediately BEFORE index @c first in the current numbering.
      *

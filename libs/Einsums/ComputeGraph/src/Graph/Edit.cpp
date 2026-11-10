@@ -10,10 +10,12 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -125,6 +127,48 @@ void Graph::edit(std::size_t index, std::function<void(NodeEdit &)> const &chang
         throw;
     }
     note_node_edit();
+}
+
+void Graph::reorder(std::span<std::size_t const> order) {
+    std::scoped_lock const lock(_content_mutex);
+    std::size_t const      count = _nodes.size();
+    if (order.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': reorder names {} positions, but the graph holds {} nodes", _name,
+                                order.size(), count);
+    }
+    std::vector<bool> taken(count, false);
+    for (std::size_t const from : order) {
+        if (from >= count || taken[from]) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': reorder is not a permutation; position {} is {}", _name, from,
+                                    from >= count ? "past the last node" : "named twice");
+        }
+        taken[from] = true;
+    }
+    std::vector<Node> ordered;
+    ordered.reserve(count);
+    for (std::size_t const from : order) {
+        ordered.push_back(std::move(_nodes[from]));
+    }
+    _nodes = std::move(ordered);
+    mark_sorted();
+}
+
+void Graph::move_node(std::size_t from, std::size_t to) {
+    std::scoped_lock const lock(_content_mutex);
+    if (from >= _nodes.size() || to >= _nodes.size()) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': move of node {} to {}, but the graph holds {}", _name, from, to,
+                                _nodes.size());
+    }
+    if (from == to) {
+        return;
+    }
+    auto const at = [this](std::size_t i) { return _nodes.begin() + static_cast<std::ptrdiff_t>(i); };
+    if (from < to) {
+        std::rotate(at(from), at(from + 1), at(to + 1));
+    } else {
+        std::rotate(at(to), at(from), at(from + 1));
+    }
+    mark_sorted();
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)
