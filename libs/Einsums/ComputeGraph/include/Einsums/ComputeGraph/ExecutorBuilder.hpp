@@ -406,10 +406,13 @@ EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
  *
  * Two families. The grouped kinds (@ref is_grouped_raisable): a group table is a
  * function of one problem's extents, so a file holds the algebraic form and the
- * load groups it again. The lifecycle kinds Materialize, Free and Initialize:
- * the resource phase places them for one machine, so a file holds the graph
- * before that phase, and the phase runs again after a load. A node of either
- * family still rebuilds in this process, which is what an edit to it needs.
+ * load groups it again. The lifecycle kinds Materialize, Free and Initialize,
+ * and the storage transfers DiskRead and DiskWrite: the resource phase places
+ * them for one machine, so a file holds the graph before that phase, and the
+ * phase runs again after a load. A node of either family still rebuilds in this
+ * process, which is what an edit to it needs. A transfer captured through
+ * ``cg::read`` or ``cg::write`` is the exception: its executor is the caller's,
+ * and @ref build_executor refuses it.
  *
  * @param[in] kind The operation kind.
  * @return True when a builder entry exists and @ref is_reconstructible is false on purpose.

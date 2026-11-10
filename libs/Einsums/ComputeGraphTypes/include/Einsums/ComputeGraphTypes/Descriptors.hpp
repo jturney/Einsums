@@ -11,6 +11,7 @@
 
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -179,9 +180,24 @@ struct TransferDescriptor {
 };
 
 /**
+ * @brief What a DiskRead or DiskWrite node moves, which is what its executor is built from.
+ *
+ * @versionadded{2.0.0}
+ */
+enum class DiskIOMode : std::uint8_t {
+    Caller,  ///< Captured through ``cg::read`` / ``cg::write`` with an executor the caller wrote; nothing rebuilds it.
+    Whole,   ///< DiskWrite of the whole tensor into its write backing, after its last writer.
+    Publish, ///< DiskWrite that publishes the backings of @ref DiskIODescriptor::members as one group.
+    Window,  ///< A window of a backing, through @ref DiskIODescriptor::window, read into or written from the node's tensor.
+};
+
+struct BackingWindow;
+
+/**
  * @brief Metadata for disk I/O nodes (DiskRead / DiskWrite).
  *
- * Stores the file path and dataset name for tensor serialization.
+ * Stores the file path and dataset name for tensor serialization, and what the transfer moves,
+ * which a pass that places one records so the executor can be built again from the node.
  */
 struct DiskIODescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
@@ -194,6 +210,13 @@ struct DiskIODescriptor {
     /// box a loop's iteration chooses. The scheduler orders the transfer after the nodes that
     /// write them, as it orders a parameter-bound view; empty for a fixed region.
     std::vector<std::string> bound_params;
+    /// What the transfer moves.
+    DiskIOMode mode{DiskIOMode::Caller};
+    /// For @ref DiskIOMode::Publish: the tensors, in the node's graph, whose backings publish together.
+    std::vector<TensorId> members;
+    /// For @ref DiskIOMode::Window: which part of which backing. Held only in memory, since the
+    /// passes that place a window run again after a load.
+    std::shared_ptr<BackingWindow const> window;
 };
 
 /**

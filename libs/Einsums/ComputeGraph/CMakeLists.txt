@@ -150,6 +150,7 @@ set(ComputeGraphSources
     Operations/Selection.cpp
     Operations/Shape.cpp
     Operations/Unary.cpp
+    BackingIoExecutors.cpp
     ExecutorBuilder.cpp
     LifecycleExecutors.cpp
     ABILayout.cpp

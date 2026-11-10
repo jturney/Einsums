@@ -12,6 +12,7 @@
 /// from reference_einsum over the same tensor.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 // Not reached through the umbrella header, which does not carry these passes.
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
@@ -266,6 +267,28 @@ void check_close(RuntimeTensor<double> const &got, RuntimeTensor<double> const &
     }
 }
 
+/// Rebuild every storage transfer a pass placed, in the graph and every body, from its descriptor
+/// alone, as an edit to the node would. Returns how many were rebuilt.
+std::size_t rebuild_transfers(cg::Graph &graph) {
+    std::size_t rebuilt = 0;
+    auto const  one     = [&rebuilt](cg::Graph &g) {
+        for (auto &node : g.nodes()) {
+            auto const *io = node.op_data.get_if<cg::DiskIODescriptor>();
+            if ((node.kind != cg::OpKind::DiskRead && node.kind != cg::OpKind::DiskWrite) || io == nullptr ||
+                io->mode == cg::DiskIOMode::Caller) {
+                continue;
+            }
+            // A transfer reads neither the dtype nor the rank it is given.
+            node.execute = cg::build_executor(node.kind, packed_gemm::ScalarType::Float64, 1, node.op_data, g,
+                                              std::span<cg::TensorId const>{node.inputs}, std::span<cg::TensorId const>{node.outputs});
+            ++rebuilt;
+        }
+    };
+    one(graph);
+    graph.for_each_descendant(std::function<void(cg::Graph &)>{one});
+    return rebuilt;
+}
+
 } // namespace
 
 TEST_CASE("SlabStreaming reads a backed operand whose last letter the output keeps, a slab per block",
@@ -293,6 +316,10 @@ TEST_CASE("SlabStreaming reads a backed operand whose last letter the output kee
     REQUIRE(pass->num_streamed() == 1);
     CHECK(pass->blocks() == std::vector<std::int64_t>{2});
 
+    // The same run again from executors rebuilt off the transfers' descriptors alone.
+    if (GENERATE(false, true)) {
+        REQUIRE(rebuild_transfers(graph) > 0);
+    }
     graph.execute();
     CHECK_FALSE(b.is_materialized());
     CHECK_FALSE(store.read_whole());
@@ -648,6 +675,10 @@ TEST_CASE("SlabStreaming reads the box AxisTiling's view names, at every iterati
     CHECK(slabs->num_boxes() >= 1);
     CHECK(materialize->num_loaded() == 0);
 
+    // The same run again from executors rebuilt off the transfers' descriptors alone.
+    if (GENERATE(false, true)) {
+        REQUIRE(rebuild_transfers(graph) > 0);
+    }
     graph.execute();
     CHECK_FALSE(store.read_whole());
     // Every read is a box, and together they cover every element exactly once.
@@ -718,6 +749,10 @@ TEST_CASE("SlabStreaming writes the box AxisTiling's view names, at every iterat
     CHECK(slabs->num_boxes() >= 1);
     CHECK(graph.verify().empty());
 
+    // The same run again from executors rebuilt off the transfers' descriptors alone.
+    if (GENERATE(false, true)) {
+        REQUIRE(rebuild_transfers(graph) > 0);
+    }
     graph.execute();
     // No write covers the whole tensor, and together the writes cover every element exactly once.
     std::vector<int> covered(naux * v * v, 0);
@@ -1002,6 +1037,10 @@ TEST_CASE("SlabStreaming produces a write-backed tensor a slab per block, straig
     CHECK(pass->streamed() == std::vector<std::string>{"T", "T"});
     CHECK(graph.verify().empty());
 
+    // The same run again from executors rebuilt off the transfers' descriptors alone.
+    if (GENERATE(false, true)) {
+        REQUIRE(rebuild_transfers(graph) > 0);
+    }
     graph.execute();
     CHECK_FALSE(t.is_materialized());
     std::vector<std::pair<std::size_t, std::size_t>> written;
@@ -1304,6 +1343,10 @@ TEST_CASE("A write-backed tensor computed in memory is stored after its last wri
         capture(graph, store, d, f);
         auto const pass = stream(graph, 0);
         CHECK(pass->num_streamed() == 0);
+        // The same run again from executors rebuilt off the transfers' descriptors alone.
+        if (GENERATE(false, true)) {
+            REQUIRE(rebuild_transfers(graph) > 0);
+        }
         graph.execute();
         CHECK(store.writes.size() == 1);
         check_close(store.stored(), want, static_cast<double>(2 * nk));

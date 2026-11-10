@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Detail/BackedWrites.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
@@ -47,8 +48,6 @@ using detail::declare_walk_bounds;
 using detail::declared_order;
 using detail::einsum_spec;
 using detail::runs_in;
-using detail::slice_bound;
-using detail::TileCursor;
 using detail::walk_iterations;
 
 /// An operand of a contraction that reads a backed tensor: the tensor itself, or a full,
@@ -263,6 +262,15 @@ std::vector<AxisWalk> streamed_walks(std::size_t extent, std::size_t block, bool
     return out;
 }
 
+/// The slab of @p backed's storage one loop's iterations walk: a run of its last axis.
+std::shared_ptr<BackingWindow const> slab_window(BackedOperand const &backed, AxisWalk const &walk) {
+    return std::make_shared<BackingWindow const>(
+        BackingWindow{.backing = backed.backing,
+                      .name    = backed.name,
+                      .axes    = {},
+                      .slab = BackingWindow::Slab{.count = walk.count, .step = walk.step, .offset = walk.offset, .length = walk.length}});
+}
+
 template <typename T>
 RuntimeTensorView<T> &view_over(OtherOperand const &operand, std::string const &lo, std::string const &hi) {
     std::vector<ViewAxis> recipe = operand.base;
@@ -289,27 +297,16 @@ void emit_body(Graph &body, Rewrite const &rw, AxisWalk const &walk, std::size_t
     // which order a parameter-bound VIEW after its write and nothing else.
     auto       &ctx     = CaptureContext::current();
     auto const  slab_id = ctx.get_or_register(slab);
-    auto        first = slice_bound(std::make_shared<TileCursor>(), 1, 0, 1, walk.count, walk.step, static_cast<std::int64_t>(walk.offset));
-    auto        last  = slice_bound(std::make_shared<TileCursor>(), 1, 0, 1, walk.count, walk.step,
-                                    static_cast<std::int64_t>(walk.offset) + static_cast<std::int64_t>(walk.length));
-    std::size_t bytes = sizeof(T);
+    std::size_t bytes   = sizeof(T);
     for (std::size_t const extent : slab_dims) {
         bytes *= extent;
     }
-    ctx.record(
-        OpKind::DiskRead, fmt::format("read_slab({})", rw.backed.name), {}, {slab_id},
-        [backing = rw.backed.backing, dims = rw.dims, first = std::move(first), last = std::move(last), target = &slab]() {
-            std::vector<std::pair<std::size_t, std::size_t>> ranges;
-            ranges.reserve(dims.size());
-            for (std::size_t p = 0; p + 1 < dims.size(); ++p) {
-                ranges.emplace_back(0, dims[p]);
-            }
-            auto const start = static_cast<std::size_t>(first());
-            auto const end   = static_cast<std::size_t>(last());
-            ranges.emplace_back(start, end);
-            detail::fill_from_backing(*backing, target->data(), target->impl(), ranges);
-        },
-        compute_graph::detail::backing_io(*rw.backed.backing, slab_id, bytes));
+    auto io   = compute_graph::detail::backing_io(*rw.backed.backing, slab_id, bytes);
+    io.mode   = DiskIOMode::Window;
+    io.window = slab_window(rw.backed, walk);
+    auto read = build_executor(OpKind::DiskRead, body.tensor(slab_id).dtype, slab_dims.size(), OpData{io}, body, {},
+                               std::span<TensorId const>{&slab_id, 1});
+    ctx.record(OpKind::DiskRead, fmt::format("read_slab({})", rw.backed.name), {}, {slab_id}, std::move(read), std::move(io));
 
     auto const &slab_view   = view_runtime(slab, std::vector<ViewAxis>(slab.rank(), ViewAxis::full()));
     auto const &other       = view_over<T>(rw.other, lo, hi);
@@ -363,27 +360,16 @@ void emit_write_body(Graph &body, WriteRewrite const &rw, AxisWalk const &walk, 
     // The write follows the loop with cursors of its own, as a read does in emit_body.
     auto       &ctx     = CaptureContext::current();
     auto const  slab_id = ctx.get_or_register(slab);
-    auto        first = slice_bound(std::make_shared<TileCursor>(), 1, 0, 1, walk.count, walk.step, static_cast<std::int64_t>(walk.offset));
-    auto        last  = slice_bound(std::make_shared<TileCursor>(), 1, 0, 1, walk.count, walk.step,
-                                    static_cast<std::int64_t>(walk.offset) + static_cast<std::int64_t>(walk.length));
-    std::size_t bytes = sizeof(T);
+    std::size_t bytes   = sizeof(T);
     for (std::size_t const extent : slab_dims) {
         bytes *= extent;
     }
-    ctx.record(
-        OpKind::DiskWrite, fmt::format("write_slab({})", rw.backed.name), {slab_id}, {},
-        [backing = rw.backed.backing, dims = rw.dims, first = std::move(first), last = std::move(last), source = &slab]() {
-            std::vector<std::pair<std::size_t, std::size_t>> ranges;
-            ranges.reserve(dims.size());
-            for (std::size_t p = 0; p + 1 < dims.size(); ++p) {
-                ranges.emplace_back(0, dims[p]);
-            }
-            auto const start = static_cast<std::size_t>(first());
-            auto const end   = static_cast<std::size_t>(last());
-            ranges.emplace_back(start, end);
-            detail::store_to_backing(*backing, source->data(), source->impl(), ranges);
-        },
-        compute_graph::detail::backing_io(*rw.backed.backing, slab_id, bytes));
+    auto io    = compute_graph::detail::backing_io(*rw.backed.backing, slab_id, bytes);
+    io.mode    = DiskIOMode::Window;
+    io.window  = slab_window(rw.backed, walk);
+    auto write = build_executor(OpKind::DiskWrite, body.tensor(slab_id).dtype, slab_dims.size(), OpData{io}, body,
+                                std::span<TensorId const>{&slab_id, 1}, {});
+    ctx.record(OpKind::DiskWrite, fmt::format("write_slab({})", rw.backed.name), {slab_id}, {}, std::move(write), std::move(io));
 }
 
 /// Mark for removal the View node @p view_node that made @p view, unless a node other than
@@ -1137,51 +1123,12 @@ bool SlabStreaming::stream_box(Graph &graph, std::size_t view_node, std::string 
         }
         auto io         = compute_graph::detail::backing_io(*backing, box_id, bytes);
         io.bound_params = bound_params;
+        io.mode         = DiskIOMode::Window;
+        io.window       = std::make_shared<BackingWindow const>(BackingWindow{.backing = backing, .name = name, .axes = view->axes});
         io_node.op_data = std::move(io);
         // The box is resolved when the transfer runs, from the parameters the view would have read, and
         // the buffer is reached through its accessor, since the memory planner may place it anywhere.
-        io_node.execute = [backing, impl_fn = box.impl_fn, axes = view->axes, params = graph.params_ptr(), name, store]() {
-            if (!params) {
-                EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' has no parameter table", name);
-            }
-            compute_graph::detail::dispatch_scalar_type(backing->dtype, [&]<typename T>(T) {
-                auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(impl_fn());
-                if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
-                    EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' has no storage", name);
-                }
-                std::vector<std::pair<std::size_t, std::size_t>> ranges;
-                ranges.reserve(axes.size());
-                std::size_t kept_axis = 0;
-                for (std::size_t p = 0; p < axes.size(); ++p) {
-                    auto const        &axis   = axes[p];
-                    std::int64_t const extent = static_cast<std::int64_t>(backing->dims[p]);
-                    std::int64_t       lo     = 0;
-                    std::int64_t       hi     = extent;
-                    if (axis.kind == ViewAxis::Kind::Drop) {
-                        lo = axis.lo.resolve(*params);
-                        hi = lo + 1;
-                    } else if (axis.kind == ViewAxis::Kind::Range) {
-                        lo = axis.lo.resolve(*params);
-                        hi = axis.hi.resolve(*params);
-                    }
-                    bool const fits_buffer =
-                        axis.kind == ViewAxis::Kind::Drop || static_cast<std::size_t>(hi - lo) == impl->dim(static_cast<int>(kept_axis));
-                    if (lo < 0 || hi < lo || hi > extent || !fits_buffer) {
-                        EINSUMS_THROW_EXCEPTION(
-                            std::logic_error, "SlabStreaming: the box of '{}' on axis {} is [{}, {}), which does not fit", name, p, lo, hi);
-                    }
-                    if (axis.kind != ViewAxis::Kind::Drop) {
-                        ++kept_axis;
-                    }
-                    ranges.emplace_back(static_cast<std::size_t>(lo), static_cast<std::size_t>(hi));
-                }
-                if (store) {
-                    detail::store_to_backing(*backing, impl->data(), *impl, ranges);
-                } else {
-                    detail::fill_from_backing(*backing, impl->data(), *impl, ranges);
-                }
-            });
-        };
+        io_node.execute = build_executor(io_node.kind, box.dtype, box.rank, io_node.op_data, graph, io_node.inputs, io_node.outputs);
         return io_node;
     };
 

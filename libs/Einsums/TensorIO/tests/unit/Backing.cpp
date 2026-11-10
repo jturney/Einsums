@@ -16,6 +16,7 @@
 
 #include <Einsums/BufferAllocator/Options.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/GraphIR.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
@@ -140,6 +141,28 @@ struct MemoryBudget {
 /// How many of the pass's decisions carry @p code.
 std::size_t decisions_coded(cg::OptimizerPass const &pass, std::string_view code) {
     return static_cast<std::size_t>(std::ranges::count_if(pass.decisions(), [&](cg::Decision const &d) { return d.code == code; }));
+}
+
+/// Rebuild every storage transfer a pass placed, in the graph and every body, from its descriptor
+/// alone, as an edit to the node would. Returns how many were rebuilt.
+std::size_t rebuild_transfers(cg::Graph &graph) {
+    std::size_t rebuilt = 0;
+    auto const  one     = [&rebuilt](cg::Graph &g) {
+        for (auto &node : g.nodes()) {
+            auto const *io = node.op_data.get_if<cg::DiskIODescriptor>();
+            if ((node.kind != cg::OpKind::DiskRead && node.kind != cg::OpKind::DiskWrite) || io == nullptr ||
+                io->mode == cg::DiskIOMode::Caller) {
+                continue;
+            }
+            // A transfer reads neither the dtype nor the rank it is given.
+            node.execute = cg::build_executor(node.kind, packed_gemm::ScalarType::Float64, 1, node.op_data, g,
+                                              std::span<cg::TensorId const>{node.inputs}, std::span<cg::TensorId const>{node.outputs});
+            ++rebuilt;
+        }
+    };
+    one(graph);
+    graph.for_each_descendant(std::function<void(cg::Graph &)>{one});
+    return rebuilt;
 }
 
 } // namespace
@@ -901,6 +924,10 @@ TEST_CASE("An update-backed tensor starts each replay from its entry and leaves 
     CHECK(pass->num_published() == 1);
 
     RuntimeTensor<double> expected = t0;
+    // The same run again from executors rebuilt off the transfers' descriptors alone.
+    if (GENERATE(false, true)) {
+        REQUIRE(rebuild_transfers(graph) > 0);
+    }
     for (int replay = 0; replay < 3; ++replay) {
         graph.execute();
         expected = step_of(a, expected);
@@ -1082,6 +1109,10 @@ TEST_CASE("The update backings of one file are published by one node", "[TensorI
 
     RuntimeTensor<double> expected_t = t0;
     RuntimeTensor<double> expected_u = u0;
+    // The same run again from executors rebuilt off the transfers' descriptors alone.
+    if (GENERATE(false, true)) {
+        REQUIRE(rebuild_transfers(graph) > 0);
+    }
     for (int replay = 0; replay < 2; ++replay) {
         graph.execute();
         expected_t = step_of(a, expected_t);

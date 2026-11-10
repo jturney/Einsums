@@ -45,6 +45,7 @@
 #include <variant>
 #include <vector>
 
+#include "BackingIoExecutors.hpp"
 #include "LifecycleExecutors.hpp"
 #include "StridedBatchedEinsum.hpp"
 
@@ -1244,7 +1245,8 @@ TensorHandle const &lifecycle_handle(Graph &graph, DeclaredTensor const &declare
 } // namespace
 
 bool is_rebuild_only(OpKind kind) noexcept {
-    return is_grouped_raisable(kind) || kind == OpKind::Materialize || kind == OpKind::Free || kind == OpKind::Initialize;
+    return is_grouped_raisable(kind) || kind == OpKind::Materialize || kind == OpKind::Free || kind == OpKind::Initialize ||
+           kind == OpKind::DiskRead || kind == OpKind::DiskWrite;
 }
 
 std::string reconstruction_blocker(Node const &node) {
@@ -1271,6 +1273,10 @@ std::string reconstruction_blocker(Node const &node) {
         case OpKind::Initialize:
             return "lifecycle nodes are placed by the resource phase for one machine and are deliberately not saved; "
                    "save before that phase and run it again after loading";
+        case OpKind::DiskRead:
+        case OpKind::DiskWrite:
+            return "storage transfers are placed by the resource phase for one machine, or carry an executor the caller "
+                   "wrote, and are not saved";
         default:
             break;
         }
@@ -1484,7 +1490,8 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
     // dispatched on anyway; see the header. The lifecycle kinds name a tensor of any rank,
     // a registered scalar included, and do nothing that depends on it.
     bool const scalar_destination_ok = kind == OpKind::Einsum || kind == OpKind::Dot || kind == OpKind::Trace ||
-                                       kind == OpKind::WriteParam || is_control_flow(kind) || is_lifecycle(kind);
+                                       kind == OpKind::WriteParam || is_control_flow(kind) || is_lifecycle(kind) ||
+                                       kind == OpKind::DiskRead || kind == OpKind::DiskWrite;
     if (rank == 0 && !scalar_destination_ok) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): rank must be at least 1", kind);
     }
@@ -1646,6 +1653,50 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
         need(kind, "outputs", outputs, 1);
         auto const &d = expect<InitializeDescriptor>(kind, desc, "InitializeDescriptor");
         return detail::build_initialize(d.kind, lifecycle_handle(graph, d.declared, outputs[0]));
+    }
+    // The storage transfers, by what the descriptor says each moves.
+    case OpKind::DiskRead:
+    case OpKind::DiskWrite: {
+        auto const &d     = expect<DiskIODescriptor>(kind, desc, "DiskIODescriptor");
+        bool const  store = kind == OpKind::DiskWrite;
+        switch (d.mode) {
+        case DiskIOMode::Caller:
+            break;
+        case DiskIOMode::Whole:
+        case DiskIOMode::Publish:
+            if (!store) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(DiskRead): a {} transfer only writes",
+                                        d.mode == DiskIOMode::Whole ? "whole-tensor" : "publish");
+            }
+            if (d.mode == DiskIOMode::Whole) {
+                need(kind, "inputs", inputs, 1);
+                return detail::build_store_whole(graph.tensor(inputs[0]));
+            } else {
+                std::vector<std::shared_ptr<TensorBacking const>> backings;
+                backings.reserve(d.members.size());
+                for (TensorId const member : d.members) {
+                    TensorHandle const &handle = graph.tensor(member);
+                    if (!handle.backing) {
+                        EINSUMS_THROW_EXCEPTION(std::logic_error, "build_executor(DiskWrite): publish member '{}' carries no backing",
+                                                handle.name);
+                    }
+                    backings.push_back(handle.backing);
+                }
+                return detail::build_publish(std::move(backings));
+            }
+        case DiskIOMode::Window: {
+            if (store) {
+                need(kind, "inputs", inputs, 1);
+            } else {
+                need(kind, "outputs", outputs, 1);
+            }
+            return detail::build_window(store, graph.tensor(store ? inputs[0] : outputs[0]), d.window, graph.params_ptr());
+        }
+        }
+        EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                "build_executor({}): '{}' was captured with an executor the caller wrote, which no descriptor holds; "
+                                "only that executor runs it",
+                                kind, d.file_path);
     }
     default:
         break;

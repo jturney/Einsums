@@ -258,7 +258,7 @@ void Materialization::reset_stats() {
 namespace {
 
 /// The node that stores a tensor produced in memory whole into its write backing.
-Node store_node(TensorHandle const &handle, TensorId tid) {
+Node store_node(Graph &graph, TensorHandle const &handle, TensorId tid) {
     std::size_t bytes = handle.element_size;
     for (std::size_t const extent : handle.dims) {
         bytes *= extent;
@@ -267,22 +267,10 @@ Node store_node(TensorHandle const &handle, TensorId tid) {
     node.kind    = OpKind::DiskWrite;
     node.label   = fmt::format("store_backing({})", handle.name);
     node.inputs  = {tid};
-    node.op_data = compute_graph::detail::backing_io(*handle.backing, tid, bytes);
-    node.execute = [backing = handle.backing, impl_fn = handle.impl_fn, dtype = handle.dtype, name = handle.name]() {
-        compute_graph::detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-            auto const *impl = static_cast<einsums::detail::TensorImpl<T> const *>(impl_fn());
-            if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
-                EINSUMS_THROW_EXCEPTION(std::logic_error, "write-backed tensor '{}' has no storage to store into {}", name,
-                                        backing->describe());
-            }
-            std::vector<std::pair<std::size_t, std::size_t>> ranges;
-            ranges.reserve(backing->dims.size());
-            for (std::size_t const extent : backing->dims) {
-                ranges.emplace_back(0, extent);
-            }
-            detail::store_to_backing(*backing, impl->data(), *impl, ranges);
-        });
-    };
+    auto io      = compute_graph::detail::backing_io(*handle.backing, tid, bytes);
+    io.mode      = DiskIOMode::Whole;
+    node.op_data = std::move(io);
+    node.execute = build_executor(node.kind, handle.dtype, handle.rank, node.op_data, graph, node.inputs, node.outputs);
     return node;
 }
 
@@ -308,7 +296,7 @@ bool Materialization::store_written_backings(Graph &graph) {
         if (use == nullptr || use->last_writer() == TensorUsage::npos) {
             continue;
         }
-        groups.emplace_back(use->last_writer() + 1, std::vector<Node>{store_node(handle, tid)});
+        groups.emplace_back(use->last_writer() + 1, std::vector<Node>{store_node(graph, handle, tid)});
         ++_num_stored;
         applied(Stored,
                 fmt::format("store write-backed tensor '{}' into {} after its last writer", handle.name, handle.backing->describe()),
@@ -358,33 +346,19 @@ bool Materialization::publish_updates(Graph &graph) {
         if (std::ranges::any_of(graph.nodes(), [&](Node const &node) { return node.kind == OpKind::DiskWrite && node.label == label; })) {
             continue;
         }
-        std::vector<std::shared_ptr<TensorBacking const>> backings;
-        for (TensorHandle const *handle : group.handles) {
-            backings.push_back(handle->backing);
-        }
         Node node;
         node.kind  = OpKind::DiskWrite;
         node.label = label;
-        node.op_data =
-            compute_graph::detail::backing_io(*backings.front(), graph.find_tensor_id_by_ptr(group.handles.front()->tensor_ptr), 0);
-        node.effects = NodeEffects{.deterministic = true, .external_effects = true};
-        node.execute = [backings = std::move(backings)]() {
-            std::vector<TensorBacking const *> members;
-            members.reserve(backings.size());
-            for (auto const &backing : backings) {
-                members.push_back(backing.get());
-            }
-            members.front()->publish(members);
-            for (TensorBacking const *member : members) {
-                if (member->counters) {
-                    member->counters->publishes.fetch_add(1, std::memory_order_relaxed);
-                    if (member->counters->context) {
-                        compute_graph::detail::notify_io(*member->counters->context, EventKind::Publish, member->counters->tensor, *member,
-                                                         0);
-                    }
-                }
-            }
-        };
+        auto io    = compute_graph::detail::backing_io(*group.handles.front()->backing,
+                                                       graph.find_tensor_id_by_ptr(group.handles.front()->tensor_ptr), 0);
+        io.mode    = DiskIOMode::Publish;
+        for (TensorHandle const *handle : group.handles) {
+            io.members.push_back(handle->id);
+        }
+        node.op_data              = std::move(io);
+        node.effects              = NodeEffects{.deterministic = true, .external_effects = true};
+        TensorHandle const &first = *group.handles.front();
+        node.execute              = build_executor(node.kind, first.dtype, first.rank, node.op_data, graph, node.inputs, node.outputs);
         appended.push_back(std::move(node));
         _num_published += group.handles.size();
         applied(Published, fmt::format("publish update-backed tensor(s) {} at the end of the replay, in one step", fmt::join(names, ", ")),

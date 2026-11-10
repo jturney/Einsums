@@ -1004,6 +1004,31 @@ struct ViewAxis {
 };
 
 /**
+ * @brief The window of a backing a @ref DiskIOMode::Window transfer moves.
+ *
+ * Exactly one of two shapes. A box is the region a parameter-bound view selects, resolved
+ * against the graph's parameters each time the transfer runs. A slab is a run of the backing's
+ * last axis that advances with a loop: position @c offset, then @c count positions @c step apart,
+ * each @c length long, every other axis whole.
+ *
+ * @versionadded{2.0.0}
+ */
+struct BackingWindow {
+    /// How a slab walks the backing's last axis.
+    struct Slab {
+        std::size_t count{1};  ///< Positions the loop visits.
+        std::size_t step{1};   ///< Distance between two consecutive positions.
+        std::size_t offset{0}; ///< The first position.
+        std::size_t length{1}; ///< How much of the axis one position holds.
+    };
+
+    std::shared_ptr<TensorBacking const> backing; ///< The storage the window is part of.
+    std::string                          name;    ///< The backed tensor's name, for errors.
+    std::vector<ViewAxis>                axes;    ///< A box: one entry per backing axis. Empty for a slab.
+    std::optional<Slab>                  slab;    ///< A slab: its walk. Empty for a box.
+};
+
+/**
  * @brief Metadata for @c View nodes, non-owning slice/alias of another tensor.
  *
  * The output tensor's ``TensorHandle::aliases`` is set to ``parent_id``.
