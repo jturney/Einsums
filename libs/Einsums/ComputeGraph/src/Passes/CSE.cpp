@@ -238,7 +238,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
 
     graph.topological_sort();
 
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
     if (nodes.size() < 2) {
         return false;
     }
@@ -611,7 +611,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
                 break; // no survivor can take j's place while a reader of it is one this pass cannot rewrite
 
             for (size_t const k : folds) {
-                apply_fold(nodes[k], FoldSite::Operand, *ratio);
+                graph.edit(k, [&](NodeEdit &e) { apply_fold(e.node(), FoldSite::Operand, *ratio); });
             }
 
             // Equivalent! Redirect j's outputs to i's outputs.
@@ -661,21 +661,24 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
         return false;
 
     // Apply redirections to all remaining nodes' inputs
+    auto const redirected = [&](TensorId tid) { return tensor_redirect.contains(tid); };
     for (size_t i = 0; i < nodes.size(); i++) {
-        if (remove[i])
+        if (remove[i] || !std::ranges::any_of(nodes[i].inputs, redirected))
             continue;
-        bool redirected = false;
-        for (auto &tid : nodes[i].inputs) {
-            auto it = tensor_redirect.find(tid);
-            if (it != tensor_redirect.end()) {
-                tid        = it->second;
-                redirected = true;
+        graph.edit(i, [&](NodeEdit &e) {
+            for (auto &tid : e->inputs) {
+                if (auto it = tensor_redirect.find(tid); it != tensor_redirect.end()) {
+                    tid = it->second;
+                }
             }
-        }
-        // A reader's GEMM hint names the operand it was captured with, which is the duplicate.
-        if (redirected) {
-            refresh_gemm_hint(graph, nodes[i]);
-        }
+            // A reader's GEMM hint names the operand it was captured with, which is the duplicate.
+            refresh_gemm_hint(graph, e.node());
+            // A reader the builder cannot rebuild keeps the executor it has: it resolves the
+            // duplicate's slot, which redirect_slot above repointed at the survivor.
+            if (e->custom_execute) {
+                e.set_executor([held = e->custom_execute]() { (*held)(); });
+            }
+        });
     }
 
     // Remove eliminated nodes

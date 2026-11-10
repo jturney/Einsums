@@ -220,6 +220,55 @@ TEMPLATE_LIST_TEST_CASE("CSE - surviving consumer of an eliminated duplicate rea
     REQUIRE(max_abs > 1e-10);
 }
 
+TEMPLATE_LIST_TEST_CASE("CSE - a consumer with its own executor keeps it and reads the survivor", "[ComputeGraph][CSE][NodeEdit]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    // Redirecting a reader changes its operands, and a graph edit refuses that on a node whose
+    // executor a pass wrote unless the pass hands one over: the builder cannot vouch for it. CSE
+    // keeps the reader's own executor, which resolves the duplicate's slot, and redirect_slot
+    // has repointed that slot at the survivor. Same diamond as above, with the consumer marked.
+    auto A   = create_random_tensor<T>("A", 4, 3);
+    auto B   = create_random_tensor<T>("B", 3, 5);
+    auto F   = create_random_tensor<T>("F", 5, 2);
+    auto C   = create_zero_tensor<T>("C", 4, 5);
+    auto out = create_zero_tensor<T>("out", 4, 2);
+
+    cg::Graph graph("cse_custom_consumer");
+    auto     &D = graph.create_tensor<T, 2>("D", 4, 5);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+        cg::einsum("ik;kj->ij", &D, A, B);
+        cg::einsum("ik;kj->ij", &out, D, F);
+    }
+
+    std::size_t const consumer = graph.num_nodes() - 1;
+    auto              own      = cg::build_executor(graph.nodes()[consumer], graph);
+    graph.edit(consumer, [&](cg::NodeEdit &e) { e.set_executor(own); });
+    REQUIRE(graph.nodes()[consumer].custom_execute != nullptr);
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    REQUIRE(modified);
+    REQUIRE(graph.num_nodes() == 3);
+    CHECK(graph.nodes().back().custom_execute != nullptr);
+
+    graph.execute();
+
+    auto AB = create_zero_tensor<T>("AB", 4, 5);
+    reference_einsum("ij <- ik ; kj", &AB, A, B);
+    auto out_ref = create_zero_tensor<T>("OUTref", 4, 2);
+    reference_einsum("ij <- ik ; kj", &out_ref, AB, F);
+
+    double max_abs = 0.0;
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 2; jj++) {
+            max_abs = std::max<double>(max_abs, std::abs(out(ii, jj)));
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < tol<T>());
+        }
+    }
+    REQUIRE(max_abs > 1e-10);
+}
+
 TEMPLATE_LIST_TEST_CASE("CSE - redirect survives a rebind of the survivor", "[ComputeGraph][CSE][Rebind]", testing::AllScalarTypes) {
     using T = TestType;
     // Regression for the residual hole in the bug above: redirect_slot used to
