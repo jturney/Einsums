@@ -2296,6 +2296,36 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void move_node(std::size_t from, std::size_t to);
 
     /**
+     * @brief Move nodes out of a body of one of this graph's nodes, to @p position in this graph.
+     *
+     * The nodes keep their order. Each tensor a moved node names is given this graph's id for it,
+     * found or registered by the tensor's storage as @ref find_or_register_tensor_ptr does, so a
+     * moved node is ordered against every node here that touches the same buffer. A node the
+     * builder can make gets its executor rebuilt against those ids, so it reaches its operands
+     * through this graph's slots; one whose pass wrote its executor keeps it, with a pre-run hook
+     * that re-seats the body's slots for the tensors it names, which is where its executor reaches
+     * them. A deferred intermediate the body declared moves out with the nodes: this graph's
+     * handle becomes its declaration and the body's a stand-in for it, as for any tensor a body
+     * borrows from its parent.
+     *
+     * The caller vouches that @p position comes after everything the moved nodes read and before
+     * everything that reads what they write, as @ref reorder has it vouch for an order; anything
+     * a pass adds to state that, such as the body's node now reading a moved output, is an
+     * ordinary @ref edit.
+     *
+     * @param[in] child    The body, held by one of this graph's nodes.
+     * @param[in] picks    The positions in @p child to move, ascending.
+     * @param[in] position Where the first of them goes in this graph.
+     * @return The moved nodes' positions in this graph, in order.
+     * @throws std::invalid_argument If @p child is not a body of this graph's nodes, @p picks is
+     *         not ascending within @p child, or @p position is past the end of this graph.
+     * @throws std::logic_error If a moved node has no executor the builder can make and none its
+     *         pass gave; neither graph is changed.
+     * @versionadded{2.0.0}
+     */
+    std::vector<std::size_t> hoist(Graph &child, std::span<std::size_t const> picks, std::size_t position);
+
+    /**
      * @brief Splice groups of nodes into the list. Each entry inserts its nodes
      *        immediately BEFORE index @c first in the current numbering.
      *
@@ -4791,6 +4821,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// mark the graph as not executed. The one place that says what a node edit makes stale, called
     /// by every function that adds, removes or reorders nodes.
     void note_node_edit() noexcept;
+
+    /// Give @p node the executor its fields say: a no-op once folded, the one its pass wrote, or
+    /// the builder's, with its pre-run hooks ahead of it, its asynchronous start phase wrapped
+    /// the same way, and its CPU fallback, when @p placed, kept in step. Throws std::logic_error
+    /// when the builder cannot make one and its pass gave none.
+    void give_executor(Node &node, bool placed);
 
     /// A value that moves whenever any graph below this one has a declared edit: each
     /// descendant's analysis version and node count, folded in walk order. A body edit moves the

@@ -17,6 +17,7 @@
 #include <mutex>
 #include <span>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -61,6 +62,40 @@ void NodeEdit::add_pre_run(std::function<void()> hook) {
     _node.pre_run.push_back(std::move(hook));
 }
 
+void Graph::give_executor(Node &node, bool placed) {
+    std::function<void()> core;
+    if (node.folded) {
+        core = [] {};
+    } else if (node.custom_execute) {
+        core = calling(node.custom_execute);
+    } else {
+        try {
+            core = build_executor(node, *this);
+        } catch (std::exception const &e) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                    "Graph '{}': node '{}' cannot be given an executor from its fields ({}); a pass that writes "
+                                    "its executor gives it through NodeEdit::set_executor",
+                                    _name, node.label, e.what());
+        }
+    }
+    node.execute = with_pre_run(node.pre_run, std::move(core));
+
+    if (node.folded) {
+        node.async_start  = nullptr;
+        node.async_finish = nullptr;
+    } else if (node.async_start || node.custom_async_start) {
+        // A pass always writes the asynchronous halves itself; the first commit keeps its
+        // start phase apart so the hooks wrap it once however often the node is edited.
+        if (!node.custom_async_start) {
+            node.custom_async_start = std::make_shared<std::function<void()>>(std::move(node.async_start));
+        }
+        node.async_start = with_pre_run(node.pre_run, calling(node.custom_async_start));
+    }
+    if (placed) {
+        node.cpu_fallback = node.execute;
+    }
+}
+
 void Graph::edit(std::size_t index, std::function<void(NodeEdit &)> const &change) {
     std::scoped_lock const lock(_content_mutex);
     if (index >= _nodes.size()) {
@@ -85,43 +120,13 @@ void Graph::edit(std::size_t index, std::function<void(NodeEdit &)> const &chang
         sync_destination_input(node);
         bool const operands_changed = node.kind != before.kind || node.inputs != before.inputs || node.outputs != before.outputs;
 
-        std::function<void()> core;
-        if (node.folded) {
-            core = [] {};
-        } else if (node.custom_execute) {
-            if (operands_changed && !edit._executor_given) {
-                EINSUMS_THROW_EXCEPTION(std::logic_error,
-                                        "Graph '{}': node '{}' runs an executor its pass wrote, and this edit changed what it reads or "
-                                        "writes without giving it a new one through NodeEdit::set_executor",
-                                        _name, node.label);
-            }
-            core = calling(node.custom_execute);
-        } else {
-            try {
-                core = build_executor(node, *this);
-            } catch (std::exception const &e) {
-                EINSUMS_THROW_EXCEPTION(std::logic_error,
-                                        "Graph '{}': node '{}' cannot be given an executor from its fields ({}); a pass that writes "
-                                        "its executor gives it through NodeEdit::set_executor",
-                                        _name, node.label, e.what());
-            }
+        if (node.custom_execute && operands_changed && !edit._executor_given && !node.folded) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                    "Graph '{}': node '{}' runs an executor its pass wrote, and this edit changed what it reads or "
+                                    "writes without giving it a new one through NodeEdit::set_executor",
+                                    _name, node.label);
         }
-        node.execute = with_pre_run(node.pre_run, std::move(core));
-
-        if (node.folded) {
-            node.async_start  = nullptr;
-            node.async_finish = nullptr;
-        } else if (node.async_start || node.custom_async_start) {
-            // A pass always writes the asynchronous halves itself; the first commit keeps its
-            // start phase apart so the hooks wrap it once however often the node is edited.
-            if (!node.custom_async_start) {
-                node.custom_async_start = std::make_shared<std::function<void()>>(std::move(node.async_start));
-            }
-            node.async_start = with_pre_run(node.pre_run, calling(node.custom_async_start));
-        }
-        if (before.cpu_fallback) {
-            node.cpu_fallback = node.execute;
-        }
+        give_executor(node, static_cast<bool>(before.cpu_fallback));
     } catch (...) {
         node = before;
         throw;
@@ -169,6 +174,126 @@ void Graph::move_node(std::size_t from, std::size_t to) {
         std::rotate(at(to), at(from), at(from + 1));
     }
     mark_sorted();
+}
+
+std::vector<std::size_t> Graph::hoist(Graph &child, std::span<std::size_t const> picks, std::size_t position) {
+    std::scoped_lock const lock(_content_mutex, child._content_mutex);
+    bool                   is_body = false;
+    for (auto const &node : _nodes) {
+        for_each_child_graph(node, [&](Graph const &sub) { is_body = is_body || &sub == &child; });
+    }
+    if (!is_body) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': hoist from '{}', which is not a body of this graph's nodes", _name,
+                                child._name);
+    }
+    if (position > _nodes.size()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': hoist to position {}, past the end of {} nodes", _name, position,
+                                _nodes.size());
+    }
+    for (std::size_t k = 0; k < picks.size(); ++k) {
+        if (picks[k] >= child._nodes.size() || (k > 0 && picks[k] <= picks[k - 1])) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': hoist picks must be ascending positions in '{}'", _name,
+                                    child._name);
+        }
+    }
+    if (picks.empty()) {
+        return {};
+    }
+    // Refused before anything moves: a node with no executor its pass gave must be one the
+    // builder can make. It is asked in the body, where the node's ids still resolve.
+    for (std::size_t const pick : picks) {
+        Node const &node = child._nodes[pick];
+        if (node.custom_execute || node.folded) {
+            continue;
+        }
+        try {
+            (void)build_executor(node, child);
+        } catch (std::exception const &e) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                    "Graph '{}': hoisted node '{}' cannot be given an executor from its fields ({}); a pass that writes "
+                                    "its executor gives it through NodeEdit::set_executor",
+                                    _name, node.label, e.what());
+        }
+    }
+
+    std::unordered_map<TensorId, TensorId>     parent_id;
+    std::vector<std::pair<TensorId, TensorId>> handed_over; // (body id, this graph's id)
+    auto const                                 lift = [&](TensorId body_tid) -> TensorId {
+        if (auto const it = parent_id.find(body_tid); it != parent_id.end()) {
+            return it->second;
+        }
+        TensorHandle const &handle = child.tensor(body_tid);
+        TensorId const      mine   = find_or_register_tensor_ptr(handle);
+        parent_id[body_tid]        = mine;
+        if (handle.alloc_state == AllocState::Deferred && handle.is_intermediate) {
+            handed_over.emplace_back(body_tid, mine);
+        }
+        return mine;
+    };
+
+    std::vector<Node> moved;
+    moved.reserve(picks.size());
+    auto const body_anchor = child.anchor();
+    // Copies, so that nothing in the body has moved until every one of them has its executor.
+    for (std::size_t const pick : picks) {
+        Node node = child._nodes[pick];
+        // The body numbered this node; this graph issues its own id.
+        node.id = unassigned_node_id;
+        if (node.custom_execute) {
+            // Its executor reaches its operands through the body's slots, which the body re-seats
+            // only when the body itself runs. Moved out, it runs first, after this graph may have
+            // placed a buffer anew, so the slots it names are re-seated ahead of it: those only,
+            // since moved nodes run concurrently here and another may be reading the rest.
+            std::vector<TensorId> touched(node.inputs);
+            touched.insert(touched.end(), node.outputs.begin(), node.outputs.end());
+            node.pre_run.emplace_back([body_anchor, touched = std::move(touched)]() { body_anchor->graph().resync_slot_storage(touched); });
+        }
+        for (auto &tid : node.inputs) {
+            tid = lift(tid);
+        }
+        for (auto &tid : node.outputs) {
+            tid = lift(tid);
+        }
+        give_executor(node, static_cast<bool>(node.cpu_fallback));
+        moved.push_back(std::move(node));
+    }
+
+    std::vector<Node> kept;
+    kept.reserve(child._nodes.size() - picks.size());
+    for (std::size_t i = 0, k = 0; i < child._nodes.size(); ++i) {
+        if (k < picks.size() && picks[k] == i) {
+            ++k;
+            continue;
+        }
+        kept.push_back(std::move(child._nodes[i]));
+    }
+    child._nodes = std::move(kept);
+
+    // The writer of a deferred intermediate the body declared moves out with it, so the declaration
+    // does too. Left the body's, a pass run on the body alone would see only the body's readers and
+    // treat the tensor as its own to change: LayoutAssignment once re-ordered a hoisted operand under
+    // the builder that writes it in the parent.
+    for (auto const &[body_tid, mine] : handed_over) {
+        TensorHandle &stand_in          = child.tensor(body_tid);
+        TensorHandle &declared          = tensor(mine);
+        declared.is_intermediate        = true;
+        declared.materialize_on_execute = stand_in.materialize_on_execute;
+        stand_in.is_intermediate        = false;
+        stand_in.materialize_on_execute = false;
+    }
+    child.note_structural_change();
+    child.mark_sorted();
+
+    _nodes.insert(_nodes.begin() + static_cast<std::ptrdiff_t>(position), std::make_move_iterator(moved.begin()),
+                  std::make_move_iterator(moved.end()));
+    note_structural_change();
+    mark_sorted();
+
+    std::vector<std::size_t> positions(picks.size());
+    for (std::size_t k = 0; k < positions.size(); ++k) {
+        positions[k] = position + k;
+    }
+    return positions;
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)

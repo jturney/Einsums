@@ -363,3 +363,104 @@ TEST_CASE("Graph - move_node moves one node and keeps the rest in order", "[Comp
     CHECK(s.labels() == "abc");
     CHECK_THROWS_AS(s.graph.move_node(0, 3), std::out_of_range);
 }
+
+// ── Hoisting out of a body ──────────────────────────────────────────────────
+
+TEST_CASE("Graph - hoist moves a body node out, rebuilt against the parent", "[ComputeGraph][NodeEdit][Hoist]") {
+    // W = A B is the same at every iteration, so it can run once, before the loop. Its scratch is
+    // the body's deferred intermediate, so its declaration moves out with it, and Materialization
+    // run afterwards gives it a lifecycle in the parent.
+    auto const A   = create_random_tensor<double>("A", n, n);
+    auto const B   = create_random_tensor<double>("B", n, n);
+    auto       acc = create_zero_tensor<double>("acc", n, n);
+
+    cg::Graph  graph("hoist");
+    cg::Graph *body = &graph.add_loop("iter", 2, [](std::size_t it) { return it < 2; });
+    void      *w    = nullptr;
+    {
+        cg::CaptureGuard const guard(*body);
+        auto                  &W = body->scratch_zero<double, 2>("W", n, n);
+        w                        = &W;
+        cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, B);   // invariant
+        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, W, A); // acc += W A
+    }
+    std::size_t const loop = position_of(graph, cg::OpKind::Loop);
+    REQUIRE(body->nodes().size() == 2);
+    cg::TensorId const w_in_body = body->nodes()[0].outputs.front();
+
+    std::vector<std::size_t> const picks{0};
+    auto const                     moved = graph.hoist(*body, picks, loop);
+    REQUIRE(moved == std::vector<std::size_t>{loop});
+    REQUIRE(body->nodes().size() == 1);
+
+    cg::Node const &lifted = graph.nodes()[loop];
+    CHECK(lifted.custom_execute == nullptr);
+    CHECK(lifted.id != cg::unassigned_node_id);
+    cg::TensorId const w_here = lifted.outputs.front();
+    CHECK(w_here == graph.find_tensor_id_by_ptr(w));
+    CHECK(lifted.inputs[0] == graph.find_tensor_id_by_ptr(&A));
+
+    // The declaration moved with the writer.
+    CHECK(graph.tensor(w_here).is_intermediate);
+    CHECK_FALSE(body->tensor(w_in_body).is_intermediate);
+
+    graph.apply<cg::passes::Materialization>();
+    graph.execute();
+
+    Tensor<double, 2> AB("AB", n, n);
+    Tensor<double, 2> want("want", n, n);
+    testing::reference_einsum("ij <- ik ; kj", 0.0, &AB, 1.0, A, B);
+    testing::reference_einsum("ij <- ik ; kj", 0.0, &want, 2.0, AB, A); // two iterations
+    check_equal(acc, want);
+}
+
+TEST_CASE("Graph - a hoisted node its pass wrote keeps its executor and re-seats the body first", "[ComputeGraph][NodeEdit][Hoist]") {
+    auto       T    = create_zero_tensor<double>("T", n, n);
+    int        runs = 0;
+    cg::Graph  graph("hoist_custom");
+    cg::Graph *body = &graph.add_loop("iter", 1, [](std::size_t it) { return it < 1; });
+    {
+        cg::CaptureGuard const guard(*body);
+        cg::custom("count", [&runs]() { ++runs; }, &T);
+    }
+    std::size_t const              loop = position_of(graph, cg::OpKind::Loop);
+    std::vector<std::size_t> const picks{0};
+    (void)graph.hoist(*body, picks, loop);
+    cg::Node const &lifted = graph.nodes()[loop];
+    CHECK(lifted.custom_execute != nullptr);
+    CHECK(lifted.pre_run.size() == 1);
+    graph.execute();
+    CHECK(runs == 1);
+}
+
+TEST_CASE("Graph - hoist refuses what it cannot do and changes nothing", "[ComputeGraph][NodeEdit][Hoist]") {
+    TwoProducts p; // a graph with no body at all
+    cg::Graph   other("other");
+    auto       &body = other.add_loop("iter", 1, [](std::size_t it) { return it < 1; });
+    {
+        cg::Node node;
+        node.kind    = cg::OpKind::Custom;
+        node.label   = "hand-written";
+        node.execute = [] {};
+        body.add_node(std::move(node));
+        cg::Node second;
+        second.kind  = cg::OpKind::Custom;
+        second.label = "second";
+        use_custom_executor(second, [] {});
+        body.add_node(std::move(second));
+    }
+    std::vector<std::size_t> const first{0};
+    std::vector<std::size_t> const backwards{1, 0};
+    CHECK_THROWS_AS(p.graph.hoist(body, first, 0), std::invalid_argument);   // not p's body
+    CHECK_THROWS_AS(other.hoist(body, backwards, 0), std::invalid_argument); // not ascending
+    CHECK_THROWS_AS(other.hoist(body, first, 5), std::invalid_argument);     // past the end
+    CHECK_THROWS_AS(other.hoist(body, first, 0), std::logic_error);          // no executor to give it
+    CHECK(body.nodes().size() == 2);
+    CHECK(other.nodes().size() == 1);
+
+    // The one its pass marked moves.
+    std::vector<std::size_t> const second{1};
+    CHECK(other.hoist(body, second, 0) == std::vector<std::size_t>{0});
+    CHECK(body.nodes().size() == 1);
+    CHECK(other.nodes().size() == 2);
+}
