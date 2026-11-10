@@ -198,6 +198,10 @@ set(ComputeGraphSources
     Passes/AntisymmetrizerFolding.cpp
     Passes/AntisymmetrizerLinearity.cpp
     Passes/AxisTiling.cpp
+    Passes/AxisTilingEmit.cpp
+    Passes/AxisTilingNodes.cpp
+    Passes/AxisTilingPrice.cpp
+    Passes/AxisTilingRegion.cpp
     Passes/SlabStreaming.cpp
     LaplaceQuadrature.cpp
     Passes/LaplaceTransform.cpp
