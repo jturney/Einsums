@@ -1624,11 +1624,22 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
     case OpKind::Materialize: {
         need(kind, "outputs", outputs, 1);
         auto const &d = expect<AllocDescriptor>(kind, desc, "AllocDescriptor");
+        if (d.arena_offset.has_value()) {
+            if (!graph.arena()) {
+                EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                        "build_executor(Materialize): '{}' is placed at arena offset {}, but graph '{}' holds no arena",
+                                        d.tensor_name, *d.arena_offset, graph.name());
+            }
+            return detail::build_attach(lifecycle_handle(graph, d.declared, outputs[0]), graph.arena(), *d.arena_offset);
+        }
         return detail::build_materialize(lifecycle_handle(graph, d.declared, outputs[0]), graph.run_context());
     }
     case OpKind::Free: {
         need(kind, "inputs", inputs, 1);
         auto const &d = expect<AllocDescriptor>(kind, desc, "AllocDescriptor");
+        if (d.arena_offset.has_value()) {
+            return detail::build_detach(lifecycle_handle(graph, d.declared, inputs[0]));
+        }
         return detail::build_free(lifecycle_handle(graph, d.declared, inputs[0]), graph.run_context());
     }
     case OpKind::Initialize: {

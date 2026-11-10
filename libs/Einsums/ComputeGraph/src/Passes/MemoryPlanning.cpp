@@ -5,6 +5,7 @@
 
 #include <Einsums/BufferAllocator/MemoryPool.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/MemoryPlanning.hpp>
@@ -24,6 +25,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "../ArenaBlock.hpp"
 #include "BudgetShare.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -147,23 +149,6 @@ void accumulate(Graph &graph, MemStats &acc) {
 }
 
 // ─── Planned arena ──────────────────────────────────────────────────────────
-
-/// One shared, 64-byte-aligned block per graph, owned by shared_ptr captures
-/// in the rewritten Materialize/Free executors, so it lives exactly as long
-/// as the graph's nodes and is reused verbatim by every replay.
-struct ArenaBlock {
-    explicit ArenaBlock(size_t bytes) : size(bytes), data(static_cast<std::byte *>(memory::aligned_alloc(bytes))) {
-        if (data == nullptr && bytes != 0) {
-            throw std::bad_alloc{};
-        }
-    }
-    ~ArenaBlock() { memory::aligned_free(data); }
-    ArenaBlock(ArenaBlock const &)            = delete;
-    ArenaBlock &operator=(ArenaBlock const &) = delete;
-
-    size_t     size;
-    std::byte *data;
-};
 
 constexpr size_t kArenaAlign = 64;
 
@@ -348,8 +333,9 @@ ArenaPlan plan_arena(Graph &graph, NoteSkip const &note) {
     return plan;
 }
 
-/// Rewrite the planned tensors' Materialize/Free executors to attach/detach
-/// arena slices instead of allocating/freeing.
+/// Place the planned tensors in the graph's arena: each Materialize and Free names its tensor's
+/// offset, and the executors built from them attach and detach slices instead of allocating and
+/// freeing.
 void apply_arena_plan(Graph &graph, ArenaPlan const &plan) {
     // The arena is held for every replay, so Graph::last_run counts it once, beside the tensors
     // the graph allocates and frees.
@@ -358,26 +344,26 @@ void apply_arena_plan(Graph &graph, ArenaPlan const &plan) {
         return;
     }
 
-    auto  arena = std::make_shared<ArenaBlock>(plan.arena_bytes);
+    graph.set_arena(std::make_shared<compute_graph::detail::ArenaBlock>(plan.arena_bytes));
     auto &nodes = graph.nodes();
 
+    // Materialize attaches at the planned offset, idempotently across replays; Free detaches only,
+    // since releasing a tensor on external storage parks it without freeing and the arena persists
+    // for the next replay. Neither allocates any more, so neither is charged to the Dataflow
+    // memory-budget gate.
+    auto const place = [&graph](Node &node, std::size_t offset) {
+        auto *desc = node.op_data.get_if<AllocDescriptor>();
+        if (desc == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error, "MemoryPlanning: lifecycle node '{}' carries no AllocDescriptor", node.label);
+        }
+        desc->arena_offset         = offset;
+        node.estimated_bytes       = 0;
+        TensorHandle const &handle = graph.tensor(node.outputs.front());
+        node.execute               = build_executor(node.kind, handle.dtype, handle.rank, node.op_data, graph, node.inputs, node.outputs);
+    };
     for (auto const &pt : plan.tensors) {
-        auto const &handle = graph.tensor(pt.tid);
-
-        // Materialize: attach at the planned offset. Idempotent across
-        // replays (materialize_into with the same pointer is a no-op).
-        nodes[pt.mat_node].execute = [arena, offset = pt.offset, attach = handle.materialize_into_fn]() {
-            attach(static_cast<void *>(arena->data + offset));
-        };
-        // The tensor no longer allocates; don't charge it to the Dataflow
-        // memory-budget gate.
-        nodes[pt.mat_node].estimated_bytes = 0;
-
-        // Free: detach only. Tensor::release() on external storage parks the
-        // impl on the sentinel without freeing; the arena block persists for
-        // the next replay.
-        nodes[pt.free_node].execute         = [rel = handle.release_fn]() { rel(); };
-        nodes[pt.free_node].estimated_bytes = 0;
+        place(nodes[pt.mat_node], pt.offset);
+        place(nodes[pt.free_node], pt.offset);
     }
 
     // Storage-reuse WAW edge. Parallel executors order nodes only by

@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "ArenaBlock.hpp"
 #include "Passes/BackingFill.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
@@ -97,6 +98,14 @@ std::function<void()> build_free(TensorHandle const &handle, std::shared_ptr<Run
             context->released(bytes);
         }
     };
+}
+
+std::function<void()> build_attach(TensorHandle const &handle, std::shared_ptr<ArenaBlock> arena, std::size_t offset) {
+    return [arena = std::move(arena), offset, attach = handle.materialize_into_fn]() { attach(static_cast<void *>(arena->data + offset)); };
+}
+
+std::function<void()> build_detach(TensorHandle const &handle) {
+    return [rel = handle.release_fn]() { rel(); };
 }
 
 std::function<void()> build_initialize(InitKind init, TensorHandle const &handle) {

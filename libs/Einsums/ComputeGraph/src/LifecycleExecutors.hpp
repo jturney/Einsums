@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 
@@ -38,6 +39,30 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
  * @return The executor.
  */
 [[nodiscard]] std::function<void()> build_free(TensorHandle const &handle, std::shared_ptr<RunContext> context);
+
+struct ArenaBlock;
+
+/**
+ * @brief Attach @p handle's tensor at @p offset of @p arena instead of allocating it.
+ *
+ * Idempotent across replays: attaching the same pointer again is a no-op. Counts nothing, since
+ * the arena is counted whole.
+ * @param[in] handle The tensor's handle.
+ * @param[in] arena  The graph's arena, held for as long as the executor lives.
+ * @param[in] offset Where in the arena the tensor's bytes start.
+ * @return The executor.
+ */
+[[nodiscard]] std::function<void()> build_attach(TensorHandle const &handle, std::shared_ptr<ArenaBlock> arena, std::size_t offset);
+
+/**
+ * @brief Detach @p handle's tensor from its arena slice.
+ *
+ * Releasing a tensor on external storage parks it without freeing anything, and the arena persists
+ * for the next replay. Counts nothing, as @ref build_attach does not.
+ * @param[in] handle The tensor's handle.
+ * @return The executor.
+ */
+[[nodiscard]] std::function<void()> build_detach(TensorHandle const &handle);
 
 /**
  * @brief Fill @p handle's freshly allocated tensor as @p init says: zeros, random values, or the

@@ -261,6 +261,7 @@ class EINSUMS_EXPORT GraphAnchor {
 };
 
 namespace detail {
+struct ArenaBlock;
 
 /// A recursive mutex that stays with its object. Moving the object hands the destination a
 /// fresh, unlocked mutex and leaves the source its own: the lock guards one object's contents,
@@ -652,6 +653,9 @@ struct GraphState {
     /// What this graph and every body under it share while a replay runs. A body takes its
     /// parent's when attached (Graph::share_run_context).
     std::shared_ptr<detail::RunContext> _run_context{std::make_shared<detail::RunContext>()};
+
+    /// The block MemoryPlanning placed this graph's planned intermediates in; null without a plan.
+    std::shared_ptr<detail::ArenaBlock> _arena;
 
     /// A backing's counts when the outermost replay started, to report the replay's share.
     struct ReplayBacking {
@@ -1861,6 +1865,25 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// @brief The run context this graph and its bodies share.
     /// @return The context, never null.
     [[nodiscard]] std::shared_ptr<detail::RunContext> const &run_context() const noexcept { return _run_context; }
+
+    /**
+     * @brief The block this graph's planned intermediates are placed in.
+     *
+     * A Materialize whose @ref AllocDescriptor carries an arena offset attaches its tensor here
+     * rather than allocating it, which is what lets its executor be built again from the node.
+     * @return The arena, or null when no memory plan was applied to this graph.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::shared_ptr<detail::ArenaBlock> const &arena() const noexcept { return _arena; }
+
+    /**
+     * @brief Hold @p arena as the block this graph's planned intermediates are placed in.
+     *
+     * Executors built against an earlier arena keep that one alive until they are rebuilt.
+     * @param[in] arena The block, or null to drop the plan's.
+     * @versionadded{2.0.0}
+     */
+    void set_arena(std::shared_ptr<detail::ArenaBlock> arena) noexcept { _arena = std::move(arena); }
 
     /// Record a run's per-node timings, under a single lock acquisition. A custom Executor calls
     /// this after running the graph so that print_timing_report() reports its run.

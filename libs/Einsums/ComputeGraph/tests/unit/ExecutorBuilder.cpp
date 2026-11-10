@@ -33,6 +33,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <map>
 #include <span>
 #include <string>
 #include <utility>
@@ -2671,4 +2672,81 @@ TEST_CASE("ExecutorBuilder - a setup body's Initialize reaches the parent's decl
     zero();
     CHECK(fit(0, 0) == 0.0);
     CHECK(fit(1, 1) == 0.0);
+}
+
+TEST_CASE("ExecutorBuilder - planned Materialize and Free rebuild into the graph's arena",
+          "[ComputeGraph][ExecutorBuilder][Lifecycle][Arena]") {
+    // MemoryPlanning used to rewrite these executors as lambdas holding an arena only they knew of,
+    // so a node it planned could not be built again. The offset is now on the descriptor and the
+    // arena on the graph, and the rebuilt executors attach and detach slices of it.
+    constexpr std::size_t n    = 24;
+    auto                  A    = create_random_tensor<double>("A", n, n);
+    auto                  B    = create_random_tensor<double>("B", n, n);
+    auto                  out1 = create_zero_tensor<double>("out1", n, n);
+    auto                  out2 = create_zero_tensor<double>("out2", n, n);
+
+    Tensor<double, 2> X_ref("Xref", n, n);
+    Tensor<double, 2> out1_ref("out1ref", n, n);
+    Tensor<double, 2> Y_ref("Yref", n, n);
+    Tensor<double, 2> out2_ref("out2ref", n, n);
+    testing::reference_einsum("ij <- ik ; kj", 0.0, &X_ref, 1.0, A, B);
+    testing::reference_einsum("ij <- ik ; kj", 0.0, &out1_ref, 1.0, X_ref, B);
+    testing::reference_einsum("ij <- ik ; kj", 0.0, &Y_ref, 1.0, out1_ref, B);
+    testing::reference_einsum("ij <- ik ; kj", 0.0, &out2_ref, 1.0, Y_ref, B);
+
+    cg::Graph graph("arena_rebuild");
+    auto     &X = graph.create_tensor<double, 2>("X", n, n);
+    auto     &Y = graph.create_tensor<double, 2>("Y", n, n);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &X, A, B);
+        cg::einsum("ik;kj->ij", &out1, X, B);
+        cg::einsum("ik;kj->ij", &Y, out1, B);
+        cg::einsum("ik;kj->ij", &out2, Y, B);
+    }
+    (void)graph.apply<cg::passes::FreeInsertion>(std::size_t{0});
+    auto [planned, mp] = graph.apply<cg::passes::MemoryPlanning>();
+    REQUIRE(planned);
+    REQUIRE(mp.num_planned() == 2);
+    REQUIRE(graph.arena() != nullptr);
+
+    std::size_t                                  placed = 0;
+    std::map<std::string, std::size_t>           offset_of;
+    std::map<std::string, std::function<void()>> attach_of;
+    for (auto &node : graph.nodes()) {
+        if (node.kind != cg::OpKind::Materialize && node.kind != cg::OpKind::Free) {
+            continue;
+        }
+        auto const *desc = node.op_data.get_if<cg::AllocDescriptor>();
+        REQUIRE(desc != nullptr);
+        REQUIRE(desc->arena_offset.has_value());
+        auto const &handle = graph.tensor(node.outputs.front());
+        node.execute       = cg::build_executor(node.kind, handle.dtype, handle.rank, node.op_data, graph,
+                                                std::span<cg::TensorId const>{node.inputs}, std::span<cg::TensorId const>{node.outputs});
+        if (node.kind == cg::OpKind::Materialize) {
+            offset_of[desc->tensor_name] = *desc->arena_offset;
+            attach_of[desc->tensor_name] = node.execute;
+        }
+        ++placed;
+    }
+    REQUIRE(placed == 4);
+
+    for (int replay = 1; replay <= 2; ++replay) {
+        INFO("replay " << replay);
+        out1.zero();
+        out2.zero();
+        graph.execute();
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t j = 0; j < n; ++j) {
+                CHECK_THAT(out2(i, j), Catch::Matchers::WithinRel(out2_ref(i, j), 1e-10));
+            }
+        }
+    }
+
+    // Both tensors are attached inside the one arena, as far apart as their offsets.
+    attach_of.at("X")();
+    attach_of.at("Y")();
+    auto const *x_bytes = reinterpret_cast<std::byte const *>(X.data());
+    auto const *y_bytes = reinterpret_cast<std::byte const *>(Y.data());
+    CHECK(x_bytes - y_bytes == static_cast<std::ptrdiff_t>(offset_of.at("X")) - static_cast<std::ptrdiff_t>(offset_of.at("Y")));
 }

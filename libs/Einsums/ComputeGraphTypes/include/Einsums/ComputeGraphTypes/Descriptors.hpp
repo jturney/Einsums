@@ -10,6 +10,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <complex>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -159,6 +160,9 @@ struct AllocDescriptor {
     std::string                       tensor_name;   ///< Name for debugging
     /// Where the tensor is declared, for a Materialize or Free placed in another graph.
     DeclaredTensor declared;
+    /// Set by MemoryPlanning: the tensor is attached at this offset of its graph's arena
+    /// (Graph::arena) instead of being allocated, and its Free detaches it instead of releasing it.
+    std::optional<std::size_t> arena_offset;
 };
 
 /**
