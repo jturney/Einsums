@@ -399,6 +399,22 @@ set_tests_properties(
   PROPERTIES LABELS "UNIT_ONLY"
 )
 
+# Executor lambdas capture by value, so they survive the graph being moved; see the script for why.
+add_test(
+  NAME Tests.Unit.Modules.ComputeGraph.ExecutorCaptures
+  COMMAND ${CMAKE_COMMAND} -DROOT=${PROJECT_SOURCE_DIR}/libs/Einsums/ComputeGraph -P
+          ${PROJECT_SOURCE_DIR}/cmake/scripts/check_executor_captures.cmake
+)
+add_test(
+  NAME Tests.Unit.Modules.ComputeGraph.ExecutorCapturesSelfTest
+  COMMAND ${CMAKE_COMMAND} -DSELF_TEST=ON -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/executor_captures_self_test -P
+          ${PROJECT_SOURCE_DIR}/cmake/scripts/check_executor_captures.cmake
+)
+set_tests_properties(
+  Tests.Unit.Modules.ComputeGraph.ExecutorCaptures Tests.Unit.Modules.ComputeGraph.ExecutorCapturesSelfTest
+  PROPERTIES LABELS "UNIT_ONLY"
+)
+
 # Every library pass declares the node features it understands; see the script for why.
 add_test(
   NAME Tests.Unit.Modules.ComputeGraph.PassFeatureDeclarations
