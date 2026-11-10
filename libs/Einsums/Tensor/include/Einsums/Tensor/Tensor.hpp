@@ -1570,6 +1570,8 @@ struct GeneralTensor<T, 0, Alloc> final : tensor_base::CoreTensor,
 #if defined(OPERATOR)
 #    undef OPERATOR
 #endif
+    // A rank-0 tensor is a scalar, so these keep plain IEEE arithmetic: x *= 0 leaves a NaN as NaN.
+    // Tensors of rank 1 and up assign zero on a zero scale instead. The difference is deliberate.
 #define OPERATOR(OP)                                                                                                                       \
     auto operator OP(const T &other)->GeneralTensor & {                                                                                    \
         _data OP other;                                                                                                                    \

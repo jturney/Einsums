@@ -1854,6 +1854,11 @@ struct TensorImpl final {
     ///
     /// Only axes of extent > 1 count; an extent-1 axis's stride is arbitrary. With one such axis, the
     /// flag suits BLAS (see @ref get_lda): a unit stride is minor, any other major.
+    ///
+    /// Extent-1 strides are kept as given rather than normalized here. A tensor with at most one
+    /// stepped axis is a vector, equally row- and column-major, so normalizing would make a packed
+    /// column-major tensor rebuilt from its own strides come back row-major. Each consumer ignores
+    /// extent-1 strides instead.
     constexpr void infer_row_major() {
         if (_rank < 2) {
             _row_major = true;

@@ -635,7 +635,8 @@ std::string Graph::to_json() const {
         }
     }
 
-    // Serialize to JSON manually (structured, no Glaze dependency in library)
+    // Serialize to JSON by hand. Glaze was tried and dropped because it silently ignored fields it
+    // did not know, and the graph IR must reject what it cannot resolve.
     std::string j;
     j.reserve(4096);
 
