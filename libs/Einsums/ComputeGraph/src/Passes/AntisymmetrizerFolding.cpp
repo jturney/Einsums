@@ -373,7 +373,7 @@ bool AntisymmetrizerFolding::transform(Graph &graph) {
                 check.inputs.push_back(body.find_or_register_tensor_ptr(*handle));
             }
         }
-        check.execute = [anchor, leaves = std::move(leaves)]() {
+        use_custom_executor(check, [anchor, leaves = std::move(leaves)]() {
             for (auto const &[tid, desc] : leaves) {
                 auto const *handle = anchor->graph().find_tensor(anchor->graph().buffer_of(tid));
                 if (handle == nullptr || !handle->impl_fn) {
@@ -401,7 +401,7 @@ bool AntisymmetrizerFolding::transform(Graph &graph) {
                         handle->name);
                 }
             }
-        };
+        });
         body.add_node(std::move(check));
     }
 

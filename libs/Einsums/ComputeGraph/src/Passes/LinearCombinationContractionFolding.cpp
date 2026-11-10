@@ -436,9 +436,9 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
         // Node A. Writes L and does not read it, so it is a pure producer as far as
         // the hoisting and liveness analyses are concerned.
         Node lbuild;
-        lbuild.kind    = OpKind::Custom;
-        lbuild.label   = fmt::format("lccf_build_L({} terms -> _lccf_L_{})", members.size(), _num_groups);
-        lbuild.execute = std::move(build_l);
+        lbuild.kind  = OpKind::Custom;
+        lbuild.label = fmt::format("lccf_build_L({} terms -> _lccf_L_{})", members.size(), _num_groups);
+        use_custom_executor(lbuild, std::move(build_l));
         lbuild.inputs  = {nonshared_id};
         lbuild.outputs = {l_id};
         lbuild.id      = graph.reserve_node_id();

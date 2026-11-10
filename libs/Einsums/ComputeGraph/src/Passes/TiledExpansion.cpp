@@ -387,7 +387,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
         nd.inputs.insert(nd.inputs.end(), bs.begin(), bs.end());
         nd.outputs        = {r};
         auto const anchor = graph.anchor();
-        nd.execute        = [anchor, as_ = std::move(as_), bs = std::move(bs), r, conj, dt]() {
+        use_custom_executor(nd, [anchor, as_ = std::move(as_), bs = std::move(bs), r, conj, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
                 T acc{0};
@@ -399,7 +399,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 auto *rp      = static_cast<Dense *>(anchor->graph().live_tensor_ptr(r));
                 rp->data()[0] = acc;
             });
-        };
+        });
         return nd;
     };
 
@@ -463,7 +463,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
         sc.inputs         = tids;
         sc.outputs        = tids;
         auto const anchor = graph.anchor();
-        sc.execute        = [anchor, tids = std::move(tids), pf, dt]() {
+        use_custom_executor(sc, [anchor, tids = std::move(tids), pf, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 bool const zero = is_zero(pf);
                 for (TensorId const tid : tids) {
@@ -475,7 +475,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                     }
                 }
             });
-        };
+        });
         return sc;
     };
 
@@ -489,7 +489,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
         nd.inputs.insert(nd.inputs.end(), ys.begin(), ys.end());
         nd.outputs        = ys;
         auto const anchor = graph.anchor();
-        nd.execute        = [anchor, xs = std::move(xs), ys = std::move(ys), alpha, dt]() {
+        use_custom_executor(nd, [anchor, xs = std::move(xs), ys = std::move(ys), alpha, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
                 for (size_t i = 0; i < xs.size(); ++i) {
@@ -498,7 +498,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                     linear_algebra::axpy(as<T>(alpha), *xptr, yptr);
                 }
             });
-        };
+        });
         return nd;
     };
 
@@ -516,7 +516,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
         }
         nd.outputs        = cs;
         auto const anchor = graph.anchor();
-        nd.execute        = [anchor, as_ = std::move(as_), bs = std::move(bs), cs = std::move(cs), alpha, beta, dt]() {
+        use_custom_executor(nd, [anchor, as_ = std::move(as_), bs = std::move(bs), cs = std::move(cs), alpha, beta, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
                 for (size_t i = 0; i < as_.size(); ++i) {
@@ -526,7 +526,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                     linear_algebra::direct_division(as<T>(alpha), *aptr, *bptr, as<T>(beta), cptr);
                 }
             });
-        };
+        });
         return nd;
     };
 
@@ -1529,7 +1529,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
         g.inputs          = ins;
         g.outputs         = {buf_id};
         auto const anchor = graph.anchor();
-        g.execute         = [anchor, buf, windows = std::move(windows)]() {
+        use_custom_executor(g, [anchor, buf, windows = std::move(windows)]() {
             buf->zero();
             T *dest = buf->data();
             for (auto const &w : windows) {
@@ -1542,7 +1542,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                     }
                 });
             }
-        };
+        });
         out.push_back(std::move(g));
         gathered.push_back(
             {.dims = dims, .sources = ins, .source_set = std::unordered_set<TensorId>(ins.begin(), ins.end()), .buffer = buf_id});
@@ -1579,7 +1579,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
         }
         sc.outputs        = outs;
         auto const anchor = graph.anchor();
-        sc.execute        = [anchor, bc, dsts = std::move(dsts), pfs = std::move(pfs)]() {
+        use_custom_executor(sc, [anchor, bc, dsts = std::move(dsts), pfs = std::move(pfs)]() {
             T const *source = bc->data();
             for (size_t i = 0; i < dsts.size(); ++i) {
                 auto const &w    = dsts[i];
@@ -1603,7 +1603,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                     });
                 }
             }
-        };
+        });
         out.push_back(std::move(sc));
     };
 

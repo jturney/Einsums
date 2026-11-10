@@ -462,8 +462,8 @@ bool StreamContractionFusion::transform(Graph &graph) {
         fused.kind = OpKind::Custom;
         fused.label =
             fmt::format("stream_fusion({} members over '{}')", members.size(), handle_of(s_id) != nullptr ? handle_of(s_id)->name : "?");
-        fused.execute = std::move(fused_fn);
-        fused.inputs  = {s_id};
+        use_custom_executor(fused, std::move(fused_fn));
+        fused.inputs = {s_id};
         for (auto const &m : members) {
             fused.inputs.push_back(m.w_id);
             if (!m.c_pf_is_zero) {

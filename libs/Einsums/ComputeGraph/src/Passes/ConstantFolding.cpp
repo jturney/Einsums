@@ -157,8 +157,8 @@ bool ConstantFolding::transform(Graph &graph) {
         report(2, fmt::format("fold node {} ({}): all inputs constant, evaluated at compile time", node.id, node.label));
         node.execute();
 
-        // Replace executor with no-op
-        node.execute = []() {};
+        // It has done all it will: from now on its executor does nothing, through any later edit.
+        graph.edit(idx, [](NodeEdit &e) { e.fold(); });
 
         // Mark its outputs as constant (they won't change on replay)
         for (auto tid : node.outputs) {

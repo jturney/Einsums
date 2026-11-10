@@ -45,7 +45,7 @@ inline Node make_transfer_node(OpKind kind, TensorHandle const &handle, std::str
     n.inputs          = {handle.id};
     n.outputs         = {handle.id};
     n.estimated_bytes = size_bytes;
-    n.execute         = []() { gpu::device_synchronize(); };
+    use_custom_executor(n, []() { gpu::device_synchronize(); });
 
     return n;
 }

@@ -286,9 +286,9 @@ bool GEMMBatching::transform(Graph &graph) {
 
         // Construct the new node and mark originals for removal.
         Node batched;
-        batched.kind    = OpKind::BatchedGemm;
-        batched.label   = fmt::format("gemm_batch x{} ({}x{}x{}, trans={}{})", d.batch_count, d.m, d.k, d.n, d.trans_a, d.trans_b);
-        batched.execute = std::move(executor);
+        batched.kind  = OpKind::BatchedGemm;
+        batched.label = fmt::format("gemm_batch x{} ({}x{}x{}, trans={}{})", d.batch_count, d.m, d.k, d.n, d.trans_a, d.trans_b);
+        use_custom_executor(batched, std::move(executor));
         batched.inputs  = std::move(batched_inputs);
         batched.outputs = std::move(batched_outputs);
         batched.op_data = d;
