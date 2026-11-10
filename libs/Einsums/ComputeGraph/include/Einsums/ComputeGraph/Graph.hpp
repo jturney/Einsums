@@ -703,6 +703,67 @@ struct GraphState {
 } // namespace detail
 
 /**
+ * @brief The fields of one node while a pass edits it through @ref Graph::edit.
+ *
+ * A pass changes what it wants through @ref node and says nothing else; the commit at the end
+ * of the edit does the follow-up a pass used to have to remember. See @ref Graph::edit for what
+ * the commit does.
+ *
+ * The node's @ref Node::execute reads empty for the length of the edit, and assigning it is
+ * refused: the commit gives the node its executor, from the builder or from
+ * @ref set_executor.
+ *
+ * @versionadded{2.0.0}
+ */
+class EINSUMS_EXPORT NodeEdit {
+  public:
+    NodeEdit(NodeEdit const &)            = delete;
+    NodeEdit &operator=(NodeEdit const &) = delete;
+    NodeEdit(NodeEdit &&)                 = delete;
+    NodeEdit &operator=(NodeEdit &&)      = delete;
+    ~NodeEdit()                           = default;
+
+    /// @brief The node's fields, to read and change.
+    /// @return The node.
+    [[nodiscard]] Node &node() noexcept { return _node; }
+
+    /// @brief The node's fields, to read and change.
+    /// @return The node.
+    [[nodiscard]] Node *operator->() noexcept { return &_node; }
+
+    /**
+     * @brief Give the node an executor its pass wrote, which the builder cannot derive from the
+     *        node's fields.
+     *
+     * The node keeps it through later edits that leave what it reads and writes alone; an edit
+     * that changes those must give a new one.
+     * @param[in] executor What the node runs.
+     */
+    void set_executor(std::function<void()> executor);
+
+    /**
+     * @brief Mark the node as having done all it ever will: from now on its executor is a
+     *        no-op, whatever its fields say, through every later edit.
+     */
+    void fold() noexcept { _node.folded = true; }
+
+    /**
+     * @brief Run @p hook before the node's executor on every replay, after the hooks it has.
+     *
+     * Kept through every later edit, so a pass that edits the node afterwards cannot drop it.
+     * @param[in] hook The work to run first.
+     */
+    void add_pre_run(std::function<void()> hook);
+
+  private:
+    friend class Graph;
+    explicit NodeEdit(Node &node) noexcept : _node(node) {}
+
+    Node &_node;
+    bool  _executor_given{false};
+};
+
+/**
  * @brief A directed acyclic graph (DAG) of tensor operations.
  *
  * The Graph class is the central container for the computation graph. It stores
@@ -2185,6 +2246,31 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return The number of nodes removed.
      */
     size_t erase_nodes(std::vector<bool> const &remove);
+
+    /**
+     * @brief Change the fields of the node at @p index, and everything that has to follow.
+     *
+     * @p change gets the node's fields through a @ref NodeEdit. When it returns, the edit
+     * commits. First the destination is listed as the node's trailing input exactly when the
+     * node reads it, as @ref sync_destination_input keeps it. Then the node gets its executor:
+     * a no-op once folded; else the one its pass wrote, which an edit that changed what the node
+     * reads or writes must have given anew; else the one @ref build_executor derives from the
+     * node's fields, so a repointed operand is the one the replay reads. Its pre-run hooks go
+     * ahead of that executor, and ahead of its asynchronous start phase when it has one, and its
+     * CPU fallback, when placement gave it one, becomes the new executor. Last, the graph's
+     * analysis version moves, so @ref usage and the schedule are rebuilt.
+     *
+     * If @p change throws, or the commit refuses the edit, the node is left as it was.
+     *
+     * @param[in] index  The node's position in this graph.
+     * @param[in] change What to change.
+     * @throws std::out_of_range If there is no node at @p index.
+     * @throws std::logic_error If @p change assigned the executor directly, or changed the
+     *         operands of a node whose pass wrote its executor without giving a new one, or the
+     *         node has no executor the builder can make and none was given.
+     * @versionadded{2.0.0}
+     */
+    void edit(std::size_t index, std::function<void(NodeEdit &)> const &change);
 
     /**
      * @brief Splice groups of nodes into the list. Each entry inserts its nodes

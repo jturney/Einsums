@@ -161,6 +161,7 @@ set(ComputeGraphSources
     Graph/Schedule.cpp
     Graph/ControlFlow.cpp
     Graph/Operations.cpp
+    Graph/Edit.cpp
     Graph/Execute.cpp
     Graph/Report.cpp
     Graph/Verify.cpp

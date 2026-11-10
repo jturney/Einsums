@@ -1568,6 +1568,45 @@ struct Node {
      */
     std::function<void()> async_finish;
 
+    /**
+     * @brief The executor a pass wrote for this node, because @ref build_executor cannot derive
+     *        it from the node's fields; empty when the node's executor is the builder's.
+     *
+     * Set through ``NodeEdit::set_executor`` or @ref use_custom_executor. A commit of
+     * ``Graph::edit`` runs it rather than rebuilding the node, and refuses an edit that changes
+     * what the node reads or writes without giving it a new one.
+     *
+     * Held once and shared: @ref execute calls through it, so an executor that keeps state of
+     * its own keeps one state however often the node is edited, and copies of the node share it.
+     *
+     * @versionadded{2.0.0}
+     */
+    std::shared_ptr<std::function<void()>> custom_execute;
+
+    /**
+     * @brief The asynchronous start phase a pass wrote, kept apart from @ref async_start so that a
+     *        commit can run the node's @ref pre_run hooks ahead of it without wrapping it twice.
+     *
+     * @versionadded{2.0.0}
+     */
+    std::shared_ptr<std::function<void()>> custom_async_start;
+
+    /**
+     * @brief Whether the node has done all it ever will: it ran once while the graph was
+     *        optimized and wrote constants, so its executor does nothing, whatever its fields say.
+     *
+     * @versionadded{2.0.0}
+     */
+    bool folded{false};
+
+    /**
+     * @brief Work that runs before the node's executor on every replay, in order, whichever
+     *        executor a commit gives the node.
+     *
+     * @versionadded{2.0.0}
+     */
+    std::vector<std::function<void()>> pre_run;
+
     std::vector<TensorId> inputs;  ///< TensorIds of tensors read by this operation
     std::vector<TensorId> outputs; ///< TensorIds of tensors written by this operation
 
@@ -1590,6 +1629,20 @@ struct Node {
     /// @c cg::custom records @ref opaque_effects unless declared pure.
     NodeEffects effects;
 };
+
+/**
+ * @brief Give a node the executor its pass wrote, marking it as one @ref build_executor cannot make.
+ *
+ * For a node that is not yet in a graph; a node already in one takes its executor through
+ * ``NodeEdit::set_executor``.
+ * @param[in,out] node     The node.
+ * @param[in]     executor What it runs.
+ * @versionadded{2.0.0}
+ */
+inline void use_custom_executor(Node &node, std::function<void()> executor) {
+    node.custom_execute = std::make_shared<std::function<void()>>(std::move(executor));
+    node.execute        = [shared = node.custom_execute]() { (*shared)(); };
+}
 
 /// @brief The letter lists of a node that carries any: an einsum's (live) or a permute's.
 struct NodeIndexLists {

@@ -156,6 +156,7 @@ set(ComputeGraphTests
     TiledRuntimeElementwise.cpp
     TensorRankConcept.cpp
     UsageAnalysis.cpp
+    NodeEdit.cpp
     VerifyLevelIndependence.cpp
     TiledRuntimeTensorLifetime.cpp
     View.cpp
