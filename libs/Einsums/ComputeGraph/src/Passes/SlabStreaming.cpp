@@ -999,7 +999,7 @@ bool SlabStreaming::stream_box(Graph &graph, std::size_t view_node, std::string 
                                std::optional<std::size_t> writer) {
     auto const        where   = fmt::format("node '{}'", label);
     std::string const decline = writer ? "so it is computed in memory and stored after its last writer" : "so it is loaded whole";
-    auto             &nodes   = graph.nodes();
+    auto const       &nodes   = graph.nodes();
     auto const       *view    = nodes[view_node].op_data.get_if<ViewDescriptor>();
     if (view == nullptr || nodes[view_node].outputs.size() != 1 || view->axes.size() != backing->dims.size()) {
         note_skip(Reason{BoxUnseenView.code, fmt::format("the backed tensor is used through a view this pass cannot see, {}", decline)},
@@ -1135,9 +1135,17 @@ bool SlabStreaming::stream_box(Graph &graph, std::size_t view_node, std::string 
     // Every executor built over the view now uses the box, and every node that names the view names
     // the box, so a read is ordered before its readers and a write after its writer.
     graph.redirect_slot(sliced, box_id);
-    for (auto &node : nodes) {
-        std::ranges::replace(node.inputs, sliced, box_id);
-        std::ranges::replace(node.outputs, sliced, box_id);
+    auto const names_view = [sliced](TensorId id) { return id == sliced; };
+    for (std::size_t j = 0; j < nodes.size(); ++j) {
+        if (j == view_node || (std::ranges::none_of(nodes[j].inputs, names_view) && std::ranges::none_of(nodes[j].outputs, names_view))) {
+            continue; // the view node goes below
+        }
+        graph.edit(j, [&](NodeEdit &e) {
+            std::ranges::replace(e->inputs, sliced, box_id);
+            std::ranges::replace(e->outputs, sliced, box_id);
+            refresh_gemm_hint(graph, e.node()); // the hint names the operand it was derived from
+            e.keep_executor();                  // resolves the view's slot, redirected above
+        });
     }
     std::vector<bool> remove(nodes.size(), false);
     remove[view_node] = true;
