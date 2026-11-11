@@ -91,13 +91,13 @@ bool CommunicationInsertion::transform(Graph &graph) {
                 ar_node.op_data = desc;
 
                 // Use the type-erased allreduce function from the handle
-                auto ar_fn      = handle.allreduce_sum_fn;
-                ar_node.execute = [ar_fn, name = handle.name]() {
+                auto ar_fn = handle.allreduce_sum_fn;
+                use_custom_executor(ar_node, [ar_fn, name = handle.name]() {
                     if (ar_fn) {
                         ar_fn();
                         EINSUMS_LOG_DEBUG("allreduce({}) completed", name);
                     }
-                };
+                });
 
                 insertions.push_back({.position = idx, .node = std::move(ar_node)});
                 _num_inserted++;

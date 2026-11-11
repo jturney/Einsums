@@ -27,7 +27,7 @@ bool CommunicationScheduling::transform(Graph &graph) {
     if (comm::world_size() <= 1)
         return false;
 
-    auto       &nodes   = graph.nodes();
+    auto const &nodes   = graph.nodes();
     auto const &tensors = graph.tensors_map();
 
     // Transform synchronous Allreduce nodes into async two-phase nodes.
@@ -38,7 +38,8 @@ bool CommunicationScheduling::transform(Graph &graph) {
     // This enables overlapping communication with computation when the graph
     // has independent work available after the allreduce.
 
-    for (auto &node : nodes) {
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        Node const &node = nodes[i];
         if (node.kind != OpKind::Allreduce)
             continue;
 
@@ -67,16 +68,15 @@ bool CommunicationScheduling::transform(Graph &graph) {
         auto iallreduce_fn = handle.iallreduce_sum_fn;
         auto request       = std::make_shared<comm::Request>();
 
-        node.async_start = [iallreduce_fn, request]() { *request = iallreduce_fn(); };
-
-        node.async_finish = [request, name = handle.name]() {
-            request->wait();
-            EINSUMS_LOG_DEBUG("CommunicationScheduling: async allreduce({}) completed", name);
-        };
-
-        // Clear the synchronous execute, the DataflowExecutor uses
-        // async_start/async_finish instead when both are set.
-        node.execute = nullptr;
+        // The DataflowExecutor runs the two halves when both are set; the serial executors run the
+        // synchronous allreduce the node keeps, which is the same reduction without the overlap.
+        graph.edit(i, [&](NodeEdit &e) {
+            e->async_start  = [iallreduce_fn, request]() { *request = iallreduce_fn(); };
+            e->async_finish = [request, name = handle.name]() {
+                request->wait();
+                EINSUMS_LOG_DEBUG("CommunicationScheduling: async allreduce({}) completed", name);
+            };
+        });
 
         _num_scheduled++;
 
