@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/ComputeGraph/Detail/ScalarTypes.hpp>
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>

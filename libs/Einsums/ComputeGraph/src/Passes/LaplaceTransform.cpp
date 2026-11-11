@@ -5,12 +5,14 @@
 
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarTypes.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/LaplaceQuadrature.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/LaplaceTransform.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/TensorExpr.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
@@ -160,19 +162,6 @@ WriterVerdict classify_writers(Graph const &graph, TensorId id, std::vector<std:
         return WriterVerdict::Unverifiable;
     }
     return WriterVerdict::Verified;
-}
-
-/// Whether @p dtype is one this pass can represent an exponential in.
-bool is_real_dtype(packed_gemm::ScalarType dtype) {
-    return dtype == packed_gemm::ScalarType::Float32 || dtype == packed_gemm::ScalarType::Float64;
-}
-
-/// The product of two real prefactors.
-///
-/// Real because the pass has already declined a complex denominator, and a complex prefactor
-/// on a real contraction is a caller error rather than a case to carry.
-PrefactorScalar multiply_real(PrefactorScalar const &lhs, PrefactorScalar const &rhs) {
-    return PrefactorScalar{as_real<double>(lhs) * as_real<double>(rhs)};
 }
 
 } // namespace
@@ -520,7 +509,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
                 continue;
             }
 
-            if (!is_real_dtype(denominator->dtype)) {
+            if (!compute_graph::detail::is_real(denominator->dtype)) {
                 decline(denominator_id, name,
                         "the tagged denominator is complex, and a reciprocal of a complex sum has no exponential-integral form",
                         fmt::format("tensor '{}'", name));
@@ -909,7 +898,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
                                          {.term      = side_b.leaf,
                                           .indices   = side_b.indices,
                                           .conjugate = !side_b.scaled && !formation.conjugate.empty() && formation.conjugate[1]},
-                                         target_indices, multiply_real(scalars->alpha, formation.factor), table);
+                                         target_indices, multiply_prefactors(scalars->alpha, formation.factor), table);
 
             ExprStatement final_statement;
             final_statement.target           = apply.target;

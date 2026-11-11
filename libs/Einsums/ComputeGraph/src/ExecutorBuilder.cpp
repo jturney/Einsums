@@ -817,7 +817,7 @@ std::function<void()> build_gemm(packed_gemm::ScalarType dtype, GemmDescriptor c
  */
 std::function<void()> build_syev(packed_gemm::ScalarType dtype, SyevDescriptor const &desc, OperandAccessor const &a,
                                  OperandAccessor const &w) {
-    if (dtype == packed_gemm::ScalarType::Complex64 || dtype == packed_gemm::ScalarType::Complex128) {
+    if (detail::is_complex(dtype)) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "build_executor(Syev): a symmetric eigendecomposition is real, and this node names a complex operand. "
                                 "The complex counterpart is Hermitian and records as OpKind::Heev, which has no builder entry yet");

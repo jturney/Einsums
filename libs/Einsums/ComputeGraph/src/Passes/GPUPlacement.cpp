@@ -5,6 +5,7 @@
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarTypes.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/NodeFeatures.hpp>
@@ -132,14 +133,11 @@ bool backend_supports_dtype(packed_gemm::ScalarType dtype, bool strided_batch) {
         return dtype == packed_gemm::ScalarType::Float32;
     }
 
-    if (dtype == packed_gemm::ScalarType::Float32 || dtype == packed_gemm::ScalarType::Float64) {
+    if (compute_graph::detail::is_real(dtype)) {
         return true;
     }
     // Complex reaches the device only through gemm_strided_batched.
-    if (dtype == packed_gemm::ScalarType::Complex64 || dtype == packed_gemm::ScalarType::Complex128) {
-        return strided_batch;
-    }
-    return false;
+    return compute_graph::detail::is_complex(dtype) && strided_batch;
 }
 
 bool node_is_dispatchable(Node const &node, Graph const &graph) {

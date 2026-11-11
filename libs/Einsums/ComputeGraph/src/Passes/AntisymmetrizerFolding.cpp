@@ -283,8 +283,7 @@ bool AntisymmetrizerFolding::transform(Graph &graph) {
         bool const            conjugated = dot_desc != nullptr && dot_desc->conjugated;
         PrefactorScalar const alpha =
             conjugated && site.slot == 0 ? PrefactorScalar{std::conj(as<std::complex<double>>(site.producer.alpha))} : site.producer.alpha;
-        bool const complex_result =
-            result_dtype == packed_gemm::ScalarType::Complex64 || result_dtype == packed_gemm::ScalarType::Complex128;
+        bool const complex_result = compute_graph::detail::is_complex(result_dtype);
         if (!complex_result && !is_real_valued(alpha)) {
             note_skip("the operator carries a complex scale and the contraction's result is real",
                       fmt::format("dot #{}", graph.nodes()[site.dot_index].id));

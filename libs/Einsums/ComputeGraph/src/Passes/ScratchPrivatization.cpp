@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarTypes.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
@@ -34,20 +35,6 @@ struct Access {
     bool   starts_generation;
 };
 
-/// The dtypes detail::dispatch_scalar_type can dispatch (clone declaration and
-/// the rebuilt executors both go through it).
-bool dispatchable_dtype(packed_gemm::ScalarType dtype) {
-    switch (dtype) {
-    case packed_gemm::ScalarType::Float32:
-    case packed_gemm::ScalarType::Float64:
-    case packed_gemm::ScalarType::Complex64:
-    case packed_gemm::ScalarType::Complex128:
-        return true;
-    default:
-        return false;
-    }
-}
-
 /// Can rebuild_node() below reproduce this node's computation with a renamed
 /// operand? Rebuilding replaces the executor, so every operand must resolve
 /// through the graph (impl_fn) and the descriptor must actually describe what
@@ -56,13 +43,13 @@ bool rebuildable(Graph &graph, Node const &nd) {
     auto const operands_resolve = [&]() {
         for (auto const tid : nd.inputs) {
             auto const *h = graph.find_tensor(tid);
-            if (h == nullptr || !h->impl_fn || !dispatchable_dtype(h->dtype)) {
+            if (h == nullptr || !h->impl_fn || !compute_graph::detail::is_dispatchable(h->dtype)) {
                 return false;
             }
         }
         for (auto const tid : nd.outputs) {
             auto const *h = graph.find_tensor(tid);
-            if (h == nullptr || !h->impl_fn || !dispatchable_dtype(h->dtype)) {
+            if (h == nullptr || !h->impl_fn || !compute_graph::detail::is_dispatchable(h->dtype)) {
                 return false;
             }
         }
@@ -243,7 +230,7 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
             skip(d->second);
             continue;
         }
-        if (handle == nullptr || !handle->impl_fn || handle->dims.empty() || !dispatchable_dtype(handle->dtype)) {
+        if (handle == nullptr || !handle->impl_fn || handle->dims.empty() || !compute_graph::detail::is_dispatchable(handle->dtype)) {
             skip("its storage or element type cannot be cloned");
             continue;
         }

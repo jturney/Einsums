@@ -48,6 +48,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Detail/MaintainedViews.hpp
     Einsums/ComputeGraph/Detail/StandIns.hpp
     Einsums/ComputeGraph/Detail/MixedPrecision.hpp
+    Einsums/ComputeGraph/Detail/ScalarTypes.hpp
     Einsums/ComputeGraph/Detail/WidthGuard.hpp
     Einsums/ComputeGraph/CostModel.hpp
     Einsums/ComputeGraph/Moldability.hpp

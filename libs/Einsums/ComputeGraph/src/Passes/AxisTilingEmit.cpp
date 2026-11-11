@@ -5,6 +5,8 @@
 
 // AxisTiling: writing a plan into the graph as loops, and the symmetry a plan can exploit.
 
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarTypes.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include "AxisTilingDetail.hpp"
@@ -518,22 +520,11 @@ bool emit_tiled_loop(Graph &graph, Plan const &plan) {
         }
     };
 
-    switch (plan.dtype) {
-    case packed_gemm::ScalarType::Float32:
-        emit.template operator()<float>();
-        return true;
-    case packed_gemm::ScalarType::Float64:
-        emit.template operator()<double>();
-        return true;
-    case packed_gemm::ScalarType::Complex64:
-        emit.template operator()<std::complex<float>>();
-        return true;
-    case packed_gemm::ScalarType::Complex128:
-        emit.template operator()<std::complex<double>>();
-        return true;
-    default:
+    if (!compute_graph::detail::is_dispatchable(plan.dtype)) {
         return false;
     }
+    compute_graph::detail::dispatch_scalar_type(plan.dtype, [&]<typename T>(T /*tag*/) { emit.template operator()<T>(); });
+    return true;
 }
 
 bool preferred(Plan const &lhs, Plan const &rhs) {

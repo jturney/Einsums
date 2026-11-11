@@ -19,6 +19,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/ComputeGraph/Detail/ScalarTypes.hpp>
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
@@ -56,14 +57,6 @@ using PromoteT = typename Promote<TA, TB>::type;
 /// Precision may narrow; a complex value may not become real.
 template <EinsumElement From, EinsumElement To>
 inline constexpr bool storable_v = !IsComplexV<From> || IsComplexV<To>;
-
-constexpr bool is_complex(packed_gemm::ScalarType t) {
-    return t == packed_gemm::ScalarType::Complex64 || t == packed_gemm::ScalarType::Complex128;
-}
-
-constexpr bool is_double_precision(packed_gemm::ScalarType t) {
-    return t == packed_gemm::ScalarType::Float64 || t == packed_gemm::ScalarType::Complex128;
-}
 
 /// Run-time mirror of PromoteT. Unknown if either operand's type is unknown.
 constexpr packed_gemm::ScalarType promote(packed_gemm::ScalarType a, packed_gemm::ScalarType b) {

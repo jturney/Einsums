@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/Detail/ScalarTypes.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
@@ -398,8 +399,7 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
         // A real destination cannot take an imaginary scale, and the two nodes as captured refuse
         // one at execute. Their product can be real (i times i), so each is asked on its own: a
         // fold must not turn that refusal into an answer.
-        bool const complex_destination =
-            th_r2->dtype == packed_gemm::ScalarType::Complex64 || th_r2->dtype == packed_gemm::ScalarType::Complex128;
+        bool const complex_destination = compute_graph::detail::is_complex(th_r2->dtype);
         if (!complex_destination && (!is_real_valued(s.s2) || !is_real_valued(alpha))) {
             note_skip("a real destination would be scaled by a complex factor", fmt::format("permute #{}", s.permute_idx));
             continue;

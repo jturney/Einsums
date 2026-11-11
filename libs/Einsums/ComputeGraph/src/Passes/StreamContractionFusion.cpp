@@ -230,7 +230,7 @@ bool StreamContractionFusion::transform(Graph &graph) {
             // Complex prefactors ride through the kernel as element-typed
             // alphas; on a real dtype a nonzero imaginary part has nowhere
             // to go, so such members stay unfused.
-            bool const complex_dtype = sh->dtype == packed_gemm::ScalarType::Complex64 || sh->dtype == packed_gemm::ScalarType::Complex128;
+            bool const complex_dtype = compute_graph::detail::is_complex(sh->dtype);
             if (!complex_dtype && (!is_real_valued(desc->ab_prefactor) || !is_real_valued(desc->c_prefactor))) {
                 continue;
             }

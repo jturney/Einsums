@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/DestinationRead.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarTypes.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -88,7 +89,7 @@ std::optional<SymmetryDescriptor> self_contraction_symmetry(Graph const &graph, 
 
     auto const &in = graph.tensor(node.inputs[0]);
 
-    bool const is_complex = in.dtype == packed_gemm::ScalarType::Complex64 || in.dtype == packed_gemm::ScalarType::Complex128;
+    bool const is_complex = detail::is_complex(in.dtype);
     bool const one_conj   = desc->conj_a ^ desc->conj_b; // XOR: exactly one side conjugated
 
     if (is_complex && one_conj)
@@ -607,7 +608,7 @@ std::optional<SymmetryDescriptor> self_product_symmetry(Graph const &graph, Node
         return std::nullopt; // Nothing moves, so there is nothing to know.
 
     auto const &in         = graph.tensor(operands[0]);
-    bool const  is_complex = in.dtype == packed_gemm::ScalarType::Complex64 || in.dtype == packed_gemm::ScalarType::Complex128;
+    bool const  is_complex = detail::is_complex(in.dtype);
     op.conjugate           = is_complex && (desc->conj_a != desc->conj_b);
 
     return scaled_by(SymmetryDescriptor{{op}}, desc->ab_prefactor);

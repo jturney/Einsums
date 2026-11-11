@@ -337,7 +337,7 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
         // Complex prefactors fold exactly on complex dtypes (the kernel
         // carries them as T); on a real dtype a nonzero imaginary part has
         // nowhere to go, so such groups stay unfolded.
-        bool const complex_dtype = dtype == packed_gemm::ScalarType::Complex64 || dtype == packed_gemm::ScalarType::Complex128;
+        bool const complex_dtype = compute_graph::detail::is_complex(dtype);
         if (!complex_dtype) {
             bool const all_real = std::ranges::all_of(members, [](FoldCandidate const &m) { return is_real_valued(m.ab_prefactor); }) &&
                                   is_real_valued(n0_desc->c_prefactor);

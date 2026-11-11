@@ -57,17 +57,6 @@ struct FactorCandidate {
     double   ab_prefactor;
 };
 
-/// A real prefactor exactly equal to one.
-///
-/// The factored form applies the output prefactor ONCE, so every member after
-/// the first has to be a pure accumulation. A member with ``c_pf != 1`` rescales
-/// the partial sum its predecessors already wrote, which the single combined
-/// contraction cannot reproduce: `W = 2*(W + A*B0) + A*B1` is not
-/// `W = 2*W + A*(B0 + B1)`.
-bool is_unit_real(PrefactorScalar const &p) {
-    return is_real_valued(p) && as_real<double>(p) == 1.0;
-}
-
 /// Canonical identity of a summed intermediate: which operands, scaled by what.
 ///
 /// Sorted, so two groups that happen to list the same terms in a different order
@@ -377,13 +366,15 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
 
         // --- Pure-accumulation gate ---
         // Only the first member's output prefactor survives into the combined
-        // contraction, so the rest must accumulate with exactly 1. See
-        // @ref is_unit_real for why anything else changes the result.
+        // contraction, so the rest must accumulate with exactly 1. A member with
+        // ``c_pf != 1`` rescales the partial sum its predecessors already wrote,
+        // which the single combined contraction cannot reproduce:
+        // `W = 2*(W + A*B0) + A*B1` is not `W = 2*W + A*(B0 + B1)`.
         {
             bool unit_accumulate = true;
             for (size_t ci = 1; ci < available.size(); ci++) {
                 auto const *d = nodes[available[ci].node_index].op_data.get_if<EinsumDescriptor>();
-                if (d == nullptr || !is_unit_real(d->c_prefactor)) {
+                if (d == nullptr || !is_one(d->c_prefactor)) {
                     unit_accumulate = false;
                     break;
                 }

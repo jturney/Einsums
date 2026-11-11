@@ -18,6 +18,7 @@
 /// export is @ref read_document.
 
 #include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarTypes.hpp>
 #include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
@@ -599,28 +600,13 @@ PredExpr read_pred_expr(Value const &value, std::string const &path, Problems &p
 /// file should not depend on which allocator happens to be linked.
 constexpr std::size_t max_buffer_bytes = std::size_t{1} << 47;
 
-/// Bytes per element of @p dtype; an unknown dtype counts as one byte, and the builder reports it.
-std::size_t element_bytes(packed_gemm::ScalarType dtype) {
-    switch (dtype) {
-    case packed_gemm::ScalarType::Float32:
-        return sizeof(float);
-    case packed_gemm::ScalarType::Float64:
-    case packed_gemm::ScalarType::Complex64:
-        return sizeof(double);
-    case packed_gemm::ScalarType::Complex128:
-        return 2 * sizeof(double);
-    case packed_gemm::ScalarType::Unknown:
-        break;
-    }
-    return 1;
-}
-
 /// Whether @p dims of @p dtype fit in @ref max_buffer_bytes, computed without overflowing.
 bool fits_in_a_buffer(std::vector<std::size_t> const &dims, packed_gemm::ScalarType dtype) {
     if (std::ranges::find(dims, std::size_t{0}) != dims.end()) {
         return true; // An empty tensor holds nothing, however large its other extents.
     }
-    std::size_t bytes = element_bytes(dtype);
+    // An unknown dtype counts as one byte; the builder reports it.
+    std::size_t bytes = std::max<std::size_t>(compute_graph::detail::element_bytes(dtype), 1);
     for (std::size_t const extent : dims) {
         if (bytes > max_buffer_bytes / extent) {
             return false;
