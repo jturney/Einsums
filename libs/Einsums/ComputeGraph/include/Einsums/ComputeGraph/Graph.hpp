@@ -3607,20 +3607,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return What the @c std::vector overload returns, which is what this forwards to.
      *
      * @par Why this exists, since it looks redundant
-     * It is what makes the promise on @ref SpaceDim, that a braced list of plain numbers keeps
-     * selecting the dims overload, true rather than merely intended. Without it, ``{n}`` --
-     * one integer -- is AMBIGUOUS under libstdc++: @c std::vector<SpaceDim> has an explicit
-     * ``vector(size_type)`` constructor, that constructor is a candidate when the compiler
-     * forms the conversion sequence for a braced list, and the two overloads then tie on
-     * user-defined conversions. libc++ does not consider it, so the call compiles on macOS and
-     * fails on GCC, which is the worst shape a portability trap can have.
-     *
-     * A parameter of type @c std::initializer_list<size_t> settles it by the standard's own
-     * rule rather than by luck: the conversion sequence for a braced list matching it is the
-     * WORST ELEMENT conversion, an identity here, and an identity beats the user-defined
-     * sequence either vector needs. So a braced list of numbers lands here on every compiler,
-     * a braced list of spaces cannot (no space converts to an integer) and still lands on the
-     * @ref SpaceDim overload, and a mixed list is a compile error as it always was.
+     * For the reason the braced-list overload of ``create_zero_runtime_tensor`` gives: without it,
+     * a braced list of one number is ambiguous under libstdc++.
      * @versionadded{2.0.0}
      */
     template <typename T, typename Alloc = std::allocator<T>>
@@ -3768,20 +3756,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return What the @c std::vector overload returns, which is what this forwards to.
      *
      * @par Why this exists, since it looks redundant
-     * It is what makes the promise on @ref SpaceDim, that a braced list of plain numbers keeps
-     * selecting the dims overload, true rather than merely intended. Without it, ``{n}`` --
-     * one integer -- is AMBIGUOUS under libstdc++: @c std::vector<SpaceDim> has an explicit
-     * ``vector(size_type)`` constructor, that constructor is a candidate when the compiler
-     * forms the conversion sequence for a braced list, and the two overloads then tie on
-     * user-defined conversions. libc++ does not consider it, so the call compiles on macOS and
-     * fails on GCC, which is the worst shape a portability trap can have.
-     *
-     * A parameter of type @c std::initializer_list<size_t> settles it by the standard's own
-     * rule rather than by luck: the conversion sequence for a braced list matching it is the
-     * WORST ELEMENT conversion, an identity here, and an identity beats the user-defined
-     * sequence either vector needs. So a braced list of numbers lands here on every compiler,
-     * a braced list of spaces cannot (no space converts to an integer) and still lands on the
-     * @ref SpaceDim overload, and a mixed list is a compile error as it always was.
+     * For the reason the braced-list overload of ``create_zero_runtime_tensor`` gives: without it,
+     * a braced list of one number is ambiguous under libstdc++.
      * @versionadded{2.0.0}
      */
     template <typename T, typename Alloc = std::allocator<T>>

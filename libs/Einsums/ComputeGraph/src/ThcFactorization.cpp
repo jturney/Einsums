@@ -167,6 +167,81 @@ std::string ThcFactorization::reference_param_name(std::string const &provider, 
 
 namespace {
 
+/// The workspace that forms a grid metric's guarded inverse, declared on the body that runs a fit.
+struct GridMetric {
+    RuntimeTensor<double> &row_gram; ///< ``X_row^T X_row``.
+    RuntimeTensor<double> &col_gram; ///< ``X_col^T X_col``, or @ref row_gram when both pairs run over one block.
+    RuntimeTensor<double> &metric;   ///< Their Hadamard product, S.
+    RuntimeTensor<double> &vectors;  ///< S's eigenvectors.
+    RuntimeTensor<double> &values;   ///< S's eigenvalues, then their guarded inverse square roots.
+    RuntimeTensor<double> &scaled;   ///< The eigenvectors scaled by those.
+    RuntimeTensor<double> &half;     ///< S^{-1/2}.
+    RuntimeTensor<double> &inverse;  ///< S^{-1}.
+};
+
+/// Declare a fit's metric workspace on @p body, under names that start with the body's own.
+///
+/// Named after the graph they are declared in, because one program may hold SEVERAL of these
+/// fittings, and an amplitude fit is emitted twice, once into a setup body and once into the loop
+/// body that refits it. The storage auditor keys its duplicate check on the name: two fits under
+/// one set of names present it with one tensor materialized twice. The workspace is live only
+/// while the fit runs, and nothing outside has any use for the eigenvectors of a collocation
+/// overlap.
+GridMetric declare_grid_metric(Graph &body, std::string_view prefix, std::size_t grid, bool one_matrix) {
+    auto const named  = [&](std::string_view stem) { return fmt::format("{}_{}_{}", body.name(), prefix, stem); };
+    auto const square = [&](std::string_view stem) -> RuntimeTensor<double> & {
+        return body.declare_runtime_tensor<double>(named(stem), {grid, grid}, /*intermediate=*/true);
+    };
+    auto &row_gram = square("gram");
+    auto &col_gram = one_matrix ? row_gram : square("gram_col");
+    auto &metric   = square("metric");
+    auto &vectors  = square("vectors");
+    auto &values   = body.declare_runtime_tensor<double>(named("values"), {grid}, /*intermediate=*/true);
+    return GridMetric{.row_gram = row_gram,
+                      .col_gram = col_gram,
+                      .metric   = metric,
+                      .vectors  = vectors,
+                      .values   = values,
+                      .scaled   = square("scaled"),
+                      .half     = square("inv_sqrt"),
+                      .inverse  = square("inverse")};
+}
+
+/// Copy the collocation matrices into the factors and form the guarded inverse of their metric.
+/// Called inside a capture of the body that declared @p fit.
+///
+/// The collocation matrices are the caller's, copied into the factors the pass declared, which is
+/// what makes them interface tensors of the transformed graph: a bind at a new geometry hands over
+/// new matrices and everything after refits from them. One copy when both pairs run over one
+/// block, two when they do not.
+void capture_grid_metric_inverse(GridMetric const &fit, RuntimeTensor<double> *X_row, RuntimeTensor<double> *X_col,
+                                 RuntimeTensorView<double> const &row_source, RuntimeTensorView<double> const &col_source, bool one_matrix,
+                                 double threshold) {
+    permute("m,P <- m,P", 0.0, X_row, 1.0, row_source);
+    if (!one_matrix) {
+        permute("n,P <- n,P", 0.0, X_col, 1.0, col_source);
+    }
+
+    // S[P,Q] = (X_row^T X_row)[P,Q] * (X_col^T X_col)[P,Q], elementwise. A Hadamard product of Gram
+    // matrices, and therefore positive semi-definite by the Schur product theorem, which is what
+    // lets the guarded inverse below be the same one a metric fit uses. With one block on every axis
+    // this is the square this always formed.
+    einsum("m,P ; m,Q -> P,Q", &fit.row_gram, *X_row, *X_row);
+    if (!one_matrix) {
+        einsum("n,P ; n,Q -> P,Q", &fit.col_gram, *X_col, *X_col);
+    }
+    direct_product(1.0, fit.row_gram, fit.col_gram, 0.0, &fit.metric);
+
+    // S^{-1} through S^{-1/2} squared, so the guard is applied once, to the eigenvalues, exactly as
+    // the metric fit applies it. A copy first, because syev destroys what it decomposes.
+    permute("P,Q <- P,Q", 0.0, &fit.vectors, 1.0, fit.metric);
+    syev(&fit.vectors, &fit.values);
+    element_transform(&fit.values, "inv_sqrt_or_zero", threshold);
+    einsum("P,R ; R -> P,R", &fit.scaled, fit.vectors, fit.values);
+    einsum("P,R ; Q,R -> P,Q", &fit.half, fit.scaled, fit.vectors);
+    einsum("P,R ; R,Q -> P,Q", &fit.inverse, fit.half, fit.half);
+}
+
 /// Finish a plan whose coupling is fitted from the TAGGED tensor.
 ///
 /// The metric is the same Hadamard product of collocation Gram matrices the integral fit uses,
@@ -192,43 +267,19 @@ FactorizationPlan amplitude_plan(FactorizationPlan plan, TensorHandle const &han
         // auditor keys its duplicate check on the name rather than on the buffer.
         auto const named = [&body](std::string_view stem) { return fmt::format("{}_{}", body.name(), stem); };
 
-        auto &row_gram = body.declare_runtime_tensor<double>(named("thc_gram"), {grid, grid}, /*intermediate=*/true);
-        auto &col_gram =
-            one_matrix ? row_gram : body.declare_runtime_tensor<double>(named("thc_gram_col"), {grid, grid}, /*intermediate=*/true);
-        auto &metric    = body.declare_runtime_tensor<double>(named("thc_metric"), {grid, grid}, /*intermediate=*/true);
-        auto &vectors   = body.declare_runtime_tensor<double>(named("thc_vectors"), {grid, grid}, /*intermediate=*/true);
-        auto &values    = body.declare_runtime_tensor<double>(named("thc_values"), {grid}, /*intermediate=*/true);
-        auto &scaled    = body.declare_runtime_tensor<double>(named("thc_scaled"), {grid, grid}, /*intermediate=*/true);
-        auto &half      = body.declare_runtime_tensor<double>(named("thc_inv_sqrt"), {grid, grid}, /*intermediate=*/true);
-        auto &inverse   = body.declare_runtime_tensor<double>(named("thc_inverse"), {grid, grid}, /*intermediate=*/true);
-        auto &first     = body.declare_runtime_tensor<double>(named("thc_proj1"), {grid, dims[1], dims[2], dims[3]}, true);
-        auto &second    = body.declare_runtime_tensor<double>(named("thc_proj2"), {grid, dims[2], dims[3]}, true);
-        auto &third     = body.declare_runtime_tensor<double>(named("thc_proj3"), {grid, grid, dims[3]}, true);
-        auto &projected = body.declare_runtime_tensor<double>(named("thc_projected"), {grid, grid}, /*intermediate=*/true);
-        auto &right     = body.declare_runtime_tensor<double>(named("thc_right"), {grid, grid}, /*intermediate=*/true);
+        GridMetric const fit       = declare_grid_metric(body, "thc", grid, one_matrix);
+        auto            &first     = body.declare_runtime_tensor<double>(named("thc_proj1"), {grid, dims[1], dims[2], dims[3]}, true);
+        auto            &second    = body.declare_runtime_tensor<double>(named("thc_proj2"), {grid, dims[2], dims[3]}, true);
+        auto            &third     = body.declare_runtime_tensor<double>(named("thc_proj3"), {grid, grid, dims[3]}, true);
+        auto            &projected = body.declare_runtime_tensor<double>(named("thc_projected"), {grid, grid}, /*intermediate=*/true);
+        auto            &right     = body.declare_runtime_tensor<double>(named("thc_right"), {grid, grid}, /*intermediate=*/true);
 
         bool const measure = residual_report.has_value() && reference_report.has_value();
 
         {
             CaptureGuard const guard(body);
 
-            permute("m,P <- m,P", 0.0, X_row, 1.0, row_source);
-            if (!one_matrix) {
-                permute("n,P <- n,P", 0.0, X_col, 1.0, col_source);
-            }
-
-            einsum("m,P ; m,Q -> P,Q", &row_gram, *X_row, *X_row);
-            if (!one_matrix) {
-                einsum("n,P ; n,Q -> P,Q", &col_gram, *X_col, *X_col);
-            }
-            direct_product(1.0, row_gram, col_gram, 0.0, &metric);
-
-            permute("P,Q <- P,Q", 0.0, &vectors, 1.0, metric);
-            syev(&vectors, &values);
-            element_transform(&values, "inv_sqrt_or_zero", threshold);
-            einsum("P,R ; R -> P,R", &scaled, vectors, values);
-            einsum("P,R ; Q,R -> P,Q", &half, scaled, vectors);
-            einsum("P,R ; R,Q -> P,Q", &inverse, half, half);
+            capture_grid_metric_inverse(fit, X_row, X_col, row_source, col_source, one_matrix, threshold);
 
             // P[P,Q] = sum_mnpq X_row[m,P] X_col[n,P] T[m,n,p,q] X_row[p,Q] X_col[q,Q], one axis
             // at a time, with the grid letter riding along on the second of each pair.
@@ -237,8 +288,8 @@ FactorizationPlan amplitude_plan(FactorizationPlan plan, TensorHandle const &han
             einsum("P,p,q ; p,Q -> P,Q,q", &third, second, *X_row);
             einsum("P,Q,q ; q,Q -> P,Q", &projected, third, *X_col);
 
-            einsum("P,R ; R,Q -> P,Q", &right, projected, inverse);
-            einsum("P,R ; R,Q -> P,Q", Z, inverse, right);
+            einsum("P,R ; R,Q -> P,Q", &right, projected, fit.inverse);
+            einsum("P,R ; R,Q -> P,Q", Z, fit.inverse, right);
 
             // What the fit is worth on this bind, measured rather than asserted, and the one
             // place this provider differs from its integral half. There the exact quantity is
@@ -283,18 +334,10 @@ FactorizationPlan three_index_plan(FactorizationPlan plan, RuntimeTensorView<dou
         // these fittings and the storage auditor keys its duplicate check on the name.
         auto const named = [&body](std::string_view stem) { return fmt::format("{}_{}", body.name(), stem); };
 
-        auto &row_gram = body.declare_runtime_tensor<double>(named("thc3_gram"), {grid, grid}, /*intermediate=*/true);
-        auto &col_gram =
-            one_matrix ? row_gram : body.declare_runtime_tensor<double>(named("thc3_gram_col"), {grid, grid}, /*intermediate=*/true);
-        auto &metric   = body.declare_runtime_tensor<double>(named("thc3_metric"), {grid, grid}, /*intermediate=*/true);
-        auto &vectors  = body.declare_runtime_tensor<double>(named("thc3_vectors"), {grid, grid}, /*intermediate=*/true);
-        auto &values   = body.declare_runtime_tensor<double>(named("thc3_values"), {grid}, /*intermediate=*/true);
-        auto &scaled   = body.declare_runtime_tensor<double>(named("thc3_scaled"), {grid, grid}, /*intermediate=*/true);
-        auto &half     = body.declare_runtime_tensor<double>(named("thc3_inv_sqrt"), {grid, grid}, /*intermediate=*/true);
-        auto &inverse  = body.declare_runtime_tensor<double>(named("thc3_inverse"), {grid, grid}, /*intermediate=*/true);
-        auto &partial  = body.declare_runtime_tensor<double>(named("thc3_partial"), {naux, row_basis, grid}, /*intermediate=*/true);
-        auto &weighted = body.declare_runtime_tensor<double>(named("thc3_weighted"), {naux, grid}, /*intermediate=*/true);
-        auto &rebuilt  = body.declare_runtime_tensor<double>(named("thc3_rebuilt"), {naux, row_basis, grid}, /*intermediate=*/true);
+        GridMetric const fit = declare_grid_metric(body, "thc3", grid, one_matrix);
+        auto &partial        = body.declare_runtime_tensor<double>(named("thc3_partial"), {naux, row_basis, grid}, /*intermediate=*/true);
+        auto &weighted       = body.declare_runtime_tensor<double>(named("thc3_weighted"), {naux, grid}, /*intermediate=*/true);
+        auto &rebuilt        = body.declare_runtime_tensor<double>(named("thc3_rebuilt"), {naux, row_basis, grid}, /*intermediate=*/true);
         auto &residual = body.declare_runtime_tensor<double>(named("thc3_residual"), {naux, row_basis, col_basis}, /*intermediate=*/true);
 
         auto *residual_squared  = new double{0.0};
@@ -308,28 +351,12 @@ FactorizationPlan three_index_plan(FactorizationPlan plan, RuntimeTensorView<dou
             CaptureContext::current().get_or_register_scalar(residual_squared, residual_key);
             CaptureContext::current().get_or_register_scalar(reference_squared, reference_key);
 
-            permute("m,P <- m,P", 0.0, X_row, 1.0, row_source);
-            if (!one_matrix) {
-                permute("n,P <- n,P", 0.0, X_col, 1.0, col_source);
-            }
-
-            einsum("m,P ; m,Q -> P,Q", &row_gram, *X_row, *X_row);
-            if (!one_matrix) {
-                einsum("n,P ; n,Q -> P,Q", &col_gram, *X_col, *X_col);
-            }
-            direct_product(1.0, row_gram, col_gram, 0.0, &metric);
-
-            permute("P,Q <- P,Q", 0.0, &vectors, 1.0, metric);
-            syev(&vectors, &values);
-            element_transform(&values, "inv_sqrt_or_zero", threshold);
-            einsum("P,R ; R -> P,R", &scaled, vectors, values);
-            einsum("P,R ; Q,R -> P,Q", &half, scaled, vectors);
-            einsum("P,R ; R,Q -> P,Q", &inverse, half, half);
+            capture_grid_metric_inverse(fit, X_row, X_col, row_source, col_source, one_matrix, threshold);
 
             // B~[A,P] = sum_mn B[A,m,n] X_row[m,P] X_col[n,P], then C = B~ S^{-1}.
             einsum("A,m,n ; n,P -> A,m,P", &partial, three_index, *X_col);
             einsum("A,m,P ; m,P -> A,P", &weighted, partial, *X_row);
-            einsum("A,R ; R,P -> A,P", C, weighted, inverse);
+            einsum("A,R ; R,P -> A,P", C, weighted, fit.inverse);
 
             // What the fit is worth, measured rather than asserted, because the exact quantity
             // here IS the tagged tensor and it is in hand.
@@ -552,22 +579,14 @@ expected<FactorizationPlan, std::string> ThcFactorization::propose(Graph const &
         // under one set of names present it with one tensor materialized twice.
         auto const named = [&body](std::string_view stem) { return fmt::format("{}_{}", body.name(), stem); };
 
-        auto &row_gram = body.declare_runtime_tensor<double>(named("thc_gram"), {grid, grid}, /*intermediate=*/true);
-        auto &col_gram =
-            one_matrix ? row_gram : body.declare_runtime_tensor<double>(named("thc_gram_col"), {grid, grid}, /*intermediate=*/true);
-        auto &metric    = body.declare_runtime_tensor<double>(named("thc_metric"), {grid, grid}, /*intermediate=*/true);
-        auto &vectors   = body.declare_runtime_tensor<double>(named("thc_vectors"), {grid, grid}, /*intermediate=*/true);
-        auto &values    = body.declare_runtime_tensor<double>(named("thc_values"), {grid}, /*intermediate=*/true);
-        auto &scaled    = body.declare_runtime_tensor<double>(named("thc_scaled"), {grid, grid}, /*intermediate=*/true);
-        auto &half      = body.declare_runtime_tensor<double>(named("thc_inv_sqrt"), {grid, grid}, /*intermediate=*/true);
-        auto &inverse   = body.declare_runtime_tensor<double>(named("thc_inverse"), {grid, grid}, /*intermediate=*/true);
-        auto &partial   = body.declare_runtime_tensor<double>(named("thc_partial"), {naux, row_basis, grid}, /*intermediate=*/true);
-        auto &projected = body.declare_runtime_tensor<double>(named("thc_projected"), {naux, grid}, /*intermediate=*/true);
-        auto &coupling  = body.declare_runtime_tensor<double>(named("thc_coupling"), {grid, grid}, /*intermediate=*/true);
-        auto &right     = body.declare_runtime_tensor<double>(named("thc_right"), {grid, grid}, /*intermediate=*/true);
-        auto &weights   = body.declare_runtime_tensor<double>(named("thc_weights"), {naux, grid}, /*intermediate=*/true);
-        auto &rebuilt   = body.declare_runtime_tensor<double>(named("thc_rebuilt"), {naux, row_basis, grid}, /*intermediate=*/true);
-        auto &residual  = body.declare_runtime_tensor<double>(named("thc_residual"), {naux, row_basis, col_basis}, true);
+        GridMetric const fit = declare_grid_metric(body, "thc", grid, one_matrix);
+        auto &partial        = body.declare_runtime_tensor<double>(named("thc_partial"), {naux, row_basis, grid}, /*intermediate=*/true);
+        auto &projected      = body.declare_runtime_tensor<double>(named("thc_projected"), {naux, grid}, /*intermediate=*/true);
+        auto &coupling       = body.declare_runtime_tensor<double>(named("thc_coupling"), {grid, grid}, /*intermediate=*/true);
+        auto &right          = body.declare_runtime_tensor<double>(named("thc_right"), {grid, grid}, /*intermediate=*/true);
+        auto &weights        = body.declare_runtime_tensor<double>(named("thc_weights"), {naux, grid}, /*intermediate=*/true);
+        auto &rebuilt        = body.declare_runtime_tensor<double>(named("thc_rebuilt"), {naux, row_basis, grid}, /*intermediate=*/true);
+        auto &residual       = body.declare_runtime_tensor<double>(named("thc_residual"), {naux, row_basis, col_basis}, true);
 
         // The residual's destinations. Plain scalars because that is what the pointer-writing
         // dot and write_param both take, and owned by the BODY so they outlive this call and
@@ -587,34 +606,7 @@ expected<FactorizationPlan, std::string> ThcFactorization::propose(Graph const &
             CaptureContext::current().get_or_register_scalar(residual_squared, residual_key);
             CaptureContext::current().get_or_register_scalar(reference_squared, reference_key);
 
-            // The collocation matrices are the caller's, copied into the factors the pass
-            // declared, which is what makes them interface tensors of the transformed graph: a
-            // bind at a new geometry hands over new matrices and everything below refits from
-            // them. One copy when both pairs run over one block, two when they do not.
-            permute("m,P <- m,P", 0.0, X_row, 1.0, row_source);
-            if (!one_matrix) {
-                permute("n,P <- n,P", 0.0, X_col, 1.0, col_source);
-            }
-
-            // S[P,Q] = (X_row^T X_row)[P,Q] * (X_col^T X_col)[P,Q], elementwise. A Hadamard
-            // product of Gram matrices, and therefore positive semi-definite by the Schur product
-            // theorem, which is what lets the guarded inverse below be the same one a metric fit
-            // uses. With one block on every axis this is the square this always formed.
-            einsum("m,P ; m,Q -> P,Q", &row_gram, *X_row, *X_row);
-            if (!one_matrix) {
-                einsum("n,P ; n,Q -> P,Q", &col_gram, *X_col, *X_col);
-            }
-            direct_product(1.0, row_gram, col_gram, 0.0, &metric);
-
-            // S^{-1} through S^{-1/2} squared, so the guard is applied once, to the eigenvalues,
-            // exactly as the metric fit applies it. A copy first, because syev destroys what it
-            // decomposes.
-            permute("P,Q <- P,Q", 0.0, &vectors, 1.0, metric);
-            syev(&vectors, &values);
-            element_transform(&values, "inv_sqrt_or_zero", threshold);
-            einsum("P,R ; R -> P,R", &scaled, vectors, values);
-            einsum("P,R ; Q,R -> P,Q", &half, scaled, vectors);
-            einsum("P,R ; R,Q -> P,Q", &inverse, half, half);
+            capture_grid_metric_inverse(fit, X_row, X_col, row_source, col_source, one_matrix, threshold);
 
             // B~[A,P] = sum_mn B[A,m,n] X_row[m,P] X_col[n,P]. The second contraction carries P
             // through both operands and the output, which is the grid index riding along rather
@@ -624,14 +616,14 @@ expected<FactorizationPlan, std::string> ThcFactorization::propose(Graph const &
 
             // Z = S^{-1} (B~^T B~) S^{-1}.
             einsum("A,P ; A,Q -> P,Q", &coupling, projected, projected);
-            einsum("P,R ; R,Q -> P,Q", &right, coupling, inverse);
-            einsum("P,R ; R,Q -> P,Q", Z, inverse, right);
+            einsum("P,R ; R,Q -> P,Q", &right, coupling, fit.inverse);
+            einsum("P,R ; R,Q -> P,Q", Z, fit.inverse, right);
 
             // What the fit is worth, measured on every bind rather than asserted once. The
             // least-squares weights are C = B~ S^{-1}, the fitted three-index tensor is
             // C[A,P] X_row[m,P] X_col[n,P], and the residual against B is a quantity this library
             // can form where the four-index error is one it cannot.
-            einsum("A,R ; R,P -> A,P", &weights, projected, inverse);
+            einsum("A,R ; R,P -> A,P", &weights, projected, fit.inverse);
             einsum("A,P ; m,P -> A,m,P", &rebuilt, weights, *X_row);
             permute("A,m,n <- A,m,n", 0.0, &residual, 1.0, three_index);
             einsum("A,m,P ; n,P -> A,m,n", 1.0, &residual, -1.0, rebuilt, *X_col);
