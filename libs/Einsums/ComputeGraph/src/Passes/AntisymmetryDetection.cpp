@@ -81,17 +81,11 @@ bool holds_in_data(TensorHandle const &handle, SymmetryDescriptor const &desc) {
 } // namespace
 
 std::vector<std::string> AntisymmetryDetection::explain() const {
-    if (_num_found == 0) {
+    if (_stats.num_found == 0) {
         return {};
     }
-    return {fmt::format("AntisymmetryDetection: found {} symmetry generator(s) on {} bound input(s), from {} probe(s)", _num_found,
-                        _num_tensors, _num_probed)};
-}
-
-void AntisymmetryDetection::reset_stats() {
-    _num_probed  = 0;
-    _num_found   = 0;
-    _num_tensors = 0;
+    return {fmt::format("AntisymmetryDetection: found {} symmetry generator(s) on {} bound input(s), from {} probe(s)", _stats.num_found,
+                        _stats.num_tensors, _stats.num_probed)};
 }
 
 namespace {
@@ -292,12 +286,12 @@ bool AntisymmetryDetection::transform(Graph &graph) {
             // be invariant under some of an operator's terms and not others, and
             // recording only the all-or-nothing answer would throw away the part
             // a later rule could have used.
-            ++_num_probed;
+            ++_stats.num_probed;
             SymmetryDescriptor one;
             one.add(generator);
             if (holds_in_data(*handle, one)) {
                 found.add(generator);
-                ++_num_found;
+                ++_stats.num_found;
             }
         }
 
@@ -316,7 +310,7 @@ bool AntisymmetryDetection::transform(Graph &graph) {
             }
         }
         handle->symmetry_hint = std::make_shared<SymmetryDescriptor>(std::move(found));
-        ++_num_tensors;
+        ++_stats.num_tensors;
     }
 
     // Annotation only.

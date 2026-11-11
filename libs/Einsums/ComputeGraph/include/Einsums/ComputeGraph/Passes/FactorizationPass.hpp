@@ -140,7 +140,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief How many contractions were re-associated around a provider's factors.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_factorized") [[nodiscard]] std::size_t num_factorized() const { return _num_factorized; }
+    APIARY_EXPOSE APIARY_GETTER("num_factorized") [[nodiscard]] std::size_t num_factorized() const { return _stats.num_factorized; }
 
     /**
      * @brief How many captured intermediates the cone flattening dissolved into a chosen tree.
@@ -151,7 +151,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      *
      * @return The count.
      */
-    APIARY_EXPOSE APIARY_GETTER("num_dissolved") [[nodiscard]] std::size_t num_dissolved() const { return _num_dissolved; }
+    APIARY_EXPOSE APIARY_GETTER("num_dissolved") [[nodiscard]] std::size_t num_dissolved() const { return _stats.num_dissolved; }
 
     /**
      * @brief How many rewrites substituted more than one tagged tensor at once.
@@ -165,7 +165,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      *
      * @return The count.
      */
-    APIARY_EXPOSE APIARY_GETTER("num_multi_substituted") [[nodiscard]] std::size_t num_multi_substituted() const { return _num_multi; }
+    APIARY_EXPOSE APIARY_GETTER("num_multi_substituted") [[nodiscard]] std::size_t num_multi_substituted() const {
+        return _stats.num_multi;
+    }
 
     /**
      * @brief Decide profitability jointly with this transform, and emit both rewrites together.
@@ -196,7 +198,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief How many rewrites were taken as one decision with a following quadrature.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_joint") [[nodiscard]] std::size_t num_joint() const { return _num_joint; }
+    APIARY_EXPOSE APIARY_GETTER("num_joint") [[nodiscard]] std::size_t num_joint() const { return _stats.num_joint; }
 
     /**
      * @brief Which rung of the symbolic comparison decided the last rewrite this pass took.
@@ -210,7 +212,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * @return The rung's name, or an empty string when no rewrite was taken.
      */
     APIARY_EXPOSE APIARY_GETTER("accept_rung") [[nodiscard]] std::string accept_rung() const {
-        return _accept_rung.has_value() ? std::string(compare_rung_name(*_accept_rung)) : std::string{};
+        return _stats.accept_rung.has_value() ? std::string(compare_rung_name(*_stats.accept_rung)) : std::string{};
     }
 
   protected:
@@ -258,25 +260,26 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// The transform this pass decides profitability with, or null.
     std::shared_ptr<LaplaceTransform> _laplace;
 
-    std::vector<PendingQuadrature> _pending_quadrature;
-    std::size_t                    _num_joint{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t num_factorized{0};
+        /// What decided the accept comparison of the last rewrite taken. See @ref accept_rung.
+        std::optional<CompareRung>     accept_rung;
+        std::size_t                    num_dissolved{0};
+        std::size_t                    num_multi{0};
+        std::size_t                    num_joint{0};
+        std::vector<PendingSetup>      pending;
+        std::vector<PendingQuadrature> pending_quadrature;
+        /// Every tagged tensor some contraction offered this pass, whatever became of it. What the
+        /// end-of-run sweep subtracts from the tagged tensors the graph holds, so a tag nothing
+        /// ever offered is reported rather than silently doing nothing.
+        std::vector<TensorId> considered;
+    };
+    Stats _stats{};
 
     /// One tagged tensor and one provider make one fitting, however many contractions read it.
     using FitKey = std::pair<TensorId, std::string>;
     std::map<FitKey, std::vector<TensorId>> _fits;
-
-    std::vector<PendingSetup> _pending;
-    std::size_t               _num_factorized{0};
-    std::size_t               _num_dissolved{0};
-    std::size_t               _num_multi{0};
-
-    /// What decided the accept comparison of the last rewrite taken. See @ref accept_rung.
-    std::optional<CompareRung> _accept_rung;
-
-    /// Every tagged tensor some contraction offered this pass, whatever became of it. What the
-    /// end-of-run sweep subtracts from the tagged tensors the graph holds, so a tag nothing
-    /// ever offered is reported rather than silently doing nothing.
-    std::vector<TensorId> _considered;
 
     /// @brief The registry this pass queries.
     /// @return The caller's, or the process-wide one.

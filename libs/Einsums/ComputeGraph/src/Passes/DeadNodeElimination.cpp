@@ -49,12 +49,6 @@ void collect_own_node_ptrs(Graph const &g, std::unordered_set<void const *> &out
 
 } // namespace
 
-void DeadNodeElimination::reset_stats() {
-    _num_eliminated = 0;
-    _pruned_tensors.clear();
-    _pruned_unreported = 0;
-}
-
 bool DeadNodeElimination::transform(Graph &graph) {
     std::unordered_set<void const *> const no_external;
     return run_one(graph, no_external);
@@ -206,13 +200,13 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
                         if (handle == nullptr || handle->name.empty()) {
                             continue;
                         }
-                        if (std::ranges::find(_pruned_tensors, handle->name) != _pruned_tensors.end()) {
+                        if (std::ranges::find(_stats.pruned_tensors, handle->name) != _stats.pruned_tensors.end()) {
                             continue;
                         }
-                        if (_pruned_tensors.size() < max_reported_tensors) {
-                            _pruned_tensors.push_back(handle->name);
+                        if (_stats.pruned_tensors.size() < max_reported_tensors) {
+                            _stats.pruned_tensors.push_back(handle->name);
                         } else {
-                            _pruned_unreported++;
+                            _stats.pruned_unreported++;
                         }
                     }
 
@@ -223,7 +217,7 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
         }
 
         if (eliminated_here > 0) {
-            _num_eliminated += eliminated_here;
+            _stats.num_eliminated += eliminated_here;
             report(1, fmt::format("eliminated {} dead node(s)", eliminated_here));
 
             graph.erase_nodes(dead);
@@ -275,7 +269,7 @@ std::vector<std::string> DeadNodeElimination::explain() const {
 
     std::vector<std::string> lines{fmt::format("DeadNodeElimination: removed {} dead node(s)", num_eliminated())};
 
-    if (_pruned_tensors.empty()) {
+    if (_stats.pruned_tensors.empty()) {
         return lines;
     }
 
@@ -284,14 +278,14 @@ std::vector<std::string> DeadNodeElimination::explain() const {
     // what turns that from a bisect into a fix, and it costs a line in a report nobody reads
     // when the pruning was the intended kind.
     std::string names;
-    for (size_t i = 0; i < _pruned_tensors.size(); i++) {
+    for (size_t i = 0; i < _stats.pruned_tensors.size(); i++) {
         if (i != 0) {
             names += ", ";
         }
-        names += fmt::format("'{}'", _pruned_tensors[i]);
+        names += fmt::format("'{}'", _stats.pruned_tensors[i]);
     }
-    if (_pruned_unreported > 0) {
-        names += fmt::format(" and {} more", _pruned_unreported);
+    if (_stats.pruned_unreported > 0) {
+        names += fmt::format(" and {} more", _stats.pruned_unreported);
     }
 
     lines.emplace_back(

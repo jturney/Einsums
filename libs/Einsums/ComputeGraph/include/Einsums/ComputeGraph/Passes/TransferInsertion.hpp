@@ -84,7 +84,7 @@ class EINSUMS_EXPORT TransferInsertion : public OptimizerPass {
                NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped |
                NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
     }
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
     /// Recurse into loop bodies / conditional branches.
     ///
@@ -95,13 +95,17 @@ class EINSUMS_EXPORT TransferInsertion : public OptimizerPass {
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of transfer nodes inserted in the last run.
-    [[nodiscard]] size_t num_transfers() const { return _num_transfers; }
+    [[nodiscard]] size_t num_transfers() const { return _stats.num_transfers; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_transfers{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_transfers{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

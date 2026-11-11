@@ -86,7 +86,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// rather than guess, the pass names what it dropped and @ref explain says what to do about
     /// it. Without this the case reports only as a node count, which is what made it a bisect.
     APIARY_EXPOSE APIARY_GETTER("pruned_tensors") [[nodiscard]] std::vector<std::string> const &pruned_tensors() const {
-        return _pruned_tensors;
+        return _stats.pruned_tensors;
     }
 
     /// @copydoc OptimizerPass::phase
@@ -98,7 +98,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Removing a node nothing reads cannot change a value anything reads.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::BitwiseExact; }
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// Opt out of PassManager auto-recursion: run() descends the sub-graph
     /// tree itself.
@@ -111,7 +111,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
 
     /// Number of nodes eliminated in the last run.
-    APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+    APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _stats.num_eliminated; }
 
   protected:
     bool transform(Graph &graph) override;
@@ -127,12 +127,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// either way.
     static constexpr size_t max_reported_tensors = 8;
 
-    std::vector<std::string> _pruned_tensors;
-
-    /// Distinct pruned tensors beyond @ref max_reported_tensors, summarized as a count.
-    size_t _pruned_unreported{0};
-
-    size_t _num_eliminated{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t                   num_eliminated{0};
+        std::vector<std::string> pruned_tensors;
+        /// Distinct pruned tensors beyond @ref max_reported_tensors, summarized as a count.
+        size_t pruned_unreported{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

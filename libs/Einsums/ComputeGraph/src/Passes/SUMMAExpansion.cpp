@@ -101,12 +101,8 @@ void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, vo
 
 } // namespace
 
-void SUMMAExpansion::reset_stats() {
-    _num_expanded = 0;
-}
-
 bool SUMMAExpansion::transform(Graph &graph) {
-    PassCounter const expanded{_num_expanded};
+    PassCounter const expanded{_stats.num_expanded};
     if (comm::world_size() <= 1)
         return false;
 
@@ -234,7 +230,7 @@ bool SUMMAExpansion::transform(Graph &graph) {
             });
         });
 
-        _num_expanded++;
+        _stats.num_expanded++;
         EINSUMS_LOG_INFO("SUMMAExpansion: replaced einsum '{}' with SUMMA loop ({} panels on {}x{} grid)", node.label, panels, grid.rows(),
                          grid.cols());
         report(2, fmt::format("expand einsum '{}' into a SUMMA broadcast+GEMM loop ({} panels, {}x{} grid)", node.label, panels,

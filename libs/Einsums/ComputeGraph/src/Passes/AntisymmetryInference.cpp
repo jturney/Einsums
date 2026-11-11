@@ -103,16 +103,11 @@ struct Contribution {
 } // namespace
 
 std::vector<std::string> AntisymmetryInference::explain() const {
-    if (_num_tagged == 0) {
+    if (_stats.num_tagged == 0) {
         return {};
     }
-    return {
-        fmt::format("AntisymmetryInference: tagged {} tensor(s) antisymmetric, from {} candidate write(s)", _num_tagged, _num_candidates)};
-}
-
-void AntisymmetryInference::reset_stats() {
-    _num_candidates = 0;
-    _num_tagged     = 0;
+    return {fmt::format("AntisymmetryInference: tagged {} tensor(s) antisymmetric, from {} candidate write(s)", _stats.num_tagged,
+                        _stats.num_candidates)};
 }
 
 bool AntisymmetryInference::transform(Graph &graph) {
@@ -159,7 +154,7 @@ bool AntisymmetryInference::transform(Graph &graph) {
 
         // ── R1: the output of a permutation operator ────────────────────────
         if (auto const site = read_operator_site(node); site.has_value()) {
-            ++_num_candidates;
+            ++_stats.num_candidates;
             contribution.overwrites = site->overwrites;
             auto const desc         = antisymmetry::full_antisymmetry(site->operators, site->c_indices);
             auto const requirement  = antisymmetry::within_groups(site->operators, site->c_indices);
@@ -193,7 +188,7 @@ bool AntisymmetryInference::transform(Graph &graph) {
         else if (node.kind == OpKind::Einsum && node.inputs.size() >= 2) {
             auto const *desc = node.op_data.get_if<EinsumDescriptor>();
             if (desc != nullptr) {
-                ++_num_candidates;
+                ++_stats.num_candidates;
                 auto const  lists       = einsum_index_lists(*desc);
                 auto const &a_idx       = lists.a;
                 auto const &b_idx       = lists.b;
@@ -230,7 +225,7 @@ bool AntisymmetryInference::transform(Graph &graph) {
         else if (node.kind == OpKind::DirectDivision && node.inputs.size() >= 2) {
             auto const *edesc = node.op_data.get_if<ElementwiseBinaryDescriptor>();
             if (edesc != nullptr) {
-                ++_num_candidates;
+                ++_stats.num_candidates;
                 contribution.overwrites = is_zero(edesc->beta);
                 auto const *numerator   = hint_of(node.inputs[0]);
                 auto const *divisor     = hint_of(node.inputs[1]);
@@ -250,7 +245,7 @@ bool AntisymmetryInference::transform(Graph &graph) {
         else if (node.kind == OpKind::Axpby && node.inputs.size() >= 1) {
             auto const *adesc = node.op_data.get_if<AxpbyDescriptor>();
             if (adesc != nullptr) {
-                ++_num_candidates;
+                ++_stats.num_candidates;
                 contribution.overwrites = is_zero(adesc->beta);
                 // Scaling preserves antisymmetry, so what this write ADDS carries
                 // whatever its source carries. The destination's own prior
@@ -339,7 +334,7 @@ bool AntisymmetryInference::transform(Graph &graph) {
             }
         }
         handle->symmetry_hint = std::make_shared<SymmetryDescriptor>(std::move(merged));
-        ++_num_tagged;
+        ++_stats.num_tagged;
     }
 
     // Annotation only; the node list is untouched.

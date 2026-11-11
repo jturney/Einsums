@@ -86,10 +86,10 @@ class EINSUMS_EXPORT DistributionPlanning : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
                NodeFeature::RawScalar;
     }
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
-    [[nodiscard]] size_t num_distributed() const { return _num_distributed; }
-    [[nodiscard]] size_t num_replicated() const { return _num_replicated; }
+    [[nodiscard]] size_t num_distributed() const { return _stats.num_distributed; }
+    [[nodiscard]] size_t num_replicated() const { return _stats.num_replicated; }
 
   protected:
     bool transform(Graph &graph) override;
@@ -97,8 +97,12 @@ class EINSUMS_EXPORT DistributionPlanning : public OptimizerPass {
   private:
     size_t _threshold;
     bool   _enable_summa;
-    size_t _num_distributed{0};
-    size_t _num_replicated{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_distributed{0};
+        size_t num_replicated{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -86,9 +86,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Computing an invariant once rather than each iteration performs the same arithmetic on the same inputs.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::BitwiseExact; }
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
-    APIARY_EXPOSE APIARY_GETTER("num_hoisted") [[nodiscard]] size_t num_hoisted() const { return _num_hoisted; }
+    APIARY_EXPOSE APIARY_GETTER("num_hoisted") [[nodiscard]] size_t num_hoisted() const { return _stats.num_hoisted; }
 
   protected:
     bool transform(Graph &graph) override;
@@ -102,10 +102,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Single-level driver: hoist invariant producers out of each Loop body that
     /// is a direct child of @p graph, up one level into @p graph. Accumulates
-    /// into @ref _num_hoisted and re-sorts @p graph if it hoisted anything.
+    /// into ``_stats.num_hoisted`` and re-sorts @p graph if it hoisted anything.
     void hoist_one_level(Graph &graph);
 
-    size_t _num_hoisted{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_hoisted{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

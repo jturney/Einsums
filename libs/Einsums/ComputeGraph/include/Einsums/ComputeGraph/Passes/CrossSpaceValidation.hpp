@@ -182,7 +182,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
     /// @copydoc OptimizerPass::reset_stats
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
@@ -212,30 +212,34 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Every finding, in the order the nodes were visited and letters sorted within a node.
     /// @return The findings. Empty for a clean or an unannotated graph.
     APIARY_EXPOSE APIARY_GETTER("findings") [[nodiscard]] std::vector<CrossSpaceFinding> const &findings() const noexcept {
-        return _findings;
+        return _stats.findings;
     }
 
     /// How many findings are errors.
     /// @return The count of @ref CrossSpaceSeverity::Error findings.
-    APIARY_EXPOSE APIARY_GETTER("num_errors") [[nodiscard]] std::size_t num_errors() const noexcept { return _num_errors; }
+    APIARY_EXPOSE APIARY_GETTER("num_errors") [[nodiscard]] std::size_t num_errors() const noexcept { return _stats.num_errors; }
 
     /// How many findings are warnings.
     /// @return The count of @ref CrossSpaceSeverity::Warning findings.
-    APIARY_EXPOSE APIARY_GETTER("num_warnings") [[nodiscard]] std::size_t num_warnings() const noexcept { return _num_warnings; }
+    APIARY_EXPOSE APIARY_GETTER("num_warnings") [[nodiscard]] std::size_t num_warnings() const noexcept { return _stats.num_warnings; }
 
     /// How many findings are notes.
     /// @return The count of @ref CrossSpaceSeverity::Note findings.
-    APIARY_EXPOSE APIARY_GETTER("num_notes") [[nodiscard]] std::size_t num_notes() const noexcept { return _num_notes; }
+    APIARY_EXPOSE APIARY_GETTER("num_notes") [[nodiscard]] std::size_t num_notes() const noexcept { return _stats.num_notes; }
 
   protected:
     /// @copydoc OptimizerPass::run
     bool transform(Graph &graph) override;
 
   private:
-    std::vector<CrossSpaceFinding> _findings;
-    std::size_t                    _num_errors{0};
-    std::size_t                    _num_warnings{0};
-    std::size_t                    _num_notes{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::vector<CrossSpaceFinding> findings;
+        std::size_t                    num_errors{0};
+        std::size_t                    num_warnings{0};
+        std::size_t                    num_notes{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

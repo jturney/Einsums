@@ -114,7 +114,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// @brief Zero the per-apply counters.
-    void reset_stats() override;
+    void reset_stats() override { _region_stats = {}; }
 
     /**
      * @brief What this pass did, for @ref PassManager::explain.
@@ -140,7 +140,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      *
      * @return The dumps, in region order.
      */
-    [[nodiscard]] std::vector<RegionDump> const &last_dumps() const { return _dumps; }
+    [[nodiscard]] std::vector<RegionDump> const &last_dumps() const { return _region_stats.dumps; }
 
     /// @brief Collect the before/after dumps regardless of the option.
     /// @param[in] on Whether to collect.
@@ -170,16 +170,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Empty unless @ref set_verify_costs is on, and empty when the two derivations agree.
     /// @return One line per disagreement, naming the region and both numbers.
     APIARY_EXPOSE APIARY_GETTER("cost_mismatches") [[nodiscard]] std::vector<std::string> cost_mismatches() const {
-        return _cost_mismatches;
+        return _region_stats.cost_mismatches;
     }
 
     /// @brief How many regions were formed on the last run.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("regions_formed") [[nodiscard]] std::size_t regions_formed() const { return _regions_formed; }
+    APIARY_EXPOSE APIARY_GETTER("regions_formed") [[nodiscard]] std::size_t regions_formed() const { return _region_stats.regions_formed; }
 
     /// @brief How many regions were rewritten on the last run.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("regions_rewritten") [[nodiscard]] std::size_t regions_rewritten() const { return _regions_rewritten; }
+    APIARY_EXPOSE APIARY_GETTER("regions_rewritten") [[nodiscard]] std::size_t regions_rewritten() const {
+        return _region_stats.regions_rewritten;
+    }
 
     /**
      * @brief Every dump of the last run, rendered as one block of text.
@@ -363,22 +365,24 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
   protected:
   private:
-    bool                     _dump{false};
-    bool                     _verify_costs{false};
-    std::vector<std::string> _cost_mismatches;
-    std::vector<RegionDump>  _dumps;
-    std::size_t              _regions_formed{0};
-    std::size_t              _regions_rewritten{0};
-    std::size_t              _regions_declined{0};
-
-    /// Why regions were turned away, counted. A subset of @ref skip_reasons: those are every
-    /// decline the pass made including per-candidate ones, and these are the region-level ones
-    /// the structural report is about.
-    std::vector<std::pair<std::string, std::size_t>> _decline_reasons;
-
-    /// Sub-graph address -> where its setups belong. Cleared once per apply by @ref reset_stats,
-    /// which the manager calls before it descends.
-    std::unordered_map<Graph const *, SetupSite> _sites;
+    bool _dump{false};
+    bool _verify_costs{false};
+    /// What one run found, which reset_stats starts afresh.
+    struct RegionStats {
+        std::vector<RegionDump> dumps;
+        /// Why regions were turned away, counted. A subset of @ref skip_reasons: those are every
+        /// decline the pass made including per-candidate ones, and these are the region-level ones
+        /// the structural report is about.
+        std::vector<std::pair<std::string, std::size_t>> decline_reasons;
+        std::vector<std::string>                         cost_mismatches;
+        /// Sub-graph address -> where its setups belong. Cleared once per apply by @ref reset_stats,
+        /// which the manager calls before it descends.
+        std::unordered_map<Graph const *, SetupSite> sites;
+        std::size_t                                  regions_formed{0};
+        std::size_t                                  regions_rewritten{0};
+        std::size_t                                  regions_declined{0};
+    };
+    RegionStats _region_stats{};
 };
 
 /**

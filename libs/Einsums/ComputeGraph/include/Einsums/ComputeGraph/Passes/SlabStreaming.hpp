@@ -199,7 +199,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     }
 
     /// @copydoc OptimizerPass::reset_stats
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
     /// @copydoc OptimizerPass::explain
 
@@ -208,7 +208,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// A contraction that produces a write-backed tensor into its storage leaves the tensor's
     /// remaining readers without an in-graph writer. They read the stored tensor instead: its fill
     /// from the storage carries the storage's key, which orders it after every slab write.
-    [[nodiscard]] std::vector<std::pair<NodeId, TensorId>> compensated_reads() const override { return _compensated; }
+    [[nodiscard]] std::vector<std::pair<NodeId, TensorId>> compensated_reads() const override { return _stats.compensated; }
 
     /**
      * @brief Override the slab budget for this pipeline, in bytes.
@@ -222,27 +222,27 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief How many contractions the last apply streamed.
     /// @return The count, zero when the pass declined everything.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("num_streamed") [[nodiscard]] std::size_t num_streamed() const noexcept { return _num_streamed; }
+    APIARY_EXPOSE APIARY_GETTER("num_streamed") [[nodiscard]] std::size_t num_streamed() const noexcept { return _stats.num_streamed; }
 
     /// @brief The backed tensors the last apply streamed, by name, one entry per streamed contraction.
     /// @return The names, in the order the contractions were rewritten.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("streamed") [[nodiscard]] std::vector<std::string> streamed() const { return _streamed; }
+    APIARY_EXPOSE APIARY_GETTER("streamed") [[nodiscard]] std::vector<std::string> streamed() const { return _stats.streamed; }
 
     /// @brief How many of the streamed contractions produce their tensor into its storage.
     /// @return The count of contractions turned into loops ending in a slab write.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("num_written") [[nodiscard]] std::size_t num_written() const noexcept { return _num_written; }
+    APIARY_EXPOSE APIARY_GETTER("num_written") [[nodiscard]] std::size_t num_written() const noexcept { return _stats.num_written; }
 
     /// @brief The block each streamed contraction reads, along the backed tensor's last axis.
     /// @return One entry per streamed contraction, in the order of @ref streamed.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("blocks") [[nodiscard]] std::vector<std::int64_t> blocks() const { return _blocks; }
+    APIARY_EXPOSE APIARY_GETTER("blocks") [[nodiscard]] std::vector<std::int64_t> blocks() const { return _stats.blocks; }
 
     /// @brief How many views of a backed tensor the last apply turned into a read of the box each one names.
     /// @return The count, one per view, whichever loop chose the box.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("num_boxes") [[nodiscard]] std::size_t num_boxes() const noexcept { return _num_boxes; }
+    APIARY_EXPOSE APIARY_GETTER("num_boxes") [[nodiscard]] std::size_t num_boxes() const noexcept { return _stats.num_boxes; }
 
     /// @brief The order the last apply left a backed tensor stored in.
     /// @param[in] name The backed tensor's name.
@@ -326,20 +326,24 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
                     std::string const &label, std::optional<std::size_t> writer);
 
     std::int64_t _budget_override{-1};
-    Graph const *_root{nullptr};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::vector<Record>                             records;
+        std::size_t                                     num_streamed{0};
+        std::size_t                                     num_written{0};
+        std::size_t                                     num_boxes{0};
+        Graph const                                    *root{nullptr};
+        std::vector<BoxUse>                             box_uses;
+        std::map<std::string, std::vector<std::size_t>> orders;
+        std::vector<Decision>                           order_lines;
+        std::vector<std::pair<NodeId, TensorId>>        compensated;
+        std::vector<std::string>                        streamed;
+        std::vector<std::int64_t>                       blocks;
+    };
+    Stats _stats{};
     /// The backed tensors each loop body this pass built holds whole, by the body.
     std::unordered_map<Graph const *, std::vector<void const *>> _held_in;
-    std::vector<BoxUse>                                          _box_uses;
-    double                                          _replays{1.0}; ///< How often the graph being streamed runs per replay of the root.
-    std::map<std::string, std::vector<std::size_t>> _orders;
-    std::vector<Decision>                           _order_lines;
-    std::vector<std::pair<NodeId, TensorId>>        _compensated;
-    std::vector<Record>                             _records;
-    std::size_t                                     _num_streamed{0};
-    std::size_t                                     _num_written{0};
-    std::size_t                                     _num_boxes{0};
-    std::vector<std::string>                        _streamed;
-    std::vector<std::int64_t>                       _blocks;
+    double _replays{1.0}; ///< How often the graph being streamed runs per replay of the root.
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

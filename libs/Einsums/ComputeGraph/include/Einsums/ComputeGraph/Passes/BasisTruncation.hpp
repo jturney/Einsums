@@ -216,11 +216,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief How many natural orbitals the last run kept, or zero before one ran.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("kept") [[nodiscard]] std::size_t kept() const noexcept { return _kept; }
+    APIARY_EXPOSE APIARY_GETTER("kept") [[nodiscard]] std::size_t kept() const noexcept { return _stats.kept; }
 
     /// @brief The occupations the last run read off the density, largest first.
     /// @return The eigenvalues of the virtual-virtual density, or empty before a run.
-    APIARY_EXPOSE APIARY_GETTER("occupations") [[nodiscard]] std::vector<double> occupations() const { return _occupations; }
+    APIARY_EXPOSE APIARY_GETTER("occupations") [[nodiscard]] std::vector<double> occupations() const { return _stats.occupations; }
 
     /**
      * @brief The transformation the setup writes, @c U over the full space by the truncated one.
@@ -276,7 +276,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief The names the last run projected, in the order they were projected.
     /// @return One entry per projected tensor, spelled by @ref projected_name.
-    APIARY_EXPOSE APIARY_GETTER("projected") [[nodiscard]] std::vector<std::string> projected() const { return _projected; }
+    APIARY_EXPOSE APIARY_GETTER("projected") [[nodiscard]] std::vector<std::string> projected() const { return _stats.projected; }
 
     /**
      * @brief The MP2 energy the truncation removed, @f$E_{MP2}(\text{full}) - E_{MP2}(\text{fno})@f$.
@@ -287,7 +287,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * space, which is the same place the density-fitting and quadrature effects already
      * compose.
      */
-    APIARY_EXPOSE APIARY_GETTER("correction") [[nodiscard]] double correction() const noexcept { return _correction; }
+    APIARY_EXPOSE APIARY_GETTER("correction") [[nodiscard]] double correction() const noexcept { return _stats.correction; }
 
     /// @copydoc OptimizerPass::phase
     /// Structural-algebraic, for the reason the other two lossy passes are: replacing a space is a
@@ -306,7 +306,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::vector<std::string> explain() const override;
 
     /// @copydoc OptimizerPass::reset_stats
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
   protected:
     /// @copydoc OptimizerPass::run
@@ -356,11 +356,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// the setup reads it and a captured read is what makes it an interface tensor.
     std::shared_ptr<RuntimeTensor<double>> _keep;
 
-    std::size_t              _kept{0};
-    std::vector<double>      _occupations;
-    std::size_t              _num_truncated{0};
-    std::vector<std::string> _projected;
-    double                   _correction{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t              kept{0};
+        std::size_t              num_truncated{0};
+        double                   correction{0};
+        std::vector<double>      occupations;
+        std::vector<std::string> projected;
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

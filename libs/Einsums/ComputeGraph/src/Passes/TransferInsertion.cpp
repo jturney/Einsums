@@ -60,12 +60,8 @@ Node make_d2h_node(TensorHandle const &handle) {
 
 } // namespace
 
-void TransferInsertion::reset_stats() {
-    _num_transfers = 0;
-}
-
 bool TransferInsertion::transform(Graph &graph) {
-    PassCounter const transfers{_num_transfers};
+    PassCounter const transfers{_stats.num_transfers};
     graph.topological_sort();
 
     auto const &nodes = graph.nodes();
@@ -105,7 +101,7 @@ bool TransferInsertion::transform(Graph &graph) {
                 if (res != Residency::Device && res != Residency::Both) {
                     auto &handle = graph.tensor(tid);
                     inserted[idx].push_back(make_h2d_node(handle));
-                    _num_transfers++;
+                    _stats.num_transfers++;
                     residency[tid] = Residency::Both;
 
                     EINSUMS_LOG_INFO("TransferInsertion: H2D for tensor '{}' (id={}) before {} node {}", handle.name, tid, node.kind,
@@ -123,7 +119,7 @@ bool TransferInsertion::transform(Graph &graph) {
                 if (cpu_node_reads_later(nodes, idx + 1, tid)) {
                     auto &handle = graph.tensor(tid);
                     inserted[idx + 1].push_back(make_d2h_node(handle));
-                    _num_transfers++;
+                    _stats.num_transfers++;
                     residency[tid] = Residency::Both;
 
                     EINSUMS_LOG_INFO("TransferInsertion: D2H for tensor '{}' (id={}) after {} node", handle.name, tid, node.kind);
@@ -165,7 +161,7 @@ bool TransferInsertion::transform(Graph &graph) {
                 auto &handle = graph.tensor(tid);
                 if (!handle.is_intermediate) {
                     inserted[nodes.size()].push_back(make_d2h_node(handle));
-                    _num_transfers++;
+                    _stats.num_transfers++;
                     residency[tid] = Residency::Both;
 
                     EINSUMS_LOG_INFO("TransferInsertion: final D2H for user-visible tensor '{}' (id={})", handle.name, tid);
@@ -189,9 +185,9 @@ bool TransferInsertion::transform(Graph &graph) {
         graph.tensor(tid).residency = res;
     }
 
-    EINSUMS_LOG_INFO("TransferInsertion: inserted {} transfer nodes", _num_transfers);
+    EINSUMS_LOG_INFO("TransferInsertion: inserted {} transfer nodes", _stats.num_transfers);
     if (transfers.moved()) {
-        report(1, fmt::format("inserted {} host/device transfer node(s)", _num_transfers));
+        report(1, fmt::format("inserted {} host/device transfer node(s)", _stats.num_transfers));
     }
     return true;
 }

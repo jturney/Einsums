@@ -183,35 +183,43 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// @brief How many intermediates were given an order other than the captured one.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_relaid_out") [[nodiscard]] std::size_t num_relaid_out() const { return _num_relaid_out; }
+    APIARY_EXPOSE APIARY_GETTER("num_relaid_out") [[nodiscard]] std::size_t num_relaid_out() const { return _stats.num_relaid_out; }
 
     /// @brief How many @c Permute nodes the chosen layout turned into identity copies and deleted.
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_permutes_folded") [[nodiscard]] std::size_t num_permutes_folded() const {
-        return _num_permutes_folded;
+        return _stats.num_permutes_folded;
     }
 
     /// @brief How many operand copies the chosen assignment removes, per replay.
     /// @return The count, over every contraction the pass modelled.
-    APIARY_EXPOSE APIARY_GETTER("num_copies_removed") [[nodiscard]] std::size_t num_copies_removed() const { return _num_copies_removed; }
+    APIARY_EXPOSE APIARY_GETTER("num_copies_removed") [[nodiscard]] std::size_t num_copies_removed() const {
+        return _stats.num_copies_removed;
+    }
 
     /// @brief What those copies were modelled to cost, in microseconds per replay.
     /// @return The estimate. A modelled number and not a measured one; see the file note.
-    APIARY_EXPOSE APIARY_GETTER("estimated_saving_us") [[nodiscard]] double estimated_saving_us() const { return _estimated_saving_us; }
+    APIARY_EXPOSE APIARY_GETTER("estimated_saving_us") [[nodiscard]] double estimated_saving_us() const {
+        return _stats.estimated_saving_us;
+    }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    CostModel   _cost_model;
-    std::size_t _num_relaid_out{0};
-    std::size_t _num_permutes_folded{0};
-    std::size_t _num_copies_removed{0};
-    double      _estimated_saving_us{0.0};
+    CostModel _cost_model;
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t num_relaid_out{0};
+        std::size_t num_permutes_folded{0};
+        std::size_t num_copies_removed{0};
+        double      estimated_saving_us{0.0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

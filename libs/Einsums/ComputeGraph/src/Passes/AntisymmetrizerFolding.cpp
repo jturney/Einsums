@@ -116,16 +116,11 @@ std::vector<std::pair<TensorId, SymmetryDescriptor>> detected_leaves(EscapeAnaly
 } // namespace
 
 std::vector<std::string> AntisymmetrizerFolding::explain() const {
-    if (_num_folded == 0) {
+    if (_stats.num_folded == 0) {
         return {};
     }
-    return {fmt::format("AntisymmetrizerFolding: collapsed {} of {} antisymmetrized contraction(s) into a scalar multiple", _num_folded,
-                        _num_candidates)};
-}
-
-void AntisymmetrizerFolding::reset_stats() {
-    _num_candidates = 0;
-    _num_folded     = 0;
+    return {fmt::format("AntisymmetrizerFolding: collapsed {} of {} antisymmetrized contraction(s) into a scalar multiple",
+                        _stats.num_folded, _stats.num_candidates)};
 }
 
 bool AntisymmetrizerFolding::transform(Graph &graph) {
@@ -194,7 +189,7 @@ bool AntisymmetrizerFolding::transform(Graph &graph) {
             if (!producer.has_value()) {
                 continue;
             }
-            ++_num_candidates;
+            ++_stats.num_candidates;
 
             // The dot will read the operator's SOURCE where the dot stands, not where the operator
             // read it, so nothing in between may write that source: a loop or branch cannot be
@@ -320,7 +315,7 @@ bool AntisymmetrizerFolding::transform(Graph &graph) {
         std::vector<Node> group;
         group.push_back(std::move(scale));
         inserts.emplace_back(site.dot_index + 1, std::move(group));
-        ++_num_folded;
+        ++_stats.num_folded;
     }
 
     if (inserts.empty()) {

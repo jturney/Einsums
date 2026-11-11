@@ -79,26 +79,30 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// (tensor, generator) pairs tested against the data.
-    APIARY_EXPOSE APIARY_GETTER("num_probed") [[nodiscard]] std::size_t num_probed() const { return _num_probed; }
+    APIARY_EXPOSE APIARY_GETTER("num_probed") [[nodiscard]] std::size_t num_probed() const { return _stats.num_probed; }
 
     /// Generators found to hold.
-    APIARY_EXPOSE APIARY_GETTER("num_found") [[nodiscard]] std::size_t num_found() const { return _num_found; }
+    APIARY_EXPOSE APIARY_GETTER("num_found") [[nodiscard]] std::size_t num_found() const { return _stats.num_found; }
 
     /// Tensors that gained at least one generator.
-    APIARY_EXPOSE APIARY_GETTER("num_tensors") [[nodiscard]] std::size_t num_tensors() const { return _num_tensors; }
+    APIARY_EXPOSE APIARY_GETTER("num_tensors") [[nodiscard]] std::size_t num_tensors() const { return _stats.num_tensors; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    std::size_t _num_probed{0};
-    std::size_t _num_found{0};
-    std::size_t _num_tensors{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t num_probed{0};
+        std::size_t num_found{0};
+        std::size_t num_tensors{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

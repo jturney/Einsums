@@ -266,16 +266,9 @@ LayoutAssignment::LayoutAssignment() : _cost_model(CostModel::detect_default()) 
 LayoutAssignment::LayoutAssignment(CostModel cost_model) : _cost_model(std::move(cost_model)) {
 }
 
-void LayoutAssignment::reset_stats() {
-    _num_relaid_out      = 0;
-    _num_permutes_folded = 0;
-    _num_copies_removed  = 0;
-    _estimated_saving_us = 0.0;
-}
-
 bool LayoutAssignment::transform(Graph &graph) {
-    PassCounter const relaid_out{_num_relaid_out};
-    PassCounter const folded{_num_permutes_folded};
+    PassCounter const relaid_out{_stats.num_relaid_out};
+    PassCounter const folded{_stats.num_permutes_folded};
 
     // Program order is what the fold's safety argument is stated in, so make the node list say
     // it rather than assuming capture already did.
@@ -815,7 +808,7 @@ bool LayoutAssignment::transform(Graph &graph) {
         if (TensorSlot *slot = graph.find_slot(id); slot != nullptr) {
             slot->dims = dims;
         }
-        _num_relaid_out++;
+        _stats.num_relaid_out++;
         report(2, fmt::format("store '{}' as ({}) instead of ({})", handle->name, fmt::join(dims, ","), fmt::join(was_dims, ",")));
     }
 
@@ -904,7 +897,7 @@ bool LayoutAssignment::transform(Graph &graph) {
             });
         }
         remove[site.node] = true;
-        _num_permutes_folded++;
+        _stats.num_permutes_folded++;
         report(2, fmt::format("permute node {} copies '{}' into its own storage order; delete it and read '{}'", nodes[site.node].id,
                               source_slot->name, source_slot->name));
     }
@@ -918,8 +911,8 @@ bool LayoutAssignment::transform(Graph &graph) {
     // counter reports copies and the search minimizes time, so they are allowed to disagree and
     // an unsigned subtraction here would turn that into a very large number.
     auto const copies_delta = static_cast<std::ptrdiff_t>(copies_before) - static_cast<std::ptrdiff_t>(copies_after);
-    _num_copies_removed += static_cast<std::size_t>(std::max<std::ptrdiff_t>(0, copies_delta));
-    _estimated_saving_us += cost_before - cost_after;
+    _stats.num_copies_removed += static_cast<std::size_t>(std::max<std::ptrdiff_t>(0, copies_delta));
+    _stats.estimated_saving_us += cost_before - cost_after;
 
     // A descriptor-only rewrite still invalidates every plan keyed on an index list or an
     // extent, which is what the counter is read for; see Graph::note_structural_change.
@@ -934,12 +927,12 @@ bool LayoutAssignment::transform(Graph &graph) {
 }
 
 std::vector<std::string> LayoutAssignment::explain() const {
-    if (_num_relaid_out == 0 && _num_permutes_folded == 0) {
+    if (_stats.num_relaid_out == 0 && _stats.num_permutes_folded == 0) {
         return {};
     }
     return {fmt::format("LayoutAssignment: re-laid out {} intermediate(s) and folded away {} permute(s), removing {} operand copy(ies) "
                         "modelled at {:.3f} us per replay",
-                        _num_relaid_out, _num_permutes_folded, _num_copies_removed, _estimated_saving_us)};
+                        _stats.num_relaid_out, _stats.num_permutes_folded, _stats.num_copies_removed, _stats.estimated_saving_us)};
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

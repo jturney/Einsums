@@ -123,13 +123,8 @@ bool try_fuse(Graph &graph, std::vector<Node> const &nodes, size_t perm_idx, siz
 
 } // namespace
 
-void PermuteFusion::reset_stats() {
-    _num_candidates = 0;
-    _num_rewrites   = 0;
-}
-
 bool PermuteFusion::transform(Graph &graph) {
-    PassCounter const rewrites{_num_rewrites};
+    PassCounter const rewrites{_stats.num_rewrites};
     graph.topological_sort();
 
     auto const &nodes = graph.nodes();
@@ -181,7 +176,7 @@ bool PermuteFusion::transform(Graph &graph) {
             if (nodes[prod_idx].kind != OpKind::Permute)
                 continue;
 
-            _num_candidates++;
+            _stats.num_candidates++;
 
             if (!admits(graph, nodes[prod_idx])) {
                 continue;
@@ -254,7 +249,7 @@ bool PermuteFusion::transform(Graph &graph) {
             }
 
             remove[prod_idx] = true;
-            _num_rewrites++;
+            _stats.num_rewrites++;
             EINSUMS_LOG_INFO("PermuteFusion: fused {} (node {}) into {} (node {})", nodes[prod_idx].label, nodes[prod_idx].id,
                              nodes[nd].label, nodes[nd].id);
             report(2, fmt::format("absorb permute node {} ({}) into einsum node {} ({})", nodes[prod_idx].id, nodes[prod_idx].label,
@@ -264,7 +259,8 @@ bool PermuteFusion::transform(Graph &graph) {
 
     if (!rewrites.moved())
         return false;
-    report(1, fmt::format("absorbed {} permute(s) into einsum subscripts ({} candidate(s) examined)", _num_rewrites, _num_candidates));
+    report(1, fmt::format("absorbed {} permute(s) into einsum subscripts ({} candidate(s) examined)", _stats.num_rewrites,
+                          _stats.num_candidates));
 
     // Compact: drop marked-for-removal nodes. Same idiom as
     // ScaleAbsorption: cheap single-pass filter, preserves order.

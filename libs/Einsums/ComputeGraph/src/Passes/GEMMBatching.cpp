@@ -61,14 +61,8 @@ struct BatchKey {
 
 } // namespace
 
-void GEMMBatching::reset_stats() {
-    _num_batches      = 0;
-    _total_batched    = 0;
-    _num_gate_skipped = 0;
-}
-
 bool GEMMBatching::transform(Graph &graph) {
-    PassCounter const batches{_num_batches};
+    PassCounter const batches{_stats.num_batches};
     graph.topological_sort();
 
     auto const  &nodes   = graph.nodes();
@@ -144,7 +138,7 @@ bool GEMMBatching::transform(Graph &graph) {
             double const gemm_us   = _cost_model.estimate_total_gemm_time_us(static_cast<size_t>(key.m), static_cast<size_t>(key.n),
                                                                              static_cast<size_t>(key.k), elem_size, Target::CPU);
             if (gemm_us > _max_gemm_us) {
-                _num_gate_skipped++;
+                _stats.num_gate_skipped++;
                 EINSUMS_LOG_INFO("GEMMBatching: group of {} GEMMs ({}x{}x{}, ~{:.1f}us each) exceeds the {:.0f}us batching "
                                  "threshold — leaving them as independent nodes",
                                  group.size(), key.m, key.k, key.n, gemm_us, _max_gemm_us);
@@ -303,15 +297,15 @@ bool GEMMBatching::transform(Graph &graph) {
             if (idx != first_pos)
                 remove[idx] = true;
 
-        _num_batches++;
-        _total_batched += group.size();
+        _stats.num_batches++;
+        _stats.total_batched += group.size();
         EINSUMS_LOG_INFO("GEMMBatching: batched {} einsums at level {} ({}×{}×{}) into gemm_batch", group.size(), lvl, key.m, key.k, key.n);
         report(2, fmt::format("batch {} independent einsums ({}x{}x{}) into one gemm_batch", group.size(), key.m, key.k, key.n));
     }
 
     if (!batches.moved())
         return false;
-    report(1, fmt::format("batched {} GEMM(s) into {} gemm_batch node(s)", _total_batched, _num_batches));
+    report(1, fmt::format("batched {} GEMM(s) into {} gemm_batch node(s)", _stats.total_batched, _stats.num_batches));
 
     // Compact: each batch already sits at its first member's slot, so
     // dropping the other members preserves a valid program order; only the

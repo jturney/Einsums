@@ -81,19 +81,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// on the same value.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::BitwiseExact; }
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// Safe on loop bodies / conditional branches: a local fusion of
     /// adjacent element-wise ops within the graph it's handed.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
-    APIARY_EXPOSE APIARY_GETTER("num_fused") [[nodiscard]] size_t num_fused() const { return _num_fused; }
+    APIARY_EXPOSE APIARY_GETTER("num_fused") [[nodiscard]] size_t num_fused() const { return _stats.num_fused; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_fused{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_fused{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

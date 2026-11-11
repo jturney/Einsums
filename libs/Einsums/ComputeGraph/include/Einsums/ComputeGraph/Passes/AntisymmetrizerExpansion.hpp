@@ -101,30 +101,34 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// A CCSD residual is a loop body, so the sites live in the subgraph.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Einsum nodes found carrying at least one permutation operator.
-    APIARY_EXPOSE APIARY_GETTER("num_sites") [[nodiscard]] std::size_t num_sites() const { return _num_sites; }
+    APIARY_EXPOSE APIARY_GETTER("num_sites") [[nodiscard]] std::size_t num_sites() const { return _stats.num_sites; }
 
     /// Sites actually rewritten: those that also passed the operand gate (one
     /// dtype, a rank-erased impl on every operand, known extents for the
     /// temporary).
-    APIARY_EXPOSE APIARY_GETTER("num_expanded") [[nodiscard]] std::size_t num_expanded() const { return _num_expanded; }
+    APIARY_EXPOSE APIARY_GETTER("num_expanded") [[nodiscard]] std::size_t num_expanded() const { return _stats.num_expanded; }
 
     /// Permuted accumulations emitted across every rewritten site, which is the
     /// sum of the sites' term counts.
-    APIARY_EXPOSE APIARY_GETTER("num_terms") [[nodiscard]] std::size_t num_terms() const { return _num_terms; }
+    APIARY_EXPOSE APIARY_GETTER("num_terms") [[nodiscard]] std::size_t num_terms() const { return _stats.num_terms; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    std::size_t _num_sites{0};
-    std::size_t _num_expanded{0};
-    std::size_t _num_terms{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t num_sites{0};
+        std::size_t num_expanded{0};
+        std::size_t num_terms{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

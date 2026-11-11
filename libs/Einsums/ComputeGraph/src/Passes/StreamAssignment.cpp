@@ -11,12 +11,8 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
-void StreamAssignment::reset_stats() {
-    _num_assigned = 0;
-}
-
 bool StreamAssignment::transform(Graph &graph) {
-    PassCounter const assigned{_num_assigned};
+    PassCounter const assigned{_stats.num_assigned};
     for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
         Node const &node       = graph.nodes()[i];
         int         new_stream = 0; // default: compute stream
@@ -29,13 +25,13 @@ bool StreamAssignment::transform(Graph &graph) {
             NodeSchedule schedule = schedule_of(node);
             schedule.stream_id    = new_stream;
             graph.set_schedule(i, schedule);
-            _num_assigned++;
+            _stats.num_assigned++;
         }
     }
 
     if (assigned.moved()) {
-        EINSUMS_LOG_INFO("StreamAssignment: assigned {} nodes to transfer stream", _num_assigned);
-        report(1, fmt::format("assigned {} node(s) to the transfer stream for overlap", _num_assigned));
+        EINSUMS_LOG_INFO("StreamAssignment: assigned {} nodes to transfer stream", _stats.num_assigned);
+        report(1, fmt::format("assigned {} node(s) to the transfer stream for overlap", _stats.num_assigned));
     }
 
     return assigned.moved();

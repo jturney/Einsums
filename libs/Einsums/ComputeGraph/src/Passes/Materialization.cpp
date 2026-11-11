@@ -240,20 +240,11 @@ std::vector<std::string> stranded_materializations(Graph const &graph) {
 }
 
 std::vector<std::string> Materialization::explain() const {
-    if (_num_materialized == 0 && _num_initialized == 0) {
+    if (_stats.num_materialized == 0 && _stats.num_initialized == 0) {
         return {};
     }
     return {fmt::format("Materialization: allocated {} deferred tensor(s), initialized {} ({} filled whole from a backing)",
-                        _num_materialized, _num_initialized, _num_loaded)};
-}
-
-void Materialization::reset_stats() {
-    _num_materialized = 0;
-    _num_initialized  = 0;
-    _num_loaded       = 0;
-    _num_stored       = 0;
-    _num_published    = 0;
-    _num_unused       = 0;
+                        _stats.num_materialized, _stats.num_initialized, _stats.num_loaded)};
 }
 
 namespace {
@@ -298,7 +289,7 @@ bool Materialization::store_written_backings(Graph &graph) {
             continue;
         }
         groups.emplace_back(use->last_writer() + 1, std::vector<Node>{store_node(graph, handle, tid)});
-        ++_num_stored;
+        ++_stats.num_stored;
         applied(Stored,
                 fmt::format("store write-backed tensor '{}' into {} after its last writer", handle.name, handle.backing->describe()),
                 Decision{.tensors = {handle.name}}, 2);
@@ -361,7 +352,7 @@ bool Materialization::publish_updates(Graph &graph) {
         TensorHandle const &first = *group.handles.front();
         node.execute              = build_executor(node.kind, first.dtype, first.rank, node.op_data, graph, node.inputs, node.outputs);
         appended.push_back(std::move(node));
-        _num_published += group.handles.size();
+        _stats.num_published += group.handles.size();
         applied(Published, fmt::format("publish update-backed tensor(s) {} at the end of the replay, in one step", fmt::join(names, ", ")),
                 Decision{.tensors = names}, 2);
     }
@@ -500,7 +491,7 @@ bool Materialization::transform(Graph &graph) {
         // time, has nothing to hold: loading it whole would spend exactly the memory the streaming
         // saved.
         if (!used && (handle.is_intermediate || handle.backing)) {
-            _num_unused++;
+            _stats.num_unused++;
             note(Unused, fmt::format("deferred tensor '{}' is used by no node; left unallocated", handle.name),
                  Decision{.tensors = {handle.name}});
             continue;
@@ -547,7 +538,7 @@ bool Materialization::transform(Graph &graph) {
             }
         }
         if (!used && (intermediate || backed)) {
-            _num_unused++;
+            _stats.num_unused++;
             note(Unused,
                  fmt::format("deferred tensor '{}' is used by no node of '{}'; left unallocated", handle.name, h.handle_owner->name()),
                  Decision{.tensors = {handle.name}});
@@ -663,12 +654,12 @@ bool Materialization::transform(Graph &graph) {
     auto lifecycle_for = [this, &init_of](Graph &target, Graph &owner, TensorHandle &handle, TensorId emit_tid) {
         InitKind const init  = init_of(handle);
         auto           built = build_lifecycle_nodes(target, owner, handle, emit_tid, init);
-        _num_materialized++;
+        _stats.num_materialized++;
         if (init != InitKind::None) {
-            _num_initialized++;
+            _stats.num_initialized++;
         }
         if (init == InitKind::FromDisk) {
-            _num_loaded++;
+            _stats.num_loaded++;
         }
         return built;
     };
@@ -777,7 +768,7 @@ bool Materialization::transform(Graph &graph) {
                 used = use->first_use() != TensorUsage::npos;
             }
             if (!used) {
-                _num_unused++;
+                _stats.num_unused++;
                 note(Unused,
                      fmt::format("setup-body tensor '{}' inside '{}' is used by no node; left unallocated", handle.name, setup_label),
                      Decision{.tensors = {handle.name}});
@@ -811,11 +802,11 @@ bool Materialization::transform(Graph &graph) {
 
     note(Summary,
          fmt::format("materialized {} deferred tensor(s) ({} initialized, {} of them from a backing, {} unused and left unallocated)",
-                     _num_materialized, _num_initialized, _num_loaded, _num_unused),
-         Decision{.facts = {Fact{.name = "materialized", .value = static_cast<double>(_num_materialized)},
-                            Fact{.name = "initialized", .value = static_cast<double>(_num_initialized)},
-                            Fact{.name = "loaded", .value = static_cast<double>(_num_loaded)},
-                            Fact{.name = "unused", .value = static_cast<double>(_num_unused)}}},
+                     _stats.num_materialized, _stats.num_initialized, _stats.num_loaded, _stats.num_unused),
+         Decision{.facts = {Fact{.name = "materialized", .value = static_cast<double>(_stats.num_materialized)},
+                            Fact{.name = "initialized", .value = static_cast<double>(_stats.num_initialized)},
+                            Fact{.name = "loaded", .value = static_cast<double>(_stats.num_loaded)},
+                            Fact{.name = "unused", .value = static_cast<double>(_stats.num_unused)}}},
          1);
     return modified;
 }

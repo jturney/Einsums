@@ -135,7 +135,7 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// Safe on loop bodies / conditional branches: batches sibling GEMMs
     /// within the single graph it's handed (one iteration's worth of
@@ -143,14 +143,14 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of batches created this run (one per collapsed group).
-    [[nodiscard]] size_t num_batches() const { return _num_batches; }
+    [[nodiscard]] size_t num_batches() const { return _stats.num_batches; }
 
     /// Total einsum nodes absorbed into BatchedGemm nodes this run
     /// (sum of group sizes across all batches).
-    [[nodiscard]] size_t total_batched() const { return _total_batched; }
+    [[nodiscard]] size_t total_batched() const { return _stats.total_batched; }
 
     /// Groups skipped by the profitability gate this run.
-    [[nodiscard]] size_t num_gate_skipped() const { return _num_gate_skipped; }
+    [[nodiscard]] size_t num_gate_skipped() const { return _stats.num_gate_skipped; }
 
   protected:
     bool transform(Graph &graph) override;
@@ -159,9 +159,13 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
     CostModel _cost_model{};
     bool      _has_cost_model{false};
     double    _max_gemm_us{100.0};
-    size_t    _num_batches{0};
-    size_t    _total_batched{0};
-    size_t    _num_gate_skipped{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_batches{0};
+        size_t total_batched{0};
+        size_t num_gate_skipped{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

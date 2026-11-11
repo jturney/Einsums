@@ -130,19 +130,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief How many delta contractions the last run removed.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] std::size_t num_eliminated() const { return _num_eliminated; }
+    APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] std::size_t num_eliminated() const { return _stats.num_eliminated; }
 
     /// @brief How many of those also dissolved their output tensor entirely.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_dissolved") [[nodiscard]] std::size_t num_dissolved() const { return _num_dissolved; }
+    APIARY_EXPOSE APIARY_GETTER("num_dissolved") [[nodiscard]] std::size_t num_dissolved() const { return _stats.num_dissolved; }
 
     /// @brief How many contractions summed over provably disjoint spaces and so were reduced to
     ///        their destination's own prefactor.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_zero_blocks") [[nodiscard]] std::size_t num_zero_blocks() const { return _num_zero_blocks; }
+    APIARY_EXPOSE APIARY_GETTER("num_zero_blocks") [[nodiscard]] std::size_t num_zero_blocks() const { return _stats.num_zero_blocks; }
 
     /// @brief Zero the per-apply counters.
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
   protected:
     /// @brief This pass's own line, appended to the framework's region report.
@@ -192,9 +192,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::optional<std::string> zero_block_letter(Graph const &graph, TensorExpr const &expr, ExprTerm const &term,
                                                                ExprStatement const &statement) const;
 
-    std::size_t _num_eliminated{0};
-    std::size_t _num_dissolved{0};
-    std::size_t _num_zero_blocks{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t num_eliminated{0};
+        std::size_t num_dissolved{0};
+        std::size_t num_zero_blocks{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

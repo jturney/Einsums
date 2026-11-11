@@ -193,7 +193,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     [[nodiscard]] std::vector<std::string> explain() const override;
 
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
     /// Factors loop bodies and conditional branches too; the counters accumulate
     /// across the whole tree.
@@ -202,13 +202,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Groups declined because the axpy chain would cost more than the
     /// contractions it saves. A bandwidth-bound contraction over large operands
     /// is the shape that lands here.
-    APIARY_EXPOSE APIARY_GETTER("num_unprofitable") [[nodiscard]] size_t num_unprofitable() const { return _num_unprofitable; }
+    APIARY_EXPOSE APIARY_GETTER("num_unprofitable") [[nodiscard]] size_t num_unprofitable() const { return _stats.num_unprofitable; }
 
     /// Number of factoring groups found.
-    APIARY_EXPOSE APIARY_GETTER("num_groups") [[nodiscard]] size_t num_groups() const { return _num_groups; }
+    APIARY_EXPOSE APIARY_GETTER("num_groups") [[nodiscard]] size_t num_groups() const { return _stats.num_groups; }
 
     /// Total number of einsum nodes eliminated.
-    APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+    APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _stats.num_eliminated; }
 
     /// Description of each factoring group found.
     struct FactoringGroup {
@@ -218,7 +218,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         std::vector<std::string> summed_tensors; ///< Names of the non-shared tensors that were summed
     };
 
-    [[nodiscard]] std::vector<FactoringGroup> const &groups() const { return _groups; }
+    [[nodiscard]] std::vector<FactoringGroup> const &groups() const { return _stats.groups; }
 
   protected:
     bool transform(Graph &graph) override;
@@ -228,12 +228,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// anything.
     bool factor_one_level(Graph &graph);
 
-    size_t                      _num_groups{0};
-    size_t                      _num_unprofitable{0};
-    size_t                      _num_eliminated{0};
-    std::vector<FactoringGroup> _groups;
-    CostModel                   _cost_model;
-    Factor                      _factor{Factor::Auto};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t                      num_groups{0};
+        size_t                      num_eliminated{0};
+        size_t                      num_unprofitable{0};
+        std::vector<FactoringGroup> groups;
+    };
+    Stats     _stats{};
+    CostModel _cost_model;
+    Factor    _factor{Factor::Auto};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -93,13 +93,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::StructuralResource; }
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     APIARY_EXPOSE APIARY_GETTER("num_tensors_privatized") [[nodiscard]] size_t num_tensors_privatized() const {
-        return _num_tensors_privatized;
+        return _stats.num_tensors_privatized;
     }
-    APIARY_EXPOSE APIARY_GETTER("num_copies_created") [[nodiscard]] size_t num_copies_created() const { return _num_copies_created; }
-    APIARY_EXPOSE APIARY_GETTER("num_nodes_rebuilt") [[nodiscard]] size_t  num_nodes_rebuilt() const { return _num_nodes_rebuilt; }
+    APIARY_EXPOSE APIARY_GETTER("num_copies_created") [[nodiscard]] size_t num_copies_created() const { return _stats.num_copies_created; }
+    APIARY_EXPOSE APIARY_GETTER("num_nodes_rebuilt") [[nodiscard]] size_t  num_nodes_rebuilt() const { return _stats.num_nodes_rebuilt; }
 
   protected:
     bool transform(Graph &graph) override;
@@ -115,9 +115,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     size_t _max_copies{0};          ///< 0 = hardware concurrency.
     bool   _require_executor{true}; ///< Rewrite only graphs with an installed executor.
 
-    size_t _num_tensors_privatized{0};
-    size_t _num_copies_created{0};
-    size_t _num_nodes_rebuilt{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_tensors_privatized{0};
+        size_t num_copies_created{0};
+        size_t num_nodes_rebuilt{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

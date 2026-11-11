@@ -111,10 +111,10 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
                NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
     }
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
     /// Number of nodes placed on GPU in the last run.
-    [[nodiscard]] size_t num_placed() const { return _num_placed; }
+    [[nodiscard]] size_t num_placed() const { return _stats.num_placed; }
 
     /// Cost model parameters. When constructed with a CostModel,
     /// these are populated from the cost_model. Otherwise, sensible defaults.
@@ -128,7 +128,11 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
 
   private:
     size_t _min_bytes;
-    size_t _num_placed{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_placed{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

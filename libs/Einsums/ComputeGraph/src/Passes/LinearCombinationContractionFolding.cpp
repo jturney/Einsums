@@ -72,18 +72,13 @@ struct FoldCandidate {
 
 } // namespace
 
-void LinearCombinationContractionFolding::reset_stats() {
-    _num_groups     = 0;
-    _num_eliminated = 0;
-}
-
 std::vector<std::string> LinearCombinationContractionFolding::explain() const {
-    if (_num_groups == 0) {
+    if (_stats.num_groups == 0) {
         return {};
     }
     return {fmt::format("LinearCombinationContractionFolding: folded {} group(s), replacing {} contraction(s) with {} fused contraction(s) "
                         "plus {} operand-combination node(s)",
-                        _num_groups, _num_eliminated + _num_groups, _num_groups, _num_groups)};
+                        _stats.num_groups, _stats.num_eliminated + _stats.num_groups, _stats.num_groups, _stats.num_groups)};
 }
 
 bool LinearCombinationContractionFolding::transform(Graph &graph) {
@@ -351,7 +346,7 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
         // without them. The build's first permute overwrites it, so it needs no zeroing.
         TensorId l_id = 0;
         compute_graph::detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-            auto &l = graph.declare_internal_tensor<T>(fmt::format("_lccf_L_{}", _num_groups), b_handle->dims);
+            auto &l = graph.declare_internal_tensor<T>(fmt::format("_lccf_L_{}", _stats.num_groups), b_handle->dims);
             l_id    = graph.find_tensor_id_by_ptr(&l);
         });
         if (l_id == 0) {
@@ -437,7 +432,7 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
         // the hoisting and liveness analyses are concerned.
         Node lbuild;
         lbuild.kind  = OpKind::Custom;
-        lbuild.label = fmt::format("lccf_build_L({} terms -> _lccf_L_{})", members.size(), _num_groups);
+        lbuild.label = fmt::format("lccf_build_L({} terms -> _lccf_L_{})", members.size(), _stats.num_groups);
         use_custom_executor(lbuild, std::move(build_l));
         lbuild.inputs  = {nonshared_id};
         lbuild.outputs = {l_id};
@@ -457,8 +452,9 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
         // operand occupied.
         TensorId const a_operand = shared_first ? shared_id : l_id;
         TensorId const b_operand = shared_first ? l_id : shared_id;
-        Node fused = graph.make_einsum_node(a_operand, b_operand, out_id, einspec, c_pf0, ab0, /*conj_a=*/false,
-                                            /*conj_b=*/false, fmt::format("lccf({} terms via _lccf_L_{})", members.size(), _num_groups));
+        Node           fused =
+            graph.make_einsum_node(a_operand, b_operand, out_id, einspec, c_pf0, ab0, /*conj_a=*/false,
+                                   /*conj_b=*/false, fmt::format("lccf({} terms via _lccf_L_{})", members.size(), _stats.num_groups));
         // Place the fused node AT node-0's vector position (not appended), keeping node-0's id:
         // the topological sort derives RAW/WAR/WAW edges from scan order, so the fused node must
         // occupy node-0's slot to remain the last writer of the output before its consumer, and
@@ -473,9 +469,9 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
         for (size_t mi = 1; mi < members.size(); mi++) { // members[0] reused for the fused node
             remove[members[mi].node_index] = true;
             used[members[mi].node_index]   = true;
-            _num_eliminated++;
+            _stats.num_eliminated++;
         }
-        _num_groups++;
+        _stats.num_groups++;
         modified = true;
         // Held whole beside a larger backed operand: the build reads it whole, which is said so a
         // reader of the decisions finds why a tensor over its share was loaded.
@@ -508,9 +504,10 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
     graph.replace_nodes(remove, std::move(pending_inserts));
     graph.topological_sort();
 
-    EINSUMS_LOG_INFO("LinearCombinationContractionFolding: folded {} groups, eliminated {} nodes", _num_groups, _num_eliminated);
-    report(1, fmt::format("folded {} group(s), replacing {} contractions with {} fused node(s)", _num_groups, _num_eliminated + _num_groups,
-                          _num_groups));
+    EINSUMS_LOG_INFO("LinearCombinationContractionFolding: folded {} groups, eliminated {} nodes", _stats.num_groups,
+                     _stats.num_eliminated);
+    report(1, fmt::format("folded {} group(s), replacing {} contractions with {} fused node(s)", _stats.num_groups,
+                          _stats.num_eliminated + _stats.num_groups, _stats.num_groups));
     return true;
 }
 

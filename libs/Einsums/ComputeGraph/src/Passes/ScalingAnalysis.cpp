@@ -61,20 +61,9 @@ std::string render(SymbolicPoly const &poly, SpaceRegistry const *registry) {
 
 } // namespace
 
-void ScalingAnalysis::reset_stats() {
-    _node_costs.clear();
-    _intermediate_sizes.clear();
-    _rate_limiting.clear();
-    _total_flops           = SymbolicPoly::zero();
-    _total_traffic         = SymbolicPoly::zero();
-    _memory_bound          = SymbolicPoly::zero();
-    _num_unannotated_nodes = 0;
-    _registry              = nullptr;
-}
-
 void ScalingAnalysis::rank_nodes(SpaceRegistry const *registry) {
-    _rate_limiting.clear();
-    if (_node_costs.empty()) {
+    _stats.rate_limiting.clear();
+    if (_stats.node_costs.empty()) {
         return;
     }
 
@@ -83,15 +72,15 @@ void ScalingAnalysis::rank_nodes(SpaceRegistry const *registry) {
     // The comparison is total and returns `equal` only for identical canonical forms, so the set
     // of maxima is exactly the set of nodes sharing one polynomial. That keeps the verdict a
     // statement about the program rather than about container order.
-    NodeCost const *best = &_node_costs.front();
-    for (auto const &candidate : _node_costs) {
+    NodeCost const *best = &_stats.node_costs.front();
+    for (auto const &candidate : _stats.node_costs) {
         if (compare(candidate.cost.flops, best->cost.flops, ctx) > 0) {
             best = &candidate;
         }
     }
-    for (auto const &candidate : _node_costs) {
+    for (auto const &candidate : _stats.node_costs) {
         if (candidate.cost.flops == best->cost.flops) {
-            _rate_limiting.push_back(candidate);
+            _stats.rate_limiting.push_back(candidate);
         }
     }
 }
@@ -99,10 +88,10 @@ void ScalingAnalysis::rank_nodes(SpaceRegistry const *registry) {
 bool ScalingAnalysis::transform(Graph &graph) {
     // The accumulate-across-subgraphs rule @ref PassCounter states, on a COLLECTION rather than a
     // counter: what this run() added is the tail past this mark.
-    std::size_t const analyzed_at_entry = _node_costs.size();
+    std::size_t const analyzed_at_entry = _stats.node_costs.size();
 
     auto const *registry = &graph.space_registry();
-    _registry            = registry;
+    _stats.registry      = registry;
 
     // Intermediates are recorded once per graph: two nodes writing one tensor must not size it
     // twice, and a tensor id is only unique within its own graph.
@@ -124,11 +113,11 @@ bool ScalingAnalysis::transform(Graph &graph) {
         effective.letter_spaces = effective_letter_spaces(graph, node, *desc);
 
         SymbolicCost const cost = symbolic_cost_for(effective);
-        _node_costs.push_back(NodeCost{.graph_name = graph.name(), .node_id = node.id, .label = node.label, .cost = cost});
-        _total_flops += cost.flops;
-        _total_traffic += cost.traffic;
+        _stats.node_costs.push_back(NodeCost{.graph_name = graph.name(), .node_id = node.id, .label = node.label, .cost = cost});
+        _stats.total_flops += cost.flops;
+        _stats.total_traffic += cost.traffic;
         if (has_anonymous_variable(cost.flops)) {
-            ++_num_unannotated_nodes;
+            ++_stats.num_unannotated_nodes;
         }
 
         if (node.outputs.empty()) {
@@ -147,15 +136,16 @@ bool ScalingAnalysis::transform(Graph &graph) {
 
         LetterVars const   vars = letter_vars_for(effective);
         SymbolicPoly const size = symbolic_size_for(effective.spec.c_indices, vars);
-        _intermediate_sizes.push_back(IntermediateSize{.graph_name = graph.name(), .tensor_id = out, .name = handle->name, .size = size});
-        _memory_bound += size;
+        _stats.intermediate_sizes.push_back(
+            IntermediateSize{.graph_name = graph.name(), .tensor_id = out, .name = handle->name, .size = size});
+        _stats.memory_bound += size;
     }
 
     rank_nodes(registry);
 
-    if (_node_costs.size() > analyzed_at_entry) {
-        EINSUMS_LOG_INFO("ScalingAnalysis: total flops {}", render(_total_flops, registry));
-        report(1, fmt::format("costed {} contraction(s), total flops {}", _node_costs.size(), render(_total_flops, registry)));
+    if (_stats.node_costs.size() > analyzed_at_entry) {
+        EINSUMS_LOG_INFO("ScalingAnalysis: total flops {}", render(_stats.total_flops, registry));
+        report(1, fmt::format("costed {} contraction(s), total flops {}", _stats.node_costs.size(), render(_stats.total_flops, registry)));
     }
 
     // Analysis pass, never changes the node list.
@@ -163,35 +153,36 @@ bool ScalingAnalysis::transform(Graph &graph) {
 }
 
 std::vector<std::string> ScalingAnalysis::explain() const {
-    if (_node_costs.empty()) {
+    if (_stats.node_costs.empty()) {
         return {};
     }
 
     std::vector<std::string> lines;
-    lines.push_back(fmt::format("ScalingAnalysis: {} contraction(s), total flops {}", _node_costs.size(), render(_total_flops, _registry)));
+    lines.push_back(fmt::format("ScalingAnalysis: {} contraction(s), total flops {}", _stats.node_costs.size(),
+                                render(_stats.total_flops, _stats.registry)));
 
-    if (!_rate_limiting.empty()) {
+    if (!_stats.rate_limiting.empty()) {
         std::string names;
-        for (std::size_t i = 0; i < _rate_limiting.size(); ++i) {
+        for (std::size_t i = 0; i < _stats.rate_limiting.size(); ++i) {
             if (i != 0) {
                 names += ", ";
             }
-            names += fmt::format("'{}' (#{})", _rate_limiting[i].label, _rate_limiting[i].node_id);
+            names += fmt::format("'{}' (#{})", _stats.rate_limiting[i].label, _stats.rate_limiting[i].node_id);
         }
-        lines.push_back(
-            fmt::format("ScalingAnalysis: rate-limiting node(s) {} at {}", names, render(_rate_limiting.front().cost.flops, _registry)));
+        lines.push_back(fmt::format("ScalingAnalysis: rate-limiting node(s) {} at {}", names,
+                                    render(_stats.rate_limiting.front().cost.flops, _stats.registry)));
     }
 
-    if (!_intermediate_sizes.empty()) {
+    if (!_stats.intermediate_sizes.empty()) {
         lines.push_back(fmt::format("ScalingAnalysis: intermediate footprint at most {} elements over {} intermediate(s), "
                                     "a sum of sizes rather than a liveness-aware high-water mark",
-                                    render(_memory_bound, _registry), _intermediate_sizes.size()));
+                                    render(_stats.memory_bound, _stats.registry), _stats.intermediate_sizes.size()));
     }
 
-    if (_num_unannotated_nodes != 0) {
+    if (_stats.num_unannotated_nodes != 0) {
         lines.push_back(fmt::format("ScalingAnalysis: {} of {} contraction(s) carry letters no index-space annotation reaches, "
                                     "so those terms are named after their letters and cannot be ranked by scale order",
-                                    _num_unannotated_nodes, _node_costs.size()));
+                                    _stats.num_unannotated_nodes, _stats.node_costs.size()));
     }
 
     return lines;
@@ -200,40 +191,40 @@ std::vector<std::string> ScalingAnalysis::explain() const {
 void ScalingAnalysis::print_report(std::ostream &os) const {
     os << "=== ScalingAnalysis ===\n";
 
-    if (_node_costs.empty()) {
+    if (_stats.node_costs.empty()) {
         os << "  no contraction nodes analysed\n";
         return;
     }
 
-    os << fmt::format("  contractions costed: {}\n", _node_costs.size());
+    os << fmt::format("  contractions costed: {}\n", _stats.node_costs.size());
     os << "  per-node cost (flops | traffic | resident):\n";
-    for (auto const &entry : _node_costs) {
+    for (auto const &entry : _stats.node_costs) {
         os << fmt::format("    [{}#{}] {}\n", entry.graph_name, entry.node_id, entry.label);
-        os << fmt::format("      flops    {}\n", render(entry.cost.flops, _registry));
-        os << fmt::format("      traffic  {}\n", render(entry.cost.traffic, _registry));
-        os << fmt::format("      resident {}\n", render(entry.cost.resident, _registry));
+        os << fmt::format("      flops    {}\n", render(entry.cost.flops, _stats.registry));
+        os << fmt::format("      traffic  {}\n", render(entry.cost.traffic, _stats.registry));
+        os << fmt::format("      resident {}\n", render(entry.cost.resident, _stats.registry));
     }
 
-    if (!_intermediate_sizes.empty()) {
+    if (!_stats.intermediate_sizes.empty()) {
         os << "  intermediate sizes (elements):\n";
-        for (auto const &entry : _intermediate_sizes) {
-            os << fmt::format("    [{}#{}] {}: {}\n", entry.graph_name, entry.tensor_id, entry.name, render(entry.size, _registry));
+        for (auto const &entry : _stats.intermediate_sizes) {
+            os << fmt::format("    [{}#{}] {}: {}\n", entry.graph_name, entry.tensor_id, entry.name, render(entry.size, _stats.registry));
         }
     }
 
-    os << fmt::format("  total flops:   {}\n", render(_total_flops, _registry));
-    os << fmt::format("  total traffic: {}\n", render(_total_traffic, _registry));
+    os << fmt::format("  total flops:   {}\n", render(_stats.total_flops, _stats.registry));
+    os << fmt::format("  total traffic: {}\n", render(_stats.total_traffic, _stats.registry));
     os << fmt::format("  memory bound:  {} (sum of intermediate sizes, an upper bound on the high-water mark)\n",
-                      render(_memory_bound, _registry));
+                      render(_stats.memory_bound, _stats.registry));
 
-    for (auto const &entry : _rate_limiting) {
+    for (auto const &entry : _stats.rate_limiting) {
         os << fmt::format("  rate-limiting: [{}#{}] {} at {}\n", entry.graph_name, entry.node_id, entry.label,
-                          render(entry.cost.flops, _registry));
+                          render(entry.cost.flops, _stats.registry));
     }
 
-    if (_num_unannotated_nodes != 0) {
+    if (_stats.num_unannotated_nodes != 0) {
         os << fmt::format("  {} contraction(s) carry unannotated letters; annotate tensor slots for a stronger report\n",
-                          _num_unannotated_nodes);
+                          _stats.num_unannotated_nodes);
     }
 }
 
@@ -244,21 +235,21 @@ std::string ScalingAnalysis::report_string() const {
 }
 
 std::string ScalingAnalysis::total_flops_str() const {
-    return render(_total_flops, _registry);
+    return render(_stats.total_flops, _stats.registry);
 }
 
 std::string ScalingAnalysis::total_traffic_str() const {
-    return render(_total_traffic, _registry);
+    return render(_stats.total_traffic, _stats.registry);
 }
 
 std::string ScalingAnalysis::memory_bound_str() const {
-    return render(_memory_bound, _registry);
+    return render(_stats.memory_bound, _stats.registry);
 }
 
 std::vector<std::string> ScalingAnalysis::node_labels() const {
     std::vector<std::string> out;
-    out.reserve(_node_costs.size());
-    for (auto const &entry : _node_costs) {
+    out.reserve(_stats.node_costs.size());
+    for (auto const &entry : _stats.node_costs) {
         out.push_back(entry.label);
     }
     return out;
@@ -266,17 +257,17 @@ std::vector<std::string> ScalingAnalysis::node_labels() const {
 
 std::vector<std::string> ScalingAnalysis::node_flops() const {
     std::vector<std::string> out;
-    out.reserve(_node_costs.size());
-    for (auto const &entry : _node_costs) {
-        out.push_back(render(entry.cost.flops, _registry));
+    out.reserve(_stats.node_costs.size());
+    for (auto const &entry : _stats.node_costs) {
+        out.push_back(render(entry.cost.flops, _stats.registry));
     }
     return out;
 }
 
 std::vector<std::string> ScalingAnalysis::rate_limiting_labels() const {
     std::vector<std::string> out;
-    out.reserve(_rate_limiting.size());
-    for (auto const &entry : _rate_limiting) {
+    out.reserve(_stats.rate_limiting.size());
+    for (auto const &entry : _stats.rate_limiting) {
         out.push_back(entry.label);
     }
     return out;
@@ -284,8 +275,8 @@ std::vector<std::string> ScalingAnalysis::rate_limiting_labels() const {
 
 std::vector<std::string> ScalingAnalysis::intermediate_names() const {
     std::vector<std::string> out;
-    out.reserve(_intermediate_sizes.size());
-    for (auto const &entry : _intermediate_sizes) {
+    out.reserve(_stats.intermediate_sizes.size());
+    for (auto const &entry : _stats.intermediate_sizes) {
         out.push_back(entry.name);
     }
     return out;
@@ -293,9 +284,9 @@ std::vector<std::string> ScalingAnalysis::intermediate_names() const {
 
 std::vector<std::string> ScalingAnalysis::intermediate_sizes_str() const {
     std::vector<std::string> out;
-    out.reserve(_intermediate_sizes.size());
-    for (auto const &entry : _intermediate_sizes) {
-        out.push_back(render(entry.size, _registry));
+    out.reserve(_stats.intermediate_sizes.size());
+    for (auto const &entry : _stats.intermediate_sizes) {
+        out.push_back(render(entry.size, _stats.registry));
     }
     return out;
 }

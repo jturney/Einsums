@@ -327,7 +327,7 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
                NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
     }
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
@@ -339,24 +339,24 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
 
     /// Tiled nodes replaced by per-tile nodes.
-    [[nodiscard]] size_t num_expanded() const { return _num_expanded; }
+    [[nodiscard]] size_t num_expanded() const { return _stats.num_expanded; }
     /// Dense per-tile nodes emitted, contractions and elementwise ops together.
-    [[nodiscard]] size_t num_tile_nodes() const { return _num_tile_nodes; }
+    [[nodiscard]] size_t num_tile_nodes() const { return _stats.num_tile_nodes; }
     /// Candidates left alone: misaligned partitions, produced operands, over
     /// budget, or sharing a tiled tensor with a node that cannot expand or with
     /// another graph of the tree.
-    [[nodiscard]] size_t num_declined() const { return _num_declined; }
+    [[nodiscard]] size_t num_declined() const { return _stats.num_declined; }
     /// Tile contractions not emitted because an operand tile screened as zero.
-    [[nodiscard]] size_t num_screened() const { return _num_screened; }
+    [[nodiscard]] size_t num_screened() const { return _stats.num_screened; }
     /// Contractions lowered to gather + one dense einsum + scatter rather than to
     /// per-tile nodes, because their tiles were too small to be worth dispatching.
-    [[nodiscard]] size_t num_densified() const { return _num_densified; }
+    [[nodiscard]] size_t num_densified() const { return _stats.num_densified; }
     /// Groups of elementwise tile ops collapsed into a single node, for the same
     /// reason.
-    [[nodiscard]] size_t num_fused() const { return _num_fused; }
+    [[nodiscard]] size_t num_fused() const { return _stats.num_fused; }
     /// Gathers not emitted because a dense copy of exactly those tiles was already
     /// available and nothing had written them since.
-    [[nodiscard]] size_t num_gathers_reused() const { return _num_gathers_reused; }
+    [[nodiscard]] size_t num_gathers_reused() const { return _stats.num_gathers_reused; }
 
   protected:
     bool transform(Graph &graph) override;
@@ -374,13 +374,17 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     Densify   _densify;
     FuseTiles _fuse;
     CostModel _cost_model;
-    size_t    _num_expanded{0};
-    size_t    _num_tile_nodes{0};
-    size_t    _num_declined{0};
-    size_t    _num_screened{0};
-    size_t    _num_densified{0};
-    size_t    _num_fused{0};
-    size_t    _num_gathers_reused{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_expanded{0};
+        size_t num_tile_nodes{0};
+        size_t num_declined{0};
+        size_t num_screened{0};
+        size_t num_densified{0};
+        size_t num_fused{0};
+        size_t num_gathers_reused{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -359,22 +359,17 @@ void process(Graph &graph, Accepts const &accepts, size_t &num_candidates, size_
 
 } // namespace
 
-void InplaceOptimization::reset_stats() {
-    _num_candidates = 0;
-    _num_merged     = 0;
-}
-
 bool InplaceOptimization::transform(Graph &graph) {
-    PassCounter const merged{_num_merged};
-    PassCounter const candidates{_num_candidates};
+    PassCounter const merged{_stats.num_merged};
+    PassCounter const candidates{_stats.num_candidates};
     Accepts const     accepts = [this, &graph](Node const &node) { return admits(graph, node); };
-    process(graph, accepts, _num_candidates, _num_merged);
+    process(graph, accepts, _stats.num_candidates, _stats.num_merged);
 
     if (merged.moved()) {
-        report(1, fmt::format("merged {} output buffer(s) into dying elementwise inputs ({} candidate(s) found)", _num_merged,
-                              _num_candidates));
+        report(1, fmt::format("merged {} output buffer(s) into dying elementwise inputs ({} candidate(s) found)", _stats.num_merged,
+                              _stats.num_candidates));
     } else if (candidates.moved()) {
-        report(1, fmt::format("found {} in-place candidate tensor(s), none safely mergeable", _num_candidates));
+        report(1, fmt::format("found {} in-place candidate tensor(s), none safely mergeable", _stats.num_candidates));
     }
 
     return merged.moved();

@@ -338,19 +338,8 @@ std::optional<std::pair<PairKey, PairSite>> describe_pair(Term const &term, std:
 } // namespace
 
 void MultiTermFactorization::reset_stats() {
-    // The framework's counters too. Without this the region tallies were never zeroed and a pass
-    // instance used for a second apply reported "rewrote 2 of 1 region(s)", which is the shape a
-    // running total takes when nothing resets it.
     RegionRewrite::reset_stats();
-    _num_rebracketed  = 0;
-    _num_shared       = 0;
-    _num_inlined      = 0;
-    _num_copies       = 0;
-    _num_cache_hits   = 0;
-    _num_cache_misses = 0;
-    _cut_off          = false;
-    // The cache itself is NOT cleared here. It is the one piece of state whose whole value is
-    // that it outlives an apply, and `clear_cache` is how a caller asks for it to go.
+    _stats = {};
 }
 
 bool MultiTermFactorization::search_enabled() const {
@@ -426,16 +415,16 @@ bool MultiTermFactorization::applicable(Graph const &graph) const {
 
 std::vector<std::string> MultiTermFactorization::describe() const {
     std::vector<std::string> lines;
-    if (_num_inlined != 0 || _num_rebracketed != 0 || _num_shared != 0 || _num_copies != 0) {
+    if (_stats.num_inlined != 0 || _stats.num_rebracketed != 0 || _stats.num_shared != 0 || _stats.num_copies != 0) {
         lines.push_back(fmt::format("MultiTermFactorization: dissolved {} captured intermediate(s), copied {} into a consumer that "
                                     "profits while keeping the definition, re-bracketed {} term(s), introduced {} shared intermediate(s)",
-                                    _num_inlined, _num_copies, _num_rebracketed, _num_shared));
+                                    _stats.num_inlined, _stats.num_copies, _stats.num_rebracketed, _stats.num_shared));
     }
-    if (_num_cache_hits != 0 || _num_cache_misses != 0) {
+    if (_stats.num_cache_hits != 0 || _stats.num_cache_misses != 0) {
         lines.push_back(fmt::format("MultiTermFactorization: {} region(s) replayed a kept plan and {} searched; {} plan(s) held",
-                                    _num_cache_hits, _num_cache_misses, _cache.size()));
+                                    _stats.num_cache_hits, _stats.num_cache_misses, _cache.size()));
     }
-    if (_cut_off) {
+    if (_stats.cut_off) {
         // Said out loud, because a report that could not tell this apart from "already optimal"
         // would be silent in exactly the case the budget exists for.
         lines.push_back("MultiTermFactorization: the search was CUT OFF by its wall-clock budget; what it had found was applied");
@@ -455,7 +444,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     if (_graph_key_valid) {
         if (auto const it = _cache.find(key); it != _cache.end()) {
             cached = &it->second;
-            _num_cache_hits++;
+            _stats.num_cache_hits++;
             report(2, fmt::format("region [{},{}) replays a plan a structurally identical graph already found", region.first, region.last));
             if (!cached->rewrites) {
                 note_skip("a structurally identical region was already searched and offered nothing",
@@ -463,10 +452,10 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
                 return false;
             }
         } else {
-            _num_cache_misses++;
+            _stats.num_cache_misses++;
         }
     }
-    bool const cut_off_on_entry = _cut_off;
+    bool const cut_off_on_entry = _stats.cut_off;
 
     ComparisonContext ctx;
     ctx.registry = &graph.space_registry();
@@ -921,7 +910,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             }
             for (auto const site : absorbers[definition]) {
                 if (budget().expired()) {
-                    _cut_off = true;
+                    _stats.cut_off = true;
                     break;
                 }
                 if (!terms[site].searchable) {
@@ -1018,7 +1007,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     // off by its budget is a partial answer and is never kept, which is also why the budget is
     // not part of the key.
     auto keep = [&](FactorizationPlan plan) {
-        bool const cut_off_here = _cut_off && !cut_off_on_entry;
+        bool const cut_off_here = _stats.cut_off && !cut_off_on_entry;
         if (_graph_key_valid && !cut_off_here && cached == nullptr) {
             _cache.insert_or_assign(key, std::move(plan));
         }
@@ -1235,7 +1224,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
                 term.factors = std::move(kept);
             }
             commit_log.push_back(std::move(record));
-            _num_shared++;
+            _stats.num_shared++;
             report(2, fmt::format("share {} across {} term(s), through the definition that already computes it", label, sites.size()));
             return true;
         }
@@ -1323,7 +1312,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         commit_log.push_back(std::move(record));
         shared.push_back(Shared{.tensor = shared_id, .left = left, .right = right, .result = first.result, .members = shared_members});
         shared_total = add_cost(shared_total, contraction_cost(letters_of(left), letters_of(right), letters_of(first.result), table));
-        _num_shared++;
+        _stats.num_shared++;
         report(2, fmt::format("share {} across {} term(s)", label, sites.size()));
         return true;
     };
@@ -1408,7 +1397,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
 
     while (!replayed) {
         if (budget().expired()) {
-            _cut_off = true;
+            _stats.cut_off = true;
             note_skip("the wall-clock budget ran out mid-search", "the best assignment found so far was kept");
             break;
         }
@@ -1447,7 +1436,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
 
         for (auto const &[key, offered] : candidates) {
             if (budget().expired()) {
-                _cut_off = true;
+                _stats.cut_off = true;
                 break;
             }
             if (offered.size() < 2) {
@@ -1892,7 +1881,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             ok = false;
             break;
         }
-        _num_rebracketed++;
+        _stats.num_rebracketed++;
     }
 
     if (!ok) {
@@ -1921,12 +1910,12 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     // Counted here rather than where the folding happened: every return above leaves the
     // expression exactly as it was, and a counter that had already been raised would report
     // intermediates as dissolved on a run that dissolved nothing.
-    _num_inlined += folded.size();
-    _num_copies += copies;
+    _stats.num_inlined += folded.size();
+    _stats.num_copies += copies;
     EINSUMS_LOG_INFO("MultiTermFactorization: {} shared intermediate(s), {} term(s) re-bracketed, {} captured intermediate(s) dissolved, "
                      "{} copied into a consumer that profits",
-                     _num_shared, _num_rebracketed, _num_inlined, _num_copies);
-    report(1, fmt::format("{} shared intermediate(s), {} term(s) re-bracketed", _num_shared, _num_rebracketed));
+                     _stats.num_shared, _stats.num_rebracketed, _stats.num_inlined, _stats.num_copies);
+    report(1, fmt::format("{} shared intermediate(s), {} term(s) re-bracketed", _stats.num_shared, _stats.num_rebracketed));
     // The pass's OWN before-and-after, which is not the region framework's: that one prices the
     // raised statements and an elementwise statement claims no cost, so a region holding a direct
     // product or a dot has a before side that leaves them out. This line prices both sides through

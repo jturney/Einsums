@@ -83,7 +83,7 @@ class EINSUMS_EXPORT TransferElimination : public OptimizerPass {
                NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped |
                NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
     }
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
     /// Recurse into loop bodies / conditional branches. Per-graph cleanup
     /// of redundant transfers within each body (its existing is_loop_tensor
@@ -91,13 +91,17 @@ class EINSUMS_EXPORT TransferElimination : public OptimizerPass {
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of transfer nodes removed in the last run.
-    [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+    [[nodiscard]] size_t num_eliminated() const { return _stats.num_eliminated; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_eliminated{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_eliminated{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

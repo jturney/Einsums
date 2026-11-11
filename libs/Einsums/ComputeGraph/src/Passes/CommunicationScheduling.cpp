@@ -18,12 +18,8 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
-void CommunicationScheduling::reset_stats() {
-    _num_scheduled = 0;
-}
-
 bool CommunicationScheduling::transform(Graph &graph) {
-    PassCounter const scheduled{_num_scheduled};
+    PassCounter const scheduled{_stats.num_scheduled};
     if (comm::world_size() <= 1)
         return false;
 
@@ -78,7 +74,7 @@ bool CommunicationScheduling::transform(Graph &graph) {
             };
         });
 
-        _num_scheduled++;
+        _stats.num_scheduled++;
 
         EINSUMS_LOG_INFO("CommunicationScheduling: converted allreduce({}) to async (iallreduce + wait)", handle.name);
         report(2, fmt::format("split Allreduce('{}') into async iallreduce + wait for compute overlap", handle.name));

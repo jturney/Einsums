@@ -104,22 +104,26 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// Each loop body and branch is merged on its own level.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
-    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
+    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _stats.num_candidates; }
 
     /// Number of output buffers merged into dying inputs in the last run.
-    APIARY_EXPOSE APIARY_GETTER("num_merged") [[nodiscard]] size_t num_merged() const { return _num_merged; }
+    APIARY_EXPOSE APIARY_GETTER("num_merged") [[nodiscard]] size_t num_merged() const { return _stats.num_merged; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_candidates{0};
-    size_t _num_merged{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_candidates{0};
+        size_t num_merged{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

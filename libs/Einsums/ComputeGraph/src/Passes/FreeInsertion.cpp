@@ -105,12 +105,8 @@ void collect_freeable(Graph &graph, std::vector<DescendantFreeable> &out) {
 
 } // namespace
 
-void FreeInsertion::reset_stats() {
-    _num_freed = 0;
-}
-
 bool FreeInsertion::transform(Graph &graph) {
-    PassCounter const freed{_num_freed};
+    PassCounter const freed{_stats.num_freed};
     auto const       &nodes   = graph.nodes();
     auto const       &tensors = graph.tensors_map();
 
@@ -300,7 +296,7 @@ bool FreeInsertion::transform(Graph &graph) {
 
         report(2, fmt::format("insert Free for '{}' ({} bytes) after its last consumer at position {}", handle.name, bytes, plan.position));
         insertions.push_back({.index = plan.position + 1, .node = std::move(free_node)});
-        _num_freed++;
+        _stats.num_freed++;
 
         if (plan.materialize_before != SIZE_MAX) {
             Node mat_node = lifecycle::make_materialize_node(graph, *plan.owner, handle, emit_tid);
@@ -342,8 +338,8 @@ bool FreeInsertion::transform(Graph &graph) {
 
     if (freed.moved()) {
         graph.mark_sorted();
-        EINSUMS_LOG_INFO("FreeInsertion: inserted {} Free nodes", _num_freed);
-        report(1, fmt::format("inserted {} Free node(s) to cap peak memory", _num_freed));
+        EINSUMS_LOG_INFO("FreeInsertion: inserted {} Free nodes", _stats.num_freed);
+        report(1, fmt::format("inserted {} Free node(s) to cap peak memory", _stats.num_freed));
     }
 
     return freed.moved();

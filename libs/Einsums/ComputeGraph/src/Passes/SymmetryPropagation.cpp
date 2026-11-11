@@ -56,18 +56,14 @@ bool apply_inferred(Graph &graph, TensorId out_tid, SymmetryDescriptor desc, Esc
 } // namespace
 
 std::vector<std::string> SymmetryPropagation::explain() const {
-    if (_num_inferred == 0) {
+    if (_stats.num_inferred == 0) {
         return {};
     }
-    return {fmt::format("SymmetryPropagation: inferred symmetry on {} tensor(s)", _num_inferred)};
-}
-
-void SymmetryPropagation::reset_stats() {
-    _num_inferred = 0;
+    return {fmt::format("SymmetryPropagation: inferred symmetry on {} tensor(s)", _stats.num_inferred)};
 }
 
 bool SymmetryPropagation::transform(Graph &graph) {
-    PassCounter const inferred{_num_inferred};
+    PassCounter const inferred{_stats.num_inferred};
     graph.topological_sort();
 
     auto const &nodes = graph.nodes();
@@ -87,12 +83,12 @@ bool SymmetryPropagation::transform(Graph &graph) {
         if (node.outputs.size() != 1)
             continue;
         if (auto desc = output_symmetry(graph, node); desc && apply_inferred(graph, node.outputs[0], std::move(*desc), guard))
-            ++_num_inferred;
+            ++_stats.num_inferred;
     }
 
     if (inferred.moved()) {
-        EINSUMS_LOG_INFO("SymmetryPropagation: inferred symmetry on {} tensor(s)", _num_inferred);
-        report(1, fmt::format("inferred symmetry on {} intermediate tensor(s) (enables rank-2 BLAS dispatch)", _num_inferred));
+        EINSUMS_LOG_INFO("SymmetryPropagation: inferred symmetry on {} tensor(s)", _stats.num_inferred);
+        report(1, fmt::format("inferred symmetry on {} intermediate tensor(s) (enables rank-2 BLAS dispatch)", _stats.num_inferred));
     }
 
     // Analysis pass, never changes the node list.

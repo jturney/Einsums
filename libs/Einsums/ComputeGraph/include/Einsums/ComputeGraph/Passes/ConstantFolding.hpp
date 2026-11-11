@@ -87,7 +87,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Evaluating a node at pass time runs the same kernel over the same values and stores what it
     /// produced, so the replay returns the number the computation would have returned.
     [[nodiscard]] PassTier tier() const override { return PassTier::BitwiseExact; }
-    void                   reset_stats() override;
+    void                   reset_stats() override { _stats = {}; }
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
@@ -102,13 +102,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of nodes folded in the last run.
-    APIARY_EXPOSE APIARY_GETTER("num_folded") [[nodiscard]] size_t num_folded() const { return _num_folded; }
+    APIARY_EXPOSE APIARY_GETTER("num_folded") [[nodiscard]] size_t num_folded() const { return _stats.num_folded; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_folded{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_folded{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

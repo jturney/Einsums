@@ -138,7 +138,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Folding a transpose pair into one contraction changes the order the two terms are summed in.
     [[nodiscard]] PassTier tier() const override { return PassTier::ReAssociating; }
 
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
     [[nodiscard]] std::vector<std::string> explain() const override;
 
     /// Safe on loop bodies / conditional branches: a local rewrite within the
@@ -146,17 +146,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of fold groups rewritten.
-    APIARY_EXPOSE APIARY_GETTER("num_groups") [[nodiscard]] size_t num_groups() const { return _num_groups; }
+    APIARY_EXPOSE APIARY_GETTER("num_groups") [[nodiscard]] size_t num_groups() const { return _stats.num_groups; }
 
     /// Total number of einsum nodes eliminated (folded away).
-    APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+    APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _stats.num_eliminated; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_groups{0};
-    size_t _num_eliminated{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_groups{0};
+        size_t num_eliminated{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

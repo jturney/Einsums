@@ -127,15 +127,21 @@ Override ``explain`` to contribute lines to ``Graph::explain()``:
 
     [[nodiscard]] std::vector<std::string> explain() const override;
 
-Keep per-run counters and zero them in ``reset_stats()``.
+Keep what one run finds, counters and records alike, in a private ``Stats`` struct whose members carry their starting values, so ``reset_stats()`` is one assignment and a new counter cannot be left out of it.
 Expose the counters with ``APIARY_GETTER`` so Python tests can assert on them:
 
 .. code-block:: cpp
 
     APIARY_EXPOSE APIARY_GETTER("num_eliminated")
-    [[nodiscard]] std::size_t num_eliminated() const { return _num_eliminated; }
+    [[nodiscard]] std::size_t num_eliminated() const { return _stats.num_eliminated; }
 
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
+
+  private:
+    struct Stats {
+        std::size_t num_eliminated{0};
+    };
+    Stats _stats{};
 
 Report what you declined, too.
 The skip tally is the negative half of ``explain``, and it is what turns "the pass did nothing" into "the pass declined because this operand carried no space annotation".
@@ -213,7 +219,7 @@ Checklist
 #. ``name()`` and ``transform()``; ``transform()`` returns whether it changed anything.
 #. ``phase()`` and ``tier()`` declared, with the tier measured rather than assumed.
 #. ``applicable()`` gate so the common case costs almost nothing.
-#. ``explain()``, counters, ``reset_stats()``, and skip reasons for what it declined.
+#. ``explain()``, counters in a ``Stats`` struct that ``reset_stats()`` resets, and skip reasons for what it declined.
 #. A test comparing against the unoptimized replay, asserting the counter fired.
 #. An entry in ``build_default_passes()``, placed with a comment saying why it goes there.
 

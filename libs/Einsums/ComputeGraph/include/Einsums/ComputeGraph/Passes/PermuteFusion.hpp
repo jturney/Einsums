@@ -100,24 +100,28 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// apart on Accelerate, which is why this is not the bitwise tier with a caveat.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::ReAssociating; }
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// Safe on loop bodies / conditional branches: a local fold of
     /// Permute→Einsum/Gemm pairs within the graph it's handed.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of Permute→Einsum/Gemm pairs detected this run (before safety filtering).
-    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
+    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _stats.num_candidates; }
 
     /// Number of candidates that passed safety checks and were actually rewritten.
-    APIARY_EXPOSE APIARY_GETTER("num_rewrites") [[nodiscard]] size_t num_rewrites() const { return _num_rewrites; }
+    APIARY_EXPOSE APIARY_GETTER("num_rewrites") [[nodiscard]] size_t num_rewrites() const { return _stats.num_rewrites; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_candidates{0};
-    size_t _num_rewrites{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_candidates{0};
+        size_t num_rewrites{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

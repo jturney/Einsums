@@ -168,21 +168,15 @@ bool read_elsewhere(TensorExpr const &expr, TensorId tensor, ExprStatement const
 
 } // namespace
 
-void DeltaElimination::reset_stats() {
-    _num_eliminated  = 0;
-    _num_dissolved   = 0;
-    _num_zero_blocks = 0;
-}
-
 std::vector<std::string> DeltaElimination::describe() const {
     std::vector<std::string> lines;
-    if (_num_eliminated != 0) {
+    if (_stats.num_eliminated != 0) {
         lines.push_back(fmt::format("DeltaElimination: removed {} contraction(s) against a Kronecker delta, dissolving {} intermediate(s)",
-                                    _num_eliminated, _num_dissolved));
+                                    _stats.num_eliminated, _stats.num_dissolved));
     }
-    if (_num_zero_blocks != 0) {
+    if (_stats.num_zero_blocks != 0) {
         lines.push_back(
-            fmt::format("DeltaElimination: reduced {} contraction(s) over disjoint spaces to their prefactor", _num_zero_blocks));
+            fmt::format("DeltaElimination: reduced {} contraction(s) over disjoint spaces to their prefactor", _stats.num_zero_blocks));
     }
     return lines;
 }
@@ -343,7 +337,7 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
                     report(2, fmt::format("'{}' contracts over disjoint spaces; it keeps only its own prefactor", statement.target_name));
                 }
 
-                ++_num_zero_blocks;
+                ++_stats.num_zero_blocks;
                 changed  = true;
                 progress = true;
                 continue;
@@ -444,7 +438,7 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
                     }
                 }
                 statement.value = invalid_term; // erased below
-                ++_num_dissolved;
+                ++_stats.num_dissolved;
                 report(2, fmt::format("dissolved '{}': its readers now take '{}' directly", statement.target_name, source_name));
             } else {
                 // Still has to be produced. A permute carries the reordering and both prefactors,
@@ -473,7 +467,7 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 report(2, fmt::format("'{}' keeps a permute of '{}'; its target is not dissolvable", statement.target_name, source_name));
             }
 
-            ++_num_eliminated;
+            ++_stats.num_eliminated;
             changed  = true;
             progress = true;
         }
@@ -484,8 +478,8 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
     }
 
     if (changed) {
-        report(1, fmt::format("removed {} delta contraction(s), dissolving {}", _num_eliminated, _num_dissolved));
-        EINSUMS_LOG_INFO("DeltaElimination: removed {} delta contraction(s), dissolving {}", _num_eliminated, _num_dissolved);
+        report(1, fmt::format("removed {} delta contraction(s), dissolving {}", _stats.num_eliminated, _stats.num_dissolved));
+        EINSUMS_LOG_INFO("DeltaElimination: removed {} delta contraction(s), dissolving {}", _stats.num_eliminated, _stats.num_dissolved);
     }
     return changed;
 }

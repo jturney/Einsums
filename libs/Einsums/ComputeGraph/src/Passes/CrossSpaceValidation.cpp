@@ -86,19 +86,12 @@ int severity_rank(CrossSpaceSeverity severity) {
 
 } // namespace
 
-void CrossSpaceValidation::reset_stats() {
-    _findings.clear();
-    _num_errors   = 0;
-    _num_warnings = 0;
-    _num_notes    = 0;
-}
-
 bool CrossSpaceValidation::transform(Graph &graph) {
     // The accumulate-across-subgraphs rule @ref PassCounter states, on a COLLECTION rather than a
     // counter: what this run() added is the tail past this mark, and the mark is the index the
     // report below starts reading from, so the snapshot is needed as a value and not only as a
     // "did it move".
-    std::size_t const findings_at_entry = _findings.size();
+    std::size_t const findings_at_entry = _stats.findings.size();
 
     SpaceRegistry const &registry = graph.space_registry();
 
@@ -170,43 +163,44 @@ bool CrossSpaceValidation::transform(Graph &graph) {
                     message += "; the verdict rests on an INFERRED annotation and is reported one level weaker for it";
                 }
 
-                _findings.push_back(CrossSpaceFinding{.severity           = severity,
-                                                      .graph_name         = graph.name(),
-                                                      .node_id            = node.id,
-                                                      .node_label         = node.label,
-                                                      .letter             = binding.letter,
-                                                      .first_space        = first.space,
-                                                      .first_space_name   = first_name,
-                                                      .first_operand      = first.operand,
-                                                      .first_tensor       = first.tensor,
-                                                      .first_tensor_name  = first.tensor_name,
-                                                      .second_space       = second.space,
-                                                      .second_space_name  = second_name,
-                                                      .second_operand     = second.operand,
-                                                      .second_tensor      = second.tensor,
-                                                      .second_tensor_name = second.tensor_name,
-                                                      .rests_on_inferred  = rests_on_inferred,
-                                                      .message            = std::move(message)});
+                _stats.findings.push_back(CrossSpaceFinding{.severity           = severity,
+                                                            .graph_name         = graph.name(),
+                                                            .node_id            = node.id,
+                                                            .node_label         = node.label,
+                                                            .letter             = binding.letter,
+                                                            .first_space        = first.space,
+                                                            .first_space_name   = first_name,
+                                                            .first_operand      = first.operand,
+                                                            .first_tensor       = first.tensor,
+                                                            .first_tensor_name  = first.tensor_name,
+                                                            .second_space       = second.space,
+                                                            .second_space_name  = second_name,
+                                                            .second_operand     = second.operand,
+                                                            .second_tensor      = second.tensor,
+                                                            .second_tensor_name = second.tensor_name,
+                                                            .rests_on_inferred  = rests_on_inferred,
+                                                            .message            = std::move(message)});
                 switch (severity) {
                 case CrossSpaceSeverity::Error:
-                    ++_num_errors;
+                    ++_stats.num_errors;
                     break;
                 case CrossSpaceSeverity::Warning:
-                    ++_num_warnings;
+                    ++_stats.num_warnings;
                     break;
                 case CrossSpaceSeverity::Note:
-                    ++_num_notes;
+                    ++_stats.num_notes;
                     break;
                 }
             }
         }
     }
 
-    if (_findings.size() > findings_at_entry) {
-        EINSUMS_LOG_WARN("CrossSpaceValidation: {} error(s), {} warning(s), {} note(s)", _num_errors, _num_warnings, _num_notes);
-        report(1, fmt::format("{} error(s), {} warning(s), {} note(s)", _num_errors, _num_warnings, _num_notes));
-        for (std::size_t i = findings_at_entry; i < _findings.size(); ++i) {
-            report(2, _findings[i].message);
+    if (_stats.findings.size() > findings_at_entry) {
+        EINSUMS_LOG_WARN("CrossSpaceValidation: {} error(s), {} warning(s), {} note(s)", _stats.num_errors, _stats.num_warnings,
+                         _stats.num_notes);
+        report(1, fmt::format("{} error(s), {} warning(s), {} note(s)", _stats.num_errors, _stats.num_warnings, _stats.num_notes));
+        for (std::size_t i = findings_at_entry; i < _stats.findings.size(); ++i) {
+            report(2, _stats.findings[i].message);
         }
     }
 
@@ -215,14 +209,14 @@ bool CrossSpaceValidation::transform(Graph &graph) {
 }
 
 std::vector<std::string> CrossSpaceValidation::explain() const {
-    if (_findings.empty()) {
+    if (_stats.findings.empty()) {
         return {};
     }
 
     std::vector<std::string> lines;
-    lines.push_back(fmt::format("CrossSpaceValidation: {} error(s), {} warning(s), {} note(s) across {} letter binding(s)", _num_errors,
-                                _num_warnings, _num_notes, _findings.size()));
-    for (auto const &finding : _findings) {
+    lines.push_back(fmt::format("CrossSpaceValidation: {} error(s), {} warning(s), {} note(s) across {} letter binding(s)",
+                                _stats.num_errors, _stats.num_warnings, _stats.num_notes, _stats.findings.size()));
+    for (auto const &finding : _stats.findings) {
         if (finding.severity == CrossSpaceSeverity::Error) {
             lines.push_back(fmt::format("CrossSpaceValidation: {}", finding.message));
         }
@@ -232,14 +226,14 @@ std::vector<std::string> CrossSpaceValidation::explain() const {
 
 void CrossSpaceValidation::print_report(std::ostream &os) const {
     os << "=== CrossSpaceValidation ===\n";
-    os << fmt::format("  {} error(s), {} warning(s), {} note(s)\n", _num_errors, _num_warnings, _num_notes);
+    os << fmt::format("  {} error(s), {} warning(s), {} note(s)\n", _stats.num_errors, _stats.num_warnings, _stats.num_notes);
 
-    if (_findings.empty()) {
+    if (_stats.findings.empty()) {
         os << "  no cross-space conflicts found\n";
         return;
     }
 
-    std::vector<CrossSpaceFinding> ordered = _findings;
+    std::vector<CrossSpaceFinding> ordered = _stats.findings;
     std::ranges::stable_sort(ordered, [](CrossSpaceFinding const &lhs, CrossSpaceFinding const &rhs) {
         return severity_rank(lhs.severity) < severity_rank(rhs.severity);
     });

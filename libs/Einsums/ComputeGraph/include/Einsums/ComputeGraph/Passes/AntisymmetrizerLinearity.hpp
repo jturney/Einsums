@@ -72,22 +72,26 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Sites where one antisymmetrized quantity accumulates into another.
-    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] std::size_t num_candidates() const { return _num_candidates; }
+    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] std::size_t num_candidates() const { return _stats.num_candidates; }
 
     /// Sites rewritten.
-    APIARY_EXPOSE APIARY_GETTER("num_merged") [[nodiscard]] std::size_t num_merged() const { return _num_merged; }
+    APIARY_EXPOSE APIARY_GETTER("num_merged") [[nodiscard]] std::size_t num_merged() const { return _stats.num_merged; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    std::size_t _num_candidates{0};
-    std::size_t _num_merged{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t num_candidates{0};
+        std::size_t num_merged{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

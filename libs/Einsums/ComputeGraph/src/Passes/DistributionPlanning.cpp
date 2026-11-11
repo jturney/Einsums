@@ -109,21 +109,16 @@ comm::DistributionDescriptor build_descriptor(std::vector<std::string> const &te
 
 } // namespace
 
-void DistributionPlanning::reset_stats() {
-    _num_distributed = 0;
-    _num_replicated  = 0;
-}
-
 bool DistributionPlanning::transform(Graph &graph) {
-    PassCounter const distributed{_num_distributed};
-    PassCounter const replicated{_num_replicated};
+    PassCounter const distributed{_stats.num_distributed};
+    PassCounter const replicated{_stats.num_replicated};
     int               num_ranks = comm::world_size();
 
     // Single rank: everything is replicated, nothing to plan.
     if (num_ranks <= 1) {
         for (auto const &[tid, handle] : graph.tensors_map()) {
             if (handle.alloc_state == AllocState::Deferred) {
-                _num_replicated++;
+                _stats.num_replicated++;
             }
         }
         return false;
@@ -259,7 +254,7 @@ bool DistributionPlanning::transform(Graph &graph) {
 
         // Skip if already distributed (set when processed as output of a prior einsum in this loop)
         if (handle.is_distributed && handle.distribution_info) {
-            _num_distributed++;
+            _stats.num_distributed++;
             continue;
         }
 
@@ -268,7 +263,7 @@ bool DistributionPlanning::transform(Graph &graph) {
         if (pinned_buffers.contains(graph.buffer_of(tid))) {
             handle.is_distributed = false;
             handle.is_replicated  = true;
-            _num_replicated++;
+            _stats.num_replicated++;
             EINSUMS_LOG_DEBUG("DistributionPlanning: '{}' → replicated (a node this pass does not understand reads it whole)", handle.name);
             continue;
         }
@@ -276,7 +271,7 @@ bool DistributionPlanning::transform(Graph &graph) {
         if (total_bytes <= _threshold) {
             handle.is_distributed = false;
             handle.is_replicated  = true;
-            _num_replicated++;
+            _stats.num_replicated++;
             EINSUMS_LOG_DEBUG("DistributionPlanning: '{}' ({} bytes) → replicated", handle.name, total_bytes);
             continue;
         }
@@ -286,7 +281,7 @@ bool DistributionPlanning::transform(Graph &graph) {
         if (it == tensor_usage.end()) {
             handle.is_distributed = false;
             handle.is_replicated  = true;
-            _num_replicated++;
+            _stats.num_replicated++;
             continue;
         }
 
@@ -360,7 +355,7 @@ bool DistributionPlanning::transform(Graph &graph) {
             // No target indices matched → replicate
             handle.is_distributed = false;
             handle.is_replicated  = true;
-            _num_replicated++;
+            _stats.num_replicated++;
             EINSUMS_LOG_DEBUG("DistributionPlanning: '{}' → replicated (no distributable indices)", handle.name);
             continue;
         }
@@ -368,7 +363,7 @@ bool DistributionPlanning::transform(Graph &graph) {
         handle.is_distributed    = true;
         handle.is_replicated     = false;
         handle.distribution_info = std::make_shared<comm::DistributionDescriptor>(std::move(desc));
-        _num_distributed++;
+        _stats.num_distributed++;
         modified = true;
 
         // Log the assignment
@@ -395,8 +390,8 @@ bool DistributionPlanning::transform(Graph &graph) {
     }
 
     if (distributed.moved() || replicated.moved()) {
-        EINSUMS_LOG_INFO("DistributionPlanning: {} distributed, {} replicated ({}x{} grid, {} ranks)", _num_distributed, _num_replicated,
-                         grid.rows(), grid.cols(), num_ranks);
+        EINSUMS_LOG_INFO("DistributionPlanning: {} distributed, {} replicated ({}x{} grid, {} ranks)", _stats.num_distributed,
+                         _stats.num_replicated, grid.rows(), grid.cols(), num_ranks);
     }
 
     return modified;

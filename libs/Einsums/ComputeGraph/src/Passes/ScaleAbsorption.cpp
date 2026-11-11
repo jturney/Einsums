@@ -28,18 +28,8 @@ char const *fold_site_name(FoldSite site) {
 
 } // namespace
 
-void ScaleAbsorption::reset_stats() {
-    _num_absorbed = 0;
-    // Per-APPLY state, not per-run: PassManager reads compensated_reads() once,
-    // after the recursive descent, and observed_writes() only inspects
-    // top-level nodes. Clearing this in run() let any subgraph -- including an
-    // empty loop body -- discard a top-level exemption, so the program-order
-    // validator threw on a legitimate fold.
-    _compensated.clear();
-}
-
 bool ScaleAbsorption::transform(Graph &graph) {
-    PassCounter const absorbed{_num_absorbed};
+    PassCounter const absorbed{_stats.num_absorbed};
     graph.topological_sort();
 
     auto const &nodes = graph.nodes();
@@ -211,7 +201,7 @@ bool ScaleAbsorption::transform(Graph &graph) {
             // Dead scale: the next writer overwrites the tensor without reading
             // it, so the scale's result is discarded. Drop the Scale node.
             remove[sc] = true;
-            ++_num_absorbed;
+            ++_stats.num_absorbed;
             EINSUMS_LOG_INFO("ScaleAbsorption: removed dead scale of a tensor overwritten by {} node {}", nodes[writer].kind,
                              nodes[writer].id);
             report(2, fmt::format("remove dead scale node {}; {} node {} overwrites the tensor without reading it", scale_node.id,
@@ -285,20 +275,20 @@ bool ScaleAbsorption::transform(Graph &graph) {
             // That node's read of scaled_tensor now observes the tensor's
             // initial contents (the scale is gone) but is exact thanks to the
             // fold; waive the program-order guard for exactly that read.
-            _compensated.emplace_back(nodes[idx].id, scaled_tensor);
+            _stats.compensated.emplace_back(nodes[idx].id, scaled_tensor);
             EINSUMS_LOG_INFO("ScaleAbsorption: folded scale({}) into {} node {} ({} prefactor)", scale_factor, nodes[idx].kind,
                              nodes[idx].id, fold_site_name(site));
             report(2, fmt::format("fold scale({}) into {} node {} {} prefactor", scale_factor, nodes[idx].kind, nodes[idx].id,
                                   fold_site_name(site)));
         }
         remove[sc] = true;
-        ++_num_absorbed;
+        ++_stats.num_absorbed;
     }
 
     if (!absorbed.moved()) {
         return false;
     }
-    report(1, fmt::format("eliminated {} scale(s) (dead-removed or folded into a consumer)", _num_absorbed));
+    report(1, fmt::format("eliminated {} scale(s) (dead-removed or folded into a consumer)", _stats.num_absorbed));
 
     graph.erase_nodes(remove);
     graph.mark_sorted();
@@ -307,10 +297,10 @@ bool ScaleAbsorption::transform(Graph &graph) {
 }
 
 std::vector<std::string> ScaleAbsorption::explain() const {
-    if (_num_absorbed == 0) {
+    if (_stats.num_absorbed == 0) {
         return {};
     }
-    return {fmt::format("ScaleAbsorption: removed {} dead scale(s)", _num_absorbed)};
+    return {fmt::format("ScaleAbsorption: removed {} dead scale(s)", _stats.num_absorbed)};
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

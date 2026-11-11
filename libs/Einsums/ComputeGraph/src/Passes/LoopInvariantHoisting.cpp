@@ -23,12 +23,8 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
-void LoopInvariantHoisting::reset_stats() {
-    _num_hoisted = 0;
-}
-
 bool LoopInvariantHoisting::transform(Graph &graph) {
-    PassCounter const hoisted_count{_num_hoisted};
+    PassCounter const hoisted_count{_stats.num_hoisted};
     run_recursive(graph);
     return hoisted_count.moved();
 }
@@ -61,7 +57,7 @@ void LoopInvariantHoisting::run_recursive(Graph &graph) {
 
 void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
     auto        &nodes          = graph.nodes();
-    size_t const hoisted_before = _num_hoisted;
+    size_t const hoisted_before = _stats.num_hoisted;
 
     // Cost caveat (known, out of scope here): this pass has no cost/benefit
     // test. Hoisting a cheap producer of a huge tensor out of a loop extends
@@ -307,7 +303,7 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
         }
 
         auto const moved = graph.hoist(body, picks, loop_idx);
-        _num_hoisted += moved.size();
+        _stats.num_hoisted += moved.size();
         loop_idx += moved.size(); // The loop has shifted; keep the outer index in sync.
 
         std::vector<TensorId> hoisted_output_ids;
@@ -328,7 +324,7 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
         }
     }
 
-    if (_num_hoisted > hoisted_before) {
+    if (_stats.num_hoisted > hoisted_before) {
         // The hoisted producers were inserted directly before their loop, so
         // the order is already valid; declare the mutation so the sort below
         // rebuilds the stale dependency lists instead of early-returning on

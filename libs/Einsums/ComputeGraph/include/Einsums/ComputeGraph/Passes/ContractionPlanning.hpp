@@ -152,7 +152,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// accumulation it touches.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::ReAssociating; }
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// Recurse into loop bodies / conditional branches.
     ///
@@ -180,13 +180,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Chain reports accumulated over the whole apply(), including every
     /// subgraph. ``_reports`` alone would hold only the last fixpoint iteration
     /// of the last subgraph visited; ``graph.explain()`` reads this getter.
-    [[nodiscard]] std::vector<ChainReport> const &chain_reports() const { return _apply_reports; }
+    [[nodiscard]] std::vector<ChainReport> const &chain_reports() const { return _stats.apply_reports; }
 
     /// How many GEMM chains the last apply() re-parenthesized. The firing count: a differential
     /// test that sees no difference has to know whether this pass ran or merely declined.
-    APIARY_EXPOSE APIARY_GETTER("chains_restructured") [[nodiscard]] size_t   chains_restructured() const { return _chains_restructured; }
+    APIARY_EXPOSE APIARY_GETTER("chains_restructured") [[nodiscard]] size_t chains_restructured() const {
+        return _stats.chains_restructured;
+    }
     APIARY_EXPOSE APIARY_GETTER("intermediates_created") [[nodiscard]] size_t intermediates_created() const {
-        return _intermediates_created;
+        return _stats.intermediates_created;
     }
 
   protected:
@@ -197,10 +199,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Reports for the CURRENT graph's last fixpoint iteration; cleared per
     /// iteration because restructuring invalidates the chains it describes.
     std::vector<ChainReport> _reports;
-    /// Per-apply accumulation of the above, appended at the end of each run().
-    std::vector<ChainReport> _apply_reports;
-    size_t                   _chains_restructured{0};
-    size_t                   _intermediates_created{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t chains_restructured{0};
+        size_t intermediates_created{0};
+        /// Per-apply accumulation of the above, appended at the end of each run().
+        std::vector<ChainReport> apply_reports;
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

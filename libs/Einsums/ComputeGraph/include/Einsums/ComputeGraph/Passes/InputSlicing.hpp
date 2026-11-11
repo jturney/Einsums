@@ -75,15 +75,19 @@ class EINSUMS_EXPORT InputSlicing : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
                NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::RawScalar;
     }
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
-    [[nodiscard]] size_t num_sliced() const { return _num_sliced; }
+    [[nodiscard]] size_t num_sliced() const { return _stats.num_sliced; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_sliced{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_sliced{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

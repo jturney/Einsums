@@ -21,12 +21,8 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
-void InputSlicing::reset_stats() {
-    _num_sliced = 0;
-}
-
 bool InputSlicing::transform(Graph &graph) {
-    PassCounter const sliced{_num_sliced};
+    PassCounter const sliced{_stats.num_sliced};
     if (comm::world_size() <= 1)
         return false;
 
@@ -183,7 +179,7 @@ bool InputSlicing::transform(Graph &graph) {
         });
         at[ins.einsum_idx].push_back(std::move(begin_node));
         at[ins.einsum_idx + 1].push_back(std::move(end_node));
-        _num_sliced += ins.slices.size();
+        _stats.num_sliced += ins.slices.size();
     }
 
     std::vector<std::pair<std::size_t, std::vector<Node>>> groups;

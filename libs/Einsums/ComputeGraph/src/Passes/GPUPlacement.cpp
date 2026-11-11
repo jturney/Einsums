@@ -206,12 +206,8 @@ size_t compute_bytes_from_tensors(Node const &node, Graph const &graph) {
 
 } // namespace
 
-void GPUPlacement::reset_stats() {
-    _num_placed = 0;
-}
-
 bool GPUPlacement::transform(Graph &graph) {
-    PassCounter const placed{_num_placed};
+    PassCounter const placed{_stats.num_placed};
 
     // Is there a usable device right now? gpu::has_gpu cannot answer that - it is
     // a build flag, and `!has_gpu && !is_mock` was a tautologically false guard
@@ -320,7 +316,7 @@ bool GPUPlacement::transform(Graph &graph) {
 
         cand.owner->edit(cand.node_idx, [](NodeEdit &e) { e.place_on(Target::GPU); });
         used += cand.eff_bytes;
-        _num_placed++;
+        _stats.num_placed++;
 
         EINSUMS_LOG_INFO("GPUPlacement: placed {} node {} ({}) on GPU (bytes={}, budget_used={}/{})", placed_node.kind, placed_node.id,
                          placed_node.label, cand.eff_bytes, used, budget);
@@ -329,8 +325,8 @@ bool GPUPlacement::transform(Graph &graph) {
     }
 
     if (placed.moved()) {
-        EINSUMS_LOG_INFO("GPUPlacement: placed {} nodes on GPU ({} / {} bytes used)", _num_placed, used, budget);
-        report(1, fmt::format("placed {} node(s) on GPU ({} / {} bytes used)", _num_placed, used, budget));
+        EINSUMS_LOG_INFO("GPUPlacement: placed {} nodes on GPU ({} / {} bytes used)", _stats.num_placed, used, budget);
+        report(1, fmt::format("placed {} node(s) on GPU ({} / {} bytes used)", _stats.num_placed, used, budget));
     }
 
     return placed.moved();

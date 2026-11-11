@@ -28,42 +28,19 @@ std::int64_t AxisTiling::memory_cap() const {
     return _cap_explicit ? _memory_cap : config::get(option::GraphTilingMemoryCap);
 }
 
-void AxisTiling::reset_stats() {
-    _num_tiled      = 0;
-    _slice_count    = 0;
-    _depth          = 0;
-    _iterations     = 0;
-    _largest_before = 0;
-    _largest_after  = 0;
-    _axis_names.clear();
-    _axis_letters.clear();
-    _axis_extents.clear();
-    _streamed.clear();
-    _whole.clear();
-    _held_results.clear();
-    _accumulator.clear();
-    _summed_into.clear();
-    _emission.clear();
-    _block_extents.clear();
-    _loops         = 0;
-    _triangle_sign = 0;
-    _regions.clear();
-    _enclosing.clear();
-}
-
 std::vector<std::string> AxisTiling::explain() const {
     std::vector<std::string> lines;
-    lines.reserve(_regions.size() + _held_results.size() + 1);
-    for (auto const &region : _regions) {
+    lines.reserve(_stats.regions.size() + _stats.held_results.size() + 1);
+    for (auto const &region : _stats.regions) {
         lines.push_back(fmt::format("AxisTiling: {}", region));
     }
-    for (auto const &held : _held_results) {
+    for (auto const &held : _stats.held_results) {
         lines.push_back(fmt::format("AxisTiling: {}", held));
     }
-    if (!_accumulator.empty()) {
-        lines.push_back(fmt::format("AxisTiling: '{}' accumulates across the first region's iterations", _accumulator));
+    if (!_stats.accumulator.empty()) {
+        lines.push_back(fmt::format("AxisTiling: '{}' accumulates across the first region's iterations", _stats.accumulator));
     }
-    for (auto const &name : _summed_into) {
+    for (auto const &name : _stats.summed_into) {
         lines.push_back(fmt::format("AxisTiling: '{}' collects a sum over a sliced axis, one block's share per iteration", name));
     }
     return lines;
@@ -134,7 +111,7 @@ bool AxisTiling::transform(Graph &graph) {
     // walks out through this record to the declarations its tensors share with this graph.
     auto const &nodes = graph.nodes();
     for (std::size_t i = 0; i < nodes.size(); ++i) {
-        for_each_child_graph(nodes[i], [&](auto const &sub) { _enclosing[&sub] = {&graph, i}; });
+        for_each_child_graph(nodes[i], [&](auto const &sub) { _stats.enclosing[&sub] = {&graph, i}; });
     }
     return moved;
 }
@@ -163,7 +140,7 @@ AxisTiling::Footprint AxisTiling::footprint(Graph &graph) const {
     // The root, and on the way to it each level's node whose body holds the graph being tiled.
     std::vector<std::pair<Graph *, std::size_t>> chain;
     Graph const                                 *root = &graph;
-    for (auto hit = _enclosing.find(root); hit != _enclosing.end(); hit = _enclosing.find(root)) {
+    for (auto hit = _stats.enclosing.find(root); hit != _stats.enclosing.end(); hit = _stats.enclosing.find(root)) {
         chain.push_back(hit->second);
         root = hit->second.first;
     }
@@ -283,9 +260,9 @@ AxisTiling::Footprint AxisTiling::footprint(Graph &graph) const {
 }
 
 bool AxisTiling::tile_graph(Graph &graph) {
-    PassCounter const tiled{_num_tiled};
+    PassCounter const tiled{_stats.num_tiled};
 
-    Scope const scope{.graph = graph, .enclosing = _enclosing};
+    Scope const scope{.graph = graph, .enclosing = _stats.enclosing};
 
     std::int64_t const cap = memory_cap();
     if (cap == 0) {
@@ -396,16 +373,17 @@ bool AxisTiling::tile_graph(Graph &graph) {
             std::size_t const bytes   = held->total_bytes();
             TensorId const    held_id = graph.find_tensor_id_by_ptr(held->tensor_ptr);
             note_skip(ResultHeld, fmt::format("'{}', {} bytes against a cap of {}", held->name, bytes, limit_for(held_id, bytes)));
-            _held_results.push_back(fmt::format("held '{}' whole, {} bytes against a cap of {}, because it is declared as a result the "
-                                                "caller may read after execute(); declare it as an intermediate if nothing does",
-                                                held->name, bytes, limit_for(held_id, bytes)));
-            note(ResultHeld, _held_results.back(),
+            _stats.held_results.push_back(
+                fmt::format("held '{}' whole, {} bytes against a cap of {}, because it is declared as a result the "
+                            "caller may read after execute(); declare it as an intermediate if nothing does",
+                            held->name, bytes, limit_for(held_id, bytes)));
+            note(ResultHeld, _stats.held_results.back(),
                  Decision{.tensors = {held->name}, .facts = {Fact{.name = "bytes", .value = static_cast<double>(bytes), .unit = "B"}}}, 1);
         }
         if (first) {
             // A running maximum: the manager runs this pass once per graph of the tree, and the
             // getters report over all of them.
-            _largest_before = std::max(_largest_before, largest);
+            _stats.largest_before = std::max(_stats.largest_before, largest);
             if (largest == 0) {
                 // A graph that writes no intermediate, such as the parent of an iterative
                 // method's loop, has nothing here to decline.
@@ -510,7 +488,7 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
         return false;
     }
     std::size_t const limit = allowance.cap;
-    Scope const       scope{.graph = graph, .enclosing = _enclosing};
+    Scope const       scope{.graph = graph, .enclosing = _stats.enclosing};
 
     // The statements that read or write a tensor, by the buffer underneath it.
     auto const touchers = [&](TensorId tid) {
@@ -947,33 +925,33 @@ bool AxisTiling::tile_region(Graph &graph, TensorId seed, Allowance const &allow
     }
 
     // Every region's: each names a destination of its own.
-    _summed_into.insert(_summed_into.end(), best->summed_names.begin(), best->summed_names.end());
+    _stats.summed_into.insert(_stats.summed_into.end(), best->summed_names.begin(), best->summed_names.end());
 
     // The getters describe the first region, which is the one around the largest seed.
-    if (_num_tiled == 0) {
-        _slice_count   = best->slices;
-        _depth         = best->depth;
-        _iterations    = best->iterations;
-        _largest_after = best->largest_after;
-        _axis_names    = best->axis_names;
-        _axis_letters  = best->axis_letters;
-        _axis_extents.assign(best->extents.begin(), best->extents.end());
-        _streamed    = best->streamed;
-        _whole       = best->whole;
-        _accumulator = best->accumulator;
-        _emission    = best->triangle.has_value() ? "triangle" : best->range ? "range" : "grouped";
-        _block_extents.assign(best->blocks.begin(), best->blocks.end());
-        _loops         = best->triangle.has_value() ? triangle_loops(best->extents[0], best->blocks[0]).size() : loop_walks(*best).size();
-        _triangle_sign = best->triangle.has_value() ? best->triangle->sigma.sign : 0;
+    if (_stats.num_tiled == 0) {
+        _stats.slice_count   = best->slices;
+        _stats.depth         = best->depth;
+        _stats.iterations    = best->iterations;
+        _stats.largest_after = best->largest_after;
+        _stats.axis_names    = best->axis_names;
+        _stats.axis_letters  = best->axis_letters;
+        _stats.axis_extents.assign(best->extents.begin(), best->extents.end());
+        _stats.streamed    = best->streamed;
+        _stats.whole       = best->whole;
+        _stats.accumulator = best->accumulator;
+        _stats.emission    = best->triangle.has_value() ? "triangle" : best->range ? "range" : "grouped";
+        _stats.block_extents.assign(best->blocks.begin(), best->blocks.end());
+        _stats.loops = best->triangle.has_value() ? triangle_loops(best->extents[0], best->blocks[0]).size() : loop_walks(*best).size();
+        _stats.triangle_sign = best->triangle.has_value() ? best->triangle->sigma.sign : 0;
     }
-    ++_num_tiled;
+    ++_stats.num_tiled;
     graph.note_structural_change();
 
     std::string const line =
         fmt::format("slicing {} into {} slice(s), {}, seed {} bytes -> largest intermediate {} bytes{}", fmt::join(best->axis_names, " x "),
                     best->slices, describe_chunks(*best), best->largest_before, best->largest_after,
                     best->best_effort ? " (none fits the budget beside the tensors outside the loop)" : "");
-    _regions.push_back(line);
+    _stats.regions.push_back(line);
     if (best->triangle.has_value()) {
         std::size_t const tiles = (best->extents[0] + best->blocks[0] - 1) / best->blocks[0];
         applied(Triangle,

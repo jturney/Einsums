@@ -74,20 +74,24 @@ class EINSUMS_EXPORT StreamAssignment : public OptimizerPass {
     [[nodiscard]] bool changes_saved_form() const override { return false; }
     /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
-    void                                      reset_stats() override;
+    void                                      reset_stats() override { _stats = {}; }
 
     /// Safe on loop bodies / conditional branches: assigns a stream id to
     /// each node based purely on its kind, scoped to the graph it's
     /// handed.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
-    [[nodiscard]] size_t num_assigned() const { return _num_assigned; }
+    [[nodiscard]] size_t num_assigned() const { return _stats.num_assigned; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_assigned{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_assigned{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

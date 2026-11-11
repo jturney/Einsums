@@ -122,7 +122,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// False, and the pass walks the sub-graph tree itself. The CCSD residual is a loop body whose
     /// scratch the enclosing graph declares, and folding a site stops writing that scratch; only a
@@ -134,16 +134,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// within the generation this permute starts, exactly one accumulating
     /// axpby into an output that a sibling accumulating axpby also feeds from
     /// the un-permuted source's generation.
-    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
+    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _stats.num_candidates; }
 
     /// Candidates that also pass the interference guard (no other node observes
     /// the half-symmetrized output or rewrites the source mid-fold) - the sites
     /// that are safe to fold.
-    APIARY_EXPOSE APIARY_GETTER("num_matched") [[nodiscard]] size_t num_matched() const { return _num_matched; }
+    APIARY_EXPOSE APIARY_GETTER("num_matched") [[nodiscard]] size_t num_matched() const { return _stats.num_matched; }
 
     /// Sites actually rewritten (num_matched that also passed the dtype and
     /// operand gates). Each eliminates one axpby and one tmpP buffer.
-    APIARY_EXPOSE APIARY_GETTER("num_rewritten") [[nodiscard]] size_t num_rewritten() const { return _num_rewritten; }
+    APIARY_EXPOSE APIARY_GETTER("num_rewritten") [[nodiscard]] size_t num_rewritten() const { return _stats.num_rewritten; }
 
   protected:
     bool transform(Graph &graph) override;
@@ -154,9 +154,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// intermediate, both as the tensor pointers every graph of the tree agrees on.
     bool run_one(Graph &graph, std::unordered_set<void const *> const &external, std::unordered_set<void const *> const &inherited_scratch);
 
-    size_t _num_candidates{0};
-    size_t _num_matched{0};
-    size_t _num_rewritten{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_candidates{0};
+        size_t num_matched{0};
+        size_t num_rewritten{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

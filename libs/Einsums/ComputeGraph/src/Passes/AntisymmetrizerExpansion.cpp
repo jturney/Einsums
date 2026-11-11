@@ -25,17 +25,11 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 std::vector<std::string> AntisymmetrizerExpansion::explain() const {
-    if (_num_expanded == 0) {
+    if (_stats.num_expanded == 0) {
         return {};
     }
-    return {fmt::format("AntisymmetrizerExpansion: lowered {} of {} operator site(s) into {} permuted accumulation(s)", _num_expanded,
-                        _num_sites, _num_terms)};
-}
-
-void AntisymmetrizerExpansion::reset_stats() {
-    _num_sites    = 0;
-    _num_expanded = 0;
-    _num_terms    = 0;
+    return {fmt::format("AntisymmetrizerExpansion: lowered {} of {} operator site(s) into {} permuted accumulation(s)", _stats.num_expanded,
+                        _stats.num_sites, _stats.num_terms)};
 }
 
 bool AntisymmetrizerExpansion::transform(Graph &graph) {
@@ -73,7 +67,7 @@ bool AntisymmetrizerExpansion::transform(Graph &graph) {
     if (sites.empty()) {
         return false;
     }
-    _num_sites += sites.size();
+    _stats.num_sites += sites.size();
 
     auto const skip = [&](std::string_view why, std::size_t index) { note_skip(why, fmt::format("einsum #{}", index)); };
 
@@ -137,7 +131,7 @@ bool AntisymmetrizerExpansion::transform(Graph &graph) {
         // could not save the plainest antisymmetrized contraction. The contraction below
         // overwrites it, so it needs no zeroing, and Materialization gives it storage.
         TensorId const tmp_id =
-            expr::declare_scratch(graph, fmt::format("_asym_{}_{}", name(), _num_expanded), c_handle->dtype, c_handle->dims);
+            expr::declare_scratch(graph, fmt::format("_asym_{}_{}", name(), _stats.num_expanded), c_handle->dtype, c_handle->dims);
         if (tmp_id == 0) {
             skip("a temporary shaped like the destination could not be created", index);
             continue;
@@ -182,8 +176,8 @@ bool AntisymmetrizerExpansion::transform(Graph &graph) {
 
         remove[index] = true;
         inserts.emplace_back(index, std::move(group));
-        ++_num_expanded;
-        _num_terms += terms.size();
+        ++_stats.num_expanded;
+        _stats.num_terms += terms.size();
     }
 
     if (inserts.empty()) {

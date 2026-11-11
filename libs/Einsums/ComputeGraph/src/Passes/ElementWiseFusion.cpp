@@ -79,12 +79,8 @@ ScaleDescriptor const *fusable_scale(Node const &nd) {
 
 } // namespace
 
-void ElementWiseFusion::reset_stats() {
-    _num_fused = 0;
-}
-
 bool ElementWiseFusion::transform(Graph &graph) {
-    PassCounter const fused{_num_fused};
+    PassCounter const fused{_stats.num_fused};
     graph.topological_sort();
 
     // Every node a fusion rewrites or removes is asked this first.
@@ -149,7 +145,7 @@ bool ElementWiseFusion::transform(Graph &graph) {
             });
 
             remove[j] = true;
-            _num_fused++;
+            _stats.num_fused++;
 
             EINSUMS_LOG_INFO("ElementWiseFusion: merged axpby node {} into node {} (alpha={}, beta={})", nodes[j].id, nodes[i].id,
                              to_string(alpha), to_string(beta));
@@ -201,7 +197,7 @@ bool ElementWiseFusion::transform(Graph &graph) {
             });
 
             remove[j] = true;
-            _num_fused++;
+            _stats.num_fused++;
 
             EINSUMS_LOG_INFO("ElementWiseFusion: merged scale({}) into scale({}) -> scale({})", was_j, was_i, to_string(composed));
             report(2, fmt::format("merge scale({}) into scale({}) on the same tensor; composed to {}", was_j, was_i, to_string(composed)));
@@ -210,7 +206,7 @@ bool ElementWiseFusion::transform(Graph &graph) {
 
     if (!fused.moved())
         return false;
-    report(1, fmt::format("fused {} element-wise op chain(s)", _num_fused));
+    report(1, fmt::format("fused {} element-wise op chain(s)", _stats.num_fused));
 
     graph.erase_nodes(remove);
     graph.mark_sorted();

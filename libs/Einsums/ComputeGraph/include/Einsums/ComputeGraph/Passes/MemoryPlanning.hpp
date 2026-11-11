@@ -114,18 +114,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
     void                                   print_report(std::ostream &os) const;
 
     /// Total bytes of all per-graph arenas planned in the last run.
-    APIARY_EXPOSE APIARY_GETTER("planned_arena_bytes") [[nodiscard]] size_t planned_arena_bytes() const { return _planned_arena_bytes; }
+    APIARY_EXPOSE APIARY_GETTER("planned_arena_bytes") [[nodiscard]] size_t planned_arena_bytes() const {
+        return _stats.planned_arena_bytes;
+    }
 
     /// Number of intermediates placed at planned arena offsets.
-    APIARY_EXPOSE APIARY_GETTER("num_planned") [[nodiscard]] size_t num_planned() const { return _num_planned; }
+    APIARY_EXPOSE APIARY_GETTER("num_planned") [[nodiscard]] size_t num_planned() const { return _stats.num_planned; }
 
     /// Sum of the planned tensors' own buffer sizes (>= planned_arena_bytes;
     /// the difference is the storage sharing the plan achieves).
-    APIARY_EXPOSE APIARY_GETTER("planned_tensor_bytes") [[nodiscard]] size_t planned_tensor_bytes() const { return _planned_tensor_bytes; }
+    APIARY_EXPOSE APIARY_GETTER("planned_tensor_bytes") [[nodiscard]] size_t planned_tensor_bytes() const {
+        return _stats.planned_tensor_bytes;
+    }
 
     APIARY_EXPOSE APIARY_GETTER("total_memory") [[nodiscard]] size_t total_memory() const { return _total_memory; }
     APIARY_EXPOSE APIARY_GETTER("peak_memory") [[nodiscard]] size_t  peak_memory() const { return _peak_memory; }
@@ -135,14 +139,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// nodes in the order a replay runs them. @ref peak_memory also counts the caller's tensors
     /// and assumes every tensor freed after its last use; this one counts what the replay does.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("managed_peak_memory") [[nodiscard]] size_t managed_peak_memory() const { return _managed_peak_memory; }
+    APIARY_EXPOSE APIARY_GETTER("managed_peak_memory") [[nodiscard]] size_t managed_peak_memory() const {
+        return _stats.managed_peak_memory;
+    }
 
     /// What a replay holds from its start to its end outside @ref managed_peak_memory: the
     /// caller's tensors and any intermediate given storage outside a lifecycle node, as
     /// Graph::last_run reports it in resident_bytes. The program holds the two together at its
     /// peak, and that sum is what has to fit --einsums:max-memory.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("resident_memory") [[nodiscard]] size_t resident_memory() const { return _resident_memory; }
+    APIARY_EXPOSE APIARY_GETTER("resident_memory") [[nodiscard]] size_t resident_memory() const { return _stats.resident_memory; }
 
     /// Device memory: total across all device-resident tensors.
     APIARY_EXPOSE APIARY_GETTER("device_total_memory") [[nodiscard]] size_t device_total_memory() const { return _device_total_memory; }
@@ -162,13 +168,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool   _apply_arena{true};
     size_t _total_memory{0};
     size_t _peak_memory{0};
-    size_t _managed_peak_memory{0};
-    size_t _resident_memory{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t managed_peak_memory{0};
+        size_t resident_memory{0};
+        size_t planned_arena_bytes{0};
+        size_t num_planned{0};
+        size_t planned_tensor_bytes{0};
+    };
+    Stats  _stats{};
     size_t _device_total_memory{0};
     size_t _device_peak_memory{0};
-    size_t _planned_arena_bytes{0};
-    size_t _num_planned{0};
-    size_t _planned_tensor_bytes{0};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

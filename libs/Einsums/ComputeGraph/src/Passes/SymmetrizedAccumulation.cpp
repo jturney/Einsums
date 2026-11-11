@@ -42,17 +42,11 @@ bool is_involution(std::vector<std::string> const &a, std::vector<std::string> c
 } // namespace
 
 std::vector<std::string> SymmetrizedAccumulation::explain() const {
-    if (_num_rewritten == 0) {
+    if (_stats.num_rewritten == 0) {
         return {};
     }
     return {fmt::format("SymmetrizedAccumulation: folded {} symmetrization site(s) of {} matched ({} candidate(s) examined)",
-                        _num_rewritten, _num_matched, _num_candidates)};
-}
-
-void SymmetrizedAccumulation::reset_stats() {
-    _num_candidates = 0;
-    _num_matched    = 0;
-    _num_rewritten  = 0;
+                        _stats.num_rewritten, _stats.num_matched, _stats.num_candidates)};
 }
 
 namespace {
@@ -82,7 +76,7 @@ bool SymmetrizedAccumulation::transform(Graph &graph) {
 
 bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void const *> const &external,
                                       std::unordered_set<void const *> const &inherited_scratch) {
-    PassCounter const rewritten{_num_rewritten};
+    PassCounter const rewritten{_stats.num_rewritten};
     auto const       &nodes   = graph.nodes();
     size_t const      n       = nodes.size();
     auto const        escapes = EscapeAnalysis::over(graph);
@@ -263,7 +257,7 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
             continue;
         }
 
-        ++_num_candidates;
+        ++_stats.num_candidates;
 
         // Interference guard: over [first, last] of the three matched nodes, no
         // OTHER node may write tmp or touch r2 except an additive accumulation
@@ -348,7 +342,7 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
         if (!clean) {
             continue;
         }
-        ++_num_matched;
+        ++_stats.num_matched;
 
         // s2 is axpby2's alpha. Requires the axpby descriptor (cg::axpy
         // carries one too); without it - a pass-built node - the scalar is
@@ -421,7 +415,7 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
         });
 
         remove[s.axpby2_idx] = true; // axpby2 folded into the permute
-        ++_num_rewritten;
+        ++_stats.num_rewritten;
     }
 
     bool modified = false;

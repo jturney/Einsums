@@ -109,49 +109,54 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Tuning; }
     /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
-    void                                      reset_stats() override;
+    void                                      reset_stats() override { _stats = {}; }
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
 
     /// @brief How many deferred tensors this run allocated.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_materialized") [[nodiscard]] size_t num_materialized() const { return _num_materialized; }
+    APIARY_EXPOSE APIARY_GETTER("num_materialized") [[nodiscard]] size_t num_materialized() const { return _stats.num_materialized; }
 
     /// @brief How many of those it also filled.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_initialized") [[nodiscard]] size_t num_initialized() const { return _num_initialized; }
+    APIARY_EXPOSE APIARY_GETTER("num_initialized") [[nodiscard]] size_t num_initialized() const { return _stats.num_initialized; }
 
     /// @brief How many of those it filled whole from a backing (see @ref Graph::annotate_backing).
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_loaded") [[nodiscard]] size_t num_loaded() const { return _num_loaded; }
+    APIARY_EXPOSE APIARY_GETTER("num_loaded") [[nodiscard]] size_t num_loaded() const { return _stats.num_loaded; }
 
     /// @brief How many tensors produced in memory it stored whole into their write backings.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_stored") [[nodiscard]] size_t num_stored() const { return _num_stored; }
+    APIARY_EXPOSE APIARY_GETTER("num_stored") [[nodiscard]] size_t num_stored() const { return _stats.num_stored; }
 
     /// @brief How many update-backed tensors it gave a publish at the end of their graph, which
     ///        makes the value each replay writes the one its storage holds.
     /// @return The count.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("num_published") [[nodiscard]] size_t num_published() const { return _num_published; }
+    APIARY_EXPOSE APIARY_GETTER("num_published") [[nodiscard]] size_t num_published() const { return _stats.num_published; }
 
     /// @brief How many graph-owned deferred tensors no node uses, and which were therefore left unallocated.
     ///
     /// A structural rewrite that dissolves an intermediate keeps its declaration, because a caller
     /// may still hold the handle; what it must not keep is the storage.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_unused") [[nodiscard]] size_t num_unused() const { return _num_unused; }
+    APIARY_EXPOSE APIARY_GETTER("num_unused") [[nodiscard]] size_t num_unused() const { return _stats.num_unused; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_materialized{0};
-    size_t _num_initialized{0};
-    size_t _num_loaded{0};
-    size_t _num_stored{0};
-    size_t _num_published{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_materialized{0};
+        size_t num_initialized{0};
+        size_t num_loaded{0};
+        size_t num_stored{0};
+        size_t num_published{0};
+        size_t num_unused{0};
+    };
+    Stats _stats{};
 
     /// Insert the whole-tensor store after the last writer of each tensor this graph produces in
     /// memory into a write backing. Returns whether it inserted any.
@@ -159,8 +164,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Append the publish of each update-backed tensor this graph declares, after every node, so it
     /// runs once every access of the storage has. Returns whether it appended any.
-    bool   publish_updates(Graph &graph);
-    size_t _num_unused{0};
+    bool publish_updates(Graph &graph);
 };
 
 /**

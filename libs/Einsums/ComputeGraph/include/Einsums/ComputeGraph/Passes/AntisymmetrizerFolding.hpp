@@ -108,23 +108,27 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// A residual is captured as a loop body.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Contractions examined whose operand came from an operator.
-    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] std::size_t num_candidates() const { return _num_candidates; }
+    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] std::size_t num_candidates() const { return _stats.num_candidates; }
 
     /// Contractions rewritten.
-    APIARY_EXPOSE APIARY_GETTER("num_folded") [[nodiscard]] std::size_t num_folded() const { return _num_folded; }
+    APIARY_EXPOSE APIARY_GETTER("num_folded") [[nodiscard]] std::size_t num_folded() const { return _stats.num_folded; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    std::size_t _num_candidates{0};
-    std::size_t _num_folded{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t num_candidates{0};
+        std::size_t num_folded{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

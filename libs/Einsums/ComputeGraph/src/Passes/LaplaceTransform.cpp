@@ -296,13 +296,7 @@ std::string LaplaceTransform::error_tensor_name(std::string const &denominator) 
 
 void LaplaceTransform::reset_stats() {
     RegionRewrite::reset_stats();
-    _num_transformed = 0;
-    _num_copied      = 0;
-    _last_points     = 0;
-    _last_measured   = 0;
-    _pending.clear();
-    _claimed.clear();
-    _dissolve.clear();
+    _stats = {};
 }
 
 void LaplaceTransform::set_epsilon(double epsilon) {
@@ -329,14 +323,15 @@ void LaplaceTransform::set_points(std::int64_t points) {
 }
 
 std::vector<std::string> LaplaceTransform::describe() const {
-    if (_num_transformed == 0) {
+    if (_stats.num_transformed == 0) {
         return {};
     }
     std::vector<std::string> out{
         fmt::format("LaplaceTransform: replaced {} energy denominator(s) with a {}-point quadrature, measured relative error {:.3e}",
-                    _num_transformed, _last_points, _last_measured)};
-    if (_num_copied != 0) {
-        out.push_back(fmt::format("LaplaceTransform: took a copy of {} numerator(s) whose definition something else reads", _num_copied));
+                    _stats.num_transformed, _stats.last_points, _stats.last_measured)};
+    if (_stats.num_copied != 0) {
+        out.push_back(
+            fmt::format("LaplaceTransform: took a copy of {} numerator(s) whose definition something else reads", _stats.num_copied));
     }
     return out;
 }
@@ -346,9 +341,9 @@ bool LaplaceTransform::applicable(Graph const &graph) const {
 }
 
 bool LaplaceTransform::transform(Graph &graph) {
-    _pending.clear();
-    _claimed.clear();
-    _dissolve.clear();
+    _stats.pending.clear();
+    _stats.claimed.clear();
+    _stats.dissolve.clear();
     bool modified = RegionRewrite::transform(graph);
 
     // After the region loop, never inside it: a region is a range of positions in the node
@@ -358,7 +353,7 @@ bool LaplaceTransform::transform(Graph &graph) {
     // top-level graph, which is correct by construction since a quadrature reads a denominator
     // and energies nothing here writes; and in the parent ahead of the Loop node when the region
     // was a loop body, so the rule is fitted once per bound problem rather than per iteration.
-    for (auto const &pending : _pending) {
+    for (auto const &pending : _stats.pending) {
         Graph *body = setup_body_for(graph, pending.label);
         if (body == nullptr) {
             continue; // gated before the rewrite was accepted; this is belt and braces
@@ -366,20 +361,20 @@ bool LaplaceTransform::transform(Graph &graph) {
         pending.emit(graph, *body);
         modified = true;
     }
-    if (!_pending.empty()) {
-        report(1, fmt::format("emitted {} setup bod(y/ies) holding the quadratures", _pending.size()));
+    if (!_stats.pending.empty()) {
+        report(1, fmt::format("emitted {} setup bod(y/ies) holding the quadratures", _stats.pending.size()));
     }
-    _pending.clear();
+    _stats.pending.clear();
 
     // The verified writer chains, erased now that nothing reads what they wrote: the rewrite that
     // accepted them dissolved the direct product that was their only reader. After the region loop
     // for the same reason the setup bodies are, since erasing a node moves every region position.
     // The tensor's own declaration stays, because the caller holds the handle, and an unused
     // deferred intermediate is left unallocated.
-    if (!_dissolve.empty()) {
+    if (!_stats.dissolve.empty()) {
         std::vector<bool> remove(graph.nodes().size(), false);
         std::size_t       erased = 0;
-        for (TensorId const denominator : _dissolve) {
+        for (TensorId const denominator : _stats.dissolve) {
             auto const owner = graph.buffer_of(denominator);
             for (std::size_t position = 0; position < graph.nodes().size(); ++position) {
                 Node const &node = graph.nodes()[position];
@@ -403,18 +398,18 @@ bool LaplaceTransform::transform(Graph &graph) {
         if (erased != 0) {
             graph.erase_nodes(remove);
             graph.note_structural_change();
-            report(1, fmt::format("dissolved {} node(s) forming {} denominator(s)", erased, _dissolve.size()));
+            report(1, fmt::format("dissolved {} node(s) forming {} denominator(s)", erased, _stats.dissolve.size()));
             modified = true;
         }
     }
-    _dissolve.clear();
+    _stats.dissolve.clear();
 
     // A tag nothing claimed is a decline rather than a silence. It is the only report a
     // SLICED denominator can produce: provenance does not cross a view, so the operand the
     // product actually reads carries no tag and the pass never sees a candidate at all.
     std::vector<std::string> unclaimed;
     for (auto const &[id, handle] : graph.tensors_map()) {
-        if (handle.tag.name == kTag && std::ranges::find(_claimed, id) == _claimed.end()) {
+        if (handle.tag.name == kTag && std::ranges::find(_stats.claimed, id) == _stats.claimed.end()) {
             unclaimed.push_back(handle.name);
         }
     }
@@ -423,7 +418,7 @@ bool LaplaceTransform::transform(Graph &graph) {
         note_skip("a tagged denominator has no direct-product consumer whose numerator is a contraction in the same region",
                   fmt::format("tensor '{}'", name));
     }
-    _claimed.clear();
+    _stats.claimed.clear();
     return modified;
 }
 
@@ -1015,7 +1010,7 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
         return true;
     };
 
-    auto const outcomes = quadrature::rewrite_denominators(graph, region.internal, expr, options, _claimed);
+    auto const outcomes = quadrature::rewrite_denominators(graph, region.internal, expr, options, _stats.claimed);
 
     bool        changed = false;
     std::size_t applied = 0;
@@ -1026,26 +1021,26 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
             }
             continue;
         }
-        _pending.push_back(PendingSetup{.label = accepted[applied].setup, .emit = outcome.emit_setup});
+        _stats.pending.push_back(PendingSetup{.label = accepted[applied].setup, .emit = outcome.emit_setup});
         if (outcome.dissolvable_writers) {
-            _dissolve.push_back(outcome.denominator);
+            _stats.dissolve.push_back(outcome.denominator);
         }
         ++applied;
-        ++_num_transformed;
-        _last_points   = outcome.points;
-        _last_measured = outcome.measured;
-        changed        = true;
+        ++_stats.num_transformed;
+        _stats.last_points   = outcome.points;
+        _stats.last_measured = outcome.measured;
+        changed              = true;
         report(2, fmt::format("replaced '{}' with a {}-point quadrature; measured relative error {:.3e}", outcome.name, outcome.points,
                               outcome.measured));
         if (outcome.copied_numerator) {
-            ++_num_copied;
+            ++_stats.num_copied;
             report(2, fmt::format("took a copy of the numerator '{}' multiplies, so the definition stays for its other readers",
                                   outcome.name));
         }
     }
 
     if (changed) {
-        EINSUMS_LOG_INFO("LaplaceTransform: replaced {} energy denominator(s)", _num_transformed);
+        EINSUMS_LOG_INFO("LaplaceTransform: replaced {} energy denominator(s)", _stats.num_transformed);
     }
     return changed;
 }

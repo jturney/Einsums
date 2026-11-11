@@ -182,17 +182,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// Safe on loop bodies / conditional branches: a local rewrite within the
     /// graph it is handed.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of fused stream groups created.
-    [[nodiscard]] size_t num_groups() const { return _num_groups; }
+    [[nodiscard]] size_t num_groups() const { return _stats.num_groups; }
 
     /// Total number of einsum nodes eliminated (fused away).
-    [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+    [[nodiscard]] size_t num_eliminated() const { return _stats.num_eliminated; }
 
     /// Cap on a member output's element count for the given element size.
     ///
@@ -235,8 +235,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     CostModel _cost_model{};
     bool      _has_cost_model{false};
-    size_t    _num_groups{0};
-    size_t    _num_eliminated{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_groups{0};
+        size_t num_eliminated{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

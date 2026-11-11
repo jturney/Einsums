@@ -19,18 +19,14 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 std::vector<std::string> ConstantFolding::explain() const {
-    if (_num_folded == 0) {
+    if (_stats.num_folded == 0) {
         return {};
     }
-    return {fmt::format("ConstantFolding: folded {} node(s) to constants", _num_folded)};
-}
-
-void ConstantFolding::reset_stats() {
-    _num_folded = 0;
+    return {fmt::format("ConstantFolding: folded {} node(s) to constants", _stats.num_folded)};
 }
 
 bool ConstantFolding::transform(Graph &graph) {
-    PassCounter const folded_count{_num_folded};
+    PassCounter const folded_count{_stats.num_folded};
     graph.topological_sort();
 
     auto &nodes = graph.nodes();
@@ -166,12 +162,12 @@ bool ConstantFolding::transform(Graph &graph) {
         }
 
         folded[idx] = true;
-        _num_folded++;
+        _stats.num_folded++;
     }
 
     if (folded_count.moved()) {
         graph.mark_sorted();
-        report(1, fmt::format("folded {} constant node(s)", _num_folded));
+        report(1, fmt::format("folded {} constant node(s)", _stats.num_folded));
     }
 
     return folded_count.moved();

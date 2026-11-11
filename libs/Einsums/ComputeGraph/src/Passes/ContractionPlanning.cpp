@@ -475,12 +475,6 @@ ContractionPlanning::ContractionPlanning(ChainPricing pricing)
 ContractionPlanning::ContractionPlanning(CostModel cost_model) : _cost_model(std::move(cost_model)) {
 }
 
-void ContractionPlanning::reset_stats() {
-    _chains_restructured   = 0;
-    _intermediates_created = 0;
-    _apply_reports.clear();
-}
-
 bool ContractionPlanning::transform(Graph &graph) {
     bool modified = false;
 
@@ -804,7 +798,7 @@ bool ContractionPlanning::transform(Graph &graph) {
                 // lifecycle is name-keyed (already_materialized_in here, FreeInsertion's own
                 // scan, the manifest's bind), so a colliding pair would have one of them answer
                 // for the other.
-                size_t const      first_name  = _intermediates_created;
+                size_t const      first_name  = _stats.intermediates_created;
                 size_t            inter_count = first_name;
                 std::vector<Node> new_nodes;
                 TensorId const    final_tid = chain.back().output_tid;
@@ -835,8 +829,8 @@ bool ContractionPlanning::transform(Graph &graph) {
 
                     size_t const created         = inter_count - first_name;
                     report.intermediates_created = created;
-                    _intermediates_created += created;
-                    _chains_restructured++;
+                    _stats.intermediates_created += created;
+                    _stats.chains_restructured++;
                     modified               = true;
                     restructured_this_scan = true;
 
@@ -871,12 +865,12 @@ bool ContractionPlanning::transform(Graph &graph) {
     // Carry this graph's reports into the per-apply tally before returning:
     // the recursive driver calls run() once per subgraph, and _reports covers
     // one run.
-    _apply_reports.insert(_apply_reports.end(), _reports.begin(), _reports.end());
+    _stats.apply_reports.insert(_stats.apply_reports.end(), _reports.begin(), _reports.end());
 
     if (!_reports.empty()) {
         EINSUMS_LOG_INFO("ContractionPlanning: analyzed {} chains using CPU='{}' GPU='{}', restructured {}", _reports.size(),
-                         _cost_model.cpu.name, _cost_model.gpu.name, _chains_restructured);
-        this->report(1, fmt::format("analyzed {} GEMM chain(s), restructured {}", _reports.size(), _chains_restructured));
+                         _cost_model.cpu.name, _cost_model.gpu.name, _stats.chains_restructured);
+        this->report(1, fmt::format("analyzed {} GEMM chain(s), restructured {}", _reports.size(), _stats.chains_restructured));
     }
 
     return modified;

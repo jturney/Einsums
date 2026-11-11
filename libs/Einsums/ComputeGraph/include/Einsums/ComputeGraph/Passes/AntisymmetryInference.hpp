@@ -76,7 +76,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// A CCSD residual is a loop body, and the guard above is what makes
     /// recursing into one safe.
@@ -85,18 +85,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// WRITES a rule examined, across every kind the rules cover. A plain
     /// contraction counts: R3 asks of every einsum whether its operands carry an
     /// antisymmetry it could pass on, and asking is what makes it a candidate.
-    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] std::size_t num_candidates() const { return _num_candidates; }
+    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] std::size_t num_candidates() const { return _stats.num_candidates; }
 
     /// TENSORS tagged antisymmetric. A tensor rather than a write, because a
     /// tensor built by accumulation is settled by all of its writes together.
-    APIARY_EXPOSE APIARY_GETTER("num_tagged") [[nodiscard]] std::size_t num_tagged() const { return _num_tagged; }
+    APIARY_EXPOSE APIARY_GETTER("num_tagged") [[nodiscard]] std::size_t num_tagged() const { return _stats.num_tagged; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    std::size_t _num_candidates{0};
-    std::size_t _num_tagged{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t num_candidates{0};
+        std::size_t num_tagged{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

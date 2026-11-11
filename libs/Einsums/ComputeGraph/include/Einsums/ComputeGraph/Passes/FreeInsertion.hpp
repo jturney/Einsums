@@ -97,16 +97,20 @@ class EINSUMS_EXPORT FreeInsertion : public OptimizerPass {
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
-    [[nodiscard]] size_t num_freed() const { return _num_freed; }
+    [[nodiscard]] size_t num_freed() const { return _stats.num_freed; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
     size_t _min_bytes;
-    size_t _num_freed{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_freed{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

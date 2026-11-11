@@ -325,14 +325,7 @@ SymbolicCost expression_cost(Graph const &graph, TensorExpr const &expr,
 
 void FactorizationPass::reset_stats() {
     RegionRewrite::reset_stats();
-    _num_factorized = 0;
-    _accept_rung.reset();
-    _num_dissolved = 0;
-    _num_multi     = 0;
-    _num_joint     = 0;
-    _pending.clear();
-    _pending_quadrature.clear();
-    _considered.clear();
+    _stats = {};
 }
 
 FactorizationRegistry &FactorizationPass::registry() const {
@@ -340,13 +333,13 @@ FactorizationRegistry &FactorizationPass::registry() const {
 }
 
 std::vector<std::string> FactorizationPass::describe() const {
-    if (_num_factorized == 0) {
+    if (_stats.num_factorized == 0) {
         return {};
     }
     return {fmt::format("FactorizationPass: re-associated {} contraction(s) around a provider's factors, dissolving {} captured "
                         "intermediate(s) into the cone, {} of them substituting more than one tagged tensor at once and {} decided "
                         "jointly with a quadrature",
-                        _num_factorized, _num_dissolved, _num_multi, _num_joint)};
+                        _stats.num_factorized, _stats.num_dissolved, _stats.num_multi, _stats.num_joint)};
 }
 
 bool FactorizationPass::applicable(Graph const &graph) const {
@@ -356,8 +349,8 @@ bool FactorizationPass::applicable(Graph const &graph) const {
 }
 
 bool FactorizationPass::transform(Graph &graph) {
-    _pending.clear();
-    _considered.clear();
+    _stats.pending.clear();
+    _stats.considered.clear();
     _fits.clear();
     bool modified = RegionRewrite::transform(graph);
 
@@ -369,7 +362,7 @@ bool FactorizationPass::transform(Graph &graph) {
     // tensor no node writes; and in the parent ahead of the Loop node when the region being
     // rewritten was a loop body, so the fitting runs once per bound problem rather than once per
     // iteration.
-    for (auto const &pending : _pending) {
+    for (auto const &pending : _stats.pending) {
         Graph *body = setup_body_for(graph, pending.label);
         if (body == nullptr) {
             continue; // gated before the rewrite was accepted; this is belt and braces
@@ -390,7 +383,7 @@ bool FactorizationPass::transform(Graph &graph) {
     // The quadratures a joint rewrite fitted, behind the fittings for the same reason those go
     // at the front: a body reading tensors nothing here produces depends on nothing this graph
     // computes, and every reader of what it writes comes later.
-    for (auto const &pending : _pending_quadrature) {
+    for (auto const &pending : _stats.pending_quadrature) {
         Graph *body = setup_body_for(graph, pending.label);
         if (body == nullptr) {
             continue;
@@ -398,12 +391,12 @@ bool FactorizationPass::transform(Graph &graph) {
         pending.emit(graph, *body);
         modified = true;
     }
-    if (!_pending.empty() || !_pending_quadrature.empty()) {
-        report(1, fmt::format("emitted {} setup bod(y/ies) holding the fittings and {} holding a quadrature", _pending.size(),
-                              _pending_quadrature.size()));
+    if (!_stats.pending.empty() || !_stats.pending_quadrature.empty()) {
+        report(1, fmt::format("emitted {} setup bod(y/ies) holding the fittings and {} holding a quadrature", _stats.pending.size(),
+                              _stats.pending_quadrature.size()));
     }
-    _pending.clear();
-    _pending_quadrature.clear();
+    _stats.pending.clear();
+    _stats.pending_quadrature.clear();
 
     // A tag no contraction ever offered is a decline rather than a silence. Every other refusal
     // here reports itself because it happens with a candidate in hand; this one happens because
@@ -415,7 +408,7 @@ bool FactorizationPass::transform(Graph &graph) {
         if (handle.tag.name.empty() || !registry().claims(handle.tag.name)) {
             continue;
         }
-        if (std::ranges::find(_considered, id) == _considered.end()) {
+        if (std::ranges::find(_stats.considered, id) == _stats.considered.end()) {
             unclaimed.push_back(handle.name);
         }
     }
@@ -424,7 +417,7 @@ bool FactorizationPass::transform(Graph &graph) {
         note_skip("a tagged tensor is read by no two-operand contraction, so there is nothing to re-associate around its factors",
                   fmt::format("tensor '{}'", name));
     }
-    _considered.clear();
+    _stats.considered.clear();
     return modified;
 }
 
@@ -489,8 +482,8 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         auto const        tagged_index = term.operand_indices[tagged_slot];
         auto const        other_index  = term.operand_indices[other_slot];
 
-        if (std::ranges::find(_considered, tagged_id) == _considered.end()) {
-            _considered.push_back(tagged_id);
+        if (std::ranges::find(_stats.considered, tagged_id) == _stats.considered.end()) {
+            _stats.considered.push_back(tagged_id);
         }
 
         // Every letter this statement already uses, so a provider's new ones cannot collide.
@@ -670,8 +663,8 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         // What each tagged leaf may be replaced by, asked once per tensor rather than once per
         // occurrence: two occurrences of one integral are two grid indices over one fit.
         for (auto &entry : tagged) {
-            if (std::ranges::find(_considered, entry.tensor) == _considered.end()) {
-                _considered.push_back(entry.tensor);
+            if (std::ranges::find(_stats.considered, entry.tensor) == _stats.considered.end()) {
+                _stats.considered.push_back(entry.tensor);
             }
 
             // A tagged tensor this graph writes has one way through, and only one: it is the
@@ -1291,20 +1284,20 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             expr.statements.erase(expr.statements.begin() + static_cast<std::ptrdiff_t>(*entry));
             --position;
         }
-        _num_dissolved += dissolved.size();
+        _stats.num_dissolved += dissolved.size();
 
         for (std::size_t which = 0; which < fits.size(); ++which) {
             if (already_fitted[which]) {
                 continue;
             }
             FactorizationPlan const &plan = tagged[fits[which].first].plans[fits[which].second];
-            _pending.push_back(PendingSetup{
+            _stats.pending.push_back(PendingSetup{
                 .label = labels[which], .factors = factor_ids[which], .emit = plan.emit_setup, .refit = tagged[fits[which].first].refit});
         }
-        ++_num_factorized;
-        _accept_rung = best->rung;
+        ++_stats.num_factorized;
+        _stats.accept_rung = best->rung;
         if (fits.size() > 1) {
-            ++_num_multi;
+            ++_stats.num_multi;
         }
         changed = true;
         report(2, fmt::format("factorized '{}' through {}{}", tagged_name, lead.provider,
@@ -1313,7 +1306,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
 
     (void)region;
     if (changed) {
-        EINSUMS_LOG_INFO("FactorizationPass: re-associated {} contraction(s)", _num_factorized);
+        EINSUMS_LOG_INFO("FactorizationPass: re-associated {} contraction(s)", _stats.num_factorized);
     }
     return changed;
 }
@@ -1408,8 +1401,8 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
     // made this shape invisible the first time it was looked for.
     auto const tagged_index = expr.at(product.operands[tagged_slot]).indices;
 
-    if (std::ranges::find(_considered, tagged_id) == _considered.end()) {
-        _considered.push_back(tagged_id);
+    if (std::ranges::find(_stats.considered, tagged_id) == _stats.considered.end()) {
+        _stats.considered.push_back(tagged_id);
     }
     if (written_anywhere(graph, tagged_id)) {
         note_skip("the tagged tensor is written by this graph, so its factors could go stale", fmt::format("tensor '{}'", tagged_name));
@@ -1718,14 +1711,14 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
     auto const outcomes = quadrature::rewrite_denominators(graph, internal, expr, options, claimed);
     for (auto const &outcome : outcomes) {
         if (outcome.applied && outcome.emit_setup) {
-            _pending_quadrature.push_back(PendingQuadrature{.label = quad.setup, .emit = outcome.emit_setup});
+            _stats.pending_quadrature.push_back(PendingQuadrature{.label = quad.setup, .emit = outcome.emit_setup});
         }
     }
 
-    _pending.push_back(PendingSetup{.label = fit.setup, .factors = factor_ids, .emit = best->plan.emit_setup});
-    ++_num_factorized;
-    _accept_rung = best->rung;
-    ++_num_joint;
+    _stats.pending.push_back(PendingSetup{.label = fit.setup, .factors = factor_ids, .emit = best->plan.emit_setup});
+    ++_stats.num_factorized;
+    _stats.accept_rung = best->rung;
+    ++_stats.num_joint;
     report(1, fmt::format("factorized '{}' through {} and decoupled its denominator in one decision: neither pays alone", tagged_name,
                           best->plan.provider));
     return grew;

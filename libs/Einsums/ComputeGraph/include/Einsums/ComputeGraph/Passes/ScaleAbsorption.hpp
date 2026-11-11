@@ -125,7 +125,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// The absorbed scale becomes the consumer's prefactor, which the consumer was already applying.
     [[nodiscard]] PassTier                 tier() const override { return PassTier::BitwiseExact; }
     [[nodiscard]] std::vector<std::string> explain() const override;
-    void                                   reset_stats() override;
+    void                                   reset_stats() override { _stats = {}; }
 
     /// Safe on loop bodies / conditional branches: a local rewrite within the
     /// graph it is handed.
@@ -133,17 +133,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// The einsum reads whose writer (a folded-away scale) was removed while the
     /// einsum's ab_prefactor was compensated. See OptimizerPass::compensated_reads.
-    [[nodiscard]] std::vector<std::pair<NodeId, TensorId>> compensated_reads() const override { return _compensated; }
+    [[nodiscard]] std::vector<std::pair<NodeId, TensorId>> compensated_reads() const override { return _stats.compensated; }
 
     /// Number of scale nodes eliminated in the last run (dead-removed or folded).
-    APIARY_EXPOSE APIARY_GETTER("num_absorbed") [[nodiscard]] size_t num_absorbed() const { return _num_absorbed; }
+    APIARY_EXPOSE APIARY_GETTER("num_absorbed") [[nodiscard]] size_t num_absorbed() const { return _stats.num_absorbed; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t                                   _num_absorbed{0};
-    std::vector<std::pair<NodeId, TensorId>> _compensated;
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t                                   num_absorbed{0};
+        std::vector<std::pair<NodeId, TensorId>> compensated;
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -292,22 +292,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief How many multi-factor terms the search re-bracketed.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_rebracketed") [[nodiscard]] std::size_t num_rebracketed() const { return _num_rebracketed; }
+    APIARY_EXPOSE APIARY_GETTER("num_rebracketed") [[nodiscard]] std::size_t num_rebracketed() const { return _stats.num_rebracketed; }
 
     /// @brief How many intermediates it introduced for more than one term to share.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_shared") [[nodiscard]] std::size_t num_shared() const { return _num_shared; }
+    APIARY_EXPOSE APIARY_GETTER("num_shared") [[nodiscard]] std::size_t num_shared() const { return _stats.num_shared; }
 
     /// @brief How many captured intermediates it dissolved into their consumers.
     /// @return The count. A definition kept for one consumer and inlined into another is not
     ///         dissolved and is counted by @ref num_copies instead.
-    APIARY_EXPOSE APIARY_GETTER("num_inlined") [[nodiscard]] std::size_t num_inlined() const { return _num_inlined; }
+    APIARY_EXPOSE APIARY_GETTER("num_inlined") [[nodiscard]] std::size_t num_inlined() const { return _stats.num_inlined; }
 
     /// @brief How many times the flattening made a captured value be computed again.
     /// @return The count. A definition every consumer inlined MOVES rather than copies, so the
     ///         consumer that took its place is not a copy and the others are; a definition a
     ///         consumer kept is a copy in each of the consumers that took it.
-    APIARY_EXPOSE APIARY_GETTER("num_copies") [[nodiscard]] std::size_t num_copies() const { return _num_copies; }
+    APIARY_EXPOSE APIARY_GETTER("num_copies") [[nodiscard]] std::size_t num_copies() const { return _stats.num_copies; }
 
     /**
      * @brief Keep and replay plans on this pipeline whatever ``einsums:graph:factorization-cache``
@@ -338,11 +338,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief How many regions replayed a plan instead of searching, this apply.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_cache_hits") [[nodiscard]] std::size_t num_cache_hits() const { return _num_cache_hits; }
+    APIARY_EXPOSE APIARY_GETTER("num_cache_hits") [[nodiscard]] std::size_t num_cache_hits() const { return _stats.num_cache_hits; }
 
     /// @brief How many regions searched because no plan was held for them, this apply.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_cache_misses") [[nodiscard]] std::size_t num_cache_misses() const { return _num_cache_misses; }
+    APIARY_EXPOSE APIARY_GETTER("num_cache_misses") [[nodiscard]] std::size_t num_cache_misses() const { return _stats.num_cache_misses; }
 
     /// @brief How many plans are held.
     /// @return The count, which survives @ref reset_stats and is zeroed only by @ref clear_cache.
@@ -366,7 +366,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      *
      * @return True when the search was cut off.
      */
-    APIARY_EXPOSE APIARY_GETTER("was_cut_off") [[nodiscard]] bool was_cut_off() const { return _cut_off; }
+    APIARY_EXPOSE APIARY_GETTER("was_cut_off") [[nodiscard]] bool was_cut_off() const { return _stats.cut_off; }
 
     /// @brief Zero the per-apply counters.
     void reset_stats() override;
@@ -426,13 +426,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::size_t _max_factors{14};
     bool        _max_readers_explicit{false};
     std::size_t _max_readers{4};
-    std::size_t _num_rebracketed{0};
-    std::size_t _num_shared{0};
-    std::size_t _num_inlined{0};
-    std::size_t _num_copies{0};
-    std::size_t _num_cache_hits{0};
-    std::size_t _num_cache_misses{0};
-    bool        _cut_off{false};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t num_rebracketed{0};
+        std::size_t num_shared{0};
+        std::size_t num_inlined{0};
+        std::size_t num_copies{0};
+        std::size_t num_cache_hits{0};
+        std::size_t num_cache_misses{0};
+        bool        cut_off{false};
+    };
+    Stats _stats{};
 
     std::map<PlanKey, FactorizationPlan> _cache;
 

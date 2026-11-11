@@ -235,18 +235,14 @@ RuleResult propagate_linear_combination(Graph &graph, Node const &node, EscapeAn
 } // namespace
 
 std::vector<std::string> SpacePropagation::explain() const {
-    if (_num_inferred == 0) {
+    if (_stats.num_inferred == 0) {
         return {};
     }
-    return {fmt::format("SpacePropagation: inferred index spaces on {} tensor(s)", _num_inferred)};
-}
-
-void SpacePropagation::reset_stats() {
-    _num_inferred = 0;
+    return {fmt::format("SpacePropagation: inferred index spaces on {} tensor(s)", _stats.num_inferred)};
 }
 
 bool SpacePropagation::transform(Graph &graph) {
-    PassCounter const inferred_count{_num_inferred};
+    PassCounter const inferred_count{_stats.num_inferred};
     graph.topological_sort();
 
     auto const &nodes = graph.nodes();
@@ -264,7 +260,7 @@ bool SpacePropagation::transform(Graph &graph) {
                                                 propagate_permute(graph, node, guard), propagate_linear_combination(graph, node, guard)};
         for (auto const &result : results) {
             if (result.applied) {
-                ++_num_inferred;
+                ++_stats.num_inferred;
             }
             if (!result.skip_reason.empty()) {
                 note_skip(result.skip_reason, result.skip_detail);
@@ -273,8 +269,8 @@ bool SpacePropagation::transform(Graph &graph) {
     }
 
     if (inferred_count.moved()) {
-        EINSUMS_LOG_INFO("SpacePropagation: inferred index spaces on {} tensor(s)", _num_inferred);
-        report(1, fmt::format("inferred index spaces on {} intermediate tensor(s)", _num_inferred));
+        EINSUMS_LOG_INFO("SpacePropagation: inferred index spaces on {} tensor(s)", _stats.num_inferred);
+        report(1, fmt::format("inferred index spaces on {} intermediate tensor(s)", _stats.num_inferred));
     }
 
     // Analysis pass, never changes the node list.

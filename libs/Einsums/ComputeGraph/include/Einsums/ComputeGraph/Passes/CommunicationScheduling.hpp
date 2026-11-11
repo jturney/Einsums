@@ -70,15 +70,19 @@ class EINSUMS_EXPORT CommunicationScheduling : public OptimizerPass {
                NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped |
                NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
     }
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
-    [[nodiscard]] size_t num_scheduled() const { return _num_scheduled; }
+    [[nodiscard]] size_t num_scheduled() const { return _stats.num_scheduled; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_scheduled{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_scheduled{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -23,16 +23,6 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
-void RegionRewrite::reset_stats() {
-    _dumps.clear();
-    _decline_reasons.clear();
-    _cost_mismatches.clear();
-    _sites.clear();
-    _regions_formed    = 0;
-    _regions_rewritten = 0;
-    _regions_declined  = 0;
-}
-
 namespace {
 
 /// The flops of every node in @p nodes that carries a contraction, through the SAME formula the
@@ -58,11 +48,11 @@ SymbolicPoly node_flops(Graph const &graph, std::vector<Node> const &nodes, auto
 } // namespace
 
 void RegionRewrite::decline(std::string_view reason, std::string_view detail) {
-    ++_regions_declined;
+    ++_region_stats.regions_declined;
     note_skip(reason, detail);
-    auto const hit = std::ranges::find_if(_decline_reasons, [&reason](auto const &e) { return e.first == reason; });
-    if (hit == _decline_reasons.end()) {
-        _decline_reasons.emplace_back(std::string(reason), 1);
+    auto const hit = std::ranges::find_if(_region_stats.decline_reasons, [&reason](auto const &e) { return e.first == reason; });
+    if (hit == _region_stats.decline_reasons.end()) {
+        _region_stats.decline_reasons.emplace_back(std::string(reason), 1);
     } else {
         ++hit->second;
     }
@@ -74,17 +64,18 @@ std::vector<std::string> RegionRewrite::explain() const {
     // Formed, rewritten, declined - reported together, because "formed twelve regions and
     // rewrote none" and "formed none" are different findings and only the first one means the
     // region rule is doing its job on this graph.
-    if (_regions_formed != 0) {
-        out.push_back(fmt::format("{}: formed {} region(s), rewrote {}", name(), _regions_formed, _regions_rewritten));
+    if (_region_stats.regions_formed != 0) {
+        out.push_back(
+            fmt::format("{}: formed {} region(s), rewrote {}", name(), _region_stats.regions_formed, _region_stats.regions_rewritten));
     }
-    for (auto const &[reason, count] : _decline_reasons) {
+    for (auto const &[reason, count] : _region_stats.decline_reasons) {
         out.push_back(fmt::format("{}: declined {} region(s): {}", name(), count, reason));
     }
 
     // What each accepted rewrite cost, before and after. Printed at every verbosity because it
     // is one line and it answers the question a rewrite exists to answer; the algebra behind it
     // is what the dump is for.
-    for (auto const &dump : _dumps) {
+    for (auto const &dump : _region_stats.dumps) {
         if (!dump.changed || dump.cost_before.empty()) {
             continue;
         }
@@ -97,7 +88,7 @@ std::vector<std::string> RegionRewrite::explain() const {
 
     // A disagreement between the two derivations is a finding rather than a diagnostic, so it is
     // printed wherever the cost line it contradicts is.
-    for (auto const &line : _cost_mismatches) {
+    for (auto const &line : _region_stats.cost_mismatches) {
         out.push_back(fmt::format("{}: {}", name(), line));
     }
 
@@ -109,7 +100,7 @@ std::vector<std::string> RegionRewrite::explain() const {
 
 std::string RegionRewrite::dump_text() const {
     std::string out;
-    for (auto const &dump : _dumps) {
+    for (auto const &dump : _region_stats.dumps) {
         out += fmt::format("region {} ({} node(s)){}\n  before:\n{}  after:\n{}", dump.region_index, dump.node_count,
                            dump.changed ? "" : " [unchanged]", dump.before, dump.after);
     }
@@ -124,19 +115,20 @@ void RegionRewrite::note_subgraph_sites(Graph &graph) {
     for (auto const &node : graph.nodes()) {
         bool const   setup = node.op_data.get_if<SetupDescriptor>() != nullptr;
         NodeId const owner = node.id;
-        for_each_child_graph(
-            node, [&](Graph const &child) { _sites[&child] = SetupSite{.host = &graph, .owner = owner, .is_setup_body = setup}; });
+        for_each_child_graph(node, [&](Graph const &child) {
+            _region_stats.sites[&child] = SetupSite{.host = &graph, .owner = owner, .is_setup_body = setup};
+        });
     }
 }
 
 bool RegionRewrite::inside_control_flow(Graph const &graph) const {
-    auto const hit = _sites.find(&graph);
-    return hit != _sites.end() && !hit->second.is_setup_body;
+    auto const hit = _region_stats.sites.find(&graph);
+    return hit != _region_stats.sites.end() && !hit->second.is_setup_body;
 }
 
 bool RegionRewrite::setup_may_escape(Graph const &graph, std::vector<TensorId> const &reads) const {
-    auto const hit = _sites.find(&graph);
-    if (hit == _sites.end()) {
+    auto const hit = _region_stats.sites.find(&graph);
+    if (hit == _region_stats.sites.end()) {
         return true;
     }
     if (hit->second.is_setup_body) {
@@ -163,15 +155,16 @@ Graph &RegionRewrite::record_host(Graph &graph) {
     // Walk out to the graph this apply started from. Bounded by the nesting depth, and by the
     // site table having been filled parent-first, so a cycle is not reachable.
     Graph *host = &graph;
-    for (auto hit = _sites.find(host); hit != _sites.end() && hit->second.host != nullptr; hit = _sites.find(host)) {
+    for (auto hit = _region_stats.sites.find(host); hit != _region_stats.sites.end() && hit->second.host != nullptr;
+         hit      = _region_stats.sites.find(host)) {
         host = hit->second.host;
     }
     return *host;
 }
 
 Graph *RegionRewrite::setup_body_for(Graph &graph, std::string label) {
-    auto const hit = _sites.find(&graph);
-    if (hit == _sites.end()) {
+    auto const hit = _region_stats.sites.find(&graph);
+    if (hit == _region_stats.sites.end()) {
         // A top-level graph. Position 0 is correct by construction: a fitting reads tensors
         // nothing here produces, so it depends on nothing this graph computes and every reader of
         // what it writes comes later.
@@ -201,7 +194,7 @@ bool RegionRewrite::transform(Graph &graph) {
     // A setup body is a fitting this framework emitted. Raising it is not obviously wrong, but a
     // rewrite of one has nowhere to hoist a setup of its own and the once-per-bind contract is a
     // property of the node rather than of the algebra inside it, so it is declined by name.
-    if (auto const hit = _sites.find(&graph); hit != _sites.end() && hit->second.is_setup_body) {
+    if (auto const hit = _region_stats.sites.find(&graph); hit != _region_stats.sites.end() && hit->second.is_setup_body) {
         note_skip("the graph is a setup body, whose once-per-bind contract a rewrite cannot restate");
         return false;
     }
@@ -222,8 +215,8 @@ bool RegionRewrite::transform(Graph &graph) {
     // counters once per apply, so a count written here would report whatever the last-visited
     // body contributed and nothing else. That is silent for a graph with one loop and wrong the
     // moment there are two.
-    _regions_formed += regions.size();
-    std::size_t const dumps_before = _dumps.size();
+    _region_stats.regions_formed += regions.size();
+    std::size_t const dumps_before = _region_stats.dumps.size();
     if (regions.empty()) {
         note_skip("the graph holds no run of raisable nodes");
         return false;
@@ -274,7 +267,7 @@ bool RegionRewrite::transform(Graph &graph) {
         // per rewrite without the option being on; an untouched region with dumping off is not
         // worth a record.
         if (dump || changed) {
-            _dumps.push_back(record);
+            _region_stats.dumps.push_back(record);
         }
         if (!changed) {
             continue;
@@ -297,7 +290,7 @@ bool RegionRewrite::transform(Graph &graph) {
         if (auto lowered = lower_region(graph, region, rewritten); !lowered) {
             // The graph is untouched: lower_region builds every node before it
             // erases anything, so a refusal costs the rewrite and nothing else.
-            _dumps.pop_back();
+            _region_stats.dumps.pop_back();
             decline(lowered.error().reason, lowered.error().detail);
             continue;
         }
@@ -309,29 +302,30 @@ bool RegionRewrite::transform(Graph &graph) {
             SymbolicPoly const nodes_after =
                 node_flops(graph, graph.nodes(), [&](Node const &node) { return !before_ids.contains(node.id); });
             if (!(nodes_before == expr_before)) {
-                _cost_mismatches.push_back(fmt::format("region {} reports a before-cost of {} and its nodes cost {}", index,
-                                                       expr_before.to_string(registry), nodes_before.to_string(registry)));
+                _region_stats.cost_mismatches.push_back(fmt::format("region {} reports a before-cost of {} and its nodes cost {}", index,
+                                                                    expr_before.to_string(registry), nodes_before.to_string(registry)));
             }
             if (!(nodes_after == expr_after)) {
-                _cost_mismatches.push_back(fmt::format("region {} reports an after-cost of {} and the nodes it emitted cost {}", index,
-                                                       expr_after.to_string(registry), nodes_after.to_string(registry)));
+                _region_stats.cost_mismatches.push_back(
+                    fmt::format("region {} reports an after-cost of {} and the nodes it emitted cost {}", index,
+                                expr_after.to_string(registry), nodes_after.to_string(registry)));
             }
         }
 
-        ++_regions_rewritten;
+        ++_region_stats.regions_rewritten;
         modified = true;
         report(2, fmt::format("rewrote region {} ({} nodes)", index, region.size()));
     }
 
     if (modified) {
-        report(1, fmt::format("rewrote {} of {} region(s)", _regions_rewritten, _regions_formed));
-        EINSUMS_LOG_INFO("{}: rewrote {} of {} region(s)", name(), _regions_rewritten, _regions_formed);
+        report(1, fmt::format("rewrote {} of {} region(s)", _region_stats.regions_rewritten, _region_stats.regions_formed));
+        EINSUMS_LOG_INFO("{}: rewrote {} of {} region(s)", name(), _region_stats.regions_rewritten, _region_stats.regions_formed);
     }
     // The dumps of THIS graph are in reverse region order because the rewrite is; put them back
     // so a report reads in program order, which is how a person reads a graph. Only this graph's,
     // because the list accumulates across the sub-graph tree and reversing the whole of it would
     // put a parent's regions behind its children's.
-    std::ranges::reverse(_dumps.begin() + static_cast<std::ptrdiff_t>(dumps_before), _dumps.end());
+    std::ranges::reverse(_region_stats.dumps.begin() + static_cast<std::ptrdiff_t>(dumps_before), _region_stats.dumps.end());
     return modified;
 }
 

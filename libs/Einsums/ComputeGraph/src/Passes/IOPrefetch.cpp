@@ -207,15 +207,11 @@ bool process(Graph &graph, size_t &num_prefetched) {
 
 } // namespace
 
-void IOPrefetch::reset_stats() {
-    _num_prefetched = 0;
-}
-
 bool IOPrefetch::transform(Graph &graph) {
-    PassCounter const prefetched{_num_prefetched};
-    bool const        result = process(graph, _num_prefetched);
+    PassCounter const prefetched{_stats.num_prefetched};
+    bool const        result = process(graph, _stats.num_prefetched);
     if (prefetched.moved()) {
-        report(1, fmt::format("prefetched {} DiskRead(s) earlier to overlap I/O with compute", _num_prefetched));
+        report(1, fmt::format("prefetched {} DiskRead(s) earlier to overlap I/O with compute", _stats.num_prefetched));
     }
     return result;
 }

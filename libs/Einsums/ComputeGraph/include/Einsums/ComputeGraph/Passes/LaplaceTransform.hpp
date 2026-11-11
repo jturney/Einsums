@@ -260,7 +260,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief How many denominators were replaced by a quadrature on the last run.
     /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("num_transformed") [[nodiscard]] std::size_t num_transformed() const { return _num_transformed; }
+    APIARY_EXPOSE APIARY_GETTER("num_transformed") [[nodiscard]] std::size_t num_transformed() const { return _stats.num_transformed; }
 
     /**
      * @brief How many numerators the last run took a COPY of rather than dissolving.
@@ -271,15 +271,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      *
      * @return The count.
      */
-    APIARY_EXPOSE APIARY_GETTER("num_numerator_copies") [[nodiscard]] std::size_t num_numerator_copies() const { return _num_copied; }
+    APIARY_EXPOSE APIARY_GETTER("num_numerator_copies") [[nodiscard]] std::size_t num_numerator_copies() const { return _stats.num_copied; }
 
     /// @brief How many quadrature points the last accepted rewrite used.
     /// @return The count, or zero when nothing was rewritten.
-    APIARY_EXPOSE APIARY_GETTER("last_point_count") [[nodiscard]] std::size_t last_point_count() const { return _last_points; }
+    APIARY_EXPOSE APIARY_GETTER("last_point_count") [[nodiscard]] std::size_t last_point_count() const { return _stats.last_points; }
 
     /// @brief The relative error the last accepted rewrite measured, at optimize time.
     /// @return The measured deviation, or zero when nothing was rewritten.
-    APIARY_EXPOSE APIARY_GETTER("last_measured_error") [[nodiscard]] double last_measured_error() const { return _last_measured; }
+    APIARY_EXPOSE APIARY_GETTER("last_measured_error") [[nodiscard]] double last_measured_error() const { return _stats.last_measured; }
 
     /// One energy vector the caller handed over, held type-erased.
     ///
@@ -347,21 +347,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     std::vector<EnergyVector> _energies;
 
-    std::vector<PendingSetup> _pending;
-    std::size_t               _num_transformed{0};
-    std::size_t               _num_copied{0};
-    std::size_t               _last_points{0};
-    double                    _last_measured{0};
-    double                    _epsilon{0}; ///< Zero means "read the option".
-    std::int64_t              _points{0};  ///< Zero means "derive from the tolerance".
-
-    /// Denominators this run has already claimed, so the sweep that reports an unclaimed tag
-    /// does not report one the rewrite took.
-    std::vector<TensorId> _claimed;
-
-    /// Denominators whose writer chain the rewrite verified and whose nodes it may now erase.
-    /// Held until the region loop is over for the reason @ref PendingSetup is.
-    std::vector<TensorId> _dissolve;
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t               num_transformed{0};
+        std::size_t               num_copied{0};
+        std::size_t               last_points{0};
+        double                    last_measured{0};
+        std::vector<PendingSetup> pending;
+        /// Denominators this run has already claimed, so the sweep that reports an unclaimed tag
+        /// does not report one the rewrite took.
+        std::vector<TensorId> claimed;
+        /// Denominators whose writer chain the rewrite verified and whose nodes it may now erase.
+        /// Held until the region loop is over for the reason @ref PendingSetup is.
+        std::vector<TensorId> dissolve;
+    };
+    Stats        _stats{};
+    double       _epsilon{0}; ///< Zero means "read the option".
+    std::int64_t _points{0};  ///< Zero means "derive from the tolerance".
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

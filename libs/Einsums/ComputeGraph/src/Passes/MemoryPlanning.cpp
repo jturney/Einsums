@@ -517,16 +517,8 @@ void plan_tree(Graph &graph, NoteSkip const &note, bool apply, bool repeats, siz
 
 } // namespace
 
-void MemoryPlanning::reset_stats() {
-    _managed_peak_memory  = 0;
-    _resident_memory      = 0;
-    _planned_arena_bytes  = 0;
-    _num_planned          = 0;
-    _planned_tensor_bytes = 0;
-}
-
 bool MemoryPlanning::transform(Graph &graph) {
-    PassCounter const planned{_num_planned};
+    PassCounter const planned{_stats.num_planned};
     // Walk the whole graph tree so loop bodies / conditional branches
     // contribute to the reported footprint. recurse_into_subgraphs() stays
     // false: this pass aggregates here rather than being re-run per
@@ -542,33 +534,34 @@ bool MemoryPlanning::transform(Graph &graph) {
     std::size_t peak_with_arena = 0;
     plan_tree(
         graph, [this](std::string_view reason, std::string_view detail) { note_skip(reason, detail); }, _apply_arena, /*repeats=*/false,
-        graph.resident_bytes(), _planned_arena_bytes, _num_planned, _planned_tensor_bytes, peak_with_arena);
+        graph.resident_bytes(), _stats.planned_arena_bytes, _stats.num_planned, _stats.planned_tensor_bytes, peak_with_arena);
     // The peak the plan holds: an applied arena is held whole, beside what is live at the peak.
     if (_apply_arena) {
         _peak_memory = std::max(_peak_memory, peak_with_arena);
     }
-    _managed_peak_memory = managed_peak(graph, _apply_arena ? _planned_arena_bytes : 0);
-    _resident_memory     = graph.resident_bytes();
+    _stats.managed_peak_memory = managed_peak(graph, _apply_arena ? _stats.planned_arena_bytes : 0);
+    _stats.resident_memory     = graph.resident_bytes();
 
     note(Peak,
          fmt::format("peak host memory {} bytes (of {} total allocated), {} of them graph-managed as a replay holds them, beside {} "
                      "resident throughout{}",
-                     _peak_memory, _total_memory, _managed_peak_memory, _resident_memory,
+                     _peak_memory, _total_memory, _stats.managed_peak_memory, _stats.resident_memory,
                      _device_peak_memory > 0 ? fmt::format(", device peak {} bytes", _device_peak_memory) : std::string{}),
          Decision{.graph = graph.name(),
                   .facts = {Fact{.name = "peak", .value = static_cast<double>(_peak_memory), .unit = "B"},
-                            Fact{.name = "managed_peak", .value = static_cast<double>(_managed_peak_memory), .unit = "B"},
-                            Fact{.name = "resident", .value = static_cast<double>(_resident_memory), .unit = "B"},
+                            Fact{.name = "managed_peak", .value = static_cast<double>(_stats.managed_peak_memory), .unit = "B"},
+                            Fact{.name = "resident", .value = static_cast<double>(_stats.resident_memory), .unit = "B"},
                             Fact{.name = "total", .value = static_cast<double>(_total_memory), .unit = "B"},
                             Fact{.name = "device_peak", .value = static_cast<double>(_device_peak_memory), .unit = "B"}}},
          1);
     if (planned.moved()) {
         Decision    about{.graph = graph.name(),
-                          .facts = {Fact{.name = "arena", .value = static_cast<double>(_planned_arena_bytes), .unit = "B"},
-                                    Fact{.name = "intermediates", .value = static_cast<double>(_num_planned)},
-                                    Fact{.name = "shared", .value = static_cast<double>(_planned_tensor_bytes), .unit = "B"}}};
-        std::string text = fmt::format("{} arena of {} bytes for {} intermediate(s) ({} bytes of buffers shared into it)",
-                                       _apply_arena ? "applied" : "planned", _planned_arena_bytes, _num_planned, _planned_tensor_bytes);
+                          .facts = {Fact{.name = "arena", .value = static_cast<double>(_stats.planned_arena_bytes), .unit = "B"},
+                                    Fact{.name = "intermediates", .value = static_cast<double>(_stats.num_planned)},
+                                    Fact{.name = "shared", .value = static_cast<double>(_stats.planned_tensor_bytes), .unit = "B"}}};
+        std::string text =
+            fmt::format("{} arena of {} bytes for {} intermediate(s) ({} bytes of buffers shared into it)",
+                        _apply_arena ? "applied" : "planned", _stats.planned_arena_bytes, _stats.num_planned, _stats.planned_tensor_bytes);
         if (_apply_arena) {
             applied(Arena, std::move(text), std::move(about), 1);
         } else {
@@ -588,9 +581,10 @@ void MemoryPlanning::print_report(std::ostream &os) const {
         os << fmt::format("  Potential savings:   {} bytes ({:.1f}%)\n", _total_memory - _peak_memory,
                           100.0 * (1.0 - static_cast<double>(_peak_memory) / static_cast<double>(_total_memory)));
     }
-    if (_num_planned > 0) {
+    if (_stats.num_planned > 0) {
         os << fmt::format("  Arena ({}):          {} bytes hosting {} intermediates ({} bytes of buffers)\n",
-                          _apply_arena ? "applied" : "planned", _planned_arena_bytes, _num_planned, _planned_tensor_bytes);
+                          _apply_arena ? "applied" : "planned", _stats.planned_arena_bytes, _stats.num_planned,
+                          _stats.planned_tensor_bytes);
     }
 
     if (_device_total_memory > 0) {

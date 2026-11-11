@@ -150,15 +150,11 @@ size_t StreamContractionFusion::max_output_elems(size_t elem_size) const {
 }
 
 std::vector<std::string> StreamContractionFusion::explain() const {
-    if (_num_groups == 0) {
+    if (_stats.num_groups == 0) {
         return {};
     }
-    return {fmt::format("StreamContractionFusion: loop-fused {} group(s), eliminating {} node(s)", _num_groups, _num_eliminated)};
-}
-
-void StreamContractionFusion::reset_stats() {
-    _num_groups     = 0;
-    _num_eliminated = 0;
+    return {
+        fmt::format("StreamContractionFusion: loop-fused {} group(s), eliminating {} node(s)", _stats.num_groups, _stats.num_eliminated)};
 }
 
 bool StreamContractionFusion::transform(Graph &graph) {
@@ -480,9 +476,9 @@ bool StreamContractionFusion::transform(Graph &graph) {
         for (size_t mi = 1; mi < members.size(); mi++) {
             remove[members[mi].node_index] = true;
             used[members[mi].node_index]   = true;
-            _num_eliminated++;
+            _stats.num_eliminated++;
         }
-        _num_groups++;
+        _stats.num_groups++;
         modified = true;
 
         report(2, fmt::format(
@@ -498,9 +494,9 @@ bool StreamContractionFusion::transform(Graph &graph) {
     graph.erase_nodes(remove);
     graph.topological_sort();
 
-    EINSUMS_LOG_INFO("StreamContractionFusion: fused {} groups, eliminated {} nodes", _num_groups, _num_eliminated);
-    report(1, fmt::format("fused {} stream group(s), replacing {} contractions with {} fused node(s)", _num_groups,
-                          _num_eliminated + _num_groups, _num_groups));
+    EINSUMS_LOG_INFO("StreamContractionFusion: fused {} groups, eliminated {} nodes", _stats.num_groups, _stats.num_eliminated);
+    report(1, fmt::format("fused {} stream group(s), replacing {} contractions with {} fused node(s)", _stats.num_groups,
+                          _stats.num_eliminated + _stats.num_groups, _stats.num_groups));
     return true;
 }
 

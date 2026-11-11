@@ -137,28 +137,16 @@ ThreadPlanning::ThreadPlanning(CostModel cost_model, unsigned max_threads)
     : _cost_model(std::move(cost_model)), _requested_threads(max_threads) {
 }
 
-void ThreadPlanning::reset_stats() {
-    _planned_threads        = 0;
-    _num_widened            = 0;
-    _max_width              = 1;
-    _num_from_timings       = 0;
-    _num_from_model         = 0;
-    _num_route_pinned       = 0;
-    _makespan_before_us     = 0.0;
-    _makespan_after_us      = 0.0;
-    _critical_path_after_us = 0.0;
-    _area_after_us          = 0.0;
-}
-
 std::vector<std::string> ThreadPlanning::explain() const {
-    if (_planned_threads == 0) {
+    if (_stats.planned_threads == 0) {
         return {};
     }
     std::vector<std::string> lines;
-    lines.push_back(fmt::format("planned {} node(s) wide (max width {}) for {} thread(s)", _num_widened, _max_width, _planned_threads));
-    lines.push_back(
-        fmt::format("serial times: {} node(s) from recorded replays, {} from the cost model", _num_from_timings, _num_from_model));
-    lines.push_back(fmt::format("estimated makespan {:.1f} us -> {:.1f} us", _makespan_before_us, _makespan_after_us));
+    lines.push_back(fmt::format("planned {} node(s) wide (max width {}) for {} thread(s)", _stats.num_widened, _stats.max_width,
+                                _stats.planned_threads));
+    lines.push_back(fmt::format("serial times: {} node(s) from recorded replays, {} from the cost model", _stats.num_from_timings,
+                                _stats.num_from_model));
+    lines.push_back(fmt::format("estimated makespan {:.1f} us -> {:.1f} us", _stats.makespan_before_us, _stats.makespan_after_us));
     return lines;
 }
 
@@ -171,30 +159,32 @@ bool ThreadPlanning::transform(Graph &graph) {
         budget.sync_machine_width();
         p = std::max(1U, budget.total());
     }
-    _planned_threads = p;
+    _stats.planned_threads = p;
 
-    SubPlan const top       = plan_graph(graph, p);
-    _makespan_before_us     = top.before_us;
-    _makespan_after_us      = top.makespan_us;
-    _critical_path_after_us = top.cp_us;
-    _area_after_us          = top.area_us;
+    SubPlan const top             = plan_graph(graph, p);
+    _stats.makespan_before_us     = top.before_us;
+    _stats.makespan_after_us      = top.makespan_us;
+    _stats.critical_path_after_us = top.cp_us;
+    _stats.area_after_us          = top.area_us;
 
     // Which bound is binding is the whole diagnosis: a plan whose area already
     // matches its critical path has nothing widening can buy, and only these
     // two numbers say whether that is the graph's fault or the model's.
     report(1, fmt::format("critical path {:.1f} -> {:.1f} us, area {:.1f} -> {:.1f} us, serial sum {:.1f} us "
                           "({} node(s) measured, {} from the model)",
-                          top.cp_before_us, top.cp_us, top.area_before_us, top.area_us, top.serial_us, _num_from_timings, _num_from_model));
+                          top.cp_before_us, top.cp_us, top.area_before_us, top.area_us, top.serial_us, _stats.num_from_timings,
+                          _stats.num_from_model));
 
-    if (_num_route_pinned > 0) {
-        report(1, fmt::format("pinned the kernel route of {} contraction node(s), so widths move without moving bits", _num_route_pinned));
+    if (_stats.num_route_pinned > 0) {
+        report(1, fmt::format("pinned the kernel route of {} contraction node(s), so widths move without moving bits",
+                              _stats.num_route_pinned));
     }
 
-    if (_num_widened == 0) {
+    if (_stats.num_widened == 0) {
         report(1, fmt::format("no node earned a width above 1 on {} thread(s)", p));
     } else {
-        report(1, fmt::format("widened {} node(s) up to width {}; estimated makespan {:.1f} us -> {:.1f} us", _num_widened, _max_width,
-                              _makespan_before_us, _makespan_after_us));
+        report(1, fmt::format("widened {} node(s) up to width {}; estimated makespan {:.1f} us -> {:.1f} us", _stats.num_widened,
+                              _stats.max_width, _stats.makespan_before_us, _stats.makespan_after_us));
     }
 
     // A width is metadata the executor reads; nothing structural moved, so the
@@ -284,9 +274,9 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
                 measured *= speedup_at(c, profile, w);
             }
             c.t1_us = measured;
-            _num_from_timings++;
+            _stats.num_from_timings++;
         } else {
-            _num_from_model++;
+            _stats.num_from_model++;
             // Priced by the body it runs, so a loop full of fat work sits on the
             // critical path where it belongs even though the container itself is
             // width 1. Every other node is priced by the shared model.
@@ -310,7 +300,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
             if (auto *desc = node.op_data.get_if<EinsumDescriptor>();
                 pin != packed_gemm::KernelRoute::Adaptive && desc != nullptr && desc->site) {
                 desc->site->route = pin;
-                _num_route_pinned++;
+                _stats.num_route_pinned++;
                 report(3, fmt::format("node '{}' pinned to the {} kernel route", node.label,
                                       pin == packed_gemm::KernelRoute::Packed ? "packed" : "vendor"));
             }
@@ -488,8 +478,8 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         schedule.admission_priority = std::max<std::int64_t>(1, std::llround(bottom[i] * 1e3));
         graph.set_schedule(i, schedule);
         if (width[i] > 1) {
-            _num_widened++;
-            _max_width = std::max(_max_width, width[i]);
+            _stats.num_widened++;
+            _stats.max_width = std::max(_stats.max_width, width[i]);
             report(2, fmt::format("node '{}' at width {} ({:.1f} us -> {:.1f} us)", nodes[i].label, width[i], cost[i].t1_us, times[i]));
         }
     }

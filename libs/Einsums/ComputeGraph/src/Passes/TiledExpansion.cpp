@@ -161,31 +161,22 @@ TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Den
 }
 
 std::vector<std::string> TiledExpansion::explain() const {
-    if (_num_expanded == 0 && _num_declined == 0) {
+    if (_stats.num_expanded == 0 && _stats.num_declined == 0) {
         return {};
     }
     std::vector<std::string> out;
-    if (_num_expanded != 0) {
+    if (_stats.num_expanded != 0) {
         out.push_back(fmt::format("TiledExpansion: expanded {} tiled op(s) into {} per-tile node(s) ({} screened out as structurally "
                                   "zero, {} densified, {} fused, {} gather(s) reused)",
-                                  _num_expanded, _num_tile_nodes, _num_screened, _num_densified, _num_fused, _num_gathers_reused));
+                                  _stats.num_expanded, _stats.num_tile_nodes, _stats.num_screened, _stats.num_densified, _stats.num_fused,
+                                  _stats.num_gathers_reused));
     }
-    if (_num_declined != 0) {
+    if (_stats.num_declined != 0) {
         out.push_back(fmt::format(
             "TiledExpansion: declined {} tiled op(s) (over node budget, tile sparsity undecidable, or shared with another graph)",
-            _num_declined));
+            _stats.num_declined));
     }
     return out;
-}
-
-void TiledExpansion::reset_stats() {
-    _num_expanded       = 0;
-    _num_tile_nodes     = 0;
-    _num_declined       = 0;
-    _num_screened       = 0;
-    _num_densified      = 0;
-    _num_fused          = 0;
-    _num_gathers_reused = 0;
 }
 
 bool TiledExpansion::transform(Graph &graph) {
@@ -612,7 +603,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 if (!planning) {
                     return; // sweep 0 tracks tile sets only; sweep 1 repeats the walk and reports
                 }
-                ++_num_declined;
+                ++_stats.num_declined;
                 report(2, fmt::format("declining '{}': {}", src.label, why));
                 EINSUMS_LOG_DEBUG("TiledExpansion: declining node {} - {}", src.id, why);
             };
@@ -1259,7 +1250,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                     // contribution at all it is simply never created, and the next
                     // contraction sees it as absent.
                     if (planning) {
-                        ++_num_screened;
+                        ++_stats.num_screened;
                     }
                     continue;
                 }
@@ -1372,7 +1363,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
             alive[p]        = false;
             Node const &nd  = nodes[plans[p].index];
             auto const  why = "a tiled operand is shared with another graph of the tree, whose nodes this graph's plan cannot see";
-            ++_num_declined;
+            ++_stats.num_declined;
             report(2, fmt::format("declining '{}': {}", nd.label, why));
             EINSUMS_LOG_DEBUG("TiledExpansion: declining node {} - {}", nd.id, why);
         }
@@ -1415,7 +1406,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 changed         = true;
                 Node const &nd  = nodes[plans[p].index];
                 auto const  why = "a tiled operand is also used by a node that cannot expand, so expanding would drop that dependency";
-                ++_num_declined;
+                ++_stats.num_declined;
                 report(2, fmt::format("declining '{}': {}", nd.label, why));
                 EINSUMS_LOG_DEBUG("TiledExpansion: declining node {} - {}", nd.id, why);
             }
@@ -1508,7 +1499,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
         }
         for (auto const &have : gathered) {
             if (have.dims == dims && have.sources == ins) {
-                ++_num_gathers_reused;
+                ++_stats.num_gathers_reused;
                 return have.buffer;
             }
         }
@@ -1702,7 +1693,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 tids.push_back(v.tile_id(co));
             }
             out.push_back(emit_fused_scale(std::move(tids), pf, dt, fmt::format("tile_scale(x{})", coords.size())));
-            ++_num_fused;
+            ++_stats.num_fused;
             return;
         }
         for (auto const &co : coords) {
@@ -1727,7 +1718,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
             bool const densify =
                 !pl.a_coords.empty() && (_densify == Densify::Always || (_densify == Densify::Auto && pl.est_dense_us < pl.est_tiled_us));
             if (densify && emit_densified(pl, emitted)) {
-                ++_num_densified;
+                ++_stats.num_densified;
                 report(2, fmt::format("densified '{}': {} tile contractions -> gather+einsum+scatter (est {:.1f} us vs {:.1f} us)",
                                       nodes[pl.index].label, pl.a_coords.size(), pl.est_dense_us, pl.est_tiled_us));
                 append_scales(pl.dst, pl.leftover, pl.leftover_pf, pl.dtype, pl.elem_size, emitted);
@@ -1759,7 +1750,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 }
                 emitted.push_back(
                     emit_fused_axpy(std::move(xs), std::move(ys), pl.alpha, pl.dtype, fmt::format("tile_axpy(x{})", pl.coords.size())));
-                ++_num_fused;
+                ++_stats.num_fused;
                 break;
             }
             for (auto const &coord : pl.coords) {
@@ -1776,7 +1767,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
             bool const densify =
                 !pl.a_coords.empty() && (_densify == Densify::Always || (_densify == Densify::Auto && pl.est_dense_us < pl.est_tiled_us));
             if (densify && emit_densified_permute(pl, emitted)) {
-                ++_num_densified;
+                ++_stats.num_densified;
                 report(2, fmt::format("densified '{}': {} tile permutes -> gather+permute+scatter (est {:.1f} us vs {:.1f} us)",
                                       nodes[pl.index].label, pl.a_coords.size(), pl.est_dense_us, pl.est_tiled_us));
                 break;
@@ -1824,7 +1815,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 }
                 emitted.push_back(emit_fused_divide(std::move(as_), std::move(bs), std::move(cs), pl.alpha, pl.beta, pl.dtype,
                                                     fmt::format("tile_divide(x{})", pl.coords.size())));
-                ++_num_fused;
+                ++_stats.num_fused;
             } else {
                 for (auto const &coord : pl.coords) {
                     emitted.push_back(emit_tile_divide(pl.src_a.tile_id(coord), pl.src_b.tile_id(coord), pl.dst.tile_id(coord), pl.alpha,
@@ -1844,8 +1835,8 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
             }
         }
 
-        _num_tile_nodes += emitted.size();
-        ++_num_expanded;
+        _stats.num_tile_nodes += emitted.size();
+        ++_stats.num_expanded;
         remove[pl.index] = true;
         inserts.emplace_back(pl.index, std::move(emitted));
         modified = true;
@@ -1860,11 +1851,12 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
     graph.replace_nodes(remove, std::move(inserts));
     graph.topological_sort();
 
-    EINSUMS_LOG_INFO("TiledExpansion: expanded {} tiled einsum(s) into {} per-tile nodes ({} declined)", _num_expanded, _num_tile_nodes,
-                     _num_declined);
+    EINSUMS_LOG_INFO("TiledExpansion: expanded {} tiled einsum(s) into {} per-tile nodes ({} declined)", _stats.num_expanded,
+                     _stats.num_tile_nodes, _stats.num_declined);
     report(1, fmt::format("expanded {} tiled op(s) into {} node(s) ({} densified, {} elementwise group(s) fused, {} gather(s) reused), "
                           "declined {}",
-                          _num_expanded, _num_tile_nodes, _num_densified, _num_fused, _num_gathers_reused, _num_declined));
+                          _stats.num_expanded, _stats.num_tile_nodes, _stats.num_densified, _stats.num_fused, _stats.num_gathers_reused,
+                          _stats.num_declined));
     return true;
 }
 

@@ -261,23 +261,16 @@ RuntimeTensor<double> &BasisTruncation::energies() {
     return *_energies;
 }
 
-void BasisTruncation::reset_stats() {
-    _kept          = 0;
-    _num_truncated = 0;
-    _correction    = 0.0;
-    _occupations.clear();
-    _projected.clear();
-}
-
 std::vector<std::string> BasisTruncation::explain() const {
-    if (_num_truncated == 0) {
+    if (_stats.num_truncated == 0) {
         return {};
     }
     std::vector<std::string> lines{fmt::format("BasisTruncation: kept {} of {} natural orbital(s) of '{}' above an occupation of {:g}",
-                                               _kept, _amplitudes.has_value() ? _amplitudes->dim(1) : 0, _virtual_space, occupation())};
-    if (!_projected.empty()) {
+                                               _stats.kept, _amplitudes.has_value() ? _amplitudes->dim(1) : 0, _virtual_space,
+                                               occupation())};
+    if (!_stats.projected.empty()) {
         lines.push_back(fmt::format("BasisTruncation: projected {} into '{}', removing {:.4e} of correlation energy",
-                                    fmt::join(_projected, ", "), space_name(), _correction));
+                                    fmt::join(_stats.projected, ", "), space_name(), _stats.correction));
     }
     return lines;
 }
@@ -320,7 +313,7 @@ std::pair<std::vector<double>, std::vector<double>> BasisTruncation::ordinary_tr
         return {}; // Only reachable from run(), which has already refused without both.
     }
     std::size_t const nvir = _amplitudes->dim(1);
-    std::size_t const kept = _kept;
+    std::size_t const kept = _stats.kept;
 
     Tensor<double, 2> natural = negated_density(*_amplitudes);
     Tensor<double, 1> values("fno_values", static_cast<int>(nvir));
@@ -378,7 +371,7 @@ expected<double, std::string> BasisTruncation::measure_correction(std::vector<do
     }
     std::size_t const                nocc = _amplitudes->dim(0);
     std::size_t const                nvir = _amplitudes->dim(1);
-    std::size_t const                kept = _kept;
+    std::size_t const                kept = _stats.kept;
     RuntimeTensorView<double> const &t    = *_amplitudes;
     RuntimeTensorView<double> const &fock = *_fock;
 
@@ -471,7 +464,7 @@ void BasisTruncation::emit_setup(Graph &body, std::vector<Target> const &targets
     }
     std::size_t const               nocc = _amplitudes->dim(0);
     std::size_t const               nvir = _amplitudes->dim(1);
-    std::size_t const               kept = _kept;
+    std::size_t const               kept = _stats.kept;
     RuntimeTensorView<double> const t    = *_amplitudes;
     RuntimeTensorView<double> const fock = *_fock;
 
@@ -584,20 +577,20 @@ bool BasisTruncation::transform(Graph &graph) {
         note_skip("the density could not be formed", spectrum.error());
         return false;
     }
-    _occupations             = std::move(*spectrum);
+    _stats.occupations       = std::move(*spectrum);
     std::size_t const nvir   = _amplitudes->dim(1);
     double const      cutoff = occupation();
-    _kept                    = 0;
-    for (double const value : _occupations) {
+    _stats.kept              = 0;
+    for (double const value : _stats.occupations) {
         if (value > cutoff) {
-            ++_kept;
+            ++_stats.kept;
         }
     }
-    if (_kept == 0) {
+    if (_stats.kept == 0) {
         note_skip("an occupation cutoff keeps no natural orbital at all", fmt::format("cutoff {:g}", cutoff));
         return false;
     }
-    if (_kept == nvir) {
+    if (_stats.kept == nvir) {
         note_skip("an occupation cutoff drops no natural orbital, so the truncation would be a rotation rather than a truncation",
                   fmt::format("cutoff {:g} against {} orbital(s)", cutoff, nvir));
         return false;
@@ -606,11 +599,11 @@ bool BasisTruncation::transform(Graph &graph) {
     // The pass's own tensors, sized here because this is where the count is known. A caller cannot
     // size a buffer for a count they do not yet have, which is why these are not handed over the
     // way a measurement destination is.
-    _transformation = std::make_shared<RuntimeTensor<double>>(transformation_name(), std::vector<std::size_t>{nvir, _kept});
-    _energies       = std::make_shared<RuntimeTensor<double>>(energies_name(), std::vector<std::size_t>{_kept});
-    _keep           = std::make_shared<RuntimeTensor<double>>(keep_matrix_name(), std::vector<std::size_t>{nvir, _kept});
+    _transformation = std::make_shared<RuntimeTensor<double>>(transformation_name(), std::vector<std::size_t>{nvir, _stats.kept});
+    _energies       = std::make_shared<RuntimeTensor<double>>(energies_name(), std::vector<std::size_t>{_stats.kept});
+    _keep           = std::make_shared<RuntimeTensor<double>>(keep_matrix_name(), std::vector<std::size_t>{nvir, _stats.kept});
     _keep->zero();
-    for (std::size_t which = 0; which < _kept; ++which) {
+    for (std::size_t which = 0; which < _stats.kept; ++which) {
         (*_keep)(which, which) = 1.0;
     }
 
@@ -626,11 +619,11 @@ bool BasisTruncation::transform(Graph &graph) {
     // would have written anyway.
     auto const [rotation, semicanonical] = ordinary_truncation();
     for (std::size_t a = 0; a < nvir; ++a) {
-        for (std::size_t z = 0; z < _kept; ++z) {
-            (*_transformation)(a, z) = rotation[a * _kept + z];
+        for (std::size_t z = 0; z < _stats.kept; ++z) {
+            (*_transformation)(a, z) = rotation[a * _stats.kept + z];
         }
     }
-    for (std::size_t z = 0; z < _kept; ++z) {
+    for (std::size_t z = 0; z < _stats.kept; ++z) {
         (*_energies)(z) = semicanonical[z];
     }
 
@@ -862,7 +855,7 @@ bool BasisTruncation::transform(Graph &graph) {
         TensorHandle const      *handle = graph.find_tensor(candidate->id);
         std::vector<std::size_t> dims   = handle->dims;
         for (std::size_t const axis : candidate->axes) {
-            dims[axis] = _kept;
+            dims[axis] = _stats.kept;
         }
         auto &destination = graph.declare_runtime_tensor<double>(projected_name(candidate->name), dims, /*intermediate=*/true);
 
@@ -918,7 +911,7 @@ bool BasisTruncation::transform(Graph &graph) {
     for (auto const &target : targets) {
         graph.get_or_create_slot(*target.destination, target.projected);
         repoint(target.source, target.projected);
-        _projected.push_back(projected_name(target.name));
+        _stats.projected.push_back(projected_name(target.name));
     }
     std::string replaced_energies;
     if (!to_replace.empty()) {
@@ -983,7 +976,7 @@ bool BasisTruncation::transform(Graph &graph) {
             handle != nullptr && handle->alloc_state == AllocState::Deferred) {
             std::vector<std::size_t> dims = handle->dims;
             for (std::size_t const axis : candidate.axes) {
-                dims[axis] = _kept;
+                dims[axis] = _stats.kept;
             }
             graph.resize_intermediate(candidate.id, dims, name());
         }
@@ -996,23 +989,24 @@ bool BasisTruncation::transform(Graph &graph) {
     graph.rederive_intermediate_extents();
 
     // ── What it cost ─────────────────────────────────────────────────────────
-    _correction = 0.0;
+    _stats.correction = 0.0;
     if (!targets.empty()) {
         auto measured = measure_correction(rotation, semicanonical);
         if (!measured) {
             note_skip("the correlation energy the truncation removes could not be measured", measured.error());
             return false;
         }
-        _correction = *measured;
-        approximate(graph, make_approximation_record(name(), ApproximationEffect::EnergyLike, cutoff, std::abs(_correction), {},
+        _stats.correction = *measured;
+        approximate(graph, make_approximation_record(name(), ApproximationEffect::EnergyLike, cutoff, std::abs(_stats.correction), {},
                                                      {_virtual_space, space_name()}, body.name(), ApproximationOrigin::Measured));
     }
 
-    ++_num_truncated;
-    report(1, fmt::format("kept {} of {} natural orbital(s) of '{}' above an occupation of {:g}", _kept, nvir, _virtual_space, cutoff));
+    ++_stats.num_truncated;
+    report(1,
+           fmt::format("kept {} of {} natural orbital(s) of '{}' above an occupation of {:g}", _stats.kept, nvir, _virtual_space, cutoff));
     if (!targets.empty()) {
         report(1, fmt::format("projected {} tensor(s) into '{}' and measured a correlation energy effect of {:.4e}", targets.size(),
-                              space_name(), _correction));
+                              space_name(), _stats.correction));
     }
     if (!replaced_energies.empty()) {
         report(1, fmt::format("replaced the orbital energies '{}' with the semicanonical ones the setup produces", replaced_energies));

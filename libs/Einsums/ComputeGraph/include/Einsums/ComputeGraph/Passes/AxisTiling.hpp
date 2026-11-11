@@ -268,7 +268,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] PassTier tier() const override { return PassTier::ReAssociating; }
 
     /// @copydoc OptimizerPass::reset_stats
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
@@ -317,59 +317,61 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @ref explain names every one.
     /// @return The count, zero when the pass declined.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("num_tiled") [[nodiscard]] std::size_t num_tiled() const noexcept { return _num_tiled; }
+    APIARY_EXPOSE APIARY_GETTER("num_tiled") [[nodiscard]] std::size_t num_tiled() const noexcept { return _stats.num_tiled; }
 
     /// @brief The sliced axes of the last decision, named ``tensor[position]``.
     /// @return One entry per sliced axis, outermost first.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("axis_names") [[nodiscard]] std::vector<std::string> axis_names() const { return _axis_names; }
+    APIARY_EXPOSE APIARY_GETTER("axis_names") [[nodiscard]] std::vector<std::string> axis_names() const { return _stats.axis_names; }
 
     /// @brief The index letter each sliced axis carries, where a contraction names one.
     /// @return One entry per sliced axis, empty where no node names the axis with a letter.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("axis_letters") [[nodiscard]] std::vector<std::string> axis_letters() const { return _axis_letters; }
+    APIARY_EXPOSE APIARY_GETTER("axis_letters") [[nodiscard]] std::vector<std::string> axis_letters() const { return _stats.axis_letters; }
 
     /// @brief The extent of each sliced axis.
     /// @return One entry per sliced axis, in the same order as @ref axis_names.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("axis_extents") [[nodiscard]] std::vector<std::int64_t> axis_extents() const { return _axis_extents; }
+    APIARY_EXPOSE APIARY_GETTER("axis_extents") [[nodiscard]] std::vector<std::int64_t> axis_extents() const { return _stats.axis_extents; }
 
     /// @brief How many slices the chosen axes cut the program into.
     /// @return The product of the sliced extents, zero when the pass declined.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("slice_count") [[nodiscard]] std::size_t slice_count() const noexcept { return _slice_count; }
+    APIARY_EXPOSE APIARY_GETTER("slice_count") [[nodiscard]] std::size_t slice_count() const noexcept { return _stats.slice_count; }
 
     /// @brief How many slices one iteration of the emitted loop handles.
     /// @return The chunk depth, the product of the block extents for a range emission, zero when
     ///         the pass declined.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("depth") [[nodiscard]] std::size_t depth() const noexcept { return _depth; }
+    APIARY_EXPOSE APIARY_GETTER("depth") [[nodiscard]] std::size_t depth() const noexcept { return _stats.depth; }
 
     /// @brief How many iterations the emitted loops run.
     /// @return The iterations summed over every emitted loop, which is @ref slice_count divided
     ///         by @ref depth when the chunks divide the slices, zero when the pass declined.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("iterations") [[nodiscard]] std::size_t iterations() const noexcept { return _iterations; }
+    APIARY_EXPOSE APIARY_GETTER("iterations") [[nodiscard]] std::size_t iterations() const noexcept { return _stats.iterations; }
 
     /// @brief The largest single intermediate any examined graph declared before the rewrite, in bytes.
     /// @return The size over the graph and every loop body the pass visited, zero when none was examined.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("largest_before") [[nodiscard]] std::size_t largest_before() const noexcept { return _largest_before; }
+    APIARY_EXPOSE APIARY_GETTER("largest_before") [[nodiscard]] std::size_t largest_before() const noexcept {
+        return _stats.largest_before;
+    }
 
     /// @brief The largest single intermediate the body declares after the rewrite, in bytes.
     /// @return The size at the chosen depth, zero when the pass declined.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("largest_after") [[nodiscard]] std::size_t largest_after() const noexcept { return _largest_after; }
+    APIARY_EXPOSE APIARY_GETTER("largest_after") [[nodiscard]] std::size_t largest_after() const noexcept { return _stats.largest_after; }
 
     /// @brief The intermediates the rewrite streams, by name.
     /// @return One entry per re-declared tensor, in region order.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("streamed") [[nodiscard]] std::vector<std::string> streamed() const { return _streamed; }
+    APIARY_EXPOSE APIARY_GETTER("streamed") [[nodiscard]] std::vector<std::string> streamed() const { return _stats.streamed; }
 
     /// @brief The tensors the rewrite left whole, by name.
     /// @return One entry per tensor read or written without a sliced axis.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("whole") [[nodiscard]] std::vector<std::string> whole() const { return _whole; }
+    APIARY_EXPOSE APIARY_GETTER("whole") [[nodiscard]] std::vector<std::string> whole() const { return _stats.whole; }
 
     /// @brief How the last decision emits a chunk.
     /// @return ``"range"`` when some sliced axis is cut into blocks the body keeps as an axis,
@@ -377,37 +379,39 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     ///         their diagonal run, ``"grouped"`` when every sliced axis is a point and a chunk is one
     ///         grouped node per family, and an empty string when the pass declined.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("emission") [[nodiscard]] std::string emission() const { return _emission; }
+    APIARY_EXPOSE APIARY_GETTER("emission") [[nodiscard]] std::string emission() const { return _stats.emission; }
 
     /// @brief The block extent of each sliced axis.
     /// @return One entry per sliced axis, in the same order as @ref axis_names: the extent of a
     ///         full block of a ranged axis, and one for an axis taken a point at a time. Empty when
     ///         the pass declined or the emission is grouped.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("block_extents") [[nodiscard]] std::vector<std::int64_t> block_extents() const { return _block_extents; }
+    APIARY_EXPOSE APIARY_GETTER("block_extents") [[nodiscard]] std::vector<std::int64_t> block_extents() const {
+        return _stats.block_extents;
+    }
 
     /// @brief How many loops the rewrite emitted.
     /// @return One for a grouped emission or a range emission whose blocks divide their axes, up to
     ///         four for two ranged axes with remainders, zero when the pass declined.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("loops") [[nodiscard]] std::size_t loops() const noexcept { return _loops; }
+    APIARY_EXPOSE APIARY_GETTER("loops") [[nodiscard]] std::size_t loops() const noexcept { return _stats.loops; }
 
     /// @brief The sign a triangle's mirrored tiles carry.
     /// @return +1 when the region's contribution is symmetric under exchanging its two sliced axes,
     ///         -1 when antisymmetric, and 0 when the last decision is not a triangle.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("triangle_sign") [[nodiscard]] int triangle_sign() const noexcept { return _triangle_sign; }
+    APIARY_EXPOSE APIARY_GETTER("triangle_sign") [[nodiscard]] int triangle_sign() const noexcept { return _stats.triangle_sign; }
 
     /// @brief The tensor the reduction accumulates into across iterations, if there is one.
     /// @return Its name, or an empty string when the region has no such reduction.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("accumulator") [[nodiscard]] std::string accumulator() const { return _accumulator; }
+    APIARY_EXPOSE APIARY_GETTER("accumulator") [[nodiscard]] std::string accumulator() const { return _stats.accumulator; }
 
     /// @brief The tensors a contraction of any tiled region sums one of its sliced axes into.
     /// @return Their names. Each is scaled by its contraction's destination prefactor once, before
     ///         the loop, and added to at every iteration; empty when no contraction sums a sliced axis.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("summed_into") [[nodiscard]] std::vector<std::string> summed_into() const { return _summed_into; }
+    APIARY_EXPOSE APIARY_GETTER("summed_into") [[nodiscard]] std::vector<std::string> summed_into() const { return _stats.summed_into; }
 
   protected:
     /// @copydoc OptimizerPass::run
@@ -474,7 +478,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief The bytes of every tensor the tree around @p graph names, each counted once, and
     ///        the span of @p graph's statements each of its intermediates is held for.
     ///
-    /// The tree is the one whose root this pass has walked out to through @ref _enclosing, so a
+    /// The tree is the one whose root this pass has walked out to through ``_stats.enclosing``, so a
     /// loop body counts its parent's tensors too. A view owns no storage and is not counted, and
     /// neither is a tensor no node of its graph reads or writes, which is never allocated.
     /// @param[in] graph A graph of the tree, in the order its spans are positions of.
@@ -490,31 +494,34 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     std::optional<CostModel> _cost_model;
 
-    std::size_t               _num_tiled{0};
-    std::size_t               _slice_count{0};
-    std::size_t               _depth{0};
-    std::size_t               _iterations{0};
-    std::size_t               _largest_before{0};
-    std::size_t               _largest_after{0};
-    std::vector<std::string>  _axis_names;
-    std::vector<std::string>  _axis_letters;
-    std::vector<std::int64_t> _axis_extents;
-    std::vector<std::string>  _streamed;
-    std::vector<std::string>  _whole;
-    /// One line per declared result over its cap that was held whole; reported at every
-    /// verbosity, because the fix is in the caller's declaration and nothing else says so.
-    std::vector<std::string>  _held_results;
-    std::string               _accumulator;
-    std::vector<std::string>  _summed_into;
-    std::string               _emission;
-    std::vector<std::int64_t> _block_extents;
-    std::size_t               _loops{0};
-    int                       _triangle_sign{0};
-    std::vector<std::string>  _regions;
-
-    /// For every graph this apply has visited, the graph that holds it and the position of the
-    /// node there that holds it, so a run on a loop body can resolve what its parent declared.
-    std::unordered_map<Graph const *, std::pair<Graph *, std::size_t>> _enclosing;
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::size_t               num_tiled{0};
+        std::size_t               slice_count{0};
+        std::size_t               depth{0};
+        std::size_t               iterations{0};
+        std::size_t               largest_before{0};
+        std::size_t               largest_after{0};
+        std::vector<std::string>  axis_names;
+        std::vector<std::string>  axis_letters;
+        std::vector<std::int64_t> axis_extents;
+        std::vector<std::string>  streamed;
+        std::vector<std::string>  whole;
+        /// One line per declared result over its cap that was held whole; reported at every
+        /// verbosity, because the fix is in the caller's declaration and nothing else says so.
+        std::vector<std::string>  held_results;
+        std::string               accumulator;
+        std::vector<std::string>  summed_into;
+        std::string               emission;
+        std::vector<std::int64_t> block_extents;
+        std::size_t               loops{0};
+        int                       triangle_sign{0};
+        std::vector<std::string>  regions;
+        /// For every graph this apply has visited, the graph that holds it and the position of the
+        /// node there that holds it, so a run on a loop body can resolve what its parent declared.
+        std::unordered_map<Graph const *, std::pair<Graph *, std::size_t>> enclosing;
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -17,10 +17,6 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
-void CommunicationElimination::reset_stats() {
-    _num_eliminated = 0;
-}
-
 bool CommunicationElimination::transform(Graph &graph) {
     auto &nodes = graph.nodes();
     if (nodes.empty())
@@ -30,7 +26,7 @@ bool CommunicationElimination::transform(Graph &graph) {
     // writes so a write through another name over the same buffer still invalidates it.
     std::unordered_set<TensorId> already_reduced;
     std::vector<bool>            remove(nodes.size(), false);
-    PassCounter const            eliminated{_num_eliminated};
+    PassCounter const            eliminated{_stats.num_eliminated};
 
     for (size_t idx = 0; idx < nodes.size(); idx++) {
         auto const &node = nodes[idx];
@@ -52,7 +48,7 @@ bool CommunicationElimination::transform(Graph &graph) {
             if (desc && already_reduced.count(graph.buffer_of(desc->tensor_id))) {
                 // Redundant: this tensor was already allreduced and hasn't been modified since.
                 remove[idx] = true;
-                ++_num_eliminated;
+                ++_stats.num_eliminated;
                 EINSUMS_LOG_INFO("CommunicationElimination: removed redundant Allreduce for tensor id={}", desc->tensor_id);
                 report(2, fmt::format("remove redundant Allreduce for tensor id={} (already reduced, unmodified since)", desc->tensor_id));
                 continue;

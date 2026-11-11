@@ -59,16 +59,11 @@ std::optional<OperatorWrite> as_operator_write(Node const &node, std::size_t ind
 } // namespace
 
 std::vector<std::string> AntisymmetrizerLinearity::explain() const {
-    if (_num_merged == 0) {
+    if (_stats.num_merged == 0) {
         return {};
     }
-    return {
-        fmt::format("AntisymmetrizerLinearity: merged {} of {} antisymmetrized sum(s) into one operator", _num_merged, _num_candidates)};
-}
-
-void AntisymmetrizerLinearity::reset_stats() {
-    _num_candidates = 0;
-    _num_merged     = 0;
+    return {fmt::format("AntisymmetrizerLinearity: merged {} of {} antisymmetrized sum(s) into one operator", _stats.num_merged,
+                        _stats.num_candidates)};
 }
 
 bool AntisymmetrizerLinearity::transform(Graph &graph) {
@@ -113,7 +108,7 @@ bool AntisymmetrizerLinearity::transform(Graph &graph) {
         if (declines(second)) {
             continue;
         }
-        ++_num_candidates;
+        ++_stats.num_candidates;
 
         TensorId const other        = graph.buffer_of(second.inputs[0]);
         auto const    &other_writes = writers[other];
@@ -198,7 +193,8 @@ bool AntisymmetrizerLinearity::transform(Graph &graph) {
             continue;
         }
 
-        auto sum = graph.create_zero_runtime_tensor_dynamic(fmt::format("_asym_sum_{}", _num_merged), src_handle->dtype, src_handle->dims);
+        auto sum =
+            graph.create_zero_runtime_tensor_dynamic(fmt::format("_asym_sum_{}", _stats.num_merged), src_handle->dtype, src_handle->dims);
         if (!sum) {
             note_skip("a tensor to hold the sum could not be created", fmt::format("tensor #{}", site.destination));
             continue;
@@ -225,7 +221,7 @@ bool AntisymmetrizerLinearity::transform(Graph &graph) {
 
         remove[site.axpby_index] = true;
         inserts.emplace_back(site.operator_index, std::move(group));
-        ++_num_merged;
+        ++_stats.num_merged;
     }
 
     if (inserts.empty()) {

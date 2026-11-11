@@ -176,13 +176,6 @@ DistributiveFactoring::DistributiveFactoring(Factor factor) : DistributiveFactor
 DistributiveFactoring::DistributiveFactoring(CostModel cost_model, Factor factor) : _cost_model(std::move(cost_model)), _factor(factor) {
 }
 
-void DistributiveFactoring::reset_stats() {
-    _num_groups       = 0;
-    _num_eliminated   = 0;
-    _num_unprofitable = 0;
-    _groups.clear();
-}
-
 bool DistributiveFactoring::transform(Graph &graph) {
     return factor_one_level(graph);
 }
@@ -525,7 +518,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             double const factored = build_us + einsum_us;
 
             if (factored >= unfactored) {
-                _num_unprofitable++;
+                _stats.num_unprofitable++;
                 note_skip("cost model says the summed accumulator costs more than the contractions it saves",
                           fmt::format("group of {} into '{}': {:.1f} us unfactored vs {:.1f} us factored", available.size(),
                                       out_h->second.name, unfactored, factored));
@@ -544,7 +537,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             auto tit = tensors.find(t_id);
             t_name   = tit != tensors.end() ? tit->second.name : "?";
         } else {
-            t_name             = fmt::format("_df_sum_{}", _num_groups);
+            t_name             = fmt::format("_df_sum_{}", _stats.num_groups);
             auto create_result = graph.create_zero_runtime_tensor_dynamic(t_name, ref_handle.dtype, ref_handle.dims);
             if (!create_result)
                 continue; // Skip this factoring group if tensor creation fails
@@ -628,7 +621,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             remove[c.node_index]    = true;
             node_used[c.node_index] = true;
         }
-        _num_eliminated += available.size() - 1;
+        _stats.num_eliminated += available.size() - 1;
 
         // Record the group for reporting
         FactoringGroup fg;
@@ -643,8 +636,8 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         }
         report(2, fmt::format("factor {} contractions into '{}' sharing operand '{}' (sum operands, contract once)", available.size(),
                               out_it != tensors.end() ? out_it->second.name : "?", sh_it != tensors.end() ? sh_it->second.name : "?"));
-        _groups.push_back(std::move(fg));
-        _num_groups++;
+        _stats.groups.push_back(std::move(fg));
+        _stats.num_groups++;
         modified = true;
     }
 
@@ -663,17 +656,17 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
     // Re-sort since we added/removed nodes
     graph.topological_sort();
 
-    EINSUMS_LOG_INFO("DistributiveFactoring: rewrote {} groups, eliminated {} nodes", _num_groups, _num_eliminated);
-    report(1, fmt::format("factored {} group(s), eliminated {} contraction node(s)", _num_groups, _num_eliminated));
+    EINSUMS_LOG_INFO("DistributiveFactoring: rewrote {} groups, eliminated {} nodes", _stats.num_groups, _stats.num_eliminated);
+    report(1, fmt::format("factored {} group(s), eliminated {} contraction node(s)", _stats.num_groups, _stats.num_eliminated));
     return true;
 }
 
 std::vector<std::string> DistributiveFactoring::explain() const {
-    if (_num_groups == 0 && _num_unprofitable == 0) {
+    if (_stats.num_groups == 0 && _stats.num_unprofitable == 0) {
         return {};
     }
     return {fmt::format("DistributiveFactoring: factored {} group(s), eliminated {} contraction(s); {} declined as unprofitable",
-                        _num_groups, _num_eliminated, _num_unprofitable)};
+                        _stats.num_groups, _stats.num_eliminated, _stats.num_unprofitable)};
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

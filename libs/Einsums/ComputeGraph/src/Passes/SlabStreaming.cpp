@@ -417,7 +417,7 @@ std::size_t SlabStreaming::budget() const {
 }
 
 bool SlabStreaming::transform(Graph &graph) {
-    _root = &graph;
+    _stats.root = &graph;
     _held_in.clear();
     bool const moved = walk(graph, Backed{}, 1.0);
     choose_orders();
@@ -485,31 +485,31 @@ bool SlabStreaming::walk(Graph &graph, Backed backed, double replays) {
 
 void SlabStreaming::note_box(std::shared_ptr<TensorBacking const> const &backing, std::string const &name, std::vector<std::size_t> extents,
                              std::vector<bool> whole_axis, double count) {
-    _box_uses.push_back(
+    _stats.box_uses.push_back(
         BoxUse{.backing = backing, .name = name, .extents = std::move(extents), .whole_axis = std::move(whole_axis), .count = count});
 }
 
 void SlabStreaming::choose_orders() {
     std::vector<std::shared_ptr<TensorBacking const>> backings;
-    for (auto const &use : _box_uses) {
+    for (auto const &use : _stats.box_uses) {
         if (std::ranges::find(backings, use.backing) == backings.end()) {
             backings.push_back(use.backing);
         }
     }
     for (auto const &backing : backings) {
-        std::size_t const        rank    = backing->dims.size();
-        std::string const        name    = std::ranges::find_if(_box_uses, [&](BoxUse const &use) { return use.backing == backing; })->name;
+        std::size_t const rank = backing->dims.size();
+        std::string const name = std::ranges::find_if(_stats.box_uses, [&](BoxUse const &use) { return use.backing == backing; })->name;
         std::vector<std::size_t> current = declared_order(rank);
         if (backing->stored_order) {
             if (auto now = backing->stored_order(); now.size() == rank) {
                 current = std::move(now);
             }
         }
-        _orders[name] = current;
+        _stats.orders[name] = current;
         // The runs every box of the tensor this program moves costs per replay, stored in an order.
         auto const cost = [&](std::vector<std::size_t> const &order) {
             double total = 0.0;
-            for (auto const &use : _box_uses) {
+            for (auto const &use : _stats.box_uses) {
                 if (use.backing == backing) {
                     total += use.count * static_cast<double>(runs_in(order, use.extents, use.whole_axis));
                 }
@@ -530,8 +530,8 @@ void SlabStreaming::choose_orders() {
             continue;
         }
         if (backing->reorder && backing->reorder(best)) {
-            _orders[name] = best;
-            _order_lines.push_back(
+            _stats.orders[name] = best;
+            _stats.order_lines.push_back(
                 Decision{.code = std::string{OrderChosen.code},
                          .text = fmt::format("SlabStreaming: stores '{}' with its axes in the order [{}], in which the boxes this program "
                                              "moves of it are {:.0f} run(s) per replay rather than {:.0f}",
@@ -541,7 +541,7 @@ void SlabStreaming::choose_orders() {
         } else if (now_cost >= 2.0 * best_cost) {
             // The order is not this program's to choose: say what it costs, and how to change it
             // where the tensor is written.
-            _order_lines.push_back(Decision{
+            _stats.order_lines.push_back(Decision{
                 .code    = std::string{OrderAdvised.code},
                 .text    = fmt::format("SlabStreaming: '{}' is stored with its axes in the order [{}], in which the boxes this "
                                        "program moves of it are {:.0f} run(s) per replay; stored in the order [{}] they would be "
@@ -554,8 +554,8 @@ void SlabStreaming::choose_orders() {
 }
 
 std::vector<std::size_t> SlabStreaming::stored_order(std::string const &name) const {
-    auto const hit = _orders.find(name);
-    return hit == _orders.end() ? std::vector<std::size_t>{} : hit->second;
+    auto const hit = _stats.orders.find(name);
+    return hit == _stats.orders.end() ? std::vector<std::size_t>{} : hit->second;
 }
 
 bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
@@ -745,7 +745,7 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
             std::size_t const per_index = whole / backing.dims.back();
             rw.block                    = std::clamp<std::size_t>(cap / std::max<std::size_t>(per_index, 1), 1, backing.dims.back());
             rw.label                    = node.label;
-            rw.prefix                   = fmt::format("slab:{}", _num_streamed);
+            rw.prefix                   = fmt::format("slab:{}", _stats.num_streamed);
 
             // The node goes, and with it every view it read or wrote that nothing else uses: the
             // loop views the tensors underneath directly, and a view left behind of the backed
@@ -792,18 +792,18 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                 }
             });
 
-            _records.push_back(Record{.tensor = use.name,
-                                      .label  = rw.label,
-                                      .extent = backing.dims.back(),
-                                      .block  = rw.block,
-                                      .bytes  = whole,
-                                      .flops  = flops,
-                                      .summed = rw.summed});
+            _stats.records.push_back(Record{.tensor = use.name,
+                                            .label  = rw.label,
+                                            .extent = backing.dims.back(),
+                                            .block  = rw.block,
+                                            .bytes  = whole,
+                                            .flops  = flops,
+                                            .summed = rw.summed});
             note_box(use.backing, use.name, last_axis_block(backing.dims, rw.block), last_axis_whole(backing.dims, rw.block),
                      _replays * std::ceil(static_cast<double>(backing.dims.back()) / static_cast<double>(rw.block)));
-            _streamed.push_back(use.name);
-            _blocks.push_back(static_cast<std::int64_t>(rw.block));
-            ++_num_streamed;
+            _stats.streamed.push_back(use.name);
+            _stats.blocks.push_back(static_cast<std::int64_t>(rw.block));
+            ++_stats.num_streamed;
             report(1, fmt::format("streamed '{}' into '{}' in blocks of {} along its last axis ({} {})", use.name, rw.label, rw.block,
                                   rw.summed ? "summed," : "kept by the output,",
                                   walks.size() == 1 ? "one loop" : fmt::format("{} loops", walks.size())));
@@ -924,7 +924,7 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
     std::size_t const per_index = whole / backing.dims.back();
     rw.block                    = std::clamp<std::size_t>(cap / std::max<std::size_t>(per_index, 1), 1, backing.dims.back());
     rw.label                    = node.label;
-    rw.prefix                   = fmt::format("slab:{}", _num_streamed);
+    rw.prefix                   = fmt::format("slab:{}", _stats.num_streamed);
 
     double flops = 2.0;
     {
@@ -964,31 +964,31 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
         }
     });
 
-    _records.push_back(Record{.tensor = out->name,
-                              .label  = rw.label,
-                              .extent = backing.dims.back(),
-                              .block  = rw.block,
-                              .bytes  = whole,
-                              .flops  = flops,
-                              .writes = true});
+    _stats.records.push_back(Record{.tensor = out->name,
+                                    .label  = rw.label,
+                                    .extent = backing.dims.back(),
+                                    .block  = rw.block,
+                                    .bytes  = whole,
+                                    .flops  = flops,
+                                    .writes = true});
     // What still reads the tensor whole now reads it from the storage, filled after the writes.
     // The program-order check looks at the top-level graph only, whose ids these are.
-    if (&graph == _root) {
+    if (&graph == _stats.root) {
         for (auto const &reader : graph.nodes()) {
             for (TensorId const tid : reader.inputs) {
                 TensorHandle const *owner = graph.find_tensor(graph.buffer_of(tid));
                 if (owner != nullptr && owner->tensor_ptr == out->object) {
-                    _compensated.emplace_back(reader.id, tid);
+                    _stats.compensated.emplace_back(reader.id, tid);
                 }
             }
         }
     }
     note_box(out->backing, out->name, last_axis_block(backing.dims, rw.block), last_axis_whole(backing.dims, rw.block),
              _replays * std::ceil(static_cast<double>(backing.dims.back()) / static_cast<double>(rw.block)));
-    _streamed.push_back(out->name);
-    _blocks.push_back(static_cast<std::int64_t>(rw.block));
-    ++_num_streamed;
-    ++_num_written;
+    _stats.streamed.push_back(out->name);
+    _stats.blocks.push_back(static_cast<std::int64_t>(rw.block));
+    ++_stats.num_streamed;
+    ++_stats.num_written;
     report(1, fmt::format("streamed '{}' out of '{}' in blocks of {} along its last axis ({})", out->name, rw.label, rw.block,
                           walks.size() == 1 ? "one loop" : fmt::format("{} loops", walks.size())));
     return true;
@@ -1104,7 +1104,7 @@ bool SlabStreaming::stream_box(Graph &graph, std::size_t view_node, std::string 
     TensorId    box_id = 0;
     std::size_t bytes  = 0;
     compute_graph::detail::dispatch_scalar_type(backing->dtype, [&]<typename T>(T) {
-        auto &box = graph.declare_runtime_tensor<T>(fmt::format("{}#box{}", name, _num_boxes), slice->dims, /*intermediate=*/true);
+        auto &box = graph.declare_runtime_tensor<T>(fmt::format("{}#box{}", name, _stats.num_boxes), slice->dims, /*intermediate=*/true);
         box_id    = graph.find_tensor_id_by_ptr(&box);
         graph.get_or_create_slot(box, box_id);
         bytes = box.size() * sizeof(T);
@@ -1157,53 +1157,38 @@ bool SlabStreaming::stream_box(Graph &graph, std::size_t view_node, std::string 
     }
     graph.replace_nodes(remove, std::move(inserts));
 
-    _records.push_back(Record{.tensor     = name,
-                              .label      = label,
-                              .bytes      = bytes,
-                              .writes     = writer.has_value(),
-                              .box        = true,
-                              .extents    = extents,
-                              .whole_axis = whole_axis});
+    _stats.records.push_back(Record{.tensor     = name,
+                                    .label      = label,
+                                    .bytes      = bytes,
+                                    .writes     = writer.has_value(),
+                                    .box        = true,
+                                    .extents    = extents,
+                                    .whole_axis = whole_axis});
     // Once each time this graph runs, which for a loop's body is once per iteration.
     note_box(backing, name, extents, whole_axis, _replays);
-    ++_num_boxes;
+    ++_stats.num_boxes;
     report(1, fmt::format("{} '{}' for '{}' a box at a time, {} bytes", writer ? "wrote" : "read", name, label, bytes));
     return true;
 }
 
-void SlabStreaming::reset_stats() {
-    _records.clear();
-    _num_streamed = 0;
-    _num_written  = 0;
-    _num_boxes    = 0;
-    // Per apply, not per run: the manager reads compensated_reads() once, after the descent, and
-    // a graph address from an earlier apply may now be a different graph.
-    _root = nullptr;
-    _box_uses.clear();
-    _orders.clear();
-    _order_lines.clear();
-    _compensated.clear();
-    _streamed.clear();
-    _blocks.clear();
-}
-
 void SlabStreaming::record_decisions() {
     // The report's lines, as decisions: explain() renders them, so the two say the same thing.
-    for (auto &line : _order_lines) {
+    for (auto &line : _stats.order_lines) {
         Reason const reason = line.code == OrderChosen.code ? OrderChosen : OrderAdvised;
         std::string  text   = line.text;
         applied(reason, std::move(text), std::move(line));
     }
-    _order_lines.clear();
-    for (auto const &record : _records) {
+    _stats.order_lines.clear();
+    for (auto const &record : _stats.records) {
         double const per_byte = record.bytes > 0 ? record.flops / static_cast<double>(record.bytes) : 0.0;
         Decision     about{.node_label = record.label,
                            .tensors    = {record.tensor},
                            .facts      = {Fact{.name = "bytes", .value = static_cast<double>(record.bytes), .unit = "B"},
                                           Fact{.name = "flops_per_byte", .value = per_byte}}};
         if (record.box) {
-            auto const        order = _orders.contains(record.tensor) ? _orders.at(record.tensor) : declared_order(record.extents.size());
-            std::size_t const runs  = runs_in(order, record.extents, record.whole_axis);
+            auto const order =
+                _stats.orders.contains(record.tensor) ? _stats.orders.at(record.tensor) : declared_order(record.extents.size());
+            std::size_t const runs = runs_in(order, record.extents, record.whole_axis);
             about.facts.push_back(Fact{.name = "runs", .value = static_cast<double>(runs)});
             applied(StreamedBox,
                     fmt::format("SlabStreaming: '{}' {} '{}' a box at a time, the box its view names: {} bytes in {} run(s) "

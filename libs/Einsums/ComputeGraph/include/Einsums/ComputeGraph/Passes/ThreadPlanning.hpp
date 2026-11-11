@@ -125,7 +125,7 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
     /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
     /// Recursion is done inside @ref run, not by the pass manager: a body is
     /// planned against the SAME `P` as its parent and its cost has to be
@@ -149,39 +149,39 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
     [[nodiscard]] static constexpr double serial_floor_us() { return kSerialFloorUs; }
 
     /// Threads the last run planned for.
-    [[nodiscard]] unsigned planned_threads() const { return _planned_threads; }
+    [[nodiscard]] unsigned planned_threads() const { return _stats.planned_threads; }
 
     /// Nodes given a width above 1, over the whole subgraph tree.
-    [[nodiscard]] std::size_t num_widened() const { return _num_widened; }
+    [[nodiscard]] std::size_t num_widened() const { return _stats.num_widened; }
 
     /// The widest width handed out.
-    [[nodiscard]] unsigned max_width() const { return _max_width; }
+    [[nodiscard]] unsigned max_width() const { return _stats.max_width; }
 
     /// Nodes whose `t_i(1)` came from a recorded replay rather than the model.
-    [[nodiscard]] std::size_t num_from_timings() const { return _num_from_timings; }
+    [[nodiscard]] std::size_t num_from_timings() const { return _stats.num_from_timings; }
 
     /// Nodes whose `t_i(1)` came from the cost model.
-    [[nodiscard]] std::size_t num_from_model() const { return _num_from_model; }
+    [[nodiscard]] std::size_t num_from_model() const { return _stats.num_from_model; }
 
     /// Estimated makespan in microseconds before any node was widened.
-    [[nodiscard]] double makespan_before_us() const { return _makespan_before_us; }
+    [[nodiscard]] double makespan_before_us() const { return _stats.makespan_before_us; }
 
     /// Estimated makespan in microseconds under the final widths. This is
     /// `max(critical_path_after_us(), area_after_us())`, which is the lower
     /// bound any schedule of these widths obeys.
-    [[nodiscard]] double makespan_after_us() const { return _makespan_after_us; }
+    [[nodiscard]] double makespan_after_us() const { return _stats.makespan_after_us; }
 
     /// Longest path through the graph in microseconds, under the final widths.
-    [[nodiscard]] double critical_path_after_us() const { return _critical_path_after_us; }
+    [[nodiscard]] double critical_path_after_us() const { return _stats.critical_path_after_us; }
 
     /// `sum(w_i * t_i(w_i)) / P` in microseconds, under the final widths: the
     /// time the plan's work needs on `P` threads if they were never idle. The
     /// area bound the search enforces is that this never exceeds the makespan.
-    [[nodiscard]] double area_after_us() const { return _area_after_us; }
+    [[nodiscard]] double area_after_us() const { return _stats.area_after_us; }
 
     /// Contraction nodes whose kernel route this run pinned, over the whole
     /// subgraph tree.
-    [[nodiscard]] std::size_t num_route_pinned() const { return _num_route_pinned; }
+    [[nodiscard]] std::size_t num_route_pinned() const { return _stats.num_route_pinned; }
 
   protected:
     bool transform(Graph &graph) override;
@@ -204,16 +204,20 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
     CostModel _cost_model;
     unsigned  _requested_threads{0};
 
-    unsigned    _planned_threads{0};
-    std::size_t _num_widened{0};
-    unsigned    _max_width{1};
-    std::size_t _num_from_timings{0};
-    std::size_t _num_from_model{0};
-    std::size_t _num_route_pinned{0};
-    double      _makespan_before_us{0.0};
-    double      _makespan_after_us{0.0};
-    double      _critical_path_after_us{0.0};
-    double      _area_after_us{0.0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        unsigned    planned_threads{0};
+        std::size_t num_widened{0};
+        unsigned    max_width{1};
+        std::size_t num_from_timings{0};
+        std::size_t num_from_model{0};
+        std::size_t num_route_pinned{0};
+        double      makespan_before_us{0.0};
+        double      makespan_after_us{0.0};
+        double      critical_path_after_us{0.0};
+        double      area_after_us{0.0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -76,15 +76,19 @@ class EINSUMS_EXPORT SUMMAExpansion : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
                NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
     }
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
-    [[nodiscard]] size_t num_expanded() const { return _num_expanded; }
+    [[nodiscard]] size_t num_expanded() const { return _stats.num_expanded; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_expanded{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_expanded{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

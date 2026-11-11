@@ -146,7 +146,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
     /// @copydoc OptimizerPass::reset_stats
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
@@ -171,38 +171,38 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// Per-node costs, in the order the nodes were visited.
     /// @return The costs. Empty when the graph holds no contraction.
-    [[nodiscard]] std::vector<NodeCost> const &node_costs() const noexcept { return _node_costs; }
+    [[nodiscard]] std::vector<NodeCost> const &node_costs() const noexcept { return _stats.node_costs; }
 
     /// Per-intermediate symbolic sizes, in tensor-id order within each graph visited.
     /// @return The sizes.
-    [[nodiscard]] std::vector<IntermediateSize> const &intermediate_sizes() const noexcept { return _intermediate_sizes; }
+    [[nodiscard]] std::vector<IntermediateSize> const &intermediate_sizes() const noexcept { return _stats.intermediate_sizes; }
 
     /// The sum of every analysed node's flops polynomial.
     /// @return The total. The zero polynomial when nothing was analysed.
-    [[nodiscard]] SymbolicPoly const &total_flops() const noexcept { return _total_flops; }
+    [[nodiscard]] SymbolicPoly const &total_flops() const noexcept { return _stats.total_flops; }
 
     /// The sum of every analysed node's traffic polynomial.
     /// @return The total. The zero polynomial when nothing was analysed.
-    [[nodiscard]] SymbolicPoly const &total_traffic() const noexcept { return _total_traffic; }
+    [[nodiscard]] SymbolicPoly const &total_traffic() const noexcept { return _stats.total_traffic; }
 
     /// The sum of every intermediate's size, an UPPER BOUND on the memory high-water mark.
     /// @return The bound, in elements. See the class documentation for what it does not say.
-    [[nodiscard]] SymbolicPoly const &memory_bound() const noexcept { return _memory_bound; }
+    [[nodiscard]] SymbolicPoly const &memory_bound() const noexcept { return _stats.memory_bound; }
 
     /// The node or nodes whose flops polynomial is maximal under the registry's scale order.
     /// @return The rate-limiting nodes. Empty when nothing was analysed; more than one entry only
     ///         when their flop polynomials are identical.
-    [[nodiscard]] std::vector<NodeCost> const &rate_limiting() const noexcept { return _rate_limiting; }
+    [[nodiscard]] std::vector<NodeCost> const &rate_limiting() const noexcept { return _stats.rate_limiting; }
 
     /// How many analysed nodes carry at least one unannotated letter.
     /// @return The count. Nonzero means the report is weaker than annotation could make it.
     APIARY_EXPOSE APIARY_GETTER("num_unannotated_nodes") [[nodiscard]] std::size_t num_unannotated_nodes() const noexcept {
-        return _num_unannotated_nodes;
+        return _stats.num_unannotated_nodes;
     }
 
     /// How many nodes were analysed.
     /// @return The number of contraction nodes the pass costed.
-    APIARY_EXPOSE APIARY_GETTER("num_analyzed") [[nodiscard]] std::size_t num_analyzed() const noexcept { return _node_costs.size(); }
+    APIARY_EXPOSE APIARY_GETTER("num_analyzed") [[nodiscard]] std::size_t num_analyzed() const noexcept { return _stats.node_costs.size(); }
 
     // ── Rendered surface ────────────────────────────────────────────────────
     //
@@ -259,20 +259,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool transform(Graph &graph) override;
 
   private:
-    /// @brief Recompute @ref _rate_limiting from @ref _node_costs.
+    /// @brief Recompute ``_stats.rate_limiting`` from ``_stats.node_costs``.
     /// @param[in] registry Registry backing the comparison. May be null.
     void rank_nodes(SpaceRegistry const *registry);
 
-    std::vector<NodeCost>         _node_costs;
-    std::vector<IntermediateSize> _intermediate_sizes;
-    std::vector<NodeCost>         _rate_limiting;
-    SymbolicPoly                  _total_flops;
-    SymbolicPoly                  _total_traffic;
-    SymbolicPoly                  _memory_bound;
-    std::size_t                   _num_unannotated_nodes{0};
-
-    /// Registry of the last graph visited, borrowed for rendering. Null until @ref run.
-    SpaceRegistry const *_registry{nullptr};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        std::vector<NodeCost>         node_costs;
+        std::vector<IntermediateSize> intermediate_sizes;
+        std::vector<NodeCost>         rate_limiting;
+        SymbolicPoly                  total_flops;
+        SymbolicPoly                  total_traffic;
+        SymbolicPoly                  memory_bound;
+        std::size_t                   num_unannotated_nodes{0};
+        /// Registry of the last graph visited, borrowed for rendering. Null until @ref run.
+        SpaceRegistry const *registry{nullptr};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

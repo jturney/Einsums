@@ -124,14 +124,8 @@ TensorId declare_clone(Graph &graph, TensorHandle const &handle, std::string nam
 
 } // namespace
 
-void ScratchPrivatization::reset_stats() {
-    _num_tensors_privatized = 0;
-    _num_copies_created     = 0;
-    _num_nodes_rebuilt      = 0;
-}
-
 bool ScratchPrivatization::transform(Graph &graph) {
-    PassCounter const nodes_rebuilt{_num_nodes_rebuilt};
+    PassCounter const nodes_rebuilt{_stats.num_nodes_rebuilt};
     run_recursive(graph);
     return nodes_rebuilt.moved();
 }
@@ -313,11 +307,11 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
             TensorId const target = clones[j % num_clones];
             for (size_t const idx : gens[j]) {
                 rebuild_node(graph, idx, tid, target);
-                ++_num_nodes_rebuilt;
+                ++_stats.num_nodes_rebuilt;
             }
         }
-        ++_num_tensors_privatized;
-        _num_copies_created += num_clones;
+        ++_stats.num_tensors_privatized;
+        _stats.num_copies_created += num_clones;
         changed = true;
 
         if (_verbosity >= 2) {

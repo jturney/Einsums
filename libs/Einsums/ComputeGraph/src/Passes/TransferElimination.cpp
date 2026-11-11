@@ -58,12 +58,8 @@ size_t next_gpu_use_after(NextUseMap const &map, TensorId tid, size_t after) {
 
 } // namespace
 
-void TransferElimination::reset_stats() {
-    _num_eliminated = 0;
-}
-
 bool TransferElimination::transform(Graph &graph) {
-    PassCounter const eliminated{_num_eliminated};
+    PassCounter const eliminated{_stats.num_eliminated};
     graph.topological_sort();
 
     auto const &nodes = graph.nodes();
@@ -124,7 +120,7 @@ bool TransferElimination::transform(Graph &graph) {
                 }
                 // Already on device, redundant.
                 remove[idx] = true;
-                _num_eliminated++;
+                _stats.num_eliminated++;
                 EINSUMS_LOG_INFO("TransferElimination: removed redundant H2D for tensor id={}", tid);
                 continue;
             }
@@ -191,7 +187,7 @@ bool TransferElimination::transform(Graph &graph) {
                 }
                 // Already on host, redundant.
                 remove[idx] = true;
-                _num_eliminated++;
+                _stats.num_eliminated++;
                 EINSUMS_LOG_INFO("TransferElimination: removed redundant D2H for tensor id={}", tid);
             } else {
                 residency[tid] = Residency::Both;
@@ -252,9 +248,9 @@ bool TransferElimination::transform(Graph &graph) {
     }
 
     if (eliminated.moved() || !insertions.empty()) {
-        EINSUMS_LOG_INFO("TransferElimination: eliminated {} redundant transfers, inserted {} evictions", _num_eliminated,
+        EINSUMS_LOG_INFO("TransferElimination: eliminated {} redundant transfers, inserted {} evictions", _stats.num_eliminated,
                          insertions.size());
-        report(1, fmt::format("eliminated {} redundant transfer(s), inserted {} eviction(s)", _num_eliminated, insertions.size()));
+        report(1, fmt::format("eliminated {} redundant transfer(s), inserted {} eviction(s)", _stats.num_eliminated, insertions.size()));
     }
 
     return true;

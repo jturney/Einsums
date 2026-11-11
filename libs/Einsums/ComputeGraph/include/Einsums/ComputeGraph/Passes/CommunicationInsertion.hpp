@@ -75,15 +75,19 @@ class EINSUMS_EXPORT CommunicationInsertion : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
                NodeFeature::MixedPrecision | NodeFeature::ControlFlow | NodeFeature::RawScalar;
     }
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
-    [[nodiscard]] size_t num_inserted() const { return _num_inserted; }
+    [[nodiscard]] size_t num_inserted() const { return _stats.num_inserted; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_inserted{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_inserted{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -65,15 +65,19 @@ class EINSUMS_EXPORT CommunicationElimination : public OptimizerPass {
         return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
                NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::Tiled | NodeFeature::RawScalar;
     }
-    void reset_stats() override;
+    void reset_stats() override { _stats = {}; }
 
-    [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+    [[nodiscard]] size_t num_eliminated() const { return _stats.num_eliminated; }
 
   protected:
     bool transform(Graph &graph) override;
 
   private:
-    size_t _num_eliminated{0};
+    /// What one run found, which reset_stats starts afresh.
+    struct Stats {
+        size_t num_eliminated{0};
+    };
+    Stats _stats{};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)
