@@ -15,6 +15,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <map>
 #include <variant>
 #include <vector>
 
@@ -29,7 +30,7 @@ bool InputSlicing::transform(Graph &graph) {
     if (comm::world_size() <= 1)
         return false;
 
-    auto       &nodes   = graph.nodes();
+    auto const &nodes   = graph.nodes();
     auto const &tensors = graph.tensors_map();
     int         rank    = comm::world_rank();
 
@@ -133,8 +134,11 @@ bool InputSlicing::transform(Graph &graph) {
     if (insertions.empty())
         return false;
 
-    // Process in reverse order so indices don't shift
-    std::ranges::sort(insertions, [](SliceInsertion const &a, SliceInsertion const &b) { return a.einsum_idx > b.einsum_idx; });
+    // One group per position, so a position shared by one einsum's end and the next one's begin
+    // holds them in that order: ascending, each einsum's begin goes in before it and its end
+    // after it, where the next einsum's begin then follows.
+    std::ranges::sort(insertions, [](SliceInsertion const &a, SliceInsertion const &b) { return a.einsum_idx < b.einsum_idx; });
+    std::map<std::size_t, std::vector<Node>> at;
 
     for (auto const &ins : insertions) {
         auto tokens = std::make_shared<std::vector<std::pair<TensorId, size_t>>>();
@@ -149,7 +153,7 @@ bool InputSlicing::transform(Graph &graph) {
         end_node.label = "end_slice";
         // Ends the local views begin_slice opened, state the node's (empty) tensor lists do not show.
         end_node.effects = opaque_effects;
-        end_node.execute = [tokens, anchor]() {
+        use_custom_executor(end_node, [tokens, anchor]() {
             auto const &tensor_map = anchor->graph().tensors_map();
             for (auto const &[tid, token] : *tokens) {
                 auto it = tensor_map.find(tid);
@@ -157,8 +161,7 @@ bool InputSlicing::transform(Graph &graph) {
                     it->second.end_local_view_fn(token);
                 }
             }
-        };
-        nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(ins.einsum_idx + 1), std::move(end_node));
+        });
 
         // BeginSlice BEFORE the node
         auto slices_copy = ins.slices;
@@ -167,7 +170,7 @@ bool InputSlicing::transform(Graph &graph) {
         begin_node.label = "begin_slice";
         // Opens local views of its tensors, state the node's (empty) tensor lists do not show.
         begin_node.effects = opaque_effects;
-        begin_node.execute = [slices_copy, tokens, anchor]() {
+        use_custom_executor(begin_node, [slices_copy, tokens, anchor]() {
             auto const &tensor_map = anchor->graph().tensors_map();
             tokens->clear();
             for (auto const &s : slices_copy) {
@@ -177,13 +180,17 @@ bool InputSlicing::transform(Graph &graph) {
                     tokens->emplace_back(s.tid, token);
                 }
             }
-        };
-        nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(ins.einsum_idx), std::move(begin_node));
+        });
+        at[ins.einsum_idx].push_back(std::move(begin_node));
+        at[ins.einsum_idx + 1].push_back(std::move(end_node));
         _num_sliced += ins.slices.size();
     }
 
-    graph.note_structural_change();
-    graph.mark_sorted();
+    std::vector<std::pair<std::size_t, std::vector<Node>>> groups;
+    for (auto &[position, group] : at) {
+        groups.emplace_back(position, std::move(group));
+    }
+    graph.insert_node_groups(std::move(groups));
     return sliced.moved();
 }
 
