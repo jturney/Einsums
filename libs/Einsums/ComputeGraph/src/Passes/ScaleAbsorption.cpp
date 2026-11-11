@@ -42,7 +42,7 @@ bool ScaleAbsorption::transform(Graph &graph) {
     PassCounter const absorbed{_num_absorbed};
     graph.topological_sort();
 
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
     if (nodes.size() < 2) {
         return false;
     }
@@ -281,7 +281,7 @@ bool ScaleAbsorption::transform(Graph &graph) {
         }
 
         for (auto const &[idx, site] : folds) {
-            apply_fold(nodes[idx], site, scale_factor);
+            graph.edit(idx, [&](NodeEdit &e) { apply_fold(e.node(), site, scale_factor); });
             // That node's read of scaled_tensor now observes the tensor's
             // initial contents (the scale is gone) but is exact thanks to the
             // fold; waive the program-order guard for exactly that read.
