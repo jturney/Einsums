@@ -283,7 +283,30 @@ def test_the_blocks_do_not_depend_on_which_pairs_share_a_chunk():
     moved = [k for k, (x, y) in enumerate(zip(a, b))
              if (x is None) != (y is None)
              or (x is not None and not np.array_equal(x, y))]
-    assert not moved, f"{len(moved)} blocks moved when the chunk size changed"
+    assert not moved, (f"{len(moved)} blocks moved when the chunk size changed; "
+                        f"{_how_far(a, b, moved)}")
+
+
+def _how_far(a, b, moved):
+    """How far the moved blocks moved, which says what kind of failure it is.
+
+    A difference near the unit roundoff is the BLAS rounding differently, and
+    a large one is a block built from the wrong data, such as a buffer a
+    previous chunk left behind.
+    """
+    shape = [k for k in moved if (a[k] is None) != (b[k] is None)
+             or a[k].shape != b[k].shape]
+    worst_abs, worst_rel = 0.0, 0.0
+    for k in moved:
+        if k in shape:
+            continue
+        diff = float(np.max(np.abs(a[k] - b[k])))
+        scale = float(np.max(np.abs(a[k])))
+        worst_abs = max(worst_abs, diff)
+        worst_rel = max(worst_rel, diff / scale if scale > 0.0 else diff)
+    return (f"largest absolute difference {worst_abs:.3e}, largest relative "
+            f"difference {worst_rel:.3e}, {len(shape)} block(s) changed shape "
+            f"or presence")
 
 
 def test_a_pair_too_large_for_the_budget_reports_itself():
