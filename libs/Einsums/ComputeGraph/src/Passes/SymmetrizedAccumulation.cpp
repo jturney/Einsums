@@ -82,7 +82,7 @@ bool SymmetrizedAccumulation::transform(Graph &graph) {
 bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void const *> const &external,
                                       std::unordered_set<void const *> const &inherited_scratch) {
     PassCounter const rewritten{_num_rewritten};
-    auto             &nodes   = graph.nodes();
+    auto const       &nodes   = graph.nodes();
     size_t const      n       = nodes.size();
     auto const        escapes = EscapeAnalysis::over(graph);
 
@@ -414,13 +414,13 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
         spec.operators = pd->operators;
         spec.raw       = spec.render();
 
-        Node  folded = graph.make_permute_node(s.tmp, s.r2, spec, factor, PrefactorScalar{double{1}}, "symacc: r2 += s2 * P(tmp)");
-        Node &perm   = nodes[s.permute_idx];
-        perm.execute = std::move(folded.execute);
-        perm.op_data = std::move(folded.op_data);
-        perm.inputs  = std::move(folded.inputs);
-        perm.outputs = std::move(folded.outputs);
-        perm.label   = std::move(folded.label);
+        Node folded = graph.make_permute_node(s.tmp, s.r2, spec, factor, PrefactorScalar{double{1}}, "symacc: r2 += s2 * P(tmp)");
+        graph.edit(s.permute_idx, [&](NodeEdit &e) {
+            e->op_data = std::move(folded.op_data);
+            e->inputs  = std::move(folded.inputs);
+            e->outputs = std::move(folded.outputs);
+            e->label   = std::move(folded.label);
+        });
 
         remove[s.axpby2_idx] = true; // axpby2 folded into the permute
         ++_num_rewritten;
