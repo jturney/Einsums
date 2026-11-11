@@ -818,22 +818,24 @@ using PlanSnapshot = std::vector<std::pair<std::uint16_t, std::int64_t>>;
 /// Setup bodies are deliberately left out of both walks: the widths these two
 /// snapshot and restore are the ones ThreadPlanning::plan_graph writes, and that
 /// planner descends into loop bodies and conditional branches only.
-void collect_thread_plan(Graph &graph, PlanSnapshot &out) {
-    for (auto &node : graph.nodes()) {
+void collect_thread_plan(Graph const &graph, PlanSnapshot &out) {
+    for (auto const &node : graph.nodes()) {
         out.emplace_back(node.thread_width, node.admission_priority);
-        for_each_child_graph(node, [&out](Graph &sub) { collect_thread_plan(sub, out); }, /*include_setup=*/false);
+        for_each_child_graph(node, [&out](Graph const &sub) { collect_thread_plan(sub, out); }, /*include_setup=*/false);
     }
 }
 
 void apply_thread_plan(Graph &graph, PlanSnapshot const &plan, size_t &pos) {
-    for (auto &node : graph.nodes()) {
+    for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
         if (pos >= plan.size()) {
             return; // structure changed under the trial; leave the rest alone
         }
-        node.thread_width       = plan[pos].first;
-        node.admission_priority = plan[pos].second;
+        NodeSchedule schedule       = schedule_of(graph.nodes()[i]);
+        schedule.thread_width       = plan[pos].first;
+        schedule.admission_priority = plan[pos].second;
+        graph.set_schedule(i, schedule);
         pos++;
-        for_each_child_graph(node, [&](Graph &sub) { apply_thread_plan(sub, plan, pos); }, /*include_setup=*/false);
+        graph.for_each_child(i, [&](Graph &sub) { apply_thread_plan(sub, plan, pos); }, /*include_setup=*/false);
     }
 }
 

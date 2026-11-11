@@ -17,15 +17,18 @@ void StreamAssignment::reset_stats() {
 
 bool StreamAssignment::transform(Graph &graph) {
     PassCounter const assigned{_num_assigned};
-    for (auto &node : graph.nodes()) {
-        int new_stream = 0; // default: compute stream
+    for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
+        Node const &node       = graph.nodes()[i];
+        int         new_stream = 0; // default: compute stream
 
         if (node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
             new_stream = 1; // transfer stream
         }
 
         if (node.stream_id != new_stream) {
-            node.stream_id = new_stream;
+            NodeSchedule schedule = schedule_of(node);
+            schedule.stream_id    = new_stream;
+            graph.set_schedule(i, schedule);
             _num_assigned++;
         }
     }

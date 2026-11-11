@@ -211,7 +211,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
     // already has them.
     graph.topological_sort();
 
-    auto             &nodes = graph.nodes();
+    auto const       &nodes = graph.nodes();
     std::size_t const n     = nodes.size();
     graph.set_planned_thread_count(p);
     if (n == 0) {
@@ -236,8 +236,8 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         // time: the container's own unit is lent back for the duration of the nested replay, so the
         // child is admitted against a budget nobody else is holding. A conditional runs only one
         // branch, so its cost is the worse of the two rather than their sum.
-        for_each_child_graph(
-            nodes[i], [&](Graph &child) { body_serial_us[i] = std::max(body_serial_us[i], plan_graph(child, p).serial_us); },
+        graph.for_each_child(
+            i, [&](Graph &child) { body_serial_us[i] = std::max(body_serial_us[i], plan_graph(child, p).serial_us); },
             /*include_setup=*/false);
     }
 
@@ -254,7 +254,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
 
     std::vector<NodeCost> cost(n);
     for (std::size_t i = 0; i < n; i++) {
-        Node                      &node  = nodes[i];
+        Node const                &node  = nodes[i];
         NodeCost                  &c     = cost[i];
         detail::ModelledCost const model = detail::model_cost(graph, node, profile);
 
@@ -482,9 +482,11 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
     cp                          = final_cp;
     area                        = final_area;
     for (std::size_t i = 0; i < n; i++) {
-        nodes[i].thread_width = static_cast<std::uint16_t>(std::min<unsigned>(width[i], p));
+        NodeSchedule schedule = schedule_of(nodes[i]);
+        schedule.thread_width = static_cast<std::uint16_t>(std::min<unsigned>(width[i], p));
         // Nanoseconds, and never 0: 0 is how a node says it was never planned.
-        nodes[i].admission_priority = std::max<std::int64_t>(1, std::llround(bottom[i] * 1e3));
+        schedule.admission_priority = std::max<std::int64_t>(1, std::llround(bottom[i] * 1e3));
+        graph.set_schedule(i, schedule);
         if (width[i] > 1) {
             _num_widened++;
             _max_width = std::max(_max_width, width[i]);

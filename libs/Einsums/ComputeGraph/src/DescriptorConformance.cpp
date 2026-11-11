@@ -330,7 +330,9 @@ class SampleCheck {
         }
         Built fresh = rebuild(_sample.descriptor, _sample.params);
         write_bytes(*fresh.graph, fresh.operands.outputs, _prior);
-        fresh.graph->nodes()[fresh.node].thread_width = static_cast<std::uint16_t>(width);
+        NodeSchedule schedule = schedule_of(fresh.graph->nodes()[fresh.node]);
+        schedule.thread_width = static_cast<std::uint16_t>(width);
+        fresh.graph->set_schedule(fresh.node, schedule);
         DataflowExecutor executor;
         fresh.graph->execute(executor);
 
