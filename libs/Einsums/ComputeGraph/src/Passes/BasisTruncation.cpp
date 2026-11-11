@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
@@ -896,18 +897,23 @@ bool BasisTruncation::transform(Graph &graph) {
     // untruncated program. A declared tensor no capture has touched has no slot at all, and
     // redirect_slot at a tensor with no slot is a SILENT no-op, so the slot is created first.
     auto repoint = [&graph](TensorId from, TensorId to) {
-        for (auto &node : graph.nodes()) {
+        graph.redirect_slot(from, to);
+        auto const names = [from](TensorId id) { return id == from; };
+        for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
+            Node const &node = graph.nodes()[i];
             if (node.kind == OpKind::Setup) {
                 continue; // Derived from its body, and refreshed rather than rewritten.
             }
-            for (TensorId &id : node.inputs) {
-                id = id == from ? to : id;
+            if (std::ranges::none_of(node.inputs, names) && std::ranges::none_of(node.outputs, names)) {
+                continue;
             }
-            for (TensorId &id : node.outputs) {
-                id = id == from ? to : id;
-            }
+            graph.edit(i, [&](NodeEdit &e) {
+                std::ranges::replace(e->inputs, from, to);
+                std::ranges::replace(e->outputs, from, to);
+                refresh_gemm_hint(graph, e.node()); // the hint names the operand it was derived from
+                e.keep_executor();                  // resolves from's slot, redirected above
+            });
         }
-        graph.redirect_slot(from, to);
     };
     for (auto const &target : targets) {
         graph.get_or_create_slot(*target.destination, target.projected);
