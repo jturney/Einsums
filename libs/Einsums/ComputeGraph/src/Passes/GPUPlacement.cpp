@@ -312,7 +312,7 @@ bool GPUPlacement::transform(Graph &graph) {
     size_t       used   = 0;
 
     for (auto const &cand : candidates) {
-        auto &placed_node = cand.owner->nodes()[cand.node_idx];
+        auto const &placed_node = cand.owner->nodes()[cand.node_idx];
 
         if (used + cand.eff_bytes > budget) {
             EINSUMS_LOG_INFO("GPUPlacement: skipping node {} (needs {} bytes, budget has {} remaining)", placed_node.id, cand.eff_bytes,
@@ -320,8 +320,7 @@ bool GPUPlacement::transform(Graph &graph) {
             continue;
         }
 
-        placed_node.target       = Target::GPU;
-        placed_node.cpu_fallback = placed_node.execute;
+        cand.owner->edit(cand.node_idx, [](NodeEdit &e) { e.place_on(Target::GPU); });
         used += cand.eff_bytes;
         _num_placed++;
 
