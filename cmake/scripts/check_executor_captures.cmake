@@ -13,10 +13,12 @@
 # same hazard for the pass or graph that built the lambda. An executor that needs the graph at
 # run time captures `graph.anchor()`, which follows the graph through moves.
 #
-# So the capture list of an `execute = [...]` lambda may not hold `this`, a default capture
+# So the capture list of an executor lambda may not hold `this`, a default capture
 # (`&` or `=`, which hide what they take), or any `&name`. A capture that is safe for a reason
 # the scan cannot see goes in _ec_allowed below as "<path relative to ROOT> <capture>", with the
 # reason; an entry that no longer matches anything fails the check, so the list only shrinks.
+# An executor lambda is one assigned to an `execute`, or handed to `use_custom_executor`,
+# `NodeEdit::set_executor` or `NodeEdit::add_pre_run`, which all run it at every replay.
 #
 # Run as:  cmake -DROOT=<ComputeGraph module dir> -P <this>
 #     or:  cmake -DSELF_TEST=ON -DWORK_DIR=<scratch dir> -P <this>
@@ -28,7 +30,9 @@
 # returns, alive for the whole process, so the reference cannot dangle.
 set(_ec_allowed "src/Passes/SUMMAExpansion.cpp &grid")
 
-set(_ec_pattern "execute[ \t\r\n]*=[ \t\r\n]*\\[")
+set(_ec_pattern
+    "(execute[ \t\r\n]*=|use_custom_executor[ \t\r\n]*\\([^,;]*,|set_executor[ \t\r\n]*\\(|add_pre_run[ \t\r\n]*\\()[ \t\r\n]*\\["
+)
 
 # Split the capture list that starts just after the `[` at `start` in `text` into its top-level
 # items, stripped. Brackets nest, so `v[0]` or `f(a, b)` inside an init-capture stays one item.
@@ -115,6 +119,7 @@ if(SELF_TEST)
     WRITE "${WORK_DIR}/src/Passes/Clean.cpp"
     "node.execute = [anchor, v = values[0], n = f(a, b), self = *this]() {};\n"
     "auto const scan = [&graph](Node const &n) { return n.id; };\n"
+    "graph.edit(i, [&](NodeEdit &e) { e.set_executor([anchor]() {}); });\n"
   )
   _ec_check("${WORK_DIR}" _clean _unused)
   if(_clean)
@@ -128,6 +133,9 @@ if(SELF_TEST)
     "node.execute = [&]() {};\n"
     "node.execute = [=]() {};\n"
     "node.execute = [&ref = graph.tensors_map()]() {};\n"
+    "use_custom_executor(node, [&tensor_map]() {});\n"
+    "e.set_executor([this]() {});\n"
+    "e.add_pre_run(\n    [&slots]() {});\n"
   )
   _ec_check("${WORK_DIR}" _dirty _unused)
   set(_expected
@@ -137,6 +145,9 @@ if(SELF_TEST)
       "src/Passes/Bad.cpp:6: &"
       "src/Passes/Bad.cpp:7: ="
       "src/Passes/Bad.cpp:8: &ref = graph.tensors_map()"
+      "src/Passes/Bad.cpp:9: &tensor_map"
+      "src/Passes/Bad.cpp:10: this"
+      "src/Passes/Bad.cpp:11: &slots"
   )
   if(NOT _dirty STREQUAL _expected)
     message(FATAL_ERROR "self test: expected\n  ${_expected}\nbut the check reported\n  ${_dirty}")
