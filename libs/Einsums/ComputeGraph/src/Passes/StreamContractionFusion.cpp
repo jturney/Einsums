@@ -164,7 +164,7 @@ void StreamContractionFusion::reset_stats() {
 bool StreamContractionFusion::transform(Graph &graph) {
     graph.topological_sort();
 
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
 
     if (nodes.size() < 2) {
         return false;
@@ -474,9 +474,8 @@ bool StreamContractionFusion::transform(Graph &graph) {
             fused.outputs.push_back(out);
         }
 
-        fused.id                     = nodes[members[0].node_index].id;
-        nodes[members[0].node_index] = std::move(fused);
-        used[members[0].node_index]  = true;
+        graph.edit(members[0].node_index, [&](NodeEdit &e) { e.replace(std::move(fused)); });
+        used[members[0].node_index] = true;
 
         for (size_t mi = 1; mi < members.size(); mi++) {
             remove[members[mi].node_index] = true;
