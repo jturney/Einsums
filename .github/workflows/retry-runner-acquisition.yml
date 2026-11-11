@@ -1,0 +1,64 @@
+name: Retry runner acquisition
+
+# Re-runs a CMake or Nightly run whose only failures are jobs GitHub never gave a runner.
+#
+# Hosted macOS arm64 capacity has been short since early November 2026: a job sits in the queue
+# about fifteen minutes and is cancelled before its first step, and the run then reports failure
+# though nothing was built or tested. GitHub marks such a job with a failure annotation, and that
+# annotation, not "cancelled with no steps", is what this keys on, because a queued job a newer
+# push superseded looks the same in every other respect.
+#
+# A run with any real failure is left alone: re-running it would also re-run the failing job, and
+# a pass on the second try would hide a flaky failure instead of reporting it. Two retries at most,
+# so a long outage costs two more queue waits rather than a loop.
+on:
+  workflow_run:
+    workflows: [CMake, Nightly]
+    types: [completed]
+
+permissions:
+  actions: write
+  checks: read
+
+jobs:
+  retry:
+    name: Retry jobs that never got a runner
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt < 3
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      NOT_ACQUIRED: The job was not acquired by Runner of type hosted even after multiple attempts
+    steps:
+      - name: Re-run when every failure is a runner that was never acquired
+        run: |
+          set -euo pipefail
+
+          # Every job of this attempt that did not succeed, as "id<TAB>conclusion<TAB>name".
+          unfinished=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs" \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")
+                  | [.id, .conclusion, .name] | @tsv')
+
+          not_acquired=0
+          while IFS=$'\t' read -r id conclusion name; do
+            [ -n "$id" ] || continue
+            # A job's id is also its check run's id, which is where GitHub puts the annotation.
+            if gh api "repos/$REPO/check-runs/$id/annotations" --jq '.[].message' | grep -qxF "$NOT_ACQUIRED"; then
+              echo "never got a runner: $name"
+              not_acquired=$((not_acquired + 1))
+            else
+              echo "::notice::Not retrying run $RUN_ID: '$name' ended '$conclusion' for a reason other than runner acquisition."
+              exit 0
+            fi
+          done <<< "$unfinished"
+
+          if [ "$not_acquired" -eq 0 ]; then
+            echo "::notice::Run $RUN_ID failed with no job left unfinished; nothing to retry."
+            exit 0
+          fi
+
+          echo "::notice::Re-running $not_acquired job(s) of run $RUN_ID that never got a runner (attempt $ATTEMPT)."
+          gh api --method POST "repos/$REPO/actions/runs/$RUN_ID/rerun-failed-jobs"
