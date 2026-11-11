@@ -742,6 +742,30 @@ class EINSUMS_EXPORT NodeEdit {
     void set_executor(std::function<void()> executor);
 
     /**
+     * @brief Keep the executor the node's pass wrote although this edit changes what the node
+     *        reads or writes.
+     *
+     * For an edit that renames an operand after @ref Graph::redirect_slot pointed the old one's
+     * slot at the new one's storage: the executor resolves that slot, so it already reads what
+     * the new lists say. Does nothing on a node whose executor the builder makes, which the
+     * commit rebuilds as always.
+     */
+    void keep_executor() noexcept { _executor_given = true; }
+
+    /**
+     * @brief Replace the node with @p replacement, a node its pass built whole (a fused or a
+     *        batched form) to take this one's position.
+     *
+     * Every field comes from @p replacement except the id and the target, which belong to the
+     * position: state keyed by the id, such as profiler payloads, refers to the node being
+     * replaced, and placement is changed only through @ref place_on. The executor is the
+     * builder's, or the one the pass wrote when it made @p replacement with
+     * @ref use_custom_executor.
+     * @param[in] replacement The node to put here.
+     */
+    void replace(Node replacement);
+
+    /**
      * @brief Mark the node as having done all it ever will: from now on its executor is a
      *        no-op, whatever its fields say, through every later edit.
      */

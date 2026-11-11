@@ -167,6 +167,61 @@ TEST_CASE("NodeEdit - a pass-written executor is kept until the operands change"
     CHECK(other == 1);
 }
 
+TEST_CASE("NodeEdit - keep_executor keeps a pass-written executor through a rename", "[ComputeGraph][NodeEdit]") {
+    // What a pass that renamed an operand behind Graph::redirect_slot says: the executor resolves
+    // the old operand's slot, so it already reads what the new lists say. The same executor, with
+    // its own state, keeps running.
+    TwoProducts p;
+    int         runs = 0;
+    p.graph.edit(0, [&](cg::NodeEdit &e) { e.set_executor([runs]() mutable { ++runs; }); });
+    auto const held = p.graph.nodes()[0].custom_execute;
+
+    p.graph.edit(0, [&](cg::NodeEdit &e) {
+        e->inputs[0] = p.a2_id();
+        e.keep_executor();
+    });
+    CHECK(p.graph.nodes()[0].inputs[0] == p.a2_id());
+    CHECK(p.graph.nodes()[0].custom_execute == held);
+
+    // On a node the builder makes it changes nothing: the commit rebuilds from the fields.
+    p.graph.edit(1, [&](cg::NodeEdit &e) {
+        e->inputs[0] = p.graph.find_tensor_id_by_ptr(&p.A);
+        e.keep_executor();
+    });
+    CHECK(p.graph.nodes()[1].custom_execute == nullptr);
+    p.graph.execute();
+    check_equal(p.D, p.expected(p.A));
+}
+
+TEST_CASE("NodeEdit - replace puts a pass-built node in the position, keeping its id", "[ComputeGraph][NodeEdit]") {
+    TwoProducts        p;
+    cg::NodeId const   id   = p.graph.nodes()[0].id;
+    auto const        &spec = p.graph.nodes()[0].op_data.get_if<cg::EinsumDescriptor>()->indices->spec;
+    cg::TensorId const c    = p.graph.nodes()[0].outputs[0];
+    cg::TensorId const b    = p.graph.nodes()[0].inputs[1];
+
+    // A node the builder makes is rebuilt.
+    cg::Node fused = p.graph.make_einsum_node(p.a2_id(), b, c, spec, 0.0, 1.0, false, false, "fused");
+    p.graph.edit(0, [&](cg::NodeEdit &e) { e.replace(std::move(fused)); });
+    CHECK(p.graph.nodes()[0].id == id);
+    CHECK(p.graph.nodes()[0].label == "fused");
+    p.graph.execute();
+    check_equal(p.C, p.expected(p.A2));
+
+    // One its pass wrote keeps that executor, though the operands are new.
+    int      runs = 0;
+    cg::Node own;
+    own.kind    = cg::OpKind::Custom;
+    own.label   = "own";
+    own.inputs  = {b};
+    own.outputs = {c};
+    cg::use_custom_executor(own, [&runs] { ++runs; });
+    p.graph.edit(0, [&](cg::NodeEdit &e) { e.replace(std::move(own)); });
+    CHECK(p.graph.nodes()[0].id == id);
+    p.graph.execute();
+    CHECK(runs == 1);
+}
+
 TEST_CASE("NodeEdit - assigning the executor directly is refused", "[ComputeGraph][NodeEdit]") {
     TwoProducts p;
     CHECK_THROWS_AS(p.graph.edit(0,

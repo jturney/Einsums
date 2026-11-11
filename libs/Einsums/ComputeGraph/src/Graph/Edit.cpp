@@ -55,6 +55,16 @@ void NodeEdit::set_executor(std::function<void()> executor) {
     _executor_given      = true;
 }
 
+void NodeEdit::replace(Node replacement) {
+    NodeId const id     = _node.id;
+    Target const target = _node.target;
+    _node               = std::move(replacement);
+    _node.id            = id;
+    _node.target        = target;
+    _node.execute       = nullptr; // the commit's to give, from the custom executor or the builder
+    _executor_given     = _node.custom_execute != nullptr;
+}
+
 void NodeEdit::add_pre_run(std::function<void()> hook) {
     if (!hook) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "NodeEdit::add_pre_run: node '{}' was given an empty hook", _node.label);

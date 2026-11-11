@@ -675,9 +675,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
             refresh_gemm_hint(graph, e.node());
             // A reader the builder cannot rebuild keeps the executor it has: it resolves the
             // duplicate's slot, which redirect_slot above repointed at the survivor.
-            if (e->custom_execute) {
-                e.set_executor([held = e->custom_execute]() { (*held)(); });
-            }
+            e.keep_executor();
         });
     }
 
