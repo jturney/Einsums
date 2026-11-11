@@ -111,7 +111,7 @@ void FreeInsertion::reset_stats() {
 
 bool FreeInsertion::transform(Graph &graph) {
     PassCounter const freed{_num_freed};
-    auto             &nodes   = graph.nodes();
+    auto const       &nodes   = graph.nodes();
     auto const       &tensors = graph.tensors_map();
 
     if (nodes.empty())
@@ -212,8 +212,6 @@ bool FreeInsertion::transform(Graph &graph) {
     // intermediate reachable inside it (at any nesting depth) gets a single
     // Free emitted in the parent immediately after the owning node.
     for (size_t i = 0; i < nodes.size(); i++) {
-        Node &node = nodes[i];
-
         auto collect_from = [&](Graph &child) {
             std::vector<DescendantFreeable> found;
             collect_freeable(child, found);
@@ -238,7 +236,7 @@ bool FreeInsertion::transform(Graph &graph) {
         // never fills. Leaving a setup body's own scratch alone costs one allocation that
         // outlives the fitting and buys the guarantee that nothing a skipped node was
         // supposed to write is missing.
-        for_each_child_graph(node, collect_from, /*include_setup=*/false);
+        graph.for_each_child(i, collect_from, /*include_setup=*/false);
     }
 
     // The size floor bounds what is held, not what each tensor saves. One tensor under it saves a

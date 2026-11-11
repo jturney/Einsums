@@ -410,10 +410,8 @@ bool Materialization::transform(Graph &graph) {
     // setup-body arm rather than hoisted, see collect_deferred.
     std::vector<std::pair<Graph *, std::string>> nested_setups;
 
-    auto &parent_nodes = graph.nodes();
+    auto const &parent_nodes = graph.nodes();
     for (size_t i = 0; i < parent_nodes.size(); i++) {
-        Node &node = parent_nodes[i];
-
         auto collect_from = [&](Graph &child) {
             std::vector<DeferredEntry> found;
             collect_deferred(child, found, nested_setups);
@@ -425,7 +423,7 @@ bool Materialization::transform(Graph &graph) {
             }
         };
 
-        for_each_child_graph(node, collect_from, /*include_setup=*/false);
+        graph.for_each_child(i, collect_from, /*include_setup=*/false);
     }
 
     if (own_deferred.empty() && hoists.empty()) {
@@ -438,7 +436,7 @@ bool Materialization::transform(Graph &graph) {
     // exists only inside a Loop/Conditional body surfaces at the
     // control-flow node's position (the Materialize then lands right before
     // the loop instead of defaulting to position 0).
-    auto       &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
     auto const &ua    = graph.usage();
 
     // ── 4. Build the insertion plan ───────────────────────────────────────
