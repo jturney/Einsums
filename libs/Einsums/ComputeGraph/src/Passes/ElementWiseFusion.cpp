@@ -74,11 +74,11 @@ PrefactorScalar compose_scale(PrefactorScalar const &f1, PrefactorScalar const &
 /// combined multiply. Until the scale executor read its scalar from the
 /// descriptor this pass had to chain the two executors instead, which removed
 /// a node but not a sweep.
-ScaleDescriptor *fusable_scale(Node &nd) {
+ScaleDescriptor const *fusable_scale(Node const &nd) {
     if (nd.kind != OpKind::Scale || nd.outputs.size() != 1) {
         return nullptr;
     }
-    auto *desc = nd.op_data.get_if<ScaleDescriptor>();
+    auto const *desc = nd.op_data.get_if<ScaleDescriptor>();
     return (desc != nullptr && desc->params != nullptr) ? desc : nullptr;
 }
 
@@ -95,7 +95,7 @@ bool ElementWiseFusion::transform(Graph &graph) {
     // Every node a fusion rewrites or removes is asked this first.
     auto const declines = [&](Node const &node) { return !admits(graph, node); };
 
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
     if (nodes.size() < 2) {
         return false;
     }
@@ -145,15 +145,15 @@ bool ElementWiseFusion::transform(Graph &graph) {
 
             auto const [alpha, beta] = compose_axpby(a1, b1, a2, b2);
 
-            auto *live_i          = nodes[i].op_data.get_if<AxpbyDescriptor>();
-            live_i->params->alpha = alpha;
-            live_i->params->beta  = beta;
-            live_i->alpha         = alpha;
-            live_i->beta          = beta;
-
-            // Y is read only when beta survives; keep the recorded I/O honest.
-            nodes[i].inputs = is_zero(beta) ? std::vector<TensorId>{x} : std::vector<TensorId>{x, y};
-            nodes[i].label  = fmt::format("axpby(alpha={}, beta={}) [fused]", to_string(alpha), to_string(beta));
+            // Y is read only when beta survives, and the commit lists it as an input exactly then.
+            graph.edit(i, [&](NodeEdit &e) {
+                auto *live          = e->op_data.get_if<AxpbyDescriptor>();
+                live->params->alpha = alpha;
+                live->params->beta  = beta;
+                live->alpha         = alpha;
+                live->beta          = beta;
+                e->label            = fmt::format("axpby(alpha={}, beta={}) [fused]", to_string(alpha), to_string(beta));
+            });
 
             remove[j] = true;
             _num_fused++;
@@ -170,7 +170,7 @@ bool ElementWiseFusion::transform(Graph &graph) {
             continue;
 
         // Look for consecutive Scale ops on the same tensor
-        auto *desc_i = fusable_scale(nodes[i]);
+        auto const *desc_i = fusable_scale(nodes[i]);
         if (desc_i == nullptr || declines(nodes[i]))
             continue;
 
@@ -187,7 +187,7 @@ bool ElementWiseFusion::transform(Graph &graph) {
             if (nodes[j].outputs.size() != 1 || nodes[j].outputs[0] != target)
                 break;
 
-            auto *desc_j = fusable_scale(nodes[j]);
+            auto const *desc_j = fusable_scale(nodes[j]);
             if (desc_j == nullptr || declines(nodes[j]))
                 break;
 
@@ -202,10 +202,12 @@ bool ElementWiseFusion::transform(Graph &graph) {
             std::string const     was_i    = to_string(desc_i->params->alpha);
             std::string const     was_j    = to_string(desc_j->params->alpha);
 
-            desc_i->params->alpha = composed;
-            desc_i->factor        = composed;
-
-            nodes[i].label = fmt::format("scale({}) [fused]", to_string(composed));
+            graph.edit(i, [&](NodeEdit &e) {
+                auto *live          = e->op_data.get_if<ScaleDescriptor>();
+                live->params->alpha = composed;
+                live->factor        = composed;
+                e->label            = fmt::format("scale({}) [fused]", to_string(composed));
+            });
 
             remove[j] = true;
             _num_fused++;
