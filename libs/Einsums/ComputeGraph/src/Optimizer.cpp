@@ -747,8 +747,7 @@ bool PassManager::run(Graph &graph) {
             // Restore original graph state. Putting the old node list back is
             // itself a node-set change, so declare it: a plan built against the
             // list the pass produced does not describe this one.
-            graph.nodes() = std::move(saved_nodes);
-            graph.note_structural_change();
+            graph.restore_nodes(std::move(saved_nodes));
             graph.topological_sort();
         } else {
             auto const baseline         = observed_writes(graph);

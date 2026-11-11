@@ -152,10 +152,11 @@ void capture(cg::Graph &graph, std::vector<Chain> &chains) {
 /// assignment that leaves different widths in flight together is the
 /// configuration under test.
 void impose_widths(cg::Graph &graph, std::vector<std::uint16_t> const &widths) {
-    auto        &nodes           = graph.nodes();
-    size_t const nodes_per_chain = std::max<size_t>(1, nodes.size() / kChains);
-    for (size_t n = 0; n < nodes.size(); n++) {
-        nodes[n].thread_width = widths[(n / nodes_per_chain) % widths.size()];
+    size_t const nodes_per_chain = std::max<size_t>(1, graph.num_nodes() / kChains);
+    for (size_t n = 0; n < graph.num_nodes(); n++) {
+        cg::NodeSchedule schedule = cg::schedule_of(graph.nodes()[n]);
+        schedule.thread_width     = widths[(n / nodes_per_chain) % widths.size()];
+        graph.set_schedule(n, schedule);
     }
 }
 
@@ -277,8 +278,10 @@ TEST_CASE("MixedWidthVendorSafety - mixed widths never corrupt a vendor contract
 
     // Width 1 everywhere first: dependency-driven overlap with nothing for the
     // fence to do, which separates a width bug from an ordering bug.
-    for (auto &node : trial_graph.nodes()) {
-        node.thread_width = 1;
+    for (std::size_t i = 0; i < trial_graph.num_nodes(); ++i) {
+        cg::NodeSchedule schedule = cg::schedule_of(trial_graph.nodes()[i]);
+        schedule.thread_width     = 1;
+        trial_graph.set_schedule(i, schedule);
     }
     reset(trial);
     trial_graph.execute(dataflow);

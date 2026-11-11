@@ -225,14 +225,18 @@ TEST_CASE("WidthBudget - a parked wide node blocks the head of the line", "[Comp
     REQUIRE(graph.nodes()[static_cast<size_t>(wide_at)].kind == cg::OpKind::Scale);
     REQUIRE(node_position(graph, "narrow_0") > wide_at + 2);
 
-    auto &wide_node        = graph.nodes()[static_cast<size_t>(wide_at)];
-    wide_node.label        = "wide";
-    wide_node.thread_width = static_cast<std::uint16_t>(p);
-    wide_node.execute      = [&trace]() {
-        trace.enter("wide");
-        std::this_thread::sleep_for(5ms);
-        trace.leave();
-    };
+    auto const wide_index = static_cast<size_t>(wide_at);
+    graph.edit(wide_index, [&](cg::NodeEdit &e) {
+        e->label = "wide";
+        e.set_executor([&trace]() {
+            trace.enter("wide");
+            std::this_thread::sleep_for(5ms);
+            trace.leave();
+        });
+    });
+    cg::NodeSchedule wide_schedule = cg::schedule_of(graph.nodes()[wide_index]);
+    wide_schedule.thread_width     = static_cast<std::uint16_t>(p);
+    graph.set_schedule(wide_index, wide_schedule);
 
     cg::DataflowExecutor df;
     graph.execute(df);
@@ -555,7 +559,9 @@ TEST_CASE("WidthBudget - mixed widths replay bit-identically", "[ComputeGraph][E
     // admitting everything at once.
     unsigned const widths[] = {1U, std::max(2U, p / 2), p, 2U};
     for (size_t i = 0; i < graph.nodes().size(); i++) {
-        graph.nodes()[i].thread_width = static_cast<std::uint16_t>(widths[i % 4]);
+        cg::NodeSchedule schedule = cg::schedule_of(graph.nodes()[i]);
+        schedule.thread_width     = static_cast<std::uint16_t>(widths[i % 4]);
+        graph.set_schedule(i, schedule);
     }
 
     cg::DataflowExecutor df;

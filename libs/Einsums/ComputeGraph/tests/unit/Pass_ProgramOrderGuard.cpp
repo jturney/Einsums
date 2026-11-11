@@ -50,13 +50,11 @@ class WriterToBack : public cg::OptimizerPass {
     [[nodiscard]] bool        recurse_into_subgraphs() const override { return _recurse; }
 
     bool transform(cg::Graph &graph) override {
-        auto &nodes = graph.nodes();
-        if (nodes.size() < 2 || _done) {
+        if (graph.num_nodes() < 2 || _done) {
             return false;
         }
-        auto moved = std::move(nodes.front());
-        nodes.erase(nodes.begin());
-        nodes.push_back(std::move(moved));
+        // move_node takes the caller's word for the order, as a pass with this bug would give it.
+        graph.move_node(0, graph.num_nodes() - 1);
         _done = true;
         return true;
     }

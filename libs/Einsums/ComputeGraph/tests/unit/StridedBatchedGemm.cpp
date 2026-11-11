@@ -340,7 +340,7 @@ TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: forcing Target::GPU routes through 
     // cost-model decision). The graph's execute() sees target == GPU
     // and routes through try_gpu_blas_dispatch, which plans the einsum
     // as a strided batch and issues gpu::blas::gemm_strided_batched<T>.
-    graph.nodes()[0].target = cg::Target::GPU;
+    graph.edit(0, [](cg::NodeEdit &e) { e.place_on(cg::Target::GPU); });
 
     graph.execute();
     require_close(C, C_ref);

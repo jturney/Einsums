@@ -272,15 +272,15 @@ void check_close(RuntimeTensor<double> const &got, RuntimeTensor<double> const &
 std::size_t rebuild_transfers(cg::Graph &graph) {
     std::size_t rebuilt = 0;
     auto const  one     = [&rebuilt](cg::Graph &g) {
-        for (auto &node : g.nodes()) {
-            auto const *io = node.op_data.get_if<cg::DiskIODescriptor>();
+        for (std::size_t i = 0; i < g.num_nodes(); ++i) {
+            cg::Node const &node = g.nodes()[i];
+            auto const     *io   = node.op_data.get_if<cg::DiskIODescriptor>();
             if ((node.kind != cg::OpKind::DiskRead && node.kind != cg::OpKind::DiskWrite) || io == nullptr ||
                 io->mode == cg::DiskIOMode::Caller) {
                 continue;
             }
-            // A transfer reads neither the dtype nor the rank it is given.
-            node.execute = cg::build_executor(node.kind, packed_gemm::ScalarType::Float64, 1, node.op_data, g,
-                                              std::span<cg::TensorId const>{node.inputs}, std::span<cg::TensorId const>{node.outputs});
+            // An edit that changes nothing still gives the node its executor from its fields.
+            g.edit(i, [](cg::NodeEdit &) {});
             ++rebuilt;
         }
     };

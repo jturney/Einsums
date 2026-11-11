@@ -35,7 +35,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 namespace {
 
 /// Execute a single node with timing, recording results in the graph.
-void execute_node(Graph const &graph, Node &node) {
+void execute_node(Graph const &graph, Node const &node) {
     // Tells an attached observer the node began here and ended however it ends; with none
     // attached, one atomic load.
     detail::NodeObservation const observed(*graph.run_context(), graph, node);
@@ -60,7 +60,7 @@ waggle::ZoneSite const &executor_node_site() {
 /// dataflow executor open one around every node while the profiler records, and so do these, so
 /// an observer's annotations (WaggleBridge) land on the node under every executor. The id is
 /// interned once per change of the node list (Graph::node_zone_ids), never per node per replay.
-void execute_node_in_zone(Graph const &graph, Node &node, std::uint32_t zone_id) {
+void execute_node_in_zone(Graph const &graph, Node const &node, std::uint32_t zone_id) {
     std::optional<waggle::ScopedZone> zone;
     if (zone_id != 0) {
         zone.emplace(executor_node_site(), zone_id);
@@ -98,13 +98,13 @@ double timed_ms(F &&work) {
 /// an SCF/CC loop pays on every iteration. Samples carry only the node id, and
 /// Graph::timing_report() resolves labels if anyone asks for them.
 void execute_all_timed(Graph &graph) {
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
 
     std::vector<NodeTimingSample> samples;
     samples.reserve(nodes.size());
     auto const zones = zone_ids_for(graph);
     for (std::size_t i = 0; i < nodes.size(); ++i) {
-        Node &node = nodes[i];
+        Node const &node = nodes[i];
         samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = timed_ms([&graph, &node, zone = zone_of(zones, i)] {
                                                                  execute_node_in_zone(graph, node, zone);
                                                              })});
@@ -134,7 +134,7 @@ void SequentialExecutor::execute(Graph &graph) {
 // ─── OpenMPExecutor ─────────────────────────────────────────────────────────
 
 void OpenMPExecutor::execute(Graph &graph) {
-    auto        &nodes = graph.nodes();
+    auto const  &nodes = graph.nodes();
     auto const  &deps  = graph.dependencies();
     size_t const n     = nodes.size();
 
@@ -226,12 +226,12 @@ struct DataflowExecutor::Scaffold {
     };
 
     // ── Refreshed per run ───────────────────────────────────────────────────
-    std::vector<Node>    *nodes{nullptr};
-    DependencyInfo const *deps{nullptr};
-    task_pool::TaskPool  *pool{nullptr};
-    size_t                n{0};
-    size_t                budget{0};
-    bool                  recording{false}; ///< profiler state, read once per run
+    std::vector<Node> const *nodes{nullptr};
+    DependencyInfo const    *deps{nullptr};
+    task_pool::TaskPool     *pool{nullptr};
+    size_t                   n{0};
+    size_t                   budget{0};
+    bool                     recording{false}; ///< profiler state, read once per run
 
     // ── Reset per run, allocation reused ────────────────────────────────────
     std::vector<std::atomic<int>> remaining; ///< preds left per node
@@ -540,7 +540,7 @@ void DataflowExecutor::Scaffold::drain_deferred() {
 }
 
 void DataflowExecutor::Scaffold::run_node(size_t i) {
-    Node &node = (*nodes)[i];
+    Node const &node = (*nodes)[i];
 
     bool const   is_free    = budget > 0 && node.kind == OpKind::Free;
     size_t const free_bytes = is_free ? node.estimated_bytes : 0;
@@ -592,7 +592,7 @@ void DataflowExecutor::Scaffold::run_node(size_t i) {
 /// property of one thread over one interval - there is no interval here that
 /// covers the operation, which by construction proceeds outside both tasks.
 void DataflowExecutor::Scaffold::run_async_start(size_t i) {
-    Node &node = (*nodes)[i];
+    Node const &node = (*nodes)[i];
     if (!failed.load(std::memory_order_acquire)) {
         std::optional<waggle::ScopedZone> zone;
         if (recording) {
@@ -618,7 +618,7 @@ void DataflowExecutor::Scaffold::run_async_start(size_t i) {
 }
 
 void DataflowExecutor::Scaffold::run_async_finish(size_t i) {
-    Node &node = (*nodes)[i];
+    Node const &node = (*nodes)[i];
     if (!failed.load(std::memory_order_acquire)) {
         std::optional<waggle::ScopedZone> zone;
         if (recording) {
@@ -635,7 +635,7 @@ void DataflowExecutor::Scaffold::run_async_finish(size_t i) {
 }
 
 void DataflowExecutor::Scaffold::submit(size_t i, std::vector<std::function<void()>> *batch) {
-    Node &node = (*nodes)[i];
+    Node const &node = (*nodes)[i];
 
     // Budget gate: park over-budget Materialize nodes instead of submitting
     // them (never blocks a worker; Frees are never gated, so parked
@@ -700,7 +700,7 @@ void DataflowExecutor::Scaffold::admit(size_t i, std::vector<std::function<void(
 }
 
 void DataflowExecutor::Scaffold::enqueue_task(size_t i, std::vector<std::function<void()>> *batch) {
-    Node &node = (*nodes)[i];
+    Node const &node = (*nodes)[i];
 
     // Both closures capture exactly a pointer and an index, which fits inside
     // std::function's inline buffer - so submitting a node allocates nothing.

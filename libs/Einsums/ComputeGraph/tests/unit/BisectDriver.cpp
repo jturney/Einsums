@@ -84,16 +84,19 @@ class PerturbingPass : public cg::OptimizerPass {
     [[nodiscard]] cg::PassTier  tier() const override { return _tier; }
 
     bool transform(cg::Graph &graph) override {
-        for (auto &node : graph.nodes()) {
-            auto *desc = node.op_data.get_if<cg::EinsumDescriptor>();
-            if (desc == nullptr || !desc->params) {
+        for (std::size_t n = 0; n < graph.num_nodes(); ++n) {
+            auto const *found = graph.nodes()[n].op_data.get_if<cg::EinsumDescriptor>();
+            if (found == nullptr || !found->params) {
                 continue;
             }
             // Both spellings, as any honest rewriter must: the live value is what the executor
             // reads and the snapshot is what analysis reads.
-            double const scaled = cg::as<double>(desc->params->ab_pf) * _factor;
-            desc->params->ab_pf = scaled;
-            desc->ab_prefactor  = scaled;
+            graph.edit(n, [this](cg::NodeEdit &e) {
+                auto        *desc   = e->op_data.get_if<cg::EinsumDescriptor>();
+                double const scaled = cg::as<double>(desc->params->ab_pf) * _factor;
+                desc->params->ab_pf = scaled;
+                desc->ab_prefactor  = scaled;
+            });
             return true;
         }
         return false;

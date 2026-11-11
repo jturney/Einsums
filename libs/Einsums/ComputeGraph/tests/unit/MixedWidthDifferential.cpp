@@ -513,8 +513,10 @@ size_t run_one(std::mt19937 &rng, std::uint32_t seed, unsigned machine) {
 
     // Width 1 everywhere: the same concurrency with no WidthGuard anywhere, so
     // a difference here is not about widths at all.
-    for (auto &node : trial_graph.nodes()) {
-        node.thread_width = 1;
+    for (std::size_t i = 0; i < trial_graph.num_nodes(); ++i) {
+        cg::NodeSchedule schedule = cg::schedule_of(trial_graph.nodes()[i]);
+        schedule.thread_width     = 1;
+        trial_graph.set_schedule(i, schedule);
     }
     restore(trial, initial);
     trial_graph.execute(dataflow);
@@ -530,9 +532,11 @@ size_t run_one(std::mt19937 &rng, std::uint32_t seed, unsigned machine) {
     WidthMode const            mode = kWidthModes[draw_index(rng, std::size(kWidthModes))];
     std::vector<std::uint16_t> widths;
     size_t                     wide = 0;
-    for (auto &node : trial_graph.nodes()) {
-        std::uint16_t const w = draw_width(rng, mode, machine);
-        node.thread_width     = w;
+    for (std::size_t i = 0; i < trial_graph.num_nodes(); ++i) {
+        std::uint16_t const w        = draw_width(rng, mode, machine);
+        cg::NodeSchedule    schedule = cg::schedule_of(trial_graph.nodes()[i]);
+        schedule.thread_width        = w;
+        trial_graph.set_schedule(i, schedule);
         widths.push_back(w);
         wide += w > 1 ? 1 : 0;
     }

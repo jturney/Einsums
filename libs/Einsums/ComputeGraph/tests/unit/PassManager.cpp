@@ -215,12 +215,10 @@ namespace {
 struct RotateNodesPass final : cg::OptimizerPass {
     [[nodiscard]] std::string name() const override { return "RotateNodesPass"; }
     bool                      transform(cg::Graph &graph) override {
-        auto &nodes = graph.nodes();
-        if (nodes.size() < 2) {
+        if (graph.num_nodes() < 2) {
             return false;
         }
-        std::rotate(nodes.begin(), nodes.begin() + 1, nodes.end());
-        graph.mark_sorted();
+        graph.move_node(0, graph.num_nodes() - 1);
         return true;
     }
 };

@@ -1823,12 +1823,16 @@ TEST_CASE("SaveLoad - a pass that changes only what a save drops leaves the grap
     REQUIRE(before.has_value());
 
     // A stream other than the compute stream on a host node, which StreamAssignment puts back.
-    graph.nodes().front().stream_id = 1;
+    graph.set_schedule(0, cg::NodeSchedule{.thread_width       = graph.nodes().front().thread_width,
+                                           .admission_priority = graph.nodes().front().admission_priority,
+                                           .stream_id          = 1});
     cg::passes::StreamAssignment streams;
     REQUIRE(streams.run(graph));
     CHECK(graph.machine_dependent_passes().empty());
 
-    graph.nodes().front().stream_id = 1;
+    graph.set_schedule(0, cg::NodeSchedule{.thread_width       = graph.nodes().front().thread_width,
+                                           .admission_priority = graph.nodes().front().admission_priority,
+                                           .stream_id          = 1});
     cg::PassManager manager;
     manager.add<cg::passes::StreamAssignment>();
     REQUIRE(graph.apply(manager));

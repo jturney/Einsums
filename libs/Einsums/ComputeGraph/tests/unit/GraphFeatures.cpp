@@ -26,6 +26,8 @@
 #include <utility>
 #include <vector>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using einsums::testing::reference_einsum;
@@ -164,7 +166,7 @@ class CorruptingPass : public cg::OptimizerPass {
         node.kind   = cg::OpKind::Custom;
         node.label  = "stray";
         node.inputs = {TensorId{987654}};
-        graph.nodes().push_back(std::move(node));
+        cg::detail::GraphBackdoor::nodes(graph).push_back(std::move(node));
         graph.mark_sorted();
         return true;
     }
@@ -177,7 +179,7 @@ class DroppingPass : public cg::OptimizerPass {
     explicit DroppingPass(bool declare) : _declare(declare) {}
     [[nodiscard]] std::string name() const override { return "DroppingPass"; }
     bool                      transform(cg::Graph &graph) override {
-        graph.nodes().pop_back();
+        cg::detail::GraphBackdoor::nodes(graph).pop_back();
         if (_declare) {
             graph.note_structural_change();
         }
@@ -277,7 +279,8 @@ TEST_CASE("Graph - verify names broken extents, in-place nodes and redirect writ
             cg::einsum("ik;kj->ij", &D, A, B);
         }
         REQUIRE(graph.verify().empty());
-        graph.nodes()[0].outputs[0] = graph.nodes()[1].outputs[0]; // C[i,j] now names the 3x4 D
+        auto &nodes         = cg::detail::GraphBackdoor::nodes(graph);
+        nodes[0].outputs[0] = nodes[1].outputs[0]; // C[i,j] now names the 3x4 D
         CHECK(problems_mention(graph, "has extent 3 on one operand and 4 on another"));
     }
 
@@ -291,7 +294,8 @@ TEST_CASE("Graph - verify names broken extents, in-place nodes and redirect writ
             cg::scale(3.0, &D);
         }
         REQUIRE(graph.verify().empty());
-        graph.nodes()[0].outputs[0] = graph.nodes()[1].outputs[0];
+        auto &nodes         = cg::detail::GraphBackdoor::nodes(graph);
+        nodes[0].outputs[0] = nodes[1].outputs[0];
         CHECK(problems_mention(graph, "reads a tensor other than the one it scales in place"));
     }
 
@@ -305,7 +309,8 @@ TEST_CASE("Graph - verify names broken extents, in-place nodes and redirect writ
             cg::element_transform(&D, "square");
         }
         REQUIRE(graph.verify().empty());
-        graph.nodes()[0].outputs[0] = graph.nodes()[1].outputs[0];
+        auto &nodes         = cg::detail::GraphBackdoor::nodes(graph);
+        nodes[0].outputs[0] = nodes[1].outputs[0];
         CHECK(problems_mention(graph, "reads a tensor other than the one it transforms in place"));
     }
 
@@ -318,7 +323,7 @@ TEST_CASE("Graph - verify names broken extents, in-place nodes and redirect writ
             cg::axpy(1.0, X, &Y);
         }
         REQUIRE(graph.verify().empty());
-        auto &node = graph.nodes()[0];
+        auto &node = cg::detail::GraphBackdoor::nodes(graph)[0];
         REQUIRE(node.inputs.size() == 2);
         std::swap(node.inputs[0], node.inputs[1]);
         CHECK(problems_mention(graph, "lists a y it does not write"));
@@ -453,7 +458,7 @@ TEST_CASE("Graph - a node lists its destination as an input exactly when it read
             cg::CaptureGuard const guard(graph);
             cg::einsum("ik;kj->ij", 1.0, &C, 1.0, A, B);
         }
-        graph.nodes().front().inputs.pop_back();
+        cg::detail::GraphBackdoor::nodes(graph).front().inputs.pop_back();
         auto const problems = graph.verify();
         REQUIRE(problems.size() == 1);
         CHECK_THAT(problems.front(), Catch::Matchers::ContainsSubstring("reads its destination but lists 2 input(s)"));
@@ -1088,7 +1093,7 @@ TEST_CASE("make_einsum_node - executor honors a later prefactor edit", "[Compute
 
     // A pass folding a scale writes ab_pf through the shared params handle. A
     // baked-closure node would ignore this; a first-class one must not.
-    auto *desc = graph.nodes()[0].op_data.get_if<cg::EinsumDescriptor>();
+    auto *desc = cg::detail::GraphBackdoor::nodes(graph)[0].op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     desc->ab_prefactor  = 3.0;
     desc->params->ab_pf = 3.0;

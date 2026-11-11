@@ -34,6 +34,8 @@
 #include <string>
 #include <vector>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using einsums::testing::reference_einsum;
@@ -723,7 +725,7 @@ TEST_CASE("a grouped family whose members disagree on a shape contract is declin
         cg::CaptureGuard const guard(graph);
         cg::grouped_batched_gemm(1.0, as_inputs(A), as_inputs(B), 0.0, as_outputs(C));
     }
-    for (auto &node : graph.nodes()) {
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (auto *desc = node.op_data.get_if<cg::GroupedBatchedGemmDescriptor>(); desc != nullptr) {
             REQUIRE(desc->groups.size() == 2);
             desc->groups[1].trans_a = 'T';

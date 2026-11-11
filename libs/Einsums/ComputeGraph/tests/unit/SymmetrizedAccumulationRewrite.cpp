@@ -19,6 +19,8 @@
 #include <complex>
 #include <memory>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -306,7 +308,7 @@ TEST_CASE("SymmetrizedAccumulation rewrite - a real output is not folded under i
     cg::Graph graph("symacc_imaginary");
     capture_symacc(graph, r2, tmp, A, B, 1.0);
     std::complex<double> const i{0.0, 1.0};
-    for (auto &node : graph.nodes()) {
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (auto *pd = node.op_data.get_if<cg::PermuteDescriptor>(); pd != nullptr) {
             pd->alpha         = i;
             pd->params->alpha = cg::PrefactorScalar{i};

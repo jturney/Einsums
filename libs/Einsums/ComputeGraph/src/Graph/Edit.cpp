@@ -155,6 +155,13 @@ void Graph::edit(std::size_t index, std::function<void(NodeEdit &)> const &chang
     note_node_edit();
 }
 
+void Graph::restore_nodes(std::vector<Node> saved) {
+    std::scoped_lock const lock(_content_mutex);
+    _nodes = std::move(saved);
+    note_node_edit();
+    note_structural_change();
+}
+
 void Graph::set_schedule(std::size_t index, NodeSchedule const &schedule) {
     std::scoped_lock const lock(_content_mutex);
     if (index >= _nodes.size()) {

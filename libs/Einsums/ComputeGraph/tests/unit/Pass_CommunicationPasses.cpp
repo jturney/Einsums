@@ -112,8 +112,8 @@ TEST_CASE("CommunicationElimination - empty graph is a no-op", "[ComputeGraph][C
 
 TEST_CASE("CommunicationElimination - removes an exact-duplicate Allreduce", "[ComputeGraph][Comm][CommunicationElimination]") {
     cg::Graph graph("dup-allreduce");
-    graph.nodes().push_back(make_allreduce(7, "C"));
-    graph.nodes().push_back(make_allreduce(7, "C")); // redundant: same tensor, unmodified since
+    graph.add_node(make_allreduce(7, "C"));
+    graph.add_node(make_allreduce(7, "C")); // redundant: same tensor, unmodified since
     graph.mark_sorted();
 
     REQUIRE(graph.num_nodes() == 2);
@@ -136,8 +136,8 @@ TEST_CASE("CommunicationElimination - removes an exact-duplicate Allreduce", "[C
 
 TEST_CASE("CommunicationElimination - keeps Allreduces for distinct tensors", "[ComputeGraph][Comm][CommunicationElimination]") {
     cg::Graph graph("distinct-tensors");
-    graph.nodes().push_back(make_allreduce(1, "C1"));
-    graph.nodes().push_back(make_allreduce(2, "C2"));
+    graph.add_node(make_allreduce(1, "C1"));
+    graph.add_node(make_allreduce(2, "C2"));
     graph.mark_sorted();
 
     cg::passes::CommunicationElimination pass;
@@ -149,9 +149,9 @@ TEST_CASE("CommunicationElimination - keeps Allreduces for distinct tensors", "[
 TEST_CASE("CommunicationElimination - a write between two Allreduces prevents elimination",
           "[ComputeGraph][Comm][CommunicationElimination]") {
     cg::Graph graph("write-guards");
-    graph.nodes().push_back(make_allreduce(5, "C"));
-    graph.nodes().push_back(make_writer(5)); // re-dirties tensor 5
-    graph.nodes().push_back(make_allreduce(5, "C"));
+    graph.add_node(make_allreduce(5, "C"));
+    graph.add_node(make_writer(5)); // re-dirties tensor 5
+    graph.add_node(make_allreduce(5, "C"));
     graph.mark_sorted();
 
     cg::passes::CommunicationElimination pass;
@@ -169,14 +169,14 @@ TEST_CASE("CommunicationElimination - a Broadcast between Allreduces does NOT pr
     // outputs, so a Broadcast of the same tensor between two Allreduces leaves the
     // "already reduced" status intact and the second Allreduce is still removed.
     cg::Graph graph("broadcast-passthrough");
-    graph.nodes().push_back(make_allreduce(9, "C"));
+    graph.add_node(make_allreduce(9, "C"));
     cg::Node bcast;
     bcast.kind    = cg::OpKind::Broadcast;
     bcast.label   = "broadcast(C)";
     bcast.inputs  = {9};
     bcast.outputs = {9};
-    graph.nodes().push_back(std::move(bcast));
-    graph.nodes().push_back(make_allreduce(9, "C"));
+    graph.add_node(std::move(bcast));
+    graph.add_node(make_allreduce(9, "C"));
     graph.mark_sorted();
 
     cg::passes::CommunicationElimination pass;
@@ -188,9 +188,9 @@ TEST_CASE("CommunicationElimination - a Broadcast between Allreduces does NOT pr
 
 TEST_CASE("CommunicationElimination - is idempotent", "[ComputeGraph][Comm][CommunicationElimination]") {
     cg::Graph graph("idempotent");
-    graph.nodes().push_back(make_allreduce(3, "C"));
-    graph.nodes().push_back(make_allreduce(3, "C"));
-    graph.nodes().push_back(make_allreduce(3, "C")); // two redundant copies
+    graph.add_node(make_allreduce(3, "C"));
+    graph.add_node(make_allreduce(3, "C"));
+    graph.add_node(make_allreduce(3, "C")); // two redundant copies
     graph.mark_sorted();
 
     cg::passes::CommunicationElimination pass;
@@ -219,8 +219,8 @@ TEST_CASE("CommunicationElimination - survivor still executes after the duplicat
     // executor is intact and runs exactly once.
     int       runs = 0;
     cg::Graph graph("survivor-runs");
-    graph.nodes().push_back(make_allreduce(4, "C", [&runs]() { runs++; }));
-    graph.nodes().push_back(make_allreduce(4, "C", [&runs]() { runs++; }));
+    graph.add_node(make_allreduce(4, "C", [&runs]() { runs++; }));
+    graph.add_node(make_allreduce(4, "C", [&runs]() { runs++; }));
     graph.mark_sorted();
 
     cg::passes::CommunicationElimination pass;
@@ -296,7 +296,7 @@ TEST_CASE("CommunicationScheduling - no-op at single rank even with an Allreduce
         SKIP("multi-rank: scheduling may split the Allreduce; this pins the single-rank guard");
 
     cg::Graph graph("scheduling-noop");
-    graph.nodes().push_back(make_allreduce(2, "C"));
+    graph.add_node(make_allreduce(2, "C"));
     graph.mark_sorted();
 
     auto const before = kinds_of(graph);

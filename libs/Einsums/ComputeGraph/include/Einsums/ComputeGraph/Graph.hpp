@@ -262,6 +262,7 @@ class EINSUMS_EXPORT GraphAnchor {
 
 namespace detail {
 struct ArenaBlock;
+struct GraphBackdoor;
 
 /// A recursive mutex that stays with its object. Moving the object hands the destination a
 /// fresh, unlocked mutex and leaves the source its own: the lock guards one object's contents,
@@ -2251,8 +2252,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     [[nodiscard]] std::string const                 &workspace_name() const { return _workspace_name; }
     [[nodiscard]] std::string const                 &stage_name() const { return _stage_name; }
     [[nodiscard]] std::string const                 &stage_type() const { return _stage_type; }
-    [[nodiscard]] std::vector<Node> const           &nodes() const { return _nodes; } ///< Read-only access to nodes.
-    [[nodiscard]] std::vector<Node>                 &nodes() { return _nodes; }       ///< Mutable access (for optimization passes).
+    /// @brief The nodes, in schedule order. A pass changes them through @ref edit,
+    ///        @ref set_schedule and the node-set functions, which keep what follows from a change in step.
+    [[nodiscard]] std::vector<Node> const &nodes() const { return _nodes; }
 
     /**
      * @brief Make every node's input list follow the destination rule (see DestinationRead.hpp),
@@ -4896,6 +4898,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// the same way, and its CPU fallback, when @p placed, kept in step. Throws std::logic_error
     /// when the builder cannot make one and its pass gave none.
     void give_executor(Node &node, bool placed);
+
+    /// Put back a node list taken from @ref nodes before a pass ran, and declare it a node-set
+    /// change. Only PassManager's analyze mode does this, to undo a pass it ran to see what it
+    /// would do; the caller sorts afterwards.
+    friend class PassManager;
+    void restore_nodes(std::vector<Node> saved);
+
+    /// Writes the node list directly, for tests that build a state this API refuses so as to
+    /// check that a guard catches it; defined only in the tests' own header.
+    friend struct detail::GraphBackdoor;
 
     /// A value that moves whenever any graph below this one has a declared edit: each
     /// descendant's analysis version and node count, folded in walk order. A body edit moves the

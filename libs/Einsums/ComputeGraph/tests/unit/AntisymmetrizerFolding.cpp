@@ -18,6 +18,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -175,7 +177,9 @@ TEST_CASE("AntisymmetrizerFolding - a real result is not folded under an imagina
     cg::Graph             graph("imaginary_scale");
     capture_energy(graph, "i,j,k <- P(i/j/k) i,j,k", dims, wsrc, vsrc, result);
     // Both operator nodes, so the fold has no unscaled operand to pick instead.
-    for (auto &node : graph.nodes()) {
+    // Written around the graph: a real result with an imaginary scale is what capture refuses at
+    // execute, and the case is that the fold declines it rather than folding it in.
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (auto *pd = node.op_data.get_if<cg::PermuteDescriptor>(); pd != nullptr) {
             pd->alpha         = std::complex<double>{0.0, 1.0};
             pd->params->alpha = cg::PrefactorScalar{std::complex<double>{0.0, 1.0}};

@@ -377,7 +377,7 @@ TEST_CASE("TransferInsertion - loop seam: body GPU consumer of a parent producer
         }
 
         // The seam: the parent einsum stays CPU, the body einsum is GPU-placed.
-        body.nodes()[0].target = cg::Target::GPU;
+        body.edit(0, [](cg::NodeEdit &e) { e.place_on(cg::Target::GPU); });
 
         cg::PassManager pm;
         pm.add<cg::passes::TransferInsertion>();
@@ -480,7 +480,7 @@ TEST_CASE("TransferInsertion - loop seam: re-running does not duplicate the body
             cg::CaptureGuard const guard(body);
             cg::einsum("ik;kj->ij", 0.0, &acc, 1.0, X, Cc);
         }
-        body.nodes()[0].target = cg::Target::GPU;
+        body.edit(0, [](cg::NodeEdit &e) { e.place_on(cg::Target::GPU); });
 
         // Only PassManager::apply recurses into loop bodies (apply<Pass>() does
         // not), so drive the pass through a PassManager here.
@@ -559,8 +559,8 @@ TEST_CASE("GPUPlacement - cost model rejects when transfer overhead dominates", 
     }
 
     // Manually set estimated_flops to a small value where transfer overhead dominates.
-    graph.nodes()[0].estimated_flops = 1000;  // tiny: 1000 FLOPs
-    graph.nodes()[0].estimated_bytes = 98304; // but large transfer
+    graph.edit(0, [](cg::NodeEdit &e) { e->estimated_flops = 1000; });  // tiny: 1000 FLOPs
+    graph.edit(0, [](cg::NodeEdit &e) { e->estimated_bytes = 98304; }); // but large transfer
 
     cg::passes::GPUPlacement pass;
     // With default cost model: cpu_time = 1000 / 50e9 = 0.02 us
@@ -586,8 +586,8 @@ TEST_CASE("GPUPlacement - cost model accepts when compute dominates", "[ComputeG
     }
 
     // Large flops, reasonable transfer.
-    graph.nodes()[0].estimated_flops = 500000000; // 500M FLOPs
-    graph.nodes()[0].estimated_bytes = 98304;
+    graph.edit(0, [](cg::NodeEdit &e) { e->estimated_flops = 500000000; }); // 500M FLOPs
+    graph.edit(0, [](cg::NodeEdit &e) { e->estimated_bytes = 98304; });
 
     cg::passes::GPUPlacement pass;
     // cpu_time = 500e6 / 50e9 = 10ms
@@ -831,7 +831,7 @@ TEST_CASE("TransferInsertion - D2H inserted when CPU node reads GPU output", "[C
     // Actually, let's just manually check what happens and verify D2H is inserted
     // when a CPU node needs GPU output.
     // Strategy: place node 1 on GPU, leave node 2 on CPU.
-    graph.nodes()[0].target = cg::Target::GPU;
+    graph.edit(0, [](cg::NodeEdit &e) { e.place_on(cg::Target::GPU); });
     // node 1 is GPU, node 2 is CPU and reads C.
 
     auto [modified, pass] = graph.apply<cg::passes::TransferInsertion>();
@@ -937,9 +937,9 @@ TEST_CASE("TransferInsertion - uploading a backed input leaves the graph valid",
     REQUIRE(graph.verify().empty());
 
     // Placed by hand, so the case does not depend on what GPUPlacement's cost model offloads.
-    for (auto &node : graph.nodes()) {
-        if (node.kind == cg::OpKind::Einsum) {
-            node.target = cg::Target::GPU;
+    for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
+        if (graph.nodes()[i].kind == cg::OpKind::Einsum) {
+            graph.edit(i, [](cg::NodeEdit &e) { e.place_on(cg::Target::GPU); });
         }
     }
     auto [modified, pass] = graph.apply<cg::passes::TransferInsertion>();
@@ -1005,13 +1005,16 @@ TEST_CASE("TransferElimination - removes manually injected redundant H2D", "[Com
     graph.apply<cg::passes::TransferInsertion>();
 
     // Manually duplicate an H2D node to create redundancy.
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
     for (size_t idx = 0; idx < nodes.size(); ++idx) {
         if (nodes[idx].kind == cg::OpKind::HostToDevice) {
             // Insert a duplicate right after.
             cg::Node dup = nodes[idx];             // copy
             dup.id       = cg::unassigned_node_id; // a copy is a new node and gets its own id
-            nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(idx) + 1, std::move(dup));
+            std::vector<std::pair<std::size_t, std::vector<cg::Node>>> groups;
+            groups.emplace_back(idx + 1, std::vector<cg::Node>{});
+            groups.back().second.push_back(std::move(dup));
+            graph.insert_node_groups(std::move(groups));
             break;
         }
     }
@@ -1044,18 +1047,22 @@ TEST_CASE("TransferElimination - removes manually injected redundant D2H", "[Com
     }
 
     // Force einsum to GPU, permute stays CPU.
-    graph.nodes()[0].target = cg::Target::GPU;
+    graph.edit(0, [](cg::NodeEdit &e) { e.place_on(cg::Target::GPU); });
 
     auto [ins_modified, ins_pass] = graph.apply<cg::passes::TransferInsertion>();
     REQUIRE(ins_modified);
 
     // Manually duplicate a D2H node to create redundancy.
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
     for (size_t idx = 0; idx < nodes.size(); ++idx) {
         if (nodes[idx].kind == cg::OpKind::DeviceToHost) {
+            // Insert a duplicate right after.
             cg::Node dup = nodes[idx];             // copy
             dup.id       = cg::unassigned_node_id; // a copy is a new node and gets its own id
-            nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(idx) + 1, std::move(dup));
+            std::vector<std::pair<std::size_t, std::vector<cg::Node>>> groups;
+            groups.emplace_back(idx + 1, std::vector<cg::Node>{});
+            groups.back().second.push_back(std::move(dup));
+            graph.insert_node_groups(std::move(groups));
             break;
         }
     }
@@ -1108,8 +1115,8 @@ TEST_CASE("TransferElimination - Belady eviction under memory pressure", "[Compu
     einsums::gpu::set_mock_device_memory_limit(100000);
 
     // Place all on GPU manually (bypass GPUPlacement budget check).
-    for (auto &n : graph.nodes())
-        n.target = cg::Target::GPU;
+    for (std::size_t i = 0; i < graph.num_nodes(); ++i)
+        graph.edit(i, [](cg::NodeEdit &e) { e.place_on(cg::Target::GPU); });
 
     graph.apply<cg::passes::TransferInsertion>();
 
@@ -1461,7 +1468,7 @@ TEST_CASE("GPU pass pipeline: mixed GPU/CPU graph produces correct results", "[C
     REQUIRE(graph.num_nodes() == 2);
 
     // Force einsum to GPU, scale to CPU to test the data-flow boundary.
-    graph.nodes()[0].target = cg::Target::GPU;
+    graph.edit(0, [](cg::NodeEdit &e) { e.place_on(cg::Target::GPU); });
     // node[1] stays CPU (Scale).
 
     graph.apply<cg::passes::TransferInsertion>();
@@ -1546,7 +1553,7 @@ TEST_CASE("GPU dispatch leaves a GEMM-shaped einsum with a permutation operator 
         cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0f, &C, 1.0f, A, B);
     }
     REQUIRE(graph.num_nodes() == 1);
-    graph.nodes()[0].target = cg::Target::GPU;
+    graph.edit(0, [](cg::NodeEdit &e) { e.place_on(cg::Target::GPU); });
 
     graph.execute();
 
@@ -1910,7 +1917,7 @@ TEST_CASE("GPUPlacement - a loaded profile without a PCIe bandwidth still places
     }
     // The flop count ContractionPlanning writes on the GEMMs it plans, which is what puts a node on
     // the cost-model path rather than the byte threshold.
-    graph.nodes()[0].estimated_flops = std::size_t{2} * 512 * 512 * 512;
+    graph.edit(0, [](cg::NodeEdit &e) { e->estimated_flops = std::size_t{2} * 512 * 512 * 512; });
 
     cg::passes::GPUPlacement pass(*loaded);
     pass.run(graph);

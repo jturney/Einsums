@@ -292,8 +292,10 @@ TEST_CASE("ThreadWidth - widths do not change results", "[ComputeGraph][Executor
         cg::einsum("ik;kj->ij", &D, A, B);
         cg::scale(3.0, &D);
     }
-    for (auto &node : planned.nodes()) {
-        node.thread_width = distinct_width(hardware::get_max_threads());
+    for (std::size_t i = 0; i < planned.num_nodes(); ++i) {
+        cg::NodeSchedule schedule = cg::schedule_of(planned.nodes()[i]);
+        schedule.thread_width     = distinct_width(hardware::get_max_threads());
+        planned.set_schedule(i, schedule);
     }
 
     cg::DataflowExecutor df;
@@ -443,15 +445,15 @@ TEMPLATE_LIST_TEST_CASE("ThreadWidth - a rank-2 GEMM under a width leaves the ve
 namespace {
 
 /// The site the node's dispatch reads, or null for a node that has none.
-packed_gemm::ContractionSite *site_of(cg::Node &node) {
-    auto *desc = node.op_data.get_if<cg::EinsumDescriptor>();
+packed_gemm::ContractionSite *site_of(cg::Node const &node) {
+    auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     return desc != nullptr ? desc->site.get() : nullptr;
 }
 
 /// Pin every contraction in @p graph, as a plan-time chooser would.
 size_t pin_every_contraction(cg::Graph &graph, packed_gemm::KernelRoute route) {
     size_t pinned = 0;
-    for (auto &node : graph.nodes()) {
+    for (auto const &node : graph.nodes()) {
         if (auto *site = site_of(node); site != nullptr) {
             site->route = route;
             pinned++;
@@ -603,12 +605,16 @@ TEST_CASE("ThreadWidth - pinned routes make widths bit-identical", "[ComputeGrap
     REQUIRE(pin_every_contraction(wide_graph, packed_gemm::KernelRoute::Packed) == 1);
 
     // The two width plans the trial could land on for the same node.
-    for (auto &node : narrow_graph.nodes()) {
-        node.thread_width = 1;
+    for (std::size_t i = 0; i < narrow_graph.num_nodes(); ++i) {
+        cg::NodeSchedule schedule = cg::schedule_of(narrow_graph.nodes()[i]);
+        schedule.thread_width     = 1;
+        narrow_graph.set_schedule(i, schedule);
     }
     std::uint16_t const w = distinct_width(hardware::get_max_threads());
-    for (auto &node : wide_graph.nodes()) {
-        node.thread_width = w;
+    for (std::size_t i = 0; i < wide_graph.num_nodes(); ++i) {
+        cg::NodeSchedule schedule = cg::schedule_of(wide_graph.nodes()[i]);
+        schedule.thread_width     = w;
+        wide_graph.set_schedule(i, schedule);
     }
 
     cg::DataflowExecutor df;
@@ -620,12 +626,12 @@ TEST_CASE("ThreadWidth - pinned routes make widths bit-identical", "[ComputeGrap
     }
 
     // The pins are exactly where they were put: replaying does not touch them.
-    for (auto &node : narrow_graph.nodes()) {
+    for (auto const &node : narrow_graph.nodes()) {
         if (auto *site = site_of(node); site != nullptr) {
             REQUIRE(site->route == packed_gemm::KernelRoute::Packed);
         }
     }
-    for (auto &node : wide_graph.nodes()) {
+    for (auto const &node : wide_graph.nodes()) {
         if (auto *site = site_of(node); site != nullptr) {
             REQUIRE(site->route == packed_gemm::KernelRoute::Packed);
         }
@@ -649,7 +655,7 @@ TEST_CASE("ThreadWidth - the planner pins every contraction it may widen", "[Com
     }
 
     // Nothing is pinned until something plans.
-    for (auto &node : graph.nodes()) {
+    for (auto const &node : graph.nodes()) {
         if (auto *site = site_of(node); site != nullptr) {
             REQUIRE(site->route == packed_gemm::KernelRoute::Adaptive);
         }
@@ -657,7 +663,7 @@ TEST_CASE("ThreadWidth - the planner pins every contraction it may widen", "[Com
 
     graph.plan_threads();
     size_t pinned = 0;
-    for (auto &node : graph.nodes()) {
+    for (auto const &node : graph.nodes()) {
         if (auto *site = site_of(node); site != nullptr) {
             REQUIRE(site->route == packed_gemm::KernelRoute::Packed);
             pinned++;
@@ -668,7 +674,7 @@ TEST_CASE("ThreadWidth - the planner pins every contraction it may widen", "[Com
     // Re-planning is what the timed width trial does between replays. It may
     // move widths; it may not move a route.
     graph.plan_threads();
-    for (auto &node : graph.nodes()) {
+    for (auto const &node : graph.nodes()) {
         if (auto *site = site_of(node); site != nullptr) {
             REQUIRE(site->route == packed_gemm::KernelRoute::Packed);
         }

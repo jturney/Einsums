@@ -40,6 +40,8 @@
 #include <variant>
 #include <vector>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -69,7 +71,7 @@ std::pair<packed_gemm::ScalarType, size_t> node_key(cg::Graph const &graph, cg::
 /// @return How many nodes were rebuilt.
 size_t rebuild_executors(cg::Graph &graph) {
     size_t rebuilt = 0;
-    for (auto &node : graph.nodes()) {
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (!cg::reconstruction_blocker(node).empty()) {
             continue;
         }
@@ -117,7 +119,7 @@ cg::OpData strip_live_params(cg::OpData data) {
 /// Rebuild every reconstructible node from its SNAPSHOT scalars alone.
 size_t rebuild_from_snapshots(cg::Graph &graph) {
     size_t rebuilt = 0;
-    for (auto &node : graph.nodes()) {
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (!cg::reconstruction_blocker(node).empty()) {
             continue;
         }
@@ -142,7 +144,7 @@ void restore(TensorType *t, std::vector<unsigned char> const &snapshot) {
 
 /// The first node of @p kind, or null.
 cg::Node *find_node(cg::Graph &graph, cg::OpKind kind) {
-    for (auto &node : graph.nodes()) {
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (node.kind == kind) {
             return &node;
         }
@@ -2525,7 +2527,7 @@ TEST_CASE("ExecutorBuilder - a callback write_param runs and reports its arm", "
     // It still REBUILDS, because the closure is in the descriptor: only a SAVE
     // is blocked, and the two questions are deliberately separate.
     graph.params_ptr()->set("n", 0);
-    for (auto &node : graph.nodes()) {
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         node.execute = cg::build_executor(node.kind, packed_gemm::ScalarType::Unknown, 0, node.op_data, graph,
                                           std::span<cg::TensorId const>{node.inputs}, std::span<cg::TensorId const>{node.outputs});
     }
@@ -2561,7 +2563,7 @@ TEST_CASE("ExecutorBuilder - rebuilt lifecycle executors run a hoisted scratch's
     graph.apply(pm);
 
     std::size_t rebuilt = 0;
-    for (auto &node : graph.nodes()) {
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (!cg::is_rebuild_only(node.kind) || cg::is_grouped_raisable(node.kind)) {
             continue;
         }
@@ -2713,7 +2715,7 @@ TEST_CASE("ExecutorBuilder - planned Materialize and Free rebuild into the graph
     std::size_t                                  placed = 0;
     std::map<std::string, std::size_t>           offset_of;
     std::map<std::string, std::function<void()>> attach_of;
-    for (auto &node : graph.nodes()) {
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (node.kind != cg::OpKind::Materialize && node.kind != cg::OpKind::Free) {
             continue;
         }

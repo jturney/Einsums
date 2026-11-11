@@ -17,6 +17,8 @@
 #include <variant>
 #include <vector>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -26,7 +28,7 @@ namespace {
 
 // The single Axpby node's descriptor (non-const, so tests can mutate params).
 cg::AxpbyDescriptor *find_axpby_desc(cg::Graph &graph) {
-    for (auto &node : graph.nodes()) {
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (node.kind == cg::OpKind::Axpby) {
             if (auto *d = node.op_data.get_if<cg::AxpbyDescriptor>()) {
                 return d;
@@ -37,7 +39,7 @@ cg::AxpbyDescriptor *find_axpby_desc(cg::Graph &graph) {
 }
 
 size_t axpby_input_count(cg::Graph &graph) {
-    for (auto &node : graph.nodes()) {
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (node.kind == cg::OpKind::Axpby) {
             return node.inputs.size();
         }
