@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
@@ -1468,6 +1469,8 @@ expected<void, RaiseFailure> lower_region(Graph &graph, Region const &region, Te
             node.inputs.push_back(expr.at(operand).tensor);
         }
         node.op_data = term.descriptor;
+        // The term lists its operands; a node that accumulates into its target reads it as well.
+        sync_destination_input(node);
         // An elementwise node carries its operators in its descriptor, which is what the executor
         // applies, so the statement's list is a claim about it and must match.
         std::vector<PermutationOperator> const *carried = nullptr;

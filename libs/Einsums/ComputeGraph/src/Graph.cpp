@@ -209,6 +209,9 @@ void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<No
         if (nodes.empty()) {
             continue;
         }
+        for (auto &node : nodes) {
+            sync_destination_input(node);
+        }
         _structure_version++;
         _nodes.insert(_nodes.begin() + static_cast<std::ptrdiff_t>(at), std::make_move_iterator(nodes.begin()),
                       std::make_move_iterator(nodes.end()));

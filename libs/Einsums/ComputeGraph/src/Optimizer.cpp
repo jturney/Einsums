@@ -756,7 +756,6 @@ bool PassManager::run(Graph &graph) {
             auto const declared = config::get(option::PassVerify) ? declared_structure(graph) : decltype(declared_structure(graph)){};
             bool const modified = run_pass_tree(*pass, graph);
             settle_node_ids(graph, pass->name());
-            graph.sync_destination_inputs();
             verify_after_pass(graph, pass->name());
             check_structure_declared(graph, declared, pass->name());
             check_untouched(graph, untouchable, pass->name());

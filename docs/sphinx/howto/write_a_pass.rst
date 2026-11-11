@@ -50,6 +50,7 @@ A change to one node's fields goes through ``graph.edit(i, [&](NodeEdit &e) { ..
 When the callback returns, the graph lists the node's destination as an input exactly when the node reads it, gives the node an executor built from its new fields, so a repointed operand is the one the replay reads, and invalidates the analyses that described the old ones.
 An executor your pass writes itself, which the builder cannot derive from the node's fields, goes in through ``e.set_executor(...)``, or through ``use_custom_executor`` for a node not yet in the graph; ``e.replace(node)`` puts a node your pass built whole in an existing position.
 Adding, removing and moving nodes goes through ``add_node``, ``insert_node_groups``, ``erase_nodes``, ``replace_nodes``, ``reorder``, ``move_node`` and ``hoist``.
+``insert_node_groups`` and ``replace_nodes`` list the destination of each node they splice in exactly when it reads it; ``add_node`` takes a node as it is given, so a node appended that way must already list it.
 The fields that say only how a replay runs a node, its thread width, admission priority and stream, go through ``graph.set_schedule``, and placement on a device through ``e.place_on(target)``.
 
 Headers go in ``libs/Einsums/ComputeGraph/include/Einsums/ComputeGraph/Passes/`` and implementations in ``libs/Einsums/ComputeGraph/src/Passes/``.

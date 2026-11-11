@@ -882,6 +882,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Typically called internally by CaptureContext::record(), not by users directly.
      * The node is taken as it is: its inputs must already follow the destination rule of
      * DestinationRead.hpp, which CaptureContext::record and make_node apply and verify() checks.
+     * The graph loader relies on that, since verify() is what judges the lists a file gives.
      *
      * @param[in] node The node to add (moved into the graph).
      * @return The assigned NodeId.
@@ -2260,8 +2261,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @brief Make every node's input list follow the destination rule (see DestinationRead.hpp),
      *        in this graph and every descendant.
      *
-     * The PassManager calls it after each pass, because a pass may rewrite a node's destination
-     * prefactor in place and leave the input list describing the old one.
+     * The graph loader calls it on the lists a file gives. A pass needs no such repair: a
+     * @ref edit lists the destination again as it commits, and @ref insert_node_groups lists
+     * it for each node it splices in.
      *
      * @return True when any node's inputs changed.
      */
@@ -2389,6 +2391,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * callers pass positions in the ORIGINAL numbering and need not track shifts.
      * An "insert after node k" is expressed as position ``k+1``. Empty groups are
      * skipped. Marks the graph sorted (the caller vouches for the chosen order).
+     * Each inserted node's inputs are brought to the destination rule of
+     * DestinationRead.hpp: the destination is listed as the trailing input
+     * exactly when the node reads it.
      */
     void insert_node_groups(std::vector<std::pair<std::size_t, std::vector<Node>>> groups);
 

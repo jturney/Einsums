@@ -363,9 +363,15 @@ TEMPLATE_LIST_TEST_CASE("prefactors survive the rewrite exactly", "[ComputeGraph
         REQUIRE(desc != nullptr);
         CHECK(desc->alpha == std::complex<double>(ab_pf)); // the product prefactor
         CHECK(desc->beta == std::complex<double>(c_pf));   // the accumulation prefactor
+        // Defends: the region lowering emitted the kept permute with only its operand listed, so a
+        // permute accumulating into C read C without the schedulers seeing the read. The pass
+        // manager's repair after every pass hid it until that repair was removed.
+        REQUIRE(node.inputs.size() == 2);
+        CHECK(structural.buffer_of(node.inputs.back()) == structural.buffer_of(node.outputs.front()));
         found_permute = true;
     }
     CHECK(found_permute);
+    CHECK(structural.verify().empty());
 }
 
 TEMPLATE_LIST_TEST_CASE("an untagged identity matrix is left alone", "[ComputeGraph][DeltaElimination]", testing::AllScalarTypes) {

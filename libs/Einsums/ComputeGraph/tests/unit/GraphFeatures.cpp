@@ -354,16 +354,40 @@ namespace {
 
 /// A pass that turns every overwriting einsum into an accumulating one by writing its live C
 /// prefactor, the way a scale-folding pass rewrites a prefactor, and leaves the input lists alone.
+// Turns each einsum into an accumulation by writing its live prefactor block directly, which the
+// read-only node list does not stop because the block sits behind a shared pointer. Nothing then
+// lists C as an input.
+class UndeclaredAccumulatingPass : public cg::OptimizerPass {
+  public:
+    [[nodiscard]] std::string name() const override { return "UndeclaredAccumulatingPass"; }
+    bool                      transform(cg::Graph &graph) override {
+        bool changed = false;
+        for (auto const &node : graph.nodes()) {
+            if (auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr && desc->params != nullptr) {
+                desc->params->c_pf = cg::PrefactorScalar{1.0};
+                changed            = true;
+            }
+        }
+        return changed;
+    }
+};
+
+// The same rewrite made through Graph::edit, which lists C again as the edit commits.
 class AccumulatingPass : public cg::OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "AccumulatingPass"; }
     bool                      transform(cg::Graph &graph) override {
         bool changed = false;
-        for (auto &node : graph.nodes()) {
-            if (auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr && desc->params != nullptr) {
-                desc->params->c_pf = cg::PrefactorScalar{1.0};
-                changed            = true;
+        for (std::size_t i = 0; i < graph.nodes().size(); ++i) {
+            if (!graph.nodes()[i].op_data.holds<cg::EinsumDescriptor>()) {
+                continue;
             }
+            graph.edit(i, [](cg::NodeEdit &e) {
+                if (auto const *desc = e->op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr && desc->params != nullptr) {
+                    desc->params->c_pf = cg::PrefactorScalar{1.0};
+                }
+            });
+            changed = true;
         }
         return changed;
     }
@@ -382,7 +406,8 @@ std::vector<TensorId> inputs_of(cg::Graph const &graph, cg::OpKind kind) {
 // through the input list, so the list names the destination last exactly when the node reads it.
 // Captured einsums and permutes used to list only their operands whatever the prefactor, while
 // make_einsum_node listed C, and a pass that rewrote a prefactor in place left the list describing
-// the old one.
+// the old one. The pass manager used to repair the lists after every pass, which hid emitters that
+// broke the rule; a rewrite now goes through Graph::edit, and one that does not is reported.
 TEST_CASE("Graph - a node lists its destination as an input exactly when it reads it", "[ComputeGraph][Verify][DestinationRead]") {
     auto A = create_random_tensor<double>("A", 3, 4);
     auto B = create_random_tensor<double>("B", 4, 3);
@@ -431,7 +456,7 @@ TEST_CASE("Graph - a node lists its destination as an input exactly when it read
         CHECK(graph.verify().empty());
     }
 
-    SECTION("the pass manager follows a pass that rewrites a prefactor in place") {
+    SECTION("a pass that rewrites a prefactor through an edit lists C") {
         auto want = C;
         reference_einsum("ij <- ik ; kj", 1.0, &want, 1.0, A, B);
 
@@ -450,6 +475,18 @@ TEST_CASE("Graph - a node lists its destination as an input exactly when it read
                 CHECK(std::abs(C(i, j) - want(i, j)) < 1e-12 * (1.0 + std::abs(want(i, j))));
             }
         }
+    }
+
+    SECTION("a pass that rewrites a prefactor outside an edit is reported") {
+        cg::Graph graph("undeclared");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", &C, A, B);
+        }
+        VerifyPasses const verifying;
+        CHECK_THROWS_WITH(graph.apply<UndeclaredAccumulatingPass>(),
+                          Catch::Matchers::ContainsSubstring("pass 'UndeclaredAccumulatingPass' left the graph malformed") &&
+                              Catch::Matchers::ContainsSubstring("reads its destination but lists 2 input(s)"));
     }
 
     SECTION("verify names a node that breaks the rule") {
