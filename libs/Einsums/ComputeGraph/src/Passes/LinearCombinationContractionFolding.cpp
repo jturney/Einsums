@@ -89,7 +89,7 @@ std::vector<std::string> LinearCombinationContractionFolding::explain() const {
 bool LinearCombinationContractionFolding::transform(Graph &graph) {
     graph.topological_sort();
 
-    auto       &nodes   = graph.nodes();
+    auto const &nodes   = graph.nodes();
     auto const &tensors = graph.tensors_map();
 
     if (nodes.size() < 2) {
@@ -459,16 +459,13 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
         TensorId const b_operand = shared_first ? l_id : shared_id;
         Node fused = graph.make_einsum_node(a_operand, b_operand, out_id, einspec, c_pf0, ab0, /*conj_a=*/false,
                                             /*conj_b=*/false, fmt::format("lccf({} terms via _lccf_L_{})", members.size(), _num_groups));
-        // Keep node-0's id: state keyed by NodeId (profiler payload strings, the
-        // program-order validator's observed-writes map) refers to it, and node-0 is
-        // the node being replaced, so no duplicate arises.
-        fused.id = nodes[members[0].node_index].id;
-        // Place the fused node AT node-0's vector position (not appended). The
-        // topological sort derives RAW/WAR/WAW edges from scan order, so the fused
-        // node must occupy node-0's slot to remain the last writer of the output
-        // before its consumer (appending would schedule it after the consumer).
-        nodes[members[0].node_index] = std::move(fused);
-        used[members[0].node_index]  = true; // kept (now the fused node)
+        // Place the fused node AT node-0's vector position (not appended), keeping node-0's id:
+        // the topological sort derives RAW/WAR/WAW edges from scan order, so the fused node must
+        // occupy node-0's slot to remain the last writer of the output before its consumer, and
+        // state keyed by NodeId (profiler payloads, the program-order validator's observed-writes
+        // map) refers to node-0.
+        graph.edit(members[0].node_index, [&](NodeEdit &e) { e.replace(std::move(fused)); });
+        used[members[0].node_index] = true; // kept (now the fused node)
         // A goes immediately before it; collected and spliced after the removal
         // bookkeeping so the recorded indices stay in the original numbering.
         pending_inserts.emplace_back(members[0].node_index, std::vector<Node>{std::move(lbuild)});
