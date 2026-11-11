@@ -13,6 +13,7 @@
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -248,15 +249,99 @@ TEST_CASE("NodeEdit - a placed node's CPU fallback follows the rebuilt executor"
     // GPUPlacement copies the executor into cpu_fallback; a commit that rebuilt only execute would
     // leave the fallback running the old closure.
     TwoProducts p;
-    {
-        // What placement does, without a device to place on.
-        auto &node        = const_cast<cg::Node &>(p.graph.nodes()[0]);
-        node.cpu_fallback = node.execute;
-    }
+    p.graph.edit(0, [](cg::NodeEdit &e) { e.place_on(cg::Target::GPU); });
+    REQUIRE(p.graph.nodes()[0].cpu_fallback);
     p.graph.edit(0, [&](cg::NodeEdit &e) { e->inputs[0] = p.a2_id(); });
     p.C.zero();
     p.graph.nodes()[0].cpu_fallback();
     check_equal(p.C, p.expected(p.A2));
+}
+
+TEST_CASE("NodeEdit - placing a node back on the CPU drops its fallback", "[ComputeGraph][NodeEdit]") {
+    TwoProducts p;
+    p.graph.edit(0, [](cg::NodeEdit &e) { e.place_on(cg::Target::GPU); });
+    CHECK(p.graph.nodes()[0].target == cg::Target::GPU);
+    p.graph.edit(0, [](cg::NodeEdit &e) { e.place_on(cg::Target::CPU); });
+    CHECK(p.graph.nodes()[0].target == cg::Target::CPU);
+    CHECK_FALSE(p.graph.nodes()[0].cpu_fallback);
+}
+
+TEST_CASE("NodeEdit - changing the target directly is refused", "[ComputeGraph][NodeEdit]") {
+    // A target set without place_on would leave a GPU node with no CPU fallback to decline to.
+    TwoProducts p;
+    CHECK_THROWS_AS(p.graph.edit(0, [](cg::NodeEdit &e) { e->target = cg::Target::GPU; }), std::logic_error);
+    CHECK(p.graph.nodes()[0].target == cg::Target::CPU);
+    CHECK_FALSE(p.graph.nodes()[0].cpu_fallback);
+}
+
+TEST_CASE("Graph - set_schedule sets the schedule and nothing else", "[ComputeGraph][NodeEdit][Schedule]") {
+    // A planner trying a plan per replay sets every node's width each time; that must not count
+    // as an edit, or every replay would rebuild the usage and the dependency schedule.
+    TwoProducts         p;
+    std::uint64_t const version = p.graph.analysis_version();
+
+    cg::NodeSchedule schedule   = cg::schedule_of(p.graph.nodes()[1]);
+    schedule.thread_width       = 3;
+    schedule.admission_priority = 42;
+    schedule.stream_id          = 1;
+    p.graph.set_schedule(1, schedule);
+
+    cg::Node const &node = p.graph.nodes()[1];
+    CHECK(node.thread_width == 3);
+    CHECK(node.admission_priority == 42);
+    CHECK(node.stream_id == 1);
+    CHECK(p.graph.analysis_version() == version);
+    CHECK_THROWS_AS(p.graph.set_schedule(2, schedule), std::out_of_range);
+
+    p.graph.execute();
+    check_equal(p.D, p.expected(p.A2));
+}
+
+TEST_CASE("Graph - for_each_child visits one node's bodies", "[ComputeGraph][NodeEdit][Walk]") {
+    cg::Graph graph("walk");
+    auto [then_g, else_g] = graph.add_conditional("branch", [] { return true; });
+    cg::Graph &setup      = graph.add_setup("once");
+
+    std::size_t const branch = position_of(graph, cg::OpKind::Conditional);
+    std::size_t const once   = position_of(graph, cg::OpKind::Setup);
+
+    std::vector<cg::Graph const *> seen;
+    auto const                     record = [&](cg::Graph &body) { seen.push_back(&body); };
+
+    graph.for_each_child(branch, record);
+    CHECK(seen == std::vector<cg::Graph const *>{&then_g, &else_g});
+
+    seen.clear();
+    graph.for_each_child(once, record);
+    CHECK(seen == std::vector<cg::Graph const *>{&setup});
+
+    seen.clear();
+    graph.for_each_child(once, record, /*include_setup=*/false);
+    CHECK(seen.empty());
+
+    seen.clear();
+    graph.for_each_subgraph(record, /*include_setup=*/false);
+    CHECK(seen == std::vector<cg::Graph const *>{&then_g, &else_g});
+
+    CHECK_THROWS_AS(graph.for_each_child(graph.num_nodes(), record), std::out_of_range);
+}
+
+TEST_CASE("Graph - for_each_child survives a visitor that grows the parent", "[ComputeGraph][NodeEdit][Walk]") {
+    // IOPrefetch inserts into the parent between a conditional's two branches; the node vector
+    // may move, and a walk still reading the branch pointers from the descriptor would read
+    // freed memory for the second.
+    cg::Graph graph("walk_grow");
+    auto [then_g, else_g]    = graph.add_conditional("branch", [] { return true; });
+    std::size_t const branch = position_of(graph, cg::OpKind::Conditional);
+
+    std::vector<cg::Graph const *> seen;
+    graph.for_each_child(branch, [&](cg::Graph &body) {
+        seen.push_back(&body);
+        for (int k = 0; k < 64; ++k) {
+            (void)graph.add_loop("filler", 1, [](std::size_t it) { return it < 1; });
+        }
+    });
+    CHECK(seen == std::vector<cg::Graph const *>{&then_g, &else_g});
 }
 
 TEST_CASE("NodeEdit - a pass-written executor keeps its own state through edits", "[ComputeGraph][NodeEdit]") {

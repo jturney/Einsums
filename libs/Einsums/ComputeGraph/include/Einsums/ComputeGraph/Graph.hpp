@@ -755,12 +755,26 @@ class EINSUMS_EXPORT NodeEdit {
      */
     void add_pre_run(std::function<void()> hook);
 
+    /**
+     * @brief Run the node on @p target.
+     *
+     * A node placed off the CPU keeps the CPU executor the commit gives it as its
+     * @ref Node::cpu_fallback, through every later edit; one placed back on the CPU drops it.
+     * Changing @ref Node::target any other way is refused.
+     * @param[in] target Where the node runs.
+     */
+    void place_on(Target target) noexcept {
+        _node.target = target;
+        _placed      = true;
+    }
+
   private:
     friend class Graph;
     explicit NodeEdit(Node &node) noexcept : _node(node) {}
 
     Node &_node;
     bool  _executor_given{false};
+    bool  _placed{false};
 };
 
 /**
@@ -2266,11 +2280,25 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] change What to change.
      * @throws std::out_of_range If there is no node at @p index.
      * @throws std::logic_error If @p change assigned the executor directly, or changed the
-     *         operands of a node whose pass wrote its executor without giving a new one, or the
-     *         node has no executor the builder can make and none was given.
+     *         target other than through @ref NodeEdit::place_on, or changed the operands of a
+     *         node whose pass wrote its executor without giving a new one, or the node has no
+     *         executor the builder can make and none was given.
      * @versionadded{2.0.0}
      */
     void edit(std::size_t index, std::function<void(NodeEdit &)> const &change);
+
+    /**
+     * @brief Set how a replay runs the node at @p index: its width, admission priority and stream.
+     *
+     * Unlike @ref edit, this rebuilds nothing and leaves the analysis version alone: no executor
+     * is built from these fields and no analysis reads them, and a planner that tries a plan per
+     * replay sets them on every node each time.
+     * @param[in] index    The node's position in this graph.
+     * @param[in] schedule The fields to give it; @ref schedule_of reads the ones it has.
+     * @throws std::out_of_range If there is no node at @p index.
+     * @versionadded{2.0.0}
+     */
+    void set_schedule(std::size_t index, NodeSchedule const &schedule);
 
     /**
      * @brief Put the nodes in a new order: position @c k takes the node that was at @c order[k].
@@ -2406,8 +2434,25 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Used by optimization passes that need to look inside or run on
      * sub-graphs. PassManager::run() calls this when a pass overrides
      * ``OptimizerPass::recurse_into_subgraphs()`` to true.
+     *
+     * @param[in] visitor       Called once per sub-graph.
+     * @param[in] include_setup False to leave Setup bodies out.
      */
-    void for_each_subgraph(std::function<void(Graph &)> const &visitor);
+    void for_each_subgraph(std::function<void(Graph &)> const &visitor, bool include_setup = true);
+
+    /**
+     * @brief Call @p visitor on each body of the node at @p index, as @ref for_each_subgraph
+     *        does for every node.
+     *
+     * The bodies are found before the first visit, so a visitor that adds or moves nodes of this
+     * graph cannot leave the walk reading a moved descriptor.
+     * @param[in] index         The node's position in this graph.
+     * @param[in] visitor       Called once per body.
+     * @param[in] include_setup False to leave a Setup body out.
+     * @throws std::out_of_range If there is no node at @p index.
+     * @versionadded{2.0.0}
+     */
+    void for_each_child(std::size_t index, std::function<void(Graph &)> const &visitor, bool include_setup = true);
 
     /// Const overload of @ref for_each_subgraph. Visitor sees ``Graph const &``.
     void for_each_subgraph(std::function<void(Graph const &)> const &visitor) const;

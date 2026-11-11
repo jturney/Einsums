@@ -1644,6 +1644,30 @@ inline void use_custom_executor(Node &node, std::function<void()> executor) {
     node.execute        = [shared = node.custom_execute]() { (*shared)(); };
 }
 
+/**
+ * @brief How a replay is to run a node: the fields that say when and how wide, not what.
+ *
+ * No executor is built from these and no analysis reads them, so ``Graph::set_schedule`` changes
+ * them without the follow-up a ``Graph::edit`` does.
+ *
+ * @versionadded{2.0.0}
+ */
+struct NodeSchedule {
+    std::uint16_t thread_width{0};       ///< See @ref Node::thread_width.
+    std::int64_t  admission_priority{0}; ///< See @ref Node::admission_priority.
+    int           stream_id{0};          ///< See @ref Node::stream_id.
+};
+
+/**
+ * @brief The schedule @p node carries now.
+ * @param[in] node The node.
+ * @return Its schedule fields.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline NodeSchedule schedule_of(Node const &node) noexcept {
+    return {.thread_width = node.thread_width, .admission_priority = node.admission_priority, .stream_id = node.stream_id};
+}
+
 /// @brief The letter lists of a node that carries any: an einsum's (live) or a permute's.
 struct NodeIndexLists {
     std::vector<std::string> const *c{nullptr}; ///< The output's indices.

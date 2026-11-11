@@ -117,6 +117,13 @@ void Graph::edit(std::size_t index, std::function<void(NodeEdit &)> const &chang
                                     _name, node.label);
         }
 
+        if (node.target != before.target && !edit._placed) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                    "Graph '{}': an edit of node '{}' changed its target directly; place it through "
+                                    "NodeEdit::place_on, which keeps its CPU fallback in step",
+                                    _name, node.label);
+        }
+
         sync_destination_input(node);
         bool const operands_changed = node.kind != before.kind || node.inputs != before.inputs || node.outputs != before.outputs;
 
@@ -126,12 +133,27 @@ void Graph::edit(std::size_t index, std::function<void(NodeEdit &)> const &chang
                                     "writes without giving it a new one through NodeEdit::set_executor",
                                     _name, node.label);
         }
-        give_executor(node, static_cast<bool>(before.cpu_fallback));
+        bool const placed = edit._placed ? node.target != Target::CPU : static_cast<bool>(before.cpu_fallback);
+        if (!placed) {
+            node.cpu_fallback = nullptr;
+        }
+        give_executor(node, placed);
     } catch (...) {
         node = before;
         throw;
     }
     note_node_edit();
+}
+
+void Graph::set_schedule(std::size_t index, NodeSchedule const &schedule) {
+    std::scoped_lock const lock(_content_mutex);
+    if (index >= _nodes.size()) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': schedule of node {}, but the graph holds {}", _name, index, _nodes.size());
+    }
+    Node &node              = _nodes[index];
+    node.thread_width       = schedule.thread_width;
+    node.admission_priority = schedule.admission_priority;
+    node.stream_id          = schedule.stream_id;
 }
 
 void Graph::reorder(std::span<std::size_t const> order) {

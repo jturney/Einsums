@@ -519,9 +519,22 @@ std::vector<SpaceId> const &Graph::tensor_spaces(TensorId id) const {
     return tensor(id).spaces;
 }
 
-void Graph::for_each_subgraph(std::function<void(Graph &)> const &visitor) {
+void Graph::for_each_subgraph(std::function<void(Graph &)> const &visitor, bool include_setup) {
     for (auto &node : _nodes) {
-        for_each_child_graph(node, visitor);
+        for_each_child_graph(node, visitor, include_setup);
+    }
+}
+
+void Graph::for_each_child(std::size_t index, std::function<void(Graph &)> const &visitor, bool include_setup) {
+    if (index >= _nodes.size()) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': bodies of node {}, but the graph holds {}", _name, index, _nodes.size());
+    }
+    // A body is owned through a pointer in the descriptor, so its address survives the node
+    // vector moving; the descriptor's does not.
+    std::vector<Graph *> bodies;
+    for_each_child_graph(_nodes[index], [&bodies](Graph &body) { bodies.push_back(&body); }, include_setup);
+    for (Graph *body : bodies) {
+        visitor(*body);
     }
 }
 
