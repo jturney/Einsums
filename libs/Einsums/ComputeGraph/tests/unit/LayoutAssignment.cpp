@@ -432,6 +432,49 @@ TEMPLATE_LIST_TEST_CASE("LayoutAssignment - the folded chain computes what the c
     CHECK(norm_relative_gap(folded2, plain2) <= re_associating_bound<T>());
 }
 
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - a fold after the lifecycle is placed drops the copy's Free", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    // A Free lists its tensor as input and output. The fold used to rename the readers' inputs
+    // first and only then ask whether a lifecycle node names nothing but the copy, so a Free of
+    // the copy no longer matched: it stayed, reading the source.
+    using T            = TestType;
+    RuntimeTensor<T> X = create_random_tensor<T>("X", kI, kJ, kX);
+    RuntimeTensor<T> U = create_random_tensor<T>("U", kJ, kX, kY);
+    RuntimeTensor<T> V = create_random_tensor<T>("V", kJ, kX, kZ);
+
+    auto run = [&](bool with_layout) {
+        RuntimeTensor<T> R1 = create_zero_tensor<T>("R1", kI, kY);
+        RuntimeTensor<T> R2 = create_zero_tensor<T>("R2", kI, kZ);
+        cg::Graph        graph("fold-after-lifecycle");
+        capture_permuted_chain(graph, R1, R2, X, U, V);
+        cg::PassManager pm;
+        pm.add<cg::passes::Materialization>();
+        pm.add<cg::passes::FreeInsertion>(std::size_t{0});
+        auto const layout = std::make_shared<cg::passes::LayoutAssignment>();
+        if (with_layout) {
+            pm.add(layout);
+        }
+        graph.apply(pm);
+        if (with_layout) {
+            REQUIRE(layout->num_permutes_folded() == 1);
+            cg::TensorId const x_id = graph.find_tensor_id_by_ptr(&X);
+            for (auto const &node : graph.nodes()) {
+                if (node.kind == cg::OpKind::Free) {
+                    CHECK(std::ranges::find(node.inputs, x_id) == node.inputs.end());
+                }
+            }
+        }
+        graph.execute();
+        graph.execute();
+        return std::pair{R1, R2};
+    };
+
+    auto const [plain1, plain2]   = run(false);
+    auto const [folded1, folded2] = run(true);
+    CHECK(norm_relative_gap(folded1, plain1) <= re_associating_bound<T>());
+    CHECK(norm_relative_gap(folded2, plain2) <= re_associating_bound<T>());
+}
+
 TEMPLATE_LIST_TEST_CASE("LayoutAssignment - a permute that already copies in place is deleted", "[ComputeGraph][LayoutAssignment]",
                         testing::AllScalarTypes) {
     using T            = TestType;

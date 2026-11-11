@@ -5,6 +5,7 @@
 
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/LayoutAssignment.hpp>
@@ -280,7 +281,7 @@ bool LayoutAssignment::transform(Graph &graph) {
     // it rather than assuming capture already did.
     graph.topological_sort();
 
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
 
     auto const                 escapes = EscapeAnalysis::over(graph);
     std::unordered_set<NodeId> whole_graph;
@@ -825,25 +826,30 @@ bool LayoutAssignment::transform(Graph &graph) {
         if (site.kind != SiteKind::Contraction) {
             continue; // a permute's index lists are never rewritten; see the fold below
         }
-        auto *desc    = nodes[site.node].op_data.get_if<EinsumDescriptor>();
-        bool  touched = false;
-        for (std::size_t role = 0; role < RoleCount; role++) {
-            auto const it = plan.assignment.find(site.ids[role]);
-            if (it == plan.assignment.end() || it->second == captured_assignment.at(site.ids[role])) {
-                continue;
+        bool touched = false;
+        graph.edit(site.node, [&](NodeEdit &e) {
+            auto *desc = e->op_data.get_if<EinsumDescriptor>();
+            for (std::size_t role = 0; role < RoleCount; role++) {
+                auto const it = plan.assignment.find(site.ids[role]);
+                if (it == plan.assignment.end() || it->second == captured_assignment.at(site.ids[role])) {
+                    continue;
+                }
+                auto rewritten = relabel(site.captured[role], it->second);
+                set_operand_indices(*desc,
+                                    role == RoleA   ? EinsumOperand::A
+                                    : role == RoleB ? EinsumOperand::B
+                                                    : EinsumOperand::C,
+                                    std::move(rewritten));
+                touched = true;
             }
-            auto rewritten = relabel(site.captured[role], it->second);
-            set_operand_indices(*desc,
-                                role == RoleA   ? EinsumOperand::A
-                                : role == RoleB ? EinsumOperand::B
-                                                : EinsumOperand::C,
-                                std::move(rewritten));
-            touched = true;
-        }
+            // The hint's transpose flags follow the index lists just rewritten.
+            refresh_gemm_hint(graph, e.node());
+        });
         if (!touched) {
             continue;
         }
-        report(2, fmt::format("node {} now reads {}", nodes[site.node].id, desc->indices->spec.raw));
+        report(2, fmt::format("node {} now reads {}", nodes[site.node].id,
+                              nodes[site.node].op_data.get_if<EinsumDescriptor>()->indices->spec.raw));
     }
 
     // ── Fold the permutes the assignment made redundant ────────────────────────────────────
@@ -874,21 +880,29 @@ bool LayoutAssignment::transform(Graph &graph) {
             if (nd == site.node) {
                 continue;
             }
-            for (auto &id : nodes[nd].inputs) {
-                if (id == copy) {
-                    id = source;
-                }
-            }
             // The Alloc and Free that bracket the copy name a tensor nothing computes any more.
             // They are removed here rather than left to DeadNodeElimination, which runs earlier
             // in the default pipeline: a stranded Alloc would otherwise reach Materialization and
-            // allocate a buffer for a tensor whose slot points somewhere else entirely.
-            bool const only_the_copy = is_lifecycle(nodes[nd].kind) && !(nodes[nd].inputs.empty() && nodes[nd].outputs.empty()) &&
-                                       std::ranges::all_of(nodes[nd].inputs, [copy](TensorId id) { return id == copy; }) &&
-                                       std::ranges::all_of(nodes[nd].outputs, [copy](TensorId id) { return id == copy; });
+            // allocate a buffer for a tensor whose slot points somewhere else entirely. Asked of
+            // the lists as they stand, before any rename: a Free lists the copy as an input too.
+            Node const &node          = nodes[nd];
+            bool const  only_the_copy = is_lifecycle(node.kind) && !(node.inputs.empty() && node.outputs.empty()) &&
+                                        std::ranges::all_of(node.inputs, [copy](TensorId id) { return id == copy; }) &&
+                                        std::ranges::all_of(node.outputs, [copy](TensorId id) { return id == copy; });
             if (only_the_copy) {
                 remove[nd] = true;
+                continue;
             }
+            if (std::ranges::find(node.inputs, copy) == node.inputs.end()) {
+                continue;
+            }
+            graph.edit(nd, [&](NodeEdit &e) {
+                std::ranges::replace(e->inputs, copy, source);
+                refresh_gemm_hint(graph, e.node()); // the hint names the operand it was derived from
+                // A node the builder cannot rebuild keeps the executor it has: it resolves the
+                // copy's slot, which the redirect above points at the source.
+                e.keep_executor();
+            });
         }
         remove[site.node] = true;
         _num_permutes_folded++;
