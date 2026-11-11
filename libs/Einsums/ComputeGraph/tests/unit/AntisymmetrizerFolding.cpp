@@ -18,8 +18,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include "GraphBackdoor.hpp"
-
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -176,14 +174,18 @@ TEST_CASE("AntisymmetrizerFolding - a real result is not folded under an imagina
     RuntimeTensor<double> result("r", {1});
     cg::Graph             graph("imaginary_scale");
     capture_energy(graph, "i,j,k <- P(i/j/k) i,j,k", dims, wsrc, vsrc, result);
-    // Both operator nodes, so the fold has no unscaled operand to pick instead.
-    // Written around the graph: a real result with an imaginary scale is what capture refuses at
-    // execute, and the case is that the fold declines it rather than folding it in.
-    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
-        if (auto *pd = node.op_data.get_if<cg::PermuteDescriptor>(); pd != nullptr) {
+    // Both operator nodes, so the fold has no unscaled operand to pick instead. A real result with
+    // an imaginary scale is what the replay refuses, and the case is that the fold declines it
+    // rather than folding it in. Through edits, so the executors are built from the new scale.
+    for (std::size_t i = 0; i < graph.nodes().size(); ++i) {
+        if (!graph.nodes()[i].op_data.holds<cg::PermuteDescriptor>()) {
+            continue;
+        }
+        graph.edit(i, [](cg::NodeEdit &e) {
+            auto *pd          = e->op_data.get_if<cg::PermuteDescriptor>();
             pd->alpha         = std::complex<double>{0.0, 1.0};
             pd->params->alpha = cg::PrefactorScalar{std::complex<double>{0.0, 1.0}};
-        }
+        });
     }
 
     auto            fold = std::make_shared<cg::passes::AntisymmetrizerFolding>();

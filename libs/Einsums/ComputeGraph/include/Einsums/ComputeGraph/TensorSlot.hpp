@@ -172,8 +172,9 @@ template <typename TensorType>
 /**
  * @brief Mutable scalar parameters for einsum operations.
  *
- * Stored in a shared_ptr so the executor lambda captures it by shared
- * ownership. Updating the values changes the computation on next execute().
+ * A tiled einsum's capture-time executor holds one by shared ownership, so a write to it changes
+ * that node's next execute(). A builder-made executor holds its own copy, taken from the
+ * descriptor's fields when it is built.
  *
  * Both prefactors are @ref PrefactorScalar variants, they hold one of
  * float/double/complex<float>/complex<double>. The executor extracts the
@@ -190,10 +191,8 @@ struct EinsumParams {
  * @brief Mutable index specification for einsum operations.
  *
  * Same story as EinsumParams but for the contraction's index strings
- * (a/b/c indices, link indices). Stored in a shared_ptr so the executor
- * captures it by shared ownership; optimization passes like
- * PermuteFusion can rewrite the indices in place and the updated
- * contraction takes effect on the next execute().
+ * (a/b/c indices, link indices): a tiled einsum's capture-time executor shares
+ * it, and a builder-made executor holds its own copy.
  *
  * Holds @ref ParsedEinsumSpec plus the precomputed link indices so
  * dispatch::string_einsum doesn't have to recompute them per call.
@@ -203,9 +202,7 @@ struct EinsumParams {
  * copies three ``vector<string>`` -- about fifteen allocations for a rank-4
  * contraction -- and a tiled einsum expanded per tile turns that into tens of
  * thousands per replay: measured at 2.1 us a node, 8 ms of a 33 ms CCSD replay,
- * more than the tile bookkeeping the graph exists to avoid. A pass that rewrites
- * indices writes into this spec and the next execute() sees it, which is the
- * property the per-call rebuild was there to provide.
+ * more than the tile bookkeeping the graph exists to avoid.
  */
 struct EinsumIndices {
     ParsedEinsumSpec         spec;         ///< Live index lists, passed straight to the dispatch

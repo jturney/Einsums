@@ -4878,8 +4878,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /**
      * @brief Update scalar prefactors for an einsum node.
      *
-     * Finds the node by NodeId and updates its EinsumParams if it was
-     * captured with mutable parameters. Also updates the EinsumDescriptor.
+     * Finds the node by NodeId and changes its prefactors through @ref edit, so the node gets an
+     * executor built from them and lists C as an input exactly when the new C prefactor reads it.
+     * A node whose executor its pass wrote keeps that executor, which does not see the change.
      *
      * @param[in] node_id The NodeId of the einsum node.
      * @param[in] c_pf New C prefactor.

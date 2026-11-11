@@ -188,11 +188,10 @@ TEST_CASE("SymmetrizedAccumulation - skip reasons reset between applies", "[Comp
     }
 }
 
-// The descriptor must not be a snapshot the executor disagrees with. axpy's
-// executor reads the shared params, so rewriting alpha there changes what
-// replay computes - the property that makes the scalar safe for a pass to fold
-// into, and the thing a baked-in lambda constant silently broke.
-TEST_CASE("axpy - descriptor scalars are live, and beta != 1 is honored", "[ComputeGraph][Operations]") {
+// The descriptor must not be a snapshot the executor disagrees with. An edit of
+// axpy's scalars changes what replay computes - the property that makes them safe
+// for a pass to fold into, and the thing a baked-in lambda constant silently broke.
+TEST_CASE("axpy - an edit of its scalars reaches the replay, and beta != 1 is honored", "[ComputeGraph][Operations]") {
     auto X = create_random_tensor<double>("X", 4);
     auto Y = create_zero_tensor<double>("Y", 4);
 
@@ -203,7 +202,7 @@ TEST_CASE("axpy - descriptor scalars are live, and beta != 1 is honored", "[Comp
     }
 
     REQUIRE(graph.num_nodes() == 1);
-    auto *desc = graph.nodes()[0].op_data.get_if<cg::AxpbyDescriptor>();
+    auto const *desc = graph.nodes()[0].op_data.get_if<cg::AxpbyDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->params != nullptr);
     CHECK(cg::is_one(desc->params->beta));
@@ -213,8 +212,17 @@ TEST_CASE("axpy - descriptor scalars are live, and beta != 1 is honored", "[Comp
         REQUIRE(std::abs(Y(n) - 2.0 * X(n)) < 1e-12);
     }
 
-    // Rewrite alpha through the params, as ScaleAbsorption/CSE do.
-    desc->params->alpha = cg::PrefactorScalar{5.0};
+    // Rewrite alpha through an edit, as ScaleAbsorption does.
+    auto const set_scalars = [&graph](cg::PrefactorScalar alpha, cg::PrefactorScalar beta) {
+        graph.edit(0, [&](cg::NodeEdit &e) {
+            auto *d          = e->op_data.get_if<cg::AxpbyDescriptor>();
+            d->alpha         = alpha;
+            d->beta          = beta;
+            d->params->alpha = alpha;
+            d->params->beta  = beta;
+        });
+    };
+    set_scalars(cg::PrefactorScalar{5.0}, cg::PrefactorScalar{1.0});
     Y.zero();
     graph.execute();
     for (size_t n = 0; n < 4; n++) {
@@ -223,7 +231,7 @@ TEST_CASE("axpy - descriptor scalars are live, and beta != 1 is honored", "[Comp
 
     // Rewriting beta turns it into a genuine axpby; the executor must follow
     // rather than keep calling the beta == 1 fast path.
-    desc->params->beta = cg::PrefactorScalar{2.0};
+    set_scalars(cg::PrefactorScalar{5.0}, cg::PrefactorScalar{2.0});
     for (size_t n = 0; n < 4; n++) {
         Y(n) = 1.0;
     }

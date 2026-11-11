@@ -383,7 +383,9 @@ class AccumulatingPass : public cg::OptimizerPass {
                 continue;
             }
             graph.edit(i, [](cg::NodeEdit &e) {
-                if (auto const *desc = e->op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr && desc->params != nullptr) {
+                auto *desc        = e->op_data.get_if<cg::EinsumDescriptor>();
+                desc->c_prefactor = cg::PrefactorScalar{1.0};
+                if (desc->params != nullptr) {
                     desc->params->c_pf = cg::PrefactorScalar{1.0};
                 }
             });
@@ -487,6 +489,30 @@ TEST_CASE("Graph - a node lists its destination as an input exactly when it read
         CHECK_THROWS_WITH(graph.apply<UndeclaredAccumulatingPass>(),
                           Catch::Matchers::ContainsSubstring("pass 'UndeclaredAccumulatingPass' left the graph malformed") &&
                               Catch::Matchers::ContainsSubstring("reads its destination but lists 2 input(s)"));
+    }
+
+    SECTION("a builder-made executor runs the descriptor's prefactor, not the live block") {
+        // The block is still writable through a const node; what it no longer does is reach the
+        // executor, which holds its own copy of the descriptor's fields. C is overwritten.
+        auto want = C;
+        reference_einsum("ij <- ik ; kj", 0.0, &want, 1.0, A, B);
+
+        cg::Graph graph("unshared");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", &C, A, B);
+        }
+        auto const *desc = graph.nodes().front().op_data.get_if<cg::EinsumDescriptor>();
+        REQUIRE(desc != nullptr);
+        REQUIRE(desc->params != nullptr);
+        desc->params->c_pf = cg::PrefactorScalar{1.0};
+
+        graph.execute();
+        for (size_t i = 0; i < 3; i++) {
+            for (size_t j = 0; j < 3; j++) {
+                CHECK(std::abs(C(i, j) - want(i, j)) < 1e-12 * (1.0 + std::abs(want(i, j))));
+            }
+        }
     }
 
     SECTION("verify names a node that breaks the rule") {
@@ -1128,12 +1154,14 @@ TEST_CASE("make_einsum_node - executor honors a later prefactor edit", "[Compute
     graph.execute();
     double const first = C(std::vector<ptrdiff_t>{0, 0});
 
-    // A pass folding a scale writes ab_pf through the shared params handle. A
-    // baked-closure node would ignore this; a first-class one must not.
-    auto *desc = cg::detail::GraphBackdoor::nodes(graph)[0].op_data.get_if<cg::EinsumDescriptor>();
-    REQUIRE(desc != nullptr);
-    desc->ab_prefactor  = 3.0;
-    desc->params->ab_pf = 3.0;
+    // A pass folding a scale writes ab_pf through an edit. A baked-closure node
+    // would ignore this; one the commit rebuilds from its descriptor must not.
+    graph.edit(0, [](cg::NodeEdit &e) {
+        auto *desc = e->op_data.get_if<cg::EinsumDescriptor>();
+        REQUIRE(desc != nullptr);
+        desc->ab_prefactor  = 3.0;
+        desc->params->ab_pf = 3.0;
+    });
 
     C.zero();
     graph.execute();

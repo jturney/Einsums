@@ -55,38 +55,27 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 void Graph::update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorScalar ab_pf) {
-    for (auto &node : _nodes) {
-        if (node.id != node_id) {
-            continue;
-        }
-        auto *desc = node.op_data.get_if<EinsumDescriptor>();
-        if (desc == nullptr) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                    "Graph '{}': node {} ({}) is not an einsum; update_prefactors only applies to einsum nodes", _name,
-                                    node_id, node.kind);
-        }
-        // Keep both prefactor sources in sync: the descriptor snapshot
-        // (read by GPU dispatch and analysis passes) and the shared
-        // EinsumParams the CPU executor lambda reads live. The descriptor
-        // owns its params handle, so this stays correct when passes
-        // reorder or remove nodes.
+    auto const it = std::ranges::find(_nodes, node_id, &Node::id);
+    if (it == _nodes.end()) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no node with id {}", _name, node_id);
+    }
+    if (!it->op_data.holds<EinsumDescriptor>()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "Graph '{}': node {} ({}) is not an einsum; update_prefactors only applies to einsum nodes", _name, node_id,
+                                it->kind);
+    }
+    // An edit, so the commit builds the executor from the new prefactors and lists C as an input
+    // exactly when the new C prefactor reads it. The live block is written too while readers still
+    // consult it.
+    edit(static_cast<std::size_t>(it - _nodes.begin()), [&](NodeEdit &e) {
+        auto *desc         = e->op_data.get_if<EinsumDescriptor>();
         desc->c_prefactor  = c_pf;
         desc->ab_prefactor = ab_pf;
         if (desc->params) {
             desc->params->c_pf  = c_pf;
             desc->params->ab_pf = ab_pf;
         }
-        // A C prefactor moving to or from zero changes whether the node reads C.
-        auto const before = node.inputs;
-        sync_destination_input(node);
-        if (node.inputs != before) {
-            note_node_edit();
-        }
-        // Prefactors appear in the cached profiler annotations.
-        _profile_strings_valid = false;
-        return;
-    }
-    EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no node with id {}", _name, node_id);
+    });
 }
 
 expected<std::pair<TensorId, void *>, GraphError> Graph::create_tensor_dynamic(std::string name, packed_gemm::ScalarType dtype,

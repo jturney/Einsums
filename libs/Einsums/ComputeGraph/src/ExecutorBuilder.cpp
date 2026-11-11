@@ -73,11 +73,11 @@ OperandAccessor resolve_operand(Graph &graph, TensorId id, OpKind kind, char con
 
 /// ``A *= factor``. Rank-erased; the kernel is ``linear_algebra::detail::scale``.
 std::function<void()> build_scale(packed_gemm::ScalarType dtype, ScaleDescriptor const &desc, OperandAccessor const &a) {
-    auto params = live_or_private_params(desc.params, desc.factor, PrefactorScalar{double{0}});
+    PrefactorScalar const factor = desc.factor;
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
-        return [params, a]() {
+        return [factor, a]() {
             WAGGLE_ZONE("scale execute");
-            linear_algebra::detail::scale(as<T>(params->alpha), a.impl<T>());
+            linear_algebra::detail::scale(as<T>(factor), a.impl<T>());
         };
     });
 }
@@ -87,7 +87,8 @@ std::function<void()> build_scale(packed_gemm::ScalarType dtype, ScaleDescriptor
 /// overload forwards to, so the eager path and this one cannot diverge.
 std::function<void()> build_permute(packed_gemm::ScalarType dtype, PermuteDescriptor const &desc, OperandAccessor const &a,
                                     OperandAccessor const &c) {
-    auto params = live_or_private_params(desc.params, PrefactorScalar{desc.alpha}, PrefactorScalar{desc.beta});
+    PrefactorScalar const alpha{desc.alpha};
+    PrefactorScalar const beta{desc.beta};
 
     // Built once. The index lists are a structural field: a pass that rewrites
     // them rebuilds the executor rather than mutating it under a replay.
@@ -98,9 +99,9 @@ std::function<void()> build_permute(packed_gemm::ScalarType dtype, PermuteDescri
     parsed.raw       = parsed.render();
 
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
-        return [params, parsed, a, c]() {
+        return [alpha, beta, parsed, a, c]() {
             WAGGLE_ZONE("permute execute");
-            dispatch::string_permute_impl<T>(parsed, as<T>(params->beta), c.impl<T>(), as<T>(params->alpha), *a.impl<T>());
+            dispatch::string_permute_impl<T>(parsed, as<T>(beta), c.impl<T>(), as<T>(alpha), *a.impl<T>());
         };
     });
 }
@@ -133,12 +134,13 @@ std::function<void()> build_transpose(packed_gemm::ScalarType dtype, OperandAcce
 /// away from 1, so the choice belongs to the executor rather than to the kind.
 std::function<void()> build_axpby(packed_gemm::ScalarType dtype, AxpbyDescriptor const &desc, OperandAccessor const &x,
                                   OperandAccessor const &y) {
-    auto params = live_or_private_params(desc.params, desc.alpha, desc.beta);
+    PrefactorScalar const alpha_pf = desc.alpha;
+    PrefactorScalar const beta_pf  = desc.beta;
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
-        return [params, x, y]() {
+        return [alpha_pf, beta_pf, x, y]() {
             WAGGLE_ZONE("axpby execute");
-            auto const  alpha  = as<T>(params->alpha);
-            auto const  beta   = as<T>(params->beta);
+            auto const  alpha  = as<T>(alpha_pf);
+            auto const  beta   = as<T>(beta_pf);
             auto const *source = x.impl<T>();
             auto       *target = y.impl<T>();
             if (beta == T{1}) {
@@ -156,23 +158,23 @@ std::function<void()> build_axpby(packed_gemm::ScalarType dtype, AxpbyDescriptor
 /// descriptor they share.
 std::function<void()> build_elementwise_binary(OpKind kind, packed_gemm::ScalarType dtype, ElementwiseBinaryDescriptor const &desc,
                                                OperandAccessor const &a, OperandAccessor const &b, OperandAccessor const &c) {
-    auto       params = live_or_private_params(desc.params, desc.alpha, desc.beta);
-    bool const divide = kind == OpKind::DirectDivision;
+    PrefactorScalar const alpha  = desc.alpha;
+    PrefactorScalar const beta   = desc.beta;
+    bool const            divide = kind == OpKind::DirectDivision;
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         if (divide) {
-            return [params, a, b, c]() {
+            return [alpha, beta, a, b, c]() {
                 WAGGLE_ZONE("direct_division execute");
                 auto *out = c.impl<T>();
                 WAGGLE_ANNOTATE("size", static_cast<std::int64_t>(out->size()));
-                linear_algebra::detail::direct_division<T, T, T>(as<T>(params->alpha), *a.impl<T>(), *b.impl<T>(), as<T>(params->beta),
-                                                                 out);
+                linear_algebra::detail::direct_division<T, T, T>(as<T>(alpha), *a.impl<T>(), *b.impl<T>(), as<T>(beta), out);
             };
         }
-        return [params, a, b, c]() {
+        return [alpha, beta, a, b, c]() {
             WAGGLE_ZONE("direct_product execute");
             auto *out = c.impl<T>();
             WAGGLE_ANNOTATE("size", static_cast<std::int64_t>(out->size()));
-            linear_algebra::detail::direct_product<T, T, T>(as<T>(params->alpha), *a.impl<T>(), *b.impl<T>(), as<T>(params->beta), out);
+            linear_algebra::detail::direct_product<T, T, T>(as<T>(alpha), *a.impl<T>(), *b.impl<T>(), as<T>(beta), out);
         };
     });
 }
@@ -223,8 +225,8 @@ make_strided_batch_state(ParsedEinsumSpec const &spec, std::vector<std::string> 
  * dispatch::mixed_string_einsum: no BLAS or PackedGemm routine takes mixed types. Views are built
  * once and re-seated per call, as in the single-type builder.
  */
-std::function<void()> build_mixed_einsum(std::shared_ptr<EinsumParams> const &params, std::shared_ptr<EinsumIndices> const &indices,
-                                         OperandAccessor const &a, OperandAccessor const &b, OperandAccessor const &c) {
+std::function<void()> build_mixed_einsum(EinsumParams const &params, EinsumIndices const &indices, OperandAccessor const &a,
+                                         OperandAccessor const &b, OperandAccessor const &c) {
     return detail::dispatch_scalar_type(c.dtype(), [&]<typename TC>(TC /*tag*/) -> std::function<void()> {
         return detail::dispatch_scalar_type(a.dtype(), [&]<typename TA>(TA /*tag*/) -> std::function<void()> {
             return detail::dispatch_scalar_type(b.dtype(), [&]<typename TB>(TB /*tag*/) -> std::function<void()> {
@@ -250,8 +252,8 @@ std::function<void()> build_mixed_einsum(std::shared_ptr<EinsumParams> const &pa
                         views->a.impl() = *a.impl<TA>();
                         views->b.impl() = *b.impl<TB>();
                         views->c.impl() = *c.impl<TC>();
-                        dispatch::mixed_string_einsum(indices->spec, as<TC>(params->c_pf), &views->c, as<TR>(params->ab_pf), views->a,
-                                                      views->b, params->conj_a, params->conj_b, &indices->link_indices);
+                        dispatch::mixed_string_einsum(indices.spec, as<TC>(params.c_pf), &views->c, as<TR>(params.ab_pf), views->a,
+                                                      views->b, params.conj_a, params.conj_b, &indices.link_indices);
                     };
                 }
             });
@@ -280,12 +282,12 @@ std::function<void()> build_mixed_einsum(std::shared_ptr<EinsumParams> const &pa
  */
 std::function<void()> build_einsum(packed_gemm::ScalarType dtype, EinsumDescriptor const &desc, OperandAccessor const &a,
                                    OperandAccessor const &b, OperandAccessor const &c) {
-    // Live handles when the node has them (capture, and any node a pass built
-    // through Graph::make_einsum_node), private ones seeded from the snapshot
-    // scalars when it does not (the loader case). A private block still runs
-    // correctly; it simply is not shared with anything that could rewrite it.
-    std::shared_ptr<EinsumParams> const  params  = desc.params != nullptr ? desc.params : detail::make_live_params(desc);
-    std::shared_ptr<EinsumIndices> const indices = desc.indices != nullptr ? desc.indices : detail::make_live_indices(desc);
+    // The executor's own copies of the prefactors and index lists, taken from the descriptor's
+    // fields. Nothing else holds them: a change to the node goes through Graph::edit, whose commit
+    // builds a new executor from the new fields. The display string is the captured one, so an
+    // error the dispatch raises quotes the spec as the user wrote it.
+    EinsumParams const  params  = detail::einsum_params_of(desc);
+    EinsumIndices const indices = detail::einsum_indices_of(desc, desc.indices != nullptr ? desc.indices->spec.raw : std::string{});
 
     // The packed-GEMM memo. One per node, so per-tile nodes from a tiled
     // expansion never share one and a parallel executor needs no
@@ -322,15 +324,15 @@ std::function<void()> build_einsum(packed_gemm::ScalarType dtype, EinsumDescript
         // operands the node has now, and re-checked on every call against the index lists and
         // geometry it was planned for, so a rebind or an index rewrite that invalidates it falls
         // back to the general dispatch rather than running a stale plan.
-        auto batched = make_strided_batch_state(indices->spec, indices->link_indices, *a.impl<T>(), *b.impl<T>(), *c.impl<T>());
+        auto batched = make_strided_batch_state(indices.spec, indices.link_indices, *a.impl<T>(), *b.impl<T>(), *c.impl<T>());
 
         return [params, indices, site, views, batched, a, b, c]() {
             WAGGLE_ZONE("einsum execute");
-            if (batched != nullptr && !params->conj_a && !params->conj_b &&
-                batched->still_applies(indices->spec, *a.impl<T>(), *b.impl<T>(), *c.impl<T>())) {
+            if (batched != nullptr && !params.conj_a && !params.conj_b &&
+                batched->still_applies(indices.spec, *a.impl<T>(), *b.impl<T>(), *c.impl<T>())) {
                 WAGGLE_ANNOTATE("dispatch", "strided_batched_gemm");
                 dispatch::last_dispatch_route() = "strided_batched_gemm";
-                detail::run_strided_batch<T>(batched->plan, as<T>(params->ab_pf), as<T>(params->c_pf), a.impl<T>()->data(),
+                detail::run_strided_batch<T>(batched->plan, as<T>(params.ab_pf), as<T>(params.c_pf), a.impl<T>()->data(),
                                              b.impl<T>()->data(), c.impl<T>()->data(), batched->tables);
                 return;
             }
@@ -343,12 +345,10 @@ std::function<void()> build_einsum(packed_gemm::ScalarType dtype, EinsumDescript
             WAGGLE_ANNOTATE("a_size", static_cast<std::int64_t>(views->a.size()));
             WAGGLE_ANNOTATE("b_size", static_cast<std::int64_t>(views->b.size()));
             WAGGLE_ANNOTATE("c_size", static_cast<std::int64_t>(views->c.size()));
-            // The spec goes BY REFERENCE, so an index rewrite (PermuteFusion)
-            // is honored without rebuilding it: the pass writes into this very
-            // object. link_indices was computed once, so a replay spares three
-            // set builds.
-            dispatch::string_einsum(indices->spec, as<T>(params->c_pf), &views->c, as<T>(params->ab_pf), views->a, views->b, params->conj_a,
-                                    params->conj_b, &indices->link_indices, site.get());
+            // The spec goes by reference to the executor's own copy, so a replay copies none of its
+            // index lists. link_indices was computed once, so a replay spares three set builds.
+            dispatch::string_einsum(indices.spec, as<T>(params.c_pf), &views->c, as<T>(params.ab_pf), views->a, views->b, params.conj_a,
+                                    params.conj_b, &indices.link_indices, site.get());
         };
     });
 }

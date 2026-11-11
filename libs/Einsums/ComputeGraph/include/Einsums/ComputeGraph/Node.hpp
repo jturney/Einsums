@@ -133,24 +133,15 @@ struct EinsumDescriptor {
     /// @versionadded{2.0.0}
     std::vector<PermutationOperator> operators;
 
-    /// Live-mutable index state shared with the executor lambda.
-    ///
-    /// Optimization passes (PermuteFusion, future index rewriters) mutate
-    /// this in place; the executor dereferences it on every call, so
-    /// rewrites take effect on the next `graph.execute()`. The
-    /// `spec` field above is the at-capture snapshot. Analysis passes
-    /// can read either, but rewriters must update both to keep
-    /// downstream analysis consistent.
+    /// The index lists, links and operators again, kept equal to @ref spec and @ref operators, plus
+    /// the spec as written. The executor does not share it: build_executor copies the fields above,
+    /// and a rewrite goes through Graph::edit, whose commit builds a new executor. Readers still
+    /// consult it, so a rewriter updates both.
     std::shared_ptr<EinsumIndices> indices;
 
-    /// Live-mutable scalar state shared with the executor lambda, same
-    /// pattern as `indices`.
-    ///
-    /// Executors read prefactors from here on
-    /// every call; `c_prefactor`/`ab_prefactor` above are the at-capture
-    /// snapshots. Graph::update_prefactors
-    /// writes both through this handle so the node stays self-contained
-    /// under passes that reorder or remove nodes.
+    /// The prefactors and conjugation flags again, kept equal to the fields above. The executor
+    /// does not share it: build_executor copies `c_prefactor`/`ab_prefactor`, and a change goes
+    /// through Graph::edit, whose commit builds a new executor. Readers still consult it.
     std::shared_ptr<EinsumParams> params;
 
     /// BLAS-level batching hint; non-null only for 2D×2D→2D contractions
@@ -193,12 +184,12 @@ struct EinsumDescriptor {
     [[nodiscard]] EINSUMS_EXPORT std::optional<SpaceId> space_for_letter(std::string_view letter) const;
 };
 
-/// Live-mutable scalars for every kind whose operation is ``dst = alpha*<source> + beta*dst``,
-/// shared with the executor lambda - the same snapshot + shared-params pattern as
-/// @ref EinsumParams.
+/// The scalars of every kind whose operation is ``dst = alpha*<source> + beta*dst``, the same
+/// snapshot + params pattern as @ref EinsumParams.
 ///
-/// The executor reads its prefactors from here on every call, so a pass that rewrites one
-/// writes it through this handle and the change takes effect on the next ``graph.execute()``.
+/// A tiled kind's capture-time executor shares the block, so a write to it changes that node's
+/// next ``graph.execute()``. A builder-made executor holds its own copy of the descriptor's
+/// fields, and a change to one of those goes through Graph::edit.
 ///
 /// A descriptor also keeps an at-capture SNAPSHOT of the same scalars, which is what analysis
 /// passes read; a rewriter must write both, and the ``live_*`` accessors below are how a reader
@@ -227,7 +218,7 @@ struct AxpbyDescriptor {
     static constexpr std::string_view descriptor_name = "AxpbyDescriptor";
     PrefactorScalar                   alpha{double{1}}; ///< alpha snapshot (at-capture value)
     PrefactorScalar                   beta{double{0}};  ///< beta snapshot (at-capture value)
-    std::shared_ptr<AxpbyParams>      params;           ///< live values the executor reads each call
+    std::shared_ptr<AxpbyParams>      params;           ///< the same values, kept equal; the executor holds its own copy
 };
 
 /**
@@ -247,7 +238,7 @@ struct ScaleDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
     static constexpr std::string_view  descriptor_name = "ScaleDescriptor";
     PrefactorScalar                    factor{double{1}}; ///< The scaling factor (at-capture snapshot).
-    std::shared_ptr<ElementwiseParams> params;            ///< Live value the executor reads each call (@ref ElementwiseParams::alpha).
+    std::shared_ptr<ElementwiseParams> params;            ///< The same value as @ref factor, kept equal; the executor holds its own copy.
 };
 
 /**
@@ -265,8 +256,7 @@ struct ScaleDescriptor {
  * The INDEX LISTS are deliberately not live-mutable. No pass rewrites them
  * today, and a pass that wants to has a better move than mutating them under a
  * running executor: rewrite the descriptor and call @ref build_executor again.
- * The scalars are live because passes genuinely do rewrite those between
- * replays.
+ * The scalars are rewritten by passes between replays, through Graph::edit.
  */
 struct PermuteDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
@@ -275,7 +265,7 @@ struct PermuteDescriptor {
     std::complex<double>               beta{0.0, 0.0};  ///< Prefactor for the destination tensor (0 = overwrite).
     std::vector<std::string>           c_indices;       ///< Output index names (e.g., {"j","i"}).
     std::vector<std::string>           a_indices;       ///< Input index names (e.g., {"i","j"}).
-    std::shared_ptr<ElementwiseParams> params;          ///< Live scalars the executor reads each call.
+    std::shared_ptr<ElementwiseParams> params;          ///< The same scalars, kept equal; the executor holds its own copy.
 
     /// Permutation (antisymmetrizer) operators this permute is wrapped in.
     /// @see EinsumDescriptor::operators
@@ -308,7 +298,7 @@ struct ElementwiseBinaryDescriptor {
     static constexpr std::string_view  descriptor_name = "ElementwiseBinaryDescriptor";
     PrefactorScalar                    alpha{double{1}}; ///< Prefactor on the A-op-B product (at-capture snapshot).
     PrefactorScalar                    beta{double{0}};  ///< Prefactor on the destination (0 = overwrite).
-    std::shared_ptr<ElementwiseParams> params;           ///< Live scalars the executor reads each call.
+    std::shared_ptr<ElementwiseParams> params;           ///< The same scalars, kept equal; the executor holds its own copy.
 };
 
 /**
@@ -1219,6 +1209,14 @@ namespace detail {
 /// assembling those by hand.
 EINSUMS_EXPORT EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf,
                                                         bool conj_a = false, bool conj_b = false);
+
+/// The scalars an einsum descriptor's fields describe: its prefactors and conjugation flags.
+[[nodiscard]] EINSUMS_EXPORT EinsumParams einsum_params_of(EinsumDescriptor const &desc);
+
+/// The index state an einsum descriptor's fields describe: its index lists, links, operators and
+/// conjugation flags. @p raw is the spec as written, for diagnostics; it is rendered from the lists
+/// when empty.
+[[nodiscard]] EINSUMS_EXPORT EinsumIndices einsum_indices_of(EinsumDescriptor const &desc, std::string raw = {});
 
 /// The live scalar block an einsum descriptor's snapshot describes: its prefactors and conjugation flags.
 [[nodiscard]] EINSUMS_EXPORT std::shared_ptr<EinsumParams> make_live_params(EinsumDescriptor const &desc);

@@ -74,7 +74,7 @@ TEST_CASE("AxpbyDescriptor - snapshot exposes alpha/beta", "[ComputeGraph][Axpby
     CHECK(cg::as<double>(d->params->beta) == 3.0);
 }
 
-TEMPLATE_LIST_TEST_CASE("AxpbyDescriptor - executor reads live params (single source of truth)", "[ComputeGraph][Axpby][descriptor]",
+TEMPLATE_LIST_TEST_CASE("AxpbyDescriptor - executor follows a prefactor edit", "[ComputeGraph][Axpby][descriptor]",
                         testing::AllScalarTypes) {
     using T       = TestType;
     T const alpha = testing::prefactor<T>(2.0, 0.5);
@@ -100,19 +100,24 @@ TEMPLATE_LIST_TEST_CASE("AxpbyDescriptor - executor reads live params (single so
         CHECK(close_to<T>(Y(i), alpha * x0[i] + beta * y0[i]));
     }
 
-    // Fold beta -> 0 through the shared params. If the executor still used the
-    // baked value it would keep accumulating (Y += beta*Y); reading live params it
-    // overwrites: Y = alpha*X.
-    auto *d = find_axpby_desc(graph);
-    REQUIRE(d != nullptr);
-    d->params->beta = cg::PrefactorScalar{0.0};
+    // Fold beta -> 0 through an edit. An executor that kept the captured value would keep
+    // accumulating (Y += beta*Y); one built from the descriptor overwrites: Y = alpha*X.
+    auto const index =
+        static_cast<std::size_t>(std::ranges::find(graph.nodes(), cg::OpKind::Axpby, &cg::Node::kind) - graph.nodes().begin());
+    REQUIRE(index < graph.nodes().size());
+    graph.edit(index, [](cg::NodeEdit &e) {
+        auto *d         = e->op_data.get_if<cg::AxpbyDescriptor>();
+        d->beta         = cg::PrefactorScalar{0.0};
+        d->params->beta = cg::PrefactorScalar{0.0};
+    });
 
     graph.execute();
     for (size_t i = 0; i < 4; ++i) {
         CHECK(close_to<T>(Y(i), alpha * x0[i]));
     }
-    // The at-capture snapshot is unchanged by the params mutation.
-    CHECK(cg::as<T>(d->beta) == beta);
+    // The descriptor says what the replay ran.
+    auto const *d = graph.nodes()[index].op_data.get_if<cg::AxpbyDescriptor>();
+    CHECK(cg::is_zero(d->beta));
 }
 
 TEST_CASE("AxpbyDescriptor - inputs encode accumulate vs overwrite", "[ComputeGraph][Axpby][descriptor]") {

@@ -192,12 +192,10 @@ bool SUMMAExpansion::transform(Graph &graph) {
 
         int panels = grid.cols(); // == grid.rows() for square grid
 
-        // Replace the einsum's execute lambda with a SUMMA loop. The prefactors are read from the
-        // node's live params block on every replay, so a scale folded into the node after this pass
-        // still applies; the snapshots stand in only for a node without one.
-        std::shared_ptr<EinsumParams const> params  = desc->params;
-        PrefactorScalar const               c_snap  = desc->c_prefactor;
-        PrefactorScalar const               ab_snap = desc->ab_prefactor;
+        // Replace the einsum's execute lambda with a SUMMA loop, which takes the node's prefactors as
+        // they stand. The executor is this pass's own, so a later change to them must give a new one.
+        PrefactorScalar const c_pf  = desc->c_prefactor;
+        PrefactorScalar const ab_pf = desc->ab_prefactor;
 
         // Tensor IDS, resolved at EXECUTE time through Graph::live_tensor_ptr,
         // rather than pointers baked here. Two reasons, and the second is a
@@ -224,12 +222,10 @@ bool SUMMAExpansion::transform(Graph &graph) {
         // comm::broadcast on the row/col communicators, not through the handle's
         // allreduce hook.
         graph.edit(i, [&](NodeEdit &e) {
-            e.set_executor([&grid, panels, anchor, a_id, b_id, c_id, dtype, params, c_snap, ab_snap]() {
-                void                 *a_ptr = anchor->graph().live_tensor_ptr(a_id);
-                void                 *b_ptr = anchor->graph().live_tensor_ptr(b_id);
-                void                 *c_ptr = anchor->graph().live_tensor_ptr(c_id);
-                PrefactorScalar const c_pf  = params ? params->c_pf : c_snap;
-                PrefactorScalar const ab_pf = params ? params->ab_pf : ab_snap;
+            e.set_executor([&grid, panels, anchor, a_id, b_id, c_id, dtype, c_pf, ab_pf]() {
+                void *a_ptr = anchor->graph().live_tensor_ptr(a_id);
+                void *b_ptr = anchor->graph().live_tensor_ptr(b_id);
+                void *c_ptr = anchor->graph().live_tensor_ptr(c_id);
                 if (dtype == packed_gemm::ScalarType::Float64) {
                     run_summa_panels<double>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf, ab_pf);
                 } else if (dtype == packed_gemm::ScalarType::Float32) {

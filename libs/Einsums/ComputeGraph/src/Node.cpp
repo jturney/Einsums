@@ -361,22 +361,29 @@ EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, Prefact
     return desc;
 }
 
+EinsumParams einsum_params_of(EinsumDescriptor const &desc) {
+    return EinsumParams{.c_pf = desc.c_prefactor, .ab_pf = desc.ab_prefactor, .conj_a = desc.conj_a, .conj_b = desc.conj_b};
+}
+
+EinsumIndices einsum_indices_of(EinsumDescriptor const &desc, std::string raw) {
+    EinsumIndices indices;
+    indices.spec.c_indices = desc.spec.c_indices;
+    indices.spec.a_indices = desc.spec.a_indices;
+    indices.spec.b_indices = desc.spec.b_indices;
+    indices.spec.operators = desc.operators;
+    indices.spec.conj_a    = desc.conj_a;
+    indices.spec.conj_b    = desc.conj_b;
+    indices.spec.raw       = raw.empty() ? indices.spec.render() : std::move(raw);
+    indices.link_indices   = desc.spec.link_indices;
+    return indices;
+}
+
 std::shared_ptr<EinsumParams> make_live_params(EinsumDescriptor const &desc) {
-    return std::make_shared<EinsumParams>(
-        EinsumParams{.c_pf = desc.c_prefactor, .ab_pf = desc.ab_prefactor, .conj_a = desc.conj_a, .conj_b = desc.conj_b});
+    return std::make_shared<EinsumParams>(einsum_params_of(desc));
 }
 
 std::shared_ptr<EinsumIndices> make_live_indices(EinsumDescriptor const &desc, std::string raw) {
-    auto indices            = std::make_shared<EinsumIndices>();
-    indices->spec.c_indices = desc.spec.c_indices;
-    indices->spec.a_indices = desc.spec.a_indices;
-    indices->spec.b_indices = desc.spec.b_indices;
-    indices->spec.operators = desc.operators;
-    indices->spec.conj_a    = desc.conj_a;
-    indices->spec.conj_b    = desc.conj_b;
-    indices->spec.raw       = raw.empty() ? indices->spec.render() : std::move(raw);
-    indices->link_indices   = desc.spec.link_indices;
-    return indices;
+    return std::make_shared<EinsumIndices>(einsum_indices_of(desc, std::move(raw)));
 }
 
 void attach_live_state(EinsumDescriptor &desc, std::string raw) {

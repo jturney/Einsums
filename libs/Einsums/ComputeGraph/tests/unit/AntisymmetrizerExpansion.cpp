@@ -11,6 +11,8 @@
 
 #include <memory>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -218,8 +220,10 @@ TEST_CASE("AntisymmetrizerExpansion - declines a contraction whose operands diff
         cg::einsum("i,j,a,b <- i,m,a,b ; m,j", 0.0, &C, 1.0, t2, F);
     }
     auto const operators = cg::parse_einsum_spec("i,j,a,b <- P(ij) P(ab) i,m,a,b ; m,j").value().operators;
-    for (auto &node : graph.nodes()) {
+    // Written around the graph's API, both copies of the operators, since capture refuses this node.
+    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (auto *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr) {
+            desc->operators               = operators;
             desc->indices->spec.operators = operators;
         }
     }

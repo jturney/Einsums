@@ -602,7 +602,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - a whole graph rebuilt from descriptor snap
 TEST_CASE("ExecutorBuilder - a Scale factor rewritten after capture is applied", "[ComputeGraph][ExecutorBuilder]") {
     // The old executor closed over the factor and the descriptor was a
     // write-only record: a pass could set it to anything and the replay would
-    // still apply the captured value.
+    // still apply the captured value. An edit's commit builds from the descriptor.
     auto A  = create_random_tensor<double>("A", 3, 3);
     auto A0 = Tensor<double, 2>(A);
 
@@ -612,14 +612,14 @@ TEST_CASE("ExecutorBuilder - a Scale factor rewritten after capture is applied",
         cg::scale(2.0, &A);
     }
 
-    auto *node = find_node(graph, cg::OpKind::Scale);
-    REQUIRE(node != nullptr);
-    auto *desc = node->op_data.get_if<cg::ScaleDescriptor>();
-    REQUIRE(desc != nullptr);
-    REQUIRE(desc->params != nullptr);
-
-    desc->params->alpha = cg::PrefactorScalar{5.0};
-    desc->factor        = desc->params->alpha;
+    REQUIRE(find_node(graph, cg::OpKind::Scale) == &cg::detail::GraphBackdoor::nodes(graph).front());
+    graph.edit(0, [](cg::NodeEdit &e) {
+        auto *desc = e->op_data.get_if<cg::ScaleDescriptor>();
+        REQUIRE(desc != nullptr);
+        REQUIRE(desc->params != nullptr);
+        desc->factor        = cg::PrefactorScalar{5.0};
+        desc->params->alpha = desc->factor;
+    });
 
     graph.execute();
 
@@ -641,19 +641,20 @@ TEST_CASE("ExecutorBuilder - Permute prefactors rewritten after capture are appl
         cg::permute(cg::PermuteFormatString{"ji <- ij"}, 0.0, &C, 1.0, A);
     }
 
-    auto *node = find_node(graph, cg::OpKind::Permute);
-    REQUIRE(node != nullptr);
-    auto *desc = node->op_data.get_if<cg::PermuteDescriptor>();
-    REQUIRE(desc != nullptr);
-    REQUIRE(desc->params != nullptr);
+    REQUIRE(find_node(graph, cg::OpKind::Permute) == &cg::detail::GraphBackdoor::nodes(graph).front());
 
     // alpha 1 -> 3, beta 0 -> 2: both must reach the replay, and the beta
     // rewrite is the sharper half, since it turns an overwrite into an
     // accumulation.
-    desc->params->alpha = cg::PrefactorScalar{3.0};
-    desc->params->beta  = cg::PrefactorScalar{2.0};
-    desc->alpha         = std::complex<double>{3.0, 0.0};
-    desc->beta          = std::complex<double>{2.0, 0.0};
+    graph.edit(0, [](cg::NodeEdit &e) {
+        auto *desc = e->op_data.get_if<cg::PermuteDescriptor>();
+        REQUIRE(desc != nullptr);
+        REQUIRE(desc->params != nullptr);
+        desc->params->alpha = cg::PrefactorScalar{3.0};
+        desc->params->beta  = cg::PrefactorScalar{2.0};
+        desc->alpha         = std::complex<double>{3.0, 0.0};
+        desc->beta          = std::complex<double>{2.0, 0.0};
+    });
 
     graph.execute();
 

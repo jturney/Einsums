@@ -19,8 +19,6 @@
 #include <complex>
 #include <memory>
 
-#include "GraphBackdoor.hpp"
-
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -308,15 +306,24 @@ TEST_CASE("SymmetrizedAccumulation rewrite - a real output is not folded under i
     cg::Graph graph("symacc_imaginary");
     capture_symacc(graph, r2, tmp, A, B, 1.0);
     std::complex<double> const i{0.0, 1.0};
-    for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
-        if (auto *pd = node.op_data.get_if<cg::PermuteDescriptor>(); pd != nullptr) {
-            pd->alpha         = i;
-            pd->params->alpha = cg::PrefactorScalar{i};
+    // Through edits, so the executors are built from the new scalars.
+    for (std::size_t n = 0; n < graph.nodes().size(); ++n) {
+        auto const &node     = graph.nodes()[n];
+        bool const  permute  = node.op_data.holds<cg::PermuteDescriptor>();
+        bool const  tmp_axpy = node.op_data.holds<cg::AxpbyDescriptor>() && graph.find_tensor(node.inputs[0])->name == "tmpP";
+        if (!permute && !tmp_axpy) {
+            continue;
         }
-        if (auto *ad = node.op_data.get_if<cg::AxpbyDescriptor>(); ad != nullptr && graph.find_tensor(node.inputs[0])->name == "tmpP") {
-            ad->alpha         = cg::PrefactorScalar{i};
-            ad->params->alpha = cg::PrefactorScalar{i};
-        }
+        graph.edit(n, [&](cg::NodeEdit &e) {
+            if (auto *pd = e->op_data.get_if<cg::PermuteDescriptor>(); pd != nullptr) {
+                pd->alpha         = i;
+                pd->params->alpha = cg::PrefactorScalar{i};
+            }
+            if (auto *ad = e->op_data.get_if<cg::AxpbyDescriptor>(); ad != nullptr) {
+                ad->alpha         = cg::PrefactorScalar{i};
+                ad->params->alpha = cg::PrefactorScalar{i};
+            }
+        });
     }
 
     auto [modified, pass] = graph.apply<cg::passes::SymmetrizedAccumulation>();
