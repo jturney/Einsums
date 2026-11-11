@@ -72,8 +72,7 @@ bool rebuildable(Graph &graph, Node const &nd) {
     switch (nd.kind) {
     case OpKind::Einsum: {
         auto const *d = nd.op_data.get_if<EinsumDescriptor>();
-        return d != nullptr && d->params != nullptr && d->indices != nullptr && nd.inputs.size() >= 2 && nd.inputs.size() <= 3 &&
-               nd.outputs.size() == 1 && operands_resolve();
+        return d != nullptr && nd.inputs.size() >= 2 && nd.inputs.size() <= 3 && nd.outputs.size() == 1 && operands_resolve();
     }
     case OpKind::Permute: {
         // The source, then the destination when the permute accumulates into it.
@@ -81,11 +80,8 @@ bool rebuildable(Graph &graph, Node const &nd) {
         return d != nullptr && (nd.inputs.size() == 1 || nd.inputs.size() == 2) && nd.outputs.size() == 1 && operands_resolve();
     }
     case OpKind::Axpby: {
-        // The live params are what the captured executor reads; a descriptor
-        // without them cannot be trusted to match the lambda.
         auto const *d = nd.op_data.get_if<AxpbyDescriptor>();
-        return d != nullptr && d->params != nullptr && (nd.inputs.size() == 1 || nd.inputs.size() == 2) && nd.outputs.size() == 1 &&
-               operands_resolve();
+        return d != nullptr && (nd.inputs.size() == 1 || nd.inputs.size() == 2) && nd.outputs.size() == 1 && operands_resolve();
     }
     default:
         return false;
@@ -100,11 +96,10 @@ void rebuild_node(Graph &graph, std::size_t index, TensorId old_id, TensorId new
     Node const &nd = graph.nodes()[index];
     if (nd.kind == OpKind::Einsum) {
         // The descriptor is re-derived for the new operands: its letter spaces and GEMM hint name
-        // them. The live indices/params are what the executor reads each call, so the rebuild
-        // starts from them, not from the capture-time snapshots.
+        // them.
         auto const *d = nd.op_data.get_if<EinsumDescriptor>();
-        Node rebuilt  = graph.make_einsum_node(sub(nd.inputs[0]), sub(nd.inputs[1]), sub(nd.outputs[0]), d->indices->spec, d->params->c_pf,
-                                               d->params->ab_pf, d->params->conj_a, d->params->conj_b, nd.label);
+        Node rebuilt  = graph.make_einsum_node(sub(nd.inputs[0]), sub(nd.inputs[1]), sub(nd.outputs[0]), detail::einsum_indices_of(*d).spec,
+                                               d->c_prefactor, d->ab_prefactor, d->conj_a, d->conj_b, nd.label);
         graph.edit(index, [&](NodeEdit &e) {
             e->inputs  = std::move(rebuilt.inputs);
             e->outputs = std::move(rebuilt.outputs);

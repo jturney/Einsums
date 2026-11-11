@@ -361,8 +361,8 @@ TEMPLATE_LIST_TEST_CASE("prefactors survive the rewrite exactly", "[ComputeGraph
         }
         auto const *desc = node.op_data.get_if<cg::PermuteDescriptor>();
         REQUIRE(desc != nullptr);
-        CHECK(desc->alpha == std::complex<double>(ab_pf)); // the product prefactor
-        CHECK(desc->beta == std::complex<double>(c_pf));   // the accumulation prefactor
+        CHECK(cg::as<std::complex<double>>(desc->alpha) == std::complex<double>(ab_pf)); // the product prefactor
+        CHECK(cg::as<std::complex<double>>(desc->beta) == std::complex<double>(c_pf));   // the accumulation prefactor
         // Defends: the region lowering emitted the kept permute with only its operand listed, so a
         // permute accumulating into C read C without the schedulers seeing the read. The pass
         // manager's repair after every pass hid it until that repair was removed.

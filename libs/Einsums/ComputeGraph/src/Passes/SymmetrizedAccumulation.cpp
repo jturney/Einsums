@@ -151,7 +151,7 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
         }
         // Pure overwrite permutation (tmpP freshly written): beta == 0. The
         // live beta, which is what the executor applies.
-        if (!is_zero(pd->params != nullptr ? pd->params->beta : PrefactorScalar{pd->beta})) {
+        if (!is_zero(pd->beta)) {
             note_skip("permute accumulates into its output (beta != 0)", fmt::format("permute #{}", pi));
             continue;
         }
@@ -283,7 +283,7 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
         // The live destination prefactor of an einsum, or null when the node is not one.
         auto const einsum_c_pf = [](Node const &node) -> PrefactorScalar const * {
             auto const *ed = node.op_data.get_if<EinsumDescriptor>();
-            return ed != nullptr ? &live_c_prefactor(*ed) : nullptr;
+            return ed != nullptr ? &ed->c_prefactor : nullptr;
         };
 
         size_t const first = std::min({static_cast<size_t>(a1), pi, a2});
@@ -360,7 +360,7 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
                       fmt::format("node #{} '{}'", a2, axpby2.label));
             continue;
         }
-        sites.push_back(Site{pi, a2, tmp, r2, live_alpha(*ad)});
+        sites.push_back(Site{pi, a2, tmp, r2, ad->alpha});
     }
 
     // ── Rewrite (Level 1): fold each site by making the permute accumulate directly into r2
@@ -394,9 +394,7 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
         if (pd == nullptr) {
             continue;
         }
-        PrefactorScalar const alpha = pd->params != nullptr
-                                          ? pd->params->alpha
-                                          : (pd->alpha.imag() == 0.0 ? PrefactorScalar{pd->alpha.real()} : PrefactorScalar{pd->alpha});
+        PrefactorScalar const alpha = pd->alpha;
         // A real destination cannot take an imaginary scale, and the two nodes as captured refuse
         // one at execute. Their product can be real (i times i), so each is asked on its own: a
         // fold must not turn that refusal into an answer.

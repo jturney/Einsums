@@ -27,27 +27,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 namespace {
 
 /// Do two einsum descriptors describe the same contraction topology?
-///
-/// Checks the at-capture ContractionSpec snapshot AND the live ParsedEinsumSpec
-/// index lists the executor reads. An index rewriter (PermuteFusion) is
-/// required to update both; comparing both means one that updated only one
-/// cannot make two different contractions look alike here.
 bool einsum_indices_equal(EinsumDescriptor const &a, EinsumDescriptor const &b) {
-    if (!(a.spec == b.spec)) {
-        return false;
-    }
-    if ((a.indices == nullptr) != (b.indices == nullptr)) {
-        return false;
-    }
-    if (a.indices == nullptr) {
-        return true;
-    }
-    auto const &sa = a.indices->spec;
-    auto const &sb = b.indices->spec;
     // The operators are half the value: `P(ij) ik;kj` and `ik;kj` read the same operands and write
     // the same shape, and one is the antisymmetrized other.
-    return sa.c_indices == sb.c_indices && sa.a_indices == sb.a_indices && sa.b_indices == sb.b_indices && sa.conj_a == sb.conj_a &&
-           sa.conj_b == sb.conj_b && live_index_lists(a).operators == live_index_lists(b).operators;
+    return a.spec == b.spec && a.conj_a == b.conj_a && a.conj_b == b.conj_b && a.operators == b.operators;
 }
 
 // ── Proportional matching ───────────────────────────────────────────────────
@@ -126,18 +109,17 @@ std::optional<double> op_data_ratio(OpData const &a, OpData const &b) {
 
     if (auto const *ea = a.get_if<EinsumDescriptor>()) {
         auto const &eb = b.get<EinsumDescriptor>();
-        if (!(einsum_indices_equal(*ea, eb) && live_c_prefactor(*ea) == live_c_prefactor(eb) && live_conj_a(*ea) == live_conj_a(eb) &&
-              live_conj_b(*ea) == live_conj_b(eb))) {
+        if (!(einsum_indices_equal(*ea, eb) && ea->c_prefactor == eb.c_prefactor && ea->conj_a == eb.conj_a && ea->conj_b == eb.conj_b)) {
             return std::nullopt;
         }
-        return exact_ratio(live_ab_prefactor(*ea), live_ab_prefactor(eb));
+        return exact_ratio(ea->ab_prefactor, eb.ab_prefactor);
     }
     if (auto const *aa = a.get_if<AxpbyDescriptor>()) {
         auto const &ab = b.get<AxpbyDescriptor>();
-        if (live_beta(*aa) != live_beta(ab)) {
+        if (aa->beta != ab.beta) {
             return std::nullopt;
         }
-        return exact_ratio(live_alpha(*aa), live_alpha(ab));
+        return exact_ratio(aa->alpha, ab.alpha);
     }
     if (auto const *pa = a.get_if<PermuteDescriptor>()) {
         auto const &pb = b.get<PermuteDescriptor>();

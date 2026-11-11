@@ -130,10 +130,10 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
 
         if (node.kind == OpKind::Einsum) {
             if (auto const *desc = node.op_data.get_if<EinsumDescriptor>()) {
-                if (desc->params == nullptr || desc->indices == nullptr || desc->site == nullptr) {
-                    note(node, "is a contraction without its live params, indices and site");
+                if (desc->site == nullptr) {
+                    note(node, "is a contraction without its packed-GEMM site");
                 } else if (node.inputs.size() >= 2 && !node.outputs.empty()) {
-                    auto const lists = live_index_lists(*desc);
+                    auto const lists = einsum_index_lists(*desc);
                     auto const check = [&](std::vector<std::string> const &letters, TensorId id, char const *operand) {
                         if (auto const rank = rank_of(id); rank.has_value() && *rank != letters.size()) {
                             note(node, fmt::format("operand {} has rank {} but the spec names {} indices for it", operand, *rank,

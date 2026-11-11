@@ -33,13 +33,11 @@ bool preserves_identity(OpKind kind) {
     return kind == OpKind::Permute || kind == OpKind::Transpose || kind == OpKind::HPTTPermute;
 }
 
-/// Whether @p node overwrites its output with exactly its source, relabelled: the LIVE alpha is one,
-/// the live beta zero, and no permutation operator turns it into a signed sum.
+/// Whether @p node overwrites its output with exactly its source, relabelled: alpha is one, beta
+/// zero, and no permutation operator turns it into a signed sum.
 bool is_plain_copy(Node const &node) {
     if (auto const *desc = node.op_data.get_if<PermuteDescriptor>()) {
-        bool const unscaled = desc->params != nullptr
-                                  ? is_one(desc->params->alpha) && is_zero(desc->params->beta)
-                                  : desc->alpha == std::complex<double>{1.0, 0.0} && desc->beta == std::complex<double>{};
+        bool const unscaled = is_one(desc->alpha) && is_zero(desc->beta);
         return unscaled && desc->operators.empty();
     }
     // A transpose carries no scalars; anything else of these kinds is not provably a copy.

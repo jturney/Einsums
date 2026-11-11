@@ -136,7 +136,7 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
 
     // A permutation operator makes the result a signed sum of permuted products, which one GEMM
     // does not compute.
-    if (!live_index_lists(desc).operators.empty())
+    if (!einsum_index_lists(desc).operators.empty())
         return false;
 
     // Need exactly 1 output (C).
@@ -194,7 +194,7 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
     //   c_indices[0] = row index of C, c_indices[1] = col index of C
     //   We need to figure out if A or B is transposed based on where the indices appear.
 
-    auto const  lists = live_index_lists(desc);
+    auto const  lists = einsum_index_lists(desc);
     auto const &ci    = lists.c;    // e.g., ["i", "j"]
     auto const &ai    = lists.a;    // e.g., ["i", "k"]
     auto const &bi    = lists.b;    // e.g., ["k", "j"]
@@ -272,14 +272,14 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
 
     // Dispatch based on dtype.
     if (ha.dtype == packed_gemm::ScalarType::Float32) {
-        auto alpha = as<float>(live_ab_prefactor(desc));
-        auto beta  = as<float>(live_c_prefactor(desc));
+        auto alpha = as<float>(desc.ab_prefactor);
+        auto beta  = as<float>(desc.c_prefactor);
         gpu::blas::gemm<float>(transa, transb, M, N, K, alpha, static_cast<float const *>(ptr_a), lda, static_cast<float const *>(ptr_b),
                                ldb, beta, static_cast<float *>(ptr_c), ldc);
         return true;
     } else if (ha.dtype == packed_gemm::ScalarType::Float64) {
-        auto alpha = as<double>(live_ab_prefactor(desc));
-        auto beta  = as<double>(live_c_prefactor(desc));
+        auto alpha = as<double>(desc.ab_prefactor);
+        auto beta  = as<double>(desc.c_prefactor);
         gpu::blas::gemm<double>(transa, transb, M, N, K, alpha, static_cast<double const *>(ptr_a), lda, static_cast<double const *>(ptr_b),
                                 ldb, beta, static_cast<double *>(ptr_c), ldc);
         return true;
@@ -343,7 +343,7 @@ bool try_gpu_gemv(EinsumDescriptor const &desc, Node const &node, std::unordered
     if (!ptr_a || !ptr_x || !ptr_y)
         return false;
 
-    auto const  lists = live_index_lists(desc);
+    auto const  lists = einsum_index_lists(desc);
     auto const &ai    = lists.a;
     auto const &bi    = lists.b; // "b" is actually x for GEMV
     auto const &ci    = lists.c; // "c" is actually y for GEMV
@@ -376,14 +376,14 @@ bool try_gpu_gemv(EinsumDescriptor const &desc, Node const &node, std::unordered
     }
 
     if (ha.dtype == packed_gemm::ScalarType::Float32) {
-        auto alpha = as<float>(live_ab_prefactor(desc));
-        auto beta  = as<float>(live_c_prefactor(desc));
+        auto alpha = as<float>(desc.ab_prefactor);
+        auto beta  = as<float>(desc.c_prefactor);
         gpu::blas::gemv<float>(trans, M, N, alpha, static_cast<float const *>(ptr_a), lda, static_cast<float const *>(ptr_x), 1, beta,
                                static_cast<float *>(ptr_y), 1);
         return true;
     } else if (ha.dtype == packed_gemm::ScalarType::Float64) {
-        auto alpha = as<double>(live_ab_prefactor(desc));
-        auto beta  = as<double>(live_c_prefactor(desc));
+        auto alpha = as<double>(desc.ab_prefactor);
+        auto beta  = as<double>(desc.c_prefactor);
         gpu::blas::gemv<double>(trans, M, N, alpha, static_cast<double const *>(ptr_a), lda, static_cast<double const *>(ptr_x), 1, beta,
                                 static_cast<double *>(ptr_y), 1);
         return true;
@@ -423,7 +423,7 @@ bool try_gpu_scale(Node const &node, std::unordered_map<TensorId, TensorHandle> 
     //
     // The live factor, not the capture-time snapshot: a pass that rescales the
     // node writes the params block the host executor reads.
-    auto const &factor = live_factor(*desc);
+    auto const &factor = desc->factor;
     if (!is_real_valued(factor)) {
         return false;
     }
@@ -477,8 +477,8 @@ bool try_gpu_axpy(Node const &node, std::unordered_map<TensorId, TensorHandle> c
     if (desc == nullptr) {
         return false; // pass-built node with no readable scalars: let the CPU executor run
     }
-    PrefactorScalar const &alpha_pf = live_alpha(*desc);
-    PrefactorScalar const &beta_pf  = live_beta(*desc);
+    PrefactorScalar const &alpha_pf = desc->alpha;
+    PrefactorScalar const &beta_pf  = desc->beta;
 
     // Only real scalars are representable by the real gpu::blas entry points
     // reached below; a complex prefactor on a real tensor has nowhere to go.
@@ -521,13 +521,13 @@ void run_gpu_strided_batched(detail::StridedBatchPlan const &plan, T alpha, T be
 }
 
 /// Try an einsum that is a strided batch of matrix products, planned the way the CPU executor plans
-/// it (see detail::plan_strided_batch) and issued as one strided-batched GEMM. Reads the live index
+/// it (see detail::plan_strided_batch) and issued as one strided-batched GEMM. Reads the index
 /// lists, prefactors and conjugation flags; a conjugated or antisymmetrized contraction has no
 /// gemm_batch form.
 bool try_gpu_strided_einsum(EinsumDescriptor const &desc, Node const &node, std::unordered_map<TensorId, TensorHandle> const &tensors,
                             DeviceShadowMap &shadows) {
-    auto const lists = live_index_lists(desc);
-    if (live_conj_a(desc) || live_conj_b(desc) || !lists.operators.empty() || node.inputs.size() < 2 || node.outputs.empty()) {
+    auto const lists = einsum_index_lists(desc);
+    if (desc.conj_a || desc.conj_b || !lists.operators.empty() || node.inputs.size() < 2 || node.outputs.empty()) {
         return false;
     }
     auto const a_it = tensors.find(node.inputs[0]);
@@ -558,7 +558,7 @@ bool try_gpu_strided_einsum(EinsumDescriptor const &desc, Node const &node, std:
         if (!plan) {
             return;
         }
-        run_gpu_strided_batched<T>(*plan, as<T>(live_ab_prefactor(desc)), as<T>(live_c_prefactor(desc)), ptr_a, ptr_b, ptr_c);
+        run_gpu_strided_batched<T>(*plan, as<T>(desc.ab_prefactor), as<T>(desc.c_prefactor), ptr_a, ptr_b, ptr_c);
         dispatched = true;
     });
     return dispatched;

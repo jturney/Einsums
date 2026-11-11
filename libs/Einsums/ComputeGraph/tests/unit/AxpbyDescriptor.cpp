@@ -3,10 +3,9 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// AxpbyDescriptor: axpby (Y = alpha*X + beta*Y) now carries a descriptor so
-// passes can read its scalars, with a shared-params block the executor reads on
-// every call (single source of truth - a mutation through the descriptor takes
-// effect on replay, avoiding the snapshot/executor desync).
+// AxpbyDescriptor: axpby (Y = alpha*X + beta*Y) carries a descriptor so passes
+// can read its scalars, and its executor is built from it (single source of
+// truth - an edit of the descriptor takes effect on replay).
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -26,7 +25,7 @@ namespace cg = einsums::compute_graph;
 
 namespace {
 
-// The single Axpby node's descriptor (non-const, so tests can mutate params).
+// The single Axpby node's descriptor (non-const, so tests can mutate it).
 cg::AxpbyDescriptor *find_axpby_desc(cg::Graph &graph) {
     for (auto &node : cg::detail::GraphBackdoor::nodes(graph)) {
         if (node.kind == cg::OpKind::Axpby) {
@@ -69,9 +68,8 @@ TEST_CASE("AxpbyDescriptor - snapshot exposes alpha/beta", "[ComputeGraph][Axpby
     REQUIRE(d != nullptr);
     CHECK(cg::as<double>(d->alpha) == 2.0);
     CHECK(cg::as<double>(d->beta) == 3.0);
-    REQUIRE(d->params != nullptr);
-    CHECK(cg::as<double>(d->params->alpha) == 2.0);
-    CHECK(cg::as<double>(d->params->beta) == 3.0);
+    CHECK(cg::as<double>(d->alpha) == 2.0);
+    CHECK(cg::as<double>(d->beta) == 3.0);
 }
 
 TEMPLATE_LIST_TEST_CASE("AxpbyDescriptor - executor follows a prefactor edit", "[ComputeGraph][Axpby][descriptor]",
@@ -106,9 +104,9 @@ TEMPLATE_LIST_TEST_CASE("AxpbyDescriptor - executor follows a prefactor edit", "
         static_cast<std::size_t>(std::ranges::find(graph.nodes(), cg::OpKind::Axpby, &cg::Node::kind) - graph.nodes().begin());
     REQUIRE(index < graph.nodes().size());
     graph.edit(index, [](cg::NodeEdit &e) {
-        auto *d         = e->op_data.get_if<cg::AxpbyDescriptor>();
-        d->beta         = cg::PrefactorScalar{0.0};
-        d->params->beta = cg::PrefactorScalar{0.0};
+        auto *d = e->op_data.get_if<cg::AxpbyDescriptor>();
+        d->beta = cg::PrefactorScalar{0.0};
+        d->beta = cg::PrefactorScalar{0.0};
     });
 
     graph.execute();

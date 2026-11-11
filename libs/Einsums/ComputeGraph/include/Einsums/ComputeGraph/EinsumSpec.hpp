@@ -179,6 +179,9 @@ struct EINSUMS_EXPORT ParsedEinsumSpec {
     /// order PackedGemm's target space takes them in, so a descriptor built from this list and the
     /// spec the dispatcher hands PackedGemm describe one contraction the same way.
     [[nodiscard]] std::vector<std::string> target_indices() const;
+
+    /// Field-wise, the spec as written included.
+    bool operator==(ParsedEinsumSpec const &) const = default;
 };
 
 /**

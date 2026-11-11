@@ -89,7 +89,7 @@ std::optional<SymmetryDescriptor> self_contraction_symmetry(Graph const &graph, 
     auto const &in = graph.tensor(node.inputs[0]);
 
     bool const is_complex = in.dtype == packed_gemm::ScalarType::Complex64 || in.dtype == packed_gemm::ScalarType::Complex128;
-    bool const one_conj   = live_conj_a(*desc) ^ live_conj_b(*desc); // XOR: exactly one side conjugated
+    bool const one_conj   = desc->conj_a ^ desc->conj_b; // XOR: exactly one side conjugated
 
     if (is_complex && one_conj)
         return SymmetryDescriptor::hermitian_pair(0, 1);
@@ -108,7 +108,7 @@ std::optional<SymmetryDescriptor> permute_symmetry(Graph const &graph, Node cons
     auto const *desc = node.op_data.get_if<PermuteDescriptor>();
     if (!desc)
         return std::nullopt;
-    if (desc->beta != 0.0)
+    if (!is_zero(desc->beta))
         return std::nullopt;
     // Rank-2 only (higher-rank symmetry descriptors can describe cross-
     // axis invariants that don't trivially carry through every permute).
@@ -216,26 +216,26 @@ std::optional<SymmetryDescriptor> symmetry_at_depth(EscapeAnalysis const &escape
             if (std::ranges::any_of(operand_inputs(node), [&](TensorId in) { return same_buffer(graph, in, root); }))
                 return std::nullopt; // The term reads what it writes.
             term      = self_product_symmetry(graph, node);
-            overwrite = is_zero(live_c_prefactor(*desc));
+            overwrite = is_zero(desc->c_prefactor);
             if (!overwrite)
-                state = scaled_by(state, live_c_prefactor(*desc));
+                state = scaled_by(state, desc->c_prefactor);
             break;
         }
         case OpKind::Axpby: {
             auto const *desc = node.op_data.get_if<AxpbyDescriptor>();
             if (!desc || node.inputs.empty() || same_buffer(graph, node.inputs[0], root))
                 return std::nullopt;
-            term      = scaled_by(symmetry_at_depth(escape, node.inputs[0], node.id, depth + 1, relied_on), live_alpha(*desc));
-            overwrite = is_zero(live_beta(*desc));
+            term      = scaled_by(symmetry_at_depth(escape, node.inputs[0], node.id, depth + 1, relied_on), desc->alpha);
+            overwrite = is_zero(desc->beta);
             if (!overwrite)
-                state = scaled_by(state, live_beta(*desc));
+                state = scaled_by(state, desc->beta);
             break;
         }
         case OpKind::Scale: {
             auto const *desc = node.op_data.get_if<ScaleDescriptor>();
             if (!desc)
                 return std::nullopt;
-            state   = scaled_by(state, live_factor(*desc));
+            state   = scaled_by(state, desc->factor);
             written = true;
             continue;
         }
@@ -297,7 +297,7 @@ Node const *inlinable_writer(EscapeAnalysis const &escape, TensorId id, NodeId r
         if (node.kind != OpKind::Einsum || node.outputs.size() != 1)
             return nullptr;
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();
-        if (desc == nullptr || !is_zero(live_c_prefactor(*desc)))
+        if (desc == nullptr || !is_zero(desc->c_prefactor))
             return nullptr;
         return &node;
     }
@@ -310,9 +310,9 @@ Node const *inlinable_writer(EscapeAnalysis const &escape, TensorId id, NodeId r
 bool expand(EscapeAnalysis const &escape, Node const &node, std::unordered_map<std::string, std::string> const &rename, Product &out,
             int depth) {
     auto const *desc = node.op_data.get_if<EinsumDescriptor>();
-    if (desc == nullptr || live_conj_a(*desc) || live_conj_b(*desc))
+    if (desc == nullptr || desc->conj_a || desc->conj_b)
         return false;
-    auto const lists = live_index_lists(*desc);
+    auto const lists = einsum_index_lists(*desc);
     if (!lists.operators.empty())
         return false;
     auto const operands = operand_inputs(node);
@@ -340,7 +340,7 @@ bool expand(EscapeAnalysis const &escape, Node const &node, std::unordered_map<s
 
         if (Node const *source = depth < kMaxInlineDepth ? inlinable_writer(escape, id, node.id) : nullptr) {
             // The source's output letters become the letters this node reads it with.
-            auto const source_lists = live_index_lists(*source->op_data.get_if<EinsumDescriptor>());
+            auto const source_lists = einsum_index_lists(*source->op_data.get_if<EinsumDescriptor>());
             if (source_lists.c.size() != letters.size())
                 return false;
             std::unordered_map<std::string, std::string> source_rename;
@@ -504,7 +504,7 @@ std::optional<SymmetryOp> contribution_symmetry(EscapeAnalysis const &escape, No
     auto const *desc = at->op_data.get_if<EinsumDescriptor>();
     if (desc == nullptr)
         return std::nullopt;
-    auto const &c    = live_index_lists(*desc).c;
+    auto const &c    = einsum_index_lists(*desc).c;
     auto const  rank = c.size();
     if (rank == 0 || rank > static_cast<std::size_t>(kMaxSymmetryRank))
         return std::nullopt;
@@ -573,7 +573,7 @@ std::optional<SymmetryDescriptor> self_product_symmetry(Graph const &graph, Node
     if (!desc)
         return std::nullopt;
 
-    auto const lists = live_index_lists(*desc);
+    auto const lists = einsum_index_lists(*desc);
     if (!lists.operators.empty() || lists.a.size() != lists.b.size())
         return std::nullopt;
     auto const rank = lists.c.size();
@@ -608,9 +608,9 @@ std::optional<SymmetryDescriptor> self_product_symmetry(Graph const &graph, Node
 
     auto const &in         = graph.tensor(operands[0]);
     bool const  is_complex = in.dtype == packed_gemm::ScalarType::Complex64 || in.dtype == packed_gemm::ScalarType::Complex128;
-    op.conjugate           = is_complex && (live_conj_a(*desc) != live_conj_b(*desc));
+    op.conjugate           = is_complex && (desc->conj_a != desc->conj_b);
 
-    return scaled_by(SymmetryDescriptor{{op}}, live_ab_prefactor(*desc));
+    return scaled_by(SymmetryDescriptor{{op}}, desc->ab_prefactor);
 }
 
 std::optional<SymmetryDescriptor> symmetry_at(EscapeAnalysis const &escape, TensorId tensor, NodeId reader, ReliedOn *relied_on) {
@@ -627,7 +627,7 @@ std::optional<SymmetryDescriptor> output_symmetry(Graph const &graph, Node const
         if (auto rank2 = self_contraction_symmetry(graph, node))
             return rank2;
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();
-        if (desc == nullptr || !is_zero(live_c_prefactor(*desc)))
+        if (desc == nullptr || !is_zero(desc->c_prefactor))
             return std::nullopt;
         return self_product_symmetry(graph, node);
     }

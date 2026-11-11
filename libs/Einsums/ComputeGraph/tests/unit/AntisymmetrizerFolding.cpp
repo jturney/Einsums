@@ -182,9 +182,9 @@ TEST_CASE("AntisymmetrizerFolding - a real result is not folded under an imagina
             continue;
         }
         graph.edit(i, [](cg::NodeEdit &e) {
-            auto *pd          = e->op_data.get_if<cg::PermuteDescriptor>();
-            pd->alpha         = std::complex<double>{0.0, 1.0};
-            pd->params->alpha = cg::PrefactorScalar{std::complex<double>{0.0, 1.0}};
+            auto *pd  = e->op_data.get_if<cg::PermuteDescriptor>();
+            pd->alpha = std::complex<double>{0.0, 1.0};
+            pd->alpha = cg::PrefactorScalar{std::complex<double>{0.0, 1.0}};
         });
     }
 

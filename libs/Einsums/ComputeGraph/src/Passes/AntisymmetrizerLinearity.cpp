@@ -48,11 +48,9 @@ std::optional<OperatorWrite> as_operator_write(Node const &node, std::size_t ind
     if (!pure_overwrite(node)) {
         return std::nullopt;
     }
-    // Without a params block the snapshot is the value; keep it complex only when it is.
-    PrefactorScalar const snapshot = desc->alpha.imag() == 0.0 ? PrefactorScalar{desc->alpha.real()} : PrefactorScalar{desc->alpha};
     return OperatorWrite{.index     = index,
                          .source    = node.inputs[0],
-                         .alpha     = desc->params != nullptr ? desc->params->alpha : snapshot,
+                         .alpha     = desc->alpha,
                          .operators = desc->operators,
                          .c_indices = desc->c_indices,
                          .a_indices = desc->a_indices};
@@ -109,7 +107,7 @@ bool AntisymmetrizerLinearity::transform(Graph &graph) {
             continue;
         }
         auto const *adesc = second.op_data.get_if<AxpbyDescriptor>();
-        if (adesc == nullptr || !is_one(live_beta(*adesc))) {
+        if (adesc == nullptr || !is_one(adesc->beta)) {
             continue; // anything but a pure accumulate changes what the sum is
         }
         if (declines(second)) {
@@ -184,7 +182,7 @@ bool AntisymmetrizerLinearity::transform(Graph &graph) {
                              .own_source     = first->source,
                              .other_source   = behind->source,
                              .own_alpha      = first->alpha,
-                             .merged_alpha   = PrefactorScalar{as<double>(live_alpha(*adesc)) * as<double>(behind->alpha)}});
+                             .merged_alpha   = PrefactorScalar{as<double>(adesc->alpha) * as<double>(behind->alpha)}});
     }
 
     if (sites.empty()) {
@@ -220,10 +218,7 @@ bool AntisymmetrizerLinearity::transform(Graph &graph) {
         graph.edit(site.operator_index, [&](NodeEdit &e) {
             e->inputs = {sum_id};
             if (auto *pdesc = e->op_data.get_if<PermuteDescriptor>()) {
-                pdesc->alpha = std::complex<double>{1.0, 0.0};
-                if (pdesc->params != nullptr) {
-                    pdesc->params->alpha = PrefactorScalar{double{1}};
-                }
+                pdesc->alpha = PrefactorScalar{double{1}};
             }
             e->label = fmt::format("{} (linearity: over the summed source)", e->label);
         });

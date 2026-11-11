@@ -170,11 +170,10 @@ template <typename TensorType>
 }
 
 /**
- * @brief Mutable scalar parameters for einsum operations.
+ * @brief The scalar parameters of an einsum, as an executor holds them.
  *
- * A tiled einsum's capture-time executor holds one by shared ownership, so a write to it changes
- * that node's next execute(). A builder-made executor holds its own copy, taken from the
- * descriptor's fields when it is built.
+ * Each einsum executor holds its own, taken from the node's descriptor when it is built; a tiled
+ * einsum's descriptor holds one too.
  *
  * Both prefactors are @ref PrefactorScalar variants, they hold one of
  * float/double/complex<float>/complex<double>. The executor extracts the
@@ -185,14 +184,15 @@ struct EinsumParams {
     PrefactorScalar ab_pf{double{1}}; ///< AB prefactor
     bool            conj_a{false};    ///< Conjugate A (complex; no-op for real)
     bool            conj_b{false};    ///< Conjugate B (complex; no-op for real)
+
+    bool operator==(EinsumParams const &) const = default; ///< Field-wise.
 };
 
 /**
- * @brief Mutable index specification for einsum operations.
+ * @brief The index specification of an einsum, as an executor holds it.
  *
  * Same story as EinsumParams but for the contraction's index strings
- * (a/b/c indices, link indices): a tiled einsum's capture-time executor shares
- * it, and a builder-made executor holds its own copy.
+ * (a/b/c indices, link indices).
  *
  * Holds @ref ParsedEinsumSpec plus the precomputed link indices so
  * dispatch::string_einsum doesn't have to recompute them per call.
@@ -205,8 +205,10 @@ struct EinsumParams {
  * more than the tile bookkeeping the graph exists to avoid.
  */
 struct EinsumIndices {
-    ParsedEinsumSpec         spec;         ///< Live index lists, passed straight to the dispatch
+    ParsedEinsumSpec         spec;         ///< Index lists, passed straight to the dispatch
     std::vector<std::string> link_indices; ///< Contracted (shared A/B, not in C) indices
+
+    bool operator==(EinsumIndices const &) const = default; ///< Field-wise.
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

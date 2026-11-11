@@ -171,7 +171,7 @@ bool SUMMAExpansion::transform(Graph &graph) {
         // The panel loop runs "ij <- ik ; kj" and DistributionPlanning lays the blocks out for that
         // pattern, so the node's own indices have to be exactly it. Rank two alone let "ij <- ki ; kj"
         // through, whose A block the kernel then read transposed.
-        auto const  lists   = live_index_lists(*desc);
+        auto const  lists   = einsum_index_lists(*desc);
         auto const &ci      = lists.c;
         auto const &ai      = lists.a;
         auto const &bi      = lists.b;

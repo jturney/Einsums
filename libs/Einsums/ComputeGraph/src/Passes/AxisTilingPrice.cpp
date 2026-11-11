@@ -198,7 +198,7 @@ double tile_price(Graph const &graph, Plan const &plan, std::vector<std::size_t>
         if (op.kind != OpKind::Einsum) {
             continue;
         }
-        auto const lists   = live_index_lists(op.op_data.get<EinsumDescriptor>());
+        auto const lists   = einsum_index_lists(op.op_data.get<EinsumDescriptor>());
         bool const scratch = mirror && plan.triangle.has_value() && o == plan.triangle->writer;
         auto const shape   = packed_gemm::describe_packed_contraction(
             tile_layout(graph, op.slots[0], lists.c, length, point, scratch || owned(op.slots[0].tid)),

@@ -646,7 +646,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             // records accumulation by listing its destination among its inputs and the
             // descriptor is where the number is.
             auto const *scalars = product.descriptor.get_if<ElementwiseBinaryDescriptor>();
-            if (scalars == nullptr || !is_real_valued(live_alpha(*scalars)) || !is_real_valued(live_beta(*scalars))) {
+            if (scalars == nullptr || !is_real_valued(scalars->alpha) || !is_real_valued(scalars->beta)) {
                 decline(denominator_id, name, "the direct product carries a complex prefactor, which a real quadrature has nowhere to put",
                         fmt::format("tensor '{}'", name));
                 continue;
@@ -909,13 +909,13 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
                                          {.term      = side_b.leaf,
                                           .indices   = side_b.indices,
                                           .conjugate = !side_b.scaled && !formation.conjugate.empty() && formation.conjugate[1]},
-                                         target_indices, multiply_real(live_alpha(*scalars), formation.factor), table);
+                                         target_indices, multiply_real(scalars->alpha, formation.factor), table);
 
             ExprStatement final_statement;
             final_statement.target           = apply.target;
             final_statement.target_name      = apply.target_name;
             final_statement.target_indices   = target_indices;
-            final_statement.target_prefactor = live_beta(*scalars);
+            final_statement.target_prefactor = scalars->beta;
             final_statement.value            = expr.add(std::move(combined));
             final_statement.origin           = apply.origin;
             final_statement.origin_kind      = OpKind::Einsum;

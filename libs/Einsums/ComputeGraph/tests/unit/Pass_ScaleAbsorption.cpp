@@ -34,75 +34,37 @@ constexpr double tol() {
 using namespace einsums;
 namespace cg = einsums::compute_graph;
 
-// Every in-tree writer of a prefactor keeps the descriptor SNAPSHOT and the shared params block
-// in step -- apply_fold (ScaleAbsorption and CSE), ElementWiseFusion and
-// Graph::update_prefactors all write both, and each says so. These cases pin what happens when
-// that discipline is not followed, which is the reason the ``live_*`` accessors exist: a reader
-// that goes through them is correct on the value the EXECUTOR will use, without depending on
-// every present and future writer having remembered to mirror it.
-//
-// A hand-built node is the only way to reach the divergent state, and that is the point: nothing
-// captures one, so nothing would notice a writer that stopped mirroring until a fold silently
-// keyed on the stale half.
-TEST_CASE("PassUtil - the destination predicates read the live prefactor, not the snapshot", "[ComputeGraph][Passes][PassUtil]") {
-    SECTION("einsum: live says overwrite, snapshot says accumulate") {
-        cg::Node node;
-        node.kind = cg::OpKind::Einsum;
-
-        cg::EinsumDescriptor desc;
-        desc.c_prefactor  = cg::PrefactorScalar{1.0}; // the at-capture snapshot: accumulating
-        desc.params       = std::make_shared<cg::EinsumParams>();
-        desc.params->c_pf = cg::PrefactorScalar{0.0}; // what a replay would actually apply
-        node.op_data      = std::move(desc);
-
-        REQUIRE(cg::passes::pure_overwrite(node));
-        REQUIRE_FALSE(cg::passes::reads_destination(node));
-    }
-
-    SECTION("einsum: live says accumulate, snapshot says overwrite") {
-        cg::Node node;
-        node.kind = cg::OpKind::Einsum;
-
-        cg::EinsumDescriptor desc;
-        desc.c_prefactor  = cg::PrefactorScalar{0.0};
-        desc.params       = std::make_shared<cg::EinsumParams>();
-        desc.params->c_pf = cg::PrefactorScalar{2.0};
-        node.op_data      = std::move(desc);
-
-        REQUIRE_FALSE(cg::passes::pure_overwrite(node));
-        REQUIRE(cg::passes::reads_destination(node));
-    }
-
-    SECTION("permute: live wins over the snapshot in both directions") {
-        cg::Node node;
-        node.kind = cg::OpKind::Permute;
-
-        cg::PermuteDescriptor desc;
-        desc.beta         = std::complex<double>{1.0, 0.0}; // snapshot: accumulating
-        desc.params       = std::make_shared<cg::ElementwiseParams>();
-        desc.params->beta = cg::PrefactorScalar{0.0}; // live: overwriting
-        node.op_data      = desc;
-
-        REQUIRE(cg::passes::pure_overwrite(node));
-        REQUIRE_FALSE(cg::passes::reads_destination(node));
-
-        auto *live         = node.op_data.get_if<cg::PermuteDescriptor>();
-        live->params->beta = cg::PrefactorScalar{3.0};
-        REQUIRE_FALSE(cg::passes::pure_overwrite(node));
-        REQUIRE(cg::passes::reads_destination(node));
-    }
-
-    SECTION("a node with no params block still reads its snapshot") {
+// The destination predicates answer from the descriptor's prefactor, which is also what the
+// executor is built from. A hand-built node reaches each answer directly.
+TEST_CASE("PassUtil - the destination predicates read the destination prefactor", "[ComputeGraph][Passes][PassUtil]") {
+    SECTION("einsum") {
         cg::Node node;
         node.kind = cg::OpKind::Einsum;
 
         cg::EinsumDescriptor desc;
         desc.c_prefactor = cg::PrefactorScalar{0.0};
-        desc.params      = nullptr; // a node some pass assembled by hand
-        node.op_data     = std::move(desc);
-
+        node.op_data     = desc;
         REQUIRE(cg::passes::pure_overwrite(node));
         REQUIRE_FALSE(cg::passes::reads_destination(node));
+
+        node.op_data.get_if<cg::EinsumDescriptor>()->c_prefactor = cg::PrefactorScalar{2.0};
+        REQUIRE_FALSE(cg::passes::pure_overwrite(node));
+        REQUIRE(cg::passes::reads_destination(node));
+    }
+
+    SECTION("permute") {
+        cg::Node node;
+        node.kind = cg::OpKind::Permute;
+
+        cg::PermuteDescriptor desc;
+        desc.beta    = cg::PrefactorScalar{0.0};
+        node.op_data = desc;
+        REQUIRE(cg::passes::pure_overwrite(node));
+        REQUIRE_FALSE(cg::passes::reads_destination(node));
+
+        node.op_data.get_if<cg::PermuteDescriptor>()->beta = cg::PrefactorScalar{3.0};
+        REQUIRE_FALSE(cg::passes::pure_overwrite(node));
+        REQUIRE(cg::passes::reads_destination(node));
     }
 }
 
@@ -1083,16 +1045,13 @@ TEMPLATE_LIST_TEST_CASE("ScaleAbsorption - absorbs into an axpy accumulation", "
     REQUIRE(pass.num_absorbed() == 1);
     REQUIRE(graph.num_nodes() == 1);
 
-    // The scale went into the accumulate's beta, through the LIVE params - the
-    // executor reads those, so a fold written only to the descriptor snapshot
-    // would leave the replay computing the unscaled result.
+    // The scale went into the accumulate's beta, which the rebuilt executor applies.
     auto &surviving = graph.nodes()[0];
     REQUIRE(surviving.kind == cg::OpKind::Axpby);
     auto *desc = surviving.op_data.get_if<cg::AxpbyDescriptor>();
     REQUIRE(desc != nullptr);
-    REQUIRE(desc->params != nullptr);
-    REQUIRE(cg::as<T>(desc->params->beta) == s);
-    REQUIRE(cg::as<T>(desc->params->alpha) == T(2.0));
+    REQUIRE(cg::as<T>(desc->beta) == s);
+    REQUIRE(cg::as<T>(desc->alpha) == T(2.0));
 
     graph.execute();
 

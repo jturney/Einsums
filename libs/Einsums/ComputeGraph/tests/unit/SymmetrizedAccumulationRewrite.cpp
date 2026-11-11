@@ -316,12 +316,12 @@ TEST_CASE("SymmetrizedAccumulation rewrite - a real output is not folded under i
         }
         graph.edit(n, [&](cg::NodeEdit &e) {
             if (auto *pd = e->op_data.get_if<cg::PermuteDescriptor>(); pd != nullptr) {
-                pd->alpha         = i;
-                pd->params->alpha = cg::PrefactorScalar{i};
+                pd->alpha = i;
+                pd->alpha = cg::PrefactorScalar{i};
             }
             if (auto *ad = e->op_data.get_if<cg::AxpbyDescriptor>(); ad != nullptr) {
-                ad->alpha         = cg::PrefactorScalar{i};
-                ad->params->alpha = cg::PrefactorScalar{i};
+                ad->alpha = cg::PrefactorScalar{i};
+                ad->alpha = cg::PrefactorScalar{i};
             }
         });
     }

@@ -313,20 +313,20 @@ bool node_accumulates(Node const &node) {
     switch (node.kind) {
     case OpKind::Einsum: {
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();
-        return desc == nullptr || !is_zero(live_c_prefactor(*desc));
+        return desc == nullptr || !is_zero(desc->c_prefactor);
     }
     case OpKind::Permute: {
         auto const *desc = node.op_data.get_if<PermuteDescriptor>();
-        return desc == nullptr || !is_zero(desc->params ? desc->params->beta : PrefactorScalar{desc->beta});
+        return desc == nullptr || !is_zero(desc->beta);
     }
     case OpKind::Axpby: {
         auto const *desc = node.op_data.get_if<AxpbyDescriptor>();
-        return desc == nullptr || !is_zero(live_beta(*desc));
+        return desc == nullptr || !is_zero(desc->beta);
     }
     case OpKind::DirectProduct:
     case OpKind::DirectDivision: {
         auto const *desc = node.op_data.get_if<ElementwiseBinaryDescriptor>();
-        return desc == nullptr || !is_zero(live_beta(*desc));
+        return desc == nullptr || !is_zero(desc->beta);
     }
     case OpKind::Dot:
         return false; // it writes element zero; the LOOP is what accumulates it
@@ -473,7 +473,7 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
                          "which would be held whole to collect the sum";
                 return false;
             }
-            summed_into.emplace_back(tid, live_c_prefactor(*desc));
+            summed_into.emplace_back(tid, desc->c_prefactor);
             continue;
         }
         if (writers != 1 || readers != 0 || nodes[writer_index].kind != OpKind::Dot) {

@@ -897,7 +897,7 @@ std::vector<std::pair<std::string, SpaceId>> current_letter_spaces(Graph const &
     if (node.inputs.size() < 2 || node.outputs.empty()) {
         return letters;
     }
-    auto const                                   lists = live_index_lists(*desc);
+    auto const                                   lists = einsum_index_lists(*desc);
     std::vector<std::pair<std::string, SpaceId>> current;
     try {
         current = einsum_letter_spaces(graph, node.inputs[0], node.inputs[1], node.outputs[0], lists.a, lists.b, lists.c, node.label);

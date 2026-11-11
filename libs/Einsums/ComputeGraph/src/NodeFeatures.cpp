@@ -22,38 +22,32 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
 
-bool complex_valued(std::complex<double> const &value) {
-    return value.imag() != 0.0;
-}
-
-/// Whether the node's live scalars carry an imaginary part. The LIVE ones, because a pass that
-/// folded a phase into a node wrote it there and not into the capture snapshot.
+/// Whether the node's scalars carry an imaginary part.
 bool complex_prefactor(Node const &node) {
     if (auto const *d = node.op_data.get_if<EinsumDescriptor>()) {
-        return !is_real_valued(live_c_prefactor(*d)) || !is_real_valued(live_ab_prefactor(*d));
+        return !is_real_valued(d->c_prefactor) || !is_real_valued(d->ab_prefactor);
     }
     if (auto const *d = node.op_data.get_if<ScaleDescriptor>()) {
-        return !is_real_valued(live_factor(*d));
+        return !is_real_valued(d->factor);
     }
     if (auto const *d = node.op_data.get_if<AxpbyDescriptor>()) {
-        return !is_real_valued(live_alpha(*d)) || !is_real_valued(live_beta(*d));
+        return !is_real_valued(d->alpha) || !is_real_valued(d->beta);
     }
     if (auto const *d = node.op_data.get_if<ElementwiseBinaryDescriptor>()) {
-        return !is_real_valued(live_alpha(*d)) || !is_real_valued(live_beta(*d));
+        return !is_real_valued(d->alpha) || !is_real_valued(d->beta);
     }
-    if (auto const *d = node.op_data.get_if<TiledEinsumDescriptor>(); d != nullptr && d->params != nullptr) {
-        return !is_real_valued(d->params->c_pf) || !is_real_valued(d->params->ab_pf);
+    if (auto const *d = node.op_data.get_if<TiledEinsumDescriptor>()) {
+        return !is_real_valued(d->params.c_pf) || !is_real_valued(d->params.ab_pf);
     }
     if (auto const *d = node.op_data.get_if<PermuteDescriptor>()) {
-        return d->params != nullptr ? !is_real_valued(d->params->alpha) || !is_real_valued(d->params->beta)
-                                    : complex_valued(d->alpha) || complex_valued(d->beta);
+        return !is_real_valued(d->alpha) || !is_real_valued(d->beta);
     }
     return false;
 }
 
 bool conjugates(Node const &node) {
     if (auto const *d = node.op_data.get_if<EinsumDescriptor>()) {
-        return live_conj_a(*d) || live_conj_b(*d);
+        return d->conj_a || d->conj_b;
     }
     if (auto const *d = node.op_data.get_if<DotDescriptor>()) {
         return d->conjugated;

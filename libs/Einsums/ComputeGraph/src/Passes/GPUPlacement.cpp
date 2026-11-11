@@ -67,8 +67,8 @@ bool node_is_dispatchable(Node const &node, Graph const &graph);
 /// Whether @p node is an einsum the device runs as one strided-batched GEMM: the plan the CPU
 /// executor and try_gpu_strided_einsum both make, over the operands as they are now.
 bool einsum_is_strided_batch(EinsumDescriptor const &desc, Node const &node, Graph const &graph) {
-    auto const lists = live_index_lists(desc);
-    if (live_conj_a(desc) || live_conj_b(desc) || !lists.operators.empty() || node.inputs.size() < 2 || node.outputs.empty()) {
+    auto const lists = einsum_index_lists(desc);
+    if (desc.conj_a || desc.conj_b || !lists.operators.empty() || node.inputs.size() < 2 || node.outputs.empty()) {
         return false;
     }
     auto const &a = graph.tensor(node.inputs[0]);
@@ -100,7 +100,7 @@ bool einsum_is_dispatchable(Node const &node, Graph const &graph) {
     }
 
     size_t const n_target = desc->spec.target_indices.size();
-    size_t const n_link   = live_index_lists(*desc).link.size();
+    size_t const n_link   = einsum_index_lists(*desc).link.size();
     if (n_link != 1 || (n_target != 1 && n_target != 2)) {
         return false;
     }

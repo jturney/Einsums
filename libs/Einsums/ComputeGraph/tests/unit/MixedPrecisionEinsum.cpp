@@ -261,7 +261,7 @@ TEST_CASE("mixed precision einsum - a node a pass builds", "[ComputeGraph][Mixed
         // operand as C's type. Deriving one used to read A's floats as doubles.
         auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
         REQUIRE(desc != nullptr);
-        CHECK(desc->gemm_hint == nullptr);
+        CHECK(!desc->gemm_hint.has_value());
         graph.add_node(std::move(node));
         graph.execute();
 

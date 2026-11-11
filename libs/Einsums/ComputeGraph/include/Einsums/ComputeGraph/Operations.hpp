@@ -263,20 +263,18 @@ void scale(typename AType::ValueType factor, AType *A) {
             return;
         }
         WAGGLE_ZONE("scale capture");
-        auto [a_id, a_slot] = ctx.get_slot(*A);
-        auto label          = fmt::format("tiled scale({})", A->name());
-        auto params         = std::make_shared<TiledElementwiseParams>();
-        params->alpha       = PrefactorScalar{factor};
-        auto executor       = [params, a_slot]() {
+        auto [a_id, a_slot]         = ctx.get_slot(*A);
+        auto                  label = fmt::format("tiled scale({})", A->name());
+        PrefactorScalar const alpha_pf{factor};
+        auto                  executor = [alpha_pf, a_slot]() {
             WAGGLE_ZONE("scale execute");
-            detail::tiled_scale<T>(as<T>(params->alpha), static_cast<AType *>(a_slot->ptr));
+            detail::tiled_scale<T>(as<T>(alpha_pf), static_cast<AType *>(a_slot->ptr));
         };
-        // Carries a descriptor so TiledExpansion can lower it per tile; the
-        // executor reads the scalar back out of the same params the descriptor
-        // exposes, so a pass that rewrites it is actually obeyed.
+        // Carries a descriptor so TiledExpansion can lower it per tile. The executor holds its own
+        // copy of the scalar, so a pass that changes the descriptor must give it a new executor.
         TiledElementwiseDescriptor edesc;
-        edesc.op     = TiledElementwiseOp::Scale;
-        edesc.params = params;
+        edesc.op           = TiledElementwiseOp::Scale;
+        edesc.params.alpha = alpha_pf;
         ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor), std::move(edesc));
     } else {
         // get_slot admits only in-core dense tensors here, all of which are one TensorImpl.
@@ -1537,18 +1535,17 @@ void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
             return;
         }
         WAGGLE_ZONE("axpy capture");
-        auto [x_id, x_slot] = ctx.get_slot(X);
-        auto [y_id, y_slot] = ctx.get_slot(*Y);
-        auto label          = fmt::format("tiled axpy({}, {})", X.name(), Y->name());
-        auto params         = std::make_shared<TiledElementwiseParams>();
-        params->alpha       = PrefactorScalar{alpha};
-        auto executor       = [params, x_slot, y_slot]() {
+        auto [x_id, x_slot]         = ctx.get_slot(X);
+        auto [y_id, y_slot]         = ctx.get_slot(*Y);
+        auto                  label = fmt::format("tiled axpy({}, {})", X.name(), Y->name());
+        PrefactorScalar const alpha_pf{alpha};
+        auto                  executor = [alpha_pf, x_slot, y_slot]() {
             WAGGLE_ZONE("axpy execute");
-            detail::tiled_axpy<T>(as<T>(params->alpha), *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
+            detail::tiled_axpy<T>(as<T>(alpha_pf), *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
         };
         TiledElementwiseDescriptor edesc;
-        edesc.op     = TiledElementwiseOp::Axpy;
-        edesc.params = params;
+        edesc.op           = TiledElementwiseOp::Axpy;
+        edesc.params.alpha = alpha_pf;
         // Y is listed as an INPUT as well as an output: tiled_axpy computes
         // Y += alpha*X, so it reads its destination. Omitting it hides the
         // accumulation from the scheduler and the liveness passes -- Reorder could
@@ -2529,17 +2526,15 @@ void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) 
             return;
         }
         WAGGLE_ZONE("direct_division capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [b_id, b_slot] = ctx.get_slot(B);
-        auto [c_id, c_slot] = ctx.get_slot(*C);
-        auto label          = fmt::format("tiled direct_division({}, {})", A.name(), C->name());
-        auto params         = std::make_shared<TiledElementwiseParams>();
-        params->alpha       = PrefactorScalar{alpha};
-        params->beta        = PrefactorScalar{beta};
-        auto executor       = [params, a_slot, b_slot, c_slot]() {
+        auto [a_id, a_slot]                = ctx.get_slot(A);
+        auto [b_id, b_slot]                = ctx.get_slot(B);
+        auto [c_id, c_slot]                = ctx.get_slot(*C);
+        auto                         label = fmt::format("tiled direct_division({}, {})", A.name(), C->name());
+        TiledElementwiseParams const params{.alpha = PrefactorScalar{alpha}, .beta = PrefactorScalar{beta}};
+        auto                         executor = [params, a_slot, b_slot, c_slot]() {
             WAGGLE_ZONE("direct_division execute");
-            detail::tiled_direct_division<T>(as<T>(params->alpha), *static_cast<AType const *>(a_slot->ptr),
-                                             *static_cast<BType const *>(b_slot->ptr), as<T>(params->beta),
+            detail::tiled_direct_division<T>(as<T>(params.alpha), *static_cast<AType const *>(a_slot->ptr),
+                                             *static_cast<BType const *>(b_slot->ptr), as<T>(params.beta),
                                              static_cast<CType *>(c_slot->ptr));
         };
         TiledElementwiseDescriptor edesc;
@@ -5665,15 +5660,15 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
-    auto params  = std::make_shared<EinsumParams>(EinsumParams{.c_pf = c_pf, .ab_pf = ab_pf});
-    auto indices = std::make_shared<EinsumIndices>(EinsumIndices{.spec = parsed, .link_indices = {}});
+    EinsumParams const  params{.c_pf = c_pf, .ab_pf = ab_pf};
+    EinsumIndices const indices{.spec = parsed, .link_indices = {}};
 
     auto label = fmt::format("tiled einsum: C[{}] = A[{}] * B[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
                              fmt::join(parsed.b_indices, ","));
 
     auto executor = [indices, params, a_slot, b_slot, c_slot]() {
         WAGGLE_ZONE("einsum execute");
-        detail::tiled_runtime_einsum<T>(indices->spec, as<T>(params->c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params->ab_pf),
+        detail::tiled_runtime_einsum<T>(indices.spec, as<T>(params.c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params.ab_pf),
                                         *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
     };
 
@@ -5682,9 +5677,9 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     // planning, GEMM batching, stream fusion), which would otherwise synthesize
     // *dense* intermediates for operands that have no single buffer.
     //
-    // It DOES carry a TiledEinsumDescriptor holding the same live indices/params
-    // the executor reads, so a pass that explicitly asks for a tiled einsum can
-    // inspect and rewrite it -- the tile-expansion pass needs the spec and the
+    // It DOES carry a TiledEinsumDescriptor holding the indices and prefactors
+    // the executor runs with, so a pass that explicitly asks for a tiled einsum
+    // can inspect it -- the tile-expansion pass needs the spec and the
     // prefactors, and a bare closure hides both. The descriptor type is distinct
     // from EinsumDescriptor precisely so that no dense-einsum pass picks it up.
     TiledEinsumDescriptor tdesc;

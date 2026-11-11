@@ -55,12 +55,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 [[nodiscard]] EINSUMS_EXPORT std::map<TensorId, std::vector<std::size_t>> value_writes_by_buffer(Graph const &graph);
 
 /**
- * @brief The live ``beta`` of an Axpby node, or null when @p nd is not an Axpby
+ * @brief The ``beta`` of an Axpby node, or null when @p nd is not an Axpby
  *        or carries no descriptor (a pass-built node) and beta is unknowable.
- *
- * Prefer the shared params over the descriptor snapshot: a pass that folded a
- * scale into this axpby wrote beta through the params handle, and that is the
- * value the executor will read.
  */
 [[nodiscard]] inline PrefactorScalar const *axpby_beta(Node const &nd) {
     // A pass-built Axpby with no descriptor returns null, which every caller
@@ -72,7 +68,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
     if (ad == nullptr) {
         return nullptr;
     }
-    return &live_beta(*ad);
+    return &ad->beta;
 }
 
 /**
@@ -182,36 +178,28 @@ inline void hash_range(std::size_t &h, Range const &range) {
     if (auto const *beta = axpby_beta(nd)) {
         return is_zero(*beta);
     }
-    // The LIVE prefactor, not the at-capture snapshot beside it. Every writer in the library
-    // currently keeps the two in step -- apply_fold (ScaleAbsorption and CSE),
-    // ElementWiseFusion and Graph::update_prefactors each write both, deliberately -- so this
-    // reads the same value either way TODAY. It is spelled this way so that stays true without
-    // depending on every future writer remembering: what this predicate is asked about is what
-    // the next execute() will do, and that is the params block by definition.
     if (auto const *e = nd.op_data.get_if<EinsumDescriptor>()) {
-        return is_zero(live_c_prefactor(*e));
+        return is_zero(e->c_prefactor);
     }
-    // A tiled einsum keeps its destination prefactor in the shared params rather
-    // than in an EinsumDescriptor, so it needs its own arm. Without one it fell
+    // A tiled einsum keeps its destination prefactor in its own descriptor's
+    // params rather than in an EinsumDescriptor, so it needs its own arm. Without one it fell
     // through to `false` here and in reads_destination below, and an op that
     // answers "no" to both looks neither overwriting nor accumulating.
     if (auto const *t = nd.op_data.get_if<TiledEinsumDescriptor>()) {
-        return t->params && is_zero(t->params->c_pf);
+        return is_zero(t->params.c_pf);
     }
-    // Permute has no live accessor (its snapshot and its params block disagree on type; see the
-    // note in Node.hpp), so the preference is spelled out here.
     if (auto const *p = nd.op_data.get_if<PermuteDescriptor>()) {
-        return p->params != nullptr ? is_zero(p->params->beta) : p->beta == 0.0;
+        return is_zero(p->beta);
     }
     if (auto const *b = nd.op_data.get_if<BatchedGemmDescriptor>()) {
         return b->beta == std::complex<double>{0.0, 0.0};
     }
     if (auto const *e = nd.op_data.get_if<ElementwiseBinaryDescriptor>()) {
-        return is_zero(live_beta(*e));
+        return is_zero(e->beta);
     }
     if (auto const *t = nd.op_data.get_if<TiledElementwiseDescriptor>()) {
         // A tiled scale works in place and a tiled axpy adds into Y; only the quotient can overwrite.
-        return t->op == TiledElementwiseOp::Divide && t->params != nullptr && is_zero(t->params->beta);
+        return t->op == TiledElementwiseOp::Divide && is_zero(t->params.beta);
     }
     if (auto const *g = nd.op_data.get_if<GemmDescriptor>()) {
         return is_zero(g->beta);
@@ -337,10 +325,7 @@ enum class FoldSite : std::uint8_t {
 /// `c_pf` / `beta`. A node that reads its destination AND uses it as an operand
 /// would again need a², so the single-read requirement stands.
 ///
-/// Both require live shared params: the CPU executor reads the scalars from
-/// EinsumParams / AxpbyParams, so a descriptor-only edit would desync it. That
-/// is why permute and BatchedGemm are not folded into: they bake their
-/// prefactors into the executor closure.
+/// Only einsum and axpby nodes are fold sites.
 ///
 /// ScaleAbsorption folds a deleted scale into its readers or its next
 /// accumulator; CSE folds the ratio between two duplicates into the readers it
@@ -378,50 +363,46 @@ enum class FoldSite : std::uint8_t {
 
     if (node.kind == OpKind::Einsum) {
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();
-        if (desc == nullptr || desc->params == nullptr) {
+        if (desc == nullptr) {
             return FoldSite::None;
         }
         if (!is_destination) {
             return FoldSite::Operand;
         }
-        return is_zero(desc->params->c_pf) ? FoldSite::None : FoldSite::Accumulator;
+        return is_zero(desc->c_prefactor) ? FoldSite::None : FoldSite::Accumulator;
     }
 
     if (node.kind == OpKind::Axpby) {
         auto const *desc = node.op_data.get_if<AxpbyDescriptor>();
-        if (desc == nullptr || desc->params == nullptr) {
+        if (desc == nullptr) {
             return FoldSite::None;
         }
         if (!is_destination) {
             return FoldSite::Operand;
         }
-        return is_zero(desc->params->beta) ? FoldSite::None : FoldSite::Accumulator;
+        return is_zero(desc->beta) ? FoldSite::None : FoldSite::Accumulator;
     }
 
     return FoldSite::None;
 }
 
 /// Multiply @p node's prefactor at @p site by @p factor. Caller guarantees
-/// @ref fold_site returned that site. Writes the live params the executor reads
-/// AND the snapshot beside them, so later analysis sees the same value.
+/// @ref fold_site returned that site, and makes the change inside Graph::edit so
+/// the node gets an executor built from it.
 inline void apply_fold(Node &node, FoldSite site, double factor) {
     if (auto *desc = node.op_data.get_if<EinsumDescriptor>()) {
         if (site == FoldSite::Operand) {
-            desc->params->ab_pf = scale_prefactor(desc->params->ab_pf, factor);
-            desc->ab_prefactor  = desc->params->ab_pf;
+            desc->ab_prefactor = scale_prefactor(desc->ab_prefactor, factor);
         } else {
-            desc->params->c_pf = scale_prefactor(desc->params->c_pf, factor);
-            desc->c_prefactor  = desc->params->c_pf;
+            desc->c_prefactor = scale_prefactor(desc->c_prefactor, factor);
         }
         return;
     }
     auto *desc = node.op_data.get_if<AxpbyDescriptor>();
     if (site == FoldSite::Operand) {
-        desc->params->alpha = scale_prefactor(desc->params->alpha, factor);
-        desc->alpha         = desc->params->alpha;
+        desc->alpha = scale_prefactor(desc->alpha, factor);
     } else {
-        desc->params->beta = scale_prefactor(desc->params->beta, factor);
-        desc->beta         = desc->params->beta;
+        desc->beta = scale_prefactor(desc->beta, factor);
     }
 }
 

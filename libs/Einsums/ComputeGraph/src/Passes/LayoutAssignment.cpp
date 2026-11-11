@@ -141,7 +141,7 @@ struct Site {
 /// A prefactor, an accumulation, or a repeated letter each make the node compute something a
 /// deletion would not, whatever storage order its output is given.
 bool is_pure_reordering(PermuteDescriptor const &desc) {
-    if (desc.alpha != std::complex<double>{1.0, 0.0} || desc.beta != std::complex<double>{0.0, 0.0}) {
+    if (!is_one(desc.alpha) || !is_zero(desc.beta)) {
         return false;
     }
     if (desc.a_indices.empty() || desc.a_indices.size() != desc.c_indices.size()) {
@@ -431,7 +431,7 @@ bool LayoutAssignment::transform(Graph &graph) {
         }
 
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();
-        if (desc == nullptr || desc->indices == nullptr || node.inputs.size() < 2 || node.outputs.size() != 1) {
+        if (desc == nullptr || node.inputs.size() < 2 || node.outputs.size() != 1) {
             for (auto id : node.inputs) {
                 pin(id);
             }
@@ -447,9 +447,9 @@ bool LayoutAssignment::transform(Graph &graph) {
         site.ids[RoleA]      = node.inputs[0];
         site.ids[RoleB]      = node.inputs[1];
         site.ids[RoleC]      = node.outputs[0];
-        site.captured[RoleA] = desc->indices->spec.a_indices;
-        site.captured[RoleB] = desc->indices->spec.b_indices;
-        site.captured[RoleC] = desc->indices->spec.c_indices;
+        site.captured[RoleA] = desc->spec.a_indices;
+        site.captured[RoleB] = desc->spec.b_indices;
+        site.captured[RoleC] = desc->spec.c_indices;
 
         // Letter groups. A letter this classification does not place is one the model has no
         // reading for - a trace, a diagonal, a lone summed index - and the site is declined
@@ -819,8 +819,7 @@ bool LayoutAssignment::transform(Graph &graph) {
         report(2, fmt::format("store '{}' as ({}) instead of ({})", handle->name, fmt::join(dims, ","), fmt::join(was_dims, ",")));
     }
 
-    // set_operand_indices writes the snapshot and the live block together, re-derives the link and
-    // target lists and re-renders the diagnostic text. Those lists are sorted letter SETS, which a
+    // set_operand_indices re-derives the link and target lists. Those lists are sorted letter SETS, which a
     // permutation of an operand's axes leaves alone, so re-deriving them changes nothing here.
     for (auto const &site : plan.sites) {
         if (site.kind != SiteKind::Contraction) {
@@ -849,7 +848,7 @@ bool LayoutAssignment::transform(Graph &graph) {
             continue;
         }
         report(2, fmt::format("node {} now reads {}", nodes[site.node].id,
-                              nodes[site.node].op_data.get_if<EinsumDescriptor>()->indices->spec.raw));
+                              detail::einsum_indices_of(*nodes[site.node].op_data.get_if<EinsumDescriptor>()).spec.raw));
     }
 
     // ── Fold the permutes the assignment made redundant ────────────────────────────────────

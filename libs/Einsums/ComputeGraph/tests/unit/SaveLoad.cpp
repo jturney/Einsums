@@ -291,7 +291,7 @@ TEMPLATE_LIST_TEST_CASE("SaveLoad - einsum round-trips bitwise", "[ComputeGraph]
             REQUIRE(std::holds_alternative<T>(desc->ab_prefactor));
             REQUIRE(bytes_of_scalar(std::get<T>(desc->c_prefactor)) == bytes_of_scalar(c_pf));
             REQUIRE(bytes_of_scalar(std::get<T>(desc->ab_prefactor)) == bytes_of_scalar(ab_pf));
-            if (desc->gemm_hint != nullptr) {
+            if (desc->gemm_hint.has_value()) {
                 hinted = true;
                 REQUIRE(desc->gemm_hint->m == 6);
                 REQUIRE(desc->gemm_hint->n == 5);

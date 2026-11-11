@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <unordered_map>
@@ -142,6 +143,16 @@ void Graph::edit(std::size_t index, std::function<void(NodeEdit &)> const &chang
                                     "Graph '{}': node '{}' runs an executor its pass wrote, and this edit changed what it reads or "
                                     "writes without giving it a new one through NodeEdit::set_executor",
                                     _name, node.label);
+        }
+        // The same for what it computes: that executor holds its own copy of the descriptor, so a
+        // change to the descriptor would never reach it. A descriptor type without operator== cannot
+        // say, and is let through.
+        if (node.custom_execute && !edit._executor_given && !node.folded &&
+            node.op_data.equals(before.op_data) == std::optional<bool>{false}) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                    "Graph '{}': node '{}' runs an executor its pass wrote, and this edit changed its {} without "
+                                    "giving it a new one through NodeEdit::set_executor",
+                                    _name, node.label, node.op_data.name());
         }
         bool const placed = edit._placed ? node.target != Target::CPU : static_cast<bool>(before.cpu_fallback);
         if (!placed) {

@@ -56,11 +56,8 @@ std::optional<OperatorProducer> read_producer(Node const &node) {
             return std::nullopt;
         }
         // The fold replaces the permuted tensor by its source and multiplies by the term count
-        // AND by the permute's own scale, `C = alpha P(A)`. The LIVE value, since a pass that
-        // folded a scale into the permute wrote it there.
-        out.alpha      = desc->params != nullptr     ? desc->params->alpha
-                         : desc->alpha.imag() == 0.0 ? PrefactorScalar{desc->alpha.real()}
-                                                     : PrefactorScalar{desc->alpha};
+        // AND by the permute's own scale, `C = alpha P(A)`.
+        out.alpha      = desc->alpha;
         out.source     = node.inputs[0];
         out.operators  = desc->operators;
         out.c_indices  = desc->c_indices;
@@ -309,9 +306,7 @@ bool AntisymmetrizerFolding::transform(Graph &graph) {
         });
 
         ScaleDescriptor desc;
-        desc.factor        = factor;
-        desc.params        = std::make_shared<ElementwiseParams>();
-        desc.params->alpha = desc.factor;
+        desc.factor = factor;
 
         Node scale;
         scale.id      = graph.reserve_node_id();

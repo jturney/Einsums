@@ -723,7 +723,7 @@ std::shared_ptr<IrFragment> read_child_fragment(Value const &value, std::string 
 /// A GEMM hint and the operand ids it names, which the builder resolves once every tensor is
 /// registered.
 void read_gemm_hint(IrNode &node, EinsumDescriptor &desc, Fields const &hint) {
-    auto record     = std::make_shared<GemmHint>();
+    std::optional<GemmHint> record{std::in_place};
     record->m       = static_cast<int>(hint.integer("m"));
     record->n       = static_cast<int>(hint.integer("n"));
     record->k       = static_cast<int>(hint.integer("k"));
@@ -759,21 +759,17 @@ void read_descriptor(IrNode &node, Fields const &fields, GateFlagTable const &ga
     case OpKind::Scale: {
         ScaleDescriptor desc;
         desc.factor     = fields.prefactor("factor", PrefactorScalar{double{1}});
-        desc.params     = make_elementwise_params(desc.factor);
         node.descriptor = std::move(desc);
         return;
     }
     case OpKind::Permute: {
         PermuteDescriptor desc;
-        auto const        alpha = fields.prefactor("alpha", PrefactorScalar{double{1}});
-        auto const        beta  = fields.prefactor("beta", PrefactorScalar{double{0}});
-        desc.alpha              = as<std::complex<double>>(alpha);
-        desc.beta               = as<std::complex<double>>(beta);
-        desc.c_indices          = fields.strings("c_indices");
-        desc.a_indices          = fields.strings("a_indices");
-        desc.operators          = read_permutation_operators(fields);
-        desc.params             = make_elementwise_params(alpha, beta);
-        node.descriptor         = std::move(desc);
+        desc.alpha      = fields.prefactor("alpha", PrefactorScalar{double{1}});
+        desc.beta       = fields.prefactor("beta", PrefactorScalar{double{0}});
+        desc.c_indices  = fields.strings("c_indices");
+        desc.a_indices  = fields.strings("a_indices");
+        desc.operators  = read_permutation_operators(fields);
+        node.descriptor = std::move(desc);
         return;
     }
     case OpKind::Axpby:
@@ -782,7 +778,6 @@ void read_descriptor(IrNode &node, Fields const &fields, GateFlagTable const &ga
         auto const read_scalars = [&]<typename Descriptor>(Descriptor desc) {
             desc.alpha      = fields.prefactor("alpha", PrefactorScalar{double{1}});
             desc.beta       = fields.prefactor("beta", PrefactorScalar{double{0}});
-            desc.params     = make_elementwise_params(desc.alpha, desc.beta);
             node.descriptor = std::move(desc);
         };
         if (node.kind == OpKind::Axpby) {

@@ -140,7 +140,7 @@ std::string describe(Node const &node, EinsumDescriptor const &desc) {
     if (!node.label.empty()) {
         return node.label;
     }
-    auto const lists = live_index_lists(desc);
+    auto const lists = einsum_index_lists(desc);
     return fmt::format("einsum: C[{}] = A[{}] * B[{}]", fmt::join(lists.c, ","), fmt::join(lists.a, ","), fmt::join(lists.b, ","));
 }
 
@@ -686,7 +686,7 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
                 continue;
             }
 
-            auto const lists = live_index_lists(*desc);
+            auto const lists = einsum_index_lists(*desc);
             if (!lists.operators.empty()) {
                 note_skip(PermutationOperators, where, Decision{.tensors = {use.name}});
                 continue;
@@ -734,10 +734,10 @@ bool SlabStreaming::stream_graph(Graph &graph, Backed const &backed) {
             rw.a                        = lists.a;
             rw.b                        = lists.b;
             rw.c                        = lists.c;
-            rw.conj_a                   = live_conj_a(*desc);
-            rw.conj_b                   = live_conj_b(*desc);
-            rw.c_prefactor              = live_c_prefactor(*desc);
-            rw.ab_prefactor             = live_ab_prefactor(*desc);
+            rw.conj_a                   = desc->conj_a;
+            rw.conj_b                   = desc->conj_b;
+            rw.c_prefactor              = desc->c_prefactor;
+            rw.ab_prefactor             = desc->ab_prefactor;
             rw.other                    = *other_view;
             rw.destination              = *destination_view;
             rw.dims                     = backing.dims;
@@ -862,7 +862,7 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
     }
     // The storage then holds the tensor only if this contraction is all that produces it: it
     // overwrites every element, and nothing else writes the tensor in memory.
-    if (!is_zero(live_c_prefactor(*desc))) {
+    if (!is_zero(desc->c_prefactor)) {
         note_skip(WriteAddsInto, where, Decision{.tensors = {out->name}});
         return false;
     }
@@ -877,7 +877,7 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
         note_skip(WriteReadsBacked, where, Decision{.tensors = {out->name}});
         return false;
     }
-    auto const lists = live_index_lists(*desc);
+    auto const lists = einsum_index_lists(*desc);
     if (!lists.operators.empty()) {
         note_skip(WritePermutationOperators, where, Decision{.tensors = {out->name}});
         return false;
@@ -915,9 +915,9 @@ bool SlabStreaming::stream_write(Graph &graph, Backed const &backed, std::size_t
     rw.a                        = lists.a;
     rw.b                        = lists.b;
     rw.c                        = lists.c;
-    rw.conj_a                   = live_conj_a(*desc);
-    rw.conj_b                   = live_conj_b(*desc);
-    rw.ab_prefactor             = live_ab_prefactor(*desc);
+    rw.conj_a                   = desc->conj_a;
+    rw.conj_b                   = desc->conj_b;
+    rw.ab_prefactor             = desc->ab_prefactor;
     rw.in_a                     = *in_a;
     rw.in_b                     = *in_b;
     rw.dims                     = backing.dims;

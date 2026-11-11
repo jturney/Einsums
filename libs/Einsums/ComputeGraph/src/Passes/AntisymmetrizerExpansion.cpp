@@ -54,10 +54,7 @@ bool AntisymmetrizerExpansion::transform(Graph &graph) {
         if (desc == nullptr) {
             continue;
         }
-        // The LIVE operators, for the reason the IR writer prefers them: the
-        // executor reads ``indices->spec``, and the descriptor's own copy beside
-        // it is the at-capture snapshot.
-        auto const &operators = desc->indices != nullptr ? desc->indices->spec.operators : desc->operators;
+        auto const &operators = desc->operators;
         if (operators.empty()) {
             continue;
         }
@@ -117,15 +114,15 @@ bool AntisymmetrizerExpansion::transform(Graph &graph) {
         bool                             conj_b = false;
         {
             auto const *desc  = graph.nodes()[index].op_data.get_if<EinsumDescriptor>();
-            auto const  lists = live_index_lists(*desc);
+            auto const  lists = einsum_index_lists(*desc);
             base.c_indices    = lists.c;
             base.a_indices    = lists.a;
             base.b_indices    = lists.b;
             operators         = lists.operators;
-            c_pf              = live_c_prefactor(*desc);
-            ab_pf             = live_ab_prefactor(*desc);
-            conj_a            = live_conj_a(*desc);
-            conj_b            = live_conj_b(*desc);
+            c_pf              = desc->c_prefactor;
+            ab_pf             = desc->ab_prefactor;
+            conj_a            = desc->conj_a;
+            conj_b            = desc->conj_b;
         }
         base.raw = base.render();
 

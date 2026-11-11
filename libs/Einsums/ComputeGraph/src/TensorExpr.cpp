@@ -978,9 +978,7 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
                 return unexpected(RaiseFailure{.reason = "a contraction's operands hold different element types",
                                                .detail = fmt::format("node '{}'", node->label)});
             }
-            // The LIVE index lists, not the capture snapshot: raising the snapshot
-            // would raise the algebra as it was before a pass rewrote it.
-            auto const                      lists  = live_index_lists(*desc);
+            auto const                      lists  = einsum_index_lists(*desc);
             std::vector<std::string> const &a_list = lists.a;
             std::vector<std::string> const &b_list = lists.b;
             std::vector<std::string> const &c_list = lists.c;
@@ -992,19 +990,18 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
                 return unexpected(
                     RaiseFailure{.reason = "a contraction names fewer than two operands", .detail = fmt::format("node '{}'", node->label)});
             }
-            auto const &params = desc->params;
-            auto const  spaces = detail::current_letter_spaces(graph, *node);
+            auto const spaces = detail::current_letter_spaces(graph, *node);
 
             ExprTerm term;
             term.kind    = TermKind::Contraction;
-            term.factor  = live_ab_prefactor(*desc);
+            term.factor  = desc->ab_prefactor;
             term.indices = indices_from(c_list, spaces);
             term.operands.push_back(leaf_for(expr, leaves, graph, node->inputs[0]));
             term.operands.push_back(leaf_for(expr, leaves, graph, node->inputs[1]));
             term.operand_indices.push_back(indices_from(a_list, spaces));
             term.operand_indices.push_back(indices_from(b_list, spaces));
-            term.conjugate.push_back(live_conj_a(*desc));
-            term.conjugate.push_back(live_conj_b(*desc));
+            term.conjugate.push_back(desc->conj_a);
+            term.conjugate.push_back(desc->conj_b);
             {
                 // Priced with the same spaces its indices carry, not the capture-time map.
                 EinsumDescriptor current = *desc;
@@ -1012,7 +1009,7 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
                 term.cost                = symbolic_cost_for(current);
             }
 
-            statement.target_prefactor = live_c_prefactor(*desc);
+            statement.target_prefactor = desc->c_prefactor;
             statement.target_indices   = term.indices;
             statement.value            = expr.add(std::move(term));
         } else {

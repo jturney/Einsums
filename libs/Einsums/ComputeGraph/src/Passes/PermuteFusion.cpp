@@ -30,7 +30,7 @@ namespace {
 /// diagonal/sum, not a permutation). The prefactors are the live ones the
 /// executor reads, not the capture snapshot.
 bool can_fuse(PermuteDescriptor const &p) {
-    bool const pure_scalars = p.params != nullptr ? is_one(p.params->alpha) && is_zero(p.params->beta) : p.alpha == 1.0 && p.beta == 0.0;
+    bool const pure_scalars = is_one(p.alpha) && is_zero(p.beta);
     if (!pure_scalars || !p.operators.empty())
         return false;
     // Duplicates would make the inverse map ambiguous.
@@ -73,13 +73,13 @@ std::vector<std::string> rewrite_subscript(PermuteDescriptor const &perm, std::v
 bool try_fuse(Graph &graph, std::vector<Node> const &nodes, size_t perm_idx, size_t einsum_idx, size_t slot) {
     auto const *perm_desc = nodes[perm_idx].op_data.get_if<PermuteDescriptor>();
     auto const *ein_desc  = nodes[einsum_idx].op_data.get_if<EinsumDescriptor>();
-    if (!perm_desc || !ein_desc || !ein_desc->indices)
+    if (!perm_desc || !ein_desc)
         return false;
     if (!can_fuse(*perm_desc))
         return false;
 
     // Old subscript: the slot's view of the permute's output.
-    auto const  lists        = live_index_lists(*ein_desc);
+    auto const  lists        = einsum_index_lists(*ein_desc);
     auto const &slot_indices = (slot == 0) ? lists.a : lists.b;
 
     // Sanity: slot rank must match permute output rank. A mismatch means

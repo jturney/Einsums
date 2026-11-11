@@ -44,32 +44,11 @@ std::optional<SpaceId> EinsumDescriptor::space_for_letter(std::string_view lette
     return std::nullopt;
 }
 
-PrefactorScalar const &live_c_prefactor(EinsumDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->c_pf : desc.c_prefactor;
-}
-
-PrefactorScalar const &live_ab_prefactor(EinsumDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->ab_pf : desc.ab_prefactor;
-}
-
-bool live_conj_a(EinsumDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->conj_a : desc.conj_a;
-}
-
-bool live_conj_b(EinsumDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->conj_b : desc.conj_b;
-}
-
 void OpData::throw_wrong_descriptor(std::string_view wanted) const {
     EINSUMS_THROW_EXCEPTION(std::logic_error, "OpData: the node holds {}, not a {}", name(), wanted);
 }
 
-EinsumIndexLists live_index_lists(EinsumDescriptor const &desc) noexcept {
-    if (desc.indices != nullptr) {
-        auto const &live = desc.indices->spec;
-        return {
-            .c = live.c_indices, .a = live.a_indices, .b = live.b_indices, .link = desc.indices->link_indices, .operators = live.operators};
-    }
+EinsumIndexLists einsum_index_lists(EinsumDescriptor const &desc) noexcept {
     return {.c         = desc.spec.c_indices,
             .a         = desc.spec.a_indices,
             .b         = desc.spec.b_indices,
@@ -89,21 +68,15 @@ void set_operand_indices(EinsumDescriptor &desc, EinsumOperand operand, std::vec
         }
         return spec.c_indices;
     };
-    slot(desc.spec) = indices;
+    slot(desc.spec) = std::move(indices);
 
     detail::derive_index_roles(desc.spec);
-
-    if (desc.indices != nullptr) {
-        slot(desc.indices->spec)   = std::move(indices);
-        desc.indices->link_indices = desc.spec.link_indices;
-        desc.indices->spec.raw     = desc.indices->spec.render();
-    }
 }
 
 std::optional<NodeIndexLists> node_index_lists(Node const &node) noexcept {
     if (node.kind == OpKind::Einsum) {
         if (auto const *desc = node.op_data.get_if<EinsumDescriptor>(); desc != nullptr) {
-            auto const lists = live_index_lists(*desc);
+            auto const lists = einsum_index_lists(*desc);
             return NodeIndexLists{.c = &lists.c, .a = &lists.a, .b = &lists.b, .operators = &lists.operators};
         }
     } else if (node.kind == OpKind::Permute) {
@@ -112,41 +85,6 @@ std::optional<NodeIndexLists> node_index_lists(Node const &node) noexcept {
         }
     }
     return std::nullopt;
-}
-
-PrefactorScalar const &live_alpha(AxpbyDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->alpha : desc.alpha;
-}
-
-PrefactorScalar const &live_beta(AxpbyDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->beta : desc.beta;
-}
-
-PrefactorScalar const &live_alpha(ElementwiseBinaryDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->alpha : desc.alpha;
-}
-
-PrefactorScalar const &live_beta(ElementwiseBinaryDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->beta : desc.beta;
-}
-
-PrefactorScalar const &live_factor(ScaleDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->alpha : desc.factor;
-}
-
-std::shared_ptr<ElementwiseParams> make_elementwise_params(PrefactorScalar const &alpha, PrefactorScalar const &beta) {
-    auto params   = std::make_shared<ElementwiseParams>();
-    params->alpha = alpha;
-    params->beta  = beta;
-    return params;
-}
-
-std::shared_ptr<ElementwiseParams> live_or_private_params(std::shared_ptr<ElementwiseParams> const &declared, PrefactorScalar const &alpha,
-                                                          PrefactorScalar const &beta) {
-    if (declared != nullptr) {
-        return declared;
-    }
-    return make_elementwise_params(alpha, beta);
 }
 
 std::string_view param_source_type_name(ParamSourceType type) noexcept {
@@ -365,7 +303,7 @@ EinsumParams einsum_params_of(EinsumDescriptor const &desc) {
     return EinsumParams{.c_pf = desc.c_prefactor, .ab_pf = desc.ab_prefactor, .conj_a = desc.conj_a, .conj_b = desc.conj_b};
 }
 
-EinsumIndices einsum_indices_of(EinsumDescriptor const &desc, std::string raw) {
+EinsumIndices einsum_indices_of(EinsumDescriptor const &desc) {
     EinsumIndices indices;
     indices.spec.c_indices = desc.spec.c_indices;
     indices.spec.a_indices = desc.spec.a_indices;
@@ -373,23 +311,9 @@ EinsumIndices einsum_indices_of(EinsumDescriptor const &desc, std::string raw) {
     indices.spec.operators = desc.operators;
     indices.spec.conj_a    = desc.conj_a;
     indices.spec.conj_b    = desc.conj_b;
-    indices.spec.raw       = raw.empty() ? indices.spec.render() : std::move(raw);
+    indices.spec.raw       = indices.spec.render();
     indices.link_indices   = desc.spec.link_indices;
     return indices;
-}
-
-std::shared_ptr<EinsumParams> make_live_params(EinsumDescriptor const &desc) {
-    return std::make_shared<EinsumParams>(einsum_params_of(desc));
-}
-
-std::shared_ptr<EinsumIndices> make_live_indices(EinsumDescriptor const &desc, std::string raw) {
-    return std::make_shared<EinsumIndices>(einsum_indices_of(desc, std::move(raw)));
-}
-
-void attach_live_state(EinsumDescriptor &desc, std::string raw) {
-    desc.params  = make_live_params(desc);
-    desc.indices = make_live_indices(desc, std::move(raw));
-    desc.site    = std::make_shared<packed_gemm::ContractionSite>();
 }
 
 std::string space_label(SpaceRegistry const *registry, SpaceId id) {

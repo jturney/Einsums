@@ -39,17 +39,16 @@ std::pair<PrefactorScalar, PrefactorScalar> compose_axpby(PrefactorScalar const 
         a1);
 }
 
-/// The axpby source operand, or null when @p nd is not a fusable axpby.
+/// The axpby descriptor, or null when @p nd is not a fusable axpby.
 ///
-/// Requires live shared params: the composed scalars are written there, which
-/// is what makes this a real fusion (one sweep with new scalars) rather than
-/// two executors called back to back.
+/// The composed scalars are written into the descriptor through an edit, whose
+/// commit builds the executor from them, which is what makes this a real fusion
+/// (one sweep with new scalars) rather than two executors called back to back.
 AxpbyDescriptor const *fusable_axpby(Node const &nd) {
     if (nd.kind != OpKind::Axpby || nd.outputs.size() != 1 || nd.inputs.empty()) {
         return nullptr;
     }
-    auto const *desc = nd.op_data.get_if<AxpbyDescriptor>();
-    return (desc != nullptr && desc->params != nullptr) ? desc : nullptr;
+    return nd.op_data.get_if<AxpbyDescriptor>();
 }
 
 /// Compose two in-place scales of one tensor: `A *= f1` then `A *= f2` is
@@ -69,17 +68,13 @@ PrefactorScalar compose_scale(PrefactorScalar const &f1, PrefactorScalar const &
 
 /// The scale descriptor, or null when @p nd is not a fusable scale.
 ///
-/// Requires live shared params for the same reason @ref fusable_axpby does:
-/// the composed factor is written there, so the merged node applies ONE
-/// combined multiply. Until the scale executor read its scalar from the
-/// descriptor this pass had to chain the two executors instead, which removed
-/// a node but not a sweep.
+/// The composed factor is written into the descriptor, as for @ref fusable_axpby,
+/// so the merged node applies ONE combined multiply.
 ScaleDescriptor const *fusable_scale(Node const &nd) {
     if (nd.kind != OpKind::Scale || nd.outputs.size() != 1) {
         return nullptr;
     }
-    auto const *desc = nd.op_data.get_if<ScaleDescriptor>();
-    return (desc != nullptr && desc->params != nullptr) ? desc : nullptr;
+    return nd.op_data.get_if<ScaleDescriptor>();
 }
 
 } // namespace
@@ -136,10 +131,10 @@ bool ElementWiseFusion::transform(Graph &graph) {
 
             // Mixing prefactor alternatives would make the composition lossy;
             // in practice both come from the same tensor's dtype.
-            auto const &a1 = desc_i->params->alpha;
-            auto const &b1 = desc_i->params->beta;
-            auto const &a2 = desc_j->params->alpha;
-            auto const &b2 = desc_j->params->beta;
+            auto const &a1 = desc_i->alpha;
+            auto const &b1 = desc_i->beta;
+            auto const &a2 = desc_j->alpha;
+            auto const &b2 = desc_j->beta;
             if (a1.index() != b1.index() || a1.index() != a2.index() || a1.index() != b2.index())
                 break;
 
@@ -147,12 +142,10 @@ bool ElementWiseFusion::transform(Graph &graph) {
 
             // Y is read only when beta survives, and the commit lists it as an input exactly then.
             graph.edit(i, [&](NodeEdit &e) {
-                auto *live          = e->op_data.get_if<AxpbyDescriptor>();
-                live->params->alpha = alpha;
-                live->params->beta  = beta;
-                live->alpha         = alpha;
-                live->beta          = beta;
-                e->label            = fmt::format("axpby(alpha={}, beta={}) [fused]", to_string(alpha), to_string(beta));
+                auto *desc  = e->op_data.get_if<AxpbyDescriptor>();
+                desc->alpha = alpha;
+                desc->beta  = beta;
+                e->label    = fmt::format("axpby(alpha={}, beta={}) [fused]", to_string(alpha), to_string(beta));
             });
 
             remove[j] = true;
@@ -193,20 +186,18 @@ bool ElementWiseFusion::transform(Graph &graph) {
 
             // Mixing prefactor alternatives would make the composition lossy;
             // in practice both come from the same tensor's dtype.
-            if (desc_i->params->alpha.index() != desc_j->params->alpha.index())
+            if (desc_i->factor.index() != desc_j->factor.index())
                 break;
 
-            // Fuse for real: one multiply with the composed factor, written
-            // through the live params the executor reads.
-            PrefactorScalar const composed = compose_scale(desc_i->params->alpha, desc_j->params->alpha);
-            std::string const     was_i    = to_string(desc_i->params->alpha);
-            std::string const     was_j    = to_string(desc_j->params->alpha);
+            // Fuse for real: one multiply with the composed factor, which the edit's commit builds
+            // the executor from.
+            PrefactorScalar const composed = compose_scale(desc_i->factor, desc_j->factor);
+            std::string const     was_i    = to_string(desc_i->factor);
+            std::string const     was_j    = to_string(desc_j->factor);
 
             graph.edit(i, [&](NodeEdit &e) {
-                auto *live          = e->op_data.get_if<ScaleDescriptor>();
-                live->params->alpha = composed;
-                live->factor        = composed;
-                e->label            = fmt::format("scale({}) [fused]", to_string(composed));
+                e->op_data.get_if<ScaleDescriptor>()->factor = composed;
+                e->label                                     = fmt::format("scale({}) [fused]", to_string(composed));
             });
 
             remove[j] = true;

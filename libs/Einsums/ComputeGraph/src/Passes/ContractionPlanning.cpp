@@ -52,7 +52,7 @@ bool analyze_contraction(EinsumDescriptor const &desc, Graph const &graph, Node 
         return false;
 
     // Must be a pure multiplication (c_prefactor == 0, i.e., C = ab_pf * A * B)
-    if (!is_zero(live_c_prefactor(desc)))
+    if (!is_zero(desc.c_prefactor))
         return false;
 
     // A conjugated operand is a value the rebuilt GEMM has nowhere to put: the
@@ -61,7 +61,7 @@ bool analyze_contraction(EinsumDescriptor const &desc, Graph const &graph, Node 
     // different number on a complex tensor. Declined rather than handled,
     // because the transpose flags are what the rebuild reasons in and a
     // conjugate-transpose is a third reading it does not model.
-    if (live_conj_a(desc) || live_conj_b(desc))
+    if (desc.conj_a || desc.conj_b)
         return false;
 
     // The same for a permutation operator: the rebuilt GEMMs compute the one unpermuted product,
@@ -156,7 +156,7 @@ std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &g
         // survives here.
         ci.ab_prefactor = PrefactorScalar{double{1}};
         if (auto const *desc = nodes[idx].op_data.get_if<EinsumDescriptor>(); desc != nullptr) {
-            ci.ab_prefactor = live_ab_prefactor(*desc);
+            ci.ab_prefactor = desc->ab_prefactor;
         }
         return ci;
     };
@@ -250,7 +250,7 @@ std::vector<TensorId> extract_leaves(std::vector<ContractionInfo> const &chain) 
 /// An index shared by both operands (a batch index) is not classifiable as an
 /// A target or a B target, so such a member is declined too.
 bool output_is_canonical(EinsumDescriptor const &desc) {
-    auto const lists         = live_index_lists(desc);
+    auto const lists         = einsum_index_lists(desc);
     bool       seen_b_target = false;
     for (auto const &idx : lists.c) {
         switch (index_role(idx, lists.c, lists.a, lists.b)) {
@@ -306,7 +306,7 @@ std::optional<std::vector<bool>> chain_leaf_orientations(std::vector<Contraction
         if (!output_is_canonical(*desc))
             return std::nullopt;
 
-        auto const  lists = live_index_lists(*desc);
+        auto const  lists = einsum_index_lists(*desc);
         auto const &links = lists.link;
         auto const  b_pl  = link_placement(lists.b, links);
         if (b_pl.split())

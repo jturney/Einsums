@@ -66,6 +66,8 @@ class Graph; // Forward declaration for ConditionalDescriptor/LoopDescriptor
 struct GemmOperand {
     TensorId id{0};          ///< The operand's tensor id. Resolution happens at execute, through the graph's slot.
     int      leading_dim{0}; ///< Capture-time leading dimension. A PLANNING HINT; see the class note.
+
+    bool operator==(GemmOperand const &) const = default; ///< Field-wise.
 };
 
 /**
@@ -95,6 +97,8 @@ struct GemmHint {
     GemmOperand a;            ///< Left input.
     GemmOperand b;            ///< Right input.
     GemmOperand c;            ///< Destination.
+
+    bool operator==(GemmHint const &) const = default; ///< Field-wise.
 };
 
 /**
@@ -112,8 +116,8 @@ struct EinsumDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
     static constexpr std::string_view descriptor_name = "EinsumDescriptor";
     packed_gemm::ContractionSpec      spec;                    ///< Contraction topology: index lists, link/target classification
-    PrefactorScalar                   c_prefactor{double{0}};  ///< C prefactor (snapshot of EinsumParams::c_pf at capture time)
-    PrefactorScalar                   ab_prefactor{double{1}}; ///< AB prefactor (snapshot of EinsumParams::ab_pf at capture time)
+    PrefactorScalar                   c_prefactor{double{0}};  ///< C prefactor
+    PrefactorScalar                   ab_prefactor{double{1}}; ///< AB prefactor
     bool                              conj_a{false};           ///< Whether to conjugate A (for complex types)
     bool                              conj_b{false};           ///< Whether to conjugate B (for complex types)
 
@@ -125,31 +129,16 @@ struct EinsumDescriptor {
     /// a one-line check against a partition and a tedious reconstruction from
     /// six permutation vectors. @ref expand_permutation_operators turns them
     /// into terms, deterministically, wherever terms are what is needed.
-    ///
-    /// Stored on the SNAPSHOT side, beside @ref spec, and deliberately not in
-    /// the live @ref indices block: no pass rewrites an operator under a running
-    /// executor, and one that wants to should rebuild the node, the same
-    /// argument @ref PermuteDescriptor already makes for its index lists.
     /// @versionadded{2.0.0}
     std::vector<PermutationOperator> operators;
 
-    /// The index lists, links and operators again, kept equal to @ref spec and @ref operators, plus
-    /// the spec as written. The executor does not share it: build_executor copies the fields above,
-    /// and a rewrite goes through Graph::edit, whose commit builds a new executor. Readers still
-    /// consult it, so a rewriter updates both.
-    std::shared_ptr<EinsumIndices> indices;
-
-    /// The prefactors and conjugation flags again, kept equal to the fields above. The executor
-    /// does not share it: build_executor copies `c_prefactor`/`ab_prefactor`, and a change goes
-    /// through Graph::edit, whose commit builds a new executor. Readers still consult it.
-    std::shared_ptr<EinsumParams> params;
-
-    /// BLAS-level batching hint; non-null only for 2D×2D→2D contractions
+    /// BLAS-level batching hint; present only for 2D×2D→2D contractions
     /// with one link index. Read by the GEMMBatching pass.
-    std::shared_ptr<GemmHint> gemm_hint;
+    std::optional<GemmHint> gemm_hint;
 
-    /// This node's packed-GEMM memo, the same object the executor lambda holds -
-    /// the `indices`/`params` pattern again, and shared for the same reason.
+    /// This node's packed-GEMM memo, the same object the executor lambda holds. Shared, unlike
+    /// every other field: it is a cache of how to run the contraction, not part of what the node
+    /// computes, so a node and its executor may both write it.
     ///
     /// A plan-time pass needs somewhere to write the node's kernel route (@ref
     /// packed_gemm::KernelRoute), and the site is where the dispatch already
@@ -182,43 +171,32 @@ struct EinsumDescriptor {
      * @return The bound space, or an empty optional when the letter carries no annotation.
      */
     [[nodiscard]] EINSUMS_EXPORT std::optional<SpaceId> space_for_letter(std::string_view letter) const;
+
+    /// Field-wise; the packed-GEMM memo compares by identity.
+    bool operator==(EinsumDescriptor const &) const = default;
 };
 
-/// The scalars of every kind whose operation is ``dst = alpha*<source> + beta*dst``, the same
-/// snapshot + params pattern as @ref EinsumParams.
+/// The scalars of every kind whose operation is ``dst = alpha*<source> + beta*dst``.
 ///
-/// A tiled kind's capture-time executor shares the block, so a write to it changes that node's
-/// next ``graph.execute()``. A builder-made executor holds its own copy of the descriptor's
-/// fields, and a change to one of those goes through Graph::edit.
-///
-/// A descriptor also keeps an at-capture SNAPSHOT of the same scalars, which is what analysis
-/// passes read; a rewriter must write both, and the ``live_*`` accessors below are how a reader
-/// stays right about which one matters.
-///
-/// @par One type, three names
-/// Axpby, the dense element-wise kinds and the tiled element-wise kinds share it; each is reached
-/// through its own descriptor's ``params``, never discriminated, and the aliases below keep each
-/// descriptor in its own vocabulary.
-///
-/// Not every kind uses both halves: a Scale is an in-place multiply with no destination
-/// prefactor, and a tiled Scale or Axpy is the same, so @ref beta stays at its default there.
+/// A tiled element-wise descriptor holds one, and its executor a copy of it. Not every kind uses
+/// both halves: a tiled Scale or Axpy is an in-place update with no destination prefactor, so
+/// @ref beta stays at its default there.
 struct ElementwiseParams {
     PrefactorScalar alpha{double{1}}; ///< Prefactor on the source operand(s).
     PrefactorScalar beta{double{0}};  ///< Prefactor on the destination (0 = pure overwrite).
-};
 
-/// @copydoc ElementwiseParams
-/// Spelled for axpby's ``Y = alpha*X + beta*Y``.
-using AxpbyParams = ElementwiseParams;
+    bool operator==(ElementwiseParams const &) const = default; ///< Field-wise.
+};
 
 /// Metadata for Axpby nodes (Y = alpha*X + beta*Y). Prefactors are type-erased
 /// (PrefactorScalar) so complex axpby folds exactly, matching EinsumDescriptor.
 struct AxpbyDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
     static constexpr std::string_view descriptor_name = "AxpbyDescriptor";
-    PrefactorScalar                   alpha{double{1}}; ///< alpha snapshot (at-capture value)
-    PrefactorScalar                   beta{double{0}};  ///< beta snapshot (at-capture value)
-    std::shared_ptr<AxpbyParams>      params;           ///< the same values, kept equal; the executor holds its own copy
+    PrefactorScalar                   alpha{double{1}}; ///< Prefactor on X.
+    PrefactorScalar                   beta{double{0}};  ///< Prefactor on Y.
+
+    bool operator==(AxpbyDescriptor const &) const = default; ///< Field-wise.
 };
 
 /**
@@ -230,15 +208,13 @@ struct AxpbyDescriptor {
  * @ref factor is a @ref PrefactorScalar, not a @c double, so a complex scale
  * records exactly what the executor applies (CSE and ScaleAbsorption compare
  * and fold it).
- *
- * @ref params is null on nodes a pass built by hand rather than through
- * @ref build_executor; readers must gate on it.
  */
 struct ScaleDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
-    static constexpr std::string_view  descriptor_name = "ScaleDescriptor";
-    PrefactorScalar                    factor{double{1}}; ///< The scaling factor (at-capture snapshot).
-    std::shared_ptr<ElementwiseParams> params;            ///< The same value as @ref factor, kept equal; the executor holds its own copy.
+    static constexpr std::string_view descriptor_name = "ScaleDescriptor";
+    PrefactorScalar                   factor{double{1}}; ///< The scaling factor.
+
+    bool operator==(ScaleDescriptor const &) const = default; ///< Field-wise.
 };
 
 /**
@@ -246,31 +222,27 @@ struct ScaleDescriptor {
  *
  * Stores the alpha/beta prefactors: C = beta * C + alpha * permute(A).
  *
- * The snapshot scalars are @c std::complex<double> (the widest concrete scalar,
- * as in @ref BatchedGemmDescriptor) so a complex permute records exactly what
- * its executor will apply. They were @c double, filled from @c alpha.real() at
- * capture, which made `alpha = 1+3i` read back as a plain `1.0`: PermuteFusion
- * saw a pure axis reorder and fused the permute away, dropping the imaginary
- * part, and CSE merged permutes that differ only in it.
- *
- * The INDEX LISTS are deliberately not live-mutable. No pass rewrites them
- * today, and a pass that wants to has a better move than mutating them under a
- * running executor: rewrite the descriptor and call @ref build_executor again.
- * The scalars are rewritten by passes between replays, through Graph::edit.
+ * The scalars are @ref PrefactorScalar, as for every other prefactor-bearing
+ * descriptor, so a complex permute records exactly what its executor will apply.
+ * They were once @c double, filled from @c alpha.real() at capture, which made
+ * `alpha = 1+3i` read back as a plain `1.0`: PermuteFusion saw a pure axis
+ * reorder and fused the permute away, dropping the imaginary part, and CSE
+ * merged permutes that differ only in it.
  */
 struct PermuteDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
-    static constexpr std::string_view  descriptor_name = "PermuteDescriptor";
-    std::complex<double>               alpha{1.0, 0.0}; ///< Prefactor for the source tensor (at-capture snapshot).
-    std::complex<double>               beta{0.0, 0.0};  ///< Prefactor for the destination tensor (0 = overwrite).
-    std::vector<std::string>           c_indices;       ///< Output index names (e.g., {"j","i"}).
-    std::vector<std::string>           a_indices;       ///< Input index names (e.g., {"i","j"}).
-    std::shared_ptr<ElementwiseParams> params;          ///< The same scalars, kept equal; the executor holds its own copy.
+    static constexpr std::string_view descriptor_name = "PermuteDescriptor";
+    PrefactorScalar                   alpha{double{1}}; ///< Prefactor for the source tensor.
+    PrefactorScalar                   beta{double{0}};  ///< Prefactor for the destination tensor (0 = overwrite).
+    std::vector<std::string>          c_indices;        ///< Output index names (e.g., {"j","i"}).
+    std::vector<std::string>          a_indices;        ///< Input index names (e.g., {"i","j"}).
 
     /// Permutation (antisymmetrizer) operators this permute is wrapped in.
     /// @see EinsumDescriptor::operators
     /// @versionadded{2.0.0}
     std::vector<PermutationOperator> operators;
+
+    bool operator==(PermuteDescriptor const &) const = default; ///< Field-wise.
 };
 
 /**
@@ -295,62 +267,16 @@ struct PermuteDescriptor {
  */
 struct ElementwiseBinaryDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
-    static constexpr std::string_view  descriptor_name = "ElementwiseBinaryDescriptor";
-    PrefactorScalar                    alpha{double{1}}; ///< Prefactor on the A-op-B product (at-capture snapshot).
-    PrefactorScalar                    beta{double{0}};  ///< Prefactor on the destination (0 = overwrite).
-    std::shared_ptr<ElementwiseParams> params;           ///< The same scalars, kept equal; the executor holds its own copy.
+    static constexpr std::string_view descriptor_name = "ElementwiseBinaryDescriptor";
+    PrefactorScalar                   alpha{double{1}}; ///< Prefactor on the A-op-B product.
+    PrefactorScalar                   beta{double{0}};  ///< Prefactor on the destination (0 = overwrite).
+
+    bool operator==(ElementwiseBinaryDescriptor const &) const = default; ///< Field-wise.
 };
 
-/**
- * @name Live scalar accessors
- *
- * Every prefactor-bearing descriptor keeps TWO records of one scalar: the at-capture SNAPSHOT on
- * the descriptor itself, and - when the node carries a shared params block - the value the
- * executor actually reads on every call. A pass that folds a scale writes the LIVE one, so a
- * reader that wants to know what the next ``graph.execute()`` will compute must prefer it, and
- * fall back to the snapshot only for a node that has no block: one a pass assembled by hand, or
- * one a loader rebuilt.
- *
- * That rule was written out by hand wherever it was needed - twenty-odd ternaries across the IR
- * writer, the expression raiser, the GPU dispatch and three passes - and getting it wrong is
- * invisible in the worst way, because the value read is merely STALE rather than absent. These
- * are the rule, in one place.
- *
- * The inverse question - "what did capture record" - is still the plain member, and a few callers
- * genuinely want that one: the IR writer's cache keys and anything comparing a node against the
- * program as written. Reach for the member deliberately, not by forgetting these exist.
- *
- * @note @ref PermuteDescriptor deliberately has no accessor here. Its snapshots are
- *       @c std::complex<double> while its params block holds @ref PrefactorScalar, so the two
- *       halves do not share a return type - and @ref GraphIR encodes them differently depending
- *       on which one it took. Unifying that is a change to the saved form, not a refactor.
- * @{
- */
-
-/// @brief The destination prefactor an einsum will actually apply.
-/// @param[in] desc The descriptor to read.
-/// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_c_prefactor(EinsumDescriptor const &desc) noexcept;
-
-/// @brief The product prefactor an einsum will actually apply.
-/// @param[in] desc The descriptor to read.
-/// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_ab_prefactor(EinsumDescriptor const &desc) noexcept;
-
-/// @brief Whether an einsum will actually conjugate its first operand.
-/// @param[in] desc The descriptor to read.
-/// @return The live flag, or the snapshot when the node carries no params block.
-[[nodiscard]] EINSUMS_EXPORT bool live_conj_a(EinsumDescriptor const &desc) noexcept;
-
-/// @brief Whether an einsum will actually conjugate its second operand.
-/// @param[in] desc The descriptor to read.
-/// @return The live flag, or the snapshot when the node carries no params block.
-[[nodiscard]] EINSUMS_EXPORT bool live_conj_b(EinsumDescriptor const &desc) noexcept;
-
-/// @brief The index lists and operators an einsum will actually run with.
+/// @brief An einsum's index lists and operators, gathered.
 ///
-/// References into the descriptor: the live index block when the node carries one, the snapshot
-/// otherwise. Valid while the descriptor is.
+/// References into the descriptor, valid while it is.
 struct EinsumIndexLists {
     std::vector<std::string> const         &c;         ///< The output's indices.
     std::vector<std::string> const         &a;         ///< The first operand's indices.
@@ -359,10 +285,10 @@ struct EinsumIndexLists {
     std::vector<PermutationOperator> const &operators; ///< The permutation operators wrapping the term.
 };
 
-/// @brief The index lists an einsum will actually run with.
+/// @brief An einsum's index lists and operators.
 /// @param[in] desc The descriptor to read.
-/// @return The live lists, or the snapshot's when the node carries no index block.
-[[nodiscard]] EINSUMS_EXPORT EinsumIndexLists live_index_lists(EinsumDescriptor const &desc) noexcept;
+/// @return References to its lists.
+[[nodiscard]] EINSUMS_EXPORT EinsumIndexLists einsum_index_lists(EinsumDescriptor const &desc) noexcept;
 
 /// @brief Which operand of an einsum an index list belongs to.
 enum class EinsumOperand : std::uint8_t {
@@ -371,78 +297,14 @@ enum class EinsumOperand : std::uint8_t {
     B  ///< The second operand.
 };
 
-/// @brief Rewrite one operand's index list, live and snapshot together.
+/// @brief Rewrite one operand's index list.
 ///
-/// A rewriter has to keep the two in step, because analysis passes read the snapshot and the
-/// executor reads the live block. This writes both, re-derives the link and target lists from the
-/// new lists, and re-renders the live block's diagnostic text.
+/// Re-derives the link and target lists from the new lists, which a rewriter would otherwise have
+/// to remember to do.
 /// @param[in,out] desc The descriptor to rewrite.
 /// @param[in] operand Which list to replace.
 /// @param[in] indices The new list.
 EINSUMS_EXPORT void set_operand_indices(EinsumDescriptor &desc, EinsumOperand operand, std::vector<std::string> indices);
-
-/// @brief The source prefactor an axpby will actually apply.
-/// @param[in] desc The descriptor to read.
-/// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_alpha(AxpbyDescriptor const &desc) noexcept;
-
-/// @brief The destination prefactor an axpby will actually apply.
-/// @param[in] desc The descriptor to read.
-/// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_beta(AxpbyDescriptor const &desc) noexcept;
-
-/// @brief The source prefactor a direct product / division will actually apply.
-/// @param[in] desc The descriptor to read.
-/// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_alpha(ElementwiseBinaryDescriptor const &desc) noexcept;
-
-/// @brief The destination prefactor a direct product / division will actually apply.
-/// @param[in] desc The descriptor to read.
-/// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_beta(ElementwiseBinaryDescriptor const &desc) noexcept;
-
-/// @brief The factor a scale will actually apply.
-/// @param[in] desc The descriptor to read.
-/// @return The live value, or the snapshot when the node carries no params block.
-///
-/// A scale uses @ref ElementwiseParams::alpha only; its ``beta`` is meaningless for an in-place
-/// multiply and is never read.
-[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_factor(ScaleDescriptor const &desc) noexcept;
-
-/**
- * @brief A fresh scalar block holding @p alpha and @p beta.
- *
- * @param[in] alpha Prefactor on the source operand(s).
- * @param[in] beta  Prefactor on the destination. Defaults to the pure-overwrite
- *                  0 that @ref ElementwiseParams itself defaults to, which is
- *                  what a scale wants: it reads ``alpha`` only.
- * @return The block.
- *
- * One function for axpby, scale and the dense element-wise kinds, which is
- * possible because @ref AxpbyParams and @ref ElementwiseParams are one type.
- * @versionadded{2.0.0}
- */
-[[nodiscard]] EINSUMS_EXPORT std::shared_ptr<ElementwiseParams>
-make_elementwise_params(PrefactorScalar const &alpha, PrefactorScalar const &beta = PrefactorScalar{double{0}});
-
-/**
- * @brief The live scalar block a node carries, or a private one seeded from its snapshots.
- *
- * @param[in] declared The descriptor's ``params``, which may be null.
- * @param[in] alpha    The descriptor's alpha snapshot, used only when @p declared is null.
- * @param[in] beta     The descriptor's beta snapshot, used only when @p declared is null.
- * @return A block that is never null.
- *
- * A node captured before the params block existed, or one a loader has just
- * rebuilt, carries the values in the descriptor rather than behind a pointer.
- * An executor and a reader both need one block to read either way, and this is
- * it.
- * @versionadded{2.0.0}
- */
-[[nodiscard]] EINSUMS_EXPORT std::shared_ptr<ElementwiseParams>
-live_or_private_params(std::shared_ptr<ElementwiseParams> const &declared, PrefactorScalar const &alpha, PrefactorScalar const &beta);
-
-/// @}
 
 /**
  * @brief Metadata for the DENSE @ref OpKind::Dot nodes.
@@ -700,9 +562,11 @@ struct GroupedGatherRotateDescriptor {
  * @brief Metadata for a TILED einsum node.
  *
  * A tiled contraction records as ``OpKind::Custom`` and executes per tile through
- * ``detail::tiled_runtime_einsum``. This carries the live state that executor
- * reads, so a pass can inspect and rewrite the operation instead of treating the
- * node as an opaque closure.
+ * ``detail::tiled_runtime_einsum``. This carries what that executor computes,
+ * so a pass can inspect the operation instead of treating the node as an opaque
+ * closure. The executor holds its own copy; a pass that changes these must give
+ * the node a new executor through NodeEdit::set_executor, since no builder entry
+ * can make one.
  *
  * Deliberately a DISTINCT type from @ref EinsumDescriptor rather than a reuse of
  * it. A whole-tiled contraction is not a dense one -- its operands have no single
@@ -718,12 +582,10 @@ struct GroupedGatherRotateDescriptor {
 struct TiledEinsumDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
     static constexpr std::string_view descriptor_name = "TiledEinsumDescriptor";
-    /// Live index lists, shared with the executor: a pass that rewrites these
-    /// changes what the next ``graph.execute()`` contracts.
-    std::shared_ptr<EinsumIndices> indices;
-    /// Live prefactors, shared with the executor. Same contract as
-    /// @ref EinsumDescriptor::params.
-    std::shared_ptr<EinsumParams> params;
+    EinsumIndices                     indices; ///< The index lists the contraction runs with.
+    EinsumParams                      params;  ///< Its prefactors and conjugation flags.
+
+    bool operator==(TiledEinsumDescriptor const &) const = default; ///< Field-wise.
 };
 
 /**
@@ -798,9 +660,11 @@ struct TiledElementwiseDescriptor {
     /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
     static constexpr std::string_view descriptor_name = "TiledElementwiseDescriptor";
     TiledElementwiseOp                op{TiledElementwiseOp::Scale};
-    /// Live scalar, shared with the executor: a pass that rewrites this changes
-    /// what the next ``graph.execute()`` computes.
-    std::shared_ptr<TiledElementwiseParams> params;
+    /// The scalars it applies. The executor holds its own copy; a pass that changes them must give
+    /// the node a new executor through NodeEdit::set_executor.
+    TiledElementwiseParams params;
+
+    bool operator==(TiledElementwiseDescriptor const &) const = default; ///< Field-wise.
 };
 
 /**
@@ -1203,10 +1067,9 @@ struct WriteParamDescriptor {
 
 namespace detail {
 
-/// Fill an EinsumDescriptor's snapshot fields from a parsed spec. Does NOT set
-/// the live @c params / @c indices handles or the gemm hint; callers that need a
-/// self-contained node should use @ref Graph::make_einsum_node instead of
-/// assembling those by hand.
+/// Fill an EinsumDescriptor's fields from a parsed spec. Does NOT set the gemm
+/// hint or the packed-GEMM site; callers that need a self-contained node should
+/// use @ref Graph::make_einsum_node instead of assembling those by hand.
 EINSUMS_EXPORT EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf,
                                                         bool conj_a = false, bool conj_b = false);
 
@@ -1214,27 +1077,12 @@ EINSUMS_EXPORT EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &
 [[nodiscard]] EINSUMS_EXPORT EinsumParams einsum_params_of(EinsumDescriptor const &desc);
 
 /// The index state an einsum descriptor's fields describe: its index lists, links, operators and
-/// conjugation flags. @p raw is the spec as written, for diagnostics; it is rendered from the lists
-/// when empty.
-[[nodiscard]] EINSUMS_EXPORT EinsumIndices einsum_indices_of(EinsumDescriptor const &desc, std::string raw = {});
-
-/// The live scalar block an einsum descriptor's snapshot describes: its prefactors and conjugation flags.
-[[nodiscard]] EINSUMS_EXPORT std::shared_ptr<EinsumParams> make_live_params(EinsumDescriptor const &desc);
-
-/// The live index block an einsum descriptor's snapshot describes: its index lists, links, operators
-/// and conjugation flags. @p raw is the spec as written, for diagnostics; it is rendered from the lists
-/// when empty.
-[[nodiscard]] EINSUMS_EXPORT std::shared_ptr<EinsumIndices> make_live_indices(EinsumDescriptor const &desc, std::string raw = {});
+/// conjugation flags, with the spec rendered from them for diagnostics.
+[[nodiscard]] EINSUMS_EXPORT EinsumIndices einsum_indices_of(EinsumDescriptor const &desc);
 
 /// Set @p spec's link, target and all-index lists from its three index lists, which are the only
 /// ones it states: the other three are derived, and every builder derives them this one way.
 EINSUMS_EXPORT void derive_index_roles(packed_gemm::ContractionSpec &spec);
-
-/// Give @p desc fresh live params, indices and packed-GEMM site, all seeded from its snapshot.
-///
-/// Every builder of an einsum node goes through this (capture, @ref Graph::make_einsum_node and the
-/// loader), so they agree on the conjugation flags and the diagnostic text.
-EINSUMS_EXPORT void attach_live_state(EinsumDescriptor &desc, std::string raw = {});
 
 /**
  * @brief Name a space for a diagnostic, without trusting the id.
@@ -1323,6 +1171,9 @@ struct OpDataConcept {
     virtual ~OpDataConcept()                                                   = default;
     [[nodiscard]] virtual std::unique_ptr<OpDataConcept> clone() const         = 0;
     [[nodiscard]] virtual std::string_view               name() const noexcept = 0;
+    /// Whether @p other, which holds the same descriptor type, holds an equal value; empty when
+    /// the type has no ``operator==``.
+    [[nodiscard]] virtual std::optional<bool> equals(OpDataConcept const &other) const = 0;
 };
 
 /// The @ref OpDataConcept holding a @p D.
@@ -1331,7 +1182,14 @@ struct OpDataModel final : OpDataConcept {
     explicit OpDataModel(D d) : value(std::move(d)) {}
     [[nodiscard]] std::unique_ptr<OpDataConcept> clone() const override { return std::make_unique<OpDataModel>(value); }
     [[nodiscard]] std::string_view               name() const noexcept override { return D::descriptor_name; }
-    D                                            value;
+    [[nodiscard]] std::optional<bool>            equals(OpDataConcept const &other) const override {
+        if constexpr (std::equality_comparable<D>) {
+            return value == static_cast<OpDataModel const &>(other).value;
+        } else {
+            return std::nullopt;
+        }
+    }
+    D value;
 };
 } // namespace detail
 
@@ -1423,6 +1281,23 @@ class EINSUMS_EXPORT OpData {
 
     /// Whether @p other holds a descriptor of the same type as this one (both empty included).
     [[nodiscard]] bool same_type_as(OpData const &other) const noexcept { return name() == other.name(); }
+
+    /**
+     * @brief Whether @p other holds an equal descriptor.
+     *
+     * @return True or false when it can tell: two empty OpData are equal, and different
+     *         descriptor types never are. Empty when both hold one type that defines no
+     *         ``operator==``, which a descriptor declared outside this library may not.
+     */
+    [[nodiscard]] std::optional<bool> equals(OpData const &other) const {
+        if (_model == nullptr || other._model == nullptr) {
+            return _model == other._model;
+        }
+        if (!same_type_as(other)) {
+            return false;
+        }
+        return _model->equals(*other._model);
+    }
 
     /// Whether no descriptor is held.
     [[nodiscard]] bool empty() const noexcept { return _model == nullptr; }

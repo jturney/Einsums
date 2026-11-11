@@ -42,9 +42,7 @@ void capture_scale(CaptureContext &ctx, T factor, TensorId a_id, std::string_vie
     // The factor is recorded in the tensor's own scalar type rather than
     // projected onto a double, so a complex scale reads back exactly.
     ScaleDescriptor desc;
-    desc.factor        = PrefactorScalar{factor};
-    desc.params        = std::make_shared<ElementwiseParams>();
-    desc.params->alpha = desc.factor;
+    desc.factor = PrefactorScalar{factor};
 
     auto label = fmt::format("scale({}, {})", to_string(desc.factor), name);
 
@@ -69,22 +67,14 @@ void capture_axpy(CaptureContext &ctx, T alpha, TensorId x_id, TensorId y_id, st
     // scalar-aware pass (ScaleAbsorption, CSE, ElementWiseFusion, ...) sees it
     // without special-casing. The executor still takes the BLAS axpy fast
     // path whenever beta == 1.
-    auto params   = std::make_shared<AxpbyParams>();
-    params->alpha = PrefactorScalar{alpha};
-    params->beta  = PrefactorScalar{T{1}};
-
     auto label = fmt::format("axpy(alpha={}, {}, {})", alpha, x_name, y_name);
 
+    // The executor is built from the descriptor, so the descriptor is the single source of truth
+    // rather than a snapshot the executor can silently disagree with. A pass that rewrites beta away
+    // from 1 through an edit turns this into a genuine axpby, and the rebuilt executor honors it.
     AxpbyDescriptor desc;
-    desc.alpha  = params->alpha;
-    desc.beta   = params->beta;
-    desc.params = params;
-
-    // The built executor reads the scalars through the shared params, so
-    // the descriptor is the single source of truth rather than a snapshot
-    // the executor can silently disagree with. A pass that rewrites beta
-    // away from 1 turns this into a genuine axpby, and the executor honors
-    // that rather than ignoring the write.
+    desc.alpha = PrefactorScalar{alpha};
+    desc.beta  = PrefactorScalar{T{1}};
     std::array<TensorId, 2> const inputs{x_id, y_id};
 
     // Y += alpha*X reads its destination unconditionally (beta == 1); list it
@@ -106,20 +96,11 @@ template <typename T>
 void capture_axpby(CaptureContext &ctx, T alpha, T beta, TensorId x_id, TensorId y_id, std::size_t rank) {
     WAGGLE_ZONE("axpby capture");
 
-    // Live-mutable scalars shared with the executor (single source of truth:
-    // a pass that folds a scale into this axpby writes beta through params and
-    // the executor honors it on replay). The descriptor keeps the at-capture
-    // snapshot for analysis passes.
-    auto params   = std::make_shared<AxpbyParams>();
-    params->alpha = PrefactorScalar{alpha};
-    params->beta  = PrefactorScalar{beta};
-
     auto label = fmt::format("axpby(alpha={}, beta={})", alpha, beta);
 
     AxpbyDescriptor desc;
-    desc.alpha  = params->alpha;
-    desc.beta   = params->beta;
-    desc.params = params;
+    desc.alpha = PrefactorScalar{alpha};
+    desc.beta  = PrefactorScalar{beta};
 
     // Y = alpha*X + beta*Y reads its destination when beta != 0; same
     // out-tensor-as-input convention as gemm/direct_product (see axpy).
@@ -151,11 +132,8 @@ void capture_elementwise_binary(CaptureContext &ctx, OpKind kind, PrefactorScala
     // A descriptor, so passes that reason about prefactors can see the node. The
     // product and the division share it; the kind distinguishes them.
     ElementwiseBinaryDescriptor desc;
-    desc.alpha         = alpha;
-    desc.beta          = beta;
-    desc.params        = std::make_shared<ElementwiseParams>();
-    desc.params->alpha = desc.alpha;
-    desc.params->beta  = desc.beta;
+    desc.alpha = alpha;
+    desc.beta  = beta;
 
     // When beta != 0 the op reads its destination (C = alpha*A*B + beta*C), so C
     // is an input as well as the output. List it -- otherwise dependency-based

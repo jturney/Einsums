@@ -360,7 +360,6 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
     auto emit_tile_scale = [&graph](TensorId tid, PrefactorScalar pf, packed_gemm::ScalarType dt, std::string label) {
         ScaleDescriptor sd;
         sd.factor = pf;
-        sd.params = make_elementwise_params(pf);
         return graph.make_node(OpKind::Scale, dt, OpData{std::move(sd)}, {tid}, {tid}, std::move(label));
     };
 
@@ -407,9 +406,8 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
     auto emit_tile_divide = [&graph](TensorId at, TensorId bt, TensorId ct, PrefactorScalar alpha, PrefactorScalar beta,
                                      packed_gemm::ScalarType dt, std::string label) {
         ElementwiseBinaryDescriptor desc;
-        desc.alpha  = alpha;
-        desc.beta   = beta;
-        desc.params = make_elementwise_params(alpha, beta);
+        desc.alpha = alpha;
+        desc.beta  = beta;
         // Same RMW convention as the dense op: beta != 0 reads the destination.
         auto inputs = is_zero(beta) ? std::vector<TensorId>{at, bt} : std::vector<TensorId>{at, bt, ct};
         return graph.make_node(OpKind::DirectDivision, dt, OpData{std::move(desc)}, std::move(inputs), {ct}, std::move(label));
@@ -710,10 +708,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
 
             // ── Elementwise: tiled scale and tiled axpy ──────────────────────────
             if (auto const *edesc = src.op_data.get_if<TiledElementwiseDescriptor>()) {
-                if (!edesc->params) {
-                    continue;
-                }
-                PrefactorScalar const alpha = edesc->params->alpha;
+                PrefactorScalar const alpha = edesc->params.alpha;
 
                 if (edesc->op == TiledElementwiseOp::Scale) {
                     if (src.inputs.size() != 1 || src.outputs.size() != 1 || src.inputs[0] != src.outputs[0]) {
@@ -815,7 +810,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                     p.src_b     = bv;
                     p.dst       = cv;
                     p.alpha     = alpha;
-                    p.beta      = edesc->params->beta;
+                    p.beta      = edesc->params.beta;
                     p.coords    = coords;
                     // C tiles the numerator never reaches are still scaled by beta.
                     for (auto const &co : pc) {
@@ -823,7 +818,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                             p.leftover.push_back(co);
                         }
                     }
-                    p.leftover_pf = edesc->params->beta;
+                    p.leftover_pf = edesc->params.beta;
                     if (planning) {
                         plans.push_back(std::move(p));
                     }
@@ -1078,7 +1073,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
 
             // ── Contraction ──────────────────────────────────────────────────────
             auto const *tdesc = src.op_data.get_if<TiledEinsumDescriptor>();
-            if (tdesc == nullptr || !tdesc->indices || !tdesc->params) {
+            if (tdesc == nullptr) {
                 continue;
             }
             if (operand_inputs(src).size() != 2 || src.outputs.size() != 1) {
@@ -1098,9 +1093,9 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 continue;
             }
 
-            auto const &cidx = tdesc->indices->spec.c_indices;
-            auto const &aidx = tdesc->indices->spec.a_indices;
-            auto const &bidx = tdesc->indices->spec.b_indices;
+            auto const &cidx = tdesc->indices.spec.c_indices;
+            auto const &aidx = tdesc->indices.spec.a_indices;
+            auto const &bidx = tdesc->indices.spec.b_indices;
             if (cidx.empty()) {
                 decline("scalar output (full reduction) over tiled operands is unsupported");
                 continue;
@@ -1208,8 +1203,8 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 c_tab[ax] = pos(cidx[ax]);
             }
 
-            auto const c_pf  = tdesc->params->c_pf;
-            auto const ab_pf = tdesc->params->ab_pf;
+            auto const c_pf  = tdesc->params.c_pf;
+            auto const ab_pf = tdesc->params.ab_pf;
 
             // Operand sparsity and which output tiles exist when this node runs --
             // all FINAL sets in this sweep. For inputs that is required, not merely

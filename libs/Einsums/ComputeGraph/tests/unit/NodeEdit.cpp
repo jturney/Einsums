@@ -104,9 +104,8 @@ TEST_CASE("NodeEdit - a replaced descriptor is the one the replay applies", "[Co
         cg::CaptureGuard const guard(graph);
         cg::scale(2.0, &A);
     }
-    graph.edit(position_of(graph, cg::OpKind::Scale), [](cg::NodeEdit &e) {
-        e->op_data = cg::OpData{cg::ScaleDescriptor{.factor = cg::PrefactorScalar{5.0}, .params = nullptr}};
-    });
+    graph.edit(position_of(graph, cg::OpKind::Scale),
+               [](cg::NodeEdit &e) { e->op_data = cg::OpData{cg::ScaleDescriptor{.factor = cg::PrefactorScalar{5.0}}}; });
     graph.execute();
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t j = 0; j < n; ++j) {
@@ -167,6 +166,36 @@ TEST_CASE("NodeEdit - a pass-written executor is kept until the operands change"
     CHECK(other == 1);
 }
 
+// A pass-written executor holds its own copy of what the descriptor says, so a descriptor change
+// would never reach it; the commit refuses one that does not give a new executor.
+TEST_CASE("NodeEdit - a pass-written executor is kept until the descriptor changes", "[ComputeGraph][NodeEdit]") {
+    TwoProducts p;
+    int         runs = 0;
+    p.graph.edit(0, [&](cg::NodeEdit &e) { e.set_executor([&runs] { ++runs; }); });
+
+    auto const before = p.graph.nodes()[0].op_data;
+    CHECK_THROWS_WITH(p.graph.edit(0, [](cg::NodeEdit &e) { e->op_data.get_if<cg::EinsumDescriptor>()->ab_prefactor = 3.0; }),
+                      Catch::Matchers::ContainsSubstring("changed its EinsumDescriptor"));
+    CHECK(p.graph.nodes()[0].op_data.equals(before) == std::optional<bool>{true});
+    p.graph.execute();
+    CHECK(runs == 1);
+
+    // With a new executor it goes through, and so does keep_executor, which says the held one
+    // already computes what the new descriptor says.
+    int other = 0;
+    p.graph.edit(0, [&](cg::NodeEdit &e) {
+        e->op_data.get_if<cg::EinsumDescriptor>()->ab_prefactor = 3.0;
+        e.set_executor([&other] { ++other; });
+    });
+    p.graph.edit(0, [](cg::NodeEdit &e) {
+        e->op_data.get_if<cg::EinsumDescriptor>()->ab_prefactor = 4.0;
+        e.keep_executor();
+    });
+    p.graph.execute();
+    CHECK(runs == 1);
+    CHECK(other == 1);
+}
+
 TEST_CASE("NodeEdit - keep_executor keeps a pass-written executor through a rename", "[ComputeGraph][NodeEdit]") {
     // What a pass that renamed an operand behind Graph::redirect_slot says: the executor resolves
     // the old operand's slot, so it already reads what the new lists say. The same executor, with
@@ -196,7 +225,7 @@ TEST_CASE("NodeEdit - keep_executor keeps a pass-written executor through a rena
 TEST_CASE("NodeEdit - replace puts a pass-built node in the position, keeping its id", "[ComputeGraph][NodeEdit]") {
     TwoProducts        p;
     cg::NodeId const   id   = p.graph.nodes()[0].id;
-    auto const        &spec = p.graph.nodes()[0].op_data.get_if<cg::EinsumDescriptor>()->indices->spec;
+    auto const         spec = cg::detail::einsum_indices_of(*p.graph.nodes()[0].op_data.get_if<cg::EinsumDescriptor>()).spec;
     cg::TensorId const c    = p.graph.nodes()[0].outputs[0];
     cg::TensorId const b    = p.graph.nodes()[0].inputs[1];
 

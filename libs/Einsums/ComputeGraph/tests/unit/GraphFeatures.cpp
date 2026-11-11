@@ -352,27 +352,8 @@ TEST_CASE("Graph - verify names broken extents, in-place nodes and redirect writ
 // depends on, and a threading executor ran the two concurrently.
 namespace {
 
-/// A pass that turns every overwriting einsum into an accumulating one by writing its live C
-/// prefactor, the way a scale-folding pass rewrites a prefactor, and leaves the input lists alone.
-// Turns each einsum into an accumulation by writing its live prefactor block directly, which the
-// read-only node list does not stop because the block sits behind a shared pointer. Nothing then
-// lists C as an input.
-class UndeclaredAccumulatingPass : public cg::OptimizerPass {
-  public:
-    [[nodiscard]] std::string name() const override { return "UndeclaredAccumulatingPass"; }
-    bool                      transform(cg::Graph &graph) override {
-        bool changed = false;
-        for (auto const &node : graph.nodes()) {
-            if (auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr && desc->params != nullptr) {
-                desc->params->c_pf = cg::PrefactorScalar{1.0};
-                changed            = true;
-            }
-        }
-        return changed;
-    }
-};
-
-// The same rewrite made through Graph::edit, which lists C again as the edit commits.
+// Turns each einsum into an accumulation through Graph::edit, which lists C again as the edit
+// commits.
 class AccumulatingPass : public cg::OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "AccumulatingPass"; }
@@ -382,13 +363,7 @@ class AccumulatingPass : public cg::OptimizerPass {
             if (!graph.nodes()[i].op_data.holds<cg::EinsumDescriptor>()) {
                 continue;
             }
-            graph.edit(i, [](cg::NodeEdit &e) {
-                auto *desc        = e->op_data.get_if<cg::EinsumDescriptor>();
-                desc->c_prefactor = cg::PrefactorScalar{1.0};
-                if (desc->params != nullptr) {
-                    desc->params->c_pf = cg::PrefactorScalar{1.0};
-                }
-            });
+            graph.edit(i, [](cg::NodeEdit &e) { e->op_data.get_if<cg::EinsumDescriptor>()->c_prefactor = cg::PrefactorScalar{1.0}; });
             changed = true;
         }
         return changed;
@@ -409,7 +384,7 @@ std::vector<TensorId> inputs_of(cg::Graph const &graph, cg::OpKind kind) {
 // Captured einsums and permutes used to list only their operands whatever the prefactor, while
 // make_einsum_node listed C, and a pass that rewrote a prefactor in place left the list describing
 // the old one. The pass manager used to repair the lists after every pass, which hid emitters that
-// broke the rule; a rewrite now goes through Graph::edit, and one that does not is reported.
+// broke the rule; a rewrite now goes through Graph::edit.
 TEST_CASE("Graph - a node lists its destination as an input exactly when it reads it", "[ComputeGraph][Verify][DestinationRead]") {
     auto A = create_random_tensor<double>("A", 3, 4);
     auto B = create_random_tensor<double>("B", 4, 3);
@@ -479,42 +454,6 @@ TEST_CASE("Graph - a node lists its destination as an input exactly when it read
         }
     }
 
-    SECTION("a pass that rewrites a prefactor outside an edit is reported") {
-        cg::Graph graph("undeclared");
-        {
-            cg::CaptureGuard const guard(graph);
-            cg::einsum("ik;kj->ij", &C, A, B);
-        }
-        VerifyPasses const verifying;
-        CHECK_THROWS_WITH(graph.apply<UndeclaredAccumulatingPass>(),
-                          Catch::Matchers::ContainsSubstring("pass 'UndeclaredAccumulatingPass' left the graph malformed") &&
-                              Catch::Matchers::ContainsSubstring("reads its destination but lists 2 input(s)"));
-    }
-
-    SECTION("a builder-made executor runs the descriptor's prefactor, not the live block") {
-        // The block is still writable through a const node; what it no longer does is reach the
-        // executor, which holds its own copy of the descriptor's fields. C is overwritten.
-        auto want = C;
-        reference_einsum("ij <- ik ; kj", 0.0, &want, 1.0, A, B);
-
-        cg::Graph graph("unshared");
-        {
-            cg::CaptureGuard const guard(graph);
-            cg::einsum("ik;kj->ij", &C, A, B);
-        }
-        auto const *desc = graph.nodes().front().op_data.get_if<cg::EinsumDescriptor>();
-        REQUIRE(desc != nullptr);
-        REQUIRE(desc->params != nullptr);
-        desc->params->c_pf = cg::PrefactorScalar{1.0};
-
-        graph.execute();
-        for (size_t i = 0; i < 3; i++) {
-            for (size_t j = 0; j < 3; j++) {
-                CHECK(std::abs(C(i, j) - want(i, j)) < 1e-12 * (1.0 + std::abs(want(i, j))));
-            }
-        }
-    }
-
     SECTION("verify names a node that breaks the rule") {
         cg::Graph graph("broken");
         {
@@ -526,6 +465,29 @@ TEST_CASE("Graph - a node lists its destination as an input exactly when it read
         REQUIRE(problems.size() == 1);
         CHECK_THAT(problems.front(), Catch::Matchers::ContainsSubstring("reads its destination but lists 2 input(s)"));
     }
+}
+
+// Defends: a descriptor that shared its prefactors with the executor through a pointer. A copy of
+// the node shared them too, so changing a copied node's prefactor changed the original's, and the
+// pointer let a pass change what a node computes through the read-only node list.
+TEST_CASE("Graph - a copied node's descriptor is its own", "[ComputeGraph][NodeEdit]") {
+    auto A = create_random_tensor<double>("A", 3, 4);
+    auto B = create_random_tensor<double>("B", 4, 3);
+    auto C = create_zero_tensor<double>("C", 3, 3);
+
+    cg::Graph graph("copied");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+    cg::Node copy                                               = graph.nodes().front();
+    copy.op_data.get_if<cg::EinsumDescriptor>()->c_prefactor    = cg::PrefactorScalar{1.0};
+    copy.op_data.get_if<cg::EinsumDescriptor>()->spec.c_indices = {"j", "i"};
+
+    auto const *original = graph.nodes().front().op_data.get_if<cg::EinsumDescriptor>();
+    CHECK(cg::is_zero(original->c_prefactor));
+    CHECK(original->spec.c_indices == std::vector<std::string>{"i", "j"});
+    CHECK(copy.op_data.equals(graph.nodes().front().op_data) == std::optional<bool>{false});
 }
 
 TEST_CASE("Graph - buffer_of follows views and redirects, and the buffer analyses key on it", "[ComputeGraph][BufferIdentity]") {
@@ -1079,8 +1041,8 @@ TEST_CASE("deferred tensor materialized by hand - no false positive", "[ComputeG
 // The factory a pass uses to synthesize a contraction. The point is that the
 // node it produces behaves like a captured one rather than an opaque closure:
 // it carries a real EinsumDescriptor other passes can read, and its executor
-// reads the LIVE params/indices so a pass that edits the descriptor is honored
-// instead of silently ignored.
+// is built from it, so a pass that edits the descriptor is honored instead of
+// silently ignored.
 namespace {
 einsums::compute_graph::ParsedEinsumSpec matmul_spec() {
     einsums::compute_graph::ParsedEinsumSpec s;
@@ -1113,8 +1075,6 @@ TEST_CASE("make_einsum_node - produces a real Einsum node with a descriptor", "[
     CHECK(node.kind == cg::OpKind::Einsum);
     auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
-    CHECK(desc->params != nullptr);
-    CHECK(desc->indices != nullptr);
     CHECK(desc->spec.link_indices == std::vector<std::string>{"k"});
     // c_pf == 0 is a pure overwrite, so the output must NOT be listed as an input.
     CHECK(node.inputs.size() == 2);
@@ -1159,8 +1119,8 @@ TEST_CASE("make_einsum_node - executor honors a later prefactor edit", "[Compute
     graph.edit(0, [](cg::NodeEdit &e) {
         auto *desc = e->op_data.get_if<cg::EinsumDescriptor>();
         REQUIRE(desc != nullptr);
-        desc->ab_prefactor  = 3.0;
-        desc->params->ab_pf = 3.0;
+        desc->ab_prefactor = 3.0;
+        desc->ab_prefactor = 3.0;
     });
 
     C.zero();
@@ -1204,7 +1164,7 @@ TEST_CASE("make_einsum_node - builds a GemmHint when the shapes qualify", "[Comp
     auto        node = graph.make_einsum_node(a_id, b_id, c_id, matmul_spec(), 0.0, 1.0);
     auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
-    REQUIRE(desc->gemm_hint != nullptr); // "i,j <- i,k ; k,j" is a plain GEMM
+    REQUIRE(desc->gemm_hint.has_value()); // "i,j <- i,k ; k,j" is a plain GEMM
 
     auto const &h = *desc->gemm_hint;
     CHECK(h.scalar == cg::BlasScalar::Double);
@@ -1250,7 +1210,7 @@ TEST_CASE("make_einsum_node - no GemmHint for a higher-rank contraction", "[Comp
     auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     // Rank-4 operand: not a GEMM, so no hint and GEMMBatching leaves it alone.
-    CHECK(desc->gemm_hint == nullptr);
+    CHECK(!desc->gemm_hint.has_value());
 }
 
 // Statically typed operands. This was impossible while the executor cast
@@ -1279,7 +1239,7 @@ TEST_CASE("make_einsum_node - works on statically typed operands", "[ComputeGrap
     auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     CHECK(node.kind == cg::OpKind::Einsum);
-    CHECK(desc->gemm_hint != nullptr); // rank-2 typed operands still qualify
+    CHECK(desc->gemm_hint.has_value()); // rank-2 typed operands still qualify
 
     graph.add_node(std::move(node));
     graph.execute();

@@ -190,7 +190,7 @@ bool DistributionPlanning::transform(Graph &graph) {
                 continue;
             // The lists the executor runs with, not the capture-time snapshot a pass may have
             // left behind when it rewrote the live block.
-            auto const                   lists = live_index_lists(*desc);
+            auto const                   lists = einsum_index_lists(*desc);
             packed_gemm::ContractionSpec spec;
             spec.c_indices    = lists.c;
             spec.a_indices    = lists.a;

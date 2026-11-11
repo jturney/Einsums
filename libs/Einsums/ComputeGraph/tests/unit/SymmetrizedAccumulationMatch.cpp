@@ -204,8 +204,7 @@ TEST_CASE("axpy - an edit of its scalars reaches the replay, and beta != 1 is ho
     REQUIRE(graph.num_nodes() == 1);
     auto const *desc = graph.nodes()[0].op_data.get_if<cg::AxpbyDescriptor>();
     REQUIRE(desc != nullptr);
-    REQUIRE(desc->params != nullptr);
-    CHECK(cg::is_one(desc->params->beta));
+    CHECK(cg::is_one(desc->beta));
 
     graph.execute();
     for (size_t n = 0; n < 4; n++) {
@@ -215,11 +214,11 @@ TEST_CASE("axpy - an edit of its scalars reaches the replay, and beta != 1 is ho
     // Rewrite alpha through an edit, as ScaleAbsorption does.
     auto const set_scalars = [&graph](cg::PrefactorScalar alpha, cg::PrefactorScalar beta) {
         graph.edit(0, [&](cg::NodeEdit &e) {
-            auto *d          = e->op_data.get_if<cg::AxpbyDescriptor>();
-            d->alpha         = alpha;
-            d->beta          = beta;
-            d->params->alpha = alpha;
-            d->params->beta  = beta;
+            auto *d  = e->op_data.get_if<cg::AxpbyDescriptor>();
+            d->alpha = alpha;
+            d->beta  = beta;
+            d->alpha = alpha;
+            d->beta  = beta;
         });
     };
     set_scalars(cg::PrefactorScalar{5.0}, cg::PrefactorScalar{1.0});

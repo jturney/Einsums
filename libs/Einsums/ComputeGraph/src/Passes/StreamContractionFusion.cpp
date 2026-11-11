@@ -184,7 +184,7 @@ bool StreamContractionFusion::transform(Graph &graph) {
             continue;
         }
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();
-        if (desc == nullptr || live_conj_a(*desc) || live_conj_b(*desc)) {
+        if (desc == nullptr || desc->conj_a || desc->conj_b) {
             continue;
         }
         auto const &spec = desc->spec;
@@ -192,8 +192,8 @@ bool StreamContractionFusion::transform(Graph &graph) {
             continue;
         }
 
-        bool const c_is_one  = is_one(live_c_prefactor(*desc));
-        bool const c_is_zero = is_zero(live_c_prefactor(*desc));
+        bool const c_is_one  = is_one(desc->c_prefactor);
+        bool const c_is_zero = is_zero(desc->c_prefactor);
 
         // Try each operand as the streamed tensor S; the other is W. The
         // member qualifies when C's and W's labels are all drawn from S's.
@@ -231,7 +231,7 @@ bool StreamContractionFusion::transform(Graph &graph) {
             // alphas; on a real dtype a nonzero imaginary part has nowhere
             // to go, so such members stay unfused.
             bool const complex_dtype = sh->dtype == packed_gemm::ScalarType::Complex64 || sh->dtype == packed_gemm::ScalarType::Complex128;
-            if (!complex_dtype && (!is_real_valued(live_ab_prefactor(*desc)) || !is_real_valued(live_c_prefactor(*desc)))) {
+            if (!complex_dtype && (!is_real_valued(desc->ab_prefactor) || !is_real_valued(desc->c_prefactor))) {
                 continue;
             }
             // Distributed operands belong to the communication passes
@@ -256,10 +256,10 @@ bool StreamContractionFusion::transform(Graph &graph) {
                                     .s_indices    = s_idx,
                                     .c_indices    = spec.c_indices,
                                     .w_indices    = w_idx,
-                                    .alpha        = live_ab_prefactor(*desc),
+                                    .alpha        = desc->ab_prefactor,
                                     .c_pf_is_one  = c_is_one,
                                     .c_pf_is_zero = c_is_zero,
-                                    .c_pf         = live_c_prefactor(*desc)});
+                                    .c_pf         = desc->c_prefactor});
             break; // one orientation per node is enough
         }
     }

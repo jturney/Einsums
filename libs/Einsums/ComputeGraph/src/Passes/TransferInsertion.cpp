@@ -28,9 +28,7 @@ namespace {
 /// destination and overwrites it without reading it, so there is nothing to
 /// transfer in.
 ///
-/// The overwrite question is @ref passes::pure_overwrite, which reads the LIVE
-/// prefactor a pass may have folded rather than the at-capture snapshot, and
-/// which knows the kinds beyond Einsum and Permute that carry one. The extra
+/// The overwrite question is @ref passes::pure_overwrite, which knows the kinds beyond Einsum and Permute that carry one. The extra
 /// kinds it admits (Axpby, BatchedGemm, TiledEinsum at a zero destination
 /// prefactor) change nothing here: a node that does not list @p tid among its
 /// outputs is rejected before the question is asked.

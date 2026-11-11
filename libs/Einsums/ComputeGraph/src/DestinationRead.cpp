@@ -26,20 +26,18 @@ bool reads_destination(Node const &node) {
     default:
         break;
     }
-    // The LIVE prefactors, which are what the next execute() reads: a pass that folds a scale
-    // into one writes it through the shared params, not the snapshot beside them.
     if (node.kind == OpKind::Axpby) {
         auto const *axpby = node.op_data.get_if<AxpbyDescriptor>();
-        return axpby == nullptr || !is_zero(live_beta(*axpby));
+        return axpby == nullptr || !is_zero(axpby->beta);
     }
     if (auto const *e = node.op_data.get_if<EinsumDescriptor>()) {
-        return !is_zero(live_c_prefactor(*e));
+        return !is_zero(e->c_prefactor);
     }
     if (auto const *t = node.op_data.get_if<TiledEinsumDescriptor>()) {
-        return t->params == nullptr || !is_zero(t->params->c_pf);
+        return !is_zero(t->params.c_pf);
     }
     if (auto const *p = node.op_data.get_if<PermuteDescriptor>()) {
-        return p->params != nullptr ? !is_zero(p->params->beta) : p->beta != 0.0;
+        return !is_zero(p->beta);
     }
     if (auto const *p = node.op_data.get_if<TiledPermuteDescriptor>()) {
         return !is_zero(p->beta);
@@ -48,14 +46,14 @@ bool reads_destination(Node const &node) {
         return b->beta != std::complex<double>{0.0, 0.0};
     }
     if (auto const *e = node.op_data.get_if<ElementwiseBinaryDescriptor>()) {
-        return !is_zero(live_beta(*e));
+        return !is_zero(e->beta);
     }
     if (auto const *t = node.op_data.get_if<TiledElementwiseDescriptor>()) {
         // A tiled scale works in place and a tiled axpy adds into Y; only the quotient has a beta.
         if (t->op != TiledElementwiseOp::Divide) {
             return true;
         }
-        return t->params == nullptr || !is_zero(t->params->beta);
+        return !is_zero(t->params.beta);
     }
     if (auto const *g = node.op_data.get_if<GemmDescriptor>()) {
         return !is_zero(g->beta);

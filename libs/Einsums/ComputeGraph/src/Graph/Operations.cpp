@@ -65,16 +65,11 @@ void Graph::update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorSca
                                 it->kind);
     }
     // An edit, so the commit builds the executor from the new prefactors and lists C as an input
-    // exactly when the new C prefactor reads it. The live block is written too while readers still
-    // consult it.
+    // exactly when the new C prefactor reads it.
     edit(static_cast<std::size_t>(it - _nodes.begin()), [&](NodeEdit &e) {
         auto *desc         = e->op_data.get_if<EinsumDescriptor>();
         desc->c_prefactor  = c_pf;
         desc->ab_prefactor = ab_pf;
-        if (desc->params) {
-            desc->params->c_pf  = c_pf;
-            desc->params->ab_pf = ab_pf;
-        }
     });
 }
 
@@ -186,10 +181,8 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     }
     auto const dtype = c_h.dtype;
 
-    // Live state, shared with the executor. Passes mutate these; the executor
-    // dereferences them on every call, so a rewrite lands on the next execute.
     auto desc = detail::build_einsum_descriptor(spec, c_pf, ab_pf, conj_a, conj_b);
-    detail::attach_live_state(desc, spec.raw);
+    desc.site = std::make_shared<packed_gemm::ContractionSite>();
 
     // Same derivation the capture path uses, from the operand handles this node was handed. A
     // pass that rebuilds a node must not drop its letter map, and re-deriving it (rather than
@@ -223,8 +216,7 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
 
     // One lowering, shared with capture and the loader: the executor is derived
     // from (kind, dtype, rank, descriptor, operand ids). It resolves operands
-    // through the graph's slots and reads the descriptor's live params and
-    // indices, so rebinds and pass rewrites take effect on the next execute.
+    // through the graph's slots, so rebinds take effect on the next execute.
     node.op_data = std::move(desc);
     node.execute = build_executor(OpKind::Einsum, dtype, c_h.rank, node.op_data, *this, std::span<TensorId const>{node.inputs},
                                   std::span<TensorId const>{node.outputs});
@@ -232,18 +224,11 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
 }
 
 Node Graph::make_axpby_node(TensorId x, TensorId y, PrefactorScalar alpha, PrefactorScalar beta, std::string label) {
-    // Live scalars shared with the executor, the same contract a captured axpby
-    // has: the descriptor is what downstream passes read AND what the executor
-    // uses, so a fold into alpha reaches the replay. A descriptor the executor
-    // ignored would be worse than none.
-    auto params   = std::make_shared<AxpbyParams>();
-    params->alpha = alpha;
-    params->beta  = beta;
-
+    // The descriptor is what downstream passes read AND what the executor is built from, so a fold
+    // into alpha made through an edit reaches the replay.
     AxpbyDescriptor desc;
-    desc.alpha  = params->alpha;
-    desc.beta   = params->beta;
-    desc.params = std::move(params);
+    desc.alpha = alpha;
+    desc.beta  = beta;
 
     // Y is read as well as written, so it is an input too.
     return make_node(OpKind::Axpby, tensor(y).dtype, OpData{std::move(desc)}, {x, y}, {y}, std::move(label));
@@ -268,20 +253,14 @@ Node Graph::make_permute_node(TensorId a_id, TensorId c_id, ParsedPermuteSpec co
     }
     auto const dtype = c_h.dtype;
 
-    // Live scalars shared with the executor, the contract make_axpby_node states:
-    // the descriptor is both what passes read and what the replay uses, so a
-    // later fold into alpha reaches execute() rather than being ignored.
-    auto params   = std::make_shared<ElementwiseParams>();
-    params->alpha = alpha;
-    params->beta  = beta;
-
+    // The descriptor is both what passes read and what the executor is built from, the contract
+    // make_axpby_node states.
     PermuteDescriptor desc;
-    desc.alpha     = as<std::complex<double>>(alpha);
-    desc.beta      = as<std::complex<double>>(beta);
+    desc.alpha     = alpha;
+    desc.beta      = beta;
     desc.c_indices = spec.c_indices;
     desc.a_indices = spec.a_indices;
     desc.operators = spec.operators;
-    desc.params    = params;
 
     if (label.empty()) {
         label = fmt::format("permute({} <- {})", fmt::join(spec.c_indices, ","), fmt::join(spec.a_indices, ","));

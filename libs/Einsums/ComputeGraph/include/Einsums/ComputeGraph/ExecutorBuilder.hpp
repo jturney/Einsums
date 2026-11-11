@@ -301,9 +301,9 @@ class ScalarAccessor {
  * Never throws: an operand with no resolvable geometry simply yields no hint,
  * because a hint is an optimization and its absence is always legal.
  */
-[[nodiscard]] EINSUMS_EXPORT std::shared_ptr<GemmHint> derive_gemm_hint(packed_gemm::ScalarType             dtype,
-                                                                        packed_gemm::ContractionSpec const &spec, Graph &graph,
-                                                                        TensorId a_id, TensorId b_id, TensorId c_id);
+[[nodiscard]] EINSUMS_EXPORT std::optional<GemmHint> derive_gemm_hint(packed_gemm::ScalarType             dtype,
+                                                                      packed_gemm::ContractionSpec const &spec, Graph &graph, TensorId a_id,
+                                                                      TensorId b_id, TensorId c_id);
 
 /**
  * @brief Derive an einsum node's GEMM hint again, from its index lists and the operands it lists now.

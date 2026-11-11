@@ -29,10 +29,6 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 namespace {
 
 /// The operators and output index list a node carries, or nothing.
-///
-/// Reads the LIVE lists where the node has them, for the reason the IR writer
-/// gives: the executor reads ``indices->spec``, and the descriptor's own copy
-/// beside it is the at-capture snapshot a rewriting pass may have left behind.
 struct OperatorSite {
     std::vector<PermutationOperator> operators;
     std::vector<std::string>         c_indices;
@@ -49,7 +45,7 @@ std::optional<OperatorSite> read_operator_site(Node const &node) {
         if (desc == nullptr) {
             return std::nullopt;
         }
-        auto const lists = live_index_lists(*desc);
+        auto const lists = einsum_index_lists(*desc);
         site.operators   = lists.operators;
         site.c_indices   = lists.c;
         site.overwrites  = pure_overwrite(node);
@@ -198,11 +194,11 @@ bool AntisymmetryInference::transform(Graph &graph) {
             auto const *desc = node.op_data.get_if<EinsumDescriptor>();
             if (desc != nullptr) {
                 ++_num_candidates;
-                auto const  lists       = live_index_lists(*desc);
+                auto const  lists       = einsum_index_lists(*desc);
                 auto const &a_idx       = lists.a;
                 auto const &b_idx       = lists.b;
                 auto const &c_idx       = lists.c;
-                contribution.overwrites = is_zero(live_c_prefactor(*desc));
+                contribution.overwrites = is_zero(desc->c_prefactor);
 
                 // C(..p..q..) = sum_links ab * A(..p..q..) * B(...). When ONE
                 // operand carries both letters, in slots it is antisymmetric in,
@@ -235,7 +231,7 @@ bool AntisymmetryInference::transform(Graph &graph) {
             auto const *edesc = node.op_data.get_if<ElementwiseBinaryDescriptor>();
             if (edesc != nullptr) {
                 ++_num_candidates;
-                contribution.overwrites = is_zero(live_beta(*edesc));
+                contribution.overwrites = is_zero(edesc->beta);
                 auto const *numerator   = hint_of(node.inputs[0]);
                 auto const *divisor     = hint_of(node.inputs[1]);
                 if (numerator != nullptr && divisor != nullptr) {
@@ -255,7 +251,7 @@ bool AntisymmetryInference::transform(Graph &graph) {
             auto const *adesc = node.op_data.get_if<AxpbyDescriptor>();
             if (adesc != nullptr) {
                 ++_num_candidates;
-                contribution.overwrites = is_zero(live_beta(*adesc));
+                contribution.overwrites = is_zero(adesc->beta);
                 // Scaling preserves antisymmetry, so what this write ADDS carries
                 // whatever its source carries. The destination's own prior
                 // contents are a separate contribution, already recorded.

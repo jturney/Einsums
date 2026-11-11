@@ -143,7 +143,7 @@ bool ScaleAbsorption::transform(Graph &graph) {
             continue;
         }
         TensorId const scaled_tensor = scale_node.outputs[0];
-        auto const    &live_scale    = live_factor(*scale_desc);
+        auto const    &live_scale    = scale_desc->factor;
 
         // Scan the window [sc+1, next-writer-of-scaled_tensor): who observes the
         // scaled value? A `scale` is IN-PLACE, so the tensor's own value is

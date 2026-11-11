@@ -203,7 +203,7 @@ std::optional<Modelled> model_statement(TensorExpr const &expr, ExprStatement co
         }
         out.operand_indices.assign({statement.target_indices, statement.target_indices});
         out.output = statement.target_indices;
-        out.factor = live_alpha(*scalars);
+        out.factor = scalars->alpha;
         out.conjugate.assign({false, false});
         return out;
     }

@@ -320,15 +320,12 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         }
 
         if (auto *einsum = node.op_data.get_if<EinsumDescriptor>()) {
-            // The live blocks a captured node carries, seeded from the loaded snapshot the
-            // way every builder seeds them. Restoring them is not cosmetic: a loaded graph is
-            // optimized after loading, and a pass that rewrites a prefactor writes through them.
             // The link, target and all-index lists are derived data. A file written before the
             // target list followed C's order holds it sorted, so they are derived again here and
             // a loaded contraction describes itself exactly as the same one captured would.
             detail::derive_index_roles(einsum->spec);
-            detail::attach_live_state(*einsum);
-            if (einsum->gemm_hint != nullptr) {
+            einsum->site = std::make_shared<packed_gemm::ContractionSite>();
+            if (einsum->gemm_hint.has_value()) {
                 if (spec.hint_ids.size() != 3) {
                     throw BuildFailure(
                         fmt::format("node '{}' carries a GEMM hint with {} operands, not three", spec.label, spec.hint_ids.size()));
@@ -356,7 +353,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
                 auto const derived    = derive_gemm_hint(spec.dtype, einsum->spec, graph, einsum->gemm_hint->a.id, einsum->gemm_hint->b.id,
                                                          einsum->gemm_hint->c.id);
                 GemmHint const &saved = *einsum->gemm_hint;
-                if (derived == nullptr) {
+                if (!derived.has_value()) {
                     throw BuildFailure(
                         fmt::format("node '{}' carries a GEMM hint, but its operands do not form a matrix product", spec.label));
                 }

@@ -83,34 +83,13 @@ size_t rebuild_executors(cg::Graph &graph) {
     return rebuilt;
 }
 
-/// A copy of @p data with every live-params handle dropped.
+/// A copy of @p data with every handle a saved file would not carry dropped.
 ///
-/// What is left is exactly what a saved file would carry: the descriptor's
-/// snapshot scalars and nothing shared with a running executor. Rebuilding
-/// from this is the honest reconstruction test.
+/// Descriptors hold values, so the only one left is an einsum's packed-GEMM
+/// memo, which is pure cache. Rebuilding from this is the honest
+/// reconstruction test.
 cg::OpData strip_live_params(cg::OpData data) {
-    if (auto *d = data.get_if<cg::ScaleDescriptor>()) {
-        d->params.reset();
-    } else if (auto *d = data.get_if<cg::PermuteDescriptor>()) {
-        d->params.reset();
-    } else if (auto *d = data.get_if<cg::AxpbyDescriptor>()) {
-        d->params.reset();
-    } else if (auto *d = data.get_if<cg::ElementwiseBinaryDescriptor>()) {
-        d->params.reset();
-    } else if (data.holds<cg::DotDescriptor>() || data.holds<cg::TraceDescriptor>() || data.holds<cg::GemmDescriptor>() ||
-               data.holds<cg::WriteParamDescriptor>()) {
-        // Nothing to strip. These four hold snapshots only: a dot records one
-        // bool, a trace records nothing, a write_param records a name and a
-        // storage type, and a gemm's prefactors have no live block because no
-        // pass rewrites them (see GemmDescriptor). What capture built is
-        // already exactly what a file would carry.
-    } else if (auto *d = data.get_if<cg::EinsumDescriptor>()) {
-        // An einsum carries three live handles, not one: the scalars, the index
-        // lists, and the packed-GEMM memo. A saved file holds none of them - the
-        // scalars and the indices are recoverable from the descriptor's own
-        // snapshot fields, and the memo is pure cache - so all three go.
-        d->params.reset();
-        d->indices.reset();
+    if (auto *d = data.get_if<cg::EinsumDescriptor>()) {
         d->site.reset();
     }
     return data;
@@ -616,9 +595,7 @@ TEST_CASE("ExecutorBuilder - a Scale factor rewritten after capture is applied",
     graph.edit(0, [](cg::NodeEdit &e) {
         auto *desc = e->op_data.get_if<cg::ScaleDescriptor>();
         REQUIRE(desc != nullptr);
-        REQUIRE(desc->params != nullptr);
-        desc->factor        = cg::PrefactorScalar{5.0};
-        desc->params->alpha = desc->factor;
+        desc->factor = cg::PrefactorScalar{5.0};
     });
 
     graph.execute();
@@ -649,11 +626,8 @@ TEST_CASE("ExecutorBuilder - Permute prefactors rewritten after capture are appl
     graph.edit(0, [](cg::NodeEdit &e) {
         auto *desc = e->op_data.get_if<cg::PermuteDescriptor>();
         REQUIRE(desc != nullptr);
-        REQUIRE(desc->params != nullptr);
-        desc->params->alpha = cg::PrefactorScalar{3.0};
-        desc->params->beta  = cg::PrefactorScalar{2.0};
-        desc->alpha         = std::complex<double>{3.0, 0.0};
-        desc->beta          = std::complex<double>{2.0, 0.0};
+        desc->alpha = cg::PrefactorScalar{3.0};
+        desc->beta  = cg::PrefactorScalar{2.0};
     });
 
     graph.execute();
@@ -813,7 +787,7 @@ TEST_CASE("ExecutorBuilder - an einsum no longer blocks a save", "[ComputeGraph]
     REQUIRE(node != nullptr);
     auto const *desc = node->op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
-    REQUIRE(desc->gemm_hint != nullptr);
+    REQUIRE(desc->gemm_hint.has_value());
 
     REQUIRE(cg::reconstruction_blocker(*node).empty());
     REQUIRE(graph.serializability_report().empty());
@@ -874,7 +848,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Einsum is bitwise identical for a 
     REQUIRE(node != nullptr);
     auto const *desc = node->op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
-    REQUIRE(desc->gemm_hint != nullptr);
+    REQUIRE(desc->gemm_hint.has_value());
 
     graph.execute();
     auto const captured = bytes_of(C);
@@ -1159,7 +1133,7 @@ TEST_CASE("ExecutorBuilder - a rebind that changes an lda is honored, and the hi
     REQUIRE(node != nullptr);
     auto *desc = node->op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
-    REQUIRE(desc->gemm_hint != nullptr);
+    REQUIRE(desc->gemm_hint.has_value());
     int const recorded_lda = desc->gemm_hint->a.leading_dim;
 
     REQUIRE(rebuild_executors(graph) == 1);

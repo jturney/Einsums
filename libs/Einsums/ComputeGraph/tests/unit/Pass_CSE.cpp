@@ -111,9 +111,9 @@ TEST_CASE("CSE - keeps einsums whose outputs differ in element type", "[ComputeG
     // Captured, the float node's prefactor is a float and already tells the two apart. A node a pass
     // builds carries whatever scalar the pass hands make_einsum_node, typically a double literal, so
     // give it one.
-    for (auto &node : graph.nodes()) {
-        if (auto *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr) {
-            desc->params->c_pf = 0.0;
+    for (std::size_t i = 0; i < graph.nodes().size(); ++i) {
+        if (graph.nodes()[i].op_data.holds<cg::EinsumDescriptor>()) {
+            graph.edit(i, [](cg::NodeEdit &e) { e->op_data.get_if<cg::EinsumDescriptor>()->c_prefactor = 0.0; });
         }
     }
 
@@ -198,7 +198,7 @@ TEMPLATE_LIST_TEST_CASE("CSE - surviving consumer of an eliminated duplicate rea
     auto const &consumer = graph.nodes().back();
     auto const *desc     = consumer.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
-    REQUIRE(desc->gemm_hint != nullptr);
+    REQUIRE(desc->gemm_hint.has_value());
     CHECK(desc->gemm_hint->a.id == consumer.inputs[0]);
 
     graph.execute();

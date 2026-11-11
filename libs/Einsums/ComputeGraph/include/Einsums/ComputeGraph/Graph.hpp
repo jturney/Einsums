@@ -2296,7 +2296,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * commits. First the destination is listed as the node's trailing input exactly when the
      * node reads it, as @ref sync_destination_input keeps it. Then the node gets its executor:
      * a no-op once folded; else the one its pass wrote, which an edit that changed what the node
-     * reads or writes must have given anew; else the one @ref build_executor derives from the
+     * reads or writes, or its descriptor, must have given anew; else the one @ref build_executor derives from the
      * node's fields, so a repointed operand is the one the replay reads. Its pre-run hooks go
      * ahead of that executor, and ahead of its asynchronous start phase when it has one, and its
      * CPU fallback, when placement gave it one, becomes the new executor. Last, the graph's
@@ -2308,8 +2308,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] change What to change.
      * @throws std::out_of_range If there is no node at @p index.
      * @throws std::logic_error If @p change assigned the executor directly, or changed the
-     *         target other than through @ref NodeEdit::place_on, or changed the operands of a
-     *         node whose pass wrote its executor without giving a new one, or the node has no
+     *         target other than through @ref NodeEdit::place_on, or changed the operands or the
+     *         descriptor of a node whose pass wrote its executor without giving a new one (a
+     *         descriptor type without ``operator==`` cannot tell, and is let through), or the node has no
      *         executor the builder can make and none was given.
      * @versionadded{2.0.0}
      */

@@ -87,8 +87,8 @@ std::function<void()> build_scale(packed_gemm::ScalarType dtype, ScaleDescriptor
 /// overload forwards to, so the eager path and this one cannot diverge.
 std::function<void()> build_permute(packed_gemm::ScalarType dtype, PermuteDescriptor const &desc, OperandAccessor const &a,
                                     OperandAccessor const &c) {
-    PrefactorScalar const alpha{desc.alpha};
-    PrefactorScalar const beta{desc.beta};
+    PrefactorScalar const alpha = desc.alpha;
+    PrefactorScalar const beta  = desc.beta;
 
     // Built once. The index lists are a structural field: a pass that rewrites
     // them rebuilds the executor rather than mutating it under a replay.
@@ -284,10 +284,9 @@ std::function<void()> build_einsum(packed_gemm::ScalarType dtype, EinsumDescript
                                    OperandAccessor const &b, OperandAccessor const &c) {
     // The executor's own copies of the prefactors and index lists, taken from the descriptor's
     // fields. Nothing else holds them: a change to the node goes through Graph::edit, whose commit
-    // builds a new executor from the new fields. The display string is the captured one, so an
-    // error the dispatch raises quotes the spec as the user wrote it.
+    // builds a new executor from the new fields.
     EinsumParams const  params  = detail::einsum_params_of(desc);
-    EinsumIndices const indices = detail::einsum_indices_of(desc, desc.indices != nullptr ? desc.indices->spec.raw : std::string{});
+    EinsumIndices const indices = detail::einsum_indices_of(desc);
 
     // The packed-GEMM memo. One per node, so per-tile nodes from a tiled
     // expansion never share one and a parallel executor needs no
@@ -1153,13 +1152,13 @@ ScalarAccessor resolve_scalar_operand(Graph &graph, TensorId id, std::string_vie
                             context, role, id);
 }
 
-std::shared_ptr<GemmHint> derive_gemm_hint(packed_gemm::ScalarType dtype, packed_gemm::ContractionSpec const &spec, Graph &graph,
-                                           TensorId a_id, TensorId b_id, TensorId c_id) {
+std::optional<GemmHint> derive_gemm_hint(packed_gemm::ScalarType dtype, packed_gemm::ContractionSpec const &spec, Graph &graph,
+                                         TensorId a_id, TensorId b_id, TensorId c_id) {
     // Index-shape gate first: it costs three size comparisons and rejects every
     // contraction that is not a plain matrix product, so nothing below has to
     // resolve an operand for a shape it will refuse anyway.
     if (spec.a_indices.size() != 2 || spec.b_indices.size() != 2 || spec.c_indices.size() != 2 || spec.link_indices.size() != 1) {
-        return nullptr;
+        return std::nullopt;
     }
 
     // Roles: C's first index must be the one A contributes, its second the one
@@ -1167,41 +1166,41 @@ std::shared_ptr<GemmHint> derive_gemm_hint(packed_gemm::ScalarType dtype, packed
     std::string const &link = spec.link_indices[0];
     auto const         free = [&link](std::vector<std::string> const &idx) { return idx[0] == link ? idx[1] : idx[0]; };
     if (spec.c_indices[0] != free(spec.a_indices) || spec.c_indices[1] != free(spec.b_indices)) {
-        return nullptr;
+        return std::nullopt;
     }
 
     OperandAccessor const a = try_resolve_operand(graph, a_id);
     OperandAccessor const b = try_resolve_operand(graph, b_id);
     OperandAccessor const c = try_resolve_operand(graph, c_id);
     if (!a.valid() || !b.valid() || !c.valid()) {
-        return nullptr;
+        return std::nullopt;
     }
     // A GEMM has one element type. Operands of different types run the mixed-precision generic
     // loop, and a hint would let GEMMBatching fold the node into a batched GEMM that reads each
     // operand as C's type. An operand of unrecorded type is taken at its word, as impl<T>() takes it.
     auto const differs = [dtype](OperandAccessor const &x) { return x.dtype() != packed_gemm::ScalarType::Unknown && x.dtype() != dtype; };
     if (differs(a) || differs(b) || differs(c)) {
-        return nullptr;
+        return std::nullopt;
     }
 
-    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::shared_ptr<GemmHint> {
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::optional<GemmHint> {
         auto const *a_impl = a.impl<T>();
         auto const *b_impl = b.impl<T>();
         auto const *c_impl = c.impl<T>();
         if (a_impl == nullptr || b_impl == nullptr || c_impl == nullptr) {
-            return nullptr;
+            return std::nullopt;
         }
         if (a_impl->rank() != 2 || b_impl->rank() != 2 || c_impl->rank() != 2) {
-            return nullptr;
+            return std::nullopt;
         }
         if (!detail::strides_follow_layout(*a_impl) || !detail::strides_follow_layout(*b_impl) || !detail::strides_follow_layout(*c_impl)) {
-            return nullptr;
+            return std::nullopt;
         }
         if (!detail::minor_stride_is_unit(*a_impl) || !detail::minor_stride_is_unit(*b_impl) || !detail::minor_stride_is_unit(*c_impl)) {
-            return nullptr;
+            return std::nullopt;
         }
 
-        auto hint     = std::make_shared<GemmHint>();
+        std::optional<GemmHint> hint{std::in_place};
         hint->scalar  = blas_scalar_of<T>();
         hint->trans_a = (spec.a_indices[0] == link) ? 'T' : 'N';
         hint->trans_b = (spec.b_indices[1] == link) ? 'T' : 'N';
@@ -1220,7 +1219,7 @@ void refresh_gemm_hint(Graph &graph, Node &node) {
     if (node.kind != OpKind::Einsum || desc == nullptr) {
         return;
     }
-    desc->gemm_hint = nullptr;
+    desc->gemm_hint = std::nullopt;
     if (node.inputs.size() < 2 || node.outputs.size() != 1) {
         return;
     }

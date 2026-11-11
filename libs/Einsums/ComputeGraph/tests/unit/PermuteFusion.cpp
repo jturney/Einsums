@@ -84,10 +84,9 @@ TEMPLATE_LIST_TEST_CASE("PermuteFusion: 2D transpose absorbed into einsum A slot
     REQUIRE(node.kind == cg::OpKind::Einsum);
     auto *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
-    REQUIRE(desc->indices != nullptr);
-    REQUIRE(desc->indices->spec.a_indices == std::vector<std::string>{"i", "j"});
-    REQUIRE(desc->indices->spec.b_indices == std::vector<std::string>{"j", "k"});
-    REQUIRE(desc->indices->spec.c_indices == std::vector<std::string>{"i", "k"});
+    REQUIRE(desc->spec.a_indices == std::vector<std::string>{"i", "j"});
+    REQUIRE(desc->spec.b_indices == std::vector<std::string>{"j", "k"});
+    REQUIRE(desc->spec.c_indices == std::vector<std::string>{"i", "k"});
 
     graph.execute();
     require_close(C, C_ref);
@@ -120,7 +119,7 @@ TEMPLATE_LIST_TEST_CASE("PermuteFusion: 2D transpose absorbed into einsum B slot
 
     auto const &node = graph.nodes()[0];
     auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
-    REQUIRE(desc->indices->spec.b_indices == std::vector<std::string>{"j", "k"});
+    REQUIRE(desc->spec.b_indices == std::vector<std::string>{"j", "k"});
 
     graph.execute();
     require_close(C, C_ref);
@@ -186,7 +185,7 @@ TEMPLATE_LIST_TEST_CASE("PermuteFusion: 3D permute on A slot (rank-3 × matrix)"
     REQUIRE(graph.num_nodes() == 1);
 
     auto const *desc = graph.nodes()[0].op_data.get_if<cg::EinsumDescriptor>();
-    REQUIRE(desc->indices->spec.a_indices == std::vector<std::string>{"p", "q", "r"});
+    REQUIRE(desc->spec.a_indices == std::vector<std::string>{"p", "q", "r"});
 
     graph.execute();
     require_close(C, C_ref);
@@ -219,7 +218,7 @@ TEMPLATE_LIST_TEST_CASE("PermuteFusion: identity permute is still fused (no-op r
 
     auto const *desc = graph.nodes()[0].op_data.get_if<cg::EinsumDescriptor>();
     // Identity permute → subscript unchanged.
-    REQUIRE(desc->indices->spec.a_indices == std::vector<std::string>{"i", "j"});
+    REQUIRE(desc->spec.a_indices == std::vector<std::string>{"i", "j"});
 
     graph.execute();
     require_close(C, C_ref);
@@ -717,7 +716,7 @@ TEMPLATE_LIST_TEST_CASE("PermuteFusion: a fused einsum's GEMM hint follows its n
     // The hint is the one a fresh capture of the fused einsum would derive.
     auto const *desc = graph.nodes()[0].op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
-    REQUIRE(desc->gemm_hint != nullptr);
+    REQUIRE(desc->gemm_hint.has_value());
     CHECK(desc->gemm_hint->trans_a == 'T');
     CHECK(desc->gemm_hint->trans_b == 'N');
     CHECK(desc->gemm_hint->a.id == graph.nodes()[0].inputs[0]);

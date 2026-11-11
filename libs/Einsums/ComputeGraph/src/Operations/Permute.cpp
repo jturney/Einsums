@@ -39,22 +39,13 @@ void capture_permute(CaptureContext &ctx, ParsedPermuteSpec const &parsed, T bet
                      std::size_t rank) {
     WAGGLE_ZONE("permute capture");
 
+    // The scalars in the operands' own type.
     PermuteDescriptor desc;
-    if constexpr (IsComplexV<T>) {
-        desc.alpha = std::complex<double>{static_cast<double>(alpha.real()), static_cast<double>(alpha.imag())};
-        desc.beta  = std::complex<double>{static_cast<double>(beta.real()), static_cast<double>(beta.imag())};
-    } else {
-        desc.alpha = std::complex<double>{static_cast<double>(alpha), 0.0};
-        desc.beta  = std::complex<double>{static_cast<double>(beta), 0.0};
-    }
+    desc.alpha     = PrefactorScalar{alpha};
+    desc.beta      = PrefactorScalar{beta};
     desc.c_indices = parsed.c_indices;
     desc.a_indices = parsed.a_indices;
     desc.operators = parsed.operators;
-    // Live scalars in the operands' own type, so a pass that rewrites a
-    // prefactor is obeyed on the next replay.
-    desc.params        = std::make_shared<ElementwiseParams>();
-    desc.params->alpha = PrefactorScalar{alpha};
-    desc.params->beta  = PrefactorScalar{beta};
 
     auto label = fmt::format("permute: C[{}] = A[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","));
 

@@ -258,22 +258,22 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
         switch (op.kind) {
         case OpKind::Einsum: {
             auto const &desc  = op.op_data.get<EinsumDescriptor>();
-            auto const  lists = live_index_lists(desc);
+            auto const  lists = einsum_index_lists(desc);
             auto const  c     = surviving(lists.c, op.slots[0].labels, walks);
             auto const  a     = surviving(lists.a, op.slots[1].labels, walks);
             auto const  b     = surviving(lists.b, op.slots[2].labels, walks);
-            auto const  alpha = real_prefactor(live_ab_prefactor(desc));
-            auto const  beta  = real_prefactor(live_c_prefactor(desc));
+            auto const  alpha = real_prefactor(desc.ab_prefactor);
+            auto const  beta  = real_prefactor(desc.c_prefactor);
             if (mirror && &op == &plan.ops[plan.triangle->writer]) {
                 // The tile's contribution once, then its two destinations. Both adds are permutes
                 // with the contraction's own destination prefactor, so a prefactor of zero
                 // overwrites each block exactly as the captured contraction did, and every element
                 // of the output is written by exactly one of the two.
                 auto &tile = view_runtime(*scratch, std::vector<ViewAxis>(scratch->rank(), ViewAxis::full()));
-                compute_graph::detail::einsum_parsed(einsum_spec(a, b, c, live_conj_a(desc), live_conj_b(desc), lists.operators), T{0},
-                                                     &tile, as<T>(live_ab_prefactor(desc)), *operand[1][0], *operand[2][0]);
+                compute_graph::detail::einsum_parsed(einsum_spec(a, b, c, desc.conj_a, desc.conj_b, lists.operators), T{0}, &tile,
+                                                     as<T>(desc.ab_prefactor), *operand[1][0], *operand[2][0]);
 
-                T const     beta  = as<T>(live_c_prefactor(desc));
+                T const     beta  = as<T>(desc.c_prefactor);
                 auto const &sigma = plan.triangle->sigma;
                 compute_graph::detail::permute_parsed(permute_spec(c, c), beta, operand[0][0], T{1}, tile);
 
@@ -298,15 +298,15 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
             }
             // A GEMM computes the one term; an operator's other terms need the per-member path. A
             // summing contraction's members all add into one destination, one after another.
-            if (chunked && !summing && readable && as_gemm.has_value() && alpha.has_value() && beta.has_value() && !live_conj_a(desc) &&
-                !live_conj_b(desc) && lists.operators.empty()) {
+            if (chunked && !summing && readable && as_gemm.has_value() && alpha.has_value() && beta.has_value() && !desc.conj_a &&
+                !desc.conj_b && lists.operators.empty()) {
                 grouped_batched_gemm(*alpha, sources(1), sources(2), *beta, operand[0], as_gemm->trans_a, as_gemm->trans_b);
                 break;
             }
-            auto const spec = einsum_spec(a, b, c, live_conj_a(desc), live_conj_b(desc), lists.operators);
+            auto const spec = einsum_spec(a, b, c, desc.conj_a, desc.conj_b, lists.operators);
             for (std::size_t member = 0; member < depth; ++member) {
-                compute_graph::detail::einsum_parsed(spec, summing ? T{1} : as<T>(live_c_prefactor(desc)), operand[0][member],
-                                                     as<T>(live_ab_prefactor(desc)), *operand[1][member], *operand[2][member]);
+                compute_graph::detail::einsum_parsed(spec, summing ? T{1} : as<T>(desc.c_prefactor), operand[0][member],
+                                                     as<T>(desc.ab_prefactor), *operand[1][member], *operand[2][member]);
             }
             break;
         }
@@ -315,8 +315,8 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
             // A permutation keeps its scalars in the params block where every other kind does,
             // and its own snapshots are plain complex doubles, so the live block is read first
             // and the snapshot only stands in for a node that has none.
-            PrefactorScalar const alpha = desc.params ? desc.params->alpha : PrefactorScalar{desc.alpha};
-            PrefactorScalar const beta  = desc.params ? desc.params->beta : PrefactorScalar{desc.beta};
+            PrefactorScalar const alpha = desc.alpha;
+            PrefactorScalar const beta  = desc.beta;
             auto const            spec  = permute_spec(surviving(desc.c_indices, op.slots[0].labels, walks),
                                                        surviving(desc.a_indices, op.slots[1].labels, walks), desc.operators);
             auto const            re_a  = real_prefactor(alpha);
@@ -333,29 +333,29 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan, std::vector<AxisWal
         }
         case OpKind::Axpby: {
             auto const &desc  = op.op_data.get<AxpbyDescriptor>();
-            auto const  alpha = real_prefactor(live_alpha(desc));
-            auto const  beta  = real_prefactor(live_beta(desc));
+            auto const  alpha = real_prefactor(desc.alpha);
+            auto const  beta  = real_prefactor(desc.beta);
             if (chunked && alpha.has_value() && beta.has_value()) {
                 grouped_axpby(std::vector<double>(depth, *alpha), sources(1), std::vector<double>(depth, *beta), operand[0]);
                 break;
             }
             for (std::size_t member = 0; member < depth; ++member) {
-                axpby(as<T>(live_alpha(desc)), *operand[1][member], as<T>(live_beta(desc)), operand[0][member]);
+                axpby(as<T>(desc.alpha), *operand[1][member], as<T>(desc.beta), operand[0][member]);
             }
             break;
         }
         case OpKind::Scale: {
             auto const &desc = op.op_data.get<ScaleDescriptor>();
             for (std::size_t member = 0; member < depth; ++member) {
-                scale(as<T>(live_factor(desc)), operand[0][member]);
+                scale(as<T>(desc.factor), operand[0][member]);
             }
             break;
         }
         case OpKind::DirectProduct:
         case OpKind::DirectDivision: {
             auto const &desc  = op.op_data.get<ElementwiseBinaryDescriptor>();
-            T const     alpha = as<T>(live_alpha(desc));
-            T const     beta  = as<T>(live_beta(desc));
+            T const     alpha = as<T>(desc.alpha);
+            T const     beta  = as<T>(desc.beta);
             if (chunked) {
                 if (op.kind == OpKind::DirectProduct) {
                     grouped_direct_product(std::vector<T>(depth, alpha), sources(1), sources(2), std::vector<T>(depth, beta), operand[0]);

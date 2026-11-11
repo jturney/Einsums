@@ -125,11 +125,6 @@ Value write_prefactor(PrefactorScalar const &scalar) {
     return Value{std::move(out)};
 }
 
-/// @copydoc write_prefactor
-Value write_complex(std::complex<double> const &value) {
-    return write_prefactor(PrefactorScalar{value});
-}
-
 /// One frame's dense numbering: this graph's ids in first-mention order, plus
 /// the enclosing frames' tensor identities so a body can name a parent buffer.
 class Frame {
@@ -277,15 +272,13 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         return Value{std::move(out)};
     case OpKind::Scale: {
         auto const &desc = node.op_data.get<ScaleDescriptor>();
-        // The LIVE scalar when the node carries one, because that is what the
-        // executor reads; the snapshot beside it can be a pass's stale copy.
-        out.set("factor", write_prefactor(live_factor(desc)));
+        out.set("factor", write_prefactor(desc.factor));
         return Value{std::move(out)};
     }
     case OpKind::Permute: {
         auto const &desc = node.op_data.get<PermuteDescriptor>();
-        out.set("alpha", desc.params != nullptr ? write_prefactor(desc.params->alpha) : write_complex(desc.alpha));
-        out.set("beta", desc.params != nullptr ? write_prefactor(desc.params->beta) : write_complex(desc.beta));
+        out.set("alpha", write_prefactor(desc.alpha));
+        out.set("beta", write_prefactor(desc.beta));
         out.set("c_indices", to_array(desc.c_indices));
         out.set("a_indices", to_array(desc.a_indices));
         // Written only when there is one, so every file this build produces for
@@ -298,10 +291,9 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
     case OpKind::Axpby:
     case OpKind::DirectProduct:
     case OpKind::DirectDivision: {
-        // The LIVE scalars, for the reason the Scale case above states.
         auto const write_scalars = [&](auto const &desc) {
-            out.set("alpha", write_prefactor(live_alpha(desc)));
-            out.set("beta", write_prefactor(live_beta(desc)));
+            out.set("alpha", write_prefactor(desc.alpha));
+            out.set("beta", write_prefactor(desc.beta));
         };
         if (node.kind == OpKind::Axpby) {
             write_scalars(node.op_data.get<AxpbyDescriptor>());
@@ -312,13 +304,9 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
     }
     case OpKind::Einsum: {
         auto const &desc = node.op_data.get<EinsumDescriptor>();
-        // The LIVE index lists when the node shares them, for the same reason
-        // the live scalars win above: the executor reads
-        // ``indices->spec``, and the descriptor's own ContractionSpec beside it
-        // is the at-capture snapshot a rewriting pass may have left behind.
-        // ``ParsedEinsumSpec::raw`` is deliberately not written: it is a display
-        // string the loader regenerates exactly as @ref build_executor does.
-        auto const lists = live_index_lists(desc);
+        // ``ParsedEinsumSpec::raw`` is not written: it is a display string the
+        // executor renders from the index lists.
+        auto const lists = einsum_index_lists(desc);
         out.set("c_indices", to_array(lists.c));
         out.set("a_indices", to_array(lists.a));
         out.set("b_indices", to_array(lists.b));
@@ -326,14 +314,13 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("target_indices", to_array(desc.spec.target_indices));
         out.set("all_indices", to_array(desc.spec.all_indices));
         out.set("scalar_output", Value{desc.spec.scalar_output});
-        out.set("conj_a", Value{live_conj_a(desc)});
-        out.set("conj_b", Value{live_conj_b(desc)});
-        out.set("c_prefactor", write_prefactor(live_c_prefactor(desc)));
-        out.set("ab_prefactor", write_prefactor(live_ab_prefactor(desc)));
+        out.set("conj_a", Value{desc.conj_a});
+        out.set("conj_b", Value{desc.conj_b});
+        out.set("c_prefactor", write_prefactor(desc.c_prefactor));
+        out.set("ab_prefactor", write_prefactor(desc.ab_prefactor));
 
-        // The LIVE operators for the same reason the index lists above are live:
-        // ``indices->spec`` is what the executor reads. Written only when there
-        // is one, so a graph without operators still writes 1.6.0's bytes.
+        // Written only when there is one, so a graph without operators still
+        // writes 1.6.0's bytes.
         auto const &operators = lists.operators;
         if (!operators.empty()) {
             out.set("operators", write_permutation_operators(operators));
@@ -346,7 +333,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
                     return Value{std::move(entry)};
                 }));
 
-        if (desc.gemm_hint != nullptr) {
+        if (desc.gemm_hint.has_value()) {
             // A hint is a PLANNING snapshot the GEMMBatching pass reads, and it
             // is written verbatim rather than re-derived: a loaded graph has no
             // geometry to derive one from until a bind, and a rebind of a LIVE

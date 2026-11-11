@@ -219,7 +219,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (!desc)
             continue;
-        if (live_conj_a(*desc) || live_conj_b(*desc))
+        if (desc->conj_a || desc->conj_b)
             continue; // conjugated contractions aren't factored (conj not threaded through the rewrite)
         if (!einsum_is_uniform(graph, node)) {
             // The shared temporary takes one operand's type, and whether the factored contraction
@@ -227,7 +227,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             note_skip("the contraction's operands hold different element types", node.label);
             continue;
         }
-        if (is_zero(live_c_prefactor(*desc)))
+        if (is_zero(desc->c_prefactor))
             continue;
         if (operand_inputs(node).size() != 2 || node.outputs.size() != 1)
             continue;
@@ -235,15 +235,14 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         TensorId const out_id = node.outputs[0];
         TensorId const in_a   = node.inputs[0];
         TensorId const in_b   = node.inputs[1];
-        // The LIVE lists, which are what the executor contracts and what the rebuild below reads.
-        auto const spec = live_index_lists(*desc);
+        auto const     spec   = einsum_index_lists(*desc);
 
         // The factoring math below is real-valued; a prefactor with nonzero
         // imaginary part would silently lose it, so skip those nodes.
-        if (!is_real_valued(live_ab_prefactor(*desc))) {
+        if (!is_real_valued(desc->ab_prefactor)) {
             continue;
         }
-        auto const ab_pf_d = as_real<double>(live_ab_prefactor(*desc));
+        auto const ab_pf_d = as_real<double>(desc->ab_prefactor);
 
         if (!admits(graph, node)) {
             continue;
@@ -384,7 +383,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             bool unit_accumulate = true;
             for (size_t ci = 1; ci < available.size(); ci++) {
                 auto const *d = nodes[available[ci].node_index].op_data.get_if<EinsumDescriptor>();
-                if (d == nullptr || !is_unit_real(live_c_prefactor(*d))) {
+                if (d == nullptr || !is_unit_real(d->c_prefactor)) {
                     unit_accumulate = false;
                     break;
                 }
@@ -503,7 +502,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             }
             auto const &a_dims = vg.key.shared_is_first ? sh_h->second.dims : ref_handle.dims;
             auto const &b_dims = vg.key.shared_is_first ? ref_handle.dims : sh_h->second.dims;
-            auto const  lists  = live_index_lists(*fd);
+            auto const  lists  = einsum_index_lists(*fd);
             auto const  shape  = contraction_shape(lists.a, a_dims, lists.b, b_dims, lists.c);
             if (!shape.ok) {
                 continue;
@@ -573,13 +572,13 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         // PackedGemm topology. Only the raw index lists carry over, which is all
         // that changes here: T takes the non-shared operand's place, so the
         // contraction's indices are exactly the ones the members already used.
-        auto const       lists = live_index_lists(*first_desc);
+        auto const       lists = einsum_index_lists(*first_desc);
         ParsedEinsumSpec spec;
         spec.c_indices  = lists.c;
         spec.a_indices  = lists.a;
         spec.b_indices  = lists.b;
         spec.raw        = spec.render();
-        auto const c_pf = live_c_prefactor(*first_desc);
+        auto const c_pf = first_desc->c_prefactor;
 
         std::vector<Node> emitted;
         emitted.reserve(available.size() + 2);
@@ -591,9 +590,8 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             // algebraic passes can reason about it. The scale kernel assigns zero
             // rather than multiplying by it, so a freshly allocated T holding
             // garbage cannot turn into a NaN here.
-            emitted.push_back(graph.make_node(OpKind::Scale, ref_handle.dtype,
-                                              OpData{ScaleDescriptor{.factor = 0.0, .params = make_elementwise_params(0.0)}}, {t_id},
-                                              {t_id}, fmt::format("zero({})", t_name)));
+            emitted.push_back(graph.make_node(OpKind::Scale, ref_handle.dtype, OpData{ScaleDescriptor{.factor = 0.0}}, {t_id}, {t_id},
+                                              fmt::format("zero({})", t_name)));
 
             // T += ab_i * B_i, carrying each member's own product prefactor, so the
             // combined contraction needs no prefactor of its own.

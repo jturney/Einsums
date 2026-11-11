@@ -257,7 +257,7 @@ std::optional<double> contraction_us(Graph const &graph, Node const &node, Devic
     if (ein == nullptr || operands.size() != 2 || node.outputs.size() != 1) {
         return std::nullopt;
     }
-    auto const lists  = live_index_lists(*ein);
+    auto const lists  = einsum_index_lists(*ein);
     auto const layout = [&](TensorId tid, std::vector<std::string> const &letters) -> std::optional<packed_gemm::OperandLayout> {
         auto const *handle = graph.find_tensor(tid);
         if (handle == nullptr || handle->dims.size() != letters.size() || handle->strides.size() != letters.size()) {

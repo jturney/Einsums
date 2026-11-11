@@ -150,7 +150,7 @@ std::vector<std::string> link_letters_of(Node const &node) {
     if (desc == nullptr) {
         return {};
     }
-    return live_index_lists(*desc).link;
+    return einsum_index_lists(*desc).link;
 }
 
 bool unify(std::vector<int> &lhs, std::vector<int> &rhs, bool &changed) {

@@ -102,7 +102,7 @@ bool GEMMBatching::transform(Graph &graph) {
         auto *desc = nodes[nd].op_data.get_if<EinsumDescriptor>();
         if (!desc || !desc->gemm_hint)
             continue; // non-GEMM-pattern einsums skipped by capture
-        if (live_conj_a(*desc) || live_conj_b(*desc))
+        if (desc->conj_a || desc->conj_b)
             continue; // conjugated einsums aren't batched (conj not threaded through the batch rewrite)
         if (carries_permutation_operators(nodes[nd]))
             continue; // a batched GEMM computes the one unpermuted term an operator is a sum over
@@ -118,8 +118,8 @@ bool GEMMBatching::transform(Graph &graph) {
                            .trans_a = desc->gemm_hint->trans_a,
                            .trans_b = desc->gemm_hint->trans_b,
                            .scalar  = desc->gemm_hint->scalar,
-                           .alpha   = PrefactorBits{live_ab_prefactor(*desc)},
-                           .beta    = PrefactorBits{live_c_prefactor(*desc)}};
+                           .alpha   = PrefactorBits{desc->ab_prefactor},
+                           .beta    = PrefactorBits{desc->c_prefactor}};
         groups[{level[nd], key}].push_back(nd);
     }
 
@@ -234,8 +234,8 @@ bool GEMMBatching::transform(Graph &graph) {
         d.trans_b = key.trans_b;
         // The descriptor carries the full complex prefactor; the batch key holds
         // its exact bits, so every member of the group has this same value.
-        d.alpha       = as<std::complex<double>>(live_ab_prefactor(*first_desc));
-        d.beta        = as<std::complex<double>>(live_c_prefactor(*first_desc));
+        d.alpha       = as<std::complex<double>>(first_desc->ab_prefactor);
+        d.beta        = as<std::complex<double>>(first_desc->c_prefactor);
         d.batch_count = static_cast<int>(group.size());
         d.scalar      = key.scalar;
 

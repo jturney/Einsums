@@ -127,14 +127,14 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 namespace {
 
-/// Record one einsum node. Every capture comes here, whatever its operand types: the descriptor's
-/// snapshot and live blocks, the letter-space binding, and an executor from build_executor, which
+/// Record one einsum node. Every capture comes here, whatever its operand types: the descriptor,
+/// the letter-space binding, and an executor from build_executor, which
 /// is also what a pass that rebuilds the node and the loader reach, so all three run one lowering.
 template <typename TC, typename TA, typename TB>
 void record_einsum(CaptureContext &ctx, ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf, bool conj_a,
                    bool conj_b, CapturedOperand<TA> const &a, CapturedOperand<TB> const &b, CapturedOperand<TC> const &c) {
     auto desc = detail::build_einsum_descriptor(parsed, c_pf, ab_pf, conj_a, conj_b);
-    detail::attach_live_state(desc, parsed.raw);
+    desc.site = std::make_shared<packed_gemm::ContractionSite>();
 
     // Index-space binding. A space is a property of the SLOT an index occupies,
     // not of the letter globally, so the letters of this one contraction are resolved against the
@@ -158,8 +158,8 @@ void record_einsum(CaptureContext &ctx, ParsedEinsumSpec const &parsed, Prefacto
     std::vector<TensorId> const node_inputs{a.id, b.id};
     std::vector<TensorId> const node_outputs{c.id};
 
-    // The node's dtype is C's, as for every einsum node. The descriptor is handed over as the OpData
-    // the node will carry, so the live blocks the builder reads are the very ones the node records.
+    // The node's dtype is C's, as for every einsum node. The executor is built from the very
+    // descriptor the node records.
     OpData op_data{std::move(desc)};
     auto   executor = build_executor(OpKind::Einsum, packed_gemm::get_scalar_type<TC>(), c.impl->rank(), op_data, *ctx.graph(),
                                      std::span<TensorId const>{node_inputs}, std::span<TensorId const>{node_outputs});
