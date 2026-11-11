@@ -345,25 +345,25 @@ void apply_arena_plan(Graph &graph, ArenaPlan const &plan) {
     }
 
     graph.set_arena(std::make_shared<compute_graph::detail::ArenaBlock>(plan.arena_bytes));
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
 
     // Materialize attaches at the planned offset, idempotently across replays; Free detaches only,
     // since releasing a tensor on external storage parks it without freeing and the arena persists
     // for the next replay. Neither allocates any more, so neither is charged to the Dataflow
     // memory-budget gate.
-    auto const place = [&graph](Node &node, std::size_t offset) {
-        auto *desc = node.op_data.get_if<AllocDescriptor>();
-        if (desc == nullptr) {
-            EINSUMS_THROW_EXCEPTION(std::logic_error, "MemoryPlanning: lifecycle node '{}' carries no AllocDescriptor", node.label);
-        }
-        desc->arena_offset         = offset;
-        node.estimated_bytes       = 0;
-        TensorHandle const &handle = graph.tensor(node.outputs.front());
-        node.execute               = build_executor(node.kind, handle.dtype, handle.rank, node.op_data, graph, node.inputs, node.outputs);
+    auto const place = [&graph](std::size_t index, std::size_t offset) {
+        graph.edit(index, [offset](NodeEdit &e) {
+            auto *desc = e->op_data.get_if<AllocDescriptor>();
+            if (desc == nullptr) {
+                EINSUMS_THROW_EXCEPTION(std::logic_error, "MemoryPlanning: lifecycle node '{}' carries no AllocDescriptor", e->label);
+            }
+            desc->arena_offset = offset;
+            e->estimated_bytes = 0;
+        });
     };
     for (auto const &pt : plan.tensors) {
-        place(nodes[pt.mat_node], pt.offset);
-        place(nodes[pt.free_node], pt.offset);
+        place(pt.mat_node, pt.offset);
+        place(pt.free_node, pt.offset);
     }
 
     // Storage-reuse WAW edge. Parallel executors order nodes only by
@@ -381,9 +381,8 @@ void apply_arena_plan(Graph &graph, ArenaPlan const &plan) {
             if (!bytes_overlap || x.free_node >= y.mat_node) {
                 continue;
             }
-            auto &outs = nodes[y.mat_node].outputs;
-            if (std::ranges::find(outs, x.tid) == outs.end()) {
-                outs.push_back(x.tid);
+            if (std::ranges::find(nodes[y.mat_node].outputs, x.tid) == nodes[y.mat_node].outputs.end()) {
+                graph.edit(y.mat_node, [&](NodeEdit &e) { e->outputs.push_back(x.tid); });
             }
         }
     }
