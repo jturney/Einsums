@@ -110,14 +110,15 @@ bool SUMMAExpansion::transform(Graph &graph) {
     if (comm::world_size() <= 1)
         return false;
 
-    auto       &nodes   = graph.nodes();
+    auto const &nodes   = graph.nodes();
     auto const &tensors = graph.tensors_map();
     auto       &grid    = comm::ProcessGrid::default_grid();
 
     if (grid.rows() <= 1 || grid.cols() <= 1)
         return false; // Need true 2D grid for SUMMA
 
-    for (auto &node : nodes) {
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        Node const &node = nodes[i];
         // Only Einsum nodes. BatchedGemm is intentionally ignored,
         // distributed batched contractions aren't supported today (see
         // libs/Einsums/ComputeGraph/docs/gemm_batching.rst).
@@ -222,18 +223,20 @@ bool SUMMAExpansion::transform(Graph &graph) {
         // Build the SUMMA executor lambda. The panels are broadcast through
         // comm::broadcast on the row/col communicators, not through the handle's
         // allreduce hook.
-        node.execute = [&grid, panels, anchor, a_id, b_id, c_id, dtype, params, c_snap, ab_snap]() {
-            void                 *a_ptr = anchor->graph().live_tensor_ptr(a_id);
-            void                 *b_ptr = anchor->graph().live_tensor_ptr(b_id);
-            void                 *c_ptr = anchor->graph().live_tensor_ptr(c_id);
-            PrefactorScalar const c_pf  = params ? params->c_pf : c_snap;
-            PrefactorScalar const ab_pf = params ? params->ab_pf : ab_snap;
-            if (dtype == packed_gemm::ScalarType::Float64) {
-                run_summa_panels<double>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf, ab_pf);
-            } else if (dtype == packed_gemm::ScalarType::Float32) {
-                run_summa_panels<float>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf, ab_pf);
-            }
-        };
+        graph.edit(i, [&](NodeEdit &e) {
+            e.set_executor([&grid, panels, anchor, a_id, b_id, c_id, dtype, params, c_snap, ab_snap]() {
+                void                 *a_ptr = anchor->graph().live_tensor_ptr(a_id);
+                void                 *b_ptr = anchor->graph().live_tensor_ptr(b_id);
+                void                 *c_ptr = anchor->graph().live_tensor_ptr(c_id);
+                PrefactorScalar const c_pf  = params ? params->c_pf : c_snap;
+                PrefactorScalar const ab_pf = params ? params->ab_pf : ab_snap;
+                if (dtype == packed_gemm::ScalarType::Float64) {
+                    run_summa_panels<double>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf, ab_pf);
+                } else if (dtype == packed_gemm::ScalarType::Float32) {
+                    run_summa_panels<float>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf, ab_pf);
+                }
+            });
+        });
 
         _num_expanded++;
         EINSUMS_LOG_INFO("SUMMAExpansion: replaced einsum '{}' with SUMMA loop ({} panels on {}x{} grid)", node.label, panels, grid.rows(),
