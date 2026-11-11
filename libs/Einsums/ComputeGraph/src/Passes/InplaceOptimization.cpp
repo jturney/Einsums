@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/InplaceOptimization.hpp>
@@ -304,23 +305,32 @@ std::optional<MergePlan> find_merge(Graph &graph, Accepts const &accepts) {
 /// and its executor slot is durably redirected at `src`'s storage so baked
 /// lambdas follow.
 void apply_merge(Graph &graph, MergePlan const &plan, size_t &num_merged) {
-    auto &nodes = graph.nodes();
-
-    for (auto &node : nodes) {
-        std::ranges::replace(node.inputs, plan.dst, plan.src);
-        std::ranges::replace(node.outputs, plan.dst, plan.src);
+    // dst's Alloc/Materialize duplicate src's own lifecycle once dst is src; drop them first, so
+    // the rename below never rebuilds a node about to go. Matched by the tensor their descriptor
+    // names, which the rename does not touch.
+    auto const       &dst_name = graph.tensor(plan.dst).name;
+    std::vector<bool> remove(graph.num_nodes(), false);
+    for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
+        remove[i] = lifecycle::lifecycle_tensor_name(graph.nodes()[i]) == dst_name;
     }
-
-    // dst's Alloc/Materialize (now rewritten to src) duplicate src's own
-    // lifecycle; drop the duplicates that originally belonged to dst. After
-    // the rewrite they are indistinguishable by id, so match by the tensor
-    // their descriptor names.
-    auto const &dst_name = graph.tensor(plan.dst).name;
-    if (std::erase_if(nodes, [&](Node const &n) { return lifecycle::lifecycle_tensor_name(n) == dst_name; }) > 0) {
-        graph.note_structural_change();
-    }
+    graph.erase_nodes(remove);
 
     graph.redirect_slot(plan.dst, plan.src);
+    auto const names_dst = [&](TensorId tid) { return tid == plan.dst; };
+    for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
+        Node const &node = graph.nodes()[i];
+        if (std::ranges::none_of(node.inputs, names_dst) && std::ranges::none_of(node.outputs, names_dst)) {
+            continue;
+        }
+        graph.edit(i, [&](NodeEdit &e) {
+            std::ranges::replace(e->inputs, plan.dst, plan.src);
+            std::ranges::replace(e->outputs, plan.dst, plan.src);
+            refresh_gemm_hint(graph, e.node()); // the hint names the operand it was derived from
+            // A node the builder cannot rebuild keeps the executor it has: it resolves dst's
+            // slot, which now holds src's storage.
+            e.keep_executor();
+        });
+    }
     graph.mark_sorted(); // order-preserving rewrite; position-keyed deps are stale
     num_merged++;
 }
