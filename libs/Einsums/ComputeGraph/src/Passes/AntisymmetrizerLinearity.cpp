@@ -215,20 +215,18 @@ bool AntisymmetrizerLinearity::transform(Graph &graph) {
         group.push_back(graph.make_axpby_node(site.other_source, sum_id, site.merged_alpha, PrefactorScalar{double{1}},
                                               "antisym linearity: sum += s*c*A"));
 
-        Node &op  = graph.nodes()[site.operator_index];
-        op.inputs = {sum_id};
-        if (auto *pdesc = op.op_data.get_if<PermuteDescriptor>()) {
-            pdesc->alpha = std::complex<double>{1.0, 0.0};
-            if (pdesc->params != nullptr) {
-                pdesc->params->alpha = PrefactorScalar{double{1}};
+        // The edit rebuilds the executor: the closure resolved its operand when it was built, so
+        // repointing inputs alone would leave the replay reading the old source.
+        graph.edit(site.operator_index, [&](NodeEdit &e) {
+            e->inputs = {sum_id};
+            if (auto *pdesc = e->op_data.get_if<PermuteDescriptor>()) {
+                pdesc->alpha = std::complex<double>{1.0, 0.0};
+                if (pdesc->params != nullptr) {
+                    pdesc->params->alpha = PrefactorScalar{double{1}};
+                }
             }
-        }
-        op.label = fmt::format("{} (linearity: over the summed source)", op.label);
-        // REBUILD the executor: the closure resolved its operand when it was
-        // built, so repointing inputs alone would leave the replay reading the
-        // old source.
-        op.execute = build_executor(OpKind::Permute, src_handle->dtype, src_handle->rank, op.op_data, graph,
-                                    std::span<TensorId const>{op.inputs}, std::span<TensorId const>{op.outputs});
+            e->label = fmt::format("{} (linearity: over the summed source)", e->label);
+        });
 
         remove[site.axpby_index] = true;
         inserts.emplace_back(site.operator_index, std::move(group));
