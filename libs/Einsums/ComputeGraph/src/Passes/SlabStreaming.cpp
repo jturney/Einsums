@@ -455,7 +455,7 @@ bool SlabStreaming::walk(Graph &graph, Backed backed, double replays) {
         // time the graph holding it does, and a setup or a branch at most once.
         auto const  *loop         = nodes[i].op_data.get_if<LoopDescriptor>();
         double const body_replays = loop != nullptr ? replays * static_cast<double>(loop->max_iterations) : replays;
-        for_each_child_graph(nodes[i], [&](Graph &sub) { bodies.push_back(Body{.graph = &sub, .replays = body_replays, .position = i}); });
+        graph.for_each_child(i, [&](Graph &sub) { bodies.push_back(Body{.graph = &sub, .replays = body_replays, .position = i}); });
     }
     for (auto const &[body, body_replays, position] : bodies) {
         Backed inherited = backed;

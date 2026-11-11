@@ -112,14 +112,15 @@ void collect_deferred(Graph &graph, std::vector<DeferredEntry> &out, std::vector
             out.push_back({.handle_owner = &graph, .tid = tid});
         }
     }
-    for (auto &node : graph.nodes()) {
-        if (auto *setup = node.op_data.get_if<SetupDescriptor>()) {
+    for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
+        Node const &node = graph.nodes()[i];
+        if (auto const *setup = node.op_data.get_if<SetupDescriptor>()) {
             if (setup->body) {
                 nested_setups.emplace_back(setup->body.get(), node.label);
             }
             continue;
         }
-        for_each_child_graph(node, [&](Graph &child) { collect_deferred(child, out, nested_setups); }, /*include_setup=*/false);
+        graph.for_each_child(i, [&](Graph &child) { collect_deferred(child, out, nested_setups); }, /*include_setup=*/false);
     }
 }
 

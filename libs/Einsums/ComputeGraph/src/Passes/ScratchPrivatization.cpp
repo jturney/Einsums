@@ -155,9 +155,7 @@ bool ScratchPrivatization::transform(Graph &graph) {
 }
 
 void ScratchPrivatization::run_recursive(Graph &graph) {
-    for (auto &node : graph.nodes()) {
-        for_each_child_graph(node, [this](Graph &child) { run_recursive(child); }, /*include_setup=*/false);
-    }
+    graph.for_each_subgraph([this](Graph &child) { run_recursive(child); }, /*include_setup=*/false);
     privatize_one_graph(graph);
 }
 

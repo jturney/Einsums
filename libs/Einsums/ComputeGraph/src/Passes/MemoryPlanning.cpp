@@ -415,7 +415,8 @@ struct ManagedCount {
     std::unordered_set<void const *> const *hosted{nullptr};
 
     void replay(Graph &graph) {
-        for (auto &node : graph.nodes()) {
+        for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
+            Node const &node = graph.nodes()[i];
             if ((node.kind == OpKind::Materialize || node.kind == OpKind::Free) && node.estimated_bytes != 0) {
                 auto const *desc   = node.op_data.get_if<AllocDescriptor>();
                 auto const *handle = desc != nullptr ? graph.find_tensor(graph.buffer_of(desc->tensor_id)) : nullptr;
@@ -433,7 +434,7 @@ struct ManagedCount {
                 }
             }
             // A Setup body runs on the first replay only; the replay this models is a later one.
-            for_each_child_graph(node, [&](Graph &sub) { replay(sub); }, /*include_setup=*/false);
+            graph.for_each_child(i, [&](Graph &sub) { replay(sub); }, /*include_setup=*/false);
         }
     }
 };
@@ -488,9 +489,9 @@ void plan_tree(Graph &graph, NoteSkip const &note, bool apply, bool repeats, siz
                     fmt::format("graph '{}': {} bytes at the peak with an arena of {}, {} without, {} of them resident throughout, against "
                                 "a budget of {}",
                                 graph.name(), with, plan.arena_bytes, without, resident, budget));
-                for (auto &node : graph.nodes()) {
-                    bool const loop = node.kind == OpKind::Loop;
-                    for_each_child_graph(node, [&](Graph &sub) {
+                for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
+                    bool const loop = graph.nodes()[i].kind == OpKind::Loop;
+                    graph.for_each_child(i, [&](Graph &sub) {
                         plan_tree(sub, note, apply, repeats || loop, resident, arena_bytes, num_planned, tensor_bytes, peak_with_arena);
                     });
                 }
@@ -507,9 +508,9 @@ void plan_tree(Graph &graph, NoteSkip const &note, bool apply, bool repeats, siz
             apply_arena_plan(graph, plan);
         }
     }
-    for (auto &node : graph.nodes()) {
-        bool const loop = node.kind == OpKind::Loop;
-        for_each_child_graph(node, [&](Graph &sub) {
+    for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
+        bool const loop = graph.nodes()[i].kind == OpKind::Loop;
+        graph.for_each_child(i, [&](Graph &sub) {
             plan_tree(sub, note, apply, repeats || loop, resident, arena_bytes, num_planned, tensor_bytes, peak_with_arena);
         });
     }

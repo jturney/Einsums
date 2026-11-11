@@ -100,9 +100,7 @@ void collect_freeable(Graph &graph, std::vector<DescendantFreeable> &out) {
         out.push_back({.owner = &graph, .tid = tid});
     }
 
-    for (auto &node : graph.nodes()) {
-        for_each_child_graph(node, [&out](Graph &child) { collect_freeable(child, out); }, /*include_setup=*/false);
-    }
+    graph.for_each_subgraph([&out](Graph &child) { collect_freeable(child, out); }, /*include_setup=*/false);
 }
 
 } // namespace

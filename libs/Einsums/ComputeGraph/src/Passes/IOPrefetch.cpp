@@ -188,16 +188,16 @@ bool process(Graph &graph, size_t &num_prefetched) {
     // reads bubble up into the body), then hoist the body's reads out.
     // Indices are re-read each step because hoisting mutates the node list.
     for (size_t idx = 0; idx < graph.nodes().size(); idx++) {
-        // hoist_reads_from_body inserts hoisted reads into THIS graph's node
-        // vector, which can reallocate and invalidate any pointer into
-        // graph.nodes()[idx].op_data. Resolve the sub-graph owners to stable
-        // Graph* BEFORE hoisting, or the second hoist reads a dangling descriptor.
-        std::vector<Graph *> children;
-        for_each_child_graph(graph.nodes()[idx], [&children](Graph &child) { children.push_back(&child); }, /*include_setup=*/false);
-        for (Graph *child : children) {
-            modified |= process(*child, num_prefetched);
-            modified |= hoist_reads_from_body(graph, idx, *child, num_prefetched);
-        }
+        // hoist_reads_from_body inserts hoisted reads into THIS graph's node vector, which can
+        // reallocate it; for_each_child finds every body before the first visit, so the second
+        // hoist does not read a moved descriptor.
+        graph.for_each_child(
+            idx,
+            [&](Graph &child) {
+                modified |= process(child, num_prefetched);
+                modified |= hoist_reads_from_body(graph, idx, child, num_prefetched);
+            },
+            /*include_setup=*/false);
     }
 
     // Within-graph prefetch (sound) after any hoists landed here.
