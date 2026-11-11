@@ -70,9 +70,9 @@ std::vector<std::string> rewrite_subscript(PermuteDescriptor const &perm, std::v
 /// which reads the permute's output at @p slot (0=A, 1=B). Returns true on
 /// successful rewrite; the caller is responsible for marking the permute
 /// node for removal.
-bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t einsum_idx, size_t slot) {
-    auto *perm_desc = nodes[perm_idx].op_data.get_if<PermuteDescriptor>();
-    auto *ein_desc  = nodes[einsum_idx].op_data.get_if<EinsumDescriptor>();
+bool try_fuse(Graph &graph, std::vector<Node> const &nodes, size_t perm_idx, size_t einsum_idx, size_t slot) {
+    auto const *perm_desc = nodes[perm_idx].op_data.get_if<PermuteDescriptor>();
+    auto const *ein_desc  = nodes[einsum_idx].op_data.get_if<EinsumDescriptor>();
     if (!perm_desc || !ein_desc || !ein_desc->indices)
         return false;
     if (!can_fuse(*perm_desc))
@@ -87,13 +87,9 @@ bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t ei
     if (slot_indices.size() != perm_desc->c_indices.size())
         return false;
 
-    // The executor lambda captured `a_slot` / `b_slot` pointers by value,
-    // so we can't change WHICH slot it reads. Instead we repoint the
-    // PERMUTE-OUTPUT slot's data pointer and dims to match the
-    // PRE-PERMUTE tensor, the einsum then reads the original tensor's
-    // memory through its existing slot capture. Safe because we already
-    // checked the permute's output has exactly one consumer (this
-    // einsum); no other node observes the mutated slot.
+    // The einsum is rebuilt to read the pre-permute tensor. The permute-output slot is repointed
+    // at it too, so anything still resolving that slot follows the source; safe because the
+    // permute's output has exactly one consumer (this einsum).
     TensorId const    perm_input_tid  = nodes[perm_idx].inputs[0];
     TensorId const    perm_output_tid = nodes[perm_idx].outputs[0];
     TensorSlot const *src_slot        = graph.find_slot(perm_input_tid);  // points at the real tensor A
@@ -103,11 +99,6 @@ bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t ei
 
     auto new_slot_sub = rewrite_subscript(*perm_desc, slot_indices);
 
-    // Commit: live indices, descriptor snapshot, slot redirect, and
-    // graph-level edge. Order doesn't matter, none of these are
-    // observed until graph.execute() runs next.
-    set_operand_indices(*ein_desc, slot == 0 ? EinsumOperand::A : EinsumOperand::B, std::move(new_slot_sub));
-
     // Durable redirect (not a raw ptr copy) so the einsum keeps following
     // the source tensor if it is rebound after this pass runs.
     graph.redirect_slot(perm_output_tid, perm_input_tid);
@@ -115,14 +106,18 @@ bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t ei
     dst_slot->dims = src_slot->dims;
     dst_slot->name = src_slot->name;
 
-    nodes[einsum_idx].inputs[slot] = perm_input_tid;
-
-    // The GEMM hint was derived from the permuted copy, so it names the copy and its transpose
-    // flag; the einsum now reads the source through a rewritten index list.
-    refresh_gemm_hint(graph, nodes[einsum_idx]);
-
-    nodes[einsum_idx].label = fmt::format("[fused permute {} -> {}] {}", fmt::join(perm_desc->a_indices, ","),
-                                          fmt::join(perm_desc->c_indices, ","), nodes[einsum_idx].label);
+    std::string const fused =
+        fmt::format("[fused permute {} -> {}]", fmt::join(perm_desc->a_indices, ","), fmt::join(perm_desc->c_indices, ","));
+    graph.edit(einsum_idx, [&](NodeEdit &e) {
+        // Live indices and the descriptor snapshot together.
+        set_operand_indices(*e->op_data.get_if<EinsumDescriptor>(), slot == 0 ? EinsumOperand::A : EinsumOperand::B,
+                            std::move(new_slot_sub));
+        e->inputs[slot] = perm_input_tid;
+        // The GEMM hint was derived from the permuted copy, so it names the copy and its transpose
+        // flag; the einsum now reads the source through a rewritten index list.
+        refresh_gemm_hint(graph, e.node());
+        e->label = fmt::format("{} {}", fused, e->label);
+    });
     return true;
 }
 
@@ -137,7 +132,7 @@ bool PermuteFusion::transform(Graph &graph) {
     PassCounter const rewrites{_num_rewrites};
     graph.topological_sort();
 
-    auto &nodes = graph.nodes();
+    auto const &nodes = graph.nodes();
 
     if (nodes.size() < 2)
         return false;
