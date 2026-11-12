@@ -49,11 +49,12 @@ enum class KernelFamily : std::uint8_t {
     GemmLarge,     ///< One GEMM, threaded inside it by the packed loops or the vendor
     BatchedGemm,   ///< Many independent GEMMs, threaded across entries
     Permute,       ///< Tensor transpose (HPTT)
-    Elementwise    ///< Element-wise kernels, threaded across a group's members
+    Elementwise,   ///< Element-wise kernels, threaded across a group's members
+    GroupedPermute ///< Many independent permutes, threaded across a group's members
 };
 
 /// Number of entries in @ref KernelFamily.
-inline constexpr std::size_t kKernelFamilyCount = 5;
+inline constexpr std::size_t kKernelFamilyCount = 6;
 
 /**
  * @brief Working-set size classes, cut at the measured cache levels.
@@ -79,6 +80,7 @@ inline constexpr EnumNames kKernelFamilyNames{std::array<std::pair<KernelFamily,
                                                   {KernelFamily::BatchedGemm, "batched_gemm"},
                                                   {KernelFamily::Permute, "permute"},
                                                   {KernelFamily::Elementwise, "elementwise"},
+                                                  {KernelFamily::GroupedPermute, "grouped_permute"},
                                               }},
                                               "gemm_large"};
 
@@ -649,6 +651,7 @@ struct DeviceProfile {
             base = 0.80;
             break;
         case KernelFamily::Elementwise:
+        case KernelFamily::GroupedPermute: // memory-bound members side by side, the element-wise shape
             base = 0.70;
             break;
         }
@@ -715,6 +718,15 @@ struct DeviceProfile {
         unsigned const w = clamp_width(width);
         if (auto const *curve = find_curve(family, size_class, route); curve != nullptr) {
             return curve->speedup_at(w);
+        }
+        // A profile swept before grouped permutes had a cell of their own prices them from the
+        // element-wise curve: the same OpenMP loop over members, each member memory-bound. The
+        // single-permute curve it was priced from before is HPTT dividing ONE tensor, which dips
+        // where a loop over independent members keeps rising.
+        if (family == KernelFamily::GroupedPermute) {
+            if (auto const *curve = find_curve(KernelFamily::Elementwise, size_class, route); curve != nullptr) {
+                return curve->speedup_at(w);
+            }
         }
         return default_parallel_speedup(family, size_class, w);
     }
@@ -1000,6 +1012,19 @@ class EINSUMS_EXPORT DeviceProfileDB {
     /// Find best-matching profile for a brand string and device type.
     [[nodiscard]] DeviceProfile const *find_best_match(std::string const &brand, DeviceType type) const;
 };
+
+/**
+ * @brief Revision of the cells @ref measure_thread_efficiency times, stored with a profile's curves.
+ *
+ * Raised when a cell changes what it times, so a profile swept before keeps every measurement
+ * except the curves of the families whose cell changed, which price from the model until the
+ * machine is swept again.
+ *
+ * - 1: the first sweep (also a profile that records no revision).
+ * - 2: the batched-GEMM cell runs the grouped batched GEMM a node runs, a dynamic loop, instead of
+ *   a static loop over GEMM calls written for the cell; grouped permutes get a cell.
+ */
+inline constexpr int kThreadSweepRevision = 2;
 
 /// Knobs for @ref measure_thread_efficiency. The defaults are what
 /// `einsums-tune` runs; the caps are what keep it to tens of seconds.

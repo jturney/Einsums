@@ -37,6 +37,9 @@ struct ModelledCost {
     KernelFamily family{KernelFamily::Elementwise}; ///< The speedup curve it scales along
     std::size_t  bytes{0};                          ///< Working set, for the curve's size class
     CurveRoute   route{CurveRoute::Einsums};        ///< Whose threads widen it; see @ref CurveRoute
+    /// Independent members a grouped or batched node runs across its threads; 0 for any other
+    /// node. A node cannot keep more threads busy than it has members.
+    std::size_t members{0};
     /// A registered descriptor's own speedup curve, overriding @ref family's; empty otherwise.
     std::function<double(unsigned)> speedup;
 };

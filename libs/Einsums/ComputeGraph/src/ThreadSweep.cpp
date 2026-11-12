@@ -14,6 +14,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/BLAS.hpp>
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
 #include <Einsums/ComputeGraph/Detail/WidthGuard.hpp>
@@ -117,6 +118,10 @@ std::vector<Cell> sweep_cells() {
         {.family = KernelFamily::Elementwise, .size_class = SizeClass::L2Resident},
         {.family = KernelFamily::Elementwise, .size_class = SizeClass::LLCResident},
         {.family = KernelFamily::Elementwise, .size_class = SizeClass::Streaming},
+        {.family = KernelFamily::GroupedPermute, .size_class = SizeClass::L1Resident},
+        {.family = KernelFamily::GroupedPermute, .size_class = SizeClass::L2Resident},
+        {.family = KernelFamily::GroupedPermute, .size_class = SizeClass::LLCResident},
+        {.family = KernelFamily::GroupedPermute, .size_class = SizeClass::Streaming},
     };
 }
 
@@ -188,6 +193,9 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
         einsums::Tensor<double, 2>              A2, B2, C2;
         std::vector<einsums::Tensor<double, 1>> group_a, group_b, group_c;
         std::vector<einsums::Tensor<double, 2>> batch_a, batch_b, batch_c;
+        std::vector<einsums::Tensor<double, 3>> perm_a, perm_c;
+        std::vector<double const *>             batch_ap, batch_bp;
+        std::vector<double *>                   batch_cp;
 
         // The packed-loop GEMM cell runs the string einsum exactly as a graph
         // node does: runtime views, and a site pinned to the packed route, as
@@ -240,15 +248,22 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
                 fill(batch_b.back().data(), n * n);
                 batch_c.back().zero();
             }
-            // The width goes to the loop over entries; each entry's BLAS call
-            // stays serial, which is how grouped_batched_gemm runs.
-            run = [&batch_a, &batch_b, &batch_c, entries] {
-                auto const count = static_cast<long>(entries);
-#pragma omp parallel for schedule(static)
-                for (long e = 0; e < count; e++) {
-                    auto const idx = static_cast<size_t>(e);
-                    einsums::linear_algebra::gemm<false, false>(1.0, batch_a[idx], batch_b[idx], 0.0, &batch_c[idx]);
-                }
+            // Timed through the call a grouped batched GEMM node makes: one group of `entries`
+            // members, its dynamic loop across them, each member's GEMM serial inside it, so the
+            // curve is the node's kernel and its schedule rather than a loop written for the cell.
+            for (size_t e = 0; e < entries; e++) {
+                batch_ap.push_back(batch_a[e].data());
+                batch_bp.push_back(batch_b[e].data());
+                batch_cp.push_back(batch_c[e].data());
+            }
+            run = [&batch_ap, &batch_bp, &batch_cp, entries, n] {
+                char const   no    = 'N';
+                auto const   ext   = static_cast<blas::int_t>(n);
+                auto const   size  = static_cast<blas::int_t>(entries);
+                double const alpha = 1.0;
+                double const beta  = 0.0;
+                blas::gemm_batch_grouped<double>(&no, &no, &ext, &ext, &ext, &alpha, batch_ap.data(), &ext, batch_bp.data(), &ext, &beta,
+                                                 batch_cp.data(), &ext, 1, &size);
             };
             break;
         }
@@ -259,6 +274,27 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
             fill(A2.data(), n * n);
             C2.zero();
             run = [&A2, &C2] { einsums::tensor_permute::permute("ji <- ij", 0.0, &C2, 1.0, A2); };
+            break;
+        }
+        case KernelFamily::GroupedPermute: {
+            // What a grouped permute node runs: an OpenMP loop over independent members, each a
+            // rank-3 reordering kept serial inside it, over the same member count as the batched
+            // cell. A single permute's curve is HPTT dividing ONE tensor, which is not this.
+            size_t const entries = std::max<size_t>(2, options.batch_entries);
+            auto const   side    = std::max<size_t>(
+                4, static_cast<size_t>(std::cbrt(static_cast<double>(bytes) / (2.0 * sizeof(double) * static_cast<double>(entries)))));
+            perm_a.reserve(entries);
+            perm_c.reserve(entries);
+            for (size_t e = 0; e < entries; e++) {
+                perm_a.emplace_back("sweep_pga", side, side, side);
+                perm_c.emplace_back("sweep_pgc", side, side, side);
+                fill(perm_a.back().data(), side * side * side);
+                perm_c.back().zero();
+            }
+            run = [&perm_a, &perm_c, entries] {
+                detail::run_grouped_members(
+                    entries, [&](std::size_t idx) { einsums::tensor_permute::permute("abc <- acb", 0.0, &perm_c[idx], 1.0, perm_a[idx]); });
+            };
             break;
         }
         case KernelFamily::Elementwise: {

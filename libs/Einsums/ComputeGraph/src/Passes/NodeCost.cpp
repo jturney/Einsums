@@ -102,6 +102,11 @@ KernelFamily family_for(Node const &node, std::size_t bytes, DeviceProfile const
 
     case KindClass::Permute:
     case KindClass::TileMove:
+        // A grouped permute is a loop over independent members, not HPTT dividing one tensor, and
+        // the two scale differently: the member loop keeps rising where one tensor's split dips.
+        if (node.kind == OpKind::GroupedPermute) {
+            return KernelFamily::GroupedPermute;
+        }
         // A tile gather/scatter scales the way a permute does, so it shares the
         // curve. It is still PRICED as plain traffic below: the two questions
         // have different answers for this one class, deliberately.
@@ -112,6 +117,34 @@ KernelFamily family_for(Node const &node, std::size_t bytes, DeviceProfile const
         break;
     }
     return KernelFamily::Elementwise;
+}
+
+/// How many independent members a grouped or batched node runs across its threads, or 0 for a
+/// node that is not one. Every grouped descriptor counts its members in `total`.
+std::size_t member_count(Node const &node) {
+    auto const count = [](int total) { return static_cast<std::size_t>(std::max(total, 0)); };
+    if (auto const *d = node.op_data.get_if<GroupedElementwiseDescriptor>(); d != nullptr) {
+        return count(d->total);
+    }
+    if (auto const *d = node.op_data.get_if<GroupedBatchedGemmDescriptor>(); d != nullptr) {
+        return count(d->total);
+    }
+    if (auto const *d = node.op_data.get_if<BatchedGemmDescriptor>(); d != nullptr) {
+        return count(static_cast<int>(d->batch_count));
+    }
+    if (auto const *d = node.op_data.get_if<GroupedDotDescriptor>(); d != nullptr) {
+        return count(d->total);
+    }
+    if (auto const *d = node.op_data.get_if<GroupedAxpbyDescriptor>(); d != nullptr) {
+        return count(d->total);
+    }
+    if (auto const *d = node.op_data.get_if<GroupedSandwichDescriptor>(); d != nullptr) {
+        return count(d->total);
+    }
+    if (auto const *d = node.op_data.get_if<GroupedGatherRotateDescriptor>(); d != nullptr) {
+        return count(d->total);
+    }
+    return 0;
 }
 
 /// The bytes a node touches: every distinct buffer it reads or writes, counted
@@ -399,14 +432,16 @@ std::optional<ModelledCost> hooked_cost(Graph const &graph, Node const &node, De
 ModelledCost model_cost(Graph const &graph, Node const &node, DeviceProfile const &profile, ContractionPriceMemo *memo) {
     std::size_t const bytes = working_set_bytes(graph, node);
     if (auto hooked = hooked_cost(graph, node, profile, bytes)) {
+        hooked->members = member_count(node);
         return std::move(*hooked);
     }
 
     GemmShape const shape = gemm_shape_of(graph, node);
     ModelledCost    cost;
-    cost.bytes  = bytes;
-    cost.family = family_for(node, bytes, profile, shape.valid() ? shape.flops() : 0.0);
-    cost.route  = curve_route_for(node);
+    cost.bytes   = bytes;
+    cost.family  = family_for(node, bytes, profile, shape.valid() ? shape.flops() : 0.0);
+    cost.route   = curve_route_for(node);
+    cost.members = member_count(node);
 
     switch (kind_class(node.kind)) {
     case KindClass::ControlFlow:

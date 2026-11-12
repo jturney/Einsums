@@ -370,6 +370,36 @@ TEST_CASE("ThreadPlanning - the area never exceeds the makespan estimate", "[Com
     }
 }
 
+// A grouped node's parallelism is its members: OpenMP hands each to one thread, so past that many
+// threads the rest wait. Priced from a curve swept over 64 members, a grouped permute of two was
+// credited the eight-thread speedup and widened to eight. Its speedup now stops at its member count,
+// and the same curve still widens a group large enough to use the machine.
+TEST_CASE("ThreadPlanning - a grouped node is not widened past its members", "[ComputeGraph][ThreadPlanning]") {
+    auto const plan = [](int members) {
+        cg::CostModel model                 = cg::CostModel::built_in();
+        model.cpu.max_threads               = 8;
+        model.cpu.kernel_launch_overhead_us = 0.0;
+        model.cpu.thread_efficiency         = {
+            cg::EfficiencyCurve{.family = cg::KernelFamily::GroupedPermute, .widths = {1, 2, 4, 8}, .speedup = {1.0, 1.9, 3.6, 6.5}},
+            // Flat, so a grouped permute priced as one tensor's permute is not widened at all.
+            cg::EfficiencyCurve{.family = cg::KernelFamily::Permute, .widths = {1, 2, 4, 8}, .speedup = {1.0, 1.0, 1.0, 1.0}}};
+
+        cg::Graph  graph("one_grouped_permute");
+        auto const in   = shell(graph, "in", kFatExtent);
+        auto const out  = shell(graph, "out", kFatExtent);
+        cg::Node   node = work_node("grouped", in, out, cg::OpKind::GroupedPermute);
+        node.op_data    = cg::GroupedElementwiseDescriptor{.total = members};
+        graph.add_node(std::move(node));
+
+        cg::passes::ThreadPlanning planner(model, 8);
+        planner.run(graph);
+        return width_of(graph, 0);
+    };
+
+    CHECK(plan(2) == 2);
+    CHECK(plan(64) == 8);
+}
+
 // The width search used to judge a step by max(critical path, area / P), which cannot see that
 // wide nodes on parallel branches cannot overlap. Three equal independent nodes on four threads,
 // each 1.8x faster at width 2: widening all three to 2 halves the critical path and leaves the

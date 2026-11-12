@@ -795,6 +795,7 @@ json::Object write_profile(DeviceProfile const &p) {
     obj.set("permute_efficiency", json::Value{std::move(permute)});
 
     obj.set("max_threads", static_cast<std::int64_t>(p.max_threads));
+    obj.set("thread_sweep_revision", static_cast<std::int64_t>(kThreadSweepRevision));
 
     // One row per (family, size class, width) rather than one object per curve
     // with a nested widths array. The shape is kept for the sake of profile
@@ -916,13 +917,23 @@ DeviceProfile read_profile(json::Object const &obj) {
     // flat; read as either route they would price a kernel they never timed,
     // so they are dropped and those families take the default model until the
     // machine is swept again.
+    //
+    // A curve whose cell has changed since the profile was swept is dropped the same way and for
+    // the same reason: it times a kernel the nodes no longer run. Revision 2 replaced the
+    // batched-GEMM cell (see kThreadSweepRevision).
     std::map<std::tuple<std::uint8_t, std::uint8_t, std::uint8_t>, EfficiencyCurve> curves;
     std::size_t                                                                     dropped_unrouted = 0;
+    std::size_t                                                                     dropped_revised  = 0;
+    auto const sweep_revision = static_cast<int>(number_or(obj, "thread_sweep_revision", 1.0));
     for_each_object(obj, "thread_efficiency", [&](json::Object const &entry) {
         KernelFamily family{};
         SizeClass    size_class{};
         if (!kernel_family_from_string(string_or(entry, "family"), family) ||
             !size_class_from_string(string_or(entry, "size_class"), size_class)) {
+            return;
+        }
+        if (sweep_revision < 2 && family == KernelFamily::BatchedGemm) {
+            dropped_revised++;
             return;
         }
         CurveRoute route{CurveRoute::Einsums};
@@ -976,6 +987,14 @@ DeviceProfile read_profile(json::Object const &obj) {
             EINSUMS_LOG_WARN("The hardware profile's GEMM and element-wise thread curves were measured before curves named the "
                              "kernel they timed, and timed the vendor's kernels rather than the ones a widened node runs; they are "
                              "ignored and the built-in model prices those families. Re-run einsums-tune to measure them.");
+        }
+    }
+    if (dropped_revised > 0) {
+        static std::atomic<bool> warned{false};
+        if (!warned.exchange(true)) {
+            EINSUMS_LOG_WARN("The hardware profile's batched-GEMM thread curves were measured by a cell that timed a different "
+                             "loop than a grouped batched GEMM runs; they are ignored and the built-in model prices that family. "
+                             "Re-run einsums-tune to measure it.");
         }
     }
 

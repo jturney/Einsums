@@ -479,6 +479,86 @@ TEST_CASE("Thread axis - a profile with no curves round-trips cleanly", "[Comput
 // Calibration sweep mechanics
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// A profile swept before revision 2 timed the batched-GEMM cell as a static loop over GEMM calls,
+// not the dynamic loop a grouped batched GEMM node runs. Loading such a profile drops exactly the
+// batched-GEMM curves and keeps every other one, and a profile written now keeps them all.
+TEST_CASE("Thread axis - a profile swept before the batched cell changed drops its batched curves", "[ComputeGraph][CostModel]") {
+    cg::CostModel original;
+    original.cpu.name              = "Revision 1 CPU";
+    original.cpu.max_threads       = 4;
+    original.cpu.thread_efficiency = {
+        {.family = cg::KernelFamily::BatchedGemm, .size_class = cg::SizeClass::L2Resident, .widths = {1, 2}, .speedup = {1.0, 0.86}},
+        {.family = cg::KernelFamily::Permute, .size_class = cg::SizeClass::Streaming, .widths = {1, 2}, .speedup = {1.0, 1.7}},
+        {.family = cg::KernelFamily::GroupedPermute, .size_class = cg::SizeClass::L2Resident, .widths = {1, 2}, .speedup = {1.0, 1.9}},
+    };
+
+    std::string const path = "test_thread_curves_revision.json";
+    REQUIRE(original.save_json(path).has_value());
+
+    SECTION("written now, every curve loads") {
+        auto loaded = cg::CostModel::load_json(path);
+        REQUIRE(loaded.has_value());
+        auto const &cpu = loaded.value().cpu;
+        CHECK(cpu.thread_efficiency.size() == 3);
+        auto const *grouped = cpu.find_curve(cg::KernelFamily::GroupedPermute, cg::SizeClass::L2Resident);
+        REQUIRE(grouped != nullptr); // and the new family's name survives the round trip
+        CHECK(grouped->speedup[1] == Catch::Approx(1.9));
+    }
+
+    SECTION("with no revision recorded, the batched-GEMM curve is dropped") {
+        std::string text;
+        {
+            std::ifstream      in(path);
+            std::ostringstream buffer;
+            buffer << in.rdbuf();
+            text = buffer.str();
+        }
+        std::string const stripped = std::regex_replace(text, std::regex(R"re("thread_sweep_revision"\s*:\s*[0-9]+\s*,?)re"), "");
+        REQUIRE(stripped != text);
+        {
+            std::ofstream out(path, std::ios::trunc);
+            out << stripped;
+        }
+        auto loaded = cg::CostModel::load_json(path);
+        REQUIRE(loaded.has_value());
+        auto const &cpu = loaded.value().cpu;
+        CHECK(cpu.find_curve(cg::KernelFamily::BatchedGemm, cg::SizeClass::L2Resident) == nullptr);
+        CHECK(cpu.find_curve(cg::KernelFamily::Permute, cg::SizeClass::Streaming) != nullptr);
+        CHECK(cpu.find_curve(cg::KernelFamily::GroupedPermute, cg::SizeClass::L2Resident) != nullptr);
+    }
+    std::remove(path.c_str());
+}
+
+// A grouped permute was priced from the single-permute curve, HPTT dividing one tensor, which dips
+// from two threads to four; the DLPNO (T) grouped permute measured 2.8x at eight. It has a curve of
+// its own now, and a profile swept before it existed prices it from the element-wise curve: the same
+// loop over members, each memory-bound. With neither, the model answers.
+TEST_CASE("Thread axis - a grouped permute reads its own curve, else the element-wise one", "[ComputeGraph][CostModel]") {
+    auto p           = pinned_profile();
+    p.max_threads    = 8;
+    auto const curve = [](cg::KernelFamily family, std::vector<double> speedup) {
+        return cg::EfficiencyCurve{
+            .family = family, .size_class = cg::SizeClass::Streaming, .widths = {1, 2, 4, 8}, .speedup = std::move(speedup)};
+    };
+
+    SECTION("its own curve") {
+        p.thread_efficiency = {curve(cg::KernelFamily::GroupedPermute, {1.0, 1.9, 2.4, 2.8}),
+                               curve(cg::KernelFamily::Elementwise, {1.0, 1.5, 1.6, 1.7}),
+                               curve(cg::KernelFamily::Permute, {1.0, 1.86, 1.74, 2.05})};
+        CHECK(p.parallel_speedup(cg::KernelFamily::GroupedPermute, kStreamingBytes, 8) == Catch::Approx(2.8));
+    }
+    SECTION("the element-wise curve when it has none") {
+        p.thread_efficiency = {curve(cg::KernelFamily::Elementwise, {1.0, 1.5, 1.6, 1.7}),
+                               curve(cg::KernelFamily::Permute, {1.0, 1.86, 1.74, 2.05})};
+        CHECK(p.parallel_speedup(cg::KernelFamily::GroupedPermute, kStreamingBytes, 8) == Catch::Approx(1.7));
+    }
+    SECTION("the model when there is neither") {
+        p.thread_efficiency = {curve(cg::KernelFamily::Permute, {1.0, 1.86, 1.74, 2.05})};
+        CHECK(p.parallel_speedup(cg::KernelFamily::GroupedPermute, kStreamingBytes, 8) ==
+              Catch::Approx(cg::DeviceProfile::default_parallel_speedup(cg::KernelFamily::GroupedPermute, cg::SizeClass::Streaming, 8)));
+    }
+}
+
 TEST_CASE("Thread axis - sweep populates curves", "[ComputeGraph][CostModel]") {
     // A drastically shortened sweep: two rungs, tiny working sets, one timed
     // run. This asserts the mechanics, never the numbers, which belong to
@@ -515,7 +595,8 @@ TEST_CASE("Thread axis - sweep populates curves", "[ComputeGraph][CostModel]") {
         CHECK(has(family, cg::CurveRoute::Einsums));
         CHECK(has(family, cg::CurveRoute::Vendor));
     }
-    for (auto const family : {cg::KernelFamily::BatchedGemm, cg::KernelFamily::Permute, cg::KernelFamily::Elementwise}) {
+    for (auto const family :
+         {cg::KernelFamily::BatchedGemm, cg::KernelFamily::Permute, cg::KernelFamily::Elementwise, cg::KernelFamily::GroupedPermute}) {
         INFO(cg::to_string(family));
         CHECK(has(family, cg::CurveRoute::Einsums));
         CHECK_FALSE(has(family, cg::CurveRoute::Vendor));

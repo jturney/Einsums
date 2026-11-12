@@ -41,13 +41,16 @@ struct NodeCost {
     std::size_t  bytes{0};                          ///< Working set, for the size class
     CurveRoute   route{CurveRoute::Einsums};        ///< Whose threads widen it
     bool         frozen{false};                     ///< Width is 1 and stays 1
+    std::size_t  members{0};                        ///< Members of a grouped node; 0 when not one
     /// A registered descriptor's own speedup curve, overriding @ref family's.
     std::function<double(unsigned)> speedup;
 };
 
-/// How many times faster than serial @p c runs at @p width.
+/// How many times faster than serial @p c runs at @p width. A grouped node's members are its
+/// parallelism, so past that many threads it gains nothing: it runs as it does at its member count.
 double speedup_at(NodeCost const &c, DeviceProfile const &profile, unsigned width) {
-    return c.speedup ? c.speedup(width) : profile.parallel_speedup(c.family, c.bytes, width, c.route);
+    unsigned const w = c.members > 0 ? static_cast<unsigned>(std::min<std::size_t>(width, c.members)) : width;
+    return c.speedup ? c.speedup(w) : profile.parallel_speedup(c.family, c.bytes, w, c.route);
 }
 
 /// Loop and Conditional, which this pass prices by the bodies it plans rather than by the model.
@@ -321,6 +324,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         c.family  = model.family;
         c.route   = model.route;
         c.speedup = model.speedup;
+        c.members = model.members;
 
         auto const sit      = samples.find(node.id);
         bool const measured = sit != samples.end();
