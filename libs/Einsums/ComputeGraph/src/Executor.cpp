@@ -282,6 +282,11 @@ struct DataflowExecutor::Scaffold {
     /// Scratch for the root-seeding batch, reused across replays.
     std::vector<std::function<void()>> root_batch;
 
+    /// The root the calling thread runs itself, chosen before seeding; `n` when none.
+    size_t caller_candidate{0};
+    /// That root once it was admitted at seeding, so the caller runs it; `n` when it was not.
+    size_t caller_root{0};
+
     /// Interned zone name per node, so a profiled run does not intern a label
     /// per task. Only filled while recording; keyed to the graph and node list
     /// it was built for, since a wrong name is cosmetic but a stale one is
@@ -713,6 +718,14 @@ void DataflowExecutor::Scaffold::enqueue_task(size_t i, std::vector<std::functio
     // drain_deferred, which can run concurrently with the seeding loop - hence
     // an explicit parameter rather than scaffold state those paths could race
     // on.
+    if (batch == &root_batch && i == caller_candidate) {
+        // Kept for the calling thread, which runs it on its own team as soon as seeding is done
+        // instead of waiting in help_until for a woken worker to take it. Only a root admitted
+        // while seeding gets here: one the budget parked comes back through its continuation
+        // with no batch and is queued like any other node.
+        caller_root = i;
+        return;
+    }
     if (node.async_start && node.async_finish) {
         if (batch != nullptr) {
             batch->emplace_back([this, i]() { run_async_start(i); });
@@ -777,6 +790,26 @@ void DataflowExecutor::execute(Graph &graph) {
     auto const &deps = *s.deps;
     auto       &pool = *s.pool;
 
+    // The calling thread keeps one root and runs it itself: the first to be admitted in the
+    // plan's order, so the head of the longest path starts at once on the team this thread
+    // already has. Handing it to the pool instead woke every parked worker for it, ran it on
+    // whichever won the race - on that worker's own team, which sleeps between uses - and left
+    // this thread polling for the end. On a graph of one node that was all the node did: placed
+    // at a width, it ran 6 to 27% slower than the same node run here at the same width.
+    //
+    // An async node's halves are tasks by design, so it is never kept.
+    s.caller_candidate = n;
+    s.caller_root      = n;
+    for (size_t i = 0; i < n; i++) {
+        Node const &node = graph.nodes()[i];
+        if (!deps.predecessors[i].empty() || (node.async_start && node.async_finish)) {
+            continue;
+        }
+        if (s.caller_candidate == n || (s.widths_active && s.priority[i] > s.priority[s.caller_candidate])) {
+            s.caller_candidate = i;
+        }
+    }
+
     // Seed the dependency-free roots in one batch; everything else
     // self-schedules. Submitting them one at a time cost a lock and a
     // condition-variable signal each, which on a wide graph was most of the
@@ -788,6 +821,10 @@ void DataflowExecutor::execute(Graph &graph) {
         }
     }
     pool.submit_bare_batch(s.root_batch);
+
+    if (s.caller_root != n) {
+        s.run_node(s.caller_root);
+    }
 
     // The calling thread work-steals while waiting instead of parking.
     pool.help_until([&s]() { return s.completed.load(std::memory_order_acquire) == s.n; });

@@ -14,6 +14,7 @@
 #    include <Einsums/Profile/Profile.hpp>
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <optional>
 #include <random>
@@ -264,7 +265,8 @@ void TaskPool::submit_bare_batch(std::vector<std::function<void()>> &tasks) {
     }
     ensure_started();
 
-    _total_submitted.fetch_add(tasks.size(), std::memory_order_relaxed);
+    size_t const count = tasks.size();
+    _total_submitted.fetch_add(count, std::memory_order_relaxed);
 
     if (tls_worker_id >= 0 && std::cmp_less(tls_worker_id, _workers.size())) {
         auto &deque = _workers[static_cast<size_t>(tls_worker_id)]->deque;
@@ -280,9 +282,12 @@ void TaskPool::submit_bare_batch(std::vector<std::function<void()>> &tasks) {
     }
     tasks.clear();
 
-    // notify_all here, unlike enqueue: a batch can feed every parked worker.
-    if (_parked_count.load(std::memory_order_relaxed) > 0) {
-        _notify_cv.notify_all();
+    // One wake per task, up to the parked workers: a batch can feed every parked worker, but a
+    // batch of one woke all ten for a single task, and the nine that found nothing each spun
+    // through its steal attempts on a core the task's own team wanted.
+    size_t const parked = _parked_count.load(std::memory_order_relaxed);
+    for (size_t k = 0; k < std::min(count, parked); k++) {
+        _notify_cv.notify_one();
     }
 }
 

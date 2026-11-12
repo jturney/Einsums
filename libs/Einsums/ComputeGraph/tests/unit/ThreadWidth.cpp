@@ -158,6 +158,57 @@ TEST_CASE("ThreadWidth - a wide node leaves its thread as it found it", "[Comput
     }
 }
 
+// A root handed to the pool woke every parked worker, ran on whichever won the race - on that
+// worker's own OpenMP team, which sleeps between uses - and left the calling thread polling. A
+// grouped node alone in its graph ran 6 to 27% slower placed at a width that way than the same node
+// on the calling thread at the same width. The calling thread now keeps one admitted root and runs
+// it itself, the one with the highest admission priority.
+TEST_CASE("ThreadWidth - the calling thread runs a lone root at its width", "[ComputeGraph][Executor][ThreadWidth]") {
+    if (!openmp_ceiling_is_settable()) {
+        SKIP("build has no OpenMP runtime, so there is no thread ceiling to plan");
+    }
+
+    int const           baseline = hardware::get_max_threads();
+    std::uint16_t const wide     = distinct_width(baseline);
+
+    Observation observed;
+    cg::Graph   graph("lone_root");
+    graph.add_node(observing_node("wide", wide, &observed));
+
+    cg::DataflowExecutor df;
+    for (int replay = 0; replay < 10; replay++) {
+        graph.execute(df);
+        REQUIRE(observed.worker_id.load() == -1);
+        REQUIRE(observed.max_threads.load() == static_cast<int>(wide));
+        REQUIRE(hardware::get_max_threads() == baseline);
+    }
+}
+
+TEST_CASE("ThreadWidth - the calling thread takes the root admitted first", "[ComputeGraph][Executor][ThreadWidth]") {
+    if (!openmp_ceiling_is_settable()) {
+        SKIP("build has no OpenMP runtime, so there is no thread ceiling to plan");
+    }
+
+    // Two independent roots that fit the budget together (one unit, and the width every other case
+    // here plans), so both are admitted while seeding; the later one in node order carries the
+    // longer path to a sink, so it is the one the plan starts first.
+    std::uint16_t const wide = distinct_width(hardware::get_max_threads());
+    Observation         low;
+    Observation         high;
+    cg::Graph           graph("two_roots");
+    graph.add_node(observing_node("low", 1, &low));
+    graph.add_node(observing_node("high", wide, &high));
+    graph.set_schedule(0, {.thread_width = 1, .admission_priority = 5});
+    graph.set_schedule(1, {.thread_width = wide, .admission_priority = 9});
+
+    cg::DataflowExecutor df;
+    for (int replay = 0; replay < 10; replay++) {
+        graph.execute(df);
+        // Whatever ran the other root - a worker, or this thread helping once its own was done.
+        REQUIRE(high.worker_id.load() == -1);
+    }
+}
+
 TEST_CASE("ThreadWidth - the calling thread survives a wide replay", "[ComputeGraph][Executor][ThreadWidth]") {
     if (!openmp_ceiling_is_settable()) {
         SKIP("build has no OpenMP runtime, so there is no thread ceiling to plan");
