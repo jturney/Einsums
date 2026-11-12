@@ -546,7 +546,8 @@ struct GraphState {
     /// Where a cold thread plan is in its measured trial. @see plan_threads
     enum class ThreadPlanTrial : std::uint8_t {
         None,      ///< No decision pending: the widths on the nodes are final.
-        Armed,     ///< Cold model plan is live; the re-plan fires after the next replay.
+        Armed,     ///< Cold model plan is live; the next replay records the timings the re-plan reads.
+        Measured,  ///< A replay has recorded timings; the re-plan runs when the next replay starts.
         Candidate, ///< The re-planned widths are live and this replay is timing them.
         Incumbent, ///< The cold widths are back and this replay is timing them.
     };
@@ -3094,7 +3095,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *   timings, and that plan is final.
      * - A graph that has never replayed is planned from the cost model.
      *   Replay 1 warms up and records timings, and a re-plan is computed from
-     *   them; if it chooses the same widths the trial ends there (keeping the
+     *   them when replay 2 starts, so a graph that is executed once never pays
+     *   for one; if it chooses the same widths the trial ends there (keeping the
      *   re-plan's measured admission priorities). Otherwise replay 2 runs the
      *   re-planned widths, replay 3 runs the cold widths again - both
      *   steady-state - and the graph keeps whichever replay was faster, the
@@ -3117,7 +3119,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_EXPOSE bool plan_threads(bool freeze = false);
 
     /// Whether the thread plan is still inside its measured trial window: a
-    /// re-plan is waiting for the next completed replay, or the trial replays
+    /// re-plan is waiting for the next replay, or the trial replays
     /// are still being timed. False once the widths are final. @see plan_threads
     APIARY_EXPOSE APIARY_GETTER("thread_replan_armed") [[nodiscard]] bool thread_replan_armed() const;
 
@@ -5235,6 +5237,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Run the width planner for @p threads threads. Shared by
     /// @ref plan_threads and the trial re-plan, neither of which may arm.
     bool run_thread_planner(unsigned threads);
+
+    /// Run the trial's re-plan if a replay has recorded timings for it. Called
+    /// at the start of a replay, before its wall clock starts, so the replay
+    /// that times the re-planned widths does not also time the planner.
+    /// @see plan_threads
+    void begin_replay_thread_plan();
 
     /// Advance the thread-plan trial, if one is open. Called at the end of a
     /// completed replay with that replay's wall-clock time. @see plan_threads

@@ -860,37 +860,53 @@ constexpr double kThreadPlanTrialMargin = 0.05;
 
 } // namespace
 
+void Graph::begin_replay_thread_plan() {
+    if (_plan_trial != ThreadPlanTrial::Measured) {
+        return;
+    }
+    // The re-plan runs here, as the second replay starts, and not where the
+    // first replay ends. That is the same point in a graph's life whenever a
+    // second replay comes, and it never comes for a graph built and executed
+    // once (one per chunk of a sweep): a full planner run there bought nothing
+    // and took longer than the graph's own work.
+    //
+    // Disarmed BEFORE planning, so a planner that throws does not leave the
+    // graph re-planning at the start of every replay from here on.
+    _plan_trial = ThreadPlanTrial::None;
+
+    _plan_incumbent.clear();
+    collect_thread_plan(*this, _plan_incumbent);
+
+    // The first replay's timings are still on the graph: a replay clears them
+    // only after this.
+    auto &budget = task_pool::WidthBudget::get_singleton();
+    budget.sync_machine_width();
+    run_thread_planner(std::max(1U, budget.total()));
+
+    _plan_candidate.clear();
+    collect_thread_plan(*this, _plan_candidate);
+    if (same_widths(_plan_candidate, _plan_incumbent)) {
+        // The timings agree with the model about the widths, so there is
+        // nothing to referee; the re-plan's measured admission priorities
+        // are kept and the plan is final.
+        _plan_incumbent.clear();
+        _plan_candidate.clear();
+        return;
+    }
+    // The candidate's widths are live now; the replay starting times them.
+    _plan_trial = ThreadPlanTrial::Candidate;
+}
+
 void Graph::finish_replay_thread_plan(double replay_ms) {
     switch (_plan_trial) {
     case ThreadPlanTrial::None:
+    case ThreadPlanTrial::Measured:
         return;
 
-    case ThreadPlanTrial::Armed: {
-        // Disarmed BEFORE planning, so a planner that throws does not leave the
-        // graph re-planning at the end of every replay from here on.
-        _plan_trial = ThreadPlanTrial::None;
-
-        _plan_incumbent.clear();
-        collect_thread_plan(*this, _plan_incumbent);
-
-        auto &budget = task_pool::WidthBudget::get_singleton();
-        budget.sync_machine_width();
-        run_thread_planner(std::max(1U, budget.total()));
-
-        _plan_candidate.clear();
-        collect_thread_plan(*this, _plan_candidate);
-        if (same_widths(_plan_candidate, _plan_incumbent)) {
-            // The timings agree with the model about the widths, so there is
-            // nothing to referee; the re-plan's measured admission priorities
-            // are kept and the plan is final.
-            _plan_incumbent.clear();
-            _plan_candidate.clear();
-            return;
-        }
-        // The candidate's widths are live now; the next replay times them.
-        _plan_trial = ThreadPlanTrial::Candidate;
+    case ThreadPlanTrial::Armed:
+        // This replay's timings are what the re-plan reads, when the next one starts.
+        _plan_trial = ThreadPlanTrial::Measured;
         return;
-    }
 
     case ThreadPlanTrial::Candidate: {
         _plan_candidate_ms = replay_ms;

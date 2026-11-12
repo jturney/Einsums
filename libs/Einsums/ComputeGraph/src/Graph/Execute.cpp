@@ -204,6 +204,10 @@ void Graph::execute() {
         return;
     }
 
+    // Before the wall clock starts, so a replay that times re-planned widths
+    // does not also time the planner.
+    begin_replay_thread_plan();
+
     // Wall clock of this replay, for the thread-plan trial: replays are the
     // only thing the trial's two sides can be compared on.
     auto const replay_t0 = std::chrono::steady_clock::now();
@@ -628,6 +632,7 @@ void Graph::execute(Executor &executor) {
 }
 
 void Graph::run_executor(Executor &executor) {
+    begin_replay_thread_plan();
     auto const        replay_t0 = std::chrono::steady_clock::now();
     bool const        outermost = _run_context->enter();
     LeaveReplay const leave{*_run_context};

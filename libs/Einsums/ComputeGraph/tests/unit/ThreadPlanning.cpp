@@ -465,9 +465,9 @@ TEST_CASE("ThreadPlanning - a cold plan runs a measured trial, then freezes", "[
 
     cg::DataflowExecutor df;
 
-    // Replay 1 records timings and computes the candidate plan. If the
-    // candidate's widths agree with the cold plan's the trial closes here;
-    // otherwise replay 2 times the candidate and replay 3 the incumbent, so
+    // Replay 1 records timings and replay 2 starts by computing the candidate
+    // plan from them. If the candidate's widths agree with the cold plan's the
+    // trial closes there; otherwise replay 2 times the candidate and replay 3 the incumbent, so
     // the trial closes within three more replays either way. Every plan the
     // trial held is snapshotted, because the final plan must be one the trial
     // actually timed, not a third thing.
@@ -520,6 +520,38 @@ TEST_CASE("ThreadPlanning - freeze never re-plans", "[ComputeGraph][ThreadPlanni
         REQUIRE(graph.nodes()[i].thread_width == planned[i]);
     }
     REQUIRE(first == second);
+}
+
+// The trial's re-plan is a full planner run. It used to fire at the end of the
+// first replay, so a graph built and executed once - one per chunk of a sweep,
+// as the DLPNO (T0) triples are - paid for a plan it could never use, and on
+// those graphs the re-plan took longer than the graph's own work. It now runs
+// when the second replay starts. A re-plan always rewrites the admission
+// priorities from measured times, so a cold plan left untouched by one execute
+// is the sign that none ran.
+TEST_CASE("ThreadPlanning - a graph executed once runs no re-plan", "[ComputeGraph][ThreadPlanning]") {
+    FatGraph  fixture;
+    cg::Graph graph("executed_once");
+    fixture.capture(graph);
+
+    graph.plan_threads();
+    REQUIRE(graph.thread_replan_armed());
+
+    auto const snapshot = [&]() {
+        std::vector<std::pair<unsigned, std::int64_t>> s;
+        for (auto const &node : graph.nodes()) {
+            s.emplace_back(node.thread_width, node.admission_priority);
+        }
+        return s;
+    };
+    auto const cold = snapshot();
+
+    cg::DataflowExecutor df;
+    graph.execute(df);
+    CHECK(snapshot() == cold);
+    // Still owed: the re-plan waits for a second replay. That it then runs, and the trial closes,
+    // is the measured-trial case above.
+    CHECK(graph.thread_replan_armed());
 }
 
 TEST_CASE("ThreadPlanning - a plan for another machine is not run", "[ComputeGraph][ThreadPlanning]") {
