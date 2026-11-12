@@ -628,6 +628,47 @@ struct GraphState {
     /// redirected, or handed to a pass.
     bool _slots_validated{false};
 
+    // ── Per-replay bookkeeping, kept between replays ───────────────────────
+    //
+    // Each replay used to rebuild these from the whole node list and tensor
+    // table, which on a graph of a few thousand small nodes was half the
+    // replay: the calling thread scanning while every worker sat idle. Each is
+    // keyed on counters that move whenever its answer can.
+
+    /// Moved by an edit to an already registered handle that no other
+    /// counter records: a backing attached, a bare scalar bound.
+    std::uint64_t _handle_version{0};
+
+    /// lease_scratch() has visited every tensor id below this one. Ids only
+    /// grow, and every write that makes a handle leasable happens as it is
+    /// registered, so a table with no new id has nothing new to lease.
+    TensorId _scratch_leased_below{1};
+
+    /// The distinct ids the node list names, for resync_slot_storage(), and
+    /// the node list they were collected from (@ref analysis_version and node
+    /// count: the contract the dependency lists the executors schedule by
+    /// already rely on).
+    std::vector<TensorId> _resync_ids;
+    std::uint64_t         _resync_ids_version{0};
+    std::size_t           _resync_ids_nodes{0};
+    bool                  _resync_ids_valid{false};
+
+    /// What resident_bytes() last returned, and the tensor_tree_stamp() it
+    /// was computed at.
+    mutable std::uint64_t _resident_bytes_memo{0};
+    mutable std::uint64_t _resident_bytes_stamp{0};
+    mutable bool          _resident_bytes_valid{false};
+
+    /// Every backed tensor of the tree once, for begin_run_metrics(), and the
+    /// tensor_tree_stamp() it was collected at.
+    struct BackedTensor {
+        std::string                          tensor;
+        std::shared_ptr<TensorBacking const> backing;
+    };
+    std::vector<BackedTensor> _tree_backings;
+    std::uint64_t             _tree_backings_stamp{0};
+    bool                      _tree_backings_valid{false};
+
     /// Summary of the last optimize() run (see explain()).
     std::string _last_optimize_report;
 
@@ -4898,6 +4939,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// @ref usage come from that body, so the cache keys on this as well. Visits only the nodes
     /// that hold a sub-graph, whose positions are re-found when this graph's own version moves.
     [[nodiscard]] std::uint64_t subtree_stamp();
+
+    /// A value that moves whenever the tensors of this graph or any graph below it can have
+    /// changed: each graph's analysis version, node count, next tensor id and handle version,
+    /// folded in walk order. What the run metrics key their cached scans on.
+    [[nodiscard]] std::uint64_t tensor_tree_stamp() const;
+
+    /// The part of @ref execute(Executor&) after the operands are leased and re-seated, which the
+    /// argument-less @ref execute has already done by the time it hands over to an installed
+    /// executor.
+    void run_executor(Executor &executor);
 
     /// Whether the node order and the dependency lists describe the graph as it stands, bodies
     /// included: what the replay entry points check before deciding to sort.

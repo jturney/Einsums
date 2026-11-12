@@ -433,6 +433,8 @@ void Graph::attach_backing(TensorHandle &handle, TensorBacking backing) {
     backing.counters->context = _run_context;
     backing.counters->tensor  = handle.name;
     handle.backing            = std::make_shared<TensorBacking const>(std::move(backing));
+    // A backing can arrive after its tensor was registered, which moves no other counter.
+    _handle_version++;
 }
 
 std::optional<TensorBacking> Graph::tensor_backing(TensorId id) const {

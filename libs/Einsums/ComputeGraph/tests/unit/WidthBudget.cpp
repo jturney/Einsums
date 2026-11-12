@@ -578,3 +578,62 @@ TEST_CASE("WidthBudget - mixed widths replay bit-identically", "[ComputeGraph][E
         REQUIRE(std::memcmp(c[i].data(), first[i].data(), dim * dim * sizeof(double)) == 0);
     }
 }
+
+// Admissions and releases take no lock while nothing is parked. Hammer the budget directly from
+// several threads with mostly narrow and some wide requests, so the lock-free path races the
+// parking path constantly: a release that slipped past a request while it parked would strand it
+// (fewer admissions than requests, something still parked), and a charge that skipped the bound
+// would run more units than the machine has.
+TEST_CASE("WidthBudget - racing admissions never exceed the machine and strand nothing", "[ComputeGraph][Executor][WidthBudget]") {
+    auto &budget = WidthBudget::get_singleton();
+    budget.sync_machine_width();
+    unsigned const total = budget.total();
+    REQUIRE(total > 0);
+    REQUIRE(budget.in_use() == 0);
+    budget.reset_peak();
+
+    constexpr int     threads    = 8;
+    constexpr int     per_thread = 5000;
+    std::atomic<int>  admitted{0};
+    std::atomic<int>  running{0};
+    std::atomic<bool> over{false};
+    auto const        run = [&](unsigned width) {
+        if (running.fetch_add(static_cast<int>(width)) + static_cast<int>(width) > static_cast<int>(total)) {
+            over = true;
+        }
+        admitted.fetch_add(1);
+        running.fetch_sub(static_cast<int>(width));
+        budget.release(width);
+    };
+
+    std::vector<std::thread> workers;
+    for (int t = 0; t < threads; ++t) {
+        workers.emplace_back([&, t]() {
+            std::uint64_t state = 0x9e3779b97f4a7c15ULL * static_cast<std::uint64_t>(t + 1);
+            auto const    next  = [&state]() {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                return state;
+            };
+            for (int i = 0; i < per_thread; ++i) {
+                unsigned const width = next() % 4 == 0 ? 1 + static_cast<unsigned>(next() % total) : 1U;
+                unsigned const granted =
+                    budget.acquire(width, {.rank = static_cast<std::int64_t>(next() % 8), .tiebreak = static_cast<std::size_t>(i)},
+                                   [&](unsigned w) { run(w); });
+                if (granted > 0) {
+                    run(granted);
+                }
+            }
+        });
+    }
+    for (auto &worker : workers) {
+        worker.join();
+    }
+
+    CHECK(admitted.load() == threads * per_thread);
+    CHECK_FALSE(over.load());
+    CHECK(budget.parked() == 0);
+    CHECK(budget.in_use() == 0);
+    CHECK(budget.peak_in_use() <= total);
+}

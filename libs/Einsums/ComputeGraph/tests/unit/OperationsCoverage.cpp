@@ -536,3 +536,29 @@ TEST_CASE("Operation - an eager op refuses a graph's intermediate outside its re
     // A declared result keeps its values, and eager ops use it freely.
     CHECK_NOTHROW(cg::einsum("i,j <- i,k ; k,j", &dst, kept, a));
 }
+
+// Leasing visits each tensor once and is skipped on a replay that registered nothing new, so an
+// intermediate declared after the graph has already replayed must still get its lease.
+TEST_CASE("Operation - an intermediate declared after a replay is leased too", "[ComputeGraph][Operations]") {
+    constexpr std::size_t n = 3;
+    auto const            a = ramp("A", n);
+    RuntimeTensor<double> out("out", std::vector<std::size_t>{n, n});
+    RuntimeTensor<double> dst("dst", std::vector<std::size_t>{n, n});
+
+    cg::Graph graph("late lease");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &out, a, a);
+    }
+    graph.execute();
+
+    auto &scratch = graph.create_runtime_tensor<double>("K", {n, n}, /*intermediate=*/true);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &scratch, a, out);
+        cg::einsum("i,j <- i,k ; k,j", &out, scratch, a);
+    }
+    graph.execute();
+    CHECK_THROWS_WITH(cg::einsum("i,j <- i,k ; k,j", &dst, scratch, a),
+                      Catch::Matchers::ContainsSubstring("intermediate of graph 'late lease'"));
+}

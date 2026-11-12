@@ -124,14 +124,28 @@ void Graph::resync_slot_storage() {
     // a Free on another branch of the parent was releasing at the same time.
     // A sub-graph's nodes are re-seated by its own execute, through its own
     // slots.
+    //
+    // Each id once: the nodes name a few thousand slots between them, most of
+    // them many times over, and re-seating one twice changes nothing.
     std::scoped_lock const lock(resync_mutex());
-    for (Node const &node : _nodes) {
-        for (TensorId const id : node.inputs) {
-            resync_slot(id);
+    if (!_resync_ids_valid || _resync_ids_version != _analysis_version || _resync_ids_nodes != _nodes.size()) {
+        std::unordered_set<TensorId> seen;
+        _resync_ids.clear();
+        for (Node const &node : _nodes) {
+            for (auto const *ids : {&node.inputs, &node.outputs}) {
+                for (TensorId const id : *ids) {
+                    if (seen.insert(id).second) {
+                        _resync_ids.push_back(id);
+                    }
+                }
+            }
         }
-        for (TensorId const id : node.outputs) {
-            resync_slot(id);
-        }
+        _resync_ids_version = _analysis_version;
+        _resync_ids_nodes   = _nodes.size();
+        _resync_ids_valid   = true;
+    }
+    for (TensorId const id : _resync_ids) {
+        resync_slot(id);
     }
 }
 
@@ -153,6 +167,9 @@ void Graph::resync_slot(TensorId id) {
 }
 
 void Graph::lease_scratch() {
+    if (_scratch_leased_below == _next_tensor_id) {
+        return;
+    }
     for (auto &[tid, handle] : _tensors) {
         if (handle.scratch_leased || !handle.is_intermediate || !handle.storage_of) {
             continue;
@@ -167,6 +184,7 @@ void Graph::lease_scratch() {
                                               return static_cast<detail::RunContext const *>(state)->replaying();
                                           }});
     }
+    _scratch_leased_below = _next_tensor_id;
 }
 
 void Graph::execute() {
@@ -182,7 +200,7 @@ void Graph::execute() {
     // how loop bodies get a parallel backend: the loop node replays its body
     // via this argument-less execute().
     if (_executor) {
-        execute(*_executor);
+        run_executor(*_executor);
         return;
     }
 
@@ -603,6 +621,13 @@ void Graph::execute() {
 
 void Graph::execute(Executor &executor) {
     lease_scratch();
+    // As the argument-less overload: a caller reaching a parallel backend
+    // directly gets the same guarantee about its operands' current buffers.
+    resync_slot_storage();
+    run_executor(executor);
+}
+
+void Graph::run_executor(Executor &executor) {
     auto const        replay_t0 = std::chrono::steady_clock::now();
     bool const        outermost = _run_context->enter();
     LeaveReplay const leave{*_run_context};
@@ -610,9 +635,6 @@ void Graph::execute(Executor &executor) {
         begin_run_metrics();
         detail::notify_replay(*_run_context, EventKind::ReplayStart, *this, nullptr);
     }
-    // As the argument-less overload: a caller reaching a parallel backend
-    // directly gets the same guarantee about its operands' current buffers.
-    resync_slot_storage();
     // Rebuild when the order is unknown OR a pass vouched for the order via
     // mark_sorted() but left the position-keyed _deps stale (_deps_valid
     // false). Concurrent executors read _deps directly, so stale lists here

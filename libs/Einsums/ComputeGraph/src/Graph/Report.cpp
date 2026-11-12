@@ -92,25 +92,51 @@ void Graph::begin_run_metrics() {
     _run_context->begin_replay(held);
     // Every backing in the tree, once, with its counts as the replay starts: the replay's share is
     // the difference at its end, whichever body or thread did the reading.
-    _replay_backings.clear();
-    auto const collect = [this](Graph const &graph) {
-        for (auto const &[tid, handle] : graph.tensors_map()) {
-            if (!handle.backing || !handle.backing->counters ||
-                std::ranges::any_of(_replay_backings, [&](ReplayBacking const &seen) { return seen.backing == handle.backing; })) {
-                continue;
+    //
+    // Which tensors are backed changes only with the tree's tensors, so the walk over every
+    // tensor table runs when tensor_tree_stamp() moves; each replay reads only the counts.
+    if (std::uint64_t const stamp = tensor_tree_stamp(); !_tree_backings_valid || _tree_backings_stamp != stamp) {
+        _tree_backings.clear();
+        auto const collect = [this](Graph const &graph) {
+            for (auto const &[tid, handle] : graph.tensors_map()) {
+                if (!handle.backing || !handle.backing->counters ||
+                    std::ranges::any_of(_tree_backings, [&](BackedTensor const &seen) { return seen.backing == handle.backing; })) {
+                    continue;
+                }
+                _tree_backings.push_back(BackedTensor{.tensor = handle.name, .backing = handle.backing});
             }
-            auto const &counts = *handle.backing->counters;
-            _replay_backings.push_back(ReplayBacking{.tensor        = handle.name,
-                                                     .backing       = handle.backing,
-                                                     .bytes_read    = counts.bytes_read.load(std::memory_order_relaxed),
-                                                     .bytes_written = counts.bytes_written.load(std::memory_order_relaxed),
-                                                     .reads         = counts.reads.load(std::memory_order_relaxed),
-                                                     .writes        = counts.writes.load(std::memory_order_relaxed),
-                                                     .publishes     = counts.publishes.load(std::memory_order_relaxed)});
-        }
+        };
+        collect(*this);
+        std::as_const(*this).for_each_descendant(collect);
+        _tree_backings_stamp = stamp;
+        _tree_backings_valid = true;
+    }
+    _replay_backings.clear();
+    _replay_backings.reserve(_tree_backings.size());
+    for (auto const &[tensor, backing] : _tree_backings) {
+        auto const &counts = *backing->counters;
+        _replay_backings.push_back(ReplayBacking{.tensor        = tensor,
+                                                 .backing       = backing,
+                                                 .bytes_read    = counts.bytes_read.load(std::memory_order_relaxed),
+                                                 .bytes_written = counts.bytes_written.load(std::memory_order_relaxed),
+                                                 .reads         = counts.reads.load(std::memory_order_relaxed),
+                                                 .writes        = counts.writes.load(std::memory_order_relaxed),
+                                                 .publishes     = counts.publishes.load(std::memory_order_relaxed)});
+    }
+}
+
+std::uint64_t Graph::tensor_tree_stamp() const {
+    std::uint64_t stamp = 1469598103934665603ULL;
+    auto const    mix   = [&stamp](std::uint64_t value) { stamp = (stamp ^ value) * 1099511628211ULL; };
+    auto const    graph = [&mix](Graph const &g) {
+        mix(g._analysis_version);
+        mix(g._nodes.size());
+        mix(g._next_tensor_id);
+        mix(g._handle_version);
     };
-    collect(*this);
-    std::as_const(*this).for_each_descendant(collect);
+    graph(*this);
+    for_each_descendant(graph);
+    return stamp;
 }
 
 void Graph::contribute_run_samples(bool outermost) {
@@ -163,6 +189,12 @@ void Graph::end_run_metrics(double wall_ms) {
 }
 
 std::uint64_t Graph::resident_bytes() const {
+    // Every replay asks, for its run metrics and the memory-budget check, and the answer is a walk
+    // of every node and tensor in the tree that changes only when those do.
+    std::uint64_t const stamp = tensor_tree_stamp();
+    if (_resident_bytes_valid && _resident_bytes_stamp == stamp) {
+        return _resident_bytes_memo;
+    }
     // The tensor objects a lifecycle node allocates or frees, anywhere in the tree: the replay's
     // own count holds those, an arena's among them.
     std::unordered_set<void const *> managed;
@@ -219,6 +251,9 @@ std::uint64_t Graph::resident_bytes() const {
         }
     };
     count(*this);
+    _resident_bytes_memo  = total;
+    _resident_bytes_stamp = stamp;
+    _resident_bytes_valid = true;
     return total;
 }
 

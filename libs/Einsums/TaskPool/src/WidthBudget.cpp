@@ -50,22 +50,37 @@ bool WidthBudget::less_urgent(Pending const &a, Pending const &b) {
     return a.seq > b.seq;
 }
 
-void WidthBudget::charge_locked(unsigned width) {
-    _in_use += width;
-    _peak = std::max(_peak, _in_use);
+void WidthBudget::note_peak(unsigned in_use) {
+    unsigned seen = _peak.load(std::memory_order_relaxed);
+    while (in_use > seen && !_peak.compare_exchange_weak(seen, in_use, std::memory_order_relaxed)) {
+    }
+}
+
+bool WidthBudget::try_charge(unsigned want, unsigned total, std::uint64_t blockers) {
+    std::uint64_t state = _state.load(std::memory_order_relaxed);
+    while ((state & blockers) == 0 && (state & in_use_mask) + want <= total) {
+        if (_state.compare_exchange_weak(state, state + want, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+            note_peak(static_cast<unsigned>((state & in_use_mask) + want));
+            return true;
+        }
+    }
+    return false;
 }
 
 void WidthBudget::drain_locked(std::vector<Pending> &ready) {
+    unsigned const total = _total.load(std::memory_order_relaxed);
     while (!_parked.empty()) {
         // Head of the queue only. Passing over it to admit something narrower
         // is exactly the starvation this policy exists to prevent.
-        if (_in_use + _parked.front().width > _total) {
+        if (!try_charge(_parked.front().width, total, 0)) {
             break;
         }
         std::pop_heap(_parked.begin(), _parked.end(), less_urgent);
-        charge_locked(_parked.back().width);
         ready.push_back(std::move(_parked.back()));
         _parked.pop_back();
+    }
+    if (_parked.empty()) {
+        _state.fetch_and(~parked_bit, std::memory_order_acq_rel);
     }
 }
 
@@ -74,25 +89,39 @@ unsigned WidthBudget::acquire(unsigned width, Priority priority, Continuation re
         return 0;
     }
 
+    // Nothing parked and room for it: one compare-and-swap. Either flag bit sends the request to
+    // the lock, which is what keeps the head-of-line rule exact.
+    if (unsigned const total = _total.load(std::memory_order_acquire); total != 0) {
+        unsigned const want = std::min(width, total);
+        if (try_charge(want, total, parked_bit | resizing_bit)) {
+            return want;
+        }
+    }
+
     std::vector<Pending> ready;
     {
         std::scoped_lock const lk(_mutex);
-        if (_total == 0) {
-            _total = machine_width();
+        if (_total.load(std::memory_order_relaxed) == 0) {
+            _total.store(machine_width(), std::memory_order_release);
         }
+        unsigned const total = _total.load(std::memory_order_relaxed);
         // Clamped, not refused: a width nobody can satisfy would park forever,
         // and the plan asking for it is a tuning artifact, not a requirement.
-        unsigned const want = std::min(width, _total);
+        unsigned const want = std::min(width, total);
 
         // Head-of-line: while anything is parked, a newcomer queues behind it.
-        if (_parked.empty() && _in_use + want <= _total) {
-            charge_locked(want);
+        if (_parked.empty() && try_charge(want, total, 0)) {
             return want;
         }
 
         _parked.push_back(
             Pending{.rank = priority.rank, .tiebreak = priority.tiebreak, .seq = _seq++, .width = want, .resume = std::move(resume)});
         std::push_heap(_parked.begin(), _parked.end(), less_urgent);
+
+        // The flag goes up before the drain: a release that slipped in without the lock before
+        // it is in the charge the drain reads, and every release after it takes the lock and
+        // drains itself, so no unit freed while this request was parking is missed.
+        _state.fetch_or(parked_bit, std::memory_order_acq_rel);
 
         // The newcomer may be the most urgent, so drain rather than assume it blocked.
         drain_locked(ready);
@@ -109,14 +138,28 @@ void WidthBudget::release(unsigned width) {
         return;
     }
 
+    // Nothing parked to admit: one compare-and-swap.
+    std::uint64_t state = _state.load(std::memory_order_relaxed);
+    while ((state & (parked_bit | resizing_bit)) == 0 && (state & in_use_mask) >= width) {
+        if (_state.compare_exchange_weak(state, state - width, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+            return;
+        }
+    }
+
     std::vector<Pending> ready;
     {
         std::scoped_lock const lk(_mutex);
-        if (width > _in_use) {
-            EINSUMS_LOG_WARN("WidthBudget: returning {} units with only {} charged; the counter is being clamped", width, _in_use);
-            _in_use = 0;
-        } else {
-            _in_use -= width;
+        // The units come out in a loop because a request can still charge without the lock
+        // until it sees the parked bit.
+        state                = _state.load(std::memory_order_relaxed);
+        std::uint64_t next   = 0;
+        std::uint64_t in_use = 0;
+        do {
+            in_use = state & in_use_mask;
+            next   = (state & ~in_use_mask) | (width > in_use ? 0 : in_use - width);
+        } while (!_state.compare_exchange_weak(state, next, std::memory_order_acq_rel, std::memory_order_relaxed));
+        if (width > in_use) {
+            EINSUMS_LOG_WARN("WidthBudget: returning {} units with only {} charged; the counter is being clamped", width, in_use);
         }
         drain_locked(ready);
     }
@@ -130,8 +173,7 @@ void WidthBudget::recharge(unsigned width) {
     if (width == 0) {
         return;
     }
-    std::scoped_lock const lk(_mutex);
-    _in_use += width;
+    _state.fetch_add(width, std::memory_order_acq_rel);
 }
 
 void WidthBudget::sync_machine_width() {
@@ -143,24 +185,25 @@ void WidthBudget::sync_machine_width() {
     unsigned const observed = machine_width();
 
     std::scoped_lock const lk(_mutex);
-    if (_in_use == 0 && _parked.empty()) {
-        _total = observed;
+    // Only while idle: nothing charged and nothing parked, claimed in one step so no request
+    // can be admitted against the old total while the new one goes in.
+    std::uint64_t idle = 0;
+    if (_state.compare_exchange_strong(idle, resizing_bit, std::memory_order_acq_rel)) {
+        _total.store(observed, std::memory_order_release);
+        _state.fetch_and(~resizing_bit, std::memory_order_acq_rel);
     }
 }
 
 unsigned WidthBudget::total() const {
-    std::scoped_lock const lk(_mutex);
-    return _total;
+    return _total.load(std::memory_order_acquire);
 }
 
 unsigned WidthBudget::in_use() const {
-    std::scoped_lock const lk(_mutex);
-    return _in_use;
+    return static_cast<unsigned>(_state.load(std::memory_order_acquire) & in_use_mask);
 }
 
 unsigned WidthBudget::peak_in_use() const {
-    std::scoped_lock const lk(_mutex);
-    return _peak;
+    return _peak.load(std::memory_order_relaxed);
 }
 
 std::size_t WidthBudget::parked() const {
@@ -169,8 +212,7 @@ std::size_t WidthBudget::parked() const {
 }
 
 void WidthBudget::reset_peak() {
-    std::scoped_lock const lk(_mutex);
-    _peak = _in_use;
+    _peak.store(in_use(), std::memory_order_relaxed);
 }
 
 WidthBudget::HoldScope::HoldScope(unsigned width) : _width(width) {

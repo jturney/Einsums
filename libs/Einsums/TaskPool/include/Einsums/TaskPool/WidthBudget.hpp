@@ -9,6 +9,7 @@
 
 #include <Einsums/TypeSupport/Singleton.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -34,6 +35,9 @@ EINSUMS_NAMESPACE_BEGIN(task_pool)
  *
  * @par Threading
  * Every member is thread-safe. Continuations run on the releasing thread, never under the lock.
+ * While nothing is parked an acquire that fits, and any release, is one compare-and-swap on the
+ * charge and takes no lock: a graph of a few thousand width-one nodes took and returned the lock
+ * around every node, and its workers spent an eighth of their node time waiting on it.
  */
 class EINSUMS_EXPORT WidthBudget {
     EINSUMS_SINGLETON_DEF(WidthBudget)
@@ -148,8 +152,20 @@ class EINSUMS_EXPORT WidthBudget {
     /// is the one admitted first.
     static bool less_urgent(Pending const &a, Pending const &b);
 
-    /// Charge @p width and update the peak. Caller holds @c _mutex.
-    void charge_locked(unsigned width);
+    /// The charge's units live in the low word of @c _state; these bits sit above them.
+    static constexpr std::uint64_t in_use_mask = 0xffff'ffffULL;
+    /// Something is parked, so a newcomer must queue behind it: every request takes the lock.
+    static constexpr std::uint64_t parked_bit = 1ULL << 32;
+    /// @ref sync_machine_width is changing the total: every request takes the lock.
+    static constexpr std::uint64_t resizing_bit = 1ULL << 33;
+
+    /// Charge @p want against @p total in one compare-and-swap loop, unless it does not fit or a bit
+    /// of @p blockers is set; updates the peak. The fast path passes both flag bits, the locked
+    /// paths (which own the flags) none.
+    bool try_charge(unsigned want, unsigned total, std::uint64_t blockers);
+
+    /// Raise the recorded peak to @p in_use if it is higher.
+    void note_peak(unsigned in_use);
 
     /// Move parked tasks that fit, in priority order, into @p ready, stopping at the first that does
     /// not (head-of-line). Caller holds @c _mutex.
@@ -159,12 +175,13 @@ class EINSUMS_EXPORT WidthBudget {
     /// May briefly push the charge past the total.
     void recharge(unsigned width);
 
-    mutable std::mutex   _mutex;
-    unsigned             _total{0};
-    unsigned             _in_use{0};
-    unsigned             _peak{0};
-    std::uint64_t        _seq{0};
-    std::vector<Pending> _parked;
+    /// Guards @c _parked, @c _seq, and every change to the flag bits and the total.
+    mutable std::mutex         _mutex;
+    std::atomic<std::uint64_t> _state{0}; ///< units in use, plus parked_bit and resizing_bit
+    std::atomic<unsigned>      _total{0};
+    std::atomic<unsigned>      _peak{0};
+    std::uint64_t              _seq{0};
+    std::vector<Pending>       _parked;
 };
 
 EINSUMS_NAMESPACE_END(task_pool)

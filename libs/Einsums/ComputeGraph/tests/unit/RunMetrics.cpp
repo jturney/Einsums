@@ -199,3 +199,62 @@ TEST_CASE("A replay that throws leaves the record of the one before", "[ComputeG
     chain.graph.execute();
     CHECK(chain.graph.last_run().nodes.size() == nodes);
 }
+
+// The run metrics' scans of the node list and the tensor tables are kept between replays and
+// keyed on what can change their answer. These pin that each one notices a change made after a
+// replay has filled it, which is the case a cache gets wrong.
+
+TEST_CASE("last_run's resident bytes follow a node added after a replay", "[ComputeGraph][RunMetrics]") {
+    auto const            a = filled("A", 0.25);
+    auto const            b = filled("B", 0.5);
+    RuntimeTensor<double> out("out", std::vector<std::size_t>{n, n});
+    cg::Graph             graph("grown");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &out, a, b);
+    }
+    graph.execute();
+    CHECK(graph.last_run().resident_bytes == 3 * bytes);
+
+    auto const            c = filled("C", 0.75);
+    RuntimeTensor<double> more("more", std::vector<std::size_t>{n, n});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &more, out, c);
+    }
+    graph.execute();
+    CHECK(graph.last_run().resident_bytes == 5 * bytes);
+}
+
+TEST_CASE("last_run reports a backing attached after a replay", "[ComputeGraph][RunMetrics]") {
+    // W is declared and no node uses it yet, so it stays deferred through the replay and can take
+    // a backing afterwards: the attach moves no node and registers no tensor, which is the change
+    // only the handle version records.
+    auto const            a = filled("A", 0.25);
+    RuntimeTensor<double> out("out", std::vector<std::size_t>{n, n});
+    cg::Graph             graph("backed later");
+    auto                 &w = graph.declare_runtime_tensor<double>("W", std::vector<std::size_t>{n, n});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", &out, a, a);
+    }
+    graph.execute();
+    CHECK(graph.last_run().backings.empty());
+
+    cg::TensorBacking backing;
+    backing.kind      = "run_metrics_test.constant";
+    backing.dims      = {n, n};
+    backing.dtype     = packed_gemm::ScalarType::Float64;
+    backing.read_slab = [](void *destination, std::vector<std::pair<std::size_t, std::size_t>> const &ranges) {
+        std::size_t count = 1;
+        for (auto const &[first, last] : ranges) {
+            count *= last - first;
+        }
+        std::fill_n(static_cast<double *>(destination), count, 1.0);
+    };
+    graph.annotate_backing(w, std::move(backing));
+    graph.execute();
+    auto const &run = graph.last_run();
+    REQUIRE(run.backings.size() == 1);
+    CHECK(run.backings.front().tensor == "W");
+}

@@ -467,6 +467,8 @@ void Graph::bind_scalar_impl(std::string const &name, void *storage, packed_gemm
     handle.tensor_ptr   = storage;
     handle.data_ptr     = storage;
     handle.element_size = element_size;
+    // The tensor-table scans of the run metrics key on this; a bound scalar moves no other counter.
+    _handle_version++;
     // The interface name is what the contract is written in; pin it exactly as
     // rebind() does, so a second bind_scalar of the same slot still finds it.
     _interface_names.emplace(entry.id, entry.name);
