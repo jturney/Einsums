@@ -308,11 +308,14 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         sample_width[timing.id] = timing.width;
     }
 
-    std::vector<NodeCost> cost(n);
+    // One profile and one graph for the whole sweep, so a contraction layout repeated across nodes
+    // is described to the packed engine and priced once.
+    detail::ContractionPriceMemo memo;
+    std::vector<NodeCost>        cost(n);
     for (std::size_t i = 0; i < n; i++) {
         Node const                &node  = nodes[i];
         NodeCost                  &c     = cost[i];
-        detail::ModelledCost const model = detail::model_cost(graph, node, profile);
+        detail::ModelledCost const model = detail::model_cost(graph, node, profile, &memo);
 
         c.bytes   = model.bytes;
         c.family  = model.family;

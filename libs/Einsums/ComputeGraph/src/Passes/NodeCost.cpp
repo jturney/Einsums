@@ -13,11 +13,15 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
@@ -262,37 +266,68 @@ GemmShape gemm_shape_of(Graph const &graph, Node const &node) {
 /// An einsum priced as the packed engine would run it on its operands' own layouts (see
 /// DeviceProfile::estimate_contraction_time_us), or empty when it is not a two-operand einsum, a
 /// handle does not describe its layout, or the engine has no plan for it.
-std::optional<double> contraction_us(Graph const &graph, Node const &node, DeviceProfile const &profile) {
+std::optional<double> contraction_us(Graph const &graph, Node const &node, DeviceProfile const &profile, ContractionPriceMemo *memo) {
     auto const *ein      = node.op_data.get_if<EinsumDescriptor>();
     auto const  operands = operand_inputs(node);
     if (ein == nullptr || operands.size() != 2 || node.outputs.size() != 1) {
         return std::nullopt;
     }
-    auto const lists  = einsum_index_lists(*ein);
-    auto const layout = [&](TensorId tid, std::vector<std::string> const &letters) -> std::optional<packed_gemm::OperandLayout> {
-        auto const *handle = graph.find_tensor(tid);
-        if (handle == nullptr || handle->dims.size() != letters.size() || handle->strides.size() != letters.size()) {
+    auto const lists = einsum_index_lists(*ein);
+
+    // The operands in C, A, B order, each with the letters it is indexed by; a handle that does not
+    // describe its layout leaves the contraction unpriced.
+    std::array<std::pair<TensorHandle const *, std::vector<std::string> const *>, 3> const operand{
+        {{graph.find_tensor(node.outputs[0]), &lists.c},
+         {graph.find_tensor(operands[0]), &lists.a},
+         {graph.find_tensor(operands[1]), &lists.b}}};
+    for (auto const &[handle, letters] : operand) {
+        if (handle == nullptr || handle->dims.size() != letters->size() || handle->strides.size() != letters->size()) {
             return std::nullopt;
         }
-        packed_gemm::OperandLayout out{.indices = letters};
-        for (std::size_t p = 0; p < letters.size(); ++p) {
-            out.dims.push_back(static_cast<int64_t>(handle->dims[p]));
-            out.strides.push_back(static_cast<int64_t>(handle->strides[p]));
+    }
+    TensorHandle const *out = operand[0].first;
+
+    // Everything the price reads: the letters, dims and strides of the three operands, and the
+    // output's element type and size. Letters are length-prefixed so no two lists spell one key.
+    std::string key;
+    if (memo != nullptr) {
+        auto const put = [&key](auto value) {
+            auto const v = static_cast<int64_t>(value);
+            key.append(reinterpret_cast<char const *>(&v), sizeof v);
+        };
+        for (auto const &[handle, letters] : operand) {
+            put(letters->size());
+            for (std::size_t p = 0; p < letters->size(); ++p) {
+                put((*letters)[p].size());
+                key.append((*letters)[p]);
+                put(handle->dims[p]);
+                put(handle->strides[p]);
+            }
         }
-        return out;
+        put(static_cast<int>(out->dtype));
+        put(out->element_size);
+        if (auto const hit = memo->prices.find(key); hit != memo->prices.end()) {
+            return hit->second;
+        }
+    }
+
+    auto const layout = [](TensorHandle const &handle, std::vector<std::string> const &letters) {
+        packed_gemm::OperandLayout layout{.indices = letters};
+        for (std::size_t p = 0; p < letters.size(); ++p) {
+            layout.dims.push_back(static_cast<int64_t>(handle.dims[p]));
+            layout.strides.push_back(static_cast<int64_t>(handle.strides[p]));
+        }
+        return layout;
     };
-    auto const c = layout(node.outputs[0], lists.c);
-    auto const a = layout(operands[0], lists.a);
-    auto const b = layout(operands[1], lists.b);
-    if (!c || !a || !b) {
-        return std::nullopt;
+    auto const                  shape = packed_gemm::describe_packed_contraction(layout(*operand[0].first, *operand[0].second),
+                                                                                 layout(*operand[1].first, *operand[1].second),
+                                                                                 layout(*operand[2].first, *operand[2].second), out->dtype);
+    std::optional<double> const price =
+        shape.valid ? std::optional<double>{profile.estimate_contraction_time_us(shape, 1, out->element_size)} : std::nullopt;
+    if (memo != nullptr) {
+        memo->prices.emplace(std::move(key), price);
     }
-    auto const *out   = graph.find_tensor(node.outputs[0]);
-    auto const  shape = packed_gemm::describe_packed_contraction(*c, *a, *b, out->dtype);
-    if (!shape.valid) {
-        return std::nullopt;
-    }
-    return profile.estimate_contraction_time_us(shape, 1, out->element_size);
+    return price;
 }
 
 /// The GEMM curve for a contraction of @p flops, as family_for picks it.
@@ -333,7 +368,7 @@ std::optional<ModelledCost> hooked_cost(Graph const &graph, Node const &node, De
 
 } // namespace
 
-ModelledCost model_cost(Graph const &graph, Node const &node, DeviceProfile const &profile) {
+ModelledCost model_cost(Graph const &graph, Node const &node, DeviceProfile const &profile, ContractionPriceMemo *memo) {
     std::size_t const bytes = working_set_bytes(graph, node);
     if (auto hooked = hooked_cost(graph, node, profile, bytes)) {
         return std::move(*hooked);
@@ -350,7 +385,7 @@ ModelledCost model_cost(Graph const &graph, Node const &node, DeviceProfile cons
         // Priced by the body it runs, which only the planner walking it can do.
         break;
     case KindClass::Gemm:
-        if (auto const contraction = contraction_us(graph, node, profile)) {
+        if (auto const contraction = contraction_us(graph, node, profile, memo)) {
             cost.t1_us = *contraction;
         } else {
             cost.t1_us = shape.valid() ? profile.estimate_gemm_time_us(shape.m, shape.n, shape.k, 1)

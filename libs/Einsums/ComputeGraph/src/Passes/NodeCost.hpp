@@ -19,6 +19,9 @@
 
 #include <cstddef>
 #include <functional>
+#include <optional>
+#include <string>
+#include <unordered_map>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -38,8 +41,23 @@ struct ModelledCost {
     std::function<double(unsigned)> speedup;
 };
 
+/**
+ * @brief Contraction prices already computed in one pricing sweep, keyed by everything the price
+ *        depends on: the index lists, each operand's dims and strides, and the output's dtype.
+ *
+ * A graph built per chunk of a sweep repeats a handful of contraction layouts across thousands of
+ * nodes (the DLPNO (T0) triples price 88 distinct layouts across 1320 einsums), and describing a
+ * layout to the packed engine was the larger part of pricing one. Valid for one profile only: the
+ * owner keeps it for one sweep over one graph and prices with one profile throughout.
+ */
+struct ContractionPriceMemo {
+    std::unordered_map<std::string, std::optional<double>> prices;
+};
+
 /// @brief The model price of @p node in @p graph on @p profile, from its registered @c cost hook
-///        when it has one that answers, otherwise from its kind and shape.
-[[nodiscard]] ModelledCost model_cost(Graph const &graph, Node const &node, DeviceProfile const &profile);
+///        when it has one that answers, otherwise from its kind and shape. A contraction's price
+///        is looked up in @p memo first and recorded there, when one is given.
+[[nodiscard]] ModelledCost model_cost(Graph const &graph, Node const &node, DeviceProfile const &profile,
+                                      ContractionPriceMemo *memo = nullptr);
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

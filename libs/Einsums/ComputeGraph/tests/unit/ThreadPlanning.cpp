@@ -554,6 +554,51 @@ TEST_CASE("ThreadPlanning - a graph executed once runs no re-plan", "[ComputeGra
     CHECK(graph.thread_replan_armed());
 }
 
+// A plan prices each contraction layout once and reuses the price for every node with that layout
+// (a graph built per chunk of a sweep repeats a few layouts across thousands of nodes). Two
+// contractions with the same letters and dims but an operand at a different stride are different
+// layouts and must be priced apart: the second is chained on the first, so the plan's critical path
+// is the sum of their two prices, each taken alone.
+TEST_CASE("ThreadPlanning - a reused contraction price is keyed on strides too", "[ComputeGraph][ThreadPlanning]") {
+    constexpr size_t  n   = 96;
+    Tensor<double, 2> a   = create_random_tensor<double>("a", n, n);
+    Tensor<double, 2> b   = create_random_tensor<double>("b", n, n);
+    Tensor<double, 3> big = create_random_tensor<double>("big", 2, n, n);
+    Tensor<double, 2> c1  = create_zero_tensor<double>("c1", n, n);
+    Tensor<double, 2> c2  = create_zero_tensor<double>("c2", n, n);
+    auto              bv  = big(0, All, All); // n x n at strides (2, 2n): no element of it is next to another
+
+    cg::CostModel const model = cg::CostModel::built_in();
+    auto const          path  = [&](auto &&emit) {
+        cg::Graph graph("priced");
+        {
+            cg::CaptureGuard const guard(graph);
+            emit();
+        }
+        cg::passes::ThreadPlanning planner(model, 1);
+        planner.run(graph);
+        return planner.critical_path_after_us();
+    };
+
+    double const plain   = path([&] { cg::einsum("ik;kj->ij", &c1, a, b); });
+    double const strided = path([&] { cg::einsum("ik;kj->ij", &c2, c1, bv); });
+    REQUIRE(plain != strided); // otherwise the case cannot tell a reused price from a fresh one
+
+    double const chained = path([&] {
+        cg::einsum("ik;kj->ij", &c1, a, b);
+        cg::einsum("ik;kj->ij", &c2, c1, bv);
+    });
+    CHECK(chained == strided + plain);
+
+    // And a repeated layout is the same price twice.
+    double const repeated = path([&] {
+        cg::einsum("ik;kj->ij", &c1, a, b);
+        cg::einsum("ik;kj->ij", &c2, c1, b);
+    });
+    double const second   = path([&] { cg::einsum("ik;kj->ij", &c2, c1, b); });
+    CHECK(repeated == second + plain);
+}
+
 TEST_CASE("ThreadPlanning - a plan for another machine is not run", "[ComputeGraph][ThreadPlanning]") {
     unsigned const p = machine_threads();
     if (p < 4) {
