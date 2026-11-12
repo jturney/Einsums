@@ -32,19 +32,22 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  *
  * A family is a group of kernels that scale with thread count the same way, so
  * one measured curve prices all of them. The split is by how the work is
- * parallelized, not by what it computes: @ref GemmLarge threads inside the
- * vendor BLAS call, @ref BatchedGemm threads across independent BLAS calls
- * while each one stays serial, @ref Permute threads inside HPTT, and
- * @ref Elementwise threads an OpenMP loop over elements. @ref GemmSmall is the
- * route that never threads at all, and is a family rather than a size class
- * because the kernel is different code, not the same code on less data.
+ * parallelized, not by what it computes: @ref GemmLarge threads inside one
+ * GEMM, @ref BatchedGemm threads across independent BLAS calls while each one
+ * stays serial, @ref Permute threads inside HPTT, and @ref Elementwise threads
+ * an OpenMP loop over a group's members. @ref GemmSmall is a GEMM too small to
+ * gain from threads, and is a family rather than a size class because the
+ * kernel is different code, not the same code on less data.
+ *
+ * A GEMM can be threaded by two different kernels - the packed loops or the
+ * vendor's - so the two GEMM families carry a curve per @ref CurveRoute.
  */
 enum class KernelFamily : std::uint8_t {
-    GemmSmall = 0, ///< Small-GEMM route: microkernel, serial by construction
-    GemmLarge,     ///< Vendor BLAS GEMM, threaded internally
+    GemmSmall = 0, ///< A GEMM below the small-GEMM flop line
+    GemmLarge,     ///< One GEMM, threaded inside it by the packed loops or the vendor
     BatchedGemm,   ///< Many independent GEMMs, threaded across entries
     Permute,       ///< Tensor transpose (HPTT)
-    Elementwise    ///< axpy/scale/copy-shaped loops over elements
+    Elementwise    ///< Element-wise kernels, threaded across a group's members
 };
 
 /// Number of entries in @ref KernelFamily.
@@ -117,6 +120,52 @@ inline constexpr EnumNames kSizeClassNames{std::array<std::pair<SizeClass, std::
 }
 
 /**
+ * @brief Whose threads a thread-efficiency curve measured.
+ *
+ * A width means different things to different kernels. Einsums' own kernels -
+ * the packed GEMM loops, the OpenMP loops over a batch's or a group's members,
+ * HPTT - fork from the ICV a node width raises, so their curve is the speedup a
+ * planner buys by widening the node. A vendor GEMM threads however the vendor
+ * threads: OpenBLAS and MKL take a thread count, and Accelerate ignores one, so
+ * a vendor curve swept there is flat at every width whatever the machine can do.
+ *
+ * The planner widens a contraction only after pinning it to the packed loops,
+ * and leaves vendor-routed kernels at width 1 wherever the vendor cannot be told
+ * a width, so it needs the curve of the kernel it pinned and not the other one.
+ * A curve therefore says which side it timed, and a lookup names the side it
+ * wants; a lookup that finds no curve of its side takes the default model
+ * rather than the other side's measurement.
+ */
+enum class CurveRoute : std::uint8_t {
+    Einsums = 0, ///< Einsums' own kernel, forking from the node width
+    Vendor       ///< The vendor BLAS call, threading as the vendor does
+};
+
+/// Number of entries in @ref CurveRoute.
+inline constexpr std::size_t kCurveRouteCount = 2;
+
+/// The one @ref CurveRoute name table; both directions read it.
+inline constexpr EnumNames kCurveRouteNames{std::array<std::pair<CurveRoute, std::string_view>, kCurveRouteCount>{{
+                                                {CurveRoute::Einsums, "einsums"},
+                                                {CurveRoute::Vendor, "vendor"},
+                                            }},
+                                            "einsums"};
+
+[[nodiscard]] inline std::string_view to_string(CurveRoute route) {
+    return kCurveRouteNames.name(route);
+}
+
+/// Parse a @ref CurveRoute name. Same contract as @ref kernel_family_from_string.
+[[nodiscard]] inline bool curve_route_from_string(std::string_view name, CurveRoute &out) {
+    auto const route = kCurveRouteNames.from_name(name);
+    if (!route) {
+        return false;
+    }
+    out = *route;
+    return true;
+}
+
+/**
  * @brief Measured speedup against thread count for one kernel family at one size class.
  *
  * `speedup[i]` is `t(1) / t(widths[i])`, so `widths[0] == 1` and
@@ -132,8 +181,9 @@ inline constexpr EnumNames kSizeClassNames{std::array<std::pair<SizeClass, std::
 struct EfficiencyCurve {
     KernelFamily               family{KernelFamily::GemmLarge};
     SizeClass                  size_class{SizeClass::Streaming};
-    std::vector<std::uint32_t> widths;  ///< Ascending, first entry 1
-    std::vector<double>        speedup; ///< Parallel to @ref widths
+    CurveRoute                 route{CurveRoute::Einsums}; ///< Which kernel was timed; see @ref CurveRoute
+    std::vector<std::uint32_t> widths;                     ///< Ascending, first entry 1
+    std::vector<double>        speedup;                    ///< Parallel to @ref widths
 
     /// A curve is usable when it has at least one rung and the two vectors agree.
     [[nodiscard]] bool valid() const { return !widths.empty() && widths.size() == speedup.size(); }
@@ -596,13 +646,15 @@ struct DeviceProfile {
     }
 
     /// The curve for a cell, or nullptr. An exact cell wins; failing that the
-    /// nearest size class within the same family, because a partly swept
-    /// profile should still price the cells it did measure.
-    [[nodiscard]] EfficiencyCurve const *find_curve(KernelFamily family, SizeClass size_class) const {
+    /// nearest size class within the same family and route, because a partly
+    /// swept profile should still price the cells it did measure. Never a curve
+    /// of the other route: see @ref CurveRoute.
+    [[nodiscard]] EfficiencyCurve const *find_curve(KernelFamily family, SizeClass size_class,
+                                                    CurveRoute route = CurveRoute::Einsums) const {
         EfficiencyCurve const *best      = nullptr;
         int                    best_dist = 0;
         for (auto const &curve : thread_efficiency) {
-            if (curve.family != family || !curve.valid()) {
+            if (curve.family != family || curve.route != route || !curve.valid()) {
                 continue;
             }
             int const dist = std::abs(static_cast<int>(curve.size_class) - static_cast<int>(size_class));
@@ -614,42 +666,46 @@ struct DeviceProfile {
         return best;
     }
 
-    /// `s(w)`: how much faster this cell runs at @p width than at width 1.
-    /// Measured when the cell was swept, the default Amdahl curve otherwise.
-    /// Always strictly positive, so callers may divide by it.
-    [[nodiscard]] double parallel_speedup(KernelFamily family, SizeClass size_class, unsigned width) const {
+    /// `s(w)`: how much faster this cell runs at @p width than at width 1, on
+    /// @p route's kernel. Measured when the cell was swept on that route, the
+    /// default Amdahl curve otherwise. Always strictly positive, so callers may
+    /// divide by it.
+    [[nodiscard]] double parallel_speedup(KernelFamily family, SizeClass size_class, unsigned width,
+                                          CurveRoute route = CurveRoute::Einsums) const {
         unsigned const w = clamp_width(width);
-        if (auto const *curve = find_curve(family, size_class); curve != nullptr) {
+        if (auto const *curve = find_curve(family, size_class, route); curve != nullptr) {
             return curve->speedup_at(w);
         }
         return default_parallel_speedup(family, size_class, w);
     }
 
     /// Same, with the size class derived from a working set of @p bytes.
-    [[nodiscard]] double parallel_speedup(KernelFamily family, size_t bytes, unsigned width) const {
-        return parallel_speedup(family, size_class_for_bytes(bytes), width);
+    [[nodiscard]] double parallel_speedup(KernelFamily family, size_t bytes, unsigned width, CurveRoute route = CurveRoute::Einsums) const {
+        return parallel_speedup(family, size_class_for_bytes(bytes), width, route);
     }
 
     /// `e(w) = s(w)/w`: the fraction of the added threads that turns into work.
     /// One at width 1, and collapsing toward `1/w` for work that cannot use
     /// the machine.
-    [[nodiscard]] double parallel_efficiency(KernelFamily family, size_t bytes, unsigned width) const {
+    [[nodiscard]] double parallel_efficiency(KernelFamily family, size_t bytes, unsigned width,
+                                             CurveRoute route = CurveRoute::Einsums) const {
         unsigned const w = clamp_width(width);
-        return parallel_speedup(family, bytes, w) / static_cast<double>(w);
+        return parallel_speedup(family, bytes, w, route) / static_cast<double>(w);
     }
 
     /// Same, on an explicit size class.
-    [[nodiscard]] double parallel_efficiency(KernelFamily family, SizeClass size_class, unsigned width) const {
+    [[nodiscard]] double parallel_efficiency(KernelFamily family, SizeClass size_class, unsigned width,
+                                             CurveRoute route = CurveRoute::Einsums) const {
         unsigned const w = clamp_width(width);
-        return parallel_speedup(family, size_class, w) / static_cast<double>(w);
+        return parallel_speedup(family, size_class, w, route) / static_cast<double>(w);
     }
 
     /// `s(w)` for a GEMM shape: picks the family and the size class for it.
     /// The working set is priced in doubles because the GEMM estimator is
     /// already an fp64 model (@ref peak_gflops_fp64).
-    [[nodiscard]] double gemm_parallel_speedup(size_t M, size_t N, size_t K, unsigned width) const {
+    [[nodiscard]] double gemm_parallel_speedup(size_t M, size_t N, size_t K, unsigned width, CurveRoute route = CurveRoute::Einsums) const {
         size_t const bytes = (M * K + K * N + M * N) * sizeof(double);
-        return parallel_speedup(gemm_family(M, N, K), size_class_for_bytes(bytes), width);
+        return parallel_speedup(gemm_family(M, N, K), size_class_for_bytes(bytes), width, route);
     }
 
     /// The width rungs this profile was calibrated at, or the rungs it would
@@ -709,13 +765,15 @@ struct EINSUMS_EXPORT CostModel {
 
     /// `s(w)` for a kernel family and working set on a specific target. This is
     /// the primitive a width planner reads: `t(w) = t(1) / s(w)`.
-    [[nodiscard]] double parallel_speedup(KernelFamily family, size_t bytes, unsigned width, Target target) const {
-        return device(target).parallel_speedup(family, bytes, width);
+    [[nodiscard]] double parallel_speedup(KernelFamily family, size_t bytes, unsigned width, Target target,
+                                          CurveRoute route = CurveRoute::Einsums) const {
+        return device(target).parallel_speedup(family, bytes, width, route);
     }
 
     /// `e(w) = s(w)/w` for a kernel family and working set on a specific target.
-    [[nodiscard]] double parallel_efficiency(KernelFamily family, size_t bytes, unsigned width, Target target) const {
-        return device(target).parallel_efficiency(family, bytes, width);
+    [[nodiscard]] double parallel_efficiency(KernelFamily family, size_t bytes, unsigned width, Target target,
+                                             CurveRoute route = CurveRoute::Einsums) const {
+        return device(target).parallel_efficiency(family, bytes, width, route);
     }
 
     /**
@@ -907,7 +965,7 @@ struct ThreadSweepOptions {
     unsigned max_threads{0};                ///< Widest rung; 0 asks the hardware
     size_t   max_bytes{64UL * 1024 * 1024}; ///< Cap on any cell's working set
     size_t   max_gemm_extent{1024};         ///< Cap on a square GEMM's extent
-    size_t   batch_entries{64};             ///< Entries in the batched-GEMM cell
+    size_t   batch_entries{64};             ///< Entries in the batched-GEMM and element-wise cells
 };
 
 /**
@@ -923,8 +981,17 @@ struct ThreadSweepOptions {
  * Not every family is measured at every size class: a small-GEMM cell at a
  * streaming working set is not a small GEMM, and a large-GEMM cell that fits in
  * L1 is not a large one. Cells that are not measured resolve through the
- * nearest measured size class in the same family, and then through the default
- * curve.
+ * nearest measured size class in the same family and route, and then through
+ * the default curve.
+ *
+ * Every cell times the kernel a node of its family runs once a planner has
+ * widened it, under the guard the executor holds for that width. The two GEMM
+ * families are timed twice, once on each @ref CurveRoute: the packed loops
+ * through the string einsum with the route pinned, as a widened contraction
+ * runs, and the vendor's GEMM left free to thread. A packed cell whose pin did
+ * not take the packed route is dropped rather than recorded under a kernel it
+ * did not time. The element-wise cells time an OpenMP loop over a group's
+ * members, which is what a widened element-wise node is.
  *
  * Returns an empty vector when the machine has one thread, since every curve
  * would be the single point `s(1) = 1`.

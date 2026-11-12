@@ -1039,7 +1039,8 @@ int measure(Config cfg) {
         auto const t_sweep_1             = std::chrono::steady_clock::now();
 
         for (auto const &curve : cost_model.cpu.thread_efficiency) {
-            std::string line = fmt::format("  {:>12} / {:<9}:", cg::to_string(curve.family), cg::to_string(curve.size_class));
+            std::string line = fmt::format("  {:>12} / {:<9} / {:<7}:", cg::to_string(curve.family), cg::to_string(curve.size_class),
+                                           cg::to_string(curve.route));
             for (size_t idx = 0; idx < curve.widths.size(); idx++) {
                 line += fmt::format("  w{}={:.2f}x", curve.widths[idx], curve.speedup[idx]);
             }

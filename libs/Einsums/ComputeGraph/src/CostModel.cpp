@@ -18,6 +18,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -28,6 +29,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -695,6 +697,7 @@ json::Object write_profile(DeviceProfile const &p) {
             json::Object entry;
             entry.set("family", to_string(curve.family));
             entry.set("size_class", to_string(curve.size_class));
+            entry.set("route", to_string(curve.route));
             entry.set("width", static_cast<std::int64_t>(curve.widths[i]));
             entry.set("speedup", curve.speedup[i]);
             curves.emplace_back(std::move(entry));
@@ -788,11 +791,21 @@ DeviceProfile read_profile(json::Object const &obj) {
 
     p.max_threads = static_cast<unsigned>(number_or(obj, "max_threads", 0.0));
 
-    // Flat (family, size class, width, speedup) rows regrouped into curves.
-    // Rows naming a family or size class this build does not know are dropped:
-    // pricing them as something else would be worse than pricing them from the
-    // default model.
-    std::map<std::pair<std::uint8_t, std::uint8_t>, EfficiencyCurve> curves;
+    // Flat (family, size class, route, width, speedup) rows regrouped into
+    // curves. Rows naming a family, size class or route this build does not know
+    // are dropped: pricing them as something else would be worse than pricing
+    // them from the default model.
+    //
+    // A row with no route predates routes, and what it timed depends on its
+    // family. The batched-GEMM and permute cells always timed Einsums' own
+    // loops, so they are read as that. The GEMM and element-wise cells timed
+    // the vendor's GEMM and axpy, which is not what a widened node of those
+    // families runs, and on a vendor that ignores thread counts they came out
+    // flat; read as either route they would price a kernel they never timed,
+    // so they are dropped and those families take the default model until the
+    // machine is swept again.
+    std::map<std::tuple<std::uint8_t, std::uint8_t, std::uint8_t>, EfficiencyCurve> curves;
+    std::size_t                                                                     dropped_unrouted = 0;
     for_each_object(obj, "thread_efficiency", [&](json::Object const &entry) {
         KernelFamily family{};
         SizeClass    size_class{};
@@ -800,13 +813,23 @@ DeviceProfile read_profile(json::Object const &obj) {
             !size_class_from_string(string_or(entry, "size_class"), size_class)) {
             return;
         }
+        CurveRoute route{CurveRoute::Einsums};
+        if (auto const name = string_or(entry, "route"); !name.empty()) {
+            if (!curve_route_from_string(name, route)) {
+                return;
+            }
+        } else if (family == KernelFamily::GemmSmall || family == KernelFamily::GemmLarge || family == KernelFamily::Elementwise) {
+            dropped_unrouted++;
+            return;
+        }
         auto const width = static_cast<std::uint32_t>(number_or(entry, "width", 0.0));
         if (width == 0) {
             return;
         }
-        auto &curve      = curves[{static_cast<std::uint8_t>(family), static_cast<std::uint8_t>(size_class)}];
-        curve.family     = family;
+        auto &curve  = curves[{static_cast<std::uint8_t>(family), static_cast<std::uint8_t>(size_class), static_cast<std::uint8_t>(route)}];
+        curve.family = family;
         curve.size_class = size_class;
+        curve.route      = route;
         curve.widths.push_back(width);
         curve.speedup.push_back(number_or(entry, "speedup", 0.0));
     });
@@ -823,12 +846,24 @@ DeviceProfile read_profile(json::Object const &obj) {
         EfficiencyCurve sorted;
         sorted.family     = curve.family;
         sorted.size_class = curve.size_class;
+        sorted.route      = curve.route;
         for (size_t const idx : order) {
             sorted.widths.push_back(curve.widths[idx]);
             sorted.speedup.push_back(curve.speedup[idx]);
         }
         if (sorted.valid()) {
             p.thread_efficiency.push_back(std::move(sorted));
+        }
+    }
+
+    // Said once per process: every pass that prices threads loads the profile,
+    // and the advice is the same each time.
+    if (dropped_unrouted > 0) {
+        static std::atomic<bool> warned{false};
+        if (!warned.exchange(true)) {
+            EINSUMS_LOG_WARN("The hardware profile's GEMM and element-wise thread curves were measured before curves named the "
+                             "kernel they timed, and timed the vendor's kernels rather than the ones a widened node runs; they are "
+                             "ignored and the built-in model prices those families. Re-run einsums-tune to measure them.");
         }
     }
 

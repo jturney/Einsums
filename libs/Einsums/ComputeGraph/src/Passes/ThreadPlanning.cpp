@@ -39,6 +39,7 @@ struct NodeCost {
     double       t1_us{0.0};                        ///< Serial time, measured or modeled
     KernelFamily family{KernelFamily::Elementwise}; ///< Which speedup curve prices it
     std::size_t  bytes{0};                          ///< Working set, for the size class
+    CurveRoute   route{CurveRoute::Einsums};        ///< Whose threads widen it
     bool         frozen{false};                     ///< Width is 1 and stays 1
     /// A registered descriptor's own speedup curve, overriding @ref family's.
     std::function<double(unsigned)> speedup;
@@ -46,7 +47,7 @@ struct NodeCost {
 
 /// How many times faster than serial @p c runs at @p width.
 double speedup_at(NodeCost const &c, DeviceProfile const &profile, unsigned width) {
-    return c.speedup ? c.speedup(width) : profile.parallel_speedup(c.family, c.bytes, width);
+    return c.speedup ? c.speedup(width) : profile.parallel_speedup(c.family, c.bytes, width, c.route);
 }
 
 /// Loop and Conditional, which this pass prices by the bodies it plans rather than by the model.
@@ -315,6 +316,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
 
         c.bytes   = model.bytes;
         c.family  = model.family;
+        c.route   = model.route;
         c.speedup = model.speedup;
 
         auto const sit      = samples.find(node.id);

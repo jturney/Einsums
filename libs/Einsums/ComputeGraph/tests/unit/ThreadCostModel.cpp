@@ -9,9 +9,13 @@
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
+#include <regex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -335,6 +339,124 @@ TEST_CASE("Thread axis - efficiency curves survive the JSON round trip", "[Compu
     std::remove(path.c_str());
 }
 
+TEST_CASE("Thread axis - a curve's route survives the JSON round trip", "[ComputeGraph][CostModel]") {
+    cg::CostModel original;
+    original.cpu.max_threads       = 4;
+    original.cpu.thread_efficiency = {
+        {.family     = cg::KernelFamily::GemmLarge,
+         .size_class = cg::SizeClass::Streaming,
+         .route      = cg::CurveRoute::Einsums,
+         .widths     = {1, 2, 4},
+         .speedup    = {1.0, 1.9, 3.5}},
+        {.family     = cg::KernelFamily::GemmLarge,
+         .size_class = cg::SizeClass::Streaming,
+         .route      = cg::CurveRoute::Vendor,
+         .widths     = {1, 2, 4},
+         .speedup    = {1.0, 1.0, 1.0}},
+    };
+
+    std::string const path = "test_thread_curves_routes.json";
+    REQUIRE(original.save_json(path).has_value());
+    auto loaded_result = cg::CostModel::load_json(path);
+    std::remove(path.c_str());
+    REQUIRE(loaded_result.has_value());
+    auto const &loaded = loaded_result.value().cpu;
+
+    // Two curves for one (family, size class), told apart by their route, and
+    // not merged into one curve of six rows.
+    REQUIRE(loaded.thread_efficiency.size() == 2);
+    auto const *packed = loaded.find_curve(cg::KernelFamily::GemmLarge, cg::SizeClass::Streaming, cg::CurveRoute::Einsums);
+    auto const *vendor = loaded.find_curve(cg::KernelFamily::GemmLarge, cg::SizeClass::Streaming, cg::CurveRoute::Vendor);
+    REQUIRE(packed != nullptr);
+    REQUIRE(vendor != nullptr);
+    CHECK(packed->widths.size() == 3);
+    CHECK(packed->speedup[2] == Catch::Approx(3.5));
+    CHECK(vendor->speedup[2] == Catch::Approx(1.0));
+}
+
+// A lookup on one route never answers from the other route's measurement. The vendor curve here is
+// what Accelerate produces, flat because it ignores the thread count it is given; reading it for a
+// contraction the planner widens on the packed loops would price that contraction as unable to
+// use the machine.
+TEST_CASE("Thread axis - a lookup never answers from the other route", "[ComputeGraph][CostModel]") {
+    auto p                = pinned_profile();
+    p.max_threads         = 4;
+    p.thread_efficiency   = {{.family     = cg::KernelFamily::GemmLarge,
+                              .size_class = cg::SizeClass::Streaming,
+                              .route      = cg::CurveRoute::Vendor,
+                              .widths     = {1, 2, 4},
+                              .speedup    = {1.0, 1.0, 1.0}}};
+    double const fallback = cg::DeviceProfile::default_parallel_speedup(cg::KernelFamily::GemmLarge, cg::SizeClass::Streaming, 4);
+
+    CHECK(p.parallel_speedup(cg::KernelFamily::GemmLarge, cg::SizeClass::Streaming, 4, cg::CurveRoute::Vendor) == Catch::Approx(1.0));
+    CHECK(p.parallel_speedup(cg::KernelFamily::GemmLarge, cg::SizeClass::Streaming, 4, cg::CurveRoute::Einsums) == Catch::Approx(fallback));
+    // The route a caller does not name is Einsums', which is the kernel every family but the vendor
+    // GEMM calls runs once widened.
+    CHECK(p.parallel_speedup(cg::KernelFamily::GemmLarge, cg::SizeClass::Streaming, 4) == Catch::Approx(fallback));
+    CHECK(p.find_curve(cg::KernelFamily::GemmLarge, cg::SizeClass::Streaming) == nullptr);
+}
+
+// A profile written before curves carried a route timed the vendor's GEMM and axpy for the GEMM and
+// element-wise families, which is not what a widened node of either runs; on Accelerate those
+// curves came out flat at every width. Loading such a profile must drop exactly those curves and
+// keep the batched-GEMM and permute curves, which always timed Einsums' own loops.
+TEST_CASE("Thread axis - a pre-route profile keeps only curves that timed the right kernel", "[ComputeGraph][CostModel]") {
+    cg::CostModel original;
+    original.cpu.name              = "Pre-route CPU";
+    original.cpu.max_threads       = 4;
+    original.cpu.thread_efficiency = {
+        {.family = cg::KernelFamily::GemmSmall, .size_class = cg::SizeClass::L1Resident, .widths = {1, 2}, .speedup = {1.0, 1.0}},
+        {.family = cg::KernelFamily::GemmLarge, .size_class = cg::SizeClass::Streaming, .widths = {1, 2}, .speedup = {1.0, 1.0}},
+        {.family = cg::KernelFamily::Elementwise, .size_class = cg::SizeClass::Streaming, .widths = {1, 2}, .speedup = {1.0, 1.0}},
+        {.family = cg::KernelFamily::BatchedGemm, .size_class = cg::SizeClass::L2Resident, .widths = {1, 2}, .speedup = {1.0, 1.5}},
+        {.family = cg::KernelFamily::Permute, .size_class = cg::SizeClass::Streaming, .widths = {1, 2}, .speedup = {1.0, 1.7}},
+    };
+
+    // Written as this build writes it, then with every route removed: a file from before routes.
+    std::string const path = "test_thread_curves_pre_route.json";
+    REQUIRE(original.save_json(path).has_value());
+    std::string text;
+    {
+        std::ifstream      in(path);
+        std::ostringstream buffer;
+        buffer << in.rdbuf();
+        text = buffer.str();
+    }
+    std::string const stripped = std::regex_replace(text, std::regex(R"re("route"\s*:\s*"[a-z]+"\s*,?)re"), "");
+    REQUIRE(stripped != text);
+    {
+        std::ofstream out(path, std::ios::trunc);
+        out << stripped;
+    }
+
+    auto loaded_result = cg::CostModel::load_json(path);
+    std::remove(path.c_str());
+    REQUIRE(loaded_result.has_value());
+    auto const &loaded = loaded_result.value().cpu;
+
+    REQUIRE(loaded.thread_efficiency.size() == 2);
+    for (auto const &curve : loaded.thread_efficiency) {
+        CHECK(curve.route == cg::CurveRoute::Einsums);
+    }
+    auto const *batched = loaded.find_curve(cg::KernelFamily::BatchedGemm, cg::SizeClass::L2Resident);
+    auto const *permute = loaded.find_curve(cg::KernelFamily::Permute, cg::SizeClass::Streaming);
+    REQUIRE(batched != nullptr);
+    REQUIRE(permute != nullptr);
+    CHECK(batched->speedup[1] == Catch::Approx(1.5));
+    CHECK(permute->speedup[1] == Catch::Approx(1.7));
+
+    for (auto const family : {cg::KernelFamily::GemmSmall, cg::KernelFamily::GemmLarge, cg::KernelFamily::Elementwise}) {
+        INFO(cg::to_string(family));
+        CHECK(loaded.find_curve(family, cg::SizeClass::Streaming, cg::CurveRoute::Einsums) == nullptr);
+        CHECK(loaded.find_curve(family, cg::SizeClass::Streaming, cg::CurveRoute::Vendor) == nullptr);
+    }
+    // The dropped families answer from the default model, not from the flat curves.
+    CHECK(loaded.parallel_speedup(cg::KernelFamily::GemmLarge, cg::SizeClass::Streaming, 2) ==
+          Catch::Approx(cg::DeviceProfile::default_parallel_speedup(cg::KernelFamily::GemmLarge, cg::SizeClass::Streaming, 2)));
+    // Everything else in the profile is kept.
+    CHECK(loaded.max_threads == 4);
+}
+
 TEST_CASE("Thread axis - a profile with no curves round-trips cleanly", "[ComputeGraph][CostModel]") {
     cg::CostModel original;
     original.cpu.name = "Bare CPU";
@@ -379,6 +501,23 @@ TEST_CASE("Thread axis - sweep populates curves", "[ComputeGraph][CostModel]") {
         CHECK(curve.speedup[0] == Catch::Approx(1.0));
         CHECK(curve.speedup[1] > 0.0);
         CHECK(std::isfinite(curve.speedup[1]));
+    }
+
+    // The GEMM families are measured on both routes, and the packed side's
+    // presence says its pin held: a packed cell that ran anything but the
+    // packed loops is dropped. Every other family times Einsums' own loop.
+    auto const has = [&](cg::KernelFamily family, cg::CurveRoute route) {
+        return std::ranges::any_of(curves, [&](cg::EfficiencyCurve const &c) { return c.family == family && c.route == route; });
+    };
+    for (auto const family : {cg::KernelFamily::GemmSmall, cg::KernelFamily::GemmLarge}) {
+        INFO(cg::to_string(family));
+        CHECK(has(family, cg::CurveRoute::Einsums));
+        CHECK(has(family, cg::CurveRoute::Vendor));
+    }
+    for (auto const family : {cg::KernelFamily::BatchedGemm, cg::KernelFamily::Permute, cg::KernelFamily::Elementwise}) {
+        INFO(cg::to_string(family));
+        CHECK(has(family, cg::CurveRoute::Einsums));
+        CHECK_FALSE(has(family, cg::CurveRoute::Vendor));
     }
 
     // Dropping the curves into a profile makes it answer from measurement.

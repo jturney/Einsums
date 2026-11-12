@@ -33,6 +33,7 @@ struct ModelledCost {
     double       t1_us{0.0};                        ///< Serial time; 0 for a Loop or Conditional, priced by its body
     KernelFamily family{KernelFamily::Elementwise}; ///< The speedup curve it scales along
     std::size_t  bytes{0};                          ///< Working set, for the curve's size class
+    CurveRoute   route{CurveRoute::Einsums};        ///< Whose threads widen it; see @ref CurveRoute
     /// A registered descriptor's own speedup curve, overriding @ref family's; empty otherwise.
     std::function<double(unsigned)> speedup;
 };

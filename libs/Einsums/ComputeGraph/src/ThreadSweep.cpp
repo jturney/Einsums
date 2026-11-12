@@ -15,9 +15,14 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
+#include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
 #include <Einsums/ComputeGraph/Detail/WidthGuard.hpp>
+#include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/LinearAlgebra.hpp>
+#include <Einsums/PackedGemm/ContractionKey.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorPermute/Permute.hpp>
 
@@ -25,7 +30,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <functional>
+#include <optional>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -50,10 +57,11 @@ double median_seconds(size_t warmup, size_t repeats, F &&run) {
     return times[n / 2];
 }
 
-/// One (family, size class) pair the sweep measures.
+/// One (family, size class, route) cell the sweep measures.
 struct Cell {
     KernelFamily family;
     SizeClass    size_class;
+    CurveRoute   route{CurveRoute::Einsums};
 };
 
 /// The cells worth measuring.
@@ -61,14 +69,21 @@ struct Cell {
 /// A family is measured only where it exists: a small-GEMM cell at a streaming
 /// working set is not a small GEMM, and a large-GEMM cell that fits in L1 is
 /// not a large one. Unmeasured cells resolve through the nearest measured size
-/// class in the same family. Fifteen cells at five rungs is what keeps the
-/// sweep in seconds.
+/// class in the same family and route. The GEMM cells are measured on both
+/// routes, because a planner widens a contraction on the packed loops and a
+/// vendor GEMM node on the vendor, and the two scale differently: on a vendor
+/// that ignores thread counts, by nothing at all. Nineteen cells at five rungs
+/// is what keeps the sweep in seconds.
 std::vector<Cell> sweep_cells() {
     return {
         {.family = KernelFamily::GemmSmall, .size_class = SizeClass::L1Resident},
         {.family = KernelFamily::GemmSmall, .size_class = SizeClass::L2Resident},
         {.family = KernelFamily::GemmLarge, .size_class = SizeClass::LLCResident},
         {.family = KernelFamily::GemmLarge, .size_class = SizeClass::Streaming},
+        {.family = KernelFamily::GemmSmall, .size_class = SizeClass::L1Resident, .route = CurveRoute::Vendor},
+        {.family = KernelFamily::GemmSmall, .size_class = SizeClass::L2Resident, .route = CurveRoute::Vendor},
+        {.family = KernelFamily::GemmLarge, .size_class = SizeClass::LLCResident, .route = CurveRoute::Vendor},
+        {.family = KernelFamily::GemmLarge, .size_class = SizeClass::Streaming, .route = CurveRoute::Vendor},
         {.family = KernelFamily::BatchedGemm, .size_class = SizeClass::L2Resident},
         {.family = KernelFamily::BatchedGemm, .size_class = SizeClass::LLCResident},
         {.family = KernelFamily::BatchedGemm, .size_class = SizeClass::Streaming},
@@ -138,6 +153,9 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
     std::vector<EfficiencyCurve> curves;
     curves.reserve(sweep_cells().size());
 
+    // A fixed, well-formed spec, so the parse cannot fail.
+    ParsedEinsumSpec const gemm_spec = parse_einsum_spec("ij <- ik ; kj").value();
+
     for (auto const &cell : sweep_cells()) {
         size_t const bytes = target_bytes(profile, cell.size_class, options.max_bytes);
 
@@ -146,9 +164,16 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
         std::function<void()> run;
 
         einsums::Tensor<double, 2>              A2, B2, C2;
-        einsums::Tensor<double, 1>              X1, Y1;
+        std::vector<einsums::Tensor<double, 1>> group_a, group_b, group_c;
         std::vector<einsums::Tensor<double, 2>> batch_a, batch_b, batch_c;
-        bool                                    blas_width = true;
+
+        // The packed-loop GEMM cell runs the string einsum exactly as a graph
+        // node does: runtime views, and a site pinned to the packed route, as
+        // ThreadPlanning pins every contraction it may widen.
+        std::optional<RuntimeTensor<double>>     RA, RB, RC;
+        std::optional<RuntimeTensorView<double>> VA, VB, VC;
+        packed_gemm::ContractionSite             site;
+        site.route = packed_gemm::KernelRoute::Packed;
 
         switch (cell.family) {
         case KernelFamily::GemmSmall:
@@ -157,13 +182,26 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
             // correct side of it whatever the cache sizes say.
             size_t const n =
                 (cell.family == KernelFamily::GemmSmall) ? gemm_extent(bytes, 8, 48) : gemm_extent(bytes, 72, options.max_gemm_extent);
-            A2 = einsums::Tensor<double, 2>("sweep_a", n, n);
-            B2 = einsums::Tensor<double, 2>("sweep_b", n, n);
-            C2 = einsums::Tensor<double, 2>("sweep_c", n, n);
-            fill(A2.data(), n * n);
-            fill(B2.data(), n * n);
-            C2.zero();
-            run = [&A2, &B2, &C2] { einsums::linear_algebra::gemm<false, false>(1.0, A2, B2, 0.0, &C2); };
+            if (cell.route == CurveRoute::Vendor) {
+                A2 = einsums::Tensor<double, 2>("sweep_a", n, n);
+                B2 = einsums::Tensor<double, 2>("sweep_b", n, n);
+                C2 = einsums::Tensor<double, 2>("sweep_c", n, n);
+                fill(A2.data(), n * n);
+                fill(B2.data(), n * n);
+                C2.zero();
+                run = [&A2, &B2, &C2] { einsums::linear_algebra::gemm<false, false>(1.0, A2, B2, 0.0, &C2); };
+                break;
+            }
+            RA.emplace("sweep_a", std::vector<size_t>{n, n});
+            RB.emplace("sweep_b", std::vector<size_t>{n, n});
+            RC.emplace("sweep_c", std::vector<size_t>{n, n});
+            fill(RA->data(), n * n);
+            fill(RB->data(), n * n);
+            RC->zero();
+            VA.emplace(RA->impl());
+            VB.emplace(RB->impl());
+            VC.emplace(RC->impl());
+            run = [&] { dispatch::string_einsum(gemm_spec, 0.0, &*VC, 1.0, *VA, *VB, false, false, nullptr, &site); };
             break;
         }
         case KernelFamily::BatchedGemm: {
@@ -182,8 +220,7 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
             }
             // The width goes to the loop over entries; each entry's BLAS call
             // stays serial, which is how grouped_batched_gemm runs.
-            blas_width = false;
-            run        = [&batch_a, &batch_b, &batch_c, entries] {
+            run = [&batch_a, &batch_b, &batch_c, entries] {
                 auto const count = static_cast<long>(entries);
 #pragma omp parallel for schedule(static)
                 for (long e = 0; e < count; e++) {
@@ -203,12 +240,30 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
             break;
         }
         case KernelFamily::Elementwise: {
-            size_t const n = std::max<size_t>(1024, bytes / (2 * sizeof(double)));
-            X1             = einsums::Tensor<double, 1>("sweep_x", n);
-            Y1             = einsums::Tensor<double, 1>("sweep_y", n);
-            fill(X1.data(), n);
-            Y1.zero();
-            run = [&X1, &Y1] { einsums::linear_algebra::axpy(1.0, X1, &Y1); };
+            // A widened element-wise node is a grouped one: an OpenMP loop over
+            // its members, each member's kernel serial inside it. That loop is
+            // what is timed, over the same member count as the batched cell.
+            // A vendor BLAS-1 call is not, because the planner never widens one
+            // whose vendor cannot be told a width.
+            size_t const entries = std::max<size_t>(2, options.batch_entries);
+            size_t const n       = std::max<size_t>(64, bytes / (3 * sizeof(double) * entries));
+            group_a.reserve(entries);
+            group_b.reserve(entries);
+            group_c.reserve(entries);
+            for (size_t e = 0; e < entries; e++) {
+                group_a.emplace_back("sweep_ga", n);
+                group_b.emplace_back("sweep_gb", n);
+                group_c.emplace_back("sweep_gc", n);
+                fill(group_a.back().data(), n);
+                fill(group_b.back().data(), n);
+                group_c.back().zero();
+            }
+            run = [&group_a, &group_b, &group_c, entries] {
+                detail::run_grouped_members(entries, [&](std::size_t idx) {
+                    einsums::linear_algebra::detail::direct_product<double, double, double>(1.0, group_a[idx].impl(), group_b[idx].impl(),
+                                                                                            0.0, &group_c[idx].impl());
+                });
+            };
             break;
         }
         }
@@ -216,14 +271,35 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
         EfficiencyCurve curve;
         curve.family     = cell.family;
         curve.size_class = cell.size_class;
+        curve.route      = cell.route;
+
+        // A cell labelled with the packed loops that ran something else would
+        // record a curve for a kernel it never timed, so it is checked once,
+        // untimed, and dropped if the pin did not hold.
+        bool const packed_cell =
+            cell.route == CurveRoute::Einsums && (cell.family == KernelFamily::GemmSmall || cell.family == KernelFamily::GemmLarge);
+        if (packed_cell) {
+            dispatch::last_dispatch_route() = "";
+            run();
+            if (std::strcmp(dispatch::last_dispatch_route(), "packed_gemm") != 0) {
+                continue;
+            }
+        }
 
         double baseline = 0.0;
         for (unsigned const w : rungs) {
-            // The vendor is left free to thread here (no moldable scope): a
-            // GemmLarge cell is measuring exactly the vendor's own scaling, and
-            // a clamp would measure the clamp instead.
-            detail::WidthGuard const scope(static_cast<int>(w), blas_width, /*moldable_scope=*/false);
-            double const             seconds = median_seconds(options.warmup, options.repeats, run);
+            // An Einsums-route cell is timed under the guard the executor holds
+            // for a node of width w, so the vendor calls inside it are clamped
+            // to one thread exactly as they are there. A vendor cell is left
+            // free to thread (no moldable scope): it is measuring the vendor's
+            // own scaling, and a clamp would measure the clamp instead.
+            std::optional<detail::WidthGuard> scope;
+            if (cell.route == CurveRoute::Vendor) {
+                scope.emplace(static_cast<int>(w), /*blas_follows_width=*/true, /*moldable_scope=*/false);
+            } else {
+                scope.emplace(static_cast<int>(w));
+            }
+            double const seconds = median_seconds(options.warmup, options.repeats, run);
             if (w == rungs.front()) {
                 baseline = seconds;
                 // A kernel too fast to time leaves no signal to divide by; the

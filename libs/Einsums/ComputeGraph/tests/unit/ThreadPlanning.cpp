@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -400,6 +401,48 @@ TEST_CASE("ThreadPlanning - widths that cannot run side by side are not taken", 
     CHECK(planner.num_widened() == 0);
     // All three run at once at width 1, so the schedule is one node long.
     CHECK(planner.makespan_after_us() == Catch::Approx(planner.critical_path_after_us()));
+}
+
+// A contraction the planner may widen is pinned to the packed loops, so its speedup is the packed
+// loops' and never the vendor GEMM's. On Accelerate the two disagree completely: the vendor ignores
+// the thread count and its curve is flat, while the packed loops fork from the node width. Priced
+// from the vendor curve, every contraction looked unable to use the machine and none was widened.
+TEST_CASE("ThreadPlanning - a contraction is priced from the packed loops' curve", "[ComputeGraph][ThreadPlanning]") {
+    auto const curve = [](cg::CurveRoute route, std::vector<double> speedup) {
+        return cg::EfficiencyCurve{.family     = cg::KernelFamily::GemmLarge,
+                                   .size_class = cg::SizeClass::Streaming,
+                                   .route      = route,
+                                   .widths     = {1, 2, 4},
+                                   .speedup    = std::move(speedup)};
+    };
+    auto const plan = [](cg::CostModel const &model) {
+        Tensor<double, 2> a = create_random_tensor<double>("a", 384, 384);
+        Tensor<double, 2> b = create_random_tensor<double>("b", 384, 384);
+        Tensor<double, 2> c = create_zero_tensor<double>("c", 384, 384);
+        cg::Graph         graph("one_contraction");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", &c, a, b);
+        }
+        REQUIRE(graph.nodes().size() == 1);
+        REQUIRE(graph.nodes()[0].kind == cg::OpKind::Einsum);
+        cg::passes::ThreadPlanning planner(model, 4);
+        planner.run(graph);
+        return width_of(graph, 0);
+    };
+
+    cg::CostModel model                 = cg::CostModel::built_in();
+    model.cpu.max_threads               = 4;
+    model.cpu.kernel_launch_overhead_us = 0.0;
+
+    SECTION("packed loops scale, vendor flat: widened") {
+        model.cpu.thread_efficiency = {curve(cg::CurveRoute::Einsums, {1.0, 1.9, 3.6}), curve(cg::CurveRoute::Vendor, {1.0, 1.0, 1.0})};
+        CHECK(plan(model) > 1);
+    }
+    SECTION("packed loops flat, vendor scales: left at width 1") {
+        model.cpu.thread_efficiency = {curve(cg::CurveRoute::Einsums, {1.0, 1.0, 1.0}), curve(cg::CurveRoute::Vendor, {1.0, 1.9, 3.6})};
+        CHECK(plan(model) == 1);
+    }
 }
 
 TEST_CASE("ThreadPlanning - a cold plan runs a measured trial, then freezes", "[ComputeGraph][ThreadPlanning]") {

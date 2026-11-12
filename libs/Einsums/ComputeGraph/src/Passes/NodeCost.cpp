@@ -73,6 +73,17 @@ KindClass kind_class(OpKind kind) {
     }
 }
 
+/// Whose threads a widened @p node runs on. A contraction is widened only on the packed loops it
+/// is pinned to, and every other kind with a curve of its own is an Einsums loop, except the
+/// GEMM-shaped vendor calls: those thread as the vendor threads, and are widened at all only where
+/// the vendor can be told a width.
+CurveRoute curve_route_for(Node const &node) {
+    if (kind_class(node.kind) == KindClass::Gemm && node.kind != OpKind::Einsum) {
+        return CurveRoute::Vendor;
+    }
+    return CurveRoute::Einsums;
+}
+
 /// Which speedup curve a node's kernel scales along.
 KernelFamily family_for(Node const &node, std::size_t bytes, DeviceProfile const &profile, double flops) {
     switch (kind_class(node.kind)) {
@@ -332,6 +343,7 @@ ModelledCost model_cost(Graph const &graph, Node const &node, DeviceProfile cons
     ModelledCost    cost;
     cost.bytes  = bytes;
     cost.family = family_for(node, bytes, profile, shape.valid() ? shape.flops() : 0.0);
+    cost.route  = curve_route_for(node);
 
     switch (kind_class(node.kind)) {
     case KindClass::ControlFlow:
