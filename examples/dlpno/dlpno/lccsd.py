@@ -2363,12 +2363,18 @@ class LCCSDSolver:
             # what this graph ran under before. The iteration is not that shape:
             # the projections and Eq. 75-77 hold contractions fat enough to want
             # threads of their own, and under a team over nodes they could not
-            # have any. `plan_widths` says what happens if the planner declines.
+            # have any.
+            #
+            # The dataflow executor even when the planner widens nothing: its
+            # schedule over the folded phases is the parallelism this graph has
+            # at width one, and the OpenMP executor `plan_widths` otherwise
+            # falls back to took 1.4 to 1.5 times as long here on methanol and
+            # the water dimer.
             #
             # Never drive any of this from Python threads: against the
             # OpenMP-built OpenBLAS conda resolves, a caller-created thread
             # returns silently wrong numbers. See `base.py::_run`.
-            self._moldable = plan_widths(g)
+            self._moldable = plan_widths(g, dataflow=True)
         #: The graphs replayed in order to evaluate the residual. One, now that
         #: the phases are folded; it stays a list because that is what
         #: :meth:`iterate` and :meth:`evaluate_residuals` walk, and because the
