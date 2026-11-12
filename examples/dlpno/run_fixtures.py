@@ -125,7 +125,12 @@ for path in paths:
         # t_cut_pno the fixture was written at; dump_reference pins both sides
         # to 3.33e-7 for exactly this reason.
         cut = Thresholds.preset("NORMAL", method="cc", n_buckets=args.buckets)
-        cc = DLPNOCCSDT(reference, replace(cut, t0_approximation=False),
+        # Converged two orders past the preset's 1e-10 energy change. At the
+        # preset the iteration stops wherever DIIS happens to cross 1e-10, and
+        # on the water dimer that point sat 2.1e-9 from psi4's energy under
+        # Accelerate (4.6e-11 when converged further): the gate measured the
+        # stopping point, not the port.
+        cc = DLPNOCCSDT(reference, replace(cut, t0_approximation=False, e_convergence=1e-12),
                         verbose=False, use_diis=not args.no_diis)
         cc.compute_energy(method="ccsd(t)")
         got = (cc.e_lccsd + cc.de_weak + cc.de_lmp2_eliminated + cc.de_dipole
