@@ -960,8 +960,12 @@ class EINSUMS_EXPORT DeviceProfileDB {
 /// Knobs for @ref measure_thread_efficiency. The defaults are what
 /// `einsums-tune` runs; the caps are what keep it to tens of seconds.
 struct ThreadSweepOptions {
-    size_t   warmup{1};                     ///< Untimed runs before each timed set
-    size_t   repeats{3};                    ///< Timed runs per point; the median is kept
+    size_t warmup{1};  ///< Untimed runs before each timed set
+    size_t repeats{3}; ///< Timed samples per point; the median is kept
+    /// Shortest a sample may be, in seconds: a sample repeats the kernel until it lasts this long
+    /// and is divided by the count, so a cell that runs in microseconds is not timed against the
+    /// clock's jitter. Zero times one run per sample.
+    double   min_sample_seconds{0.005};
     unsigned max_threads{0};                ///< Widest rung; 0 asks the hardware
     size_t   max_bytes{64UL * 1024 * 1024}; ///< Cap on any cell's working set
     size_t   max_gemm_extent{1024};         ///< Cap on a square GEMM's extent

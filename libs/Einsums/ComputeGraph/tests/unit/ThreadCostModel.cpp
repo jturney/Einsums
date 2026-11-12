@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/CostModel.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -525,6 +526,34 @@ TEST_CASE("Thread axis - sweep populates curves", "[ComputeGraph][CostModel]") {
     p.max_threads       = 2;
     p.thread_efficiency = curves;
     CHECK(p.parallel_speedup(cg::KernelFamily::Permute, kStreamingBytes, 2) > 0.0);
+}
+
+// A sample is as many back-to-back runs as fill the minimum sample time. Timed one run at a time,
+// the microsecond cells were the clock's jitter: a three-sample median of a small vendor GEMM
+// read 1.94x at width 2 on one sweep and 1.00x on the next. The bound below is a floor on wall
+// time, which a slow machine can only exceed, so it fails only when samples are not filled.
+TEST_CASE("Thread axis - each sweep sample lasts at least the minimum sample time", "[ComputeGraph][CostModel]") {
+    cg::ThreadSweepOptions options;
+    options.warmup             = 0;
+    options.repeats            = 1;
+    options.max_threads        = 2;
+    options.max_bytes          = 64UL * 1024;
+    options.max_gemm_extent    = 96;
+    options.batch_entries      = 4;
+    options.min_sample_seconds = 0.01;
+
+    auto const t0     = std::chrono::steady_clock::now();
+    auto const curves = cg::measure_thread_efficiency(pinned_profile(), options);
+    auto const t1     = std::chrono::steady_clock::now();
+    REQUIRE_FALSE(curves.empty());
+
+    // Every recorded point spent at least one full batch finding its run count and one timing it.
+    size_t points = 0;
+    for (auto const &curve : curves) {
+        points += curve.widths.size();
+    }
+    double const elapsed = std::chrono::duration<double>(t1 - t0).count();
+    CHECK(elapsed >= 2.0 * static_cast<double>(points) * options.min_sample_seconds);
 }
 
 TEST_CASE("Thread axis - sweep on a single-thread machine yields nothing", "[ComputeGraph][CostModel]") {

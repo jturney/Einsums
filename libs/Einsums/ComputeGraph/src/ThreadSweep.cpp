@@ -39,19 +39,41 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
 
-/// Median wall time of @p run, in seconds, after @p warmup untimed runs.
+/// Wall time of @p count back-to-back runs of @p run, in seconds.
 template <typename F>
-double median_seconds(size_t warmup, size_t repeats, F &&run) {
+double time_runs(size_t count, F &run) {
+    auto const t0 = std::chrono::steady_clock::now();
+    for (size_t i = 0; i < count; i++) {
+        run();
+    }
+    auto const t1 = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(t1 - t0).count();
+}
+
+/// Median wall time of one run of @p run, in seconds, after @p warmup untimed runs.
+///
+/// Each of the @p repeats samples times as many back-to-back runs as it takes to fill
+/// @p min_sample_seconds, and is divided by that count. The smallest cells run in microseconds, where
+/// one run is the clock's jitter and a fork's start-up and nothing else: timed one at a time, a
+/// three-sample median of them moved by a factor of two between sweeps. The count is chosen per
+/// call, so each width of a cell gets as many runs as its own speed needs.
+template <typename F>
+double median_seconds(size_t warmup, size_t repeats, double min_sample_seconds, F &&run) {
     for (size_t w = 0; w < warmup; w++) {
         run();
+    }
+    size_t count = 1;
+    if (min_sample_seconds > 0.0) {
+        // Doubled until one batch fills the sample, so a slow first run is not mistaken for the rate.
+        constexpr size_t kMaxCount = size_t{1} << 20;
+        while (count < kMaxCount && time_runs(count, run) < min_sample_seconds) {
+            count *= 2;
+        }
     }
     size_t const        n = std::max<size_t>(1, repeats);
     std::vector<double> times(n);
     for (size_t r = 0; r < n; r++) {
-        auto const t0 = std::chrono::steady_clock::now();
-        run();
-        auto const t1 = std::chrono::steady_clock::now();
-        times[r]      = std::chrono::duration<double>(t1 - t0).count();
+        times[r] = time_runs(count, run) / static_cast<double>(count);
     }
     std::ranges::sort(times);
     return times[n / 2];
@@ -299,7 +321,7 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
             } else {
                 scope.emplace(static_cast<int>(w));
             }
-            double const seconds = median_seconds(options.warmup, options.repeats, run);
+            double const seconds = median_seconds(options.warmup, options.repeats, options.min_sample_seconds, run);
             if (w == rungs.front()) {
                 baseline = seconds;
                 // A kernel too fast to time leaves no signal to divide by; the
