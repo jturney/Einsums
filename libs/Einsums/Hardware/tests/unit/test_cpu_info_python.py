@@ -279,6 +279,32 @@ def test_profile_options_apply_below_the_environment(tmp_path):
     assert _in_subprocess(SHARE, _isolated(tmp_path, EINSUMS_GRAPH_TILING_BUDGET_SHARE="0.4")) == "0.4"
 
 
+def test_a_query_before_startup_does_not_decide_the_profile(tmp_path):
+    """Asking about the profile before the runtime starts must not pin the answer.
+
+    A profile with options can only be judged once the parser has registered which options a
+    profile may set, and the package starts the runtime on first real use. A query made before
+    that once cached an "invalid" verdict for the life of the process, so the profile, and every
+    tuned option in it, was ignored even after start-up.
+    """
+    # Isolated through the platform cache location rather than the einsums options, which read
+    # their defaults before start-up and the environment after: a changed option re-resolves the
+    # profile anyway and would hide the pinned verdict.
+    platform_cache = tmp_path / "platform-cache"
+    _write(platform_cache / "einsums" / "profiles" / f"{hw.machine_fingerprint()}.json",
+           _profile(options={"einsums:graph:tiling-budget-share": 0.3}))
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("EINSUMS_CACHE_DIR", "EINSUMS_HARDWARE_SITE_PROFILES", "EINSUMS_HARDWARE_PROFILE")}
+    env.update({"XDG_CACHE_HOME": str(platform_cache), "LOCALAPPDATA": str(platform_cache), "OMP_NUM_THREADS": "2"})
+    script = ("import json, einsums; from einsums import _core; hw = _core.hardware; "
+              "before = hw.profile_state(); einsums._ensure_initialized(); "
+              "print(json.dumps([before, hw.profile_state(), _core._option_values()['graph-tiling-budget-share']]))")
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True, env=env)
+    _, after, share = json.loads(out.stdout.strip().splitlines()[-1])
+    assert after == "loaded"
+    assert share == "0.3"
+
+
 def test_a_profile_without_options_leaves_the_defaults(tmp_path):
     _write(_cached(tmp_path), _profile())
     default = next(o["default"] for o in __import__("einsums")._core._registered_options()

@@ -216,8 +216,12 @@ std::shared_ptr<Active const> resolve(std::string key) {
 
 /// The profile in effect, resolved again only when an option that locates it has changed.
 std::shared_ptr<Active const> current() {
-    std::string                       key = fmt::format("{}\n{}\n{}", config::get(option::HardwareProfile), config::get(option::CacheDir),
-                                                        config::get(option::HardwareSiteProfiles));
+    // Keyed by everything the verdict reads that can change after the first query: the options that
+    // locate the file, whether the parser has registered its option check yet, and the BLAS this
+    // process reports. A query made before start-up, when no option may come from a profile, would
+    // otherwise pin that verdict for the life of the process.
+    std::string key = fmt::format("{}\n{}\n{}\n{}\n{}", config::get(option::HardwareProfile), config::get(option::CacheDir),
+                                  config::get(option::HardwareSiteProfiles), option_check.load() != nullptr, software_identity().blas);
     std::lock_guard<std::mutex> const guard(active_mutex);
     if (!active || active->key != key) {
         active = resolve(std::move(key));
@@ -236,15 +240,23 @@ void set_blas_identity_provider(std::string (*provider)()) {
 }
 
 SoftwareIdentity const &software_identity() {
-    static SoftwareIdentity const identity = [] {
+    auto const make = [](std::string blas) {
         SoftwareIdentity id;
-        id.major            = EINSUMS_VERSION_MAJOR;
-        id.minor            = EINSUMS_VERSION_MINOR;
-        id.patch            = EINSUMS_VERSION_PATCH;
-        auto const provider = blas_provider.load();
-        id.blas             = provider != nullptr ? provider() : std::string{"unidentified"};
+        id.major = EINSUMS_VERSION_MAJOR;
+        id.minor = EINSUMS_VERSION_MINOR;
+        id.patch = EINSUMS_VERSION_PATCH;
+        id.blas  = std::move(blas);
         return id;
-    }();
+    };
+    // Not cached until the BLAS layer has said who it is: an answer given before that would
+    // otherwise stand for the whole process, and every profile would read as measured with
+    // another BLAS.
+    auto const provider = blas_provider.load();
+    if (provider == nullptr) {
+        static SoftwareIdentity const unidentified = make("unidentified");
+        return unidentified;
+    }
+    static SoftwareIdentity const identity = make(provider());
     return identity;
 }
 
