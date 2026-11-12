@@ -44,6 +44,10 @@ extensions = [
     'sphinx_copybutton',
 ]
 
+# Cards spell their header and footer with the card-header and card-footer
+# directives; the old '^^^' and '+++' separator lines are read as text.
+sd_card_legacy_separators = False
+
 # External inventories for :py:...: cross-references in the generated Python
 # API reference and the user guide.
 intersphinx_mapping = {

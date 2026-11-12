@@ -69,80 +69,84 @@ As a short example, the following :code:`einsum` call routes to a single
       :img-top: _static/index-images/getting_started.svg
       :class-img-top: icon
 
-      Getting Started
-      ^^^^^^^^^^^^^^^
+      .. card-header::
+
+         Getting Started
 
       New to Einsums? Check out the Absolute Beginner's Guide. It contains
       an introduction to Einsums' main concepts and links to additional
       tutorials.
 
-      +++
+      .. card-footer::
 
-      .. button-ref:: user/absolute_beginners
-         :expand:
-         :color: primary
-         :click-parent:
+         .. button-ref:: user/absolute_beginners
+            :expand:
+            :color: primary
+            :click-parent:
 
-         To the beginner's guide
+            To the beginner's guide
 
    .. grid-item-card::
       :img-top: _static/index-images/user_guide.svg
       :class-img-top: icon
 
-      User's Guide
-      ^^^^^^^^^^^^
+      .. card-header::
+
+         User's Guide
 
       The user guide provides in-depth information on the key concepts of
       Einsums with useful background information and explanation.
 
-      +++
+      .. card-footer::
 
-      .. button-ref:: user/index
-         :expand:
-         :color: primary
-         :click-parent:
+         .. button-ref:: user/index
+            :expand:
+            :color: primary
+            :click-parent:
 
-         To the user's guide
+            To the user's guide
 
    .. grid-item-card::
       :img-top: _static/index-images/api.svg
       :class-img-top: icon
 
-      API Reference
-      ^^^^^^^^^^^^^
+      .. card-header::
+
+         API Reference
 
       The reference for the C++ and Python APIs. Start here when you need
       to know what a particular class does, what symbols a header exposes,
       or which functions the Python package binds.
 
-      +++
+      .. card-footer::
 
-      .. button-ref:: api/index
-         :expand:
-         :color: primary
-         :click-parent:
+         .. button-ref:: api/index
+            :expand:
+            :color: primary
+            :click-parent:
 
-         To the API reference
+            To the API reference
 
    .. grid-item-card::
       :img-top: _static/index-images/contributor.svg
       :class-img-top: icon
 
-      Developer Guide
-      ^^^^^^^^^^^^^^^
+      .. card-header::
+
+         Developer Guide
 
       Want to add to the codebase? The developer guide covers the coding
       and documentation guidelines, the per-module internals, and the
       tooling for improving Einsums.
 
-      +++
+      .. card-footer::
 
-      .. button-ref:: contributors/index
-         :expand:
-         :color: primary
-         :click-parent:
+         .. button-ref:: contributors/index
+            :expand:
+            :color: primary
+            :click-parent:
 
-         To the developer guide
+            To the developer guide
 
 .. Indices and tables
 .. ==================
