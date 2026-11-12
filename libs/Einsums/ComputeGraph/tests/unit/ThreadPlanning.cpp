@@ -369,6 +369,39 @@ TEST_CASE("ThreadPlanning - the area never exceeds the makespan estimate", "[Com
     }
 }
 
+// The width search used to judge a step by max(critical path, area / P), which cannot see that
+// wide nodes on parallel branches cannot overlap. Three equal independent nodes on four threads,
+// each 1.8x faster at width 2: widening all three to 2 halves the critical path and leaves the
+// area under the old makespan, so the bound called it an improvement, but only two width-2 nodes
+// fit in four threads and the third waits for them, which is slower than running all three
+// narrow side by side. The DLPNO pair bodies lost 23% to this. Judged by the schedule the
+// executor's admission makes, the plan leaves them at width 1.
+TEST_CASE("ThreadPlanning - widths that cannot run side by side are not taken", "[ComputeGraph][ThreadPlanning]") {
+    cg::CostModel model                 = cg::CostModel::built_in();
+    model.cpu.max_threads               = 4;
+    model.cpu.kernel_launch_overhead_us = 0.0;
+    model.cpu.thread_efficiency         = {
+        cg::EfficiencyCurve{.family = cg::KernelFamily::Elementwise, .widths = {1, 2, 4}, .speedup = {1.0, 1.8, 2.5}}};
+
+    cg::Graph graph("three_lanes");
+    for (int lane = 0; lane < 3; lane++) {
+        auto const in  = shell(graph, fmt::format("in{}", lane), kFatExtent);
+        auto const out = shell(graph, fmt::format("out{}", lane), kFatExtent);
+        graph.add_node(work_node(fmt::format("lane{}", lane), in, out));
+    }
+
+    cg::passes::ThreadPlanning planner(model, 4);
+    planner.run(graph);
+
+    for (size_t i = 0; i < graph.nodes().size(); i++) {
+        INFO("node " << i);
+        CHECK(width_of(graph, i) == 1);
+    }
+    CHECK(planner.num_widened() == 0);
+    // All three run at once at width 1, so the schedule is one node long.
+    CHECK(planner.makespan_after_us() == Catch::Approx(planner.critical_path_after_us()));
+}
+
 TEST_CASE("ThreadPlanning - a cold plan runs a measured trial, then freezes", "[ComputeGraph][ThreadPlanning]") {
     FatGraph  fixture;
     cg::Graph graph("cold_then_warm");

@@ -25,18 +25,25 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * plan is safe to run on an unoptimized graph.
  *
  * @par The heuristic
- * Critical-path-and-area moldable scheduling. Every node starts at width 1.
- * Each round measures the current critical path `CP` (the longest path through
- * the graph under `t_i(w_i)`) and the area bound `A = sum(w_i * t_i(w_i)) / P`,
- * whose maximum is the makespan any schedule of these widths can reach. It then
- * widens the ONE node, on the critical path, whose next rung buys the most time
- * per unit of area it consumes, and takes the step when it does not make the
- * estimate worse and the area stays inside the makespan the round started with.
- * A node whose next rung fails that test is frozen at its current width, so the
- * search terminates. The plan that is KEPT is the widths at the last strict
- * improvement, which is what lets the search cross a plateau - several fat
- * nodes side by side on the critical path buy nothing until the last of them is
- * widened - without leaving the graph standing on one.
+ * Critical-path moldable scheduling, judged by a simulated schedule. Every node
+ * starts at width 1. Each round measures the current critical path `CP` (the
+ * longest path through the graph under `t_i(w_i)`) and the area
+ * `A = sum(w_i * t_i(w_i)) / P`, then proposes widening the ONE node, on the
+ * critical path, whose next rung buys the most time per unit of area it
+ * consumes. The step is taken when it does not lengthen the schedule the
+ * executor would make of the new widths: every node at its estimated time,
+ * admitted the way WidthBudget admits, strictly by priority with head-of-line
+ * blocking. A node whose next rung fails that test is frozen at its current
+ * width, so the search terminates. The plan that is KEPT is the widths at the
+ * last strict improvement, which is what lets the search cross a plateau -
+ * several fat nodes side by side on the critical path buy nothing until the
+ * last of them is widened - without leaving the graph standing on one.
+ *
+ * `max(CP, A)` is a lower bound on that schedule, and is not what steps are
+ * judged by, because it cannot see that two wide nodes on parallel branches
+ * cannot overlap. On a short body of parallel branches it scores widening every
+ * node to the whole machine as well as pairing nodes up, though the first runs
+ * them one at a time.
  *
  * `t_i(w) = t_i(1) / s(family, bytes, w)`, with `s` from
  * @ref DeviceProfile::parallel_speedup - measured curves where the machine was
@@ -163,20 +170,21 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
     /// Nodes whose `t_i(1)` came from the cost model.
     [[nodiscard]] std::size_t num_from_model() const { return _stats.num_from_model; }
 
-    /// Estimated makespan in microseconds before any node was widened.
+    /// Simulated makespan in microseconds before any node was widened: the
+    /// schedule the executor's admission rule makes with every width at 1.
     [[nodiscard]] double makespan_before_us() const { return _stats.makespan_before_us; }
 
-    /// Estimated makespan in microseconds under the final widths. This is
-    /// `max(critical_path_after_us(), area_after_us())`, which is the lower
-    /// bound any schedule of these widths obeys.
+    /// Simulated makespan in microseconds under the final widths. A real
+    /// schedule, so never below `max(critical_path_after_us(), area_after_us())`,
+    /// the lower bound any schedule of these widths obeys.
     [[nodiscard]] double makespan_after_us() const { return _stats.makespan_after_us; }
 
     /// Longest path through the graph in microseconds, under the final widths.
     [[nodiscard]] double critical_path_after_us() const { return _stats.critical_path_after_us; }
 
     /// `sum(w_i * t_i(w_i)) / P` in microseconds, under the final widths: the
-    /// time the plan's work needs on `P` threads if they were never idle. The
-    /// area bound the search enforces is that this never exceeds the makespan.
+    /// time the plan's work needs on `P` threads if they were never idle, and
+    /// so never more than the simulated makespan.
     [[nodiscard]] double area_after_us() const { return _stats.area_after_us; }
 
     /// Contraction nodes whose kernel route this run pinned, over the whole
@@ -191,10 +199,10 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
     /// container node can be priced by what it will actually run.
     struct SubPlan {
         double serial_us{0.0};      ///< sum of t_i(1) over the body, one traversal
-        double before_us{0.0};      ///< max(CP, area) with every width at 1
+        double before_us{0.0};      ///< simulated schedule with every width at 1
         double cp_before_us{0.0};   ///< longest path with every width at 1
         double area_before_us{0.0}; ///< sum(t_i(1)) / P with every width at 1
-        double makespan_us{0.0};    ///< max(CP, area) under the body's final widths
+        double makespan_us{0.0};    ///< simulated schedule under the body's final widths
         double cp_us{0.0};          ///< longest path under the final widths
         double area_us{0.0};        ///< sum(w_i * t_i(w_i)) / P under the final widths
     };
