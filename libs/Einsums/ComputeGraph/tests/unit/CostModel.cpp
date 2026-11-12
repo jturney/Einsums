@@ -16,13 +16,19 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -119,6 +125,215 @@ TEST_CASE("DeviceProfile - each engine reads its own points", "[ComputeGraph][Co
     // A profile that measured only the routed engine answers for both.
     std::erase_if(p.gemm_efficiency, [](cg::GemmEfficiencyPoint const &pt) { return pt.engine == cg::GemmEngine::Packed; });
     CHECK(p.estimate_gemm_gflops(64, 64, 64, cg::GemmEngine::Packed) == Catch::Approx(40.0));
+}
+
+namespace {
+
+// The GEMM rate read as it was before the profile prepared its tables: everything rebuilt from the
+// points on every read. The prepared read must agree with it to the bit, because a thread plan's
+// admission priorities are rounded from times priced with these rates, and a rate that moves in its
+// last bit can reorder a plan.
+double log_extent_ref(size_t extent) {
+    return std::log(static_cast<double>(std::max<size_t>(extent, 1)));
+}
+
+std::pair<size_t, double> bracket_ref(std::vector<double> const &axis, double x) {
+    if (axis.size() < 2 || x <= axis.front()) {
+        return {0, 0.0};
+    }
+    if (x >= axis.back()) {
+        return {axis.size() - 2, 1.0};
+    }
+    auto const   upper = static_cast<size_t>(std::ranges::upper_bound(axis, x) - axis.begin());
+    size_t const lower = upper - 1;
+    return {lower, (x - axis[lower]) / (axis[upper] - axis[lower])};
+}
+
+double reference_gemm_gflops(cg::DeviceProfile const &profile, size_t M, size_t N, size_t K, cg::GemmEngine engine) {
+    std::vector<cg::GemmEfficiencyPoint const *> points;
+    for (cg::GemmEngine const from : {engine, cg::GemmEngine::Routed}) {
+        for (auto const &pt : profile.gemm_efficiency) {
+            if (pt.engine == from && pt.gflops > 0.0) {
+                points.push_back(&pt);
+            }
+        }
+        if (!points.empty()) {
+            break;
+        }
+    }
+    if (points.empty()) {
+        double const volume     = static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K);
+        double const efficiency = std::min(0.85, 0.1 + 0.75 * (1.0 - std::exp(-volume / 1e6)));
+        return profile.peak_gflops_fp64 * efficiency;
+    }
+    if (std::ranges::all_of(points, [](cg::GemmEfficiencyPoint const *pt) { return pt->M == pt->N && pt->N == pt->K; })) {
+        std::ranges::sort(points, {}, &cg::GemmEfficiencyPoint::M);
+        std::vector<double> xs, ys;
+        for (auto const *pt : points) {
+            if (!xs.empty() && log_extent_ref(pt->M) == xs.back()) {
+                continue;
+            }
+            xs.push_back(log_extent_ref(pt->M));
+            ys.push_back(std::log(pt->gflops));
+        }
+        double const x = (log_extent_ref(M) + log_extent_ref(N) + log_extent_ref(K)) / 3.0;
+        if (xs.size() == 1) {
+            return std::exp(ys.front());
+        }
+        auto const [i, t] = bracket_ref(xs, x);
+        return std::exp(ys[i] + t * (ys[i + 1] - ys[i]));
+    }
+
+    auto const axis_of = [&](auto member) {
+        std::vector<double> axis;
+        axis.reserve(points.size());
+        for (auto const *pt : points) {
+            axis.push_back(log_extent_ref(pt->*member));
+        }
+        std::ranges::sort(axis);
+        axis.erase(std::ranges::unique(axis).begin(), axis.end());
+        return axis;
+    };
+    std::array<std::vector<double>, 3> const axes{axis_of(&cg::GemmEfficiencyPoint::M), axis_of(&cg::GemmEfficiencyPoint::N),
+                                                  axis_of(&cg::GemmEfficiencyPoint::K)};
+    std::array<double, 3> const              at{log_extent_ref(M), log_extent_ref(N), log_extent_ref(K)};
+    std::array<std::pair<size_t, double>, 3> where{};
+    for (size_t d = 0; d < 3; ++d) {
+        where[d] = bracket_ref(axes[d], at[d]);
+    }
+    double weighted = 0.0;
+    double total    = 0.0;
+    for (unsigned corner = 0; corner < 8; ++corner) {
+        double                weight = 1.0;
+        std::array<double, 3> position{};
+        for (size_t d = 0; d < 3; ++d) {
+            bool const upper  = ((corner >> d) & 1U) != 0U;
+            auto const [i, t] = where[d];
+            if (axes[d].size() < 2) {
+                if (upper) {
+                    weight = 0.0;
+                }
+                position[d] = axes[d].front();
+                continue;
+            }
+            weight *= upper ? t : 1.0 - t;
+            position[d] = axes[d][upper ? i + 1 : i];
+        }
+        if (weight == 0.0) {
+            continue;
+        }
+        auto const found = std::ranges::find_if(points, [&](cg::GemmEfficiencyPoint const *pt) {
+            return log_extent_ref(pt->M) == position[0] && log_extent_ref(pt->N) == position[1] && log_extent_ref(pt->K) == position[2];
+        });
+        if (found != points.end()) {
+            weighted += weight * std::log((*found)->gflops);
+            total += weight;
+        }
+    }
+    if (total > 0.0) {
+        return std::exp(weighted / total);
+    }
+    cg::GemmEfficiencyPoint const *nearest  = points.front();
+    double                         shortest = std::numeric_limits<double>::infinity();
+    for (auto const *pt : points) {
+        double const dm = log_extent_ref(pt->M) - at[0], dn = log_extent_ref(pt->N) - at[1], dk = log_extent_ref(pt->K) - at[2];
+        if (double const d = dm * dm + dn * dn + dk * dk; d < shortest) {
+            shortest = d;
+            nearest  = pt;
+        }
+    }
+    return std::exp(std::log(nearest->gflops));
+}
+
+/// Shapes read for every table: on the grid, between it, past both ends, and empty extents.
+constexpr std::array<size_t, 15> kProbeExtents{0, 1, 5, 12, 16, 28, 45, 64, 124, 200, 508, 1020, 2044, 3000, 100000};
+
+/// Reads that disagree with the reference in any bit, over every probe shape and both engines.
+size_t prepared_read_mismatches(cg::DeviceProfile const &profile) {
+    size_t mismatches = 0;
+    for (cg::GemmEngine const engine : {cg::GemmEngine::Routed, cg::GemmEngine::Packed}) {
+        for (size_t const M : kProbeExtents) {
+            for (size_t const N : kProbeExtents) {
+                for (size_t const K : kProbeExtents) {
+                    double const prepared  = profile.estimate_gemm_gflops(M, N, K, engine);
+                    double const reference = reference_gemm_gflops(profile, M, N, K, engine);
+                    if (std::bit_cast<std::uint64_t>(prepared) != std::bit_cast<std::uint64_t>(reference)) {
+                        mismatches++;
+                    }
+                }
+            }
+        }
+    }
+    return mismatches;
+}
+
+} // namespace
+
+// A cold thread plan of a few thousand nodes spent two thirds of its time rebuilding the GEMM rate
+// grid from the profile's points on every read; the profile now prepares it once. The prepared read
+// must be the old read to the bit, on every kind of table the cost model meets.
+TEST_CASE("DeviceProfile - a prepared GEMM rate is the unprepared read to the bit", "[ComputeGraph][CostModel]") {
+    SECTION("a full two-engine grid, as a calibration measures") {
+        cg::DeviceProfile           p;
+        std::array<size_t, 8> const sizes{12, 28, 60, 124, 252, 508, 1020, 2044};
+        for (cg::GemmEngine const engine : {cg::GemmEngine::Routed, cg::GemmEngine::Packed}) {
+            for (size_t const m : sizes) {
+                for (size_t const n : sizes) {
+                    for (size_t const k : sizes) {
+                        double const gflops = 1.0 + std::log2(static_cast<double>(m * n)) * std::sqrt(static_cast<double>(k)) * 0.37 +
+                                              (engine == cg::GemmEngine::Packed ? 3.1 : 0.0);
+                        p.gemm_efficiency.push_back({.M = m, .N = n, .K = k, .gflops = gflops, .engine = engine});
+                    }
+                }
+            }
+        }
+        CHECK(prepared_read_mismatches(p) == 0);
+    }
+
+    SECTION("a sparse grid with repeated positions, so corners go missing and the first point answers") {
+        cg::DeviceProfile p;
+        p.gemm_efficiency = {
+            {.M = 16, .N = 16, .K = 16, .gflops = 3.0},    {.M = 256, .N = 16, .K = 16, .gflops = 30.0},
+            {.M = 16, .N = 256, .K = 256, .gflops = 22.0}, {.M = 16, .N = 16, .K = 16, .gflops = 99.0},
+            {.M = 1024, .N = 64, .K = 16, .gflops = 41.0}, {.M = 64, .N = 1024, .K = 1024, .gflops = 47.0},
+            {.M = 256, .N = 256, .K = 16, .gflops = 0.0},  {.M = 64, .N = 64, .K = 64, .gflops = 17.0, .engine = cg::GemmEngine::Packed}};
+        CHECK(prepared_read_mismatches(p) == 0);
+    }
+
+    SECTION("every profile in the built-in database") {
+        auto const db = cg::DeviceProfileDB::load_defaults();
+        for (auto const &p : db.profiles()) {
+            INFO(p.name);
+            CHECK(prepared_read_mismatches(p) == 0);
+        }
+    }
+
+    SECTION("a profile with no points") {
+        cg::DeviceProfile const p;
+        CHECK(prepared_read_mismatches(p) == 0);
+    }
+}
+
+TEST_CASE("DeviceProfile - prepared GEMM rates follow the points, and a copy prepares its own", "[ComputeGraph][CostModel]") {
+    cg::DeviceProfile p;
+    p.gemm_efficiency   = {{.M = 16, .N = 16, .K = 16, .gflops = 4.0}, {.M = 256, .N = 256, .K = 256, .gflops = 64.0}};
+    double const before = p.estimate_gemm_gflops(64, 64, 64);
+
+    // Copied after a read, so the source holds prepared tables when the copy is made.
+    cg::DeviceProfile copy         = p;
+    copy.gemm_efficiency[1].gflops = 256.0;
+    CHECK(copy.estimate_gemm_gflops(64, 64, 64) == reference_gemm_gflops(copy, 64, 64, 64, cg::GemmEngine::Routed));
+    CHECK(copy.estimate_gemm_gflops(64, 64, 64) > before);
+    CHECK(p.estimate_gemm_gflops(64, 64, 64) == before);
+
+    // Edited in place, the source re-prepares.
+    p.gemm_efficiency[0].gflops = 1.0;
+    CHECK(p.estimate_gemm_gflops(64, 64, 64) == reference_gemm_gflops(p, 64, 64, 64, cg::GemmEngine::Routed));
+    CHECK(p.estimate_gemm_gflops(64, 64, 64) < before);
+
+    // Assigned over, a profile reads the points it was given.
+    p = copy;
+    CHECK(p.estimate_gemm_gflops(64, 64, 64) == copy.estimate_gemm_gflops(64, 64, 64));
 }
 
 TEST_CASE("DeviceProfile - run costs interpolate in log run length", "[ComputeGraph][CostModel]") {

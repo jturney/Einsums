@@ -19,6 +19,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -305,6 +307,44 @@ struct PermuteEfficiencyPoint {
     size_t rank{0};  ///< Rank of the permuted tensor
     double gbps{0};  ///< Achieved (read + write) bandwidth
 };
+
+namespace detail {
+
+/// The GEMM rate table of one engine, prepared from a profile's points. Defined in CostModel.cpp.
+struct GemmRateTable;
+
+/**
+ * @brief Prepared GEMM rate tables for a @ref DeviceProfile, rebuilt when its points change.
+ *
+ * Reading a rate from a measured grid of a few hundred points used to rebuild the grid on every
+ * read, which made pricing the contractions most of what a thread plan cost. The tables are built
+ * once and kept with a copy of the points they were built from; a read whose points no longer
+ * match rebuilds, so a profile edited in place is never priced from stale tables.
+ *
+ * A copy starts empty rather than sharing: a copied profile is edited independently of its source.
+ */
+class GemmRateCache {
+  public:
+    GemmRateCache() = default;
+    GemmRateCache(GemmRateCache const & /*other*/) noexcept {}
+    GemmRateCache(GemmRateCache && /*other*/) noexcept {}
+    EINSUMS_EXPORT GemmRateCache &operator=(GemmRateCache const &other) noexcept;
+    EINSUMS_EXPORT GemmRateCache &operator=(GemmRateCache &&other) noexcept;
+    ~GemmRateCache() = default;
+
+    /// The table for @p engine prepared from @p points, building it if the points have changed.
+    [[nodiscard]] EINSUMS_EXPORT std::shared_ptr<GemmRateTable const> table(std::vector<GemmEfficiencyPoint> const &points,
+                                                                            GemmEngine                              engine) const;
+
+  private:
+    void reset() noexcept;
+
+    mutable std::mutex                                                         _mutex;
+    mutable std::vector<GemmEfficiencyPoint>                                   _points;
+    mutable std::array<std::shared_ptr<GemmRateTable const>, kGemmEngineCount> _tables;
+};
+
+} // namespace detail
 
 /// Cache level description.
 struct CacheLevel {
@@ -723,6 +763,10 @@ struct DeviceProfile {
         }
         return width_rungs_for(max_threads);
     }
+
+    /// Prepared tables behind @ref estimate_gemm_gflops. Not part of the profile's data: it is
+    /// derived from @ref gemm_efficiency, follows edits to it, and is not serialized or copied.
+    detail::GemmRateCache gemm_rates;
 };
 
 /**

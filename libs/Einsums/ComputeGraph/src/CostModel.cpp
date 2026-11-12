@@ -27,6 +27,8 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -189,111 +191,221 @@ double interpolate(std::vector<double> const &xs, std::vector<double> const &ys,
     return ys[i] + t * (ys[i + 1] - ys[i]);
 }
 
-/// The log rate of @p points read at the cube of the GEMM's volume, interpolated in log size.
-/// Every point is a cube. A table of cubes says how a kernel's fixed costs amortize with size and
-/// nothing about shape, so a shape is read by its size alone; a thin GEMM's low arithmetic
-/// intensity is the memory floor's to price (see DeviceProfile::estimate_contraction_time_us).
-double cube_log_rate(std::vector<GemmEfficiencyPoint const *> points, size_t M, size_t N, size_t K) {
-    std::ranges::sort(points, {}, &GemmEfficiencyPoint::M);
+} // namespace
+
+namespace detail {
+
+/// One engine's GEMM rates, prepared once from a profile's points so a read does no sorting and
+/// takes no logarithm of a point. Every value is computed exactly as the read used to compute it
+/// from the points, in the same order, so a rate is bit-identical to the unprepared read.
+struct GemmRateTable {
+    /// No usable point for the engine or the routed fallback: the volume formula prices it.
+    bool empty{true};
+
+    /// Every point is a cube, so a shape is read by its size alone, in @ref xs and @ref ys.
+    /// A table of cubes says how a kernel's fixed costs amortize with size and nothing about
+    /// shape; a thin GEMM's low arithmetic intensity is the memory floor's to price (see
+    /// DeviceProfile::estimate_contraction_time_us).
+    bool                cubes{false};
     std::vector<double> xs, ys;
-    for (auto const *pt : points) {
-        if (!xs.empty() && log_extent(pt->M) == xs.back()) {
-            continue;
-        }
-        xs.push_back(log_extent(pt->M));
-        ys.push_back(std::log(pt->gflops));
-    }
-    return interpolate(xs, ys, (log_extent(M) + log_extent(N) + log_extent(K)) / 3.0);
-}
 
-/// The log rate of @p points read trilinearly in log M, log N and log K over the grid their shapes
-/// span. A corner the grid lacks drops out and the rest are reweighted; with none, the nearest
-/// point by log distance answers.
-double grid_log_rate(std::vector<GemmEfficiencyPoint const *> const &points, size_t M, size_t N, size_t K) {
-    auto const axis_of = [&](auto member) {
-        std::vector<double> axis;
-        axis.reserve(points.size());
-        for (auto const *pt : points) {
-            axis.push_back(log_extent(pt->*member));
-        }
-        std::ranges::sort(axis);
-        axis.erase(std::ranges::unique(axis).begin(), axis.end());
-        return axis;
-    };
-    std::array<std::vector<double>, 3> const axes{axis_of(&GemmEfficiencyPoint::M), axis_of(&GemmEfficiencyPoint::N),
-                                                  axis_of(&GemmEfficiencyPoint::K)};
-    std::array<double, 3> const              at{log_extent(M), log_extent(N), log_extent(K)};
-    std::array<std::pair<size_t, double>, 3> where{};
-    for (size_t d = 0; d < 3; ++d) {
-        where[d] = bracket(axes[d], at[d]);
-    }
+    /// The grid: ascending distinct log extents per axis, and the log rate of the FIRST point at
+    /// each grid position (indexed M-major), or nothing where the grid has no point.
+    std::array<std::vector<double>, 3> axes;
+    std::vector<double>                cell_rate;
+    std::vector<char>                  cell_present;
 
-    double weighted = 0.0;
-    double total    = 0.0;
-    for (unsigned corner = 0; corner < 8; ++corner) {
-        double                weight = 1.0;
-        std::array<double, 3> position{};
-        for (size_t d = 0; d < 3; ++d) {
-            bool const upper  = ((corner >> d) & 1U) != 0U;
-            auto const [i, t] = where[d];
-            if (axes[d].size() < 2) {
-                if (upper) {
-                    weight = 0.0;
+    /// Every point's log extents and log rate, in the points' order, for the nearest-point answer
+    /// when a shape's corners are all missing.
+    std::vector<std::array<double, 3>> point_at;
+    std::vector<double>                point_rate;
+
+    [[nodiscard]] size_t cell(size_t i, size_t j, size_t k) const { return (i * axes[1].size() + j) * axes[2].size() + k; }
+
+    /// The rates of @p points for @p engine, falling back to the routed points when it has none.
+    static GemmRateTable build(std::vector<GemmEfficiencyPoint> const &all, GemmEngine engine) {
+        std::vector<GemmEfficiencyPoint const *> points;
+        for (GemmEngine const from : {engine, GemmEngine::Routed}) {
+            for (auto const &pt : all) {
+                if (pt.engine == from && pt.gflops > 0.0) {
+                    points.push_back(&pt);
                 }
-                position[d] = axes[d].front();
+            }
+            if (!points.empty()) {
+                break;
+            }
+        }
+        GemmRateTable table;
+        if (points.empty()) {
+            return table;
+        }
+        table.empty = false;
+        table.cubes = std::ranges::all_of(points, [](GemmEfficiencyPoint const *pt) { return pt->M == pt->N && pt->N == pt->K; });
+
+        if (table.cubes) {
+            std::ranges::sort(points, {}, &GemmEfficiencyPoint::M);
+            for (auto const *pt : points) {
+                if (!table.xs.empty() && log_extent(pt->M) == table.xs.back()) {
+                    continue;
+                }
+                table.xs.push_back(log_extent(pt->M));
+                table.ys.push_back(std::log(pt->gflops));
+            }
+            return table;
+        }
+
+        auto const axis_of = [&](auto member) {
+            std::vector<double> axis;
+            axis.reserve(points.size());
+            for (auto const *pt : points) {
+                axis.push_back(log_extent(pt->*member));
+            }
+            std::ranges::sort(axis);
+            axis.erase(std::ranges::unique(axis).begin(), axis.end());
+            return axis;
+        };
+        table.axes         = {axis_of(&GemmEfficiencyPoint::M), axis_of(&GemmEfficiencyPoint::N), axis_of(&GemmEfficiencyPoint::K)};
+        size_t const cells = table.axes[0].size() * table.axes[1].size() * table.axes[2].size();
+        table.cell_rate.assign(cells, 0.0);
+        table.cell_present.assign(cells, 0);
+
+        // A point's log extent is one of its axis's values exactly, since the axis was built from
+        // the same computation; a grid read compares positions to them by equality.
+        auto const index_on = [](std::vector<double> const &axis, double x) {
+            return static_cast<size_t>(std::ranges::lower_bound(axis, x) - axis.begin());
+        };
+        table.point_at.reserve(points.size());
+        table.point_rate.reserve(points.size());
+        for (auto const *pt : points) {
+            std::array<double, 3> const at{log_extent(pt->M), log_extent(pt->N), log_extent(pt->K)};
+            double const                rate = std::log(pt->gflops);
+            table.point_at.push_back(at);
+            table.point_rate.push_back(rate);
+            size_t const c = table.cell(index_on(table.axes[0], at[0]), index_on(table.axes[1], at[1]), index_on(table.axes[2], at[2]));
+            if (table.cell_present[c] == 0) {
+                // The first point at a position answers for it, as a search through the points
+                // in order would find it.
+                table.cell_present[c] = 1;
+                table.cell_rate[c]    = rate;
+            }
+        }
+        return table;
+    }
+
+    /// The log rate at (@p M, @p N, @p K).
+    [[nodiscard]] double log_rate(size_t M, size_t N, size_t K) const {
+        if (cubes) {
+            return interpolate(xs, ys, (log_extent(M) + log_extent(N) + log_extent(K)) / 3.0);
+        }
+        return grid_log_rate(M, N, K);
+    }
+
+    /// Read trilinearly in log M, log N and log K over the grid the points span. A corner the grid
+    /// lacks drops out and the rest are reweighted; with none, the nearest point by log distance
+    /// answers.
+    [[nodiscard]] double grid_log_rate(size_t M, size_t N, size_t K) const {
+        std::array<double, 3> const              at{log_extent(M), log_extent(N), log_extent(K)};
+        std::array<std::pair<size_t, double>, 3> where{};
+        for (size_t d = 0; d < 3; ++d) {
+            where[d] = bracket(axes[d], at[d]);
+        }
+
+        double weighted = 0.0;
+        double total    = 0.0;
+        for (unsigned corner = 0; corner < 8; ++corner) {
+            double                weight = 1.0;
+            std::array<size_t, 3> index{};
+            for (size_t d = 0; d < 3; ++d) {
+                bool const upper  = ((corner >> d) & 1U) != 0U;
+                auto const [i, t] = where[d];
+                if (axes[d].size() < 2) {
+                    if (upper) {
+                        weight = 0.0;
+                    }
+                    index[d] = 0;
+                    continue;
+                }
+                weight *= upper ? t : 1.0 - t;
+                index[d] = upper ? i + 1 : i;
+            }
+            if (weight == 0.0) {
                 continue;
             }
-            weight *= upper ? t : 1.0 - t;
-            position[d] = axes[d][upper ? i + 1 : i];
+            if (size_t const c = cell(index[0], index[1], index[2]); cell_present[c] != 0) {
+                weighted += weight * cell_rate[c];
+                total += weight;
+            }
         }
-        if (weight == 0.0) {
-            continue;
+        if (total > 0.0) {
+            return weighted / total;
         }
-        auto const found = std::ranges::find_if(points, [&](GemmEfficiencyPoint const *pt) {
-            return log_extent(pt->M) == position[0] && log_extent(pt->N) == position[1] && log_extent(pt->K) == position[2];
-        });
-        if (found != points.end()) {
-            weighted += weight * std::log((*found)->gflops);
-            total += weight;
-        }
-    }
-    if (total > 0.0) {
-        return weighted / total;
-    }
 
-    GemmEfficiencyPoint const *nearest  = points.front();
-    double                     shortest = std::numeric_limits<double>::infinity();
-    for (auto const *pt : points) {
-        double const dm = log_extent(pt->M) - at[0], dn = log_extent(pt->N) - at[1], dk = log_extent(pt->K) - at[2];
-        if (double const d = dm * dm + dn * dn + dk * dk; d < shortest) {
-            shortest = d;
-            nearest  = pt;
+        size_t nearest  = 0;
+        double shortest = std::numeric_limits<double>::infinity();
+        for (size_t p = 0; p < point_at.size(); ++p) {
+            double const dm = point_at[p][0] - at[0], dn = point_at[p][1] - at[1], dk = point_at[p][2] - at[2];
+            if (double const d = dm * dm + dn * dn + dk * dk; d < shortest) {
+                shortest = d;
+                nearest  = p;
+            }
         }
+        return point_rate[nearest];
     }
-    return std::log(nearest->gflops);
+};
+
+GemmRateCache &GemmRateCache::operator=(GemmRateCache const &other) noexcept {
+    if (this != &other) {
+        reset();
+    }
+    return *this;
+}
+
+GemmRateCache &GemmRateCache::operator=(GemmRateCache &&other) noexcept {
+    if (this != &other) {
+        reset();
+    }
+    return *this;
+}
+
+void GemmRateCache::reset() noexcept {
+    std::scoped_lock const lock(_mutex);
+    _points.clear();
+    _tables = {};
+}
+
+namespace {
+
+bool same_points(std::vector<GemmEfficiencyPoint> const &a, std::vector<GemmEfficiencyPoint> const &b) {
+    return std::ranges::equal(a, b, [](GemmEfficiencyPoint const &x, GemmEfficiencyPoint const &y) {
+        return x.M == y.M && x.N == y.N && x.K == y.K && x.gflops == y.gflops && x.engine == y.engine;
+    });
 }
 
 } // namespace
 
-double DeviceProfile::estimate_gemm_gflops(size_t M, size_t N, size_t K, GemmEngine engine) const {
-    std::vector<GemmEfficiencyPoint const *> points;
-    for (GemmEngine const from : {engine, GemmEngine::Routed}) {
-        for (auto const &pt : gemm_efficiency) {
-            if (pt.engine == from && pt.gflops > 0.0) {
-                points.push_back(&pt);
-            }
-        }
-        if (!points.empty()) {
-            break;
-        }
+std::shared_ptr<GemmRateTable const> GemmRateCache::table(std::vector<GemmEfficiencyPoint> const &points, GemmEngine engine) const {
+    std::scoped_lock const lock(_mutex);
+    if (!same_points(_points, points)) {
+        _points = points;
+        _tables = {};
     }
-    if (points.empty()) {
+    auto &slot = _tables[static_cast<size_t>(engine)];
+    if (!slot) {
+        slot = std::make_shared<GemmRateTable const>(GemmRateTable::build(points, engine));
+    }
+    return slot;
+}
+
+} // namespace detail
+
+double DeviceProfile::estimate_gemm_gflops(size_t M, size_t N, size_t K, GemmEngine engine) const {
+    auto const table = gemm_rates.table(gemm_efficiency, engine);
+    if (table->empty) {
         double const volume     = static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K);
         double const efficiency = std::min(0.85, 0.1 + 0.75 * (1.0 - std::exp(-volume / 1e6)));
         return peak_gflops_fp64 * efficiency;
     }
-    bool const cubes = std::ranges::all_of(points, [](GemmEfficiencyPoint const *pt) { return pt->M == pt->N && pt->N == pt->K; });
-    return std::exp(cubes ? cube_log_rate(points, M, N, K) : grid_log_rate(points, M, N, K));
+    return std::exp(table->log_rate(M, N, K));
 }
 
 double DeviceProfile::run_cost_ns(std::vector<RunCostPoint> const &curve, size_t run) {
