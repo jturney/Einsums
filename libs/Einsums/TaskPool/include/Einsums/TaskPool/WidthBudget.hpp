@@ -171,6 +171,12 @@ class EINSUMS_EXPORT WidthBudget {
     /// not (head-of-line). Caller holds @c _mutex.
     void drain_locked(std::vector<Pending> &ready);
 
+    /// Run the continuations of @p ready, which the lock released. A continuation may release units
+    /// itself, and that release admits the next parked tasks; run in place, every such release
+    /// would nest one stack frame deeper per parked task. So on a thread already running
+    /// continuations, @p ready is queued for the outermost call on that thread to run in turn.
+    void run_ready(std::vector<Pending> &ready);
+
     /// Take back @p width without an admission check, for a task resuming after lending its width.
     /// May briefly push the charge past the total.
     void recharge(unsigned width);

@@ -127,9 +127,7 @@ unsigned WidthBudget::acquire(unsigned width, Priority priority, Continuation re
         drain_locked(ready);
     }
 
-    for (auto &entry : ready) {
-        entry.resume(entry.width);
-    }
+    run_ready(ready);
     return 0;
 }
 
@@ -164,9 +162,46 @@ void WidthBudget::release(unsigned width) {
         drain_locked(ready);
     }
 
+    run_ready(ready);
+}
+
+void WidthBudget::run_ready(std::vector<Pending> &ready) {
+    // Continuations admitted while this thread is already running one. A continuation that frees
+    // its units at once - a task that fails before it runs, or a caller that releases inline -
+    // drains the queue again from inside the one before it, and with a few hundred parked tasks on
+    // a small machine that recursion ran a thread off the end of its stack. Queued here, the
+    // outermost call runs them one after another on the same thread.
+    struct Resumes {
+        bool                 running{false};
+        std::vector<Pending> queued;
+    };
+    static thread_local Resumes resumes;
+
+    if (resumes.running) {
+        for (auto &entry : ready) {
+            resumes.queued.push_back(std::move(entry));
+        }
+        return;
+    }
+
+    struct Running {
+        Resumes &r;
+        explicit Running(Resumes &r) : r(r) { r.running = true; }
+        ~Running() { r.running = false; }
+        Running(Running const &)            = delete;
+        Running &operator=(Running const &) = delete;
+    } const running(resumes);
+
     for (auto &entry : ready) {
         entry.resume(entry.width);
     }
+    // In admission order: each entry was queued after the ones before it were admitted. Moved out
+    // before it runs, since running it may queue more and grow the vector.
+    for (std::size_t i = 0; i < resumes.queued.size(); ++i) {
+        Pending entry = std::move(resumes.queued[i]);
+        entry.resume(entry.width);
+    }
+    resumes.queued.clear();
 }
 
 void WidthBudget::recharge(unsigned width) {

@@ -584,6 +584,37 @@ TEST_CASE("WidthBudget - mixed widths replay bit-identically", "[ComputeGraph][E
 // parking path constantly: a release that slipped past a request while it parked would strand it
 // (fewer admissions than requests, something still parked), and a charge that skipped the bound
 // would run more units than the machine has.
+// A release runs the continuations of the parked tasks it admits, and a continuation that frees its
+// units at once releases again from inside the first: one stack frame per parked task. On the
+// three-core CI runner the racing case below parked enough to run a thread off the end of its stack
+// (a bus error); here a chain of parked tasks long enough to do that on any machine has to finish,
+// every task admitted, the budget back to zero.
+TEST_CASE("WidthBudget - a long chain of releasing continuations does not deepen the stack", "[ComputeGraph][Executor][WidthBudget]") {
+    auto &budget = WidthBudget::get_singleton();
+    budget.sync_machine_width();
+    unsigned const total = budget.total();
+    REQUIRE(total > 0);
+    REQUIRE(budget.in_use() == 0);
+
+    REQUIRE(budget.acquire(total, {.rank = 1, .tiebreak = 0}, [](unsigned) {}) == total);
+
+    constexpr int parked = 200000;
+    int           ran    = 0;
+    for (int i = 0; i < parked; ++i) {
+        unsigned const granted = budget.acquire(1, {.rank = 0, .tiebreak = static_cast<std::size_t>(i)}, [&](unsigned w) {
+            ran++;
+            budget.release(w);
+        });
+        REQUIRE(granted == 0);
+    }
+    REQUIRE(budget.parked() == static_cast<std::size_t>(parked));
+
+    budget.release(total);
+    CHECK(ran == parked);
+    CHECK(budget.parked() == 0);
+    CHECK(budget.in_use() == 0);
+}
+
 TEST_CASE("WidthBudget - racing admissions never exceed the machine and strand nothing", "[ComputeGraph][Executor][WidthBudget]") {
     auto &budget = WidthBudget::get_singleton();
     budget.sync_machine_width();
