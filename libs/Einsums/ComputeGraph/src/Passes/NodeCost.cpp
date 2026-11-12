@@ -20,7 +20,6 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -119,24 +118,53 @@ KernelFamily family_for(Node const &node, std::size_t bytes, DeviceProfile const
 /// once. Views resolve to the buffer they alias, so a node working through two
 /// slices of one tensor is not charged for it twice.
 std::size_t working_set_bytes(Graph const &graph, Node const &node) {
-    std::unordered_set<TensorId> seen;
-    std::size_t                  bytes = 0;
-    auto const                  &map   = graph.tensors_map();
-
-    auto add = [&](TensorId raw) {
-        TensorId const tid = graph.buffer_of(raw);
-        if (!seen.insert(tid).second) {
-            return;
-        }
-        if (auto it = map.find(tid); it != map.end()) {
+    auto const &map   = graph.tensors_map();
+    std::size_t bytes = 0;
+    auto const  count = [&](TensorId tid) {
+        if (auto const it = map.find(tid); it != map.end()) {
             bytes += it->second.total_bytes();
         }
     };
+
+    // Most nodes touch two to four buffers, and a set per node was most of what pricing one cost
+    // once contraction prices were memoized: those are deduplicated in place on the stack. A
+    // grouped node can carry hundreds of operands, and those are sorted instead, so neither path
+    // is quadratic.
+    constexpr std::size_t kInline  = 8;
+    std::size_t const     operands = node.inputs.size() + node.outputs.size();
+    if (operands <= kInline) {
+        std::array<TensorId, kInline> seen{};
+        std::size_t                   distinct = 0;
+        auto const                    add      = [&](TensorId raw) {
+            TensorId const tid = graph.buffer_of(raw);
+            if (std::find(seen.begin(), seen.begin() + static_cast<std::ptrdiff_t>(distinct), tid) !=
+                seen.begin() + static_cast<std::ptrdiff_t>(distinct)) {
+                return;
+            }
+            seen[distinct++] = tid;
+            count(tid);
+        };
+        for (TensorId const tid : node.inputs) {
+            add(tid);
+        }
+        for (TensorId const tid : node.outputs) {
+            add(tid);
+        }
+        return bytes;
+    }
+
+    std::vector<TensorId> buffers;
+    buffers.reserve(operands);
     for (TensorId const tid : node.inputs) {
-        add(tid);
+        buffers.push_back(graph.buffer_of(tid));
     }
     for (TensorId const tid : node.outputs) {
-        add(tid);
+        buffers.push_back(graph.buffer_of(tid));
+    }
+    std::ranges::sort(buffers);
+    buffers.erase(std::ranges::unique(buffers).begin(), buffers.end());
+    for (TensorId const tid : buffers) {
+        count(tid);
     }
     return bytes;
 }
