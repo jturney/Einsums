@@ -16,13 +16,14 @@ The CUDA GPU backend and the MPI distributed computing support are works in prog
 
 IMPORTANT: activate the conda environment BEFORE the first configure of any fresh worktree or build directory.
 A configure without it caches Apple's SDK Accelerate BLAS (whose f2c-style `sdot` returns double and silently corrupts float BLAS-1 results) and fails on OpenMP.
-If a configure ran without the env, purge with `cmake -U '*BLAS*' -U '*LAPACK*'` and reconfigure.
+Pass `-DBLA_VENDOR=Generic` so CMake takes the env's `libblas` (on macOS, conda-forge's `newaccelerate` build of Accelerate); without it CMake's BLAS search finds the SDK framework first even with the env active.
+If a configure ran without the env, purge with `cmake -U '*BLAS*' -U '*LAPACK*' -DBLA_VENDOR=Generic` and reconfigure.
 
 ```bash
 conda activate einsums-dev
 
 # Configure (out-of-source required; always use the directory named `build`)
-cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBLA_VENDOR=Generic
 
 # Common option additions
 #   -DEINSUMS_BUILD_PYTHON=ON     # apiary codegen tool + bindings + python tests (one switch)
