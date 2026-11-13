@@ -591,17 +591,6 @@ struct TensorHandle {
     std::vector<std::string> dim_symbols;
 
     /**
-     * @brief Swap the tensor's underlying data pointer with a new one.
-     *
-     * Used by the GPU executor to temporarily redirect a tensor to a device shadow
-     * allocation. The function captures the tensor type and performs the swap.
-     * Returns the previous data pointer so it can be restored after GPU execution.
-     *
-     * Set by make_handle(). Null for scalar handles.
-     */
-    std::function<void *(void *)> swap_data;
-
-    /**
      * @brief Hash of the tensor name at registration time.
      *
      * Used by the runtime validation system to detect destroyed tensors.
@@ -838,20 +827,10 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
         h.is_tiled = tensor.is_tiled_tensor();
     }
 
-    // swap_data: redirect the tensor's internal data pointer to a new buffer.
-    // Returns the previous data pointer. Used for GPU shadow allocation swapping.
-    // Owning tensors expose ``set_data``; non-owning views (TensorView) do not,
-    // skip the lambda for view types so make_handle still type-checks.
+    // The type-erased hooks below act on the tensor itself, through a mutable pointer.
     using CleanTensor = std::remove_cvref_t<TensorType>;
     using ValType     = typename CleanTensor::ValueType;
     auto *tensor_mut  = const_cast<CleanTensor *>(&tensor);
-    if constexpr (requires(CleanTensor &t, ValType *p) { t.set_data(p); }) {
-        h.swap_data = [tensor_mut](void *new_ptr) -> void * {
-            void *old_ptr = tensor_mut->data();
-            tensor_mut->set_data(static_cast<ValType *>(new_ptr));
-            return old_ptr;
-        };
-    }
 
     // begin_local_view_fn / end_local_view_fn: temporarily restrict tensor to a slice.
     // Only available on owning tensors that expose the local-view machinery.

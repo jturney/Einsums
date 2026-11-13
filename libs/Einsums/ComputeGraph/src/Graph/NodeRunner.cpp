@@ -71,8 +71,11 @@ NodeRunner::NodeRunner(Graph &graph, bool recording) : _graph(graph), _recording
     // assign() reuses the slots' storage, so a replay of an unchanged graph allocates nothing.
     _graph._run_slots.assign(_graph._nodes.size(), detail::NodeRunSlot{});
     if constexpr (!gpu::has_unified_memory) {
-        if (serial_only()) {
-            prepare_device_work();
+        for (Node const &node : _graph._nodes) {
+            if (node.target == Target::GPU || node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
+                prepare_device_work();
+                break;
+            }
         }
     }
 }
@@ -159,19 +162,6 @@ bool NodeRunner::is_async(std::size_t idx) const {
     return node.async_start && node.async_finish;
 }
 
-bool NodeRunner::serial_only() const {
-    if constexpr (gpu::has_unified_memory) {
-        return false;
-    } else {
-        for (Node const &node : _graph._nodes) {
-            if (node.target == Target::GPU || node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
-                return true;
-            }
-        }
-        return false;
-    }
-}
-
 void NodeRunner::start_async(std::size_t idx) {
     Node const                       &node = _graph._nodes[idx];
     std::optional<waggle::ScopedZone> zone;
@@ -246,8 +236,6 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
         }
     } else if (node.target == Target::GPU) {
         // GPU node execution.
-        std::vector<std::pair<TensorId, void *>> saved_ptrs;
-
         // Every operand must be transferable before anything is placed on
         // the device. A tensor with no live host storage can neither be
         // uploaded nor receive a result, so a node touching one has to run
@@ -282,31 +270,21 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 // replay correct whichever passes ran: a GPU node reached without a preceding
                 // H2D (a hand-set Target::GPU, or an H2D TransferElimination dropped) would
                 // otherwise compute on uninitialized device memory.
-                std::unordered_set<TensorId> swapped;
                 for (auto const *ids : {&node.inputs, &node.outputs}) {
                     for (TensorId const id : *ids) {
-                        if (swapped.contains(id)) {
-                            continue;
-                        }
                         TensorHandle const *handle = _graph.find_tensor(id);
                         void               *shadow = _graph._device_shadows.get(id);
                         if (!_coherence.need_on_device(id, [&]() { return upload(handle, shadow, handle->total_bytes()); })) {
-                            // No shadow to compute in: the node runs on the host below.
+                            // No device buffer to compute in: the node runs on the host below.
                             operands_ready = false;
-                            continue;
-                        }
-                        // Discrete GPU: swap tensor data pointers to device shadows.
-                        if (handle->swap_data) {
-                            void *old_ptr = handle->swap_data(shadow);
-                            saved_ptrs.emplace_back(id, old_ptr);
-                            swapped.insert(id);
                         }
                     }
                 }
             }
         }
-        // Unified memory: no swap needed, GPU reads tensor.data() directly.
-        // MPS wrap_or_copy will create a zero-copy MTLBuffer wrapper.
+        // The dispatcher reads every operand through its device shadow (resolve_device_ptr), never
+        // through the tensor object, so the tensors keep their host data the whole time and a node
+        // running beside this one on another thread sees nothing change.
 
         // Execute via GPU BLAS dispatch if possible, otherwise CPU fallback.
         bool gpu_dispatched = false;
@@ -328,18 +306,9 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
         } else {
             waggle::annotate("gpu_dispatch", "cpu_fallback");
 
-            // The CPU lambda must run on HOST pointers: on a discrete device
-            // the tensors currently point at device shadows, and a host
-            // BLAS kernel on them segfaults. And every operand must be current
-            // on the host, because a preceding GPU node may have produced it on
-            // the device.
+            // Every operand must be current on the host, because a preceding
+            // GPU node may have produced it on the device.
             if constexpr (!gpu::has_unified_memory) {
-                for (auto const &[id, old_ptr] : saved_ptrs) {
-                    if (TensorHandle const *handle = _graph.find_tensor(id); handle != nullptr && handle->swap_data) {
-                        handle->swap_data(old_ptr);
-                    }
-                }
-                saved_ptrs.clear();
                 for (auto const *ids : {&node.inputs, &node.outputs}) {
                     for (TensorId const id : *ids) {
                         host_current(id);
@@ -361,14 +330,6 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 if constexpr (!gpu::has_unified_memory) {
                     _coherence.wrote_on_host(id);
                 }
-            }
-        }
-
-        // Restore original host pointers (only needed on discrete GPU).
-        // Empty when the fallback above already restored them.
-        for (auto const &[id, old_ptr] : saved_ptrs) {
-            if (TensorHandle const *handle = _graph.find_tensor(id); handle != nullptr && handle->swap_data) {
-                handle->swap_data(old_ptr);
             }
         }
     } else {

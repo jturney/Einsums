@@ -148,8 +148,8 @@ is numerically correct however broken the real CUDA path is, and
 ``gpu::has_unified_memory`` being true compiles out the whole host-to-device
 transfer path in the ComputeGraph executor. Under mock-discrete:
 
-* ``has_unified_memory`` is false, so shadow allocation, uploads, copy-backs and
-  tensor pointer swapping all execute;
+* ``has_unified_memory`` is false, so shadow allocation, uploads and copy-backs
+  all execute;
 * each device allocation is a guard-paged ``mmap`` held at ``PROT_NONE``, so a
   host dereference of a device pointer faults at the offending instruction
   instead of quietly succeeding;
@@ -158,8 +158,7 @@ transfer path in the ComputeGraph executor. Under mock-discrete:
 
 The backend's own kernels still reach device memory - cuBLAS reads it as a
 matter of course - through ``gpu::MockDeviceKernelScope``. Code outside such a
-scope does not, which is what catches a host kernel running on operands that
-are still swapped to device shadows.
+scope does not, which is what catches a host kernel handed a device pointer.
 
 It is POSIX-only (``mmap``/``mprotect``) and mutually exclusive with a real
 backend. CI runs it as the ``mock-discrete`` variant; locally,

@@ -234,5 +234,3 @@ Run node ``i`` with ``run.run(i)``, never by calling a node's callable, in any o
            }
        }
    };
-
-An executor that runs nodes concurrently refuses a replay for which ``run.serial_only()`` is true.

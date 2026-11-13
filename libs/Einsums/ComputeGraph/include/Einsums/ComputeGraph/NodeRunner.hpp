@@ -40,8 +40,7 @@ class Graph;
  *
  * @par Concurrency
  * @ref run, @ref start_async and @ref finish_async may be called from several threads at once for
- * different nodes, provided the executor honors @ref Graph::dependencies. The one exception is
- * stated by @ref serial_only.
+ * different nodes, provided the executor honors @ref Graph::dependencies.
  *
  * @versionadded{2.0.0}
  */
@@ -81,18 +80,6 @@ class EINSUMS_EXPORT NodeRunner {
     /// @param[in] index Position in the node list.
     void finish_async(std::size_t index);
 
-    /**
-     * @brief Whether this replay must run its nodes one at a time.
-     *
-     * True when the build's device memory is separate from the host's and the graph holds a node
-     * placed on the device or a transfer. A device node then points its operands' tensor objects
-     * at their device copies for the length of the node, which a concurrent reader of the same
-     * tensor would see. A concurrent executor refuses such a replay.
-     *
-     * @return False on every unified-memory build and for every graph that runs only on the host.
-     */
-    [[nodiscard]] bool serial_only() const;
-
   private:
     friend class Graph;
 
@@ -107,7 +94,7 @@ class EINSUMS_EXPORT NodeRunner {
 
     /// Track every tensor a device node or transfer touches, allocate its device shadow, and
     /// record each control-flow node's subtree I/O. Called by the constructor on a build whose
-    /// device memory is separate, and only when the graph places work there.
+    /// device memory is separate, and only when the graph places a node there or holds a transfer.
     void prepare_device_work();
 
     /// Make @p id current on the host, copying it down when only its device copy is.

@@ -32,17 +32,6 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
 
-/// Refuse a replay @p executor cannot run concurrently; see NodeRunner::serial_only.
-void refuse_if_serial_only(NodeRunner const &run, std::string_view executor) {
-    if (run.serial_only()) {
-        EINSUMS_THROW_EXCEPTION(std::logic_error,
-                                "{}: graph '{}' places work on a device whose memory is separate from the host's, where a device node "
-                                "repoints its operands' tensors at their device copies while it runs, so no other node may run beside "
-                                "it. Replay it with SequentialExecutor (or plain execute()).",
-                                executor, run.graph().name());
-    }
-}
-
 /// Replays that ran width-1 because the plan was made for another machine.
 std::atomic<std::size_t> g_stale_thread_plan_fallbacks{0};
 
@@ -75,8 +64,6 @@ void OpenMPExecutor::execute(Graph &graph, NodeRunner &run) {
         return;
 
 #ifdef _OPENMP
-    refuse_if_serial_only(run, name());
-
     // Everything in a level is launched together, so a conflict inside one is
     // a data race rather than a slow schedule - and one that leaves every
     // serial replay correct, so nothing else will report it. On by default
@@ -599,8 +586,6 @@ void DataflowExecutor::execute(Graph &graph, NodeRunner &run) {
 
     if (n == 0)
         return;
-
-    refuse_if_serial_only(run, name());
 
     // If this run was started from inside an admitted task - a Loop or
     // Conditional node replaying its body - that task is about to wait for the

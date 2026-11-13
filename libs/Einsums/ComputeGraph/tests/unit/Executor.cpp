@@ -1447,18 +1447,11 @@ std::optional<std::string> gpu_dispatch_of_replay(std::string const &name, Repla
     return dispatch;
 }
 
-/// Replay a GPU-placed node through @p executor and require that it ran on the device. A
-/// concurrent executor on a build whose device memory is separate refuses the replay instead (see
-/// NodeRunner::serial_only), which is what the case requires there.
+/// Replay a GPU-placed node through @p executor and require that it ran on the device.
 template <typename ExecutorType>
-void require_device_dispatch(std::string const &name, bool concurrent) {
+void require_device_dispatch(std::string const &name) {
     ExecutorType executor;
-    auto         replay = [&](cg::Graph &g) { g.execute(executor); };
-    if (concurrent && !einsums::gpu::has_unified_memory) {
-        CHECK_THROWS_AS(gpu_dispatch_of_replay(name, replay), std::logic_error);
-    } else {
-        CHECK(gpu_dispatch_of_replay(name, replay) == std::optional<std::string>{"gemm"});
-    }
+    CHECK(gpu_dispatch_of_replay(name, [&](cg::Graph &g) { g.execute(executor); }) == std::optional<std::string>{"gemm"});
 }
 
 } // namespace
@@ -1479,20 +1472,20 @@ TEST_CASE("GPU dispatch - SequentialExecutor runs a GPU-placed node on the devic
     if (!einsums::gpu::gpu_available()) {
         SKIP("no usable GPU device (gpu::gpu_available() is false)");
     }
-    require_device_dispatch<cg::SequentialExecutor>("gpu_dispatch_sequential", false);
+    require_device_dispatch<cg::SequentialExecutor>("gpu_dispatch_sequential");
 }
 
 TEST_CASE("GPU dispatch - OpenMPExecutor runs a GPU-placed node on the device", "[ComputeGraph][Executor][GPU]") {
     if (!einsums::gpu::gpu_available()) {
         SKIP("no usable GPU device (gpu::gpu_available() is false)");
     }
-    require_device_dispatch<cg::OpenMPExecutor>("gpu_dispatch_openmp", true);
+    require_device_dispatch<cg::OpenMPExecutor>("gpu_dispatch_openmp");
 }
 
 TEST_CASE("GPU dispatch - DataflowExecutor runs a GPU-placed node on the device", "[ComputeGraph][Executor][GPU]") {
     if (!einsums::gpu::gpu_available()) {
         SKIP("no usable GPU device (gpu::gpu_available() is false)");
     }
-    require_device_dispatch<cg::DataflowExecutor>("gpu_dispatch_dataflow", true);
+    require_device_dispatch<cg::DataflowExecutor>("gpu_dispatch_dataflow");
 }
 #endif

@@ -493,8 +493,7 @@ TEMPLATE_TEST_CASE("RuntimeTensor::set_data — swap-pointer support for GPU sha
     auto *original = t.data();
 
     // Parallel buffer of the same shape; swap the tensor's internal
-    // pointer to it. Simulates what TensorHandle::swap_data does when
-    // redirecting a tensor to a GPU shadow allocation.
+    // pointer to it.
     std::vector<TestType> shadow(t.size(), TestType{});
     t.set_data(shadow.data());
     REQUIRE(t.data() == shadow.data());

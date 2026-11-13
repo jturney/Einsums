@@ -1521,10 +1521,10 @@ TEST_CASE("GPU runtime fallback when dispatch is not applicable", "[ComputeGraph
     CHECK(found_gpu_scale);
 
     // Execute: GPU GEMM dispatch won't apply (it's a Scale, not Einsum),
-    // so the CPU lambda runs as fallback with data swapped to shadows.
+    // so the CPU lambda runs as the fallback, on the host copies.
     REQUIRE_NOTHROW(graph.execute());
 
-    // Result should be correct (computed by CPU fallback on shadow data).
+    // Result should be correct (computed by the CPU fallback).
     for (size_t ii = 0; ii < 128; ii++) {
         for (size_t jj = 0; jj < 128; jj++) {
             CHECK(C(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-4f));
