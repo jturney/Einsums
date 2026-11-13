@@ -273,3 +273,44 @@ TEST_CASE("UsageAnalysis - cache invalidation at mutation points", "[ComputeGrap
     CHECK(c_after->reads() == 1);
     CHECK(c_after->last_use() == 1);
 }
+
+// An alias declaration changes which buffer a tensor resolves to, so a usage table built before it
+// counts X's writers against X's own buffer and none against P's. The cache must not survive it.
+//
+// Known bug: Graph::declare_alias clears _deps_valid but does not bump _analysis_version, which is
+// what Graph::usage() keys its cache on, so the stale table is returned. Drop [!shouldfail] when the
+// change notification (Graph::note) invalidates the usage cache on every buffer-identity change.
+TEST_CASE("UsageAnalysis - cache sees an alias declared after it was built", "[ComputeGraph][UsageAnalysis][!shouldfail]") {
+    auto X   = create_zero_tensor<double>("X", 4, 4);
+    auto P   = create_random_tensor<double>("P", 4, 4);
+    auto out = create_zero_tensor<double>("out", 4, 4);
+
+    cg::Graph graph("ua_alias_declared");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(2.0, &X);     // writes X
+        cg::axpy(1.0, P, &out); // reads P
+    }
+    graph.topological_sort();
+    cg::TensorId const x_id = tid_of(graph, X);
+    cg::TensorId const p_id = tid_of(graph, P);
+
+    // Prime the cache, as an earlier pass would: P's buffer has a reader and no writer.
+    cg::TensorUsage const *before = graph.usage().find(graph, p_id);
+    REQUIRE(before != nullptr);
+    REQUIRE(before->writes() == 0);
+
+    // X turns out to be part of P's storage, as a loaded manifest can declare.
+    graph.declare_alias(x_id, p_id);
+
+    // The truth, from a fresh build: the scale of X now writes P's buffer.
+    auto const             fresh = cg::UsageAnalysis::build(graph);
+    cg::TensorUsage const *truth = fresh.find(graph, p_id);
+    REQUIRE(truth != nullptr);
+    REQUIRE(truth->writes() == 1);
+
+    // The cached answer must agree with it.
+    cg::TensorUsage const *cached = graph.usage().find(graph, p_id);
+    REQUIRE(cached != nullptr);
+    CHECK(cached->writes() == truth->writes());
+}
