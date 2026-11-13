@@ -263,6 +263,7 @@ class EINSUMS_EXPORT GraphAnchor {
 namespace detail {
 struct ArenaBlock;
 struct GraphBackdoor;
+class NodeRunner;
 
 /// A recursive mutex that stays with its object. Moving the object hands the destination a
 /// fresh, unlocked mutex and leaves the source its own: the lock guards one object's contents,
@@ -4956,6 +4957,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Writes the node list directly, for tests that build a state this API refuses so as to
     /// check that a guard catches it; defined only in the tests' own header.
     friend struct detail::GraphBackdoor;
+
+    /// Runs one node of a replay; reads the node list, tensor table, device shadows, profile
+    /// strings and timing samples as the replay loop it was extracted from did.
+    friend class detail::NodeRunner;
 
     /// A value that moves whenever any graph below this one has a declared edit: each
     /// descendant's analysis version and node count, folded in walk order. A body edit moves the

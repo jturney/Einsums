@@ -164,6 +164,7 @@ set(ComputeGraphSources
     Graph/Operations.cpp
     Graph/Edit.cpp
     Graph/Execute.cpp
+    Graph/NodeRunner.cpp
     Graph/Report.cpp
     Graph/Verify.cpp
     GraphIR.cpp
