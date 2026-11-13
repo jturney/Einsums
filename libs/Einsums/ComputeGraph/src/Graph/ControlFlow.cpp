@@ -339,12 +339,12 @@ void Graph::note_approximation(ApproximationRecord record) {
     _approximations.push_back(std::move(record));
     // A record is saved structure, so adding one changes what a save writes and what a
     // content hash covers.
-    _structure_version++;
+    note(Change::NodeSetChanged);
 }
 
 void Graph::restore_approximations(std::vector<ApproximationRecord> records) {
     _approximations = std::move(records);
-    _structure_version++;
+    note(Change::NodeSetChanged);
 }
 
 double Graph::accuracy_spent(ApproximationEffect effect, std::string const &output) const {

@@ -131,9 +131,8 @@ NodeId Graph::add_node(Node node) {
     node.id         = _next_node_id++;
     NodeId const id = node.id;
     _nodes.push_back(std::move(node));
-    _sorted = false;
+    note(Change::NodeAppended);
     note_node_edit();
-    _structure_version++;
     return id;
 }
 
@@ -157,11 +156,7 @@ bool Graph::sync_destination_inputs() {
 }
 
 void Graph::note_node_edit() noexcept {
-    _executed              = false;
-    _deps_valid            = false;
-    _profile_strings_valid = false;
-    _slots_validated       = false;
-    _analysis_version++;
+    note(Change::NodeEdited);
 }
 
 size_t Graph::erase_nodes(std::vector<bool> const &remove) {
@@ -181,7 +176,7 @@ size_t Graph::erase_nodes(std::vector<bool> const &remove) {
         // Erasing keeps the survivors' relative order, so a sorted graph stays sorted; what the
         // positions keyed is stale all the same.
         note_node_edit();
-        _structure_version++;
+        note(Change::NodeSetChanged);
     }
     return removed;
 }
@@ -213,7 +208,7 @@ void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<No
         for (auto &node : nodes) {
             sync_destination_input(node);
         }
-        _structure_version++;
+        note(Change::NodeSetChanged);
         _nodes.insert(_nodes.begin() + static_cast<std::ptrdiff_t>(at), std::make_move_iterator(nodes.begin()),
                       std::make_move_iterator(nodes.end()));
     }
@@ -277,7 +272,7 @@ TensorId Graph::register_tensor(TensorHandle handle) {
     // pass (see link_alias_storage), because doing it per registration is
     // O(n) each and quadratic overall. A DLPNO-MP2 capture registers ~13k
     // tensors and paid 0.3s for it.
-    _aliases_linked = false;
+    note(Change::AliasLinksStale);
     return id;
 }
 
@@ -288,6 +283,57 @@ TensorId Graph::find_or_register_tensor_ptr(TensorHandle const &handle) {
         }
     }
     return register_tensor(handle);
+}
+
+void Graph::note(Change change) noexcept {
+    switch (change) {
+    case Change::NodeAppended:
+        _sorted = false;
+        _structure_version++;
+        break;
+    case Change::NodeSetChanged:
+        _structure_version++;
+        break;
+    case Change::NodeEdited:
+        _executed              = false;
+        _deps_valid            = false;
+        _profile_strings_valid = false;
+        _slots_validated       = false;
+        _analysis_version++;
+        break;
+    case Change::BufferIdentityChanged:
+        // The hazard edges and every per-buffer analysis (usage() is keyed on the version) are
+        // derived from which buffer each tensor resolves to.
+        _deps_valid = false;
+        _analysis_version++;
+        break;
+    case Change::AliasLinksStale:
+        _aliases_linked = false;
+        break;
+    case Change::AliasesRelinked:
+        _analysis_version++;
+        break;
+    case Change::SlotsChanged:
+        _slots_validated = false;
+        break;
+    case Change::TensorRebound:
+        _profile_strings_valid = false;
+        _slots_validated       = false;
+        _analysis_version++;
+        break;
+    case Change::HandleChanged:
+        _handle_version++;
+        break;
+    case Change::NodesReordered:
+        _analysis_version++;
+        break;
+    case Change::TimingsRecorded:
+        _timing_report_valid = false;
+        break;
+    case Change::PassesApplied:
+        _executed = false;
+        break;
+    }
 }
 
 TensorHandle &Graph::mutable_tensor(TensorId id) {
@@ -354,7 +400,7 @@ void Graph::annotate_tag(TensorId id, ProvenanceTag tag) {
     tag.attributes.erase(duplicates.begin(), duplicates.end());
 
     handle.tag = std::move(tag);
-    _handle_version++;
+    note(Change::HandleChanged);
 }
 
 ProvenanceTag const &Graph::tensor_tag(TensorId id) const {
@@ -436,7 +482,7 @@ void Graph::attach_backing(TensorHandle &handle, TensorBacking backing) {
     backing.counters->tensor  = handle.name;
     handle.backing            = std::make_shared<TensorBacking const>(std::move(backing));
     // A backing can arrive after its tensor was registered, which moves no other counter.
-    _handle_version++;
+    note(Change::HandleChanged);
 }
 
 std::optional<TensorBacking> Graph::tensor_backing(TensorId id) const {
@@ -483,7 +529,7 @@ void Graph::annotate_spaces(TensorId id, std::vector<SpaceId> spaces) {
     // downstream may overwrite that.
     handle.spaces          = std::move(spaces);
     handle.spaces_inferred = false;
-    _handle_version++;
+    note(Change::HandleChanged);
 
     // A declaration over a tensor with concrete dims also says how big those spaces are on
     // this problem, which is what lets a later tensor be shaped in spaces instead of numbers.
@@ -511,7 +557,7 @@ void Graph::annotate_space_axis(TensorId id, std::size_t axis, SpaceId space) {
     }
     handle.spaces[axis]    = space;
     handle.spaces_inferred = false;
-    _handle_version++;
+    note(Change::HandleChanged);
 
     {
         TensorHandle probe;
@@ -576,7 +622,7 @@ void Graph::refresh_declared_symmetry() {
             if (auto declared = handle.declared_symmetry_fn();
                 declared != nullptr && (handle.symmetry_hint == nullptr || !(*handle.symmetry_hint == *declared))) {
                 handle.symmetry_hint = std::move(declared);
-                graph._handle_version++;
+                graph.note(Change::HandleChanged);
             }
         }
     };
@@ -654,7 +700,7 @@ void Graph::record_node_timings(std::vector<NodeTimingSample> &&samples) {
     } else {
         _timing_samples.insert(_timing_samples.end(), samples.begin(), samples.end());
     }
-    _timing_report_valid = false;
+    note(Change::TimingsRecorded);
 }
 
 void Graph::clear_timing_report() {
@@ -794,10 +840,9 @@ void Graph::redirect_slot(TensorId from, TensorId to) {
     from_slot->impl_of    = to_slot->impl_of;
     from_slot->resync_of  = to_slot->resync_of;
     _slot_redirects[from] = to;
-    _slots_validated      = false;
+    note(Change::SlotsChanged);
     // Buffer-keyed analyses (UsageAnalysis, the hazard scan) keyed @p from on its own id.
-    _deps_valid = false;
-    _analysis_version++;
+    note(Change::BufferIdentityChanged);
     // Anything already redirected to `from` now follows the same terminal.
     for (auto &[f, t] : _slot_redirects) {
         if (t == from) {

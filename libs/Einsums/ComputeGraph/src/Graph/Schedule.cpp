@@ -1099,7 +1099,7 @@ void Graph::topological_sort() {
     // Positions changed but the node COUNT did not, so cached position-keyed
     // analyses (UsageAnalysis) must be invalidated explicitly - the count
     // defense in usage() cannot see a same-size reorder.
-    _analysis_version++;
+    note(Change::NodesReordered);
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)

@@ -276,11 +276,9 @@ TEST_CASE("UsageAnalysis - cache invalidation at mutation points", "[ComputeGrap
 
 // An alias declaration changes which buffer a tensor resolves to, so a usage table built before it
 // counts X's writers against X's own buffer and none against P's. The cache must not survive it.
-//
-// Known bug: Graph::declare_alias clears _deps_valid but does not bump _analysis_version, which is
-// what Graph::usage() keys its cache on, so the stale table is returned. Drop [!shouldfail] when the
-// change notification (Graph::note) invalidates the usage cache on every buffer-identity change.
-TEST_CASE("UsageAnalysis - cache sees an alias declared after it was built", "[ComputeGraph][UsageAnalysis][!shouldfail]") {
+// declare_alias used to clear the dependency lists without moving the analysis version usage() is
+// keyed on, and the stale table came back.
+TEST_CASE("UsageAnalysis - cache sees an alias declared after it was built", "[ComputeGraph][UsageAnalysis]") {
     auto X   = create_zero_tensor<double>("X", 4, 4);
     auto P   = create_random_tensor<double>("P", 4, 4);
     auto out = create_zero_tensor<double>("out", 4, 4);
@@ -310,6 +308,43 @@ TEST_CASE("UsageAnalysis - cache sees an alias declared after it was built", "[C
     REQUIRE(truth->writes() == 1);
 
     // The cached answer must agree with it.
+    cg::TensorUsage const *cached = graph.usage().find(graph, p_id);
+    REQUIRE(cached != nullptr);
+    CHECK(cached->writes() == truth->writes());
+}
+
+// The same through a rebind: a slice of P is P's storage until it is rebound to a slice of Q, and
+// then its writer is no longer P's. note_rebind_geometry drops the alias link on the spot, and
+// the rebind that calls it moves the analysis version the cache is keyed on.
+TEST_CASE("UsageAnalysis - cache sees a view rebound away from its parent", "[ComputeGraph][UsageAnalysis]") {
+    auto P   = create_zero_tensor<double>("P", 6, 6);
+    auto Q   = create_zero_tensor<double>("Q", 6, 6);
+    auto out = create_zero_tensor<double>("out", 6, 6);
+    auto V   = P(Range{0, 3}, AllT{});
+    auto W   = Q(Range{0, 3}, AllT{});
+
+    cg::Graph graph("ua_view_rebound");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(2.0, &V);     // writes a slice of P
+        cg::axpy(1.0, P, &out); // reads P, so P is registered
+    }
+    graph.topological_sort(); // links the slice into P by address
+    cg::TensorId const v_id = tid_of(graph, V);
+    cg::TensorId const p_id = tid_of(graph, P);
+    REQUIRE(graph.tensor(v_id).aliases == p_id);
+
+    cg::TensorUsage const *before = graph.usage().find(graph, p_id);
+    REQUIRE(before != nullptr);
+    REQUIRE(before->writes() == 1);
+
+    graph.rebind(v_id, W);
+
+    auto const             fresh = cg::UsageAnalysis::build(graph);
+    cg::TensorUsage const *truth = fresh.find(graph, p_id);
+    REQUIRE(truth != nullptr);
+    REQUIRE(truth->writes() == 0);
+
     cg::TensorUsage const *cached = graph.usage().find(graph, p_id);
     REQUIRE(cached != nullptr);
     CHECK(cached->writes() == truth->writes());

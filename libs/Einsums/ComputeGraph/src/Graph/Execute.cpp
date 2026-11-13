@@ -365,7 +365,7 @@ bool Graph::apply(PassManager &pm) {
     std::scoped_lock const lock(_content_mutex);
     bool const             modified = pm.run(*this);
     if (modified) {
-        _executed = false;
+        note(Change::PassesApplied);
     }
     return modified;
 }

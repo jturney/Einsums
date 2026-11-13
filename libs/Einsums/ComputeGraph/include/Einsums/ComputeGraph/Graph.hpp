@@ -2982,7 +2982,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Idempotent in effect but not in value: call it once per rewrite, not once
      * per node. Only the fact that the counter moved is meaningful.
      */
-    void note_structural_change() { _structure_version++; }
+    void note_structural_change() { note(Change::NodeSetChanged); }
 
     /**
      * @brief Record that a structural-algebraic pass rewrote this graph.
@@ -5119,6 +5119,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// The non-throwing @ref mutable_tensor: null when no tensor with the given ID exists.
     [[nodiscard]] TensorHandle *find_mutable_tensor(TensorId id) noexcept;
 
+    /// A change to the graph that can leave a cache describing the graph as it was.
+    ///
+    /// Each change site names what happened and @ref note decides which caches that makes stale,
+    /// so the mapping from change to cache lives in one place. A cache's own rebuild (the sort,
+    /// the replay, a memo) still marks itself current where it rebuilds.
+    enum class Change : std::uint8_t {
+        NodeAppended,          ///< A node was appended: the order is unknown.
+        NodeSetChanged,        ///< Nodes were erased, inserted or replaced in an order a pass chose.
+        NodeEdited,            ///< A node's fields changed through @ref edit.
+        NodesReordered,        ///< The same nodes now sit at different positions.
+        BufferIdentityChanged, ///< Which buffer some tensor resolves to may have changed.
+        AliasLinksStale,       ///< The address-derived alias links need deriving again.
+        AliasesRelinked,       ///< The alias links were just derived again.
+        SlotsChanged,          ///< A slot was created or repointed.
+        TensorRebound,         ///< A tensor's storage was rebound.
+        HandleChanged,         ///< A field of a registered handle changed.
+        TimingsRecorded,       ///< New timing samples arrived.
+        PassesApplied,         ///< A pass manager ran over the graph.
+    };
+
+    /// Make stale every cache @p change can have invalidated.
+    void note(Change change) noexcept;
+
     /// Whether the node order and the dependency lists describe the graph as it stands, bodies
     /// included: what the replay entry points check before deciding to sort.
     [[nodiscard]] bool deps_current();
@@ -5809,7 +5832,7 @@ auto Graph::get_or_create_slot(TensorType const &tensor, TensorId tensor_id) -> 
 
     auto *raw            = slot.get();
     _slot_map[tensor_id] = std::move(slot);
-    _slots_validated     = false;
+    note(Change::SlotsChanged);
     return raw;
 }
 template <GraphCapturableTensor TensorType>
@@ -5904,10 +5927,9 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
     slot->name      = new_tensor.name();
     slot->dims      = new_dims;
 
-    // Tensor names feed the cached profiler annotations.
-    _profile_strings_valid = false;
-    // A fresh pointer has not been through the slot check yet.
-    _slots_validated = false;
+    // Tensor names feed the cached profiler annotations, a fresh pointer has not been through the
+    // slot check yet, and rebinding is a mutation-declaration point (see analysis_version).
+    note(Change::TensorRebound);
 
     // An explicit rebind of a merged-away tensor overrides its pass
     // redirect; otherwise a later rebind of the survivor would stomp it.
@@ -5992,9 +6014,6 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
         }
         note_rebind_geometry(th_it->second, new_data, new_dims, new_strides);
     }
-
-    // Rebind is a mutation-declaration point (see analysis_version).
-    _analysis_version++;
 
     if (descend) {
         rebind_subgraphs(old_ptr, new_tensor, allow_extent_change);

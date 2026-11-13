@@ -92,8 +92,9 @@ void Graph::declare_alias(TensorId child, TensorId parent) {
     // A declaration says WHICH buffer, never WHICH REGION - the manifest schema
     // carries no box - so the declared alias conflicts as the whole parent.
     child_handle->alias_box.clear();
-    // The hazard relation just changed, so anything derived from it is stale.
-    _deps_valid = false;
+    // The hazard relation and every per-buffer analysis just changed, so anything derived from
+    // them is stale.
+    note(Change::BufferIdentityChanged);
 }
 
 void Graph::clear_alias_links() noexcept {
@@ -101,10 +102,9 @@ void Graph::clear_alias_links() noexcept {
         handle.aliases = 0;
         handle.alias_box.clear();
     }
-    _aliases_linked = false;
-    _deps_valid     = false;
+    note(Change::AliasLinksStale);
     // Owner-keyed analyses were keyed on the relation this just dropped; see link_alias_storage.
-    _analysis_version++;
+    note(Change::BufferIdentityChanged);
 }
 
 void Graph::apply_declared_aliases() {
@@ -197,7 +197,7 @@ void Graph::link_alias_storage() {
     // lookup of a newly linked handle asks for an owner nobody recorded: an interface tensor
     // that a first manifest() reported vanished from the second, since the mint that made the
     // link happens inside the very analysis the link then invalidates.
-    _analysis_version++;
+    note(Change::AliasesRelinked);
 
     // A declaration is authoritative and an address coincidence is not, so
     // declarations go on first and the containment search below leaves them

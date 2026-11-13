@@ -59,7 +59,7 @@ bool Graph::infer_spaces(TensorId id, std::vector<SpaceId> spaces) {
     }
     handle.spaces          = std::move(spaces);
     handle.spaces_inferred = true;
-    _handle_version++;
+    note(Change::HandleChanged);
     return true;
 }
 
@@ -75,7 +75,7 @@ bool Graph::infer_symmetry(TensorId id, SymmetryDescriptor descriptor, SymmetryR
     if (reach == SymmetryReach::Tensor && handle.set_symmetry_fn) {
         handle.set_symmetry_fn(std::move(descriptor));
     }
-    _handle_version++;
+    note(Change::HandleChanged);
     return true;
 }
 
@@ -129,7 +129,7 @@ void Graph::relayout(TensorId id, std::span<std::size_t const> order) {
     if (TensorSlot *slot = find_slot(id); slot != nullptr) {
         slot->dims = dims;
     }
-    _handle_version++;
+    note(Change::HandleChanged);
 }
 
 void Graph::set_distribution(TensorId id, std::optional<comm::DistributionDescriptor> distributed) {
@@ -145,7 +145,7 @@ void Graph::set_distribution(TensorId id, std::optional<comm::DistributionDescri
         handle.is_replicated  = true;
         handle.distribution_info.reset();
     }
-    _handle_version++;
+    note(Change::HandleChanged);
 }
 
 void Graph::adopt_lifecycle(TensorId id, TensorHandle const &from) {
@@ -155,14 +155,14 @@ void Graph::adopt_lifecycle(TensorId id, TensorHandle const &from) {
     handle.materialize_fn = from.materialize_fn;
     handle.zero_fn        = from.zero_fn;
     handle.random_fn      = from.random_fn;
-    _handle_version++;
+    note(Change::HandleChanged);
 }
 
 void Graph::set_residency(TensorId id, Residency residency) {
     TensorHandle &handle = registered(_tensors, _name, id);
     if (handle.residency != residency) {
         handle.residency = residency;
-        _handle_version++;
+        note(Change::HandleChanged);
     }
 }
 
@@ -170,7 +170,7 @@ void Graph::mark_materialized(TensorId id) {
     TensorHandle &handle = registered(_tensors, _name, id);
     handle.alloc_state   = AllocState::Materialized;
     handle.init_kind     = InitKind::None;
-    _handle_version++;
+    note(Change::HandleChanged);
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)

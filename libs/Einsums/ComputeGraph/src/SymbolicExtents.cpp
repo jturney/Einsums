@@ -428,7 +428,7 @@ void Graph::annotate_dims(TensorId id, std::vector<std::string> symbols) {
     record_symbol_space_ties(probe);
 
     handle.dim_symbols = std::move(symbols);
-    _handle_version++;
+    note(Change::HandleChanged);
 }
 
 void Graph::annotate_ragged_dim(TensorId id, std::size_t axis, std::string_view space_name) {
@@ -603,8 +603,8 @@ void Graph::resize_derived_extent(TensorId id, std::vector<std::size_t> const &d
 
     // The buffer moved and changed size, so whatever the alias relation said about it is
     // about a tensor that no longer exists.
-    _aliases_linked = false;
-    _deps_valid     = false;
+    note(Change::AliasLinksStale);
+    note(Change::BufferIdentityChanged);
 }
 
 void Graph::rederive_owned_extents() {
@@ -813,8 +813,8 @@ void Graph::note_rebind_geometry(TensorHandle &handle, void *new_data, std::vect
         handle.aliases = 0;
         handle.alias_box.clear();
     }
-    _aliases_linked = false;
-    _deps_valid     = false;
+    note(Change::AliasLinksStale);
+    note(Change::BufferIdentityChanged);
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)
