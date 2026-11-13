@@ -652,6 +652,42 @@ TEST_CASE("ThreadPlanning - a cold plan runs a measured trial, then freezes", "[
     REQUIRE(first == second);
 }
 
+// A width set by hand is how a plan is measured: a node is replayed at each width in turn. It has
+// to stay where it was put, so setting one ends the trial a cold plan opened, and no later replay
+// re-plans over it.
+TEST_CASE("ThreadPlanning - a width set by hand ends the trial and survives replays", "[ComputeGraph][ThreadPlanning]") {
+    FatGraph  fixture;
+    cg::Graph graph("hand_set");
+    fixture.capture(graph);
+
+    graph.plan_threads();
+    REQUIRE(graph.thread_replan_armed());
+
+    cg::NodeId const id = graph.nodes().front().id;
+    graph.set_thread_width(id, 2);
+    REQUIRE_FALSE(graph.thread_replan_armed());
+    REQUIRE(graph.nodes().front().thread_width == 2);
+
+    std::vector<unsigned> set;
+    for (auto const &node : graph.nodes()) {
+        set.push_back(node.thread_width);
+    }
+    cg::DataflowExecutor df;
+    for (int replay = 0; replay < 3; replay++) {
+        graph.execute(df);
+        REQUIRE_FALSE(graph.thread_replan_armed());
+        for (size_t i = 0; i < graph.nodes().size(); i++) {
+            REQUIRE(graph.nodes()[i].thread_width == set[i]);
+        }
+    }
+
+    // Zero clears it; an id the graph does not hold and a width a node cannot carry are refused.
+    graph.set_thread_width(id, 0);
+    REQUIRE(graph.nodes().front().thread_width == 0);
+    REQUIRE_THROWS_AS(graph.set_thread_width(cg::unassigned_node_id, 2), std::out_of_range);
+    REQUIRE_THROWS_AS(graph.set_thread_width(id, 1U << 20), std::invalid_argument);
+}
+
 TEST_CASE("ThreadPlanning - freeze never re-plans", "[ComputeGraph][ThreadPlanning]") {
     FatGraph  fixture;
     cg::Graph graph("frozen");

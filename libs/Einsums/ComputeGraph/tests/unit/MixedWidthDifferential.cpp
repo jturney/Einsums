@@ -8,9 +8,8 @@
 // depend on the widths its nodes carry.
 //
 // The suite's differential fuzzers all compare a captured graph against an
-// eager or numpy oracle, and none of them can put a width on a node - the
-// python surface exposes plan_threads() but neither Node::thread_width nor the
-// node list, so the moldable replay path has no fuzz coverage from that side.
+// eager or numpy oracle, and none of them puts a width on a node, so the
+// moldable replay path has no fuzz coverage from that side.
 // This case supplies it in C++: random small graphs built from the kernel
 // families that carry widths (vendor GEMM through the packed route, HPTT
 // permutes, elementwise scale/axpby, rank-3 contractions), each replayed three

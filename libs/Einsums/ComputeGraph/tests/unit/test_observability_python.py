@@ -6,6 +6,7 @@
 """What a graph reports about itself: its shape, its interface, and what its last replay did."""
 
 import numpy as np
+import pytest
 
 import einsums
 import einsums.graph as cg
@@ -84,6 +85,32 @@ def test_last_run_reports_nodes_and_memory_of_the_replay():
     # Every tensor is the caller's: the graph allocated nothing of its own.
     assert run.peak_bytes == 0
     assert list(run.backings) == []
+
+
+def test_a_width_set_by_hand_survives_replays_and_changes_no_result():
+    A = _filled("A", (16, 16), 0.5)
+    out = einsums.create_zero_tensor("out", [16, 16], dtype="float64")
+    g = cg.Graph("hand_set")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", out, A, A)
+    g.set_executor(cg.DataflowExecutor())
+    g.execute()
+    want = np.asarray(out).copy()
+    node = g.last_run().nodes[0]
+
+    # A cold plan opens a trial; a width set by hand closes it, so no replay re-plans over it.
+    g.plan_threads()
+    g.set_thread_width(node.id, 2)
+    assert not g.thread_replan_armed
+    for _ in range(3):
+        g.execute()
+        assert not g.thread_replan_armed
+        # The node ran at the width it was given, or at 1 on a machine with one thread to give.
+        assert g.last_run().nodes[0].width in (1, 2)
+        np.testing.assert_allclose(np.asarray(out), want, rtol=1e-12)
+
+    with pytest.raises(IndexError):
+        g.set_thread_width(node.id + 1000, 2)
 
 
 def test_last_run_counts_the_intermediates_the_graph_holds():

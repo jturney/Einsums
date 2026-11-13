@@ -49,6 +49,7 @@
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <ostream>
@@ -718,6 +719,23 @@ unsigned Graph::planned_thread_count() const {
 
 bool Graph::thread_replan_armed() const {
     return _plan_trial != ThreadPlanTrial::None;
+}
+
+void Graph::set_thread_width(NodeId id, unsigned width) {
+    if (width > std::numeric_limits<std::uint16_t>::max()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': a thread width of {} does not fit a node", _name, width);
+    }
+    std::scoped_lock const lock(_content_mutex);
+    auto const             it = std::ranges::find_if(_nodes, [id](Node const &node) { return node.id == id; });
+    if (it == _nodes.end()) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no node with id {} to give a thread width", _name, id);
+    }
+    it->thread_width = static_cast<std::uint16_t>(width);
+    // A width set by hand is a decision, and a trial still open would re-plan over it or put
+    // the cold widths back at the next replay.
+    _plan_trial = ThreadPlanTrial::None;
+    _plan_incumbent.clear();
+    _plan_candidate.clear();
 }
 
 void Graph::free_tensor(TensorId id, std::string name, size_t size_bytes) {

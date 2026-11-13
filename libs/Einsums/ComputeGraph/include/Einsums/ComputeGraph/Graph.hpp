@@ -3124,6 +3124,28 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_EXPOSE APIARY_GETTER("thread_replan_armed") [[nodiscard]] bool thread_replan_armed() const;
 
     /**
+     * @brief Give one node a thread width by hand.
+     *
+     * For measuring a plan rather than making one: replay a graph with a node at each width in
+     * turn and read what it cost from @ref last_run, which is how a planner's choice is checked
+     * against the machine. The width is taken as given. None of the planner's vetoes apply (a
+     * kernel that cannot be told a width, a node that is sequential by contract), and no kernel
+     * route is pinned, so call @ref plan_threads first and change the widths it chose.
+     *
+     * Setting a width ends any plan trial in progress, so a later replay does not re-plan over
+     * it. Only @ref DataflowExecutor acts on a width.
+     *
+     * @param[in] id    The node, by the id @ref last_run and @ref timing_report give it. Only this
+     *                  graph's own nodes are searched, not those of a loop body or a branch.
+     * @param[in] width Threads the node may use; 0 clears the width, which runs as 1.
+     * @throws std::out_of_range If this graph has no node with that id.
+     * @throws std::invalid_argument If @p width does not fit a node's width field.
+     *
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void set_thread_width(NodeId id, unsigned width);
+
+    /**
      * @brief Add a conditional (if-then-else) node to the graph.
      *
      * Returns references to the then-branch and else-branch subgraphs.
