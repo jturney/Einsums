@@ -53,6 +53,7 @@ set(ComputeGraphTests
     NaryEinsum.cpp
     ElementOps.cpp
     EscapeAnalysis.cpp
+    DeviceCoherence.cpp
     Executor.cpp
     ExecutorBuilder.cpp
     GEMMBatching.cpp

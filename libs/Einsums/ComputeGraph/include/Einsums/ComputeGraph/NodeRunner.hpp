@@ -10,13 +10,16 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/ComputeGraph/Detail/DeviceCoherence.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
 
 #include <cstddef>
 #include <optional>
-#include <unordered_set>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -82,9 +85,9 @@ class EINSUMS_EXPORT NodeRunner {
      * @brief Whether this replay must run its nodes one at a time.
      *
      * True when the build's device memory is separate from the host's and the graph holds a node
-     * placed on the device or a transfer. The record of which tensors' device copies are current
-     * is then written as nodes run, and is not yet safe to write from two threads. A concurrent
-     * executor refuses such a replay.
+     * placed on the device or a transfer. A device node then points its operands' tensor objects
+     * at their device copies for the length of the node, which a concurrent reader of the same
+     * tensor would see. A concurrent executor refuses such a replay.
      *
      * @return False on every unified-memory build and for every graph that runs only on the host.
      */
@@ -102,6 +105,14 @@ class EINSUMS_EXPORT NodeRunner {
     /// replay's timing samples in node order. Called once by the graph, after the executor returns.
     void finish();
 
+    /// Track every tensor a device node or transfer touches, allocate its device shadow, and
+    /// record each control-flow node's subtree I/O. Called by the constructor on a build whose
+    /// device memory is separate, and only when the graph places work there.
+    void prepare_device_work();
+
+    /// Make @p id current on the host, copying it down when only its device copy is.
+    void host_current(TensorId id);
+
     /// The part of @ref finish that copies device-only results back to the host.
     void flush_device();
 
@@ -111,7 +122,8 @@ class EINSUMS_EXPORT NodeRunner {
     Graph &_graph;
     bool   _recording;
 
-    /// Tensors whose DEVICE shadow currently holds the authoritative data.
+    /// Which of each device-touched tensor's two copies is current, on a build whose device memory
+    /// is separate; untouched (and empty) on a unified-memory build.
     ///
     /// Tracked at run time rather than read off TensorHandle::residency, which
     /// is a static annotation left by TransferInsertion and says nothing about a
@@ -119,9 +131,16 @@ class EINSUMS_EXPORT NodeRunner {
     /// inserted for those, so residency stays Host while the live value is on the
     /// device. Copying the host side up on that basis would clobber the producer's
     /// result.
-    ///
-    /// Written only on a build whose device memory is separate, which is why @ref serial_only.
-    std::unordered_set<TensorId> _device_valid;
+    detail::DeviceCoherence _coherence;
+
+    /// Whether this replay places work on a separate device at all: the coherence record and the
+    /// two members below are filled only when it does.
+    bool _device_work{false};
+
+    /// The buffers each control-flow node's subtree reads and writes, by node position, worked
+    /// out before any node runs: Graph::effective_io may register a handle, which must not
+    /// happen while nodes run on other threads.
+    std::unordered_map<std::size_t, std::pair<std::vector<TensorId>, std::vector<TensorId>>> _control_io;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

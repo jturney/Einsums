@@ -40,6 +40,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/DescriptorRegistry.hpp
     Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp
     Einsums/ComputeGraph/Detail/DenseElementTransform.hpp
+    Einsums/ComputeGraph/Detail/DeviceCoherence.hpp
     Einsums/ComputeGraph/Detail/ErasedEinsum.hpp
     Einsums/ComputeGraph/Detail/ErasedOperations.hpp
     Einsums/ComputeGraph/Detail/BackedWrites.hpp
