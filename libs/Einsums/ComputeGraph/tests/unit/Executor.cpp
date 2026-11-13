@@ -4,7 +4,9 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/GPU/Platform.hpp>
 #include <Einsums/Json/Json.hpp>
+#include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -17,8 +19,11 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <set>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -1357,3 +1362,117 @@ TEST_CASE("IOPrefetch - a loop-invariant read is hoisted out of the body and run
         }
     }
 }
+
+#if defined(EINSUMS_HAVE_PROFILER)
+namespace {
+
+/// The value of @p key on the first zone named any of @p zone_names in any thread's tree, or none
+/// when no such zone was recorded, or it was recorded without that annotation.
+std::optional<std::string> zone_annotation(std::vector<std::string> const &zone_names, std::string const &key, bool &zone_found) {
+    auto const snapshot = waggle::Snapshot::take();
+    for (auto const &thread : snapshot.threads()) {
+        std::vector<waggle::SnapshotNode> pending{thread.root};
+        while (!pending.empty()) {
+            auto const current = pending.back();
+            pending.pop_back();
+            for (auto const &child : current.children()) {
+                if (std::ranges::find(zone_names, child.name()) != zone_names.end()) {
+                    zone_found = true;
+                    for (auto const &[k, v] : child.annotations()) {
+                        if (k == key) {
+                            return v;
+                        }
+                    }
+                    return std::nullopt;
+                }
+                pending.push_back(child);
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+/// Capture one float32 GEMM-shaped einsum into a graph named @p name, place it on the GPU, replay it
+/// through @p replay with the profiler recording, and report how the replay ran the node: the
+/// ``gpu_dispatch`` annotation the replay left on the node's zone, which the GPU path writes as
+/// ``gemm`` when the device ran it and ``cpu_fallback`` when it declined.
+///
+/// Float32 because MPS accepts nothing else, so a float64 node is never placed and the case would
+/// prove nothing on this backend. The result is checked against the reference either way: the
+/// defect this guards is WHERE the node ran, and a CPU run gives the right numbers.
+template <typename Replay>
+std::optional<std::string> gpu_dispatch_of_replay(std::string const &name, Replay &&replay) {
+    auto const A = create_random_tensor<float>("A", 128, 128);
+    auto const B = create_random_tensor<float>("B", 128, 128);
+    auto       C = create_zero_tensor<float>("C", 128, 128);
+
+    cg::Graph graph(name);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0f, &C, 1.0f, A, B);
+    }
+    REQUIRE(graph.nodes().size() == 1);
+    // A label no other case uses, because the dataflow executor names a node's zone by its bare
+    // label, and a zone another case recorded under the einsum's default label would answer for it.
+    std::string const label = fmt::format("gpu dispatch probe ({})", name);
+    graph.edit(0, [&](cg::NodeEdit &e) { e->label = label; });
+    auto [placed, pass] = graph.apply<cg::passes::GPUPlacement>();
+    REQUIRE(placed);
+    REQUIRE(graph.nodes()[0].target == cg::Target::GPU);
+    // The built-in loop and the sequential and OpenMP executors name the zone after the graph and
+    // the label; the dataflow executor after the label alone.
+    std::vector<std::string> const zone_names{fmt::format("graph:{}/{}", name, label), label};
+
+    bool const was = waggle::enabled();
+    waggle::set_enabled(true);
+    replay(graph);
+    waggle::set_enabled(was);
+
+    auto C_ref = create_zero_tensor<float>("C_ref", 128, 128);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
+    einsums::testing::require_tensors_close(C, C_ref, {.rtol = 1e-4, .atol = 1e-4});
+
+    bool       zone_found = false;
+    auto const dispatch   = zone_annotation(zone_names, "gpu_dispatch", zone_found);
+    // Every executor opens a zone around the node, so a missing zone is a broken probe, not the
+    // defect. Under [!shouldfail] it would still read as the expected failure: when that tag is
+    // dropped, the failing assertion must be the caller's CHECK, never this one.
+    REQUIRE(zone_found);
+    return dispatch;
+}
+
+} // namespace
+
+TEST_CASE("GPU dispatch - the default replay runs a GPU-placed node on the device", "[ComputeGraph][Executor][GPU]") {
+    if (!einsums::gpu::gpu_available()) {
+        SKIP("no usable GPU device (gpu::gpu_available() is false)");
+    }
+    // The baseline the two cases below compare against, and the proof their probe works.
+    auto const dispatch = gpu_dispatch_of_replay("gpu_dispatch_default", [](cg::Graph &g) { g.execute(); });
+    CHECK(dispatch == std::optional<std::string>{"gemm"});
+}
+
+// Known bug: GPU execution lives only in the built-in replay loop of Graph::execute()
+// (src/Graph/Execute.cpp). The Executor classes in src/Executor.cpp call node.execute(), the CPU
+// callable, so a node GPUPlacement placed runs on the host, with no transfers and no diagnostic.
+// The numbers are right, so no value comparison notices. Drop [!shouldfail] when every executor
+// runs a node through one shared path.
+TEST_CASE("GPU dispatch - SequentialExecutor runs a GPU-placed node on the device", "[ComputeGraph][Executor][GPU][!shouldfail]") {
+    if (!einsums::gpu::gpu_available()) {
+        SKIP("no usable GPU device (gpu::gpu_available() is false)");
+    }
+    cg::SequentialExecutor executor;
+    auto const             dispatch = gpu_dispatch_of_replay("gpu_dispatch_sequential", [&](cg::Graph &g) { g.execute(executor); });
+    CHECK(dispatch == std::optional<std::string>{"gemm"});
+}
+
+// Known bug: see the SequentialExecutor case above; the same defect under the dataflow executor.
+TEST_CASE("GPU dispatch - DataflowExecutor runs a GPU-placed node on the device", "[ComputeGraph][Executor][GPU][!shouldfail]") {
+    if (!einsums::gpu::gpu_available()) {
+        SKIP("no usable GPU device (gpu::gpu_available() is false)");
+    }
+    cg::DataflowExecutor executor;
+    auto const           dispatch = gpu_dispatch_of_replay("gpu_dispatch_dataflow", [&](cg::Graph &g) { g.execute(executor); });
+    CHECK(dispatch == std::optional<std::string>{"gemm"});
+}
+#endif
