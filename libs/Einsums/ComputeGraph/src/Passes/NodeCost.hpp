@@ -40,6 +40,10 @@ struct ModelledCost {
     /// Independent members a grouped or batched node runs across its threads; 0 for any other
     /// node. A node cannot keep more threads busy than it has members.
     std::size_t members{0};
+    /// Extent of one member's GEMM for a batched GEMM or a sandwich, the cube root of its
+    /// `m*n*k`; 0 for any other node. It picks the batched curve; see
+    /// @ref EfficiencyCurve::member_extent.
+    std::size_t member_extent{0};
     /// A registered descriptor's own speedup curve, overriding @ref family's; empty otherwise.
     std::function<double(unsigned)> speedup;
 };

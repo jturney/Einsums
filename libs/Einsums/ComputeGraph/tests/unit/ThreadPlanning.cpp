@@ -400,6 +400,133 @@ TEST_CASE("ThreadPlanning - a grouped node is not widened past its members", "[C
     CHECK(plan(64) == 8);
 }
 
+// A batched GEMM's curve is the one swept at its own member extent. Priced from a single cell of
+// 73-cubed members, where the vendor GEMM gains almost nothing from concurrent callers, the DLPNO
+// (T0) projection batch of 1860 members of about 20 x 18 x 18 read 1.08x at width 4 where it ran
+// 2.28x. Two extent-keyed curves, rising at 12 and flat at 48, must give batches of those members
+// different plans.
+TEST_CASE("ThreadPlanning - a batched GEMM is priced from its own member extent", "[ComputeGraph][ThreadPlanning]") {
+    auto const plan = [](int extent) {
+        cg::CostModel model                 = cg::CostModel::built_in();
+        model.cpu.max_threads               = 8;
+        model.cpu.kernel_launch_overhead_us = 0.0;
+        model.cpu.thread_efficiency         = {
+            cg::EfficiencyCurve{
+                .family = cg::KernelFamily::BatchedGemm, .member_extent = 12, .widths = {1, 2, 4, 8}, .speedup = {1.0, 1.9, 3.6, 6.5}},
+            cg::EfficiencyCurve{
+                .family = cg::KernelFamily::BatchedGemm, .member_extent = 48, .widths = {1, 2, 4, 8}, .speedup = {1.0, 1.0, 1.0, 1.0}}};
+
+        int constexpr kMembers = 100000;
+        cg::Graph  graph("one_grouped_batched_gemm");
+        auto const in   = shell(graph, "in", kFatExtent);
+        auto const out  = shell(graph, "out", kFatExtent);
+        cg::Node   node = work_node("batched", in, out, cg::OpKind::GroupedBatchedGemm);
+        node.op_data    = cg::GroupedBatchedGemmDescriptor{
+            .groups = {cg::GemmGroup{
+                .m = extent, .n = extent, .k = extent, .lda = extent, .ldb = extent, .ldc = extent, .count = kMembers}},
+            .total  = kMembers};
+        graph.add_node(std::move(node));
+
+        cg::passes::ThreadPlanning planner(model, 8);
+        planner.run(graph);
+        return width_of(graph, 0);
+    };
+
+    CHECK(plan(12) == 8);
+    CHECK(plan(48) == 1);
+}
+
+// The batched curves are net of the region's fork, which a plan pays once per call. A batch whose
+// curve rises still stays narrow when the fork costs more than the width saves: 64 members of
+// 20-cubed are a 26 us call on an M-series laptop, the fork at width 4 is 10 us, and the batch
+// ran no faster there than at width 1.
+TEST_CASE("ThreadPlanning - a batch too short to pay back its region's fork stays narrow", "[ComputeGraph][ThreadPlanning]") {
+    auto const plan = [](double fee_us) {
+        cg::CostModel model                 = cg::CostModel::built_in();
+        model.cpu.max_threads               = 8;
+        model.cpu.kernel_launch_overhead_us = 0.0;
+        model.cpu.thread_efficiency         = {cg::EfficiencyCurve{
+            .family = cg::KernelFamily::BatchedGemm, .member_extent = 20, .widths = {1, 2, 4, 8}, .speedup = {1.0, 1.9, 3.6, 6.5}}};
+        model.cpu.region_fee                = cg::RegionFee{.widths = {2, 4, 8}, .us = {fee_us, fee_us, fee_us}};
+
+        int constexpr kMembers = 100000;
+        cg::Graph  graph("one_grouped_batched_gemm");
+        auto const in   = shell(graph, "in", kFatExtent);
+        auto const out  = shell(graph, "out", kFatExtent);
+        cg::Node   node = work_node("batched", in, out, cg::OpKind::GroupedBatchedGemm);
+        node.op_data    = cg::GroupedBatchedGemmDescriptor{
+            .groups = {cg::GemmGroup{.m = 20, .n = 20, .k = 20, .lda = 20, .ldb = 20, .ldc = 20, .count = kMembers}}, .total = kMembers};
+        graph.add_node(std::move(node));
+
+        cg::passes::ThreadPlanning planner(model, 8);
+        planner.run(graph);
+        return width_of(graph, 0);
+    };
+
+    CHECK(plan(0.0) == 8);
+    // A fee no batch this size could pay back: longer than the whole serial call.
+    CHECK(plan(1e12) == 1);
+}
+
+// A gather-rotate node is a grouped batched GEMM by kind, but it runs the grouped member loop with
+// members of hundreds of microseconds, not gemm_batch_grouped: priced from a batched curve, the
+// DLPNO (T0) gather was moved from width 8 to 4 and ran 21% slower. With the batched
+// curves flat and its own rising, it must take its own.
+TEST_CASE("ThreadPlanning - a gather-rotate is priced from the member loop it runs", "[ComputeGraph][ThreadPlanning]") {
+    cg::CostModel model                 = cg::CostModel::built_in();
+    model.cpu.max_threads               = 8;
+    model.cpu.kernel_launch_overhead_us = 0.0;
+    model.cpu.thread_efficiency         = {
+        cg::EfficiencyCurve{
+            .family = cg::KernelFamily::BatchedGemm, .member_extent = 20, .widths = {1, 2, 4, 8}, .speedup = {1.0, 1.3, 1.3, 0.8}},
+        cg::EfficiencyCurve{.family = cg::KernelFamily::GroupedRotate, .widths = {1, 2, 4, 8}, .speedup = {1.0, 1.9, 3.4, 4.2}}};
+
+    int constexpr kMembers = 88;
+    cg::Graph  graph("one_gather_rotate");
+    auto const in   = shell(graph, "in", kFatExtent);
+    auto const out  = shell(graph, "out", kFatExtent);
+    cg::Node   node = work_node("gather_rotate", in, out, cg::OpKind::GroupedGatherRotate);
+    node.op_data    = cg::GroupedGatherRotateDescriptor{.total      = kMembers,
+                                                        .nq         = std::vector<std::int64_t>(kMembers, 200),
+                                                        .nu         = std::vector<std::int64_t>(kMembers, 60),
+                                                        .nt         = std::vector<std::int64_t>(kMembers, 20),
+                                                        .elem_bytes = 8};
+    graph.add_node(std::move(node));
+
+    cg::passes::ThreadPlanning planner(model, 8);
+    planner.run(graph);
+    CHECK(width_of(graph, 0) == 8);
+}
+
+// A sandwich runs the same member loop as a gather-rotate, but its members are small GEMMs: priced
+// from the gather-rotate curve, the DLPNO iteration's sandwich went from width 2 to 4 and the
+// iteration ran 3-4% slower. It reads the batched curve for the extent of its own GEMMs, so a
+// rising gather-rotate curve must not widen it.
+TEST_CASE("ThreadPlanning - a sandwich is priced from the batched curve, not the gather-rotate one", "[ComputeGraph][ThreadPlanning]") {
+    cg::CostModel model                 = cg::CostModel::built_in();
+    model.cpu.max_threads               = 8;
+    model.cpu.kernel_launch_overhead_us = 0.0;
+    model.cpu.thread_efficiency         = {
+        cg::EfficiencyCurve{
+            .family = cg::KernelFamily::BatchedGemm, .member_extent = 20, .widths = {1, 2, 4, 8}, .speedup = {1.0, 0.95, 0.9, 0.8}},
+        cg::EfficiencyCurve{.family = cg::KernelFamily::GroupedRotate, .widths = {1, 2, 4, 8}, .speedup = {1.0, 1.9, 3.4, 4.2}}};
+
+    int constexpr kMembers = 88;
+    cg::Graph  graph("one_sandwich");
+    auto const in   = shell(graph, "in", kFatExtent);
+    auto const out  = shell(graph, "out", kFatExtent);
+    cg::Node   node = work_node("sandwich", in, out, cg::OpKind::GroupedSandwich);
+    node.op_data    = cg::GroupedSandwichDescriptor{.total = kMembers,
+                                                    .nq    = std::vector<std::int64_t>(kMembers, 200),
+                                                    .nk    = std::vector<std::int64_t>(kMembers, 10),
+                                                    .na    = std::vector<std::int64_t>(kMembers, 20)};
+    graph.add_node(std::move(node));
+
+    cg::passes::ThreadPlanning planner(model, 8);
+    planner.run(graph);
+    CHECK(width_of(graph, 0) == 1);
+}
+
 // The width search used to judge a step by max(critical path, area / P), which cannot see that
 // wide nodes on parallel branches cannot overlap. Three equal independent nodes on four threads,
 // each 1.8x faster at width 2: widening all three to 2 halves the critical path and leaves the

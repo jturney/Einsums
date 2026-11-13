@@ -42,6 +42,7 @@ struct NodeCost {
     CurveRoute   route{CurveRoute::Einsums};        ///< Whose threads widen it
     bool         frozen{false};                     ///< Width is 1 and stays 1
     std::size_t  members{0};                        ///< Members of a grouped node; 0 when not one
+    std::size_t  member_extent{0};                  ///< Extent of a batched node's members; 0 when not one
     /// A registered descriptor's own speedup curve, overriding @ref family's.
     std::function<double(unsigned)> speedup;
 };
@@ -50,7 +51,17 @@ struct NodeCost {
 /// parallelism, so past that many threads it gains nothing: it runs as it does at its member count.
 double speedup_at(NodeCost const &c, DeviceProfile const &profile, unsigned width) {
     unsigned const w = c.members > 0 ? static_cast<unsigned>(std::min<std::size_t>(width, c.members)) : width;
-    return c.speedup ? c.speedup(w) : profile.parallel_speedup(c.family, c.bytes, w, c.route);
+    return c.speedup ? c.speedup(w) : profile.parallel_speedup(c.family, c.bytes, w, c.route, c.member_extent);
+}
+
+/// What opening its region costs @p c at @p width, in microseconds, where the curve that prices
+/// it is net of that cost; zero otherwise. See DeviceProfile::region_fee_us.
+double region_fee_at(NodeCost const &c, DeviceProfile const &profile, unsigned width) {
+    if (c.speedup || width <= 1) {
+        return 0.0;
+    }
+    unsigned const w = c.members > 0 ? static_cast<unsigned>(std::min<std::size_t>(width, c.members)) : width;
+    return profile.region_fee_us(c.family, w, c.route);
 }
 
 /// Loop and Conditional, which this pass prices by the bodies it plans rather than by the model.
@@ -320,18 +331,20 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         NodeCost                  &c     = cost[i];
         detail::ModelledCost const model = detail::model_cost(graph, node, profile, &memo);
 
-        c.bytes   = model.bytes;
-        c.family  = model.family;
-        c.route   = model.route;
-        c.speedup = model.speedup;
-        c.members = model.members;
+        c.bytes         = model.bytes;
+        c.family        = model.family;
+        c.route         = model.route;
+        c.speedup       = model.speedup;
+        c.members       = model.members;
+        c.member_extent = model.member_extent;
 
         auto const sit      = samples.find(node.id);
         bool const measured = sit != samples.end();
         if (auto it = sit; measured) {
             // A measurement is t(w) for the width it ran at, and everything
             // downstream - the fork floor, the widening search - reads t1_us as
-            // the SERIAL time. Undo the width: t(1) = t(w) * s(w).
+            // the SERIAL time. Undo the width: t(1) = (t(w) - fee(w)) * s(w), the
+            // fee being zero except where the curve is net of it.
             //
             // Without this the pass is self-defeating. A node the previous plan
             // widened reports a duration smaller by its own speedup, so it
@@ -345,7 +358,8 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
             // duration is already serial and needs nothing.
             double measured = median_us(it->second);
             if (auto const w = sample_width[node.id]; w > 1) {
-                measured *= speedup_at(c, profile, w);
+                // A fee the model puts above the sample is the model's error, not negative work.
+                measured = std::max(measured - region_fee_at(c, profile, w), 0.25 * measured) * speedup_at(c, profile, w);
             }
             c.t1_us = measured;
             _stats.num_from_timings++;
@@ -396,7 +410,9 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
 
     // t_i(w). The fixed launch cost is paid whatever the width, so it comes out
     // before the division and goes back after: a plan must never be able to buy
-    // its way below the floor a kernel costs to start.
+    // its way below the floor a kernel costs to start. A node whose curve is net
+    // of its region's fork pays that on top, once per call: it is what keeps a
+    // short batch narrow on a curve measured for a long one.
     double const overhead_us = profile.kernel_launch_overhead_us;
     auto         time_at     = [&](std::size_t i, unsigned width) {
         NodeCost const &c = cost[i];
@@ -405,7 +421,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         }
         double const scalable = std::max(0.0, c.t1_us - overhead_us);
         double const speedup  = std::max(1e-9, speedup_at(c, profile, width));
-        return scalable / speedup + std::min(overhead_us, c.t1_us);
+        return scalable / speedup + std::min(overhead_us, c.t1_us) + region_fee_at(c, profile, width);
     };
 
     std::vector<unsigned> const rungs = (profile.max_threads == p) ? profile.width_rungs() : width_rungs_for(p);

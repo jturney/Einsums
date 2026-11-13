@@ -19,6 +19,7 @@
 #include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
 #include <Einsums/ComputeGraph/Detail/WidthGuard.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/LinearAlgebra.hpp>
@@ -80,11 +81,12 @@ double median_seconds(size_t warmup, size_t repeats, double min_sample_seconds, 
     return times[n / 2];
 }
 
-/// One (family, size class, route) cell the sweep measures.
+/// One (family, size class, route) cell the sweep measures; a batched GEMM's also names its member extent.
 struct Cell {
-    KernelFamily family;
-    SizeClass    size_class;
-    CurveRoute   route{CurveRoute::Einsums};
+    KernelFamily  family;
+    SizeClass     size_class;
+    CurveRoute    route{CurveRoute::Einsums};
+    std::uint32_t member_extent{0}; ///< Square extent of a batched-GEMM cell's members; see EfficiencyCurve::member_extent
 };
 
 /// The cells worth measuring.
@@ -95,10 +97,17 @@ struct Cell {
 /// class in the same family and route. The GEMM cells are measured on both
 /// routes, because a planner widens a contraction on the packed loops and a
 /// vendor GEMM node on the vendor, and the two scale differently: on a vendor
-/// that ignores thread counts, by nothing at all. Nineteen cells at five rungs
-/// is what keeps the sweep in seconds.
-std::vector<Cell> sweep_cells() {
-    return {
+/// that ignores thread counts, by nothing at all.
+///
+/// The batched GEMM is swept per member extent as well as per working set, one cell for each of
+/// @p options' extents at each of three size classes. How a batch scales follows the kernel its
+/// members run: on an M-series laptop, long batches on the vendor GEMM read 3.7x at four threads
+/// for 12-cubed members, 2.7x for 20-cubed, 2.0x for 32-cubed and 1.6x from 48-cubed up, while a
+/// plain loop GEMM in the same OpenMP loop read 3.5x to 3.8x at every size. The faster the vendor
+/// runs one member, the less concurrent callers gain. A batch larger than the cache loses a
+/// little more, which is the size-class axis.
+std::vector<Cell> sweep_cells(ThreadSweepOptions const &options) {
+    std::vector<Cell> cells{
         {.family = KernelFamily::GemmSmall, .size_class = SizeClass::L1Resident},
         {.family = KernelFamily::GemmSmall, .size_class = SizeClass::L2Resident},
         {.family = KernelFamily::GemmLarge, .size_class = SizeClass::LLCResident},
@@ -107,9 +116,6 @@ std::vector<Cell> sweep_cells() {
         {.family = KernelFamily::GemmSmall, .size_class = SizeClass::L2Resident, .route = CurveRoute::Vendor},
         {.family = KernelFamily::GemmLarge, .size_class = SizeClass::LLCResident, .route = CurveRoute::Vendor},
         {.family = KernelFamily::GemmLarge, .size_class = SizeClass::Streaming, .route = CurveRoute::Vendor},
-        {.family = KernelFamily::BatchedGemm, .size_class = SizeClass::L2Resident},
-        {.family = KernelFamily::BatchedGemm, .size_class = SizeClass::LLCResident},
-        {.family = KernelFamily::BatchedGemm, .size_class = SizeClass::Streaming},
         {.family = KernelFamily::Permute, .size_class = SizeClass::L1Resident},
         {.family = KernelFamily::Permute, .size_class = SizeClass::L2Resident},
         {.family = KernelFamily::Permute, .size_class = SizeClass::LLCResident},
@@ -122,7 +128,17 @@ std::vector<Cell> sweep_cells() {
         {.family = KernelFamily::GroupedPermute, .size_class = SizeClass::L2Resident},
         {.family = KernelFamily::GroupedPermute, .size_class = SizeClass::LLCResident},
         {.family = KernelFamily::GroupedPermute, .size_class = SizeClass::Streaming},
+        {.family = KernelFamily::GroupedRotate, .size_class = SizeClass::L2Resident},
+        {.family = KernelFamily::GroupedRotate, .size_class = SizeClass::LLCResident},
+        {.family = KernelFamily::GroupedRotate, .size_class = SizeClass::Streaming},
     };
+    for (std::uint32_t const extent : options.batched_gemm_extents) {
+        for (SizeClass const size_class : {SizeClass::L2Resident, SizeClass::LLCResident, SizeClass::Streaming}) {
+            cells.push_back(
+                {.family = KernelFamily::BatchedGemm, .size_class = size_class, .member_extent = std::max<std::uint32_t>(1, extent)});
+        }
+    }
+    return cells;
 }
 
 /// Working set, in bytes, that lands a cell in @p size_class on this machine.
@@ -178,24 +194,30 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
     auto const rungs = width_rungs_for(max_threads);
 
     std::vector<EfficiencyCurve> curves;
-    curves.reserve(sweep_cells().size());
+    std::vector<Cell> const      cells = sweep_cells(options);
+    curves.reserve(cells.size());
 
     // A fixed, well-formed spec, so the parse cannot fail.
     ParsedEinsumSpec const gemm_spec = parse_einsum_spec("ij <- ik ; kj").value();
 
-    for (auto const &cell : sweep_cells()) {
+    for (auto const &cell : cells) {
         size_t const bytes = target_bytes(profile, cell.size_class, options.max_bytes);
 
         // Build the operands once per cell and reuse them across the rungs, so
         // what varies between points is the width and nothing else.
         std::function<void()> run;
 
-        einsums::Tensor<double, 2>              A2, B2, C2;
-        std::vector<einsums::Tensor<double, 1>> group_a, group_b, group_c;
-        std::vector<einsums::Tensor<double, 2>> batch_a, batch_b, batch_c;
-        std::vector<einsums::Tensor<double, 3>> perm_a, perm_c;
-        std::vector<double const *>             batch_ap, batch_bp;
-        std::vector<double *>                   batch_cp;
+        einsums::Tensor<double, 2>                 A2, B2, C2;
+        std::vector<einsums::Tensor<double, 1>>    group_a, group_b, group_c;
+        std::vector<einsums::Tensor<double, 2>>    batch_a, batch_b, batch_c;
+        std::vector<einsums::Tensor<double, 3>>    perm_a, perm_c;
+        std::optional<RuntimeTensor<double>>       rot_src;
+        std::vector<RuntimeTensor<double>>         rot_x, rot_c;
+        std::vector<std::vector<size_t>>           rot_q, rot_u;
+        std::vector<RuntimeTensor<double> *>       rot_cp;
+        std::vector<RuntimeTensor<double> const *> rot_xp;
+        std::vector<double const *>                batch_ap, batch_bp;
+        std::vector<double *>                      batch_cp;
 
         // The packed-loop GEMM cell runs the string einsum exactly as a graph
         // node does: runtime views, and a site pinned to the packed route, as
@@ -235,8 +257,10 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
             break;
         }
         case KernelFamily::BatchedGemm: {
-            size_t const entries = std::max<size_t>(2, options.batch_entries);
-            size_t const n       = gemm_extent(bytes / entries, 8, 256);
+            // As many members of the cell's extent as fill the class, and never fewer than two a
+            // thread, so the widest rung still has members to hand out.
+            size_t const n       = cell.member_extent;
+            size_t const entries = std::max<size_t>(2 * max_threads, bytes / (3 * n * n * sizeof(double)));
             batch_a.reserve(entries);
             batch_b.reserve(entries);
             batch_c.reserve(entries);
@@ -297,6 +321,42 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
             };
             break;
         }
+        case KernelFamily::GroupedRotate: {
+            // What a gather-rotate node runs, through its own eager call: the grouped member loop,
+            // each member streaming its own run of the shared source's auxiliary axis into a
+            // cache-resident tile and rotating it with small GEMMs. A sandwich runs the same loop but
+            // its members are too light to share the curve; it is priced as a batched GEMM. The extents are a DLPNO
+            // domain's order of magnitude; the source is sized so the whole run is the class.
+            constexpr size_t kNu     = 32;
+            constexpr size_t kNt     = 16;
+            size_t const     entries = std::max<size_t>(2, options.batch_entries);
+            size_t const     nq      = std::max<size_t>(4, bytes / (sizeof(double) * kNu * kNu * entries));
+            rot_src.emplace("sweep_rs", std::vector<size_t>{nq * entries, kNu, kNu});
+            fill(rot_src->data(), nq * entries * kNu * kNu);
+            std::vector<size_t> u(kNu);
+            for (size_t a = 0; a < kNu; a++) {
+                u[a] = a;
+            }
+            rot_x.reserve(entries);
+            rot_c.reserve(entries);
+            for (size_t e = 0; e < entries; e++) {
+                rot_x.emplace_back("sweep_rx", std::vector<size_t>{kNu, kNt});
+                rot_c.emplace_back("sweep_rc", std::vector<size_t>{nq, kNt, kNt});
+                fill(rot_x.back().data(), kNu * kNt);
+                std::vector<size_t> q(nq);
+                for (size_t t = 0; t < nq; t++) {
+                    q[t] = e * nq + t;
+                }
+                rot_q.push_back(std::move(q));
+                rot_u.push_back(u);
+            }
+            for (size_t e = 0; e < entries; e++) {
+                rot_cp.push_back(&rot_c[e]);
+                rot_xp.push_back(&rot_x[e]);
+            }
+            run = [&rot_src, &rot_cp, &rot_xp, &rot_q, &rot_u] { grouped_gather_rotate(rot_cp, *rot_src, rot_q, rot_u, rot_xp); };
+            break;
+        }
         case KernelFamily::Elementwise: {
             // A widened element-wise node is a grouped one: an OpenMP loop over
             // its members, each member's kernel serial inside it. That loop is
@@ -327,9 +387,10 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
         }
 
         EfficiencyCurve curve;
-        curve.family     = cell.family;
-        curve.size_class = cell.size_class;
-        curve.route      = cell.route;
+        curve.family        = cell.family;
+        curve.size_class    = cell.size_class;
+        curve.route         = cell.route;
+        curve.member_extent = cell.member_extent;
 
         // A cell labelled with the packed loops that ran something else would
         // record a curve for a kernel it never timed, so it is checked once,
@@ -357,7 +418,7 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
             } else {
                 scope.emplace(static_cast<int>(w));
             }
-            double const seconds = median_seconds(options.warmup, options.repeats, options.min_sample_seconds, run);
+            double seconds = median_seconds(options.warmup, options.repeats, options.min_sample_seconds, run);
             if (w == rungs.front()) {
                 baseline = seconds;
                 // A kernel too fast to time leaves no signal to divide by; the
@@ -365,6 +426,11 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
                 if (baseline <= 0.0) {
                     break;
                 }
+            } else if (cell.family == KernelFamily::BatchedGemm) {
+                // Net of the region fee, so the curve is the kernel's scaling at any call length
+                // and a plan adds the fee back per node. A fee that is most of the sample would
+                // leave nothing to divide by, so it never takes more than three quarters of it.
+                seconds = std::max(seconds - profile.region_fee.at(w) * 1e-6, 0.25 * seconds);
             }
             curve.widths.push_back(static_cast<std::uint32_t>(w));
             curve.speedup.push_back(seconds > 0.0 ? baseline / seconds : 1.0);

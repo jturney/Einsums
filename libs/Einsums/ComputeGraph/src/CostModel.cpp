@@ -811,12 +811,26 @@ json::Object write_profile(DeviceProfile const &p) {
             entry.set("family", to_string(curve.family));
             entry.set("size_class", to_string(curve.size_class));
             entry.set("route", to_string(curve.route));
+            if (curve.member_extent != 0) {
+                entry.set("member_extent", static_cast<std::int64_t>(curve.member_extent));
+            }
             entry.set("width", static_cast<std::int64_t>(curve.widths[i]));
             entry.set("speedup", curve.speedup[i]);
             curves.emplace_back(std::move(entry));
         }
     }
     obj.set("thread_efficiency", json::Value{std::move(curves)});
+
+    json::Array fee;
+    if (p.region_fee.valid()) {
+        for (size_t i = 0; i < p.region_fee.widths.size(); i++) {
+            json::Object entry;
+            entry.set("width", static_cast<std::int64_t>(p.region_fee.widths[i]));
+            entry.set("us", p.region_fee.us[i]);
+            fee.emplace_back(std::move(entry));
+        }
+    }
+    obj.set("region_fee", json::Value{std::move(fee)});
 
     return obj;
 }
@@ -920,10 +934,12 @@ DeviceProfile read_profile(json::Object const &obj) {
     //
     // A curve whose cell has changed since the profile was swept is dropped the same way and for
     // the same reason: it times a kernel the nodes no longer run. Revision 2 replaced the
-    // batched-GEMM cell (see kThreadSweepRevision).
-    std::map<std::tuple<std::uint8_t, std::uint8_t, std::uint8_t>, EfficiencyCurve> curves;
-    std::size_t                                                                     dropped_unrouted = 0;
-    std::size_t                                                                     dropped_revised  = 0;
+    // batched-GEMM cell, and revision 3 keyed its curves on member extent and took the region fee
+    // out of them (see kThreadSweepRevision). A batched curve with no member extent is not one a
+    // revision-3 sweep writes, so it is dropped whatever revision the file claims.
+    std::map<std::tuple<std::uint8_t, std::uint8_t, std::uint8_t, std::uint32_t>, EfficiencyCurve> curves;
+    std::size_t                                                                                    dropped_unrouted = 0;
+    std::size_t                                                                                    dropped_revised  = 0;
     auto const sweep_revision = static_cast<int>(number_or(obj, "thread_sweep_revision", 1.0));
     for_each_object(obj, "thread_efficiency", [&](json::Object const &entry) {
         KernelFamily family{};
@@ -932,7 +948,8 @@ DeviceProfile read_profile(json::Object const &obj) {
             !size_class_from_string(string_or(entry, "size_class"), size_class)) {
             return;
         }
-        if (sweep_revision < 2 && family == KernelFamily::BatchedGemm) {
+        auto const member_extent = static_cast<std::uint32_t>(number_or(entry, "member_extent", 0.0));
+        if (family == KernelFamily::BatchedGemm && (sweep_revision < 3 || member_extent == 0)) {
             dropped_revised++;
             return;
         }
@@ -949,10 +966,12 @@ DeviceProfile read_profile(json::Object const &obj) {
         if (width == 0) {
             return;
         }
-        auto &curve  = curves[{static_cast<std::uint8_t>(family), static_cast<std::uint8_t>(size_class), static_cast<std::uint8_t>(route)}];
+        auto &curve  = curves[{static_cast<std::uint8_t>(family), static_cast<std::uint8_t>(size_class), static_cast<std::uint8_t>(route),
+                               member_extent}];
         curve.family = family;
-        curve.size_class = size_class;
-        curve.route      = route;
+        curve.size_class    = size_class;
+        curve.route         = route;
+        curve.member_extent = member_extent;
         curve.widths.push_back(width);
         curve.speedup.push_back(number_or(entry, "speedup", 0.0));
     });
@@ -967,9 +986,10 @@ DeviceProfile read_profile(json::Object const &obj) {
         std::ranges::sort(order, [&](size_t a, size_t b) { return curve.widths[a] < curve.widths[b]; });
 
         EfficiencyCurve sorted;
-        sorted.family     = curve.family;
-        sorted.size_class = curve.size_class;
-        sorted.route      = curve.route;
+        sorted.family        = curve.family;
+        sorted.size_class    = curve.size_class;
+        sorted.route         = curve.route;
+        sorted.member_extent = curve.member_extent;
         for (size_t const idx : order) {
             sorted.widths.push_back(curve.widths[idx]);
             sorted.speedup.push_back(curve.speedup[idx]);
@@ -977,6 +997,20 @@ DeviceProfile read_profile(json::Object const &obj) {
         if (sorted.valid()) {
             p.thread_efficiency.push_back(std::move(sorted));
         }
+    }
+
+    // The region fee, one row per width, kept ascending whatever order the file lists them in.
+    std::vector<std::pair<std::uint32_t, double>> fee_rows;
+    for_each_object(obj, "region_fee", [&](json::Object const &entry) {
+        auto const width = static_cast<std::uint32_t>(number_or(entry, "width", 0.0));
+        if (width > 1) {
+            fee_rows.emplace_back(width, number_or(entry, "us", 0.0));
+        }
+    });
+    std::ranges::sort(fee_rows);
+    for (auto const &[width, us] : fee_rows) {
+        p.region_fee.widths.push_back(width);
+        p.region_fee.us.push_back(us);
     }
 
     // Said once per process: every pass that prices threads loads the profile,
@@ -992,9 +1026,9 @@ DeviceProfile read_profile(json::Object const &obj) {
     if (dropped_revised > 0) {
         static std::atomic<bool> warned{false};
         if (!warned.exchange(true)) {
-            EINSUMS_LOG_WARN("The hardware profile's batched-GEMM thread curves were measured by a cell that timed a different "
-                             "loop than a grouped batched GEMM runs; they are ignored and the built-in model prices that family. "
-                             "Re-run einsums-tune to measure it.");
+            EINSUMS_LOG_WARN("The hardware profile's batched-GEMM thread curves were measured by an older cell, which timed one "
+                             "member size where a batch's scaling depends on the size of its members; they are ignored and the "
+                             "built-in model prices that family. Re-run einsums-tune to measure it.");
         }
     }
 

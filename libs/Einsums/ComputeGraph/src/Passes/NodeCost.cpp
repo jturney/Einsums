@@ -98,6 +98,16 @@ KernelFamily family_for(Node const &node, std::size_t bytes, DeviceProfile const
                : profile.size_class_for_bytes(bytes) == SizeClass::L1Resident ? KernelFamily::GemmSmall
                                                                               : KernelFamily::GemmLarge;
     case KindClass::BatchedGemm:
+        // A gather-rotate runs the grouped member loop, not gemm_batch_grouped: a member stages a
+        // tile of its operand and runs its small GEMMs out of it. On the DLPNO (T0) gather a member
+        // is ~300 us, and the node ran 4.2x at width 8 where the batched curve for its 88 members,
+        // timed on 20-cubed GEMMs, read 0.8x. A sandwich runs the same loop but its members are
+        // small GEMMs of its own extent, and it stays on the batched curves, read at that extent:
+        // priced from the gather-rotate one, the DLPNO iteration's sandwich went from width 2 to 4
+        // and the iteration ran 3-4% slower.
+        if (node.kind == OpKind::GroupedGatherRotate) {
+            return KernelFamily::GroupedRotate;
+        }
         return KernelFamily::BatchedGemm;
 
     case KindClass::Permute:
@@ -145,6 +155,40 @@ std::size_t member_count(Node const &node) {
         return count(d->total);
     }
     return 0;
+}
+
+/// The extent of one member's GEMM for a node priced from the batched-GEMM curves, or 0 for a
+/// node that is not one or carries no shape.
+///
+/// The cube root of the member's `m*n*k`. A grouped batch mixes shapes, and its time is spent
+/// where its flops are, so the volumes are averaged by flops before the root: a batch of a
+/// thousand tiny members and ten large ones scales the way the large ones do. A sandwich's GEMMs
+/// are square in each member's `na`.
+std::size_t member_extent_of(Node const &node) {
+    double     weighted = 0.0;
+    double     weight   = 0.0;
+    auto const add      = [&](double volume, double count) {
+        if (volume > 0.0 && count > 0.0) {
+            weighted += count * volume * volume;
+            weight += count * volume;
+        }
+    };
+    if (auto const *b = node.op_data.get_if<BatchedGemmDescriptor>(); b != nullptr) {
+        add(static_cast<double>(b->m) * static_cast<double>(b->n) * static_cast<double>(b->k), static_cast<double>(b->batch_count));
+    } else if (auto const *g = node.op_data.get_if<GroupedBatchedGemmDescriptor>(); g != nullptr) {
+        for (auto const &grp : g->groups) {
+            add(static_cast<double>(grp.m) * static_cast<double>(grp.n) * static_cast<double>(grp.k), static_cast<double>(grp.count));
+        }
+    } else if (auto const *sw = node.op_data.get_if<GroupedSandwichDescriptor>(); sw != nullptr) {
+        for (int i = 0; i < sw->total; i++) {
+            auto const na = static_cast<double>(sw->na[static_cast<std::size_t>(i)]);
+            add(na * na * na, static_cast<double>(sw->nq[static_cast<std::size_t>(i)]));
+        }
+    }
+    if (weight <= 0.0) {
+        return 0;
+    }
+    return static_cast<std::size_t>(std::max(1.0, std::round(std::cbrt(weighted / weight))));
 }
 
 /// The bytes a node touches: every distinct buffer it reads or writes, counted
@@ -432,16 +476,18 @@ std::optional<ModelledCost> hooked_cost(Graph const &graph, Node const &node, De
 ModelledCost model_cost(Graph const &graph, Node const &node, DeviceProfile const &profile, ContractionPriceMemo *memo) {
     std::size_t const bytes = working_set_bytes(graph, node);
     if (auto hooked = hooked_cost(graph, node, profile, bytes)) {
-        hooked->members = member_count(node);
+        hooked->members       = member_count(node);
+        hooked->member_extent = member_extent_of(node);
         return std::move(*hooked);
     }
 
     GemmShape const shape = gemm_shape_of(graph, node);
     ModelledCost    cost;
-    cost.bytes   = bytes;
-    cost.family  = family_for(node, bytes, profile, shape.valid() ? shape.flops() : 0.0);
-    cost.route   = curve_route_for(node);
-    cost.members = member_count(node);
+    cost.bytes         = bytes;
+    cost.family        = family_for(node, bytes, profile, shape.valid() ? shape.flops() : 0.0);
+    cost.route         = curve_route_for(node);
+    cost.members       = member_count(node);
+    cost.member_extent = member_extent_of(node);
 
     switch (kind_class(node.kind)) {
     case KindClass::ControlFlow:

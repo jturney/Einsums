@@ -1023,6 +1023,26 @@ int measure(Config cfg) {
         einsums::println("  einsum(2x2x2) call overhead: {:.2f} us", overhead);
     } // end SerialMeasurementScope
 
+    // The OpenMP region cost, swept across team sizes. It lives in the same
+    // file as the cost model but is read by the Hardware module, since things
+    // that never load a cost model consume it too (PackedGemm's parallel gate,
+    // the DLPNO bucket chooser through the Python binding).
+    einsums::println("\n--- OpenMP Region Cost ---\n");
+    json::Object region_cost = einsums::hardware::measure_region_cost_section();
+    for (std::size_t idx = 0; idx < region_cost.size(); ++idx) {
+        einsums::println("  {:>3} threads: {:.0f} ns", region_cost.key_at(idx), region_cost.value_at(idx).as_double());
+    }
+
+    // The batched-GEMM thread curves are recorded net of a region's cost, so the cost model carries
+    // the same numbers a plan later adds back per call.
+    for (std::size_t idx = 0; idx < region_cost.size(); ++idx) {
+        auto const threads = static_cast<std::uint32_t>(std::stoul(region_cost.key_at(idx)));
+        if (threads > 1) {
+            cost_model.cpu.region_fee.widths.push_back(threads);
+            cost_model.cpu.region_fee.us.push_back(region_cost.value_at(idx).as_double() * 1e-3);
+        }
+    }
+
     // Measure how each kernel family scales with thread count, at each size
     // class the cache levels just defined. This is the axis a width planner
     // reads: t(w) = t(1) / s(w).
@@ -1039,8 +1059,10 @@ int measure(Config cfg) {
         auto const t_sweep_1             = std::chrono::steady_clock::now();
 
         for (auto const &curve : cost_model.cpu.thread_efficiency) {
-            std::string line = fmt::format("  {:>12} / {:<9} / {:<7}:", cg::to_string(curve.family), cg::to_string(curve.size_class),
-                                           cg::to_string(curve.route));
+            // A batched-GEMM curve is keyed on its member extent too, which tells its rows apart.
+            std::string const key = curve.member_extent != 0 ? fmt::format("{}^3 {}", curve.member_extent, cg::to_string(curve.size_class))
+                                                             : std::string(cg::to_string(curve.size_class));
+            std::string line      = fmt::format("  {:>12} / {:<12} / {:<7}:", cg::to_string(curve.family), key, cg::to_string(curve.route));
             for (size_t idx = 0; idx < curve.widths.size(); idx++) {
                 line += fmt::format("  w{}={:.2f}x", curve.widths[idx], curve.speedup[idx]);
             }
@@ -1056,16 +1078,6 @@ int measure(Config cfg) {
     // Update cost_model name
     cost_model.cpu.name   = fmt::format("{} (calibrated)", cpu_brand);
     cost_model.cpu.source = "calibrated";
-
-    // The OpenMP region cost, swept across team sizes. It lives in the same
-    // file as the cost model but is read by the Hardware module, since things
-    // that never load a cost model consume it too (PackedGemm's parallel gate,
-    // the DLPNO bucket chooser through the Python binding).
-    einsums::println("\n--- OpenMP Region Cost ---\n");
-    json::Object region_cost = einsums::hardware::measure_region_cost_section();
-    for (std::size_t idx = 0; idx < region_cost.size(); ++idx) {
-        einsums::println("  {:>3} threads: {:.0f} ns", region_cost.key_at(idx), region_cost.value_at(idx).as_double());
-    }
 
     // One file: the header saying what it describes, then each module's section.
     json::Object measured;

@@ -45,16 +45,17 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * vendor's - so the two GEMM families carry a curve per @ref CurveRoute.
  */
 enum class KernelFamily : std::uint8_t {
-    GemmSmall = 0, ///< A GEMM below the small-GEMM flop line
-    GemmLarge,     ///< One GEMM, threaded inside it by the packed loops or the vendor
-    BatchedGemm,   ///< Many independent GEMMs, threaded across entries
-    Permute,       ///< Tensor transpose (HPTT)
-    Elementwise,   ///< Element-wise kernels, threaded across a group's members
-    GroupedPermute ///< Many independent permutes, threaded across a group's members
+    GemmSmall = 0,  ///< A GEMM below the small-GEMM flop line
+    GemmLarge,      ///< One GEMM, threaded inside it by the packed loops or the vendor
+    BatchedGemm,    ///< Many independent GEMMs, threaded across entries
+    Permute,        ///< Tensor transpose (HPTT)
+    Elementwise,    ///< Element-wise kernels, threaded across a group's members
+    GroupedPermute, ///< Many independent permutes, threaded across a group's members
+    GroupedRotate   ///< Gather-and-rotate members, each staging a tile and running its GEMMs
 };
 
 /// Number of entries in @ref KernelFamily.
-inline constexpr std::size_t kKernelFamilyCount = 6;
+inline constexpr std::size_t kKernelFamilyCount = 7;
 
 /**
  * @brief Working-set size classes, cut at the measured cache levels.
@@ -81,6 +82,7 @@ inline constexpr EnumNames kKernelFamilyNames{std::array<std::pair<KernelFamily,
                                                   {KernelFamily::Permute, "permute"},
                                                   {KernelFamily::Elementwise, "elementwise"},
                                                   {KernelFamily::GroupedPermute, "grouped_permute"},
+                                                  {KernelFamily::GroupedRotate, "grouped_rotate"},
                                               }},
                                               "gemm_large"};
 
@@ -183,11 +185,17 @@ inline constexpr EnumNames kCurveRouteNames{std::array<std::pair<CurveRoute, std
  * reader's core count would be read off at the wrong widths.
  */
 struct EfficiencyCurve {
-    KernelFamily               family{KernelFamily::GemmLarge};
-    SizeClass                  size_class{SizeClass::Streaming};
-    CurveRoute                 route{CurveRoute::Einsums}; ///< Which kernel was timed; see @ref CurveRoute
-    std::vector<std::uint32_t> widths;                     ///< Ascending, first entry 1
-    std::vector<double>        speedup;                    ///< Parallel to @ref widths
+    KernelFamily family{KernelFamily::GemmLarge};
+    SizeClass    size_class{SizeClass::Streaming};
+    CurveRoute   route{CurveRoute::Einsums}; ///< Which kernel was timed; see @ref CurveRoute
+    /// Extent of one member, for a batched-GEMM curve: the cube root of the member's `m*n*k`; 0
+    /// for every other curve. How a batch scales is set by the kernel its members run and by how
+    /// fast that kernel already is alone, both of which follow the member's size, so the batched
+    /// curves are keyed on it as well as on the batch's working set. Such a curve is net of the
+    /// region's fork; see @ref RegionFee.
+    std::uint32_t              member_extent{0};
+    std::vector<std::uint32_t> widths;  ///< Ascending, first entry 1
+    std::vector<double>        speedup; ///< Parallel to @ref widths
 
     /// A curve is usable when it has at least one rung and the two vectors agree.
     [[nodiscard]] bool valid() const { return !widths.empty() && widths.size() == speedup.size(); }
@@ -227,6 +235,48 @@ struct EfficiencyCurve {
             return std::max(kFloor, speedup[idx - 1] + t * (speedup[idx] - speedup[idx - 1]));
         }
         return std::max(kFloor, speedup.back());
+    }
+};
+
+/**
+ * @brief What opening one OpenMP region costs at each width, in microseconds over width 1.
+ *
+ * A region's fork and join are paid once per call whatever the call does, so they are a time and
+ * not a fraction of the work: 10 us is most of a 20 us batch and nothing of a 5 ms one. A curve
+ * that folds them in is right only at the call length it was timed at. The batched-GEMM curves
+ * are therefore recorded net of this fee, `t(1) / (t(w) - fee(w))`, and a plan pays the fee back
+ * per node: `t(w) = fee(w) + t(1) / s(w)`.
+ *
+ * The numbers are the Hardware module's region-cost sweep, the one measurement of a region this
+ * machine has; `einsums-tune` copies it here so a cost model prices from what it carries.
+ */
+struct RegionFee {
+    std::vector<std::uint32_t> widths; ///< Ascending widths above 1
+    std::vector<double>        us;     ///< Parallel to @ref widths
+
+    /// Usable when it has at least one rung and the two vectors agree.
+    [[nodiscard]] bool valid() const { return !widths.empty() && widths.size() == us.size(); }
+
+    /// The fee at @p width, interpolated linearly in width from zero at width 1; widths past the
+    /// last rung read the last rung. Zero when nothing was measured. Never negative.
+    [[nodiscard]] double at(unsigned width) const {
+        if (!valid() || width <= 1) {
+            return 0.0;
+        }
+        auto const w      = static_cast<double>(width);
+        double     lo_w   = 1.0;
+        double     lo_fee = 0.0;
+        for (std::size_t idx = 0; idx < widths.size(); idx++) {
+            auto const   hi_w   = static_cast<double>(widths[idx]);
+            double const hi_fee = std::max(0.0, us[idx]);
+            if (w <= hi_w) {
+                double const span = hi_w - lo_w;
+                return span > 0.0 ? lo_fee + (w - lo_w) / span * (hi_fee - lo_fee) : hi_fee;
+            }
+            lo_w   = hi_w;
+            lo_fee = hi_fee;
+        }
+        return lo_fee;
     }
 };
 
@@ -405,6 +455,10 @@ struct DeviceProfile {
     /// state for a database profile; see @ref default_parallel_speedup for
     /// what that costs.
     std::vector<EfficiencyCurve> thread_efficiency;
+
+    /// Measured cost of opening a region at each width; see @ref RegionFee. Empty when the
+    /// machine was not swept, and then no curve is net of it and no plan adds it.
+    RegionFee region_fee;
 
     /// GEMM throughput of the routed engine; see the overload taking a @ref GemmEngine.
     [[nodiscard]] double estimate_gemm_gflops(size_t M, size_t N, size_t K) const {
@@ -647,6 +701,9 @@ struct DeviceProfile {
             // caller sweeps.
             base = 0.862;
             break;
+        case KernelFamily::GroupedRotate: // members of small GEMMs, the batched shape
+            base = 0.862;
+            break;
         case KernelFamily::Permute:
             base = 0.80;
             break;
@@ -697,7 +754,8 @@ struct DeviceProfile {
         EfficiencyCurve const *best      = nullptr;
         int                    best_dist = 0;
         for (auto const &curve : thread_efficiency) {
-            if (curve.family != family || curve.route != route || !curve.valid()) {
+            // A batched curve keyed on member extent is found through batched_extent_speedup.
+            if (curve.family != family || curve.route != route || curve.member_extent != 0 || !curve.valid()) {
                 continue;
             }
             int const dist = std::abs(static_cast<int>(curve.size_class) - static_cast<int>(size_class));
@@ -709,21 +767,121 @@ struct DeviceProfile {
         return best;
     }
 
+    /**
+     * @brief `s(w)` of a batched GEMM whose members have extent @p member_extent, from the curves
+     *        keyed on member extent, or nothing when this profile has none on @p route.
+     *
+     * The curves of the nearest swept size class are used, and between them the speedup is
+     * interpolated linearly in log(extent), each curve read at @p width; an extent outside the
+     * swept range snaps to the nearest end. An extent of 0 (unknown) reads the largest swept
+     * extent, the least optimistic curve: the faster a member's kernel runs alone, the less a
+     * batch of them gains from threads.
+     */
+    [[nodiscard]] std::optional<double> batched_extent_speedup(std::size_t member_extent, SizeClass size_class, unsigned width,
+                                                               CurveRoute route = CurveRoute::Einsums) const {
+        auto const keyed = [route](EfficiencyCurve const &curve) {
+            return curve.family == KernelFamily::BatchedGemm && curve.route == route && curve.member_extent != 0 && curve.valid();
+        };
+        int best_dist = -1;
+        for (auto const &curve : thread_efficiency) {
+            if (!keyed(curve)) {
+                continue;
+            }
+            int const dist = std::abs(static_cast<int>(curve.size_class) - static_cast<int>(size_class));
+            if (best_dist < 0 || dist < best_dist) {
+                best_dist = dist;
+            }
+        }
+        if (best_dist < 0) {
+            return std::nullopt;
+        }
+        // Two classes can be equally near (L2 and streaming around an unswept LLC); the first one
+        // met at that distance is the class every later curve must match.
+        EfficiencyCurve const   *lo      = nullptr;
+        EfficiencyCurve const   *hi      = nullptr;
+        EfficiencyCurve const   *largest = nullptr;
+        std::optional<SizeClass> chosen;
+        for (auto const &curve : thread_efficiency) {
+            if (!keyed(curve) || std::abs(static_cast<int>(curve.size_class) - static_cast<int>(size_class)) != best_dist) {
+                continue;
+            }
+            if (!chosen) {
+                chosen = curve.size_class;
+            }
+            if (curve.size_class != *chosen) {
+                continue;
+            }
+            if (largest == nullptr || curve.member_extent > largest->member_extent) {
+                largest = &curve;
+            }
+            if (curve.member_extent <= member_extent && (lo == nullptr || curve.member_extent > lo->member_extent)) {
+                lo = &curve;
+            }
+            if (curve.member_extent >= member_extent && (hi == nullptr || curve.member_extent < hi->member_extent)) {
+                hi = &curve;
+            }
+        }
+        if (member_extent == 0) {
+            return largest->speedup_at(width);
+        }
+        if (lo == nullptr || hi == nullptr || lo->member_extent == hi->member_extent) {
+            return (lo != nullptr ? lo : hi)->speedup_at(width);
+        }
+        double const t    = (std::log(static_cast<double>(member_extent)) - std::log(static_cast<double>(lo->member_extent))) /
+                            (std::log(static_cast<double>(hi->member_extent)) - std::log(static_cast<double>(lo->member_extent)));
+        double const s_lo = lo->speedup_at(width);
+        return s_lo + t * (hi->speedup_at(width) - s_lo);
+    }
+
+    /**
+     * @brief The region fee a node of @p family pays at @p width on top of `t(1) / s(w)`, in
+     *        microseconds.
+     *
+     * Nonzero only where the curve that prices the node is net of the fee: a batched GEMM on a
+     * profile that carries extent-keyed batched curves on @p route. Every other curve was timed
+     * with its fork inside it, and adding the fee there would charge it twice.
+     */
+    [[nodiscard]] double region_fee_us(KernelFamily family, unsigned width, CurveRoute route = CurveRoute::Einsums) const {
+        if (family != KernelFamily::BatchedGemm || !region_fee.valid()) {
+            return 0.0;
+        }
+        for (auto const &curve : thread_efficiency) {
+            if (curve.family == KernelFamily::BatchedGemm && curve.route == route && curve.member_extent != 0 && curve.valid()) {
+                return region_fee.at(clamp_width(width));
+            }
+        }
+        return 0.0;
+    }
+
     /// `s(w)`: how much faster this cell runs at @p width than at width 1, on
     /// @p route's kernel. Measured when the cell was swept on that route, the
     /// default Amdahl curve otherwise. Always strictly positive, so callers may
-    /// divide by it.
-    [[nodiscard]] double parallel_speedup(KernelFamily family, SizeClass size_class, unsigned width,
-                                          CurveRoute route = CurveRoute::Einsums) const {
+    /// divide by it. @p member_extent is the extent of a batched GEMM's members,
+    /// which its curves are keyed on; other families ignore it. A batched GEMM's
+    /// measured speedup is net of the region's fork; see @ref region_fee_us.
+    [[nodiscard]] double parallel_speedup(KernelFamily family, SizeClass size_class, unsigned width, CurveRoute route = CurveRoute::Einsums,
+                                          std::size_t member_extent = 0) const {
         unsigned const w = clamp_width(width);
+        if (family == KernelFamily::BatchedGemm) {
+            if (auto const s = batched_extent_speedup(member_extent, size_class, w, route)) {
+                return std::max(0.01, *s);
+            }
+        }
         if (auto const *curve = find_curve(family, size_class, route); curve != nullptr) {
             return curve->speedup_at(w);
+        }
+        // A profile swept before gather-rotate nodes had a cell prices them from the
+        // grouped-permute curve: the same member loop, each member staging its own tile.
+        if (family == KernelFamily::GroupedRotate) {
+            if (auto const *curve = find_curve(KernelFamily::GroupedPermute, size_class, route); curve != nullptr) {
+                return curve->speedup_at(w);
+            }
         }
         // A profile swept before grouped permutes had a cell of their own prices them from the
         // element-wise curve: the same OpenMP loop over members, each member memory-bound. The
         // single-permute curve it was priced from before is HPTT dividing ONE tensor, which dips
         // where a loop over independent members keeps rising.
-        if (family == KernelFamily::GroupedPermute) {
+        if (family == KernelFamily::GroupedPermute || family == KernelFamily::GroupedRotate) {
             if (auto const *curve = find_curve(KernelFamily::Elementwise, size_class, route); curve != nullptr) {
                 return curve->speedup_at(w);
             }
@@ -732,8 +890,9 @@ struct DeviceProfile {
     }
 
     /// Same, with the size class derived from a working set of @p bytes.
-    [[nodiscard]] double parallel_speedup(KernelFamily family, size_t bytes, unsigned width, CurveRoute route = CurveRoute::Einsums) const {
-        return parallel_speedup(family, size_class_for_bytes(bytes), width, route);
+    [[nodiscard]] double parallel_speedup(KernelFamily family, size_t bytes, unsigned width, CurveRoute route = CurveRoute::Einsums,
+                                          std::size_t member_extent = 0) const {
+        return parallel_speedup(family, size_class_for_bytes(bytes), width, route, member_extent);
     }
 
     /// `e(w) = s(w)/w`: the fraction of the added threads that turns into work.
@@ -1023,8 +1182,11 @@ class EINSUMS_EXPORT DeviceProfileDB {
  * - 1: the first sweep (also a profile that records no revision).
  * - 2: the batched-GEMM cell runs the grouped batched GEMM a node runs, a dynamic loop, instead of
  *   a static loop over GEMM calls written for the cell; grouped permutes get a cell.
+ * - 3: the batched-GEMM curves are keyed on member extent as well as working set and recorded
+ *   net of the region fee; see @ref EfficiencyCurve::member_extent and @ref RegionFee.
+ *   Gather-rotate nodes get a cell of their own.
  */
-inline constexpr int kThreadSweepRevision = 2;
+inline constexpr int kThreadSweepRevision = 3;
 
 /// Knobs for @ref measure_thread_efficiency. The defaults are what
 /// `einsums-tune` runs; the caps are what keep it to tens of seconds.
@@ -1038,7 +1200,11 @@ struct ThreadSweepOptions {
     unsigned max_threads{0};                ///< Widest rung; 0 asks the hardware
     size_t   max_bytes{64UL * 1024 * 1024}; ///< Cap on any cell's working set
     size_t   max_gemm_extent{1024};         ///< Cap on a square GEMM's extent
-    size_t   batch_entries{64};             ///< Entries in the batched-GEMM and element-wise cells
+    size_t   batch_entries{64};             ///< Members in the element-wise and grouped-permute cells
+    /// Square member extents of the batched-GEMM cells, one curve per extent and size class.
+    /// Ascending. On an M-series laptop the vendor GEMM's speedup at four threads fell from 3.7x
+    /// at extent 12 to 1.6x at 48 and stayed there, so the default covers that slope and stops.
+    std::vector<std::uint32_t> batched_gemm_extents{12, 20, 32, 48};
 };
 
 /**
@@ -1065,6 +1231,12 @@ struct ThreadSweepOptions {
  * not take the packed route is dropped rather than recorded under a kernel it
  * did not time. The element-wise cells time an OpenMP loop over a group's
  * members, which is what a widened element-wise node is.
+ *
+ * The batched-GEMM cells are swept per member extent and size class, through
+ * the grouped batched GEMM a node calls. When @p profile carries a
+ * @ref RegionFee their points are recorded net of it,
+ * `t(1) / (t(w) - fee(w))`, so a short cell and a long one of the same member
+ * read the same curve; without one they are recorded as timed.
  *
  * Returns an empty vector when the machine has one thread, since every curve
  * would be the single point `s(1) = 1`.

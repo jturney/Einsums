@@ -409,7 +409,11 @@ TEST_CASE("Thread axis - a pre-route profile keeps only curves that timed the ri
         {.family = cg::KernelFamily::GemmSmall, .size_class = cg::SizeClass::L1Resident, .widths = {1, 2}, .speedup = {1.0, 1.0}},
         {.family = cg::KernelFamily::GemmLarge, .size_class = cg::SizeClass::Streaming, .widths = {1, 2}, .speedup = {1.0, 1.0}},
         {.family = cg::KernelFamily::Elementwise, .size_class = cg::SizeClass::Streaming, .widths = {1, 2}, .speedup = {1.0, 1.0}},
-        {.family = cg::KernelFamily::BatchedGemm, .size_class = cg::SizeClass::L2Resident, .widths = {1, 2}, .speedup = {1.0, 1.5}},
+        {.family        = cg::KernelFamily::BatchedGemm,
+         .size_class    = cg::SizeClass::L2Resident,
+         .member_extent = 20,
+         .widths        = {1, 2},
+         .speedup       = {1.0, 1.5}},
         {.family = cg::KernelFamily::Permute, .size_class = cg::SizeClass::Streaming, .widths = {1, 2}, .speedup = {1.0, 1.7}},
     };
 
@@ -439,11 +443,11 @@ TEST_CASE("Thread axis - a pre-route profile keeps only curves that timed the ri
     for (auto const &curve : loaded.thread_efficiency) {
         CHECK(curve.route == cg::CurveRoute::Einsums);
     }
-    auto const *batched = loaded.find_curve(cg::KernelFamily::BatchedGemm, cg::SizeClass::L2Resident);
+    auto const  batched = loaded.batched_extent_speedup(20, cg::SizeClass::L2Resident, 2);
     auto const *permute = loaded.find_curve(cg::KernelFamily::Permute, cg::SizeClass::Streaming);
-    REQUIRE(batched != nullptr);
+    REQUIRE(batched.has_value());
     REQUIRE(permute != nullptr);
-    CHECK(batched->speedup[1] == Catch::Approx(1.5));
+    CHECK(*batched == Catch::Approx(1.5));
     CHECK(permute->speedup[1] == Catch::Approx(1.7));
 
     for (auto const family : {cg::KernelFamily::GemmSmall, cg::KernelFamily::GemmLarge, cg::KernelFamily::Elementwise}) {
@@ -480,39 +484,83 @@ TEST_CASE("Thread axis - a profile with no curves round-trips cleanly", "[Comput
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // A profile swept before revision 2 timed the batched-GEMM cell as a static loop over GEMM calls,
-// not the dynamic loop a grouped batched GEMM node runs. Loading such a profile drops exactly the
-// batched-GEMM curves and keeps every other one, and a profile written now keeps them all.
+// not the dynamic loop a grouped batched GEMM node runs, and one swept before revision 3 timed one
+// member size and keyed it on working set alone. Loading either drops exactly the batched-GEMM
+// curves and keeps every other one, and a profile written now keeps them all.
 TEST_CASE("Thread axis - a profile swept before the batched cell changed drops its batched curves", "[ComputeGraph][CostModel]") {
     cg::CostModel original;
     original.cpu.name              = "Revision 1 CPU";
     original.cpu.max_threads       = 4;
     original.cpu.thread_efficiency = {
-        {.family = cg::KernelFamily::BatchedGemm, .size_class = cg::SizeClass::L2Resident, .widths = {1, 2}, .speedup = {1.0, 0.86}},
+        {.family        = cg::KernelFamily::BatchedGemm,
+         .size_class    = cg::SizeClass::L2Resident,
+         .member_extent = 48,
+         .widths        = {1, 2},
+         .speedup       = {1.0, 0.86}},
+        {.family        = cg::KernelFamily::BatchedGemm,
+         .size_class    = cg::SizeClass::L2Resident,
+         .member_extent = 12,
+         .widths        = {1, 2},
+         .speedup       = {1.0, 1.6}},
         {.family = cg::KernelFamily::Permute, .size_class = cg::SizeClass::Streaming, .widths = {1, 2}, .speedup = {1.0, 1.7}},
         {.family = cg::KernelFamily::GroupedPermute, .size_class = cg::SizeClass::L2Resident, .widths = {1, 2}, .speedup = {1.0, 1.9}},
     };
 
     std::string const path = "test_thread_curves_revision.json";
     REQUIRE(original.save_json(path).has_value());
+    std::string text;
+    {
+        std::ifstream      in(path);
+        std::ostringstream buffer;
+        buffer << in.rdbuf();
+        text = buffer.str();
+    }
 
     SECTION("written now, every curve loads") {
         auto loaded = cg::CostModel::load_json(path);
         REQUIRE(loaded.has_value());
         auto const &cpu = loaded.value().cpu;
-        CHECK(cpu.thread_efficiency.size() == 3);
+        CHECK(cpu.thread_efficiency.size() == 4);
         auto const *grouped = cpu.find_curve(cg::KernelFamily::GroupedPermute, cg::SizeClass::L2Resident);
         REQUIRE(grouped != nullptr); // and the new family's name survives the round trip
         CHECK(grouped->speedup[1] == Catch::Approx(1.9));
+        // The two member extents stay two curves, each read back at its own extent.
+        CHECK(cpu.batched_extent_speedup(48, cg::SizeClass::L2Resident, 2).value_or(0.0) == Catch::Approx(0.86));
+        CHECK(cpu.batched_extent_speedup(12, cg::SizeClass::L2Resident, 2).value_or(0.0) == Catch::Approx(1.6));
+    }
+
+    SECTION("a batched-GEMM curve with no member extent is dropped at any revision") {
+        std::string const stripped = std::regex_replace(text, std::regex(R"re("member_extent"\s*:\s*[0-9]+\s*,?)re"), "");
+        REQUIRE(stripped != text);
+        {
+            std::ofstream out(path, std::ios::trunc);
+            out << stripped;
+        }
+        auto loaded = cg::CostModel::load_json(path);
+        REQUIRE(loaded.has_value());
+        auto const &cpu = loaded.value().cpu;
+        CHECK_FALSE(cpu.batched_extent_speedup(12, cg::SizeClass::L2Resident, 2).has_value());
+        CHECK(cpu.find_curve(cg::KernelFamily::BatchedGemm, cg::SizeClass::L2Resident) == nullptr);
+        CHECK(cpu.find_curve(cg::KernelFamily::Permute, cg::SizeClass::Streaming) != nullptr);
+    }
+
+    SECTION("swept at revision 2, the batched-GEMM curves are dropped") {
+        std::string const revised =
+            std::regex_replace(text, std::regex(R"re("thread_sweep_revision"\s*:\s*[0-9]+)re"), R"re("thread_sweep_revision": 2)re");
+        REQUIRE(revised != text);
+        {
+            std::ofstream out(path, std::ios::trunc);
+            out << revised;
+        }
+        auto loaded = cg::CostModel::load_json(path);
+        REQUIRE(loaded.has_value());
+        auto const &cpu = loaded.value().cpu;
+        CHECK_FALSE(cpu.batched_extent_speedup(12, cg::SizeClass::L2Resident, 2).has_value());
+        CHECK(cpu.find_curve(cg::KernelFamily::Permute, cg::SizeClass::Streaming) != nullptr);
+        CHECK(cpu.find_curve(cg::KernelFamily::GroupedPermute, cg::SizeClass::L2Resident) != nullptr);
     }
 
     SECTION("with no revision recorded, the batched-GEMM curve is dropped") {
-        std::string text;
-        {
-            std::ifstream      in(path);
-            std::ostringstream buffer;
-            buffer << in.rdbuf();
-            text = buffer.str();
-        }
         std::string const stripped = std::regex_replace(text, std::regex(R"re("thread_sweep_revision"\s*:\s*[0-9]+\s*,?)re"), "");
         REQUIRE(stripped != text);
         {
@@ -522,7 +570,7 @@ TEST_CASE("Thread axis - a profile swept before the batched cell changed drops i
         auto loaded = cg::CostModel::load_json(path);
         REQUIRE(loaded.has_value());
         auto const &cpu = loaded.value().cpu;
-        CHECK(cpu.find_curve(cg::KernelFamily::BatchedGemm, cg::SizeClass::L2Resident) == nullptr);
+        CHECK_FALSE(cpu.batched_extent_speedup(12, cg::SizeClass::L2Resident, 2).has_value());
         CHECK(cpu.find_curve(cg::KernelFamily::Permute, cg::SizeClass::Streaming) != nullptr);
         CHECK(cpu.find_curve(cg::KernelFamily::GroupedPermute, cg::SizeClass::L2Resident) != nullptr);
     }
@@ -559,20 +607,147 @@ TEST_CASE("Thread axis - a grouped permute reads its own curve, else the element
     }
 }
 
+// Gather-rotate nodes run the grouped member loop, each member staging a tile and running its
+// GEMMs out of it, so a profile swept before they had a cell prices them from the
+// grouped-permute curve, the same loop, and failing that from the element-wise one.
+TEST_CASE("Thread axis - a gather-rotate reads its own curve, else the grouped-permute one", "[ComputeGraph][CostModel]") {
+    auto p           = pinned_profile();
+    p.max_threads    = 8;
+    auto const curve = [](cg::KernelFamily family, std::vector<double> speedup) {
+        return cg::EfficiencyCurve{
+            .family = family, .size_class = cg::SizeClass::Streaming, .widths = {1, 2, 4, 8}, .speedup = std::move(speedup)};
+    };
+
+    SECTION("its own curve") {
+        p.thread_efficiency = {curve(cg::KernelFamily::GroupedRotate, {1.0, 1.9, 3.4, 4.2}),
+                               curve(cg::KernelFamily::GroupedPermute, {1.0, 1.7, 2.1, 2.1})};
+        CHECK(p.parallel_speedup(cg::KernelFamily::GroupedRotate, kStreamingBytes, 8) == Catch::Approx(4.2));
+    }
+    SECTION("the grouped-permute curve when it has none") {
+        p.thread_efficiency = {curve(cg::KernelFamily::GroupedPermute, {1.0, 1.7, 2.1, 2.1}),
+                               curve(cg::KernelFamily::Elementwise, {1.0, 1.5, 1.6, 1.7})};
+        CHECK(p.parallel_speedup(cg::KernelFamily::GroupedRotate, kStreamingBytes, 8) == Catch::Approx(2.1));
+    }
+    SECTION("the element-wise curve when there is neither") {
+        p.thread_efficiency = {curve(cg::KernelFamily::Elementwise, {1.0, 1.5, 1.6, 1.7})};
+        CHECK(p.parallel_speedup(cg::KernelFamily::GroupedRotate, kStreamingBytes, 8) == Catch::Approx(1.7));
+    }
+}
+
+// How a batched GEMM scales follows the size of its members: on an M-series laptop long batches
+// on the vendor GEMM read 3.7x at four threads for 12-cubed members and 1.6x for 48-cubed ones.
+// Its curves are keyed on member extent within a size class and read by the node's own extent,
+// interpolated in log(extent) and snapped at the ends; no size-class lookup may return one.
+TEST_CASE("Thread axis - a batched GEMM reads the curve of its own member extent", "[ComputeGraph][CostModel]") {
+    auto p           = pinned_profile();
+    p.max_threads    = 4;
+    auto const curve = [](cg::SizeClass size_class, std::uint32_t extent, double at_four) {
+        return cg::EfficiencyCurve{.family        = cg::KernelFamily::BatchedGemm,
+                                   .size_class    = size_class,
+                                   .member_extent = extent,
+                                   .widths        = {1, 4},
+                                   .speedup       = {1.0, at_four}};
+    };
+    p.thread_efficiency = {curve(cg::SizeClass::L2Resident, 12, 3.0), curve(cg::SizeClass::L2Resident, 48, 1.0),
+                           curve(cg::SizeClass::Streaming, 12, 2.0), curve(cg::SizeClass::Streaming, 48, 1.5)};
+    auto const speedup  = [&p](cg::SizeClass size_class, std::size_t extent) {
+        return p.parallel_speedup(cg::KernelFamily::BatchedGemm, size_class, 4, cg::CurveRoute::Einsums, extent);
+    };
+
+    CHECK(speedup(cg::SizeClass::L2Resident, 12) == Catch::Approx(3.0));
+    CHECK(speedup(cg::SizeClass::L2Resident, 48) == Catch::Approx(1.0));
+    // 24 is halfway between 12 and 48 in log(extent).
+    CHECK(speedup(cg::SizeClass::L2Resident, 24) == Catch::Approx(2.0));
+    // Outside the swept extents the nearest end holds; an unknown extent reads the largest.
+    CHECK(speedup(cg::SizeClass::L2Resident, 4) == Catch::Approx(3.0));
+    CHECK(speedup(cg::SizeClass::L2Resident, 500) == Catch::Approx(1.0));
+    CHECK(speedup(cg::SizeClass::L2Resident, 0) == Catch::Approx(1.0));
+
+    // The working set picks the class: its own when swept, the nearest swept one otherwise.
+    CHECK(speedup(cg::SizeClass::Streaming, 12) == Catch::Approx(2.0));
+    CHECK(speedup(cg::SizeClass::Streaming, 48) == Catch::Approx(1.5));
+    CHECK(speedup(cg::SizeClass::L1Resident, 12) == Catch::Approx(3.0));
+
+    // The size-class lookup does not see them.
+    CHECK(p.find_curve(cg::KernelFamily::BatchedGemm, cg::SizeClass::L2Resident) == nullptr);
+}
+
+// A region's fork is a time, not a share of the work, so the batched curves are net of it and a
+// plan adds it back per call. It is read linearly in width from zero at width 1, charged only to
+// the family whose curves exclude it, and survives a save and load.
+TEST_CASE("Thread axis - the region fee is charged to batched GEMMs alone", "[ComputeGraph][CostModel]") {
+    auto p        = pinned_profile();
+    p.max_threads = 8;
+    p.region_fee  = cg::RegionFee{.widths = {2, 4, 8}, .us = {4.0, 10.0, 24.0}};
+
+    CHECK(p.region_fee.at(1) == 0.0);
+    CHECK(p.region_fee.at(2) == Catch::Approx(4.0));
+    CHECK(p.region_fee.at(3) == Catch::Approx(7.0));
+    CHECK(p.region_fee.at(8) == Catch::Approx(24.0));
+    CHECK(p.region_fee.at(64) == Catch::Approx(24.0));
+    CHECK(cg::RegionFee{}.at(8) == 0.0);
+
+    SECTION("no extent-keyed batched curve, no fee: the model's curve has its fork inside it") {
+        CHECK(p.region_fee_us(cg::KernelFamily::BatchedGemm, 4) == 0.0);
+    }
+    SECTION("with one, the batched family pays it and no other does") {
+        p.thread_efficiency = {
+            {.family        = cg::KernelFamily::BatchedGemm,
+             .size_class    = cg::SizeClass::L2Resident,
+             .member_extent = 20,
+             .widths        = {1, 4},
+             .speedup       = {1.0, 2.5}},
+            {.family = cg::KernelFamily::GroupedRotate, .size_class = cg::SizeClass::L2Resident, .widths = {1, 4}, .speedup = {1.0, 2.8}},
+        };
+        CHECK(p.region_fee_us(cg::KernelFamily::BatchedGemm, 4) == Catch::Approx(10.0));
+        CHECK(p.region_fee_us(cg::KernelFamily::BatchedGemm, 1) == 0.0);
+        CHECK(p.region_fee_us(cg::KernelFamily::GroupedRotate, 4) == 0.0);
+        CHECK(p.region_fee_us(cg::KernelFamily::BatchedGemm, 4, cg::CurveRoute::Vendor) == 0.0);
+    }
+    SECTION("it round-trips through a profile file") {
+        cg::CostModel original;
+        original.cpu           = p;
+        std::string const path = "test_region_fee_roundtrip.json";
+        REQUIRE(original.save_json(path).has_value());
+        auto loaded = cg::CostModel::load_json(path);
+        REQUIRE(loaded.has_value());
+        auto const &fee = loaded.value().cpu.region_fee;
+        REQUIRE(fee.valid());
+        CHECK(fee.widths == std::vector<std::uint32_t>{2, 4, 8});
+        CHECK(fee.at(4) == Catch::Approx(10.0));
+        std::remove(path.c_str());
+    }
+}
+
 TEST_CASE("Thread axis - sweep populates curves", "[ComputeGraph][CostModel]") {
     // A drastically shortened sweep: two rungs, tiny working sets, one timed
     // run. This asserts the mechanics, never the numbers, which belong to
     // whatever else the machine is doing.
     cg::ThreadSweepOptions options;
-    options.warmup          = 0;
-    options.repeats         = 1;
-    options.max_threads     = 2;
-    options.max_bytes       = 64UL * 1024;
-    options.max_gemm_extent = 96;
-    options.batch_entries   = 4;
+    options.warmup               = 0;
+    options.repeats              = 1;
+    options.max_threads          = 2;
+    options.max_bytes            = 64UL * 1024;
+    options.max_gemm_extent      = 96;
+    options.batch_entries        = 4;
+    options.batched_gemm_extents = {4, 8};
 
     auto const curves = cg::measure_thread_efficiency(pinned_profile(), options);
     REQUIRE_FALSE(curves.empty());
+
+    // Three batched-GEMM curves per member extent asked for, one a size class, each carrying its
+    // extent; no other family's curve is keyed on one.
+    std::vector<std::uint32_t> batched_extents;
+    for (auto const &curve : curves) {
+        if (curve.family == cg::KernelFamily::BatchedGemm) {
+            batched_extents.push_back(curve.member_extent);
+            CHECK(curve.size_class != cg::SizeClass::L1Resident);
+        } else {
+            CHECK(curve.member_extent == 0);
+        }
+    }
+    std::ranges::sort(batched_extents);
+    CHECK(batched_extents == std::vector<std::uint32_t>{4, 4, 4, 8, 8, 8});
 
     for (auto const &curve : curves) {
         CHECK(curve.valid());
@@ -595,8 +770,8 @@ TEST_CASE("Thread axis - sweep populates curves", "[ComputeGraph][CostModel]") {
         CHECK(has(family, cg::CurveRoute::Einsums));
         CHECK(has(family, cg::CurveRoute::Vendor));
     }
-    for (auto const family :
-         {cg::KernelFamily::BatchedGemm, cg::KernelFamily::Permute, cg::KernelFamily::Elementwise, cg::KernelFamily::GroupedPermute}) {
+    for (auto const family : {cg::KernelFamily::BatchedGemm, cg::KernelFamily::Permute, cg::KernelFamily::Elementwise,
+                              cg::KernelFamily::GroupedPermute, cg::KernelFamily::GroupedRotate}) {
         INFO(cg::to_string(family));
         CHECK(has(family, cg::CurveRoute::Einsums));
         CHECK_FALSE(has(family, cg::CurveRoute::Vendor));
@@ -615,13 +790,14 @@ TEST_CASE("Thread axis - sweep populates curves", "[ComputeGraph][CostModel]") {
 // time, which a slow machine can only exceed, so it fails only when samples are not filled.
 TEST_CASE("Thread axis - each sweep sample lasts at least the minimum sample time", "[ComputeGraph][CostModel]") {
     cg::ThreadSweepOptions options;
-    options.warmup             = 0;
-    options.repeats            = 1;
-    options.max_threads        = 2;
-    options.max_bytes          = 64UL * 1024;
-    options.max_gemm_extent    = 96;
-    options.batch_entries      = 4;
-    options.min_sample_seconds = 0.01;
+    options.warmup               = 0;
+    options.repeats              = 1;
+    options.max_threads          = 2;
+    options.max_bytes            = 64UL * 1024;
+    options.max_gemm_extent      = 96;
+    options.batch_entries        = 4;
+    options.batched_gemm_extents = {4};
+    options.min_sample_seconds   = 0.01;
 
     auto const t0     = std::chrono::steady_clock::now();
     auto const curves = cg::measure_thread_efficiency(pinned_profile(), options);
