@@ -37,20 +37,11 @@ namespace {
 /// Returns true if the descriptor was applied (either taking on a new value
 /// or overwriting ``nullptr`` on the backing tensor).
 bool apply_inferred(Graph &graph, TensorId out_tid, SymmetryDescriptor desc, EscapeAnalysis const &guard) {
-    auto &handle = graph.tensor(out_tid);
-    if (!handle.is_intermediate)
-        return false; // Never mutate user-owned tensor state.
     if (!guard.stable(out_tid))
         return false; // Could be overwritten later / by a child body, don't tag.
-    // Skip if the tensor already has an equivalent descriptor, avoids
-    // redundant work and spurious "new inference" reports on re-runs.
-    if (handle.symmetry_hint && *handle.symmetry_hint == desc)
-        return false;
-
-    handle.symmetry_hint = std::make_shared<SymmetryDescriptor>(desc);
-    if (handle.set_symmetry_fn)
-        handle.set_symmetry_fn(std::move(desc));
-    return true;
+    // Tensor reach: the inferred descriptor also reaches the intermediate itself, so the rank-2
+    // BLAS dispatch sees it on the next execute().
+    return graph.infer_symmetry(out_tid, std::move(desc), SymmetryReach::Tensor);
 }
 
 } // namespace

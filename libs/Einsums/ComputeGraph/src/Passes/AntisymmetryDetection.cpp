@@ -309,7 +309,7 @@ bool AntisymmetryDetection::transform(Graph &graph) {
                 }
             }
         }
-        handle->symmetry_hint = std::make_shared<SymmetryDescriptor>(std::move(found));
+        graph.infer_symmetry(tid, std::move(found), SymmetryReach::GraphOnly);
         ++_stats.num_tensors;
     }
 

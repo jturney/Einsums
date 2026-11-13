@@ -132,19 +132,12 @@ bool Pipeline::apply(PassManager &pm) {
             if (tid == 0) {
                 continue; // this stage does not touch the tensor
             }
-            auto &mutable_h = graph.tensor(tid);
-
             if (materialized_in_earlier_stage.count(handle.tensor_ptr)) {
                 // Already materialized in an earlier stage, don't re-materialize/re-initialize
-                mutable_h.alloc_state = AllocState::Materialized;
-                mutable_h.init_kind   = InitKind::None;
+                graph.mark_materialized(tid);
             } else {
                 // First stage using this tensor, set up materialization
-                mutable_h.alloc_state    = handle.alloc_state;
-                mutable_h.init_kind      = handle.init_kind;
-                mutable_h.materialize_fn = handle.materialize_fn;
-                mutable_h.zero_fn        = handle.zero_fn;
-                mutable_h.random_fn      = handle.random_fn;
+                graph.adopt_lifecycle(tid, handle);
                 materialized_in_earlier_stage.insert(handle.tensor_ptr);
             }
         }

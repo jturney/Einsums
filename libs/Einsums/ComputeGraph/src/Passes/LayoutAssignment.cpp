@@ -774,42 +774,12 @@ bool LayoutAssignment::transform(Graph &graph) {
     // ── Commit ─────────────────────────────────────────────────────────────────────────────
     for (auto id : moved) {
         AxisOrder const          &order    = plan.assignment.at(id);
-        TensorHandle             *handle   = graph.find_tensor(id);
-        std::vector<size_t> const was_dims = handle->dims;
-        std::vector<size_t>       dims;
-        dims.reserve(order.size());
-        for (auto axis : order) {
-            dims.push_back(was_dims[axis]);
-        }
-
-        // Every per-axis annotation moves with the axis it describes. A missed one is not a
-        // wrong number today; it is a dim symbol naming the wrong extent at the next bind, which
-        // is the failure the whole symbolic-extent machinery exists to catch.
-        auto permute_axis_data = [&order](auto &vec) {
-            if (vec.size() != order.size()) {
-                return;
-            }
-            std::remove_reference_t<decltype(vec)> moved_vec;
-            moved_vec.reserve(order.size());
-            for (auto axis : order) {
-                moved_vec.push_back(vec[axis]);
-            }
-            vec = std::move(moved_vec);
-        };
-        permute_axis_data(handle->spaces);
-        permute_axis_data(handle->dim_symbols);
-
-        handle->resize_deferred_fn(dims);
-        handle->dims = dims;
-        handle->strides.assign(dims.size(), 1);
-        for (std::size_t axis = 1; axis < dims.size(); axis++) {
-            handle->strides[axis] = handle->strides[axis - 1] * dims[axis - 1]; // column-major
-        }
-        if (TensorSlot *slot = graph.find_slot(id); slot != nullptr) {
-            slot->dims = dims;
-        }
+        std::vector<size_t> const was_dims = graph.tensor(id).dims;
+        graph.relayout(id, order);
+        TensorHandle const        &handle = graph.tensor(id);
+        std::vector<size_t> const &dims   = handle.dims;
         _stats.num_relaid_out++;
-        report(2, fmt::format("store '{}' as ({}) instead of ({})", handle->name, fmt::join(dims, ","), fmt::join(was_dims, ",")));
+        report(2, fmt::format("store '{}' as ({}) instead of ({})", handle.name, fmt::join(dims, ","), fmt::join(was_dims, ",")));
     }
 
     // set_operand_indices re-derives the link and target lists. Those lists are sorted letter SETS, which a

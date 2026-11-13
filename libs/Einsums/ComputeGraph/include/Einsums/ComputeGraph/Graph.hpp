@@ -7,6 +7,7 @@
 
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/Comm/Collectives.hpp>
+#include <Einsums/Comm/DistributionDescriptor.hpp>
 #include <Einsums/ComputeGraph/Approximation.hpp>
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
 #include <Einsums/ComputeGraph/Decision.hpp>
@@ -44,6 +45,7 @@
 #include <iosfwd>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -234,6 +236,20 @@ struct NodeTimingSample {
 };
 
 class Graph;
+
+/**
+ * @brief How far an inferred symmetry reaches: the graph's annotation only, or the tensor too.
+ *
+ * @see Graph::infer_symmetry
+ */
+enum class SymmetryReach : std::uint8_t {
+    /// Annotate the graph's handle only. For a symmetry a pass found by looking at a tensor's
+    /// data: what holds of today's values is no declaration to write back onto someone's tensor.
+    GraphOnly,
+    /// Annotate the handle and give the tensor itself the descriptor (its ``set_symmetry``), so
+    /// the rank-2 BLAS dispatch sees it on the next replay. Only for a graph-owned intermediate.
+    Tensor,
+};
 
 /**
  * @brief A name for a graph that stays correct when the graph is moved.
@@ -1341,6 +1357,96 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
     void annotate_spaces(TensorType const &tensor, std::vector<SpaceId> spaces);
+
+    /// @name Changes to a registered tensor's handle
+    /// Each change a pass makes to a handle the graph holds has one method here, which owns the
+    /// rules for that change and bumps the handle version. The accessors hand out const handles,
+    /// so these are the only way to make the change.
+    /// @{
+
+    /**
+     * @brief Record index spaces inferred for an intermediate's axes.
+     *
+     * Leaves the handle alone, and returns false, when the tensor is not a graph-owned
+     * intermediate (an inference never changes a tensor the caller owns), when @p spaces is not
+     * one space per axis (an annotation is that or nothing), when the axes carry a declared
+     * annotation (a declaration is authoritative and an inference never argues with it), or when
+     * the handle already says @p spaces (so a re-run reports nothing new).
+     *
+     * @param[in] id     The tensor.
+     * @param[in] spaces One space per axis.
+     * @return Whether the handle changed.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @versionadded{2.0.0}
+     */
+    bool infer_spaces(TensorId id, std::vector<SpaceId> spaces);
+
+    /**
+     * @brief Record a symmetry inferred or detected for a tensor.
+     *
+     * Replaces the handle's descriptor with @p descriptor; a caller that means to add to what is
+     * there merges first. Leaves the handle alone, and returns false, when it already holds an
+     * equal descriptor, or when @p reach is @ref SymmetryReach::Tensor and the tensor is not a
+     * graph-owned intermediate.
+     *
+     * @param[in] id         The tensor.
+     * @param[in] descriptor The symmetry.
+     * @param[in] reach      Whether the tensor itself is given the descriptor too.
+     * @return Whether the handle changed.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @versionadded{2.0.0}
+     */
+    bool infer_symmetry(TensorId id, SymmetryDescriptor descriptor, SymmetryReach reach);
+
+    /**
+     * @brief Store a deferred tensor with its axes permuted: axis ``k`` of the new layout is
+     *        axis ``order[k]`` of the old.
+     *
+     * The tensor object, the handle's dims, strides (column-major), spaces and dim symbols, and
+     * the tensor's slot all move together.
+     *
+     * @param[in] id    The tensor; must be deferred, with a resize hook.
+     * @param[in] order A permutation of ``0 .. rank - 1``.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @throws std::logic_error if the tensor is allocated, has no resize hook, or @p order is not
+     *         a permutation of its axes.
+     * @versionadded{2.0.0}
+     */
+    void relayout(TensorId id, std::span<std::size_t const> order);
+
+    /**
+     * @brief Decide how a tensor is laid out across ranks.
+     *
+     * @param[in] id          The tensor.
+     * @param[in] distributed Its distribution, or empty to replicate it on every rank.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @versionadded{2.0.0}
+     */
+    void set_distribution(TensorId id, std::optional<comm::DistributionDescriptor> distributed);
+
+    /**
+     * @brief Take a tensor's lifecycle from the handle a declaring scope (a Pipeline or a
+     *        Workspace) holds for it: its allocation state, initialization, and the hooks that
+     *        allocate and fill it.
+     *
+     * @param[in] id   The tensor in this graph.
+     * @param[in] from The declaring scope's handle.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @versionadded{2.0.0}
+     */
+    void adopt_lifecycle(TensorId id, TensorHandle const &from);
+
+    /**
+     * @brief Mark a tensor already allocated and initialized, so no stage allocates or fills it
+     *        again.
+     *
+     * @param[in] id The tensor.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @versionadded{2.0.0}
+     */
+    void mark_materialized(TensorId id);
+
+    /// @}
 
     /**
      * @brief The index spaces annotated on a registered tensor's axes.

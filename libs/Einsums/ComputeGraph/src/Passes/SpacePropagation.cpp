@@ -63,28 +63,10 @@ bool apply_inferred(Graph &graph, TensorId out_tid, std::vector<SpaceId> spaces,
     if (spaces.empty()) {
         return false; // Nothing resolved, and a partial annotation is never written.
     }
-    auto &handle = graph.tensor(out_tid);
-    if (!handle.is_intermediate) {
-        return false; // Never mutate user-owned tensor state.
-    }
     if (!guard.stable(out_tid)) {
         return false; // Could be rebound later / by a child body, don't annotate.
     }
-    if (spaces.size() != handle.rank) {
-        return false; // An annotation is either one space per axis or nothing at all.
-    }
-    if (!handle.spaces.empty()) {
-        if (!handle.spaces_inferred) {
-            return false; // A declaration is authoritative; inference never argues with it.
-        }
-        if (handle.spaces == spaces) {
-            return false; // Already says this, so a re-run reports no new inference.
-        }
-    }
-
-    handle.spaces          = std::move(spaces);
-    handle.spaces_inferred = true;
-    return true;
+    return graph.infer_spaces(out_tid, std::move(spaces));
 }
 
 /// Bind an operand's index letters to the spaces annotated on its slots.

@@ -333,7 +333,7 @@ bool AntisymmetryInference::transform(Graph &graph) {
                 merged.add(op);
             }
         }
-        handle->symmetry_hint = std::make_shared<SymmetryDescriptor>(std::move(merged));
+        graph.infer_symmetry(out, std::move(merged), SymmetryReach::GraphOnly);
         ++_stats.num_tagged;
     }
 
