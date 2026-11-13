@@ -6,110 +6,41 @@
 #include <Einsums/ComputeGraph/Detail/WidthGuard.hpp>
 #include <Einsums/ComputeGraph/Executor.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
-#include <Einsums/ComputeGraph/Observer.hpp>
+#include <Einsums/ComputeGraph/NodeRunner.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
-#include <Einsums/Profile/Profile.hpp>
-#include <Einsums/Profile/Recording.hpp>
 #include <Einsums/Runtime/RuntimeConfiguration.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
 #include <Einsums/TaskPool/WidthBudget.hpp>
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
 
-/// Execute a single node with timing, recording results in the graph.
-void execute_node(Graph const &graph, Node const &node) {
-    // Tells an attached observer the node began here and ended however it ends; with none
-    // attached, one atomic load.
-    detail::NodeObservation const observed(*graph.run_context(), graph, node);
-    if (node.execute) {
-        // Prefer the synchronous executor when available.
-        node.execute();
-    } else if (node.async_start && node.async_finish) {
-        // Fallback: run async phases synchronously (start + wait).
-        // The DataflowExecutor handles true overlap; Sequential/MPI just runs serially.
-        node.async_start();
-        node.async_finish();
+/// Refuse a replay @p executor cannot run concurrently; see NodeRunner::serial_only.
+void refuse_if_serial_only(NodeRunner const &run, std::string_view executor) {
+    if (run.serial_only()) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                "{}: graph '{}' places work on a device whose memory is separate from the host's, and the record of "
+                                "which device copies are current cannot yet be kept from several threads. Replay it with "
+                                "SequentialExecutor (or plain execute()).",
+                                executor, run.graph().name());
     }
-}
-
-/// The site the Sequential and OpenMP executors' node zones are recorded under.
-waggle::ZoneSite const &executor_node_site() {
-    static waggle::ZoneSite const site{"ComputeGraph::node", __FILE__, __LINE__, "execute", WAGGLE_CURRENT_DOMAIN};
-    return site;
-}
-
-/// Run @p node in a profiler zone named @p zone_id when it is not 0: the built-in loop and the
-/// dataflow executor open one around every node while the profiler records, and so do these, so
-/// an observer's annotations (WaggleBridge) land on the node under every executor. The id is
-/// interned once per change of the node list (Graph::node_zone_ids), never per node per replay.
-void execute_node_in_zone(Graph const &graph, Node const &node, std::uint32_t zone_id) {
-    std::optional<waggle::ScopedZone> zone;
-    if (zone_id != 0) {
-        zone.emplace(executor_node_site(), zone_id);
-    }
-    execute_node(graph, node);
-}
-
-/// The zone ids @p graph's nodes run under, or none while the profiler does not record.
-std::vector<std::uint32_t> zone_ids_for(Graph &graph) {
-    return profile::recording() ? graph.node_zone_ids() : std::vector<std::uint32_t>{};
-}
-
-std::uint32_t zone_of(std::vector<std::uint32_t> const &ids, std::size_t index) noexcept {
-    return index < ids.size() ? ids[index] : 0;
-}
-
-/// Run @p work and return how long it took, in milliseconds.
-///
-/// Every executor records the same per-node number, and a hand-written
-/// now/call/now/duration_cast triple is where a clock or a unit quietly drifts
-/// between them. The clock is steady rather than system: a wall clock that
-/// steps backwards over an NTP correction would report a negative node time.
-template <typename F>
-double timed_ms(F &&work) {
-    auto const t0 = std::chrono::steady_clock::now();
-    work();
-    auto const t1 = std::chrono::steady_clock::now();
-    return std::chrono::duration<double, std::milli>(t1 - t0).count();
-}
-
-/// Run every node in list order, collecting timings into one batch.
-///
-/// The batch matters: recording per node took the graph's RECURSIVE content
-/// mutex and copied the node's label string, once per node per replay, which
-/// an SCF/CC loop pays on every iteration. Samples carry only the node id, and
-/// Graph::timing_report() resolves labels if anyone asks for them.
-void execute_all_timed(Graph &graph) {
-    auto const &nodes = graph.nodes();
-
-    std::vector<NodeTimingSample> samples;
-    samples.reserve(nodes.size());
-    auto const zones = zone_ids_for(graph);
-    for (std::size_t i = 0; i < nodes.size(); ++i) {
-        Node const &node = nodes[i];
-        samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = timed_ms([&graph, &node, zone = zone_of(zones, i)] {
-                                                                 execute_node_in_zone(graph, node, zone);
-                                                             })});
-    }
-    graph.record_node_timings(std::move(samples));
 }
 
 /// Replays that ran width-1 because the plan was made for another machine.
@@ -127,21 +58,25 @@ void reset_stale_thread_plan_fallbacks() {
 
 // ─── SequentialExecutor ─────────────────────────────────────────────────────
 
-void SequentialExecutor::execute(Graph &graph) {
-    execute_all_timed(graph);
+void SequentialExecutor::execute(Graph &graph, NodeRunner &run) {
+    std::size_t const n = graph.nodes().size();
+    for (std::size_t i = 0; i < n; ++i) {
+        run.run(i);
+    }
 }
 
 // ─── OpenMPExecutor ─────────────────────────────────────────────────────────
 
-void OpenMPExecutor::execute(Graph &graph) {
-    auto const  &nodes = graph.nodes();
-    auto const  &deps  = graph.dependencies();
-    size_t const n     = nodes.size();
+void OpenMPExecutor::execute(Graph &graph, NodeRunner &run) {
+    auto const  &deps = graph.dependencies();
+    size_t const n    = graph.nodes().size();
 
     if (n == 0)
         return;
 
 #ifdef _OPENMP
+    refuse_if_serial_only(run, name());
+
     // Everything in a level is launched together, so a conflict inside one is
     // a data race rather than a slow schedule - and one that leaves every
     // serial replay correct, so nothing else will report it. On by default
@@ -158,28 +93,20 @@ void OpenMPExecutor::execute(Graph &graph) {
     // to be re-derived here on every execute).
     auto const &levels = deps.levels;
 
-    // Lock-free timing: every node writes its own slot (distinct indices,
-    // no sharing), merged serially below in deterministic node order. The
-    // old path serialized every node on a shared mutex.
-    std::vector<double> node_ms(n, -1.0);
-
     // An exception must NOT escape an OpenMP structured block, doing so leaves
     // the team waiting at the join barrier forever (deadlock). Catch any node
     // failure inside the region, keep the first, and rethrow after the barrier.
     std::exception_ptr first_exc;
     std::mutex         exc_mutex;
 
-    auto const zones = zone_ids_for(graph);
     for (auto const &group : levels) {
         if (group.size() == 1) {
-            size_t const i = group[0];
-            node_ms[i]     = timed_ms([&graph, &nodes, i, &zones] { execute_node_in_zone(graph, nodes[i], zone_of(zones, i)); });
+            run.run(group[0]);
         } else {
 #    pragma omp parallel for schedule(dynamic)
             for (size_t g = 0; g < group.size(); g++) { // NOLINT(modernize-loop-convert)
-                size_t const i = group[g];
                 try {
-                    node_ms[i] = timed_ms([&graph, &nodes, i, &zones] { execute_node_in_zone(graph, nodes[i], zone_of(zones, i)); });
+                    run.run(group[g]);
                 } catch (...) {
                     std::scoped_lock const lock(exc_mutex);
                     if (!first_exc) {
@@ -192,17 +119,10 @@ void OpenMPExecutor::execute(Graph &graph) {
             }
         }
     }
-
-    std::vector<NodeTimingSample> samples;
-    samples.reserve(n);
-    for (size_t i = 0; i < n; i++) {
-        if (node_ms[i] >= 0.0) {
-            samples.push_back({.id = nodes[i].id, .kind = nodes[i].kind, .duration_ms = node_ms[i]});
-        }
-    }
-    graph.record_node_timings(std::move(samples));
 #else
-    execute_all_timed(graph);
+    for (size_t i = 0; i < n; ++i) {
+        run.run(i);
+    }
 #endif
 }
 
@@ -210,28 +130,19 @@ void OpenMPExecutor::execute(Graph &graph) {
 
 /// Per-run scheduling state, pooled and reused across replays.
 ///
-/// Everything here is either reset per run (the counters, the timing slots) or
-/// reused verbatim (the allocations behind them, the interned zone names). The
-/// graph pointers are refreshed at the top of every run, so a scaffold never
+/// Everything here is either reset per run (the counters) or reused verbatim
+/// (the allocations behind them). The graph and runner pointers are refreshed
+/// at the top of every run, so a scaffold never
 /// outlives its knowledge of a graph: it is a bag of buffers, not a cache of
 /// graph structure, which is what makes reuse safe without an identity check.
 struct DataflowExecutor::Scaffold {
-    /// One node's wall-clock time, padded to its own cache line.
-    ///
-    /// A contiguous vector<double> put eight nodes' slots on one line, so every
-    /// worker writing a completed node's time invalidated the line under seven
-    /// others - false sharing on a value nobody reads until the run is over.
-    struct alignas(64) PaddedMs {
-        double ms{-1.0};
-    };
-
     // ── Refreshed per run ───────────────────────────────────────────────────
     std::vector<Node> const *nodes{nullptr};
     DependencyInfo const    *deps{nullptr};
     task_pool::TaskPool     *pool{nullptr};
+    NodeRunner              *run{nullptr}; ///< What running a node means; valid for the run only.
     size_t                   n{0};
     size_t                   budget{0};
-    bool                     recording{false}; ///< profiler state, read once per run
 
     // ── Reset per run, allocation reused ────────────────────────────────────
     std::vector<std::atomic<int>> remaining; ///< preds left per node
@@ -239,12 +150,6 @@ struct DataflowExecutor::Scaffold {
     std::atomic<bool>             failed{false};
     std::exception_ptr            first_exc;
     std::mutex                    exc_mutex;
-
-    /// Per-node timing slots: each task writes only its own index, so no lock
-    /// is needed. Slot writes happen-before the task's completed increment
-    /// (release), and the merge runs after help_until observes completed == n
-    /// (acquire).
-    std::vector<PaddedMs> node_ms;
 
     // Memory budget: Materialize nodes that would exceed the budget wait in
     // `deferred` (instead of blocking a worker) and are resubmitted when a
@@ -287,22 +192,8 @@ struct DataflowExecutor::Scaffold {
     /// That root once it was admitted at seeding, so the caller runs it; `n` when it was not.
     size_t caller_root{0};
 
-    /// Interned zone name per node, so a profiled run does not intern a label
-    /// per task. Only filled while recording; keyed to the graph and node list
-    /// it was built for, since a wrong name is cosmetic but a stale one is
-    /// confusing.
-    std::vector<uint32_t> zone_ids;
-    Graph const          *zone_graph{nullptr};
-
-    /// The graph being run, for the observer.
-    Graph const  *graph{nullptr};
-    std::uint64_t zone_version{0};
-
     /// Size the reused buffers for an n-node run and clear the per-run state.
-    void reset(Graph &graph, size_t node_count);
-
-    /// Rebuild zone_ids if this graph's labels are not the ones cached.
-    void refresh_zone_ids(Graph const &graph);
+    void reset(Graph &graph, NodeRunner &runner, size_t node_count);
 
     /// Fill @ref priority from the plan the nodes carry, or from the structural
     /// hop count when they carry none.
@@ -342,23 +233,12 @@ struct DataflowExecutor::Scaffold {
     }
 };
 
-namespace {
-
-/// The one call site every dataflow task's zone reports; the NAME comes from
-/// the node and is interned once per graph in Scaffold::zone_ids.
-waggle::ZoneSite const &dataflow_task_site() {
-    static waggle::ZoneSite const site{"dataflow task", __FILE__, __LINE__, __func__, WAGGLE_CURRENT_DOMAIN};
-    return site;
-}
-
-} // namespace
-
-void DataflowExecutor::Scaffold::reset(Graph &graph, size_t node_count) {
-    this->graph = &graph;
-    nodes       = &graph.nodes();
-    deps        = &graph.dependencies();
-    pool        = &task_pool::TaskPool::get_singleton();
-    n           = node_count;
+void DataflowExecutor::Scaffold::reset(Graph &graph, NodeRunner &runner, size_t node_count) {
+    run   = &runner;
+    nodes = &graph.nodes();
+    deps  = &graph.dependencies();
+    pool  = &task_pool::TaskPool::get_singleton();
+    n     = node_count;
 
     // atomic<int> is neither movable nor copyable, so the counter vector can
     // only be resized by rebuilding it; same-size replays skip that.
@@ -373,7 +253,6 @@ void DataflowExecutor::Scaffold::reset(Graph &graph, size_t node_count) {
         any_wide = any_wide || (*nodes)[i].thread_width > 1;
     }
 
-    node_ms.assign(n, PaddedMs{});
     completed.store(0, std::memory_order_relaxed);
     failed.store(false, std::memory_order_relaxed);
     first_exc = nullptr;
@@ -472,18 +351,6 @@ unsigned DataflowExecutor::Scaffold::effective_width(Node const &node) const {
     return node.thread_width == 0 ? 1U : node.thread_width;
 }
 
-void DataflowExecutor::Scaffold::refresh_zone_ids(Graph const &graph) {
-    if (zone_graph == &graph && zone_version == graph.analysis_version() && zone_ids.size() == n) {
-        return;
-    }
-    zone_ids.resize(n);
-    for (size_t i = 0; i < n; i++) {
-        zone_ids[i] = waggle::intern_string((*nodes)[i].label);
-    }
-    zone_graph   = &graph;
-    zone_version = graph.analysis_version();
-}
-
 void DataflowExecutor::Scaffold::complete(size_t i) {
     // Width goes back BEFORE the successors are submitted, so a successor can
     // be admitted into the room this node just left instead of parking behind
@@ -554,32 +421,29 @@ void DataflowExecutor::Scaffold::run_node(size_t i) {
     // (execute() rethrows the first exception; partial results are unspecified
     // either way).
     if (!failed.load(std::memory_order_acquire)) {
-        std::optional<waggle::ScopedZone> zone;
-        if (recording) {
-            zone.emplace(dataflow_task_site(), zone_ids[i]);
-        }
         try {
-            node_ms[i].ms = timed_ms([this, i, &node] {
-                // Tells this thread what it holds, so a nested replay started
-                // from inside the kernel can lend the width back while it
-                // waits. Costs nothing for a node that acquired nothing.
-                task_pool::WidthBudget::HoldScope const hold(widths_active ? admitted[i].load(std::memory_order_relaxed) : 0U);
-                // A planned width gives the executing thread exactly that many
-                // threads for the node. Width 1 is guarded too: `help_until`
-                // runs nodes on the thread that called execute(), which never
-                // pinned its ICV or vendor count to 1, so unguarded it would
-                // oversubscribe and make results depend on which thread ran
-                // the node (a threaded GEMM splits k differently).
-                //
-                // Width 0 (unplanned, or a stale plan with widths_active
-                // false) takes the plain path: no thread count read or written.
-                if (widths_active && node.thread_width > 0) {
-                    detail::WidthGuard const width(node.thread_width);
-                    execute_node(*graph, node);
-                } else {
-                    execute_node(*graph, node);
-                }
-            });
+            // Tells this thread what it holds, so a nested replay started
+            // from inside the kernel can lend the width back while it
+            // waits. Costs nothing for a node that acquired nothing.
+            task_pool::WidthBudget::HoldScope const hold(widths_active ? admitted[i].load(std::memory_order_relaxed) : 0U);
+            // A planned width gives the executing thread exactly that many
+            // threads for the node. Width 1 is guarded too: `help_until`
+            // runs nodes on the thread that called execute(), which never
+            // pinned its ICV or vendor count to 1, so unguarded it would
+            // oversubscribe and make results depend on which thread ran
+            // the node (a threaded GEMM splits k differently).
+            //
+            // Width 0 (unplanned, or a stale plan with widths_active
+            // false) takes the plain path: no thread count read or written.
+            // The width goes in the node's timing sample only when it was
+            // applied: a measurement taken at width w is t(w), not t(1), and
+            // a stale plan's widths describe an intention, not what ran.
+            if (widths_active && node.thread_width > 0) {
+                detail::WidthGuard const width(node.thread_width);
+                run->run(i, node.thread_width);
+            } else {
+                run->run(i);
+            }
         } catch (...) {
             fail(std::current_exception());
         }
@@ -597,17 +461,9 @@ void DataflowExecutor::Scaffold::run_node(size_t i) {
 /// property of one thread over one interval - there is no interval here that
 /// covers the operation, which by construction proceeds outside both tasks.
 void DataflowExecutor::Scaffold::run_async_start(size_t i) {
-    Node const &node = (*nodes)[i];
     if (!failed.load(std::memory_order_acquire)) {
-        std::optional<waggle::ScopedZone> zone;
-        if (recording) {
-            zone.emplace(dataflow_task_site(), zone_ids[i]);
-        }
-        // An async node's two halves are separate tasks: the observer hears it begin here and end
-        // where the finish half completes.
-        detail::notify_node(*graph->run_context(), EventKind::NodeStart, *graph, node, 0.0);
         try {
-            node.async_start();
+            run->start_async(i);
         } catch (...) {
             fail(std::current_exception());
         }
@@ -623,18 +479,12 @@ void DataflowExecutor::Scaffold::run_async_start(size_t i) {
 }
 
 void DataflowExecutor::Scaffold::run_async_finish(size_t i) {
-    Node const &node = (*nodes)[i];
     if (!failed.load(std::memory_order_acquire)) {
-        std::optional<waggle::ScopedZone> zone;
-        if (recording) {
-            zone.emplace(dataflow_task_site(), zone_ids[i]);
-        }
         try {
-            node_ms[i].ms = timed_ms([&node] { node.async_finish(); });
+            run->finish_async(i);
         } catch (...) {
             fail(std::current_exception());
         }
-        detail::notify_node(*graph->run_context(), EventKind::NodeEnd, *graph, node, node_ms[i].ms);
     }
     complete(i);
 }
@@ -709,7 +559,7 @@ void DataflowExecutor::Scaffold::enqueue_task(size_t i, std::vector<std::functio
 
     // Both closures capture exactly a pointer and an index, which fits inside
     // std::function's inline buffer - so submitting a node allocates nothing.
-    // The profiling zone is taken inside the run_* bodies from a pre-interned name.
+    // The node's profiling zone is the runner's, opened inside the run_* bodies.
     //
     // `batch` is passed only by the root-seeding loop, which runs on the
     // calling thread and so would otherwise take the pool's external-queue
@@ -744,11 +594,13 @@ void DataflowExecutor::Scaffold::enqueue_task(size_t i, std::vector<std::functio
 DataflowExecutor::DataflowExecutor()  = default;
 DataflowExecutor::~DataflowExecutor() = default;
 
-void DataflowExecutor::execute(Graph &graph) {
+void DataflowExecutor::execute(Graph &graph, NodeRunner &run) {
     size_t const n = graph.nodes().size();
 
     if (n == 0)
         return;
+
+    refuse_if_serial_only(run, name());
 
     // If this run was started from inside an admitted task - a Loop or
     // Conditional node replaying its body - that task is about to wait for the
@@ -780,12 +632,8 @@ void DataflowExecutor::execute(Graph &graph) {
     }
 
     Scaffold &s = *scaffold;
-    s.reset(graph, n);
-    s.budget    = _memory_budget;
-    s.recording = profile::recording();
-    if (s.recording) {
-        s.refresh_zone_ids(graph);
-    }
+    s.reset(graph, run, n);
+    s.budget = _memory_budget;
 
     auto const &deps = *s.deps;
     auto       &pool = *s.pool;
@@ -829,25 +677,6 @@ void DataflowExecutor::execute(Graph &graph) {
     // The calling thread work-steals while waiting instead of parking.
     pool.help_until([&s]() { return s.completed.load(std::memory_order_acquire) == s.n; });
 
-    // Serial merge in deterministic node order (the mutex-per-node this
-    // replaces produced completion order, which was nondeterministic anyway).
-    auto                         &nodes = graph.nodes();
-    std::vector<NodeTimingSample> samples;
-    samples.reserve(n);
-    for (size_t i = 0; i < n; i++) {
-        if (s.node_ms[i].ms >= 0.0) {
-            // The width this node actually ran at, which is what makes the
-            // duration interpretable: a measurement taken at width w is t(w),
-            // not t(1). Zero whenever the plan was not applied - see the
-            // widths_active guard around execute_node above - because then the
-            // node ran unwrapped and its thread_width describes an intention
-            // rather than a fact.
-            unsigned const ran_at = (s.widths_active && nodes[i].thread_width > 0) ? nodes[i].thread_width : 0U;
-            samples.push_back({.id = nodes[i].id, .kind = nodes[i].kind, .duration_ms = s.node_ms[i].ms, .width = ran_at});
-        }
-    }
-    graph.record_node_timings(std::move(samples));
-
     std::exception_ptr const exc = s.first_exc;
 
     // Return the scaffold whether or not the run failed; every task has
@@ -861,6 +690,7 @@ void DataflowExecutor::execute(Graph &graph) {
     if (exc) {
         std::rethrow_exception(exc);
     }
+    // The timing samples are the runner's, which the graph collects when this returns.
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)

@@ -22,6 +22,7 @@
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/ComputeGraph/NodeRunner.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp> // For OptimizerPass and PassManager
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
@@ -51,8 +52,6 @@
 #include <unordered_set>
 #include <utility>
 
-#include "NodeRunner.hpp"
-
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
@@ -76,11 +75,6 @@ namespace {
 // profiler with it, even by a replay that records nothing.
 waggle::ZoneSite const &graph_exec_site() {
     static waggle::ZoneSite const site{"ComputeGraph::execute", __FILE__, __LINE__, "execute", WAGGLE_CURRENT_DOMAIN};
-    return site;
-}
-
-waggle::ZoneSite const &graph_executor_site() {
-    static waggle::ZoneSite const site{"ComputeGraph::execute(executor)", __FILE__, __LINE__, "execute", WAGGLE_CURRENT_DOMAIN};
     return site;
 }
 
@@ -180,6 +174,20 @@ void Graph::lease_scratch() {
 }
 
 void Graph::execute() {
+    // An installed executor (set_executor) takes over the whole run. This is
+    // how loop bodies get a parallel backend: the loop node replays its body
+    // via this argument-less execute(). Otherwise nodes run one at a time, in
+    // the schedule's order.
+    if (_executor) {
+        execute(*_executor);
+        return;
+    }
+    // Stateless, so one instance serves every graph on every thread.
+    static SequentialExecutor sequential;
+    execute(sequential);
+}
+
+void Graph::execute(Executor &executor) {
     lease_scratch();
     // An operand a Free released and a later Materialize replaced has moved,
     // and any stand-in this graph adopted for it still names the old buffer.
@@ -188,14 +196,10 @@ void Graph::execute() {
     // Storage-level aliasing must be resolved before anything reasons about
     // which buffer a node touches; cheap and idempotent after the first call.
     link_alias_storage();
-    // An installed executor (set_executor) takes over the whole run. This is
-    // how loop bodies get a parallel backend: the loop node replays its body
-    // via this argument-less execute().
-    if (_executor) {
-        run_executor(*_executor);
-        return;
-    }
+    replay(executor);
+}
 
+void Graph::replay(Executor &executor) {
     // Before the wall clock starts, so a replay that times re-planned widths
     // does not also time the planner.
     begin_replay_thread_plan();
@@ -217,7 +221,9 @@ void Graph::execute() {
     // Rebuild when the order is unknown OR a pass vouched for the order via
     // mark_sorted() but left the position-keyed _deps stale (_deps_valid
     // false). topological_sort() takes the cheap rebuild_deps path in that
-    // second case, keeping the pass-chosen order.
+    // second case, keeping the pass-chosen order. Concurrent executors read
+    // _deps directly, so stale lists would drop storage-reuse and lifecycle
+    // edges a serial run never needed.
     if (!deps_current()) {
         topological_sort();
     }
@@ -255,7 +261,6 @@ void Graph::execute() {
     }
 
     clear_timing_report();
-    _timing_samples.reserve(_nodes.size());
     _timing_report_valid = false; // samples are about to be written
 
     // Read once so the zone pushes and their matching pops agree even if
@@ -266,100 +271,33 @@ void Graph::execute() {
     // All fmt::format work for zones/annotations is precomputed, and so is the
     // string interning behind them; replays of an unchanged graph only pay the
     // profiler's event write. A run that records nothing builds none of it.
-    if (recording && !_profile_strings_valid) {
+    if (recording && (!_profile_strings_valid || _profile_strings.size() != _nodes.size())) {
         rebuild_profile_strings();
     }
 
-    // RAII zones (see execute(Executor&)): a node that throws must still pop its
-    // profiler zone, or the tree depth grows without bound across failed runs.
-    std::optional<waggle::ScopedZone> exec_zone;
-    if (recording) {
-        exec_zone.emplace(graph_exec_site(), _exec_zone_id);
-    }
+    {
+        // RAII: pop the profiler zone even if the executor propagates an
+        // exception. A bare push/pop here leaks an unclosed zone on every
+        // failed execute, deepening the profiler tree without bound (which
+        // makes the profiler->viewer serialization progressively slower).
+        std::optional<waggle::ScopedZone> exec_zone;
+        if (recording) {
+            exec_zone.emplace(graph_exec_site(), _exec_zone_id);
+            waggle::annotate("executor", executor.name());
+        }
 
-    // What running each node means lives in the runner; the replay only walks the order.
-    detail::NodeRunner runner(*this, recording);
-    for (size_t idx = 0; idx < _nodes.size(); idx++) {
-        runner.run(idx);
+        // The executor chooses the order and the threads; the runner is what running each node
+        // means, the same under every executor.
+        NodeRunner runner(*this, recording);
+        executor.execute(*this, runner);
+        runner.finish();
     }
-    runner.finish();
-
-    // exec_zone pops here.
     _executed = true;
 
     // The safe point for the thread-plan trial (see plan_threads): the replay
     // has returned, so nothing is reading a width; every nested body replay it
     // started has returned with it; and this run's timings are complete and
     // recorded, which is the whole reason to wait for it.
-    double const replay_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replay_t0).count();
-    contribute_run_samples(outermost);
-    if (outermost) {
-        end_run_metrics(replay_ms);
-        if (_run_context->observer() != nullptr) {
-            detail::notify_replay(*_run_context, EventKind::ReplayEnd, *this, &last_run());
-        }
-    }
-    finish_replay_thread_plan(replay_ms);
-}
-
-void Graph::execute(Executor &executor) {
-    lease_scratch();
-    // As the argument-less overload: a caller reaching a parallel backend
-    // directly gets the same guarantee about its operands' current buffers.
-    resync_slot_storage();
-    run_executor(executor);
-}
-
-void Graph::run_executor(Executor &executor) {
-    begin_replay_thread_plan();
-    auto const        replay_t0 = std::chrono::steady_clock::now();
-    bool const        outermost = _run_context->enter();
-    LeaveReplay const leave{*_run_context};
-    if (outermost) {
-        begin_run_metrics();
-        detail::notify_replay(*_run_context, EventKind::ReplayStart, *this, nullptr);
-    }
-    // Rebuild when the order is unknown OR a pass vouched for the order via
-    // mark_sorted() but left the position-keyed _deps stale (_deps_valid
-    // false). Concurrent executors read _deps directly, so stale lists here
-    // would drop storage-reuse and lifecycle edges a serial run never needed.
-    if (!deps_current()) {
-        topological_sort();
-    }
-
-    if (!_executed) {
-        materialize_internal_tensors();
-        auto validation = validate_tensors();
-        if (!validation) {
-            EINSUMS_THROW_EXCEPTION(std::runtime_error, "{}", validation.error().message);
-        }
-    }
-
-    clear_timing_report();
-    _timing_samples.reserve(_nodes.size());
-    _timing_report_valid = false; // the executor is about to write samples
-
-    {
-        // RAII: pop the profiler zone even if the executor propagates an
-        // exception. A bare push/pop here leaks an unclosed zone on every
-        // failed execute, deepening the profiler tree without bound (which
-        // makes the profiler→viewer serialization progressively slower).
-        //
-        // The name is built through the callable overload so that a run with
-        // recording off pays neither the fmt::format nor executor.name()'s
-        // returned std::string - this fired on every replay regardless of
-        // profiler state.
-        std::optional<waggle::ScopedZone> zone;
-        if (profile::recording()) {
-            zone.emplace(graph_executor_site(),
-                         [&]() { return fmt::format("ComputeGraph::execute({}, executor={})", _name, executor.name()); });
-        }
-        executor.execute(*this);
-    }
-    _executed = true;
-
-    // Same safe point as the argument-less execute(): the replay has returned
-    // and its timings are complete.
     double const replay_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replay_t0).count();
     contribute_run_samples(outermost);
     if (outermost) {

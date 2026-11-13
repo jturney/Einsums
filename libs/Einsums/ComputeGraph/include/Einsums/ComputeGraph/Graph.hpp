@@ -154,6 +154,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") SpaceTiling {
 }
 
 class PassManager; // Forward declaration
+class NodeRunner;
 class OptimizerPass;
 enum class OptLevel : std::uint8_t; // Optimizer.hpp
 
@@ -263,7 +264,16 @@ class EINSUMS_EXPORT GraphAnchor {
 namespace detail {
 struct ArenaBlock;
 struct GraphBackdoor;
-class NodeRunner;
+
+/// One node's timing in the replay running now: its wall-clock time and the width it ran at.
+///
+/// Padded to its own cache line, because a concurrent executor's workers each write the slot of
+/// the node they finished, and eight unpadded slots on one line had every write invalidate the
+/// line under seven other nodes.
+struct alignas(64) NodeRunSlot {
+    double   ms{-1.0}; ///< Milliseconds; negative when the node did not run.
+    unsigned width{0}; ///< See NodeTimingSample::width.
+};
 
 /// A recursive mutex that stays with its object. Moving the object hands the destination a
 /// fresh, unlocked mutex and leaves the source its own: the lock guards one object's contents,
@@ -685,6 +695,11 @@ struct GraphState {
     /// Device shadow allocations for GPU execution.
     /// Persists across execute() calls so shadows can be reused.
     DeviceShadowMap _device_shadows;
+
+    /// One slot per node for the replay running now, written by whichever thread runs the node
+    /// and turned into @ref _timing_samples when the replay ends. Kept between replays so that a
+    /// replay of an unchanged graph allocates none.
+    std::vector<detail::NodeRunSlot> _run_slots;
 
     /// Per-node timing from last execute() call, as recorded (no labels).
     std::vector<NodeTimingSample> _timing_samples;
@@ -1997,14 +2012,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     APIARY_EXPOSE void set_observer(std::shared_ptr<ExecutionObserver> observer) { _run_context->set_observer(std::move(observer)); }
-
-    /**
-     * @brief The interned profiler zone name of every node, in node order, for an executor that
-     *        opens a zone per node while the profiler records.
-     * @return One id per node: what the built-in loop names its node zones with, built once per
-     *         change of the node list rather than interned per node per replay.
-     */
-    [[nodiscard]] std::vector<std::uint32_t> node_zone_ids();
 
     /// @brief The run context this graph and its bodies share.
     /// @return The context, never null.
@@ -4958,9 +4965,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// check that a guard catches it; defined only in the tests' own header.
     friend struct detail::GraphBackdoor;
 
-    /// Runs one node of a replay; reads the node list, tensor table, device shadows, profile
-    /// strings and timing samples as the replay loop it was extracted from did.
-    friend class detail::NodeRunner;
+    /// Runs the nodes of a replay; reads the node list, tensor table, device shadows, profile
+    /// strings and per-node timing slots.
+    friend class NodeRunner;
 
     /// A value that moves whenever any graph below this one has a declared edit: each
     /// descendant's analysis version and node count, folded in walk order. A body edit moves the
@@ -4974,10 +4981,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// folded in walk order. What the run metrics key their cached scans on.
     [[nodiscard]] std::uint64_t tensor_tree_stamp() const;
 
-    /// The part of @ref execute(Executor&) after the operands are leased and re-seated, which the
-    /// argument-less @ref execute has already done by the time it hands over to an installed
-    /// executor.
-    void run_executor(Executor &executor);
+    /// Everything a replay does once around @p executor's run: the thread plan, the run metrics
+    /// and observer events, sorting, first-run validation, the profiler zone, and the runner the
+    /// executor runs each node through.
+    void replay(Executor &executor);
 
     /// Whether the node order and the dependency lists describe the graph as it stands, bodies
     /// included: what the replay entry points check before deciding to sort.

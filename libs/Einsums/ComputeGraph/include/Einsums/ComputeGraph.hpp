@@ -97,6 +97,7 @@
 #include <Einsums/ComputeGraph/LuPivots.hpp>
 #include <Einsums/ComputeGraph/NaryEinsum.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeRunner.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>

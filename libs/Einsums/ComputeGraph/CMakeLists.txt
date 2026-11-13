@@ -112,6 +112,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/NaryEinsum.hpp
     Einsums/ComputeGraph/KhatriRao.hpp
     Einsums/ComputeGraph/Executor.hpp
+    Einsums/ComputeGraph/NodeRunner.hpp
     Einsums/ComputeGraph/StringDispatch.hpp
     Einsums/ComputeGraph/Decision.hpp
     Einsums/ComputeGraph/Observer.hpp

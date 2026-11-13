@@ -215,14 +215,24 @@ fine-grained parallelism within each operation.
 Writing a Custom Executor
 =========================
 
+An executor decides when, and on which thread, each node runs.
+It does not decide what running a node means: the ``NodeRunner`` it is handed does that, so the
+graph computes the same thing, on the same devices, with the same profile, under every executor.
+Run node ``i`` with ``run.run(i)``, never by calling a node's callable, in any order that
+``graph.dependencies()`` allows.
+
 .. code-block:: cpp
 
    class MyExecutor : public cg::Executor {
    public:
        std::string name() const override { return "MyExecutor"; }
-       void execute(cg::Graph &graph) override {
-           auto &nodes = graph.nodes();
+       void execute(cg::Graph &graph, cg::NodeRunner &run) override {
            auto const &deps = graph.dependencies();
-           // ... custom execution strategy ...
+           // ... choose an order the dependencies allow ...
+           for (std::size_t i = 0; i < graph.nodes().size(); ++i) {
+               run.run(i);
+           }
        }
    };
+
+An executor that runs nodes concurrently refuses a replay for which ``run.serial_only()`` is true.

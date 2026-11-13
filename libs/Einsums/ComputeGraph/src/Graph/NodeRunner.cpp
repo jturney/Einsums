@@ -9,10 +9,9 @@
 /// Per node, the GPU is offered the work first through `GpuDispatch.hpp` and the
 /// CPU closure runs whenever it declines.
 
-#include "NodeRunner.hpp"
-
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeRunner.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Logging.hpp>
@@ -28,7 +27,7 @@
 
 #include "GpuDispatch.hpp"
 
-EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 using namespace gpu_dispatch;
 
@@ -45,41 +44,91 @@ waggle::ZoneSite const &graph_node_site() {
 
 } // namespace
 
-void NodeRunner::run(std::size_t idx) {
-    Node &node = _graph._nodes[idx];
+NodeRunner::NodeRunner(Graph &graph, bool recording) : _graph(graph), _recording(recording) {
+    // assign() reuses the slots' storage, so a replay of an unchanged graph allocates nothing.
+    _graph._run_slots.assign(_graph._nodes.size(), detail::NodeRunSlot{});
+}
+
+void NodeRunner::open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t idx) const {
+    if (!_recording) {
+        return;
+    }
+    Node const &node = _graph._nodes[idx];
 
     // A node whose cache entry does not match falls back to its bare label
     // (defensive: an undeclared mutation after the profile strings were built).
     static Graph::NodeProfileStrings const kEmptyEntry{};
+    Graph::NodeProfileStrings const       &ps = (idx < _graph._profile_strings.size() && _graph._profile_strings[idx].node_id == node.id)
+                                                    ? _graph._profile_strings[idx]
+                                                    : kEmptyEntry;
 
-    std::optional<waggle::ScopedZone> node_zone;
-    if (_recording) {
-        Graph::NodeProfileStrings const &ps = (idx < _graph._profile_strings.size() && _graph._profile_strings[idx].node_id == node.id)
-                                                  ? _graph._profile_strings[idx]
-                                                  : kEmptyEntry;
-
-        if (ps.zone_id != 0) {
-            node_zone.emplace(graph_node_site(), ps.zone_id);
-        } else {
-            node_zone.emplace(node.label);
-        }
-
-        // These two are static strings, interned once per process.
-        waggle::annotate("op_kind", op_kind_name(node.kind));
-        waggle::annotate("device", node.target == Target::GPU ? "GPU" : "CPU");
-
-        for (auto const &[key, value] : ps.texts) {
-            waggle::annotate_interned(key, value);
-        }
-        for (auto const &[key, value] : ps.numbers) {
-            waggle::annotate_interned(key, value);
-        }
-        for (auto const &[key, value] : ps.reals) {
-            waggle::annotate_interned(key, value);
-        }
+    if (ps.zone_id != 0) {
+        zone.emplace(graph_node_site(), ps.zone_id);
+    } else {
+        zone.emplace(node.label);
     }
 
-    // An attached observer hears the node begin here and end however this iteration ends.
+    // These two are static strings, interned once per process.
+    waggle::annotate("op_kind", op_kind_name(node.kind));
+    waggle::annotate("device", node.target == Target::GPU ? "GPU" : "CPU");
+
+    for (auto const &[key, value] : ps.texts) {
+        waggle::annotate_interned(key, value);
+    }
+    for (auto const &[key, value] : ps.numbers) {
+        waggle::annotate_interned(key, value);
+    }
+    for (auto const &[key, value] : ps.reals) {
+        waggle::annotate_interned(key, value);
+    }
+}
+
+bool NodeRunner::is_async(std::size_t idx) const {
+    Node const &node = _graph._nodes[idx];
+    return node.async_start && node.async_finish;
+}
+
+bool NodeRunner::serial_only() const {
+    if constexpr (gpu::has_unified_memory) {
+        return false;
+    } else {
+        for (Node const &node : _graph._nodes) {
+            if (node.target == Target::GPU || node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+void NodeRunner::start_async(std::size_t idx) {
+    Node const                       &node = _graph._nodes[idx];
+    std::optional<waggle::ScopedZone> zone;
+    open_zone(zone, idx);
+    // The two halves are separate calls, possibly on two threads: the observer hears the node
+    // begin here and end where finish_async completes.
+    detail::notify_node(*_graph._run_context, EventKind::NodeStart, _graph, node, 0.0);
+    node.async_start();
+}
+
+void NodeRunner::finish_async(std::size_t idx) {
+    Node const                       &node = _graph._nodes[idx];
+    std::optional<waggle::ScopedZone> zone;
+    open_zone(zone, idx);
+    auto const t_start = std::chrono::steady_clock::now();
+    node.async_finish();
+    double const ms           = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_start).count();
+    _graph._run_slots[idx].ms = ms;
+    detail::notify_node(*_graph._run_context, EventKind::NodeEnd, _graph, node, ms);
+}
+
+void NodeRunner::run(std::size_t idx, unsigned width) {
+    Node &node = _graph._nodes[idx];
+
+    std::optional<waggle::ScopedZone> node_zone;
+    open_zone(node_zone, idx);
+
+    // An attached observer hears the node begin here and end however this call ends.
     detail::NodeObservation const observed(*_graph._run_context, _graph, node);
     auto                          t_start = std::chrono::steady_clock::now();
 
@@ -330,11 +379,29 @@ void NodeRunner::run(std::size_t idx) {
     auto t_end = std::chrono::steady_clock::now();
 
     double const ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
-    _graph._timing_samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = ms});
+    // This node's own slot: concurrent runs of other nodes write other slots.
+    _graph._run_slots[idx] = {.ms = ms, .width = width};
     // node_zone pops here (and on any early return / thrown node).
 }
 
 void NodeRunner::finish() {
+    flush_device();
+
+    // In node order, which is the order the samples have always been reported in, whatever order
+    // a concurrent executor ran the nodes in.
+    std::vector<NodeTimingSample> samples;
+    samples.reserve(_graph._nodes.size());
+    for (std::size_t i = 0; i < _graph._nodes.size(); ++i) {
+        detail::NodeRunSlot const &slot = _graph._run_slots[i];
+        if (slot.ms >= 0.0) {
+            Node const &node = _graph._nodes[i];
+            samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = slot.ms, .width = slot.width});
+        }
+    }
+    _graph.record_node_timings(std::move(samples));
+}
+
+void NodeRunner::flush_device() {
     // Final D2H flush (discrete GPU only).
     // On unified memory, GPU wrote directly to host-accessible tensor data, no copy needed.
     if constexpr (!gpu::has_unified_memory) {
@@ -358,4 +425,4 @@ void NodeRunner::finish() {
     }
 }
 
-EINSUMS_NAMESPACE_END(compute_graph::detail)
+EINSUMS_NAMESPACE_END(compute_graph)

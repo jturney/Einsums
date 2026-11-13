@@ -38,6 +38,7 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class Graph; // Forward declaration
+class NodeRunner;
 
 /**
  * @brief Replays that ignored their thread plan because the machine changed.
@@ -74,9 +75,10 @@ struct DependencyInfo {
 /**
  * @brief Abstract base class for graph execution backends.
  *
- * An executor determines HOW graph nodes are executed, sequentially,
- * in parallel via threads, on GPU streams, etc. The graph structure,
- * optimization passes, and capture mechanism are executor-agnostic.
+ * An executor decides WHEN, and on which thread, each node of a replay runs: one at a time, a
+ * dependency level at a time, or as soon as its predecessors finish. It does not decide what
+ * running a node means. That is the @ref NodeRunner's, which is what makes a graph compute the
+ * same thing, on the same devices, with the same profile, whichever executor replays it.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HOLDER(std::shared_ptr) Executor {
   public:
@@ -85,14 +87,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HO
     APIARY_EXPOSE [[nodiscard]] virtual std::string name() const = 0;
 
     /**
-     * @brief Execute all nodes of the graph.
+     * @brief Run every node of the graph, each through @p run.
      *
-     * The graph is guaranteed to be topologically sorted with valid
-     * dependency info before this is called.
+     * The graph is topologically sorted and its @ref Graph::dependencies are current before this
+     * is called. An executor runs node ``i`` with ``run.run(i)`` and never calls a node's callable
+     * itself; any order the dependencies allow is correct.
      *
      * @param[in,out] graph The graph to execute.
+     * @param[in,out] run   Runs one node; valid for this call only.
      */
-    virtual void execute(Graph &graph) = 0;
+    virtual void execute(Graph &graph, NodeRunner &run) = 0;
 };
 
 /**
@@ -107,15 +111,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HO
     APIARY_EXPOSE SequentialExecutor() = default;
 
     [[nodiscard]] std::string name() const override { return "Sequential"; }
-    void                      execute(Graph &graph) override;
+    void                      execute(Graph &graph, NodeRunner &run) override;
 };
 
 /**
  * @brief OpenMP task-based executor, launches independent nodes in parallel.
  *
- * Uses OpenMP tasks with dependency tracking. When a node completes,
- * it decrements the in-degree of its successors. Successors whose
- * in-degree reaches zero are launched as new tasks.
+ * Runs the graph a dependency level at a time: a level of one node on the calling thread, a
+ * level of several as an OpenMP parallel loop over its nodes.
  *
  * @note BLAS calls within nodes may use their own OpenMP parallelism.
  *       For small graphs, the sequential executor may be faster due
@@ -127,7 +130,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HO
     APIARY_EXPOSE OpenMPExecutor() = default;
 
     [[nodiscard]] std::string name() const override { return "OpenMP"; }
-    void                      execute(Graph &graph) override;
+    void                      execute(Graph &graph, NodeRunner &run) override;
 };
 
 /**
@@ -156,7 +159,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HO
     ~DataflowExecutor() override;
 
     [[nodiscard]] std::string name() const override { return "Dataflow"; }
-    void                      execute(Graph &graph) override;
+    void                      execute(Graph &graph, NodeRunner &run) override;
 
     /**
      * @brief Set a memory budget for execution.
