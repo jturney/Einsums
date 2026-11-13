@@ -348,15 +348,10 @@ TensorId declare_chain_intermediate(Graph &graph, std::string name, packed_gemm:
     // rebuild has always declared and its shape is known to be a matrix.
     // ScalarType::Unknown is refused by the caller before it gets here, so the
     // dispatcher's throw is unreachable.
+    // scratch, not declare_tensor: these are pass-created intermediates the memory passes manage.
     void const *ptr = detail::dispatch_scalar_type(
-        dtype, [&]<typename T>(T /*tag*/) -> void const * { return &graph.declare_tensor<T, 2>(std::move(name), rows, cols); });
-    // declare_tensor defaults to user-visible; these are pass-created
-    // scratch the memory passes should manage.
-    if (auto *handle = graph.find_tensor_by_ptr(ptr); handle != nullptr) {
-        handle->is_intermediate = true;
-        return handle->id;
-    }
-    return 0;
+        dtype, [&]<typename T>(T /*tag*/) -> void const * { return &graph.scratch<T, 2>(std::move(name), rows, cols); });
+    return graph.find_tensor_id_by_ptr(ptr);
 }
 
 /// Recursively build the optimal tree from the DP split table.
