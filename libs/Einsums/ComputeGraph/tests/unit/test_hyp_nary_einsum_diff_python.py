@@ -28,7 +28,7 @@ from _sanitizer_scaling import sanitizer_examples
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import ALL_DTYPES, assert_close
+from einsums.testing import ALL_DTYPES, tolerance_for
 
 _LETTERS = "ijklmn"
 _ctr = itertools.count()
@@ -93,6 +93,11 @@ def _spec(operands, output, conj):
 @example(problem=([["i"], ["i"], ["j"]], [], {"i": 2, "j": 3}, "float64", [False] * 3, [False] * 3, False, 0.0, 1.0, "eager", 0))
 @example(problem=([["i"], ["j"], ["k"]], [], {"i": 2, "j": 3, "k": 1}, "complex128", [True, False, True], [False] * 3, False, 0.5,
                   2.0, "graph+passes", 1))
+# A float32 sum of 108 products that cancel to 1/844 of their total magnitude. Compared at a fixed
+# relative tolerance this failed at 3e-5, which is rounding in a different summation order than
+# numpy's and not a wrong contraction, so the tolerance scales with the magnitude of the terms.
+@example(problem=([["m", "m"], ["k", "l", "m"], ["l", "m"], ["i", "j", "k"]], [], {"i": 1, "j": 4, "k": 3, "l": 3, "m": 3}, "float32",
+                  [False] * 4, [False] * 4, False, 0.0, 1.0, "eager", 3))
 def test_hyp_nary_einsum_diff(problem):
     operands, output, extent, dtype, conj, views, alias, c_pf, ab_pf, mode, seed = problem
     rng = np.random.default_rng(seed)
@@ -120,5 +125,14 @@ def test_hyp_nary_einsum_diff(problem):
 
     oracle_inputs = [np.conj(a) if c else a for a, c in zip(arrays, conj)]
     numpy_spec = ",".join("".join(op) for op in operands) + "->" + "".join(output)
-    want = c_pf * start + ab_pf * np.einsum(numpy_spec, *oracle_inputs)
-    assert_close(np.asarray(C), np.asarray(want, dtype=dtype))
+    want = np.asarray(c_pf * start + ab_pf * np.einsum(numpy_spec, *oracle_inputs), dtype=dtype)
+
+    # Each output element is a sum, and rounding in a sum is bounded by the magnitude of its terms,
+    # not of its result: the same contraction over the operands' absolute values is that magnitude.
+    # A wrong plan, a dropped letter or a misplaced conjugate is off by a fraction of it that no
+    # multiple of epsilon reaches.
+    magnitude = abs(c_pf) * np.abs(start) + abs(ab_pf) * np.einsum(numpy_spec, *[np.abs(a).astype(np.float64) for a in arrays])
+    rtol, atol = tolerance_for(dtype)
+    bound = rtol * np.abs(want) + atol + 32.0 * np.finfo(np.dtype(dtype)).eps * magnitude
+    error = np.abs(np.asarray(C) - want)
+    assert np.all(error <= bound), f"{spec}: largest error {error.max()} against a bound of {bound.flat[error.argmax()]}"
