@@ -34,6 +34,7 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(gpu)
@@ -77,6 +78,12 @@ void mock_set_payload_prot(void *payload, int prot) {
 }
 
 /// Live mock allocations, which MockDeviceKernelScope unprotects all at once.
+///
+/// Everything below is guarded by mock_registry_mutex(). Page protection is a property of the
+/// process, not of a thread, so who may touch a buffer is counted for the process too: a buffer is
+/// host-accessible exactly while some thread is inside a device-kernel scope or a transfer of that
+/// buffer. Counting per thread let one thread re-protect pages another was still copying into or
+/// computing on, which faulted as soon as two device nodes ran at once.
 std::mutex &mock_registry_mutex() {
     static std::mutex m;
     return m;
@@ -86,9 +93,31 @@ std::vector<void *> &mock_registry() {
     return v;
 }
 
+/// Transfers in progress per buffer, across every thread.
+std::unordered_map<void *, int> &mock_open_transfers() {
+    static std::unordered_map<void *, int> m;
+    return m;
+}
+
+/// Device-kernel scopes open, across every thread; while any is, every buffer is accessible.
+int &mock_open_kernel_scopes() {
+    static int n = 0;
+    return n;
+}
+
+/// Give @p payload the protection the counts call for. Caller holds mock_registry_mutex().
+void mock_apply_prot_locked(void *payload) {
+    auto const it         = mock_open_transfers().find(payload);
+    bool const accessible = mock_open_kernel_scopes() > 0 || (it != mock_open_transfers().end() && it->second > 0);
+    mock_set_payload_prot(payload, accessible ? PROT_READ | PROT_WRITE : PROT_NONE);
+}
+
 void mock_registry_add(void *payload) {
     std::lock_guard<std::mutex> const lock(mock_registry_mutex());
     mock_registry().push_back(payload);
+    // A buffer allocated while another thread is inside a kernel scope must be as accessible as
+    // every other buffer is for that kernel.
+    mock_apply_prot_locked(payload);
 }
 
 void mock_registry_remove(void *payload) {
@@ -97,18 +126,27 @@ void mock_registry_remove(void *payload) {
     auto                              it = std::find(v.begin(), v.end(), payload);
     if (it != v.end())
         v.erase(it);
+    mock_open_transfers().erase(payload);
 }
 
 /// RAII: make a mock device buffer host-accessible for one transfer.
 struct MockAccess {
     void *payload;
     explicit MockAccess(void const *p) : payload(const_cast<void *>(p)) {
-        if (payload)
-            mock_set_payload_prot(payload, PROT_READ | PROT_WRITE);
+        if (payload) {
+            std::lock_guard<std::mutex> const lock(mock_registry_mutex());
+            ++mock_open_transfers()[payload];
+            mock_apply_prot_locked(payload);
+        }
     }
     ~MockAccess() {
-        if (payload)
-            mock_set_payload_prot(payload, PROT_NONE);
+        if (payload) {
+            std::lock_guard<std::mutex> const lock(mock_registry_mutex());
+            if (auto it = mock_open_transfers().find(payload); it != mock_open_transfers().end() && --it->second == 0) {
+                mock_open_transfers().erase(it);
+            }
+            mock_apply_prot_locked(payload);
+        }
     }
     MockAccess(MockAccess const &)            = delete;
     MockAccess &operator=(MockAccess const &) = delete;
@@ -384,27 +422,25 @@ bool gpu_available() {
 
 #if defined(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
 
-namespace {
-/// Nesting depth of device-kernel scopes on this thread; only the outermost flips protection.
-thread_local int mock_kernel_depth = 0;
-
-void mock_set_all(int prot) {
-    std::lock_guard<std::mutex> const lock(mock_registry_mutex());
-    for (void *p : mock_registry()) {
-        mock_set_payload_prot(p, prot);
-    }
-}
-} // namespace
-
+// Counted for the whole process (see mock_registry): the first scope to open, on any thread,
+// unprotects every buffer, and the last to close re-protects each one no transfer still holds.
+// While any thread is inside a scope, a host access from another thread does not fault; that is
+// what one process-wide protection can express, and a serial run keeps the full check.
 MockDeviceKernelScope::MockDeviceKernelScope() {
-    if (mock_kernel_depth++ == 0) {
-        mock_set_all(PROT_READ | PROT_WRITE);
+    std::lock_guard<std::mutex> const lock(mock_registry_mutex());
+    if (mock_open_kernel_scopes()++ == 0) {
+        for (void *p : mock_registry()) {
+            mock_apply_prot_locked(p);
+        }
     }
 }
 
 MockDeviceKernelScope::~MockDeviceKernelScope() {
-    if (--mock_kernel_depth == 0) {
-        mock_set_all(PROT_NONE);
+    std::lock_guard<std::mutex> const lock(mock_registry_mutex());
+    if (--mock_open_kernel_scopes() == 0) {
+        for (void *p : mock_registry()) {
+            mock_apply_prot_locked(p);
+        }
     }
 }
 

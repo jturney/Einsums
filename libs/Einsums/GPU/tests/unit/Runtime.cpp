@@ -20,6 +20,8 @@
 #    include <sys/wait.h>
 #    include <unistd.h>
 #endif
+#include <atomic>
+#include <thread>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -392,6 +394,81 @@ TEST_CASE("mock-discrete: a host dereference of a device pointer faults", "[gpu]
     REQUIRE(WIFSIGNALED(status));
     CHECK((WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS));
 
+    device_free(dev);
+}
+
+namespace {
+
+/// Whether a host read of @p dev kills the process, tried in a forked child so the fault is
+/// survivable. True means the mock is guarding @p dev.
+bool host_read_faults(void const *dev) {
+    pid_t const pid = fork();
+    if (pid == 0) {
+        signal(SIGSEGV, SIG_DFL);
+        signal(SIGBUS, SIG_DFL);
+        double const sink = *static_cast<double const volatile *>(dev);
+        _exit(sink == 0.0 ? 17 : 17);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFSIGNALED(status) && (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS);
+}
+
+/// Spin until @p stage reaches @p value.
+void await_stage(std::atomic<int> const &stage, int value) {
+    while (stage.load() < value) {
+        std::this_thread::yield();
+    }
+}
+
+} // namespace
+
+// Page protection is process-wide, so who may touch a device buffer has to be counted for the
+// process. The mock counted kernel scopes per thread: the first of two threads to leave its scope
+// re-protected every buffer while the second was still computing on one, which faulted as soon as
+// a concurrent executor ran two device nodes at once. A process that faults here dies, which fails
+// the case.
+TEST_CASE("mock-discrete: leaving a kernel scope does not re-protect another thread's kernel", "[gpu][mock-discrete]") {
+    void *dev = test_malloc(8 * sizeof(double));
+
+    std::atomic<int> stage{0};
+    std::thread      first([&]() {
+        MockDeviceKernelScope const scope;
+        stage = 1;
+        await_stage(stage, 2); // the second thread is inside its own scope
+    });
+    std::thread      second([&]() {
+        await_stage(stage, 1);
+        MockDeviceKernelScope const scope;
+        stage = 2;
+        first.join(); // the first scope has closed
+        *static_cast<double volatile *>(dev) = 1.0;
+    });
+    second.join();
+
+    CHECK(host_read_faults(dev));
+    device_free(dev);
+}
+
+// The same for a transfer, whose end re-protected the buffer it copied into although a kernel on
+// another thread was using it.
+TEST_CASE("mock-discrete: a finished transfer does not re-protect another thread's kernel", "[gpu][mock-discrete]") {
+    void *dev = test_malloc(8 * sizeof(double));
+
+    std::atomic<int> stage{0};
+    std::thread      kernel([&]() {
+        MockDeviceKernelScope const scope;
+        stage = 1;
+        await_stage(stage, 2); // the transfer has finished
+        *static_cast<double volatile *>(dev) = 1.0;
+    });
+    await_stage(stage, 1);
+    double const host[8] = {};
+    memcpy_host_to_device(dev, host, sizeof(host));
+    stage = 2;
+    kernel.join();
+
+    CHECK(host_read_faults(dev));
     device_free(dev);
 }
 #endif // EINSUMS_HAVE_GPU_MOCK_DISCRETE
