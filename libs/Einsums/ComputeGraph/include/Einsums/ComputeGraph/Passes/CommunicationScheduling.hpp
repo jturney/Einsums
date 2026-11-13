@@ -46,8 +46,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *
  * @par Limitations
  * - A no-op on a single rank; exercised only under real MPI (or the mock backend with `world_size() > 1`).
- * - Splits **Allreduce** only; despite the family description, Allgather (and other collectives) are not
- *   yet converted to async form.
+ * - Splits **Allreduce**, the only collective kind there is.
  * - Requires the tensor handle to provide `iallreduce_sum_fn`; nodes without it are left synchronous.
  * - Only marks the node as two-phase — actual overlap depends on the DataflowExecutor finding
  *   independent work between start and finish; it does not itself reorder nodes to create that slack.

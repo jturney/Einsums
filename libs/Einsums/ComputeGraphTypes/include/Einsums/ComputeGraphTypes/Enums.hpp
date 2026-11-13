@@ -22,10 +22,13 @@ namespace APIARY_MODULE("graph") compute_graph {
  * ScaleAbsorption looks for OpKind::Scale followed by a prefactor-bearing op.
  *
  * Categories:
- * - **TensorAlgebra**: Einsum, Permute, Transpose, ElementTransform, KhatriRao
+ * - **TensorAlgebra**: Einsum, Permute, Transpose, ElementTransform
  * - **BLAS-level**: Gemm, Gemv, Ger, Dot, Scale, Axpby, DirectProduct
- * - **LAPACK-level**: SVD, QR, Syev, Heev, Geev, Gesv, Getrf, Getrs, Invert, Det, Pow, etc.
- * - **Other**: HPTTPermute, Custom
+ * - **LAPACK-level**: Syev, Heev, Gesv, Getrf, Getrs, Invert, SymmGemm, Norm
+ * - **Other**: Custom
+ *
+ * A kind is listed here only once some code records nodes of it. Returning-form operations such
+ * as ``svd`` or ``det`` refuse capture and so have none; one gains a kind with its capture form.
  */
 enum class APIARY_EXPOSE OpKind : std::uint8_t {
     // Tensor algebra operations
@@ -34,7 +37,6 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     GroupedPermute,   ///< Many independent index reorderings, one per member
     Transpose,        ///< 2D transpose, via tensor_permute::transpose()
     ElementTransform, ///< Element-wise unary transform
-    KhatriRao,        ///< Khatri-Rao product
 
     // LinearAlgebra - BLAS level
     BatchedGemm,           ///< Many independent GEMMs in one `gemm_batch` call
@@ -55,28 +57,14 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     GroupedDirectDivision, ///< Many independent element-wise quotients, one per member
 
     // LinearAlgebra - LAPACK level
-    SVD,           ///< Singular value decomposition
-    SVD_DD,        ///< SVD with divide-and-conquer algorithm
-    TruncatedSVD,  ///< Truncated SVD (keeping k singular values)
-    QR,            ///< QR decomposition
-    Syev,          ///< Symmetric eigendecomposition
-    Heev,          ///< Hermitian eigendecomposition
-    Geev,          ///< General eigendecomposition
-    TruncatedSyev, ///< Truncated symmetric eigendecomposition
-    Gesv,          ///< General linear system solver (AX = B)
-    Getrf,         ///< LU factorization
-    Getrs,         ///< Solve against an LU factorization
-    Getri,         ///< Inverse from LU factorization
-    Invert,        ///< Matrix inverse
-    Pseudoinverse, ///< Moore-Penrose pseudoinverse
-    Det,           ///< Matrix determinant (returns scalar)
-    Pow,           ///< Matrix power
-    SymmGemm,      ///< Symmetric double multiply: C = B^T * A * B
-    Norm,          ///< Tensor norm (returns scalar)
-    SolveLyapunov, ///< Continuous Lyapunov equation solver
-
-    // HPTT
-    HPTTPermute, ///< High-performance tensor transpose
+    Syev,     ///< Symmetric eigendecomposition
+    Heev,     ///< Hermitian eigendecomposition
+    Gesv,     ///< General linear system solver (AX = B)
+    Getrf,    ///< LU factorization
+    Getrs,    ///< Solve against an LU factorization
+    Invert,   ///< Matrix inverse
+    SymmGemm, ///< Symmetric double multiply: C = B^T * A * B
+    Norm,     ///< Tensor norm (returns scalar)
 
     // Control flow
     Conditional, ///< If-then-else branch with subgraphs
@@ -113,10 +101,6 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
 
     // Distributed communication
     Allreduce, ///< Sum partial results across MPI ranks
-    Broadcast, ///< Root sends data to all ranks
-    Allgather, ///< Each rank contributes a piece, all receive the whole
-    Scatter,   ///< Root distributes pieces to ranks
-    Barrier,   ///< Synchronization point across ranks
 
     // Tiled lowering
     TileGather,      ///< Copy a tiled tensor's tiles into one dense buffer
@@ -194,8 +178,6 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "Transpose";
     case OpKind::ElementTransform:
         return "ElementTransform";
-    case OpKind::KhatriRao:
-        return "KhatriRao";
     case OpKind::BatchedGemm:
         return "BatchedGemm";
     case OpKind::GroupedBatchedGemm:
@@ -228,46 +210,22 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "GroupedDirectProduct";
     case OpKind::GroupedDirectDivision:
         return "GroupedDirectDivision";
-    case OpKind::SVD:
-        return "SVD";
-    case OpKind::SVD_DD:
-        return "SVD_DD";
-    case OpKind::TruncatedSVD:
-        return "TruncatedSVD";
-    case OpKind::QR:
-        return "QR";
     case OpKind::Syev:
         return "Syev";
     case OpKind::Heev:
         return "Heev";
-    case OpKind::Geev:
-        return "Geev";
-    case OpKind::TruncatedSyev:
-        return "TruncatedSyev";
     case OpKind::Gesv:
         return "Gesv";
     case OpKind::Getrf:
         return "Getrf";
     case OpKind::Getrs:
         return "Getrs";
-    case OpKind::Getri:
-        return "Getri";
     case OpKind::Invert:
         return "Invert";
-    case OpKind::Pseudoinverse:
-        return "Pseudoinverse";
-    case OpKind::Det:
-        return "Det";
-    case OpKind::Pow:
-        return "Pow";
     case OpKind::SymmGemm:
         return "SymmGemm";
     case OpKind::Norm:
         return "Norm";
-    case OpKind::SolveLyapunov:
-        return "SolveLyapunov";
-    case OpKind::HPTTPermute:
-        return "HPTTPermute";
     case OpKind::Conditional:
         return "Conditional";
     case OpKind::Loop:
@@ -304,14 +262,6 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "Trace";
     case OpKind::Allreduce:
         return "Allreduce";
-    case OpKind::Broadcast:
-        return "Broadcast";
-    case OpKind::Allgather:
-        return "Allgather";
-    case OpKind::Scatter:
-        return "Scatter";
-    case OpKind::Barrier:
-        return "Barrier";
     case OpKind::DiisStep:
         return "DiisStep";
     case OpKind::Custom:
@@ -455,10 +405,9 @@ inline std::string_view op_kind_name(OpKind kind) {
     return kind == OpKind::HostToDevice || kind == OpKind::DeviceToHost;
 }
 
-/// @brief Distributed collective kinds (Allreduce, Broadcast, Allgather, Scatter, Barrier).
+/// @brief Distributed collective kinds (Allreduce).
 [[nodiscard]] inline bool is_collective(OpKind kind) {
-    return kind == OpKind::Allreduce || kind == OpKind::Broadcast || kind == OpKind::Allgather || kind == OpKind::Scatter ||
-           kind == OpKind::Barrier;
+    return kind == OpKind::Allreduce;
 }
 
 /// @brief Infrastructure kinds that carry no einsum-style data dependency a

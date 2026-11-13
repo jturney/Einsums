@@ -60,7 +60,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   Materialization pass, so deferred (shell) tensors -- notably loop-body workspace -- are skipped rather than executed against
  *   unallocated storage.
  * - Never folds control-flow (Conditional, Loop), memory (Alloc, Free, Materialize, Initialize), I/O (DiskRead, DiskWrite),
- *   GPU transfer (HostToDevice, DeviceToHost), collective (Allreduce, Broadcast, Allgather, Scatter, Barrier), or Custom nodes.
+ *   GPU transfer (HostToDevice, DeviceToHost), collective (Allreduce), or Custom nodes.
  * - Folding has a **side effect**: it mutates tensor data during the pass, not at `execute()` time.
  *
  * @par Future improvements

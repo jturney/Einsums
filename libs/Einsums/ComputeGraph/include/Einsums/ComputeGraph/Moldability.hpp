@@ -116,23 +116,12 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
     case OpKind::DirectDivision:
     case OpKind::Norm:
     case OpKind::Trace:
-    case OpKind::SVD:
-    case OpKind::SVD_DD:
-    case OpKind::TruncatedSVD:
-    case OpKind::QR:
     case OpKind::Syev:
     case OpKind::Heev:
-    case OpKind::Geev:
-    case OpKind::TruncatedSyev:
     case OpKind::Gesv:
     case OpKind::Getrf:
     case OpKind::Getrs:
-    case OpKind::Getri:
     case OpKind::Invert:
-    case OpKind::Pseudoinverse:
-    case OpKind::Det:
-    case OpKind::Pow:
-    case OpKind::SolveLyapunov:
         return blas_route_is_moldable();
 
     // Control flow runs a nested execute(), whose nodes carry their own widths;

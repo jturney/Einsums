@@ -60,7 +60,6 @@ KindClass kind_class(OpKind kind) {
     case OpKind::Permute:
     case OpKind::GroupedPermute:
     case OpKind::Transpose:
-    case OpKind::HPTTPermute:
         return KindClass::Permute;
 
     case OpKind::TileGather:

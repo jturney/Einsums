@@ -163,29 +163,6 @@ TEST_CASE("CommunicationElimination - a write between two Allreduces prevents el
     CHECK(graph.num_nodes() == 3);
 }
 
-TEST_CASE("CommunicationElimination - a Broadcast between Allreduces does NOT protect the duplicate",
-          "[ComputeGraph][Comm][CommunicationElimination]") {
-    // Surprising truth: the invalidation loop skips Allreduce/Broadcast/Allgather
-    // outputs, so a Broadcast of the same tensor between two Allreduces leaves the
-    // "already reduced" status intact and the second Allreduce is still removed.
-    cg::Graph graph("broadcast-passthrough");
-    graph.add_node(make_allreduce(9, "C"));
-    cg::Node bcast;
-    bcast.kind    = cg::OpKind::Broadcast;
-    bcast.label   = "broadcast(C)";
-    bcast.inputs  = {9};
-    bcast.outputs = {9};
-    graph.add_node(std::move(bcast));
-    graph.add_node(make_allreduce(9, "C"));
-    graph.mark_sorted();
-
-    cg::passes::CommunicationElimination pass;
-    CHECK(pass.run(graph));
-    CHECK(pass.num_eliminated() == 1);
-    CHECK(count_kind(graph, cg::OpKind::Allreduce) == 1);
-    CHECK(count_kind(graph, cg::OpKind::Broadcast) == 1);
-}
-
 TEST_CASE("CommunicationElimination - is idempotent", "[ComputeGraph][Comm][CommunicationElimination]") {
     cg::Graph graph("idempotent");
     graph.add_node(make_allreduce(3, "C"));

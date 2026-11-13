@@ -369,7 +369,6 @@ TEST_CASE("ThreadWidth - moldability follows the kernel and the vendor", "[Compu
     // Kernels einsums threads itself fork from the ICV the executor sets, so
     // they are governable whatever BLAS was linked.
     REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::Permute)));
-    REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::HPTTPermute)));
     REQUIRE(cg::kernel_moldability(kind_node(cg::OpKind::Custom)));
 
     // A vendor call is governable only where the vendor listens.

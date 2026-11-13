@@ -929,7 +929,7 @@ a saved graph keeps, and a later bind may supply a different tensor under the
 same manifest name.
 
 What propagates, and what deliberately does not: only the axis reorderings,
-``Permute``, ``Transpose`` and ``HPTTPermute``. A **view** does not, and the
+``Permute`` and ``Transpose``. A **view** does not, and the
 reason is worth stating because the obvious rule gets it wrong. "Views, permutes
 and copies preserve identity" is false for the tag that matters most here: a view
 of a Kronecker delta is an identity only when the slice is a square block on the
@@ -1282,8 +1282,7 @@ distributed communication, analogously to the GPU transfer passes.
 ``SUMMAExpansion``
     Expand a distributed GEMM into its SUMMA panel schedule.
 ``CommunicationInsertion``
-    Insert collective nodes (Allreduce, Broadcast, Allgather) where needed
-    between distributed operations.
+    Insert Allreduce nodes where a distributed operation leaves partial sums.
 ``CommunicationElimination``
     Remove redundant communication, for example a back-to-back allreduce of the
     same tensor with no intervening modification. Reports ``num_eliminated()``.

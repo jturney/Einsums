@@ -30,7 +30,7 @@ namespace {
 /// delta is an identity only when it is a square block on the diagonal, and this pass has no way
 /// to know that from the node alone.
 bool preserves_identity(OpKind kind) {
-    return kind == OpKind::Permute || kind == OpKind::Transpose || kind == OpKind::HPTTPermute;
+    return kind == OpKind::Permute || kind == OpKind::Transpose;
 }
 
 /// Whether @p node overwrites its output with exactly its source, relabelled: alpha is one, beta

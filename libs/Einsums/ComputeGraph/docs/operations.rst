@@ -384,4 +384,4 @@ These ``OpKind`` values are inserted by passes, not directly by users:
 - ``Materialize``: allocates storage for a deferred tensor
 - ``Initialize``: fills tensor with zeros or random values after materialization
 - ``HostToDevice`` / ``DeviceToHost``: GPU data transfers
-- ``Allreduce`` / ``Broadcast`` / ``Allgather`` / ``Scatter`` / ``Barrier``: MPI collectives
+- ``Allreduce``: sums partial results across MPI ranks

@@ -60,7 +60,7 @@ bool CommunicationElimination::transform(Graph &graph) {
 
         // If a compute node writes to a tensor, invalidate its "already reduced" status.
         for (auto tid : node.outputs) {
-            if (node.kind != OpKind::Allreduce && node.kind != OpKind::Broadcast && node.kind != OpKind::Allgather) {
+            if (node.kind != OpKind::Allreduce) {
                 already_reduced.erase(graph.buffer_of(tid));
             }
         }

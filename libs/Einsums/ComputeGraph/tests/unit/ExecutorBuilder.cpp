@@ -229,8 +229,8 @@ TEST_CASE("ExecutorBuilder - the predicate and the builder's dispatch agree", "[
 TEST_CASE("ExecutorBuilder - an unconvertible kind names itself when refused", "[ComputeGraph][ExecutorBuilder]") {
     cg::Graph        graph("refusal");
     cg::OpData const empty{};
-    REQUIRE_THROWS_WITH(cg::build_executor(cg::OpKind::HPTTPermute, packed_gemm::ScalarType::Float64, 2, empty, graph, {}, {}),
-                        Catch::Matchers::ContainsSubstring("HPTTPermute"));
+    REQUIRE_THROWS_WITH(cg::build_executor(cg::OpKind::Gemv, packed_gemm::ScalarType::Float64, 2, empty, graph, {}, {}),
+                        Catch::Matchers::ContainsSubstring("Gemv"));
 }
 
 // ── Identity: rebuilt executors reproduce captured ones bit for bit ─────────

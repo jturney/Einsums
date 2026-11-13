@@ -51,8 +51,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *
  * @par Limitations
  * - A no-op on a single rank; exercised only under real MPI (or the mock backend with `world_size() > 1`).
- * - Only inserts **Allreduce** (partial-sum → full). Broadcast/Allgather/Scatter are recognized as
- *   existing infrastructure nodes but are not synthesized here.
+ * - Only inserts **Allreduce** (partial-sum → full), which is the only collective kind there is.
  * - Infrastructure and control-flow nodes (Materialize, Initialize, transfers, existing collectives,
  *   Loop, Conditional, …) are skipped; distributed reductions inside a loop body are not inserted by
  *   this top-level walk.
