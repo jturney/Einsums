@@ -454,7 +454,7 @@ void Graph::bind_scalar_impl(std::string const &name, void *storage, packed_gemm
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': bind_scalar('{}'): the storage pointer is null", _name, name);
     }
 
-    TensorHandle &handle = tensor(entry.id);
+    TensorHandle &handle = mutable_tensor(entry.id);
     // A rank-0 TENSOR slot is read and written as a tensor object, so a bare element bound there
     // would be decoded as one.
     if (!handle.raw_scalar) {

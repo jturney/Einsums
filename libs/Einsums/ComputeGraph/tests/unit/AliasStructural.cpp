@@ -59,6 +59,8 @@
 #include <utility>
 #include <vector>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -591,7 +593,7 @@ TEST_CASE("a graph with no addresses links structurally", "[ComputeGraph][Alias]
 
     // Strip every address, which is what a graph read from a file has.
     for (auto const &[id, handle] : graph.tensors_map()) {
-        graph.find_tensor(id)->data_ptr = nullptr;
+        cg::detail::GraphBackdoor::tensor(graph, id).data_ptr = nullptr;
     }
     graph.clear_alias_links();
     graph.link_alias_storage(); // must DELEGATE, not link nothing
@@ -631,7 +633,7 @@ TEST_CASE("a graph with no addresses and no View nodes still links its declarati
     REQUIRE(slice_id != 0);
 
     for (auto const &[id, handle] : graph.tensors_map()) {
-        graph.find_tensor(id)->data_ptr = nullptr;
+        cg::detail::GraphBackdoor::tensor(graph, id).data_ptr = nullptr;
     }
 
     SECTION("undeclared, the relation is genuinely lost") {

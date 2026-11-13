@@ -25,6 +25,8 @@
 #include <string>
 #include <vector>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -262,9 +264,10 @@ TEST_CASE("Manifest - spaces round-trip as names, with the inferred flag", "[Com
 
     // An inference is only as good as the declarations it came from, and the
     // manifest has to carry that distinction across a save.
-    cg::TensorId const b_id            = graph.live_tensor_id_by_ptr(&B, {});
-    graph.tensor(b_id).spaces          = {virt, occ};
-    graph.tensor(b_id).spaces_inferred = true;
+    cg::TensorId const b_id = graph.live_tensor_id_by_ptr(&B, {});
+    // On a manifest entry, which infer_spaces refuses: the state a saved inference reloads as.
+    cg::detail::GraphBackdoor::tensor(graph, b_id).spaces          = {virt, occ};
+    cg::detail::GraphBackdoor::tensor(graph, b_id).spaces_inferred = true;
 
     auto const contract = graph.manifest();
 
@@ -305,8 +308,8 @@ TEST_CASE("Manifest - an unnamed axis is a hole and a foreign SpaceId is an erro
     // axes whose extent means nothing chemically. The manifest cannot tell the two apart from
     // the id alone, so it reports the hole as the empty name rather than refusing a graph the
     // public API can build.
-    cg::TensorId const a_id      = graph.live_tensor_id_by_ptr(&A, {});
-    graph.tensor(a_id).spaces[1] = cg::SpaceId{};
+    cg::TensorId const a_id                                  = graph.live_tensor_id_by_ptr(&A, {});
+    cg::detail::GraphBackdoor::tensor(graph, a_id).spaces[1] = cg::SpaceId{};
 
     auto const  contract = graph.manifest();
     auto const *entry    = contract.find("A");
@@ -320,7 +323,7 @@ TEST_CASE("Manifest - an unnamed axis is a hole and a foreign SpaceId is an erro
     elsewhere.register_space(cg::make_index_space("other_a", "a", 1.0));
     elsewhere.register_space(cg::make_index_space("other_b", "b", 1.0));
     elsewhere.register_space(cg::make_index_space("other_c", "c", 1.0));
-    graph.tensor(a_id).spaces[1] = elsewhere.ids().back();
+    cg::detail::GraphBackdoor::tensor(graph, a_id).spaces[1] = elsewhere.ids().back();
     REQUIRE_THROWS_WITH(graph.manifest(), Catch::Matchers::ContainsSubstring("'A'"));
 }
 

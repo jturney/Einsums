@@ -65,7 +65,7 @@ void Graph::declare_alias(TensorId child, TensorId parent) {
     // An unknown id is a caller's mistake, and ignoring it would drop the hazard edges the
     // declaration exists to add: two tensors sharing storage would then be scheduled as if they
     // did not.
-    auto *child_handle = find_tensor(child);
+    auto *child_handle = find_mutable_tensor(child);
     if (child_handle == nullptr || !_tensors.contains(parent)) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': declare_alias({}, {}) names a tensor this graph does not have: {}",
                                 _name, child, parent, child_handle == nullptr ? child : parent);
@@ -109,7 +109,7 @@ void Graph::clear_alias_links() noexcept {
 
 void Graph::apply_declared_aliases() {
     for (auto const &[child, parent] : _declared_aliases) {
-        auto *handle = find_tensor(child);
+        auto *handle = find_mutable_tensor(child);
         if (handle == nullptr || child == parent || !_tensors.contains(parent)) {
             continue;
         }
@@ -159,7 +159,7 @@ void Graph::link_alias_structural() {
         updates.push_back({.tid = id, .root = res.root, .box = std::move(box)});
     }
     for (auto &update : updates) {
-        auto *handle = find_tensor(update.tid);
+        auto *handle = find_mutable_tensor(update.tid);
         if (handle == nullptr) {
             continue;
         }
@@ -389,7 +389,7 @@ void Graph::link_alias_storage() {
                     if (root == canonical) {
                         continue;
                     }
-                    auto *handle = find_tensor(root);
+                    auto *handle = find_mutable_tensor(root);
                     if (handle == nullptr) {
                         continue;
                     }

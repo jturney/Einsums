@@ -182,7 +182,7 @@ bool TransferInsertion::transform(Graph &graph) {
 
     // Update TensorHandle residency to match final state.
     for (auto const &[tid, res] : residency) {
-        graph.tensor(tid).residency = res;
+        graph.set_residency(tid, res);
     }
 
     EINSUMS_LOG_INFO("TransferInsertion: inserted {} transfer nodes", _stats.num_transfers);

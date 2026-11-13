@@ -21,6 +21,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 /// alone. Everything else edits through Graph::edit and the node-set functions, as a pass does.
 struct GraphBackdoor {
     static std::vector<Node> &nodes(Graph &graph) { return graph._nodes; }
+
+    /// A registered handle to write, for a test that builds a state the graph's methods refuse.
+    static TensorHandle &tensor(Graph &graph, TensorId id) { return graph.mutable_tensor(id); }
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

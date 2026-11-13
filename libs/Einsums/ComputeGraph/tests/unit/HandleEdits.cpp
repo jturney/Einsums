@@ -198,3 +198,14 @@ TEST_CASE("Handle edits - a stage adopts a declaring scope's lifecycle, or finds
     CHECK(graph.tensor(id).alloc_state == cg::AllocState::Materialized);
     CHECK(graph.tensor(id).init_kind == cg::InitKind::None);
 }
+
+// The transfer passes read residency back at their next run, so a re-run plans from where the
+// last one left the data rather than inserting the same transfers again.
+TEST_CASE("Handle edits - set_residency records where the data is left", "[ComputeGraph][HandleEdits]") {
+    cg::Graph  graph("residency");
+    auto      &tmp = graph.scratch<double, 2>("tmp", 4, 4);
+    auto const id  = id_of(graph, &tmp);
+    REQUIRE(graph.tensor(id).residency == cg::Residency::Host);
+    graph.set_residency(id, cg::Residency::Device);
+    CHECK(graph.tensor(id).residency == cg::Residency::Device);
+}

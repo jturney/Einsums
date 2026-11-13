@@ -51,6 +51,11 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::graph_ir)
 
+/// The loader's access to handle state a saved file restores and no pass may set.
+struct LoaderAccess {
+    static TensorHandle &tensor(Graph &graph, TensorId id) { return graph.mutable_tensor(id); }
+};
+
 namespace {
 
 /// One frame's loaded storage: the dense id's tensor object, its id in this
@@ -235,7 +240,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         // annotate_spaces records a DECLARATION; the file says whether the
         // original was one, and a derived annotation must read back as derived
         // so a validation pass still reports the weaker verdict on it.
-        graph.tensor(loaded[spec.id].id).spaces_inferred = spec.spaces_inferred;
+        LoaderAccess::tensor(graph, loaded[spec.id].id).spaces_inferred = spec.spaces_inferred;
     }
     for (auto const &spec : tensors) {
         if (!spec.dim_symbols.empty()) {
@@ -272,7 +277,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         // find already set, so it is cleared first. A write backing's record says how the tensor
         // starts (empty, or zero for one its writers add into), which annotating keeps.
         if (spec.init == InitKind::FromDisk) {
-            graph.tensor(loaded[spec.id].id).init_kind = InitKind::None;
+            LoaderAccess::tensor(graph, loaded[spec.id].id).init_kind = InitKind::None;
         }
         try {
             graph.annotate_backing(loaded[spec.id].id, std::move(backing));

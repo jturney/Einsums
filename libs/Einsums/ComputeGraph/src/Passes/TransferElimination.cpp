@@ -244,7 +244,7 @@ bool TransferElimination::transform(Graph &graph) {
 
     // Update TensorHandle residency.
     for (auto const &[tid, res] : residency) {
-        graph.tensor(tid).residency = res;
+        graph.set_residency(tid, res);
     }
 
     if (eliminated.moved() || !insertions.empty()) {

@@ -15,6 +15,8 @@
 
 #include <cmath>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using einsums::testing::reference_einsum;
@@ -933,9 +935,9 @@ TEMPLATE_LIST_TEST_CASE("CSE - deduplicates rank-3 batched einsum nodes (row-maj
     // Mark D's handle intermediate so the fold is allowed (create_tensor has
     // no row-major variant; this test exercises the row_mode dedup machinery,
     // not the user-visibility guard - that has its own test above).
-    for (auto &[tid, handle] : graph.tensors_map()) {
+    for (auto const &[tid, handle] : graph.tensors_map()) {
         if (handle.lookup_ptr() == &D) {
-            handle.is_intermediate = true;
+            cg::detail::GraphBackdoor::tensor(graph, tid).is_intermediate = true;
         }
     }
 

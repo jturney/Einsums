@@ -324,7 +324,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 node.execute();
             }
             for (TensorId const id : node.outputs) {
-                if (auto *handle = _graph.find_tensor(id)) {
+                if (auto *handle = _graph.find_mutable_tensor(id)) {
                     handle->residency = Residency::Host;
                 }
                 if constexpr (!gpu::has_unified_memory) {

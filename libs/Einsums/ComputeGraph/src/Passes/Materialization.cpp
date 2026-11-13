@@ -51,7 +51,7 @@ namespace {
 //                       For a hoisted body tensor this is a parent id
 //                       minted via Graph::find_or_register_tensor_ptr,
 //                       not the body's own id.
-std::vector<Node> build_lifecycle_nodes(Graph &graph, Graph &owner, TensorHandle &handle, TensorId emit_tid, InitKind init) {
+std::vector<Node> build_lifecycle_nodes(Graph &graph, Graph &owner, TensorHandle const &handle, TensorId emit_tid, InitKind init) {
     std::vector<Node> out;
 
     // ── Materialize ────────────────────────────────────────────────────
@@ -651,7 +651,7 @@ bool Materialization::transform(Graph &graph) {
     // build_lifecycle_nodes plus the two counters that always move with it: every
     // lifecycle this pass emits materializes one tensor, and initializes it as well
     // when the handle asks for it. Kept together so the three cannot drift.
-    auto lifecycle_for = [this, &init_of](Graph &target, Graph &owner, TensorHandle &handle, TensorId emit_tid) {
+    auto lifecycle_for = [this, &init_of](Graph &target, Graph &owner, TensorHandle const &handle, TensorId emit_tid) {
         InitKind const init  = init_of(handle);
         auto           built = build_lifecycle_nodes(target, owner, handle, emit_tid, init);
         _stats.num_materialized++;

@@ -290,7 +290,7 @@ TensorId Graph::find_or_register_tensor_ptr(TensorHandle const &handle) {
     return register_tensor(handle);
 }
 
-TensorHandle &Graph::tensor(TensorId id) {
+TensorHandle &Graph::mutable_tensor(TensorId id) {
     auto it = _tensors.find(id);
     if (it == _tensors.end()) {
         EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no tensor with id {}", _name, id);
@@ -298,7 +298,7 @@ TensorHandle &Graph::tensor(TensorId id) {
     return it->second;
 }
 
-TensorHandle *Graph::find_tensor(TensorId id) noexcept {
+TensorHandle *Graph::find_mutable_tensor(TensorId id) noexcept {
     auto it = _tensors.find(id);
     return it == _tensors.end() ? nullptr : &it->second;
 }
@@ -342,7 +342,7 @@ void Graph::note_machine_dependent_pass(std::string pass_name) {
 }
 
 void Graph::annotate_tag(TensorId id, ProvenanceTag tag) {
-    auto &handle = tensor(id);
+    auto &handle = mutable_tensor(id);
 
     // Sorted on the way in, so two tags built by setting the same keys in a different order
     // compare equal and a saved graph's bytes do not depend on the order a caller happened to
@@ -354,6 +354,7 @@ void Graph::annotate_tag(TensorId id, ProvenanceTag tag) {
     tag.attributes.erase(duplicates.begin(), duplicates.end());
 
     handle.tag = std::move(tag);
+    _handle_version++;
 }
 
 ProvenanceTag const &Graph::tensor_tag(TensorId id) const {
@@ -361,7 +362,7 @@ ProvenanceTag const &Graph::tensor_tag(TensorId id) const {
 }
 
 void Graph::annotate_backing(TensorId id, TensorBacking backing) {
-    attach_backing(tensor(id), std::move(backing));
+    attach_backing(mutable_tensor(id), std::move(backing));
 }
 
 void Graph::attach_backing(TensorHandle &handle, TensorBacking backing) {
@@ -444,7 +445,7 @@ std::optional<TensorBacking> Graph::tensor_backing(TensorId id) const {
 }
 
 void Graph::annotate_spaces(TensorId id, std::vector<SpaceId> spaces) {
-    auto &handle = tensor(id);
+    auto &handle = mutable_tensor(id);
 
     if (!spaces.empty() && spaces.size() != handle.rank) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': annotate_spaces tensor '{}': got {} spaces for a rank-{} tensor", _name,
@@ -482,6 +483,7 @@ void Graph::annotate_spaces(TensorId id, std::vector<SpaceId> spaces) {
     // downstream may overwrite that.
     handle.spaces          = std::move(spaces);
     handle.spaces_inferred = false;
+    _handle_version++;
 
     // A declaration over a tensor with concrete dims also says how big those spaces are on
     // this problem, which is what lets a later tensor be shaped in spaces instead of numbers.
@@ -489,7 +491,7 @@ void Graph::annotate_spaces(TensorId id, std::vector<SpaceId> spaces) {
 }
 
 void Graph::annotate_space_axis(TensorId id, std::size_t axis, SpaceId space) {
-    auto &handle = tensor(id);
+    auto &handle = mutable_tensor(id);
 
     if (axis >= handle.rank) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': annotate_space_axis tensor '{}': axis {} is past its rank of {}", _name,
@@ -509,6 +511,7 @@ void Graph::annotate_space_axis(TensorId id, std::size_t axis, SpaceId space) {
     }
     handle.spaces[axis]    = space;
     handle.spaces_inferred = false;
+    _handle_version++;
 
     {
         TensorHandle probe;
@@ -573,6 +576,7 @@ void Graph::refresh_declared_symmetry() {
             if (auto declared = handle.declared_symmetry_fn();
                 declared != nullptr && (handle.symmetry_hint == nullptr || !(*handle.symmetry_hint == *declared))) {
                 handle.symmetry_hint = std::move(declared);
+                graph._handle_version++;
             }
         }
     };
@@ -897,12 +901,9 @@ std::vector<std::pair<std::string, SpaceId>> bind_einsum_spaces(Graph &graph, Te
                                                                 std::vector<std::string> const &c_indices, std::string_view context) {
     auto letters = einsum_letter_spaces(graph, a_id, b_id, c_id, a_indices, b_indices, c_indices, context);
 
-    if (auto *output = graph.find_tensor(c_id); output != nullptr && output->is_intermediate && output->spaces.empty()) {
-        auto inferred = spaces_from_letters(c_indices, letters);
-        if (inferred.size() == output->rank) {
-            output->spaces          = std::move(inferred);
-            output->spaces_inferred = true;
-        }
+    // Only the first inference at capture: a later one belongs to SpacePropagation, which may refine it.
+    if (auto const *output = graph.find_tensor(c_id); output != nullptr && output->spaces.empty()) {
+        graph.infer_spaces(c_id, spaces_from_letters(c_indices, letters));
     }
 
     return letters;

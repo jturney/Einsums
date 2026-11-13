@@ -1525,7 +1525,7 @@ TEST_CASE("ExecutorBuilder - a rebuilt WriteParam reads the graph's source, not 
     REQUIRE(desc->source_id != 0);
     REQUIRE(desc->source_type == cg::ParamSourceType::Int64);
 
-    stage->tensor(desc->source_id).tensor_ptr = &second;
+    cg::detail::GraphBackdoor::tensor(*stage, desc->source_id).tensor_ptr = &second;
     pipe.execute();
     REQUIRE(pipe.get_param("n") == 1);
 }

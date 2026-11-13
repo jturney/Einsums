@@ -157,6 +157,9 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") SpaceTiling {
 
 class PassManager; // Forward declaration
 class NodeRunner;
+namespace graph_ir {
+struct LoaderAccess;
+} // namespace graph_ir
 class OptimizerPass;
 enum class OptLevel : std::uint8_t; // Optimizer.hpp
 
@@ -1231,16 +1234,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * one. The index has no such ambiguity: @ref register_tensor reassigns it to the tensor
      * that lives there now.
      */
-    [[nodiscard]] TensorHandle *find_tensor_by_ptr(void const *ptr) noexcept { return find_tensor(find_tensor_id_by_ptr(ptr)); }
+    [[nodiscard]] TensorHandle const *find_tensor_by_ptr(void const *ptr) const noexcept { return find_tensor(find_tensor_id_by_ptr(ptr)); }
 
     /**
      * @brief Look up a tensor handle by its TensorId.
+     *
+     * Read-only: a pass changes a registered handle through the method for that change
+     * (@ref infer_spaces, @ref relayout, @ref set_distribution, ...), never by writing its fields.
+     *
      * @param[in] id The tensor identifier.
      * @return Reference to the TensorHandle.
      * @throws std::out_of_range If no tensor with the given ID exists.
      */
-    [[nodiscard]] TensorHandle       &tensor(TensorId id);
-    [[nodiscard]] TensorHandle const &tensor(TensorId id) const; ///< @overload
+    [[nodiscard]] TensorHandle const &tensor(TensorId id) const;
 
     /**
      * @brief Look up a tensor handle by its TensorId, without throwing.
@@ -1249,8 +1255,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *         given ID exists. The non-throwing counterpart of tensor() for
      *         the optimizer passes' "handle or skip" lookups.
      */
-    [[nodiscard]] TensorHandle       *find_tensor(TensorId id) noexcept;
-    [[nodiscard]] TensorHandle const *find_tensor(TensorId id) const noexcept; ///< @overload
+    [[nodiscard]] TensorHandle const *find_tensor(TensorId id) const noexcept;
 
     /**
      * @brief The id registered for @p ptr, when that registration is still about the SAME tensor.
@@ -1445,6 +1450,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     void mark_materialized(TensorId id);
+
+    /**
+     * @brief Record where a tensor's data lives once the planned transfers have run, for the next
+     *        transfer pass over this graph to start from.
+     *
+     * @param[in] id        The tensor.
+     * @param[in] residency Where it lives.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @versionadded{2.0.0}
+     */
+    void set_residency(TensorId id, Residency residency);
 
     /// @}
 
@@ -2600,9 +2616,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// @versionadded{2.0.0}
     [[nodiscard]] std::unordered_map<TensorId, TensorId> const &slot_redirects() const noexcept { return _slot_redirects; }
 
+    /// The tensor registry, read-only; see @ref tensor.
     [[nodiscard]] std::unordered_map<TensorId, TensorHandle> const &tensors_map() const { return _tensors; }
-    /// Mutable access to the tensor registry (for testing / optimization passes).
-    [[nodiscard]] std::unordered_map<TensorId, TensorHandle> &tensors_map() { return _tensors; }
 
     /**
      * @brief Invoke @p visitor on each immediate child sub-graph.
@@ -4082,7 +4097,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         requires(sizeof...(Dims) == Rank)
     Tensor<T, Rank> &declare_zero_tensor(std::string name, Dims... dims) {
         auto &t = declare_tensor<T, Rank>(std::move(name), dims...);
-        if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
+        if (auto *handle = find_mutable_tensor(find_tensor_id_by_ptr(&t)); handle != nullptr) {
             handle->init_kind = InitKind::Zero;
         }
         return t;
@@ -4114,7 +4129,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         requires(sizeof...(Dims) == Rank)
     Tensor<T, Rank> &scratch(std::string name, Dims... dims) {
         auto &t = declare_tensor<T, Rank>(std::move(name), dims...);
-        if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
+        if (auto *handle = find_mutable_tensor(find_tensor_id_by_ptr(&t)); handle != nullptr) {
             handle->is_intermediate = true;
         }
         return t;
@@ -4126,7 +4141,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         requires(sizeof...(Dims) == Rank)
     Tensor<T, Rank> &scratch_zero(std::string name, Dims... dims) {
         auto &t = declare_zero_tensor<T, Rank>(std::move(name), dims...);
-        if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
+        if (auto *handle = find_mutable_tensor(find_tensor_id_by_ptr(&t)); handle != nullptr) {
             handle->is_intermediate = true;
         }
         return t;
@@ -4203,7 +4218,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }(std::make_index_sequence<Rank>{});
         auto *ptr     = &t;
         auto  fill_fn = std::forward<FillFn>(fill);
-        if (auto *handle = find_tensor_by_ptr(ptr); handle != nullptr) {
+        if (auto *handle = find_mutable_tensor(find_tensor_id_by_ptr(ptr)); handle != nullptr) {
             handle->init_kind = InitKind::Zero; // Triggers an init node
             handle->zero_fn   = [ptr, fill_fn]() {
                 ptr->materialize();
@@ -5075,6 +5090,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// strings and per-node timing slots.
     friend class NodeRunner;
 
+    /// Restores a saved graph, including handle state no pass may set (whether an annotation was
+    /// inferred, how a backed tensor starts), which the file recorded.
+    friend struct graph_ir::LoaderAccess;
+
     /// A value that moves whenever any graph below this one has a declared edit: each
     /// descendant's analysis version and node count, folded in walk order. A body edit moves the
     /// body's own counter and not this graph's, while this graph's control-flow entries in
@@ -5091,6 +5110,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// and observer events, sorting, first-run validation, the profiler zone, and the runner the
     /// executor runs each node through.
     void replay(Executor &executor);
+
+    /// A registered handle to change, for this graph's own members and friends. Everything else
+    /// reads handles through @ref tensor and changes them through the named methods.
+    /// @throws std::out_of_range If no tensor with the given ID exists.
+    [[nodiscard]] TensorHandle &mutable_tensor(TensorId id);
+
+    /// The non-throwing @ref mutable_tensor: null when no tensor with the given ID exists.
+    [[nodiscard]] TensorHandle *find_mutable_tensor(TensorId id) noexcept;
 
     /// Whether the node order and the dependency lists describe the graph as it stands, bodies
     /// included: what the replay entry points check before deciding to sort.
@@ -5564,7 +5591,7 @@ auto Graph::scratch_zero_runtime(std::string name, std::vector<size_t> dims) -> 
 template <typename T, typename Alloc>
 auto Graph::declare_internal_tensor(std::string name, std::vector<size_t> dims) -> GeneralRuntimeTensor<T, Alloc> & {
     auto &t = declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), /*intermediate=*/true);
-    if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
+    if (auto *handle = find_mutable_tensor(find_tensor_id_by_ptr(&t)); handle != nullptr) {
         handle->materialize_on_execute = true;
     }
     return t;

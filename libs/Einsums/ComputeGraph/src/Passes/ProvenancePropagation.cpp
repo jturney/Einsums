@@ -102,7 +102,7 @@ bool ProvenancePropagation::transform(Graph &graph) {
         }
 
         TensorHandle const *source = graph.find_tensor(node.inputs[0]);
-        TensorHandle       *target = graph.find_tensor(node.outputs[0]);
+        TensorHandle const *target = graph.find_tensor(node.outputs[0]);
         if (source == nullptr || target == nullptr || !source->tag.valid()) {
             continue;
         }

@@ -397,7 +397,7 @@ void Graph::apply_space_shape(TensorId id, ResolvedSpaceShape const &resolved) {
 }
 
 void Graph::annotate_dims(TensorId id, std::vector<std::string> symbols) {
-    auto &handle = tensor(id);
+    auto &handle = mutable_tensor(id);
 
     if (!symbols.empty() && symbols.size() != handle.rank) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': annotate_dims tensor '{}': got {} symbols for a rank-{} tensor", _name,
@@ -428,6 +428,7 @@ void Graph::annotate_dims(TensorId id, std::vector<std::string> symbols) {
     record_symbol_space_ties(probe);
 
     handle.dim_symbols = std::move(symbols);
+    _handle_version++;
 }
 
 void Graph::annotate_ragged_dim(TensorId id, std::size_t axis, std::string_view space_name) {
@@ -525,7 +526,7 @@ bool Graph::decides_extents(TensorId id) const {
 }
 
 void Graph::resize_derived_extent(TensorId id, std::vector<std::size_t> const &derived, std::string_view producer) {
-    TensorHandle *handle = find_tensor(id);
+    TensorHandle *handle = find_mutable_tensor(id);
     if (handle == nullptr || handle->rank != derived.size() || handle->dims == derived) {
         return;
     }

@@ -158,6 +158,14 @@ void Graph::adopt_lifecycle(TensorId id, TensorHandle const &from) {
     _handle_version++;
 }
 
+void Graph::set_residency(TensorId id, Residency residency) {
+    TensorHandle &handle = registered(_tensors, _name, id);
+    if (handle.residency != residency) {
+        handle.residency = residency;
+        _handle_version++;
+    }
+}
+
 void Graph::mark_materialized(TensorId id) {
     TensorHandle &handle = registered(_tensors, _name, id);
     handle.alloc_state   = AllocState::Materialized;

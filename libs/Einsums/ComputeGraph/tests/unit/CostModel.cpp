@@ -1323,10 +1323,12 @@ TEST_CASE("ContractionPlanning - reports comm_cost for distributed tensors", "[C
     }
 
     // Manually mark A as distributed (simulating what DistributionPlanningPass would do)
-    for (auto &[tid, handle] : graph.tensors_map()) {
+    for (auto const &[tid, handle] : graph.tensors_map()) {
         if (handle.name == "A") {
-            handle.is_distributed = true;
-            handle.is_replicated  = false;
+            comm::DistributionDescriptor rows;
+            rows.dim_to_axis.assign(handle.rank, comm::GridAxis::None);
+            rows.dim_to_axis[0] = comm::GridAxis::Row;
+            graph.set_distribution(tid, std::move(rows));
             break;
         }
     }
@@ -1388,11 +1390,12 @@ TEST_CASE("Materialization - respects distribution_info on handle", "[ComputeGra
     }
 
     // Manually annotate the handle as distributed
-    for (auto &[tid, handle] : graph.tensors_map()) {
+    for (auto const &[tid, handle] : graph.tensors_map()) {
         if (handle.lookup_ptr() == &T) {
-            handle.is_distributed    = true;
-            handle.is_replicated     = false;
-            handle.distribution_info = std::make_shared<size_t>(0); // Block along dim 0
+            comm::DistributionDescriptor rows; // block along dim 0
+            rows.dim_to_axis.assign(handle.rank, comm::GridAxis::None);
+            rows.dim_to_axis[0] = comm::GridAxis::Row;
+            graph.set_distribution(tid, std::move(rows));
             break;
         }
     }

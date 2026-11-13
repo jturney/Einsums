@@ -324,8 +324,8 @@ std::vector<std::size_t> Graph::hoist(Graph &child, std::span<std::size_t const>
     // treat the tensor as its own to change: LayoutAssignment once re-ordered a hoisted operand under
     // the builder that writes it in the parent.
     for (auto const &[body_tid, mine] : handed_over) {
-        TensorHandle &stand_in          = child.tensor(body_tid);
-        TensorHandle &declared          = tensor(mine);
+        TensorHandle &stand_in          = child.mutable_tensor(body_tid);
+        TensorHandle &declared          = mutable_tensor(mine);
         declared.is_intermediate        = true;
         declared.materialize_on_execute = stand_in.materialize_on_execute;
         stand_in.is_intermediate        = false;
