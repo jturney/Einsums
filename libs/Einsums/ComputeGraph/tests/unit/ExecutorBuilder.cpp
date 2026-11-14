@@ -2524,7 +2524,7 @@ TEST_CASE("ExecutorBuilder - rebuilt lifecycle executors run a hoisted scratch's
         graph.execute();
         for (std::size_t i = 0; i < n; ++i) {
             for (std::size_t j = 0; j < n; ++j) {
-                CHECK_THAT(acc(i, j), Catch::Matchers::WithinRel(3.0 * AAA(i, j), 1e-12));
+                CHECK_THAT(acc(i, j), Catch::Matchers::WithinAbs(3.0 * AAA(i, j), 1e-12));
             }
         }
     }
