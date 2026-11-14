@@ -6003,6 +6003,7 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
         // lookup checks the two together (see live_tensor_id_by_ptr), so a handle left
         // holding the old token disowns the tensor it was just rebound to.
         th_it->second.caller_token = detail::liveness_token_of(new_tensor);
+        th_it->second.ops          = &tensor_ops_for<TensorType>;
         // ``impl_fn`` was baked over the OLD tensor object, so leaving it
         // alone hands every pass-built executor that reads through it (see
         // ``make_einsum_node``) a rebound node's PREVIOUS storage. It is

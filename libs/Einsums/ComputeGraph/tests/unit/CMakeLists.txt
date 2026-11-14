@@ -62,6 +62,7 @@ set(ComputeGraphTests
     GraphCapture.cpp
     GraphFeatures.cpp
     HandleEdits.cpp
+    TensorOps.cpp
     GraphRegistry.cpp
     GraphStateContracts.cpp
     NodeFeatures.cpp

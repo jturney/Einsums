@@ -22,6 +22,8 @@
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/TensorBase/TensorBase.hpp>
 
+#include <any>
+#include <array>
 #include <cstddef>
 #include <cstdlib>
 #include <functional>
@@ -252,6 +254,202 @@ concept GraphCapturableTensor =
  */
 // TensorId, AllocState, InitKind, Residency are defined in ComputeGraphTypes module
 // (included via Einsums/ComputeGraphTypes/Enums.hpp and Ids.hpp above)
+
+/**
+ * @brief What one tensor type can do, as plain functions over a pointer to the tensor object.
+ *
+ * One table per tensor type, built at compile time by ``tensor_ops_for``, and shared by every
+ * handle naming a tensor of that type. Its entries are called on @ref TensorHandle::live_ptr, read
+ * at call time, so repointing a handle at another tensor is repointing two pointers rather than
+ * rebuilding a set of closures each bound to one object.
+ *
+ * An entry is null when the type lacks the method behind it, decided once per type by the same
+ * requirement @ref make_handle tests before installing the matching closure. The object pointer is
+ * always the type the table was built for; nothing checks it.
+ *
+ * Tables are per shared library (each one that instantiates a type has its own copy), so compare
+ * the entries, never the table addresses.
+ */
+struct TensorOps {
+    /// The tensor's rank-erased ``detail::TensorImpl<T>``, as @ref TensorHandle::impl_fn returns it.
+    void *(*impl)(void *object){nullptr};
+    /// Whether the tensor has storage now. Null means "always materialized".
+    bool (*is_materialized)(void const *object){nullptr};
+    void (*materialize)(void *object){nullptr};
+    /// Attach caller-provided storage, typed as the tensor's element.
+    void (*materialize_into)(void *object, void *storage){nullptr};
+    void (*release)(void *object){nullptr};
+    /// The tensor's own storage block. Set only for owning types with a releasable block.
+    einsums::detail::StorageBase *(*storage)(void *object){nullptr};
+    /// Materialize, then zero.
+    void (*fill_zero)(void *object){nullptr};
+    /// Materialize, then fill uniformly on ``[-1, 1)``; see @ref make_random_fn.
+    void (*fill_random)(void *object){nullptr};
+    /// Give a deferred tensor new extents before it is allocated.
+    void (*resize_deferred)(void *object, std::span<std::size_t const> dims){nullptr};
+    /// Record a distributed tensor's global extents and this rank's offsets.
+    void (*set_distribution)(void *object, std::span<std::size_t const> global_dims, std::span<std::size_t const> offsets){nullptr};
+    void (*allreduce_sum)(void *object){nullptr};
+    comm::Request (*iallreduce_sum)(void *object){nullptr};
+    /// The symmetry the tensor declares now, or null when it declares none.
+    std::shared_ptr<SymmetryDescriptor const> (*declared_symmetry)(void const *object){nullptr};
+    void (*set_symmetry)(void *object, SymmetryDescriptor descriptor){nullptr};
+    /// Restrict the tensor to a slice; the returned state is the caller's, to hand to
+    /// ``end_local_view``.
+    std::any (*begin_local_view)(void *object, std::size_t dim, std::size_t start, std::size_t count){nullptr};
+    void (*end_local_view)(void *object, std::any &state){nullptr};
+    std::string const &(*name)(void const *object){nullptr};
+};
+
+namespace detail {
+
+/// The table a default-constructed handle points at: every entry null.
+inline constexpr TensorOps no_tensor_ops{};
+
+template <typename TensorType>
+consteval TensorOps make_tensor_ops() {
+    using Clean = std::remove_cvref_t<TensorType>;
+    using Value = typename Clean::ValueType;
+    TensorOps ops;
+
+    if constexpr (requires(Clean &t) { t.impl(); }) {
+        ops.impl = [](void *object) -> void * { return static_cast<void *>(&static_cast<Clean *>(object)->impl()); };
+    }
+    if constexpr (requires(Clean const &t) { t.is_materialized(); }) {
+        ops.is_materialized = [](void const *object) -> bool { return static_cast<Clean const *>(object)->is_materialized(); };
+    }
+    if constexpr (requires(Clean &t) { t.materialize(); }) {
+        ops.materialize = [](void *object) { static_cast<Clean *>(object)->materialize(); };
+    }
+    if constexpr (requires(Clean &t, Value *p) { t.materialize_into(p); }) {
+        ops.materialize_into = [](void *object, void *storage) {
+            static_cast<Clean *>(object)->materialize_into(static_cast<Value *>(storage));
+        };
+    }
+    if constexpr (requires(Clean &t) { t.release(); }) {
+        ops.release = [](void *object) { static_cast<Clean *>(object)->release(); };
+        if constexpr (requires(Clean &t) { t.storage().get(); }) {
+            ops.storage = [](void *object) -> einsums::detail::StorageBase * { return static_cast<Clean *>(object)->storage().get(); };
+        }
+    }
+    if constexpr (requires(Clean &t) {
+                      t.materialize();
+                      t.zero();
+                  }) {
+        ops.fill_zero = [](void *object) {
+            auto *tensor = static_cast<Clean *>(object);
+            tensor->materialize();
+            tensor->zero();
+        };
+    }
+    if constexpr (requires(Clean &t) {
+                      t.materialize();
+                      t.data();
+                      t.size();
+                  }) {
+        ops.fill_random = [](void *object) {
+            auto *tensor = static_cast<Clean *>(object);
+            tensor->materialize();
+            auto        *data = tensor->data();
+            size_t const size = tensor->size();
+            for (size_t idx = 0; idx < size; idx++) {
+                // NOLINTNEXTLINE(misc-predictable-rand)
+                data[idx] = static_cast<Value>(static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0);
+            }
+        };
+    }
+    if constexpr (requires(Clean &t, std::vector<std::size_t> const &dims) { t.resize_deferred(dims); }) {
+        ops.resize_deferred = [](void *object, std::span<std::size_t const> dims) {
+            static_cast<Clean *>(object)->resize_deferred(std::vector<std::size_t>(dims.begin(), dims.end()));
+        };
+    } else if constexpr (requires(Clean &t) {
+                             Clean::Rank;
+                             t.resize_deferred(::einsums::Dim<Clean::Rank>{});
+                         }) {
+        ops.resize_deferred = [](void *object, std::span<std::size_t const> dims) {
+            ::einsums::Dim<Clean::Rank> d;
+            for (size_t i = 0; i < Clean::Rank && i < dims.size(); i++) {
+                d[i] = dims[i];
+            }
+            static_cast<Clean *>(object)->resize_deferred(d);
+        };
+    }
+    if constexpr (requires(Clean &t, std::array<std::size_t, Clean::Rank> a) { t.set_distribution(a, a); }) {
+        ops.set_distribution = [](void *object, std::span<std::size_t const> global_dims, std::span<std::size_t const> offsets) {
+            std::array<std::size_t, Clean::Rank> gd{}, off{};
+            for (size_t i = 0; i < Clean::Rank && i < global_dims.size(); i++) {
+                gd[i] = global_dims[i];
+            }
+            for (size_t i = 0; i < Clean::Rank && i < offsets.size(); i++) {
+                off[i] = offsets[i];
+            }
+            static_cast<Clean *>(object)->set_distribution(gd, off);
+        };
+    }
+    ops.allreduce_sum = [](void *object) {
+        auto *tensor = static_cast<Clean *>(object);
+        auto  span   = std::span<Value>(tensor->data(), tensor->size());
+        (void)comm::allreduce_inplace<Value>(span, comm::ReduceOp::Sum);
+    };
+    ops.iallreduce_sum = [](void *object) -> comm::Request {
+        auto *tensor = static_cast<Clean *>(object);
+        auto  span   = std::span<Value>(tensor->data(), tensor->size());
+        auto  result = comm::iallreduce_inplace<Value>(span, comm::ReduceOp::Sum);
+        if (result.has_value()) {
+            return std::move(result.value());
+        }
+        return comm::Request{};
+    };
+    if constexpr (requires(Clean const &t) { t.symmetry(); }) {
+        ops.declared_symmetry = [](void const *object) -> std::shared_ptr<SymmetryDescriptor const> {
+            auto const *desc = static_cast<Clean const *>(object)->symmetry();
+            return desc != nullptr ? std::make_shared<SymmetryDescriptor const>(*desc) : nullptr;
+        };
+    }
+    if constexpr (requires(Clean &t, SymmetryDescriptor d) { t.set_symmetry(std::move(d)); }) {
+        ops.set_symmetry = [](void *object, SymmetryDescriptor descriptor) {
+            static_cast<Clean *>(object)->set_symmetry(std::move(descriptor));
+        };
+    }
+    if constexpr (requires(Clean &t) {
+                      typename Clean::LocalViewState;
+                      t.begin_local_view(size_t{}, size_t{}, size_t{});
+                  }) {
+        ops.begin_local_view = [](void *object, std::size_t dim, std::size_t start, std::size_t count) -> std::any {
+            return std::any(static_cast<Clean *>(object)->begin_local_view(dim, start, count));
+        };
+        ops.end_local_view = [](void *object, std::any &state) {
+            static_cast<Clean *>(object)->end_local_view(std::any_cast<typename Clean::LocalViewState &>(state));
+        };
+    }
+    if constexpr (requires(Clean const &t) {
+                      { t.name() } -> std::same_as<std::string const &>;
+                  }) {
+        ops.name = [](void const *object) -> std::string const & { return static_cast<Clean const *>(object)->name(); };
+    }
+    return ops;
+}
+
+template <typename T>
+consteval TensorOps make_scalar_ops() {
+    TensorOps ops;
+    ops.allreduce_sum = [](void *object) {
+        auto span = std::span<T>(static_cast<T *>(object), 1);
+        (void)comm::allreduce_inplace<T>(span, comm::ReduceOp::Sum);
+    };
+    return ops;
+}
+
+} // namespace detail
+
+/// The operations table of tensor type @p TensorType. @see TensorOps
+template <typename TensorType>
+inline constexpr TensorOps tensor_ops_for = detail::make_tensor_ops<TensorType>();
+
+/// The operations table of a bare element of type @p T, which a returning-form op writes through.
+/// Only the allreduce is defined. @see make_scalar_handle
+template <typename T>
+inline constexpr TensorOps scalar_ops_for = detail::make_scalar_ops<T>();
 
 /**
  * @brief Type-erased handle to a tensor, storing pointer and metadata.
@@ -681,6 +879,14 @@ struct TensorHandle {
      */
     [[nodiscard]] void *live_ptr() const noexcept { return owner ? owner.get() : tensor_ptr; }
 
+    /**
+     * @brief What this tensor's type can do; each entry is called on @ref live_ptr.
+     *
+     * Set by @ref make_handle and @ref make_scalar_handle for the type they were given, and by a
+     * rebind for the type of the tensor it binds. A default handle points at a table of nulls.
+     */
+    TensorOps const *ops{&detail::no_tensor_ops};
+
     /// @brief The address the caller knows this tensor by: @ref caller_ptr when set, else @ref tensor_ptr.
     [[nodiscard]] void *lookup_ptr() const noexcept { return caller_ptr != nullptr ? caller_ptr : tensor_ptr; }
 
@@ -791,6 +997,7 @@ template <GraphCapturableTensor TensorType>
 TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *identity = nullptr) {
     TensorHandle h;
     h.tensor_ptr = const_cast<void *>(identity != nullptr ? identity : static_cast<void const *>(&tensor));
+    h.ops        = &tensor_ops_for<TensorType>;
 
     // data_ptr may be nullptr for deferred (shell) tensors, that's expected.
     if constexpr (requires { tensor.is_materialized(); }) {
@@ -1052,6 +1259,7 @@ TensorHandle make_scalar_handle(T *scalar, TensorId id, std::string name = "scal
     h.element_size = sizeof(T);
     h.dtype        = packed_gemm::get_scalar_type<T>();
     h.raw_scalar   = true;
+    h.ops          = &scalar_ops_for<T>;
 
     // Enable allreduce on scalar results from distributed computations
     h.allreduce_sum_fn = [scalar]() {
