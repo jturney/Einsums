@@ -69,9 +69,9 @@ bool download(TensorHandle const *handle, void const *shadow, std::size_t bytes)
 
 NodeRunner::NodeRunner(Graph &graph, bool recording) : _graph(graph), _recording(recording) {
     // assign() reuses the slots' storage, so a replay of an unchanged graph allocates nothing.
-    _graph._run_slots.assign(_graph._nodes.size(), detail::NodeRunSlot{});
+    _graph._replay._run_slots.assign(_graph.nodes().size(), detail::NodeRunSlot{});
     if constexpr (!gpu::has_unified_memory) {
-        for (Node const &node : _graph._nodes) {
+        for (Node const &node : _graph.nodes()) {
             if (node.target == Target::GPU || node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
                 prepare_device_work();
                 break;
@@ -88,9 +88,9 @@ void NodeRunner::prepare_device_work() {
     std::vector<TensorId> tracked;
     auto const            track = [&](TensorId id, std::size_t bytes) {
         tracked.push_back(id);
-        _graph._device_shadows.ensure(id, bytes);
+        _graph._replay._device_shadows.ensure(id, bytes);
     };
-    for (Node const &node : _graph._nodes) {
+    for (Node const &node : _graph.nodes()) {
         if (node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
             if (auto const *tdesc = node.op_data.get_if<TransferDescriptor>()) {
                 track(tdesc->tensor_id, tdesc->size_bytes);
@@ -110,9 +110,9 @@ void NodeRunner::prepare_device_work() {
     // A body replays through its own runner and its own shadows, so what it touches must be
     // current on the host before it runs. effective_io can register a handle, which is why it is
     // asked here, before the executor starts, and never while nodes run.
-    for (std::size_t i = 0; i < _graph._nodes.size(); ++i) {
-        if (is_control_flow(_graph._nodes[i].kind)) {
-            _control_io.emplace(i, _graph.effective_io(_graph._nodes[i]));
+    for (std::size_t i = 0; i < _graph.nodes().size(); ++i) {
+        if (is_control_flow(_graph.nodes()[i].kind)) {
+            _control_io.emplace(i, _graph.effective_io(_graph.nodes()[i]));
         }
     }
 }
@@ -120,21 +120,22 @@ void NodeRunner::prepare_device_work() {
 void NodeRunner::host_current(TensorId id) {
     TensorHandle const *handle = _graph.find_tensor(id);
     _coherence.need_on_host(
-        id, [&]() { return download(handle, _graph._device_shadows.get(id), handle != nullptr ? handle->total_bytes() : 0); });
+        id, [&]() { return download(handle, _graph._replay._device_shadows.get(id), handle != nullptr ? handle->total_bytes() : 0); });
 }
 
 void NodeRunner::open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t idx) const {
     if (!_recording) {
         return;
     }
-    Node const &node = _graph._nodes[idx];
+    Node const &node = _graph.nodes()[idx];
 
     // A node whose cache entry does not match falls back to its bare label
     // (defensive: an undeclared mutation after the profile strings were built).
-    static Graph::NodeProfileStrings const kEmptyEntry{};
-    Graph::NodeProfileStrings const       &ps = (idx < _graph._profile_strings.size() && _graph._profile_strings[idx].node_id == node.id)
-                                                    ? _graph._profile_strings[idx]
-                                                    : kEmptyEntry;
+    static detail::ReplayState::NodeProfileStrings const kEmptyEntry{};
+    detail::ReplayState::NodeProfileStrings const       &ps =
+        (idx < _graph._replay._profile_strings.size() && _graph._replay._profile_strings[idx].node_id == node.id)
+            ? _graph._replay._profile_strings[idx]
+            : kEmptyEntry;
 
     if (ps.zone_id != 0) {
         zone.emplace(graph_node_site(), ps.zone_id);
@@ -158,17 +159,17 @@ void NodeRunner::open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t 
 }
 
 bool NodeRunner::is_async(std::size_t idx) const {
-    Node const &node = _graph._nodes[idx];
+    Node const &node = _graph.nodes()[idx];
     return node.async_start && node.async_finish;
 }
 
 void NodeRunner::start_async(std::size_t idx) {
-    Node const                       &node = _graph._nodes[idx];
+    Node const                       &node = _graph.nodes()[idx];
     std::optional<waggle::ScopedZone> zone;
     open_zone(zone, idx);
     // The two halves are separate calls, possibly on two threads: the observer hears the node
     // begin here and end where finish_async completes.
-    detail::notify_node(*_graph._run_context, EventKind::NodeStart, _graph, node, 0.0);
+    detail::notify_node(*_graph._replay._run_context, EventKind::NodeStart, _graph, node, 0.0);
     if (_device_work) {
         for (auto const *ids : {&node.inputs, &node.outputs}) {
             for (TensorId const id : *ids) {
@@ -180,7 +181,7 @@ void NodeRunner::start_async(std::size_t idx) {
 }
 
 void NodeRunner::finish_async(std::size_t idx) {
-    Node const                       &node = _graph._nodes[idx];
+    Node const                       &node = _graph.nodes()[idx];
     std::optional<waggle::ScopedZone> zone;
     open_zone(zone, idx);
     auto const t_start = std::chrono::steady_clock::now();
@@ -190,19 +191,19 @@ void NodeRunner::finish_async(std::size_t idx) {
             _coherence.wrote_on_host(id);
         }
     }
-    double const ms           = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_start).count();
-    _graph._run_slots[idx].ms = ms;
-    detail::notify_node(*_graph._run_context, EventKind::NodeEnd, _graph, node, ms);
+    double const ms                   = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_start).count();
+    _graph._replay._run_slots[idx].ms = ms;
+    detail::notify_node(*_graph._replay._run_context, EventKind::NodeEnd, _graph, node, ms);
 }
 
 void NodeRunner::run(std::size_t idx, unsigned width) {
-    Node &node = _graph._nodes[idx];
+    Node const &node = _graph.nodes()[idx];
 
     std::optional<waggle::ScopedZone> node_zone;
     open_zone(node_zone, idx);
 
     // An attached observer hears the node begin here and end however this call ends.
-    detail::NodeObservation const observed(*_graph._run_context, _graph, node);
+    detail::NodeObservation const observed(*_graph._replay._run_context, _graph, node);
     auto                          t_start = std::chrono::steady_clock::now();
 
     if (node.kind == OpKind::HostToDevice) {
@@ -215,7 +216,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 // exactly as defined as the host one.
                 TensorId const      id     = tdesc->tensor_id;
                 TensorHandle const *handle = _graph.find_tensor(id);
-                _coherence.need_on_device(id, [&]() { return upload(handle, _graph._device_shadows.get(id), tdesc->size_bytes); });
+                _coherence.need_on_device(id, [&]() { return upload(handle, _graph._replay._device_shadows.get(id), tdesc->size_bytes); });
             }
         }
     } else if (node.kind == OpKind::DeviceToHost) {
@@ -231,7 +232,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 // come out zero.
                 TensorId const      id     = tdesc->tensor_id;
                 TensorHandle const *handle = _graph.find_tensor(id);
-                _coherence.need_on_host(id, [&]() { return download(handle, _graph._device_shadows.get(id), tdesc->size_bytes); });
+                _coherence.need_on_host(id, [&]() { return download(handle, _graph._replay._device_shadows.get(id), tdesc->size_bytes); });
             }
         }
     } else if (node.target == Target::GPU) {
@@ -273,7 +274,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 for (auto const *ids : {&node.inputs, &node.outputs}) {
                     for (TensorId const id : *ids) {
                         TensorHandle const *handle = _graph.find_tensor(id);
-                        void               *shadow = _graph._device_shadows.get(id);
+                        void               *shadow = _graph._replay._device_shadows.get(id);
                         if (!_coherence.need_on_device(id, [&]() { return upload(handle, shadow, handle->total_bytes()); })) {
                             // No device buffer to compute in: the node runs on the host below.
                             operands_ready = false;
@@ -289,7 +290,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
         // Execute via GPU BLAS dispatch if possible, otherwise CPU fallback.
         bool gpu_dispatched = false;
         try {
-            gpu_dispatched = operands_ready && try_gpu_blas_dispatch(node, _graph._tensors, _graph._device_shadows);
+            gpu_dispatched = operands_ready && try_gpu_blas_dispatch(node, _graph.tensors_map(), _graph._replay._device_shadows);
             if (gpu_dispatched) {
                 waggle::annotate("gpu_dispatch", "gemm");
             }
@@ -382,7 +383,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
 
     double const ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
     // This node's own slot: concurrent runs of other nodes write other slots.
-    _graph._run_slots[idx] = {.ms = ms, .width = width};
+    _graph._replay._run_slots[idx] = {.ms = ms, .width = width};
     // node_zone pops here (and on any early return / thrown node).
 }
 
@@ -392,11 +393,11 @@ void NodeRunner::finish() {
     // In node order, which is the order the samples have always been reported in, whatever order
     // a concurrent executor ran the nodes in.
     std::vector<NodeTimingSample> samples;
-    samples.reserve(_graph._nodes.size());
-    for (std::size_t i = 0; i < _graph._nodes.size(); ++i) {
-        detail::NodeRunSlot const &slot = _graph._run_slots[i];
+    samples.reserve(_graph.nodes().size());
+    for (std::size_t i = 0; i < _graph.nodes().size(); ++i) {
+        detail::NodeRunSlot const &slot = _graph._replay._run_slots[i];
         if (slot.ms >= 0.0) {
-            Node const &node = _graph._nodes[i];
+            Node const &node = _graph.nodes()[i];
             samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = slot.ms, .width = slot.width});
         }
     }
@@ -415,7 +416,7 @@ void NodeRunner::flush_device() {
         if (_device_work) {
             _coherence.flush([&](TensorId id) {
                 TensorHandle const *handle = _graph.find_tensor(id);
-                return download(handle, _graph._device_shadows.get(id), handle != nullptr ? handle->total_bytes() : 0);
+                return download(handle, _graph._replay._device_shadows.get(id), handle != nullptr ? handle->total_bytes() : 0);
             });
         }
     }

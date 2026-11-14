@@ -1857,44 +1857,6 @@ TEST_CASE("ExecutorBuilder - a Gemm prefactor rewritten after capture is applied
     }
 }
 
-TEST_CASE("ExecutorBuilder - make_gemm_executor and the builder are one kernel", "[ComputeGraph][ExecutorBuilder][Gemm]") {
-    // The Graph method is a forwarder onto build_executor now. It used to cast
-    // TensorHandle::tensor_ptr straight to Tensor<T, 2>* whatever the tensor
-    // was, so a RuntimeTensor operand was type confusion; going through the
-    // builder it is just another impl.
-    RuntimeTensor<double> A("A", std::vector<size_t>{3, 3});
-    RuntimeTensor<double> B("B", std::vector<size_t>{3, 3});
-    RuntimeTensor<double> C("C", std::vector<size_t>{3, 3});
-    for (size_t ii = 0; ii < 3; ii++) {
-        for (size_t jj = 0; jj < 3; jj++) {
-            A(ii, jj) = 0.5 * static_cast<double>(ii + 1) + 0.25 * static_cast<double>(jj);
-            B(ii, jj) = 1.5 - 0.125 * static_cast<double>(ii * 3 + jj);
-        }
-    }
-    C.zero();
-
-    cg::Graph graph("make_gemm_executor");
-    {
-        cg::CaptureGuard const guard(graph);
-        cg::gemm<false, false>(1.0, A, B, 0.0, &C);
-    }
-    graph.execute();
-    auto const captured = bytes_of_scalar(C(2, 2));
-
-    cg::TensorId const a_id = graph.find_tensor_id_by_ptr(&A);
-    cg::TensorId const b_id = graph.find_tensor_id_by_ptr(&B);
-    cg::TensorId const c_id = graph.find_tensor_id_by_ptr(&C);
-    REQUIRE(a_id != 0);
-    REQUIRE(b_id != 0);
-    REQUIRE(c_id != 0);
-
-    C.zero();
-    auto direct = graph.make_gemm_executor(a_id, b_id, c_id, 1.0, 0.0);
-    direct();
-
-    REQUIRE(bytes_of_scalar(C(2, 2)) == captured);
-}
-
 TEST_CASE("ExecutorBuilder - a graph of gemms and dots reports no blockers", "[ComputeGraph][ExecutorBuilder][Gemm][Dot]") {
     auto A = create_random_tensor<double>("A", 4, 4);
     auto B = create_random_tensor<double>("B", 4, 4);

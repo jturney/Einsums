@@ -32,15 +32,15 @@
 ///
 /// NOT saved, because it is machine-dependent tuning that a load re-derives:
 ///   `Node::thread_width`, `Node::admission_priority`, `Node::stream_id`,
-///   `Node::estimated_flops`, `Node::estimated_bytes`, `_thread_plan`,
-///   `_timing_samples`, `_timing_report`, and the last optimize() report in
-///   `_optimization`.
+///   `Node::estimated_flops`, `Node::estimated_bytes`, `_thread_plan`, the
+///   timings in `_replay`, and the last optimize() report in `_optimization`.
 ///
 /// NOT saved, because it is a live-process resource with no meaning in a file:
 ///   every `std::function` on a `TensorHandle`, `_owned_tensors`,
-///   `_adopted_cleanups`, `_slot_map`, `_ptr_index`, `_device_shadows`,
-///   `_executor`, `_content_mutex`, `_deps` / `_usage` and the version counters
-///   that guard them, `_profile_strings`, `_binding`, the extents and tilings in
+///   `_adopted_cleanups`, `_slot_map`, `_ptr_index`, the rest of `_replay`
+///   (run context, run metrics, device shadows, arena, executor, profiler
+///   payloads), `_content_mutex`, `_deps` / `_usage` and the version counters
+///   that guard them, `_binding`, the extents and tilings in
 ///   `_spaces`, `_scope_maps`. `_binding` and the space extents and tilings are
 ///   bind-time state about the CALLER's problem (what is bound, what each space
 ///   measures, how it is partitioned), and a loaded graph is bound afresh.

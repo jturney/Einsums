@@ -356,6 +356,197 @@ class CleanupStack {
     std::vector<std::function<void()>> _callbacks;
 };
 
+/**
+ * @brief Everything a graph's replays record or cache between them.
+ *
+ * The profiler payloads, the per-node timings and their labelled report, the run context a
+ * graph shares with its bodies, the run metrics of the last outermost replay and the memos
+ * behind them, the device shadows, the arena, and the executor a plain execute() uses.
+ *
+ * The metrics walk the graph tree, so the functions that compute them take the graph as an
+ * argument rather than holding it, and take @c tree_stamp (Graph::tensor_tree_stamp) as a value:
+ * the memos are keyed on it. @ref NodeRunner is a friend, for the per-node slots, the profiler
+ * payloads and the device shadows it reads and writes while a replay runs.
+ */
+class EINSUMS_EXPORT ReplayState {
+  public:
+    /// Pre-interned profiler payloads for one node: the zone name plus every
+    /// annotation whose value is invariant across replays. Built once per
+    /// graph mutation instead of fmt::format-ing per node per execute() -
+    /// for an SCF/CC loop that replays the graph hundreds of times, the
+    /// formatting dominated the serial replay overhead.
+    ///
+    /// The ids are string-table ids, not strings: interning a key and a value
+    /// per annotation per node per replay took the table's lock several times
+    /// per node, which is what made a profiled replay several times the cost
+    /// of an unprofiled one. Ids are stable for the life of the process (the
+    /// table only grows), so caching them here is safe across enable/disable.
+    struct NodeProfileStrings {
+        NodeId                                     node_id{0}; ///< owner, checked against the node at replay
+        uint32_t                                   zone_id{0}; ///< interned "graph:<name>/<label>"
+        std::vector<std::pair<uint32_t, uint32_t>> texts;      ///< invariant string annotations (key id, value id)
+        std::vector<std::pair<uint32_t, int64_t>>  numbers;    ///< invariant integer annotations
+        std::vector<std::pair<uint32_t, double>>   reals;      ///< invariant floating-point annotations
+    };
+
+    // ── Profiler payloads ─────────────────────────────────────────────────
+
+    /// Whether the payloads describe a node list of @p nodes nodes as it now is.
+    [[nodiscard]] bool profile_strings_current(std::size_t nodes) const noexcept {
+        return _profile_strings_valid && _profile_strings.size() == nodes;
+    }
+
+    /// Start rebuilding the payloads: one empty entry per node, and the graph's own zone.
+    [[nodiscard]] std::vector<NodeProfileStrings> &rebuild_profile_strings(std::uint32_t exec_zone, std::size_t nodes);
+
+    /// The rebuild is complete.
+    void profile_strings_built() noexcept { _profile_strings_valid = true; }
+
+    /// The node list or its annotated metadata changed.
+    void invalidate_profile_strings() noexcept { _profile_strings_valid = false; }
+
+    /// The interned zone of the graph's whole replay.
+    [[nodiscard]] std::uint32_t exec_zone_id() const noexcept { return _exec_zone_id; }
+
+    // ── Whether a replay has run since the graph last changed ─────────────
+
+    [[nodiscard]] bool executed() const noexcept { return _executed; }
+    void               mark_executed() noexcept { _executed = true; }
+    void               mark_unexecuted() noexcept { _executed = false; }
+
+    // ── Timings ───────────────────────────────────────────────────────────
+
+    [[nodiscard]] std::vector<NodeTimingSample> const &timing_samples() const noexcept { return _timing_samples; }
+
+    /// Append a run's samples to this replay's.
+    void record_timings(std::vector<NodeTimingSample> &&samples);
+
+    /// Forget the samples and the report, as a replay starts.
+    void clear_timings() noexcept;
+
+    /// The samples changed, so the labelled report must be rebuilt.
+    void invalidate_timing_report() noexcept { _timing_report_valid = false; }
+
+    /// The samples, labelled from @p nodes.
+    [[nodiscard]] std::vector<NodeTiming> const &timing_report(std::span<Node const> nodes) const;
+
+    // ── What a replay runs with ───────────────────────────────────────────
+
+    [[nodiscard]] std::shared_ptr<RunContext> const &run_context() const noexcept { return _run_context; }
+
+    /// Join the run context of the graph that holds this one.
+    void share_run_context(std::shared_ptr<RunContext> context) noexcept { _run_context = std::move(context); }
+
+    [[nodiscard]] std::shared_ptr<ArenaBlock> const &arena() const noexcept { return _arena; }
+    void                                             set_arena(std::shared_ptr<ArenaBlock> arena) noexcept { _arena = std::move(arena); }
+
+    [[nodiscard]] std::shared_ptr<Executor> const &executor() const noexcept { return _executor; }
+    void set_executor(std::shared_ptr<Executor> executor) noexcept { _executor = std::move(executor); }
+
+    // ── Run metrics ───────────────────────────────────────────────────────
+
+    /// What the outermost replay of @p graph starts from: the managed tensors held now, and
+    /// every backing's counts.
+    void begin_run_metrics(Graph const &graph, std::uint64_t tree_stamp);
+
+    /// Hand this replay's node times to the run context; @p self is null for the outermost
+    /// graph, whose samples are its own.
+    void contribute_run_samples(Graph const *self);
+
+    /// Record the outermost replay of @p graph, which took @p wall_ms, and say once if it held
+    /// more than --einsums:max-memory.
+    void end_run_metrics(Graph const &graph, double wall_ms, std::uint64_t tree_stamp);
+
+    /// The bytes @p graph's tree holds outside the tensors its lifecycle nodes manage.
+    [[nodiscard]] std::uint64_t resident_bytes(Graph const &graph, std::uint64_t tree_stamp) const;
+
+    /// The last outermost replay of @p graph, labelled.
+    [[nodiscard]] RunMetrics const &last_run(Graph const &graph) const;
+
+  private:
+    friend class compute_graph::NodeRunner;
+
+    /// Parallel to the node list (position i describes node i), which is what lets
+    /// the replay loop index straight in instead of hashing a NodeId per node.
+    /// @c node_id is checked against the node anyway, so an UNdeclared
+    /// mutation degrades to a bare label rather than mislabelling a zone.
+    /// Only built when something is recording; a run with the profiler off
+    /// never formats or interns any of it.
+    std::vector<NodeProfileStrings> _profile_strings;
+    bool                            _profile_strings_valid{false};
+    uint32_t                        _exec_zone_id{0};
+
+    bool _executed{false}; ///< True after a successful execute since the graph last changed.
+
+    /// What resident_bytes() last returned, and the tree stamp it was computed at.
+    mutable std::uint64_t _resident_bytes_memo{0};
+    mutable std::uint64_t _resident_bytes_stamp{0};
+    mutable bool          _resident_bytes_valid{false};
+
+    /// Every backed tensor of the tree once, for begin_run_metrics(), and the tree stamp it
+    /// was collected at.
+    struct BackedTensor {
+        std::string                          tensor;
+        std::shared_ptr<TensorBacking const> backing;
+    };
+    std::vector<BackedTensor> _tree_backings;
+    std::uint64_t             _tree_backings_stamp{0};
+    bool                      _tree_backings_valid{false};
+
+    /// Device shadow allocations for GPU execution.
+    /// Persists across execute() calls so shadows can be reused.
+    DeviceShadowMap _device_shadows;
+
+    /// One slot per node for the replay running now, written by whichever thread runs the node
+    /// and turned into @ref _timing_samples when the replay ends. Kept between replays so that a
+    /// replay of an unchanged graph allocates none.
+    std::vector<NodeRunSlot> _run_slots;
+
+    /// Per-node timing from last execute() call, as recorded (no labels).
+    std::vector<NodeTimingSample> _timing_samples;
+
+    /// Labelled view of _timing_samples, materialized on demand by
+    /// timing_report(). Mutable so the const accessor can fill it.
+    mutable std::vector<NodeTiming> _timing_report;
+    mutable bool                    _timing_report_valid{true};
+
+    /// What this graph and every body under it share while a replay runs. A body takes its
+    /// parent's when attached.
+    std::shared_ptr<RunContext> _run_context{std::make_shared<RunContext>()};
+
+    /// The block MemoryPlanning placed this graph's planned intermediates in; null without a plan.
+    std::shared_ptr<ArenaBlock> _arena;
+
+    /// A backing's counts when the outermost replay started, to report the replay's share.
+    struct ReplayBacking {
+        std::string                          tensor;
+        std::shared_ptr<TensorBacking const> backing;
+        std::uint64_t                        bytes_read{0};
+        std::uint64_t                        bytes_written{0};
+        std::uint64_t                        reads{0};
+        std::uint64_t                        writes{0};
+        std::uint64_t                        publishes{0};
+    };
+    std::vector<ReplayBacking> _replay_backings;
+
+    /// The last outermost replay, as recorded; last_run assembles it on demand. A sample
+    /// whose graph is null is this graph's own, so a moved graph still finds it.
+    std::vector<RunSample>  _last_samples;
+    std::vector<BackingRun> _last_backings;
+    double                  _last_wall_ms{0.0};
+    std::uint64_t           _last_peak_bytes{0};
+    std::uint64_t           _last_resident_bytes{0};
+    std::uint64_t           _last_arena_bytes{0};
+    /// Whether a replay's peak has been reported over --einsums:max-memory; once per graph.
+    bool               _warned_over_budget{false};
+    mutable RunMetrics _last_run;
+    mutable bool       _last_run_valid{true};
+
+    /// Executor plain execute() delegates to; nullptr means the built-in sequential path.
+    /// Loop bodies replay through this.
+    std::shared_ptr<Executor> _executor;
+};
+
 /// Everything a @ref Graph holds.
 ///
 /// Graph derives from this so that moving one is the defaulted move of its members plus the
@@ -373,6 +564,8 @@ struct GraphState {
     GraphState(GraphState const &)                = delete;
     GraphState &operator=(GraphState const &)     = delete;
     ~GraphState()                                 = default;
+
+    using NodeProfileStrings = ReplayState::NodeProfileStrings;
 
     using BoundSpan   = BindingSession::BoundSpan;
     using DimSolution = BindingSession::DimSolution;
@@ -453,39 +646,6 @@ struct GraphState {
     /// declared edit below this graph makes them stale too. @see Graph::subtree_stamp
     std::uint64_t _deps_subtree_stamp{0};
 
-    /// Pre-interned profiler payloads for one node: the zone name plus every
-    /// annotation whose value is invariant across replays. Built once per
-    /// graph mutation instead of fmt::format-ing per node per execute() -
-    /// for an SCF/CC loop that replays the graph hundreds of times, the
-    /// formatting dominated the serial replay overhead.
-    ///
-    /// The ids are string-table ids, not strings: interning a key and a value
-    /// per annotation per node per replay took the table's lock several times
-    /// per node, which is what made a profiled replay several times the cost
-    /// of an unprofiled one. Ids are stable for the life of the process (the
-    /// table only grows), so caching them here is safe across enable/disable.
-    struct NodeProfileStrings {
-        NodeId                                     node_id{0}; ///< owner, checked against the node at replay
-        uint32_t                                   zone_id{0}; ///< interned "graph:<name>/<label>"
-        std::vector<std::pair<uint32_t, uint32_t>> texts;      ///< invariant string annotations (key id, value id)
-        std::vector<std::pair<uint32_t, int64_t>>  numbers;    ///< invariant integer annotations
-        std::vector<std::pair<uint32_t, double>>   reals;      ///< invariant floating-point annotations
-    };
-
-    /// Parallel to _nodes (position i describes node i), which is what lets
-    /// the replay loop index straight in instead of hashing a NodeId per node.
-    /// @c node_id is checked against the node anyway, so an UNdeclared
-    /// mutation degrades to a bare label rather than mislabelling a zone.
-    ///
-    /// Invalidated wherever the node list or annotated metadata changes:
-    /// add_node, mark_sorted (the declared-mutation contract - passes rewrite
-    /// labels/descriptors), rebind (tensor names), and update_prefactors.
-    /// Only built when something is recording; a run with the profiler off
-    /// never formats or interns any of it.
-    std::vector<NodeProfileStrings> _profile_strings;
-    bool                            _profile_strings_valid{false};
-    uint32_t                        _exec_zone_id{0};
-
     /// The thread count the node widths assume, and the trial a cold plan is in.
     /// @see planned_thread_count, plan_threads
     ThreadPlan _thread_plan;
@@ -507,8 +667,7 @@ struct GraphState {
     std::vector<std::uint32_t> _subgraph_positions;
     std::uint64_t              _subgraph_positions_version{std::numeric_limits<std::uint64_t>::max()};
     std::size_t                _subgraph_positions_count{0};
-    bool                       _executed{false}; ///< True after first successful execute (caching)
-    DependencyInfo             _deps;            ///< Populated by topological_sort()
+    DependencyInfo             _deps; ///< Populated by topological_sort()
 
     /// Serializes structural reads/writes of _nodes / _tensors / _timing_report
     /// so the profiler server thread's to_json() cannot observe a torn or
@@ -574,79 +733,15 @@ struct GraphState {
     std::size_t           _resync_ids_nodes{0};
     bool                  _resync_ids_valid{false};
 
-    /// What resident_bytes() last returned, and the tensor_tree_stamp() it
-    /// was computed at.
-    mutable std::uint64_t _resident_bytes_memo{0};
-    mutable std::uint64_t _resident_bytes_stamp{0};
-    mutable bool          _resident_bytes_valid{false};
-
-    /// Every backed tensor of the tree once, for begin_run_metrics(), and the
-    /// tensor_tree_stamp() it was collected at.
-    struct BackedTensor {
-        std::string                          tensor;
-        std::shared_ptr<TensorBacking const> backing;
-    };
-    std::vector<BackedTensor> _tree_backings;
-    std::uint64_t             _tree_backings_stamp{0};
-    bool                      _tree_backings_valid{false};
-
     /// Durable slot redirects recorded by redirect_slot(): key resolves to
     /// value's buffer. Chains are collapsed at insert, so values are always
     /// terminal ids. rebind() re-applies these so redirected slots follow.
     std::unordered_map<TensorId, TensorId> _slot_redirects;
 
-    /// Device shadow allocations for GPU execution.
-    /// Persists across execute() calls so shadows can be reused.
-    DeviceShadowMap _device_shadows;
-
-    /// One slot per node for the replay running now, written by whichever thread runs the node
-    /// and turned into @ref _timing_samples when the replay ends. Kept between replays so that a
-    /// replay of an unchanged graph allocates none.
-    std::vector<detail::NodeRunSlot> _run_slots;
-
-    /// Per-node timing from last execute() call, as recorded (no labels).
-    std::vector<NodeTimingSample> _timing_samples;
-
-    /// Labelled view of _timing_samples, materialized on demand by
-    /// timing_report(). Mutable so the const accessor can fill it.
-    mutable std::vector<NodeTiming> _timing_report;
-    mutable bool                    _timing_report_valid{true};
-
-    /// What this graph and every body under it share while a replay runs. A body takes its
-    /// parent's when attached (Graph::share_run_context).
-    std::shared_ptr<detail::RunContext> _run_context{std::make_shared<detail::RunContext>()};
-
-    /// The block MemoryPlanning placed this graph's planned intermediates in; null without a plan.
-    std::shared_ptr<detail::ArenaBlock> _arena;
-
-    /// A backing's counts when the outermost replay started, to report the replay's share.
-    struct ReplayBacking {
-        std::string                          tensor;
-        std::shared_ptr<TensorBacking const> backing;
-        std::uint64_t                        bytes_read{0};
-        std::uint64_t                        bytes_written{0};
-        std::uint64_t                        reads{0};
-        std::uint64_t                        writes{0};
-        std::uint64_t                        publishes{0};
-    };
-    std::vector<ReplayBacking> _replay_backings;
-
-    /// The last outermost replay, as recorded; Graph::last_run assembles it on demand. A sample
-    /// whose graph is null is this graph's own, so a moved graph still finds it.
-    std::vector<detail::RunSample> _last_samples;
-    std::vector<BackingRun>        _last_backings;
-    double                         _last_wall_ms{0.0};
-    std::uint64_t                  _last_peak_bytes{0};
-    std::uint64_t                  _last_resident_bytes{0};
-    std::uint64_t                  _last_arena_bytes{0};
-    /// Whether a replay's peak has been reported over --einsums:max-memory; once per graph.
-    bool               _warned_over_budget{false};
-    mutable RunMetrics _last_run;
-    mutable bool       _last_run_valid{true};
-
-    /// Executor plain execute() delegates to (see set_executor); nullptr means
-    /// the built-in sequential path. Loop bodies replay through this.
-    std::shared_ptr<Executor> _executor;
+    /// What the replays record and cache between them: profiler payloads, timings, run
+    /// metrics, the run context, device shadows, the arena and the executor.
+    /// @see execute, timing_report, last_run
+    ReplayState _replay;
 
     /// The passes that shaped this graph, the last optimize() report, and the lossy rewrites it
     /// carries. @see structural_passes, explain, approximations
@@ -1847,10 +1942,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * @param[in] executor Shared ownership of the executor, or nullptr to reset.
      */
-    APIARY_EXPOSE void set_executor(std::shared_ptr<Executor> executor) { _executor = std::move(executor); }
+    APIARY_EXPOSE void set_executor(std::shared_ptr<Executor> executor) { _replay.set_executor(std::move(executor)); }
 
     /// The executor plain execute() will use, or nullptr for the built-in sequential path.
-    [[nodiscard]] std::shared_ptr<Executor> const &executor() const { return _executor; }
+    [[nodiscard]] std::shared_ptr<Executor> const &executor() const { return _replay.executor(); }
 
     // Note: execute() always instruments with the profiler (no separate execute_profiled variant).
 
@@ -1991,16 +2086,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_EXPOSE [[nodiscard]] std::uint64_t resident_bytes() const;
 
     /**
-     * @brief Make @p child, and every graph under it, share this graph's run context.
-     * @param[in,out] child A body this graph holds.
-     *
-     * Called where a body is attached, so its lifecycle nodes and its replays count into the
-     * replay of the graph that holds it.
-     * @versionadded{2.0.0}
-     */
-    void share_run_context(Graph &child);
-
-    /**
      * @brief Attach @p observer to every replay of this graph and of every body under it.
      * @param[in] observer What hears the replays; null detaches the one attached.
      *
@@ -2010,11 +2095,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @see EventLog
      * @versionadded{2.0.0}
      */
-    APIARY_EXPOSE void set_observer(std::shared_ptr<ExecutionObserver> observer) { _run_context->set_observer(std::move(observer)); }
+    APIARY_EXPOSE void set_observer(std::shared_ptr<ExecutionObserver> observer) {
+        _replay.run_context()->set_observer(std::move(observer));
+    }
 
     /// @brief The run context this graph and its bodies share.
     /// @return The context, never null.
-    [[nodiscard]] std::shared_ptr<detail::RunContext> const &run_context() const noexcept { return _run_context; }
+    [[nodiscard]] std::shared_ptr<detail::RunContext> const &run_context() const noexcept { return _replay.run_context(); }
 
     /**
      * @brief The block this graph's planned intermediates are placed in.
@@ -2024,7 +2111,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return The arena, or null when no memory plan was applied to this graph.
      * @versionadded{2.0.0}
      */
-    [[nodiscard]] std::shared_ptr<detail::ArenaBlock> const &arena() const noexcept { return _arena; }
+    [[nodiscard]] std::shared_ptr<detail::ArenaBlock> const &arena() const noexcept { return _replay.arena(); }
 
     /**
      * @brief Hold @p arena as the block this graph's planned intermediates are placed in.
@@ -2033,14 +2120,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] arena The block, or null to drop the plan's.
      * @versionadded{2.0.0}
      */
-    void set_arena(std::shared_ptr<detail::ArenaBlock> arena) noexcept { _arena = std::move(arena); }
-
-    /// Record a run's per-node timings, under a single lock acquisition. A custom Executor calls
-    /// this after running the graph so that print_timing_report() reports its run.
-    void record_node_timings(std::vector<NodeTimingSample> &&samples);
-
-    /// Clear timing data (called at the start of execute()).
-    void clear_timing_report();
+    void set_arena(std::shared_ptr<detail::ArenaBlock> arena) noexcept { _replay.set_arena(std::move(arena)); }
 
     /**
      * @brief Sort nodes in topological order based on data dependencies.
@@ -4133,28 +4213,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     create_zero_runtime_tensor_dynamic(std::string name, packed_gemm::ScalarType dtype, std::vector<size_t> const &dims);
 
     /**
-     * @brief Create an executor lambda that performs C = alpha * A * B + beta * C.
-     *
-     * Uses runtime type dispatch. Only supports rank-2 tensors (matrices).
-     *
-     * A thin forwarder onto @ref build_executor with a @ref GemmDescriptor, so
-     * there is one place that decides what a Gemm node computes.
-     *
-     * A caller that wants the node as well as the callable should build the
-     * descriptor itself and record both, so the node it produces is
-     * reconstructible; this entry exists for the callable alone.
-     *
-     * @param[in] a_id   TensorId of left operand (M x K).
-     * @param[in] b_id   TensorId of right operand (K x N).
-     * @param[in] c_id   TensorId of output tensor (M x N).
-     * @param[in] alpha  Scalar prefactor for the product.
-     * @param[in] beta   Scalar prefactor for the accumulator (0 = overwrite).
-     * @return A callable that performs the GEMM.
-     * @throws std::invalid_argument When an operand exposes no rank-erased geometry.
-     */
-    std::function<void()> make_gemm_executor(TensorId a_id, TensorId b_id, TensorId c_id, double alpha = 1.0, double beta = 0.0);
-
-    /**
      * @brief Build a FIRST-CLASS einsum node for a pass that synthesizes a contraction.
      *
      * Returns a complete ``OpKind::Einsum`` node that behaves like a captured one:
@@ -4956,8 +5014,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// check that a guard catches it; defined only in the tests' own header.
     friend struct detail::GraphBackdoor;
 
-    /// Runs the nodes of a replay; reads the node list, tensor table, device shadows, profile
-    /// strings and per-node timing slots.
+    /// Runs the nodes of a replay. Reaches the replay state, which names it a friend too, and
+    /// marks a fallen-back node's outputs host-resident without the handle-version bump, from
+    /// whichever worker thread ran the node.
     friend class NodeRunner;
 
     /// Restores a saved graph, including handle state no pass may set (whether an annotation was
@@ -4983,6 +5042,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// contains. A node already captured keeps the table it captured, so this runs before
     /// anything is captured: as a stage or a body is created.
     void set_params_ptr(std::shared_ptr<ParamTable> params);
+
+    /// Make @p child, and every graph under it, share this graph's run context. Called where a
+    /// body is attached, so its lifecycle nodes and its replays count into the replay of the
+    /// graph that holds it.
+    void share_run_context(Graph &child);
+
+    /// Record a run's per-node timings, under a single lock acquisition, as a replay ends.
+    void record_node_timings(std::vector<NodeTimingSample> &&samples);
 
     /// A value that moves whenever any graph below this one has a declared edit: each
     /// descendant's analysis version and node count, folded in walk order. A body edit moves the

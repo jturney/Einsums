@@ -139,14 +139,6 @@ expected<std::pair<TensorId, void *>, GraphError> Graph::create_zero_runtime_ten
     return detail::dispatch_scalar_type(dtype, make);
 }
 
-std::function<void()> Graph::make_gemm_executor(TensorId a_id, TensorId b_id, TensorId c_id, double alpha, double beta) {
-    std::array<TensorId, 2> const inputs{a_id, b_id};
-
-    OpData const op_data(GemmDescriptor{.alpha = PrefactorScalar{alpha}, .beta = PrefactorScalar{beta}, .trans_a = 'n', .trans_b = 'n'});
-
-    return build_executor(OpKind::Gemm, tensor(a_id).dtype, 2, op_data, *this, inputs, std::span<TensorId const>{&c_id, 1});
-}
-
 Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, ParsedEinsumSpec const &spec, PrefactorScalar c_pf,
                              PrefactorScalar ab_pf, bool conj_a, bool conj_b, std::string label) {
     auto const &a_h = tensor(a_id);

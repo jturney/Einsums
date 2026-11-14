@@ -295,10 +295,10 @@ void Graph::note(Change change) noexcept {
         _structure_version++;
         break;
     case Change::NodeEdited:
-        _executed              = false;
-        _deps_valid            = false;
-        _profile_strings_valid = false;
-        _slots_validated       = false;
+        _replay.mark_unexecuted();
+        _replay.invalidate_profile_strings();
+        _deps_valid      = false;
+        _slots_validated = false;
         _analysis_version++;
         break;
     case Change::BufferIdentityChanged:
@@ -317,8 +317,8 @@ void Graph::note(Change change) noexcept {
         _slots_validated = false;
         break;
     case Change::TensorRebound:
-        _profile_strings_valid = false;
-        _slots_validated       = false;
+        _replay.invalidate_profile_strings();
+        _slots_validated = false;
         _analysis_version++;
         break;
     case Change::HandleChanged:
@@ -328,10 +328,10 @@ void Graph::note(Change change) noexcept {
         _analysis_version++;
         break;
     case Change::TimingsRecorded:
-        _timing_report_valid = false;
+        _replay.invalidate_timing_report();
         break;
     case Change::PassesApplied:
-        _executed = false;
+        _replay.mark_unexecuted();
         break;
     }
 }
@@ -469,7 +469,7 @@ void Graph::attach_backing(TensorHandle &handle, TensorBacking backing) {
     }
     // Counted from here on, by the reads and writes of every pass that moves it (last_run).
     backing.counters          = std::make_shared<BackingCounters>();
-    backing.counters->context = _run_context;
+    backing.counters->context = _replay.run_context();
     backing.counters->tensor  = handle.name;
     handle.backing            = std::make_shared<TensorBacking const>(std::move(backing));
     // A backing can arrive after its tensor was registered, which moves no other counter.
@@ -686,18 +686,8 @@ void *Graph::live_tensor_ptr(TensorId id) const noexcept {
 
 void Graph::record_node_timings(std::vector<NodeTimingSample> &&samples) {
     std::scoped_lock const lock(_content_mutex);
-    if (_timing_samples.empty()) {
-        _timing_samples = std::move(samples);
-    } else {
-        _timing_samples.insert(_timing_samples.end(), samples.begin(), samples.end());
-    }
+    _replay.record_timings(std::move(samples));
     note(Change::TimingsRecorded);
-}
-
-void Graph::clear_timing_report() {
-    _timing_samples.clear();
-    _timing_report.clear();
-    _timing_report_valid = true;
 }
 
 std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> const &Graph::named_gate_flags() const noexcept {

@@ -57,6 +57,9 @@ struct LoaderAccess {
 
     /// A body is a scope of the graph that holds it, so it reads the root's parameter table.
     static void share_params(Graph &body, Graph const &root) { body.set_params_ptr(root.params_ptr()); }
+
+    /// A body's replays count into its root's.
+    static void share_run_context(Graph &root, Graph &body) { root.share_run_context(body); }
 };
 
 namespace {
@@ -172,7 +175,7 @@ std::shared_ptr<Graph> build_fragment(Graph &root, IrFragment const &fragment, s
                                       GateFlagTable const &gates, SpaceRegistry const &registry) {
     auto body = std::make_shared<Graph>(fragment.name);
     LoaderAccess::share_params(*body, root);
-    root.share_run_context(*body);
+    LoaderAccess::share_run_context(root, *body);
     build_frame(root, *body, fragment.tensors, fragment.nodes, &parent, gates, registry);
     return body;
 }
@@ -388,7 +391,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
             } else {
                 conditional->else_branch = std::make_shared<Graph>("else");
                 LoaderAccess::share_params(*conditional->else_branch, root);
-                root.share_run_context(*conditional->else_branch);
+                LoaderAccess::share_run_context(root, *conditional->else_branch);
             }
         }
         if (auto *loop = node.op_data.get_if<LoopDescriptor>()) {

@@ -792,7 +792,7 @@ bool Graph::plan_threads(bool freeze) {
     bool have_timings = false;
     {
         std::scoped_lock const lock(_content_mutex);
-        have_timings = !_timing_samples.empty();
+        have_timings = !_replay.timing_samples().empty();
     }
 
     bool const widened = run_thread_planner(threads);

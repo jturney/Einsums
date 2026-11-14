@@ -172,6 +172,7 @@ set(ComputeGraphSources
     Graph/SpaceTable.cpp
     Graph/BindingSession.cpp
     Graph/ParamStore.cpp
+    Graph/ReplayState.cpp
     Graph/ControlFlow.cpp
     Graph/Operations.cpp
     Graph/Edit.cpp

@@ -166,7 +166,7 @@ void Graph::lease_scratch() {
             continue;
         }
         storage->scratch = std::make_shared<einsums::detail::ScratchLease const>(
-            einsums::detail::ScratchLease{.graph = _name, .state = _run_context, .replaying = [](void const *state) noexcept {
+            einsums::detail::ScratchLease{.graph = _name, .state = _replay.run_context(), .replaying = [](void const *state) noexcept {
                                               return static_cast<detail::RunContext const *>(state)->replaying();
                                           }});
     }
@@ -178,8 +178,8 @@ void Graph::execute() {
     // how loop bodies get a parallel backend: the loop node replays its body
     // via this argument-less execute(). Otherwise nodes run one at a time, in
     // the schedule's order.
-    if (_executor) {
-        execute(*_executor);
+    if (auto const &installed = _replay.executor()) {
+        execute(*installed);
         return;
     }
     // Stateless, so one instance serves every graph on every thread.
@@ -211,11 +211,12 @@ void Graph::replay(Executor &executor) {
     // The run metrics describe the outermost replay of the tree; a body's replay adds its node
     // times to it. Left however the replay ends, so a throw cannot leave the tree marked as
     // inside a replay.
-    bool const        outermost = _run_context->enter();
-    LeaveReplay const leave{*_run_context};
+    detail::RunContext &context   = *_replay.run_context();
+    bool const          outermost = context.enter();
+    LeaveReplay const   leave{context};
     if (outermost) {
         begin_run_metrics();
-        detail::notify_replay(*_run_context, EventKind::ReplayStart, *this, nullptr);
+        detail::notify_replay(context, EventKind::ReplayStart, *this, nullptr);
     }
 
     // Rebuild when the order is unknown OR a pass vouched for the order via
@@ -251,7 +252,7 @@ void Graph::replay(Executor &executor) {
         _slots_validated = true;
     }
 
-    if (!_executed) {
+    if (!_replay.executed()) {
         materialize_internal_tensors();
         auto validation = validate_tensors();
         if (!validation) {
@@ -260,8 +261,8 @@ void Graph::replay(Executor &executor) {
         register_graph(this);
     }
 
-    clear_timing_report();
-    _timing_report_valid = false; // samples are about to be written
+    _replay.clear_timings();
+    _replay.invalidate_timing_report(); // samples are about to be written
 
     // Read once so the zone pushes and their matching pops agree even if
     // another thread flips recording mid-run: an unbalanced zone deepens the
@@ -271,7 +272,7 @@ void Graph::replay(Executor &executor) {
     // All fmt::format work for zones/annotations is precomputed, and so is the
     // string interning behind them; replays of an unchanged graph only pay the
     // profiler's event write. A run that records nothing builds none of it.
-    if (recording && (!_profile_strings_valid || _profile_strings.size() != _nodes.size())) {
+    if (recording && !_replay.profile_strings_current(_nodes.size())) {
         rebuild_profile_strings();
     }
 
@@ -282,7 +283,7 @@ void Graph::replay(Executor &executor) {
         // makes the profiler->viewer serialization progressively slower).
         std::optional<waggle::ScopedZone> exec_zone;
         if (recording) {
-            exec_zone.emplace(graph_exec_site(), _exec_zone_id);
+            exec_zone.emplace(graph_exec_site(), _replay.exec_zone_id());
             waggle::annotate("executor", executor.name());
         }
 
@@ -292,7 +293,7 @@ void Graph::replay(Executor &executor) {
         executor.execute(*this, runner);
         runner.finish();
     }
-    _executed = true;
+    _replay.mark_executed();
 
     // The safe point for the thread-plan trial (see plan_threads): the replay
     // has returned, so nothing is reading a width; every nested body replay it
@@ -302,8 +303,8 @@ void Graph::replay(Executor &executor) {
     contribute_run_samples(outermost);
     if (outermost) {
         end_run_metrics(replay_ms);
-        if (_run_context->observer() != nullptr) {
-            detail::notify_replay(*_run_context, EventKind::ReplayEnd, *this, &last_run());
+        if (context.observer() != nullptr) {
+            detail::notify_replay(context, EventKind::ReplayEnd, *this, &last_run());
         }
     }
     finish_replay_thread_plan(replay_ms);
