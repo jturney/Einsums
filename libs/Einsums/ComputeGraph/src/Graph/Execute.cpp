@@ -114,23 +114,7 @@ void Graph::resync_slot_storage() {
     // Each id once: the nodes name a few thousand slots between them, most of
     // them many times over, and re-seating one twice changes nothing.
     std::scoped_lock const lock(resync_mutex());
-    if (!_resync_ids_valid || _resync_ids_version != _analysis_version || _resync_ids_nodes != _nodes.size()) {
-        std::unordered_set<TensorId> seen;
-        _resync_ids.clear();
-        for (Node const &node : _nodes) {
-            for (auto const *ids : {&node.inputs, &node.outputs}) {
-                for (TensorId const id : *ids) {
-                    if (seen.insert(id).second) {
-                        _resync_ids.push_back(id);
-                    }
-                }
-            }
-        }
-        _resync_ids_version = _analysis_version;
-        _resync_ids_nodes   = _nodes.size();
-        _resync_ids_valid   = true;
-    }
-    for (TensorId const id : _resync_ids) {
+    for (TensorId const id : _registry.resync_ids(_nodes, _analysis_version)) {
         resync_slot(id);
     }
 }
@@ -143,7 +127,7 @@ void Graph::resync_slot_storage(std::span<TensorId const> ids) {
 }
 
 void Graph::resync_slot(TensorId id) {
-    if (auto const redirect = _slot_redirects.find(id); redirect != _slot_redirects.end()) {
+    if (auto const redirect = _registry.redirects().find(id); redirect != _registry.redirects().end()) {
         id = redirect->second;
     }
     TensorSlot const *slot = find_slot(id);
@@ -153,24 +137,7 @@ void Graph::resync_slot(TensorId id) {
 }
 
 void Graph::lease_scratch() {
-    if (_scratch_leased_below == _next_tensor_id) {
-        return;
-    }
-    for (auto &[tid, handle] : _tensors) {
-        if (handle.scratch_leased || !handle.is_intermediate || !handle.storage_of) {
-            continue;
-        }
-        handle.scratch_leased = true;
-        auto *storage         = handle.storage_of();
-        if (storage == nullptr || storage->scratch != nullptr) {
-            continue;
-        }
-        storage->scratch = std::make_shared<einsums::detail::ScratchLease const>(
-            einsums::detail::ScratchLease{.graph = _name, .state = _replay.run_context(), .replaying = [](void const *state) noexcept {
-                                              return static_cast<detail::RunContext const *>(state)->replaying();
-                                          }});
-    }
-    _scratch_leased_below = _next_tensor_id;
+    _registry.lease_scratch(_name, _replay.run_context());
 }
 
 void Graph::execute() {
@@ -235,8 +202,8 @@ void Graph::replay(Executor &executor) {
     // the walk is skipped on the replays that iterative workloads spend their
     // time in; every slot create/rebind/redirect and every pass run clears the
     // flag.
-    if (!_slots_validated) {
-        for (auto const &[id, slot] : _slot_map) {
+    if (!_registry.slots_validated()) {
+        for (auto const &[id, slot] : _registry.slots()) {
             if (!slot)
                 continue;
             if (slot->ptr == nullptr || reinterpret_cast<uintptr_t>(slot->ptr) < 4096) {
@@ -249,7 +216,7 @@ void Graph::replay(Executor &executor) {
                                         _name, tname, reinterpret_cast<uintptr_t>(slot->ptr));
             }
         }
-        _slots_validated = true;
+        _registry.set_slots_validated(true);
     }
 
     if (!_replay.executed()) {

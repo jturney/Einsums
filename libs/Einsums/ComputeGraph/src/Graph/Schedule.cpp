@@ -342,7 +342,7 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     // Without this they would still be ordered against the parent correctly, but
     // as whole-tensor accesses, chaining every slice behind every other and
     // costing the parallel executors their width.
-    for (auto const &[tid, h] : _tensors) {
+    for (auto const &[tid, h] : _registry.handles()) {
         if (h.aliases == 0 || h.alias_box.empty() || view_box.contains(tid)) {
             continue;
         }
@@ -480,7 +480,7 @@ std::vector<std::string> Graph::unjustified_hazard_edges() {
         }
     }
     auto const structural_root = [&](TensorId tid) {
-        for (std::size_t hop = 0; hop <= _tensors.size(); ++hop) {
+        for (std::size_t hop = 0; hop <= _registry.handles().size(); ++hop) {
             auto const it = view_parent.find(tid);
             if (it == view_parent.end() || it->second == tid) {
                 break;
@@ -490,7 +490,7 @@ std::vector<std::string> Graph::unjustified_hazard_edges() {
         return tid;
     };
 
-    auto const span = byte_spans(_tensors);
+    auto const span = byte_spans(_registry.handles());
 
     auto const may_share = [&](TensorId a, TensorId b) {
         if (a == b) {
@@ -565,7 +565,7 @@ void Graph::verify_level_independence() const {
     // reasoned about (deferred allocation, tiled layout) is skipped entirely
     // rather than guessed at; the hazard scan skips it too, so a conflict
     // through one is out of scope for both.
-    auto const span = byte_spans(_tensors);
+    auto const span = byte_spans(_registry.handles());
     if (span.size() < 2) {
         return;
     }

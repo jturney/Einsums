@@ -215,7 +215,7 @@
  * convenience - it is a correctness bug waiting for a different conda
  * environment.
  *
- * ``_slot_redirects`` IS saved, and the reason is worth stating because it looks
+ * The slot redirects (``Graph::slot_redirects``) ARE saved, and the reason is worth stating because it looks
  * like a derived cache. CSE merges a duplicate by redirecting the loser's SLOT
  * and deliberately leaving the node dataflow alone, so the redirect is the only
  * record that a node naming the loser must read the winner's buffer. Dropping it

@@ -75,8 +75,8 @@ std::uint64_t Graph::tensor_tree_stamp() const {
     auto const    graph = [&mix](Graph const &g) {
         mix(g._analysis_version);
         mix(g._nodes.size());
-        mix(g._next_tensor_id);
-        mix(g._handle_version);
+        mix(g._registry.next_id());
+        mix(g._registry.handle_version());
     };
     graph(*this);
     for_each_descendant(graph);
@@ -217,7 +217,7 @@ void Graph::print_dot(std::ostream &os) const {
     os << "  rankdir=TB;\n";
 
     // Tensor nodes (rectangles)
-    for (auto const &[id, handle] : _tensors) {
+    for (auto const &[id, handle] : _registry.handles()) {
         os << fmt::format("  T{} [shape=box, label=\"{}\\n", id, handle.name);
         if (!handle.dims.empty()) {
             os << fmt::format("({})", fmt::join(handle.dims, "x"));
@@ -277,7 +277,7 @@ void Graph::print_summary(std::ostream &os) const {
         return fmt::format("{}", fmt::join(names, ", "));
     };
 
-    os << fmt::format("Graph '{}': {} nodes, {} tensors\n", _name, _nodes.size(), _tensors.size());
+    os << fmt::format("Graph '{}': {} nodes, {} tensors\n", _name, _nodes.size(), _registry.handles().size());
     for (auto const &node : _nodes) {
         os << fmt::format("  [{}] {} ({})\n", node.id, node.label, node.kind);
         if (!node.inputs.empty()) {
@@ -306,7 +306,7 @@ std::string Graph::to_json() const {
     data.stage_index    = _stage_index;
 
     // Tensors
-    for (auto const &[id, h] : _tensors) {
+    for (auto const &[id, h] : _registry.handles()) {
         GraphTensorData td;
         td.id              = id;
         td.name            = h.name;

@@ -494,7 +494,7 @@ void Graph::finish_bind_solution(DimSolution const &solution) {
 
 bool Graph::decides_extents(TensorId id) const {
     TensorHandle const *handle = find_tensor(id);
-    return handle != nullptr && (handle->is_intermediate || _owned_tensor_ptrs.contains(handle->tensor_ptr));
+    return handle != nullptr && (handle->is_intermediate || _registry.owns(handle->tensor_ptr));
 }
 
 void Graph::resize_derived_extent(TensorId id, std::vector<std::size_t> const &derived, std::string_view producer) {
@@ -770,7 +770,7 @@ void Graph::note_rebind_geometry(TensorHandle &handle, void *new_data, std::vect
     // declaration is an input to the derivation, not an output of it, and survives - and
     // let the next link pass re-derive against what is there now. Whole-table and
     // amortized, so one rebind of one slot costs one flag rather than a scan.
-    if (!_declared_aliases.contains(handle.id)) {
+    if (!_registry.declared_aliases().contains(handle.id)) {
         handle.aliases = 0;
         handle.alias_box.clear();
     }

@@ -66,7 +66,7 @@ void Graph::declare_alias(TensorId child, TensorId parent) {
     // declaration exists to add: two tensors sharing storage would then be scheduled as if they
     // did not.
     auto *child_handle = find_mutable_tensor(child);
-    if (child_handle == nullptr || !_tensors.contains(parent)) {
+    if (child_handle == nullptr || !_registry.handles().contains(parent)) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': declare_alias({}, {}) names a tensor this graph does not have: {}",
                                 _name, child, parent, child_handle == nullptr ? child : parent);
     }
@@ -74,7 +74,7 @@ void Graph::declare_alias(TensorId child, TensorId parent) {
     // there is about a corrupt link rather than about the declaration that made
     // it. Refuse here, where the two names are still in hand: a saved graph
     // claiming A is part of B and B part of A describes nothing.
-    for (TensorId walk = parent, hops = 0; walk != 0 && hops <= _tensors.size(); ++hops) {
+    for (TensorId walk = parent, hops = 0; walk != 0 && hops <= _registry.handles().size(); ++hops) {
         if (walk == child) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                     "Graph '{}': declare_alias({}, {}) would make the two tensors each other's alias parent; an "
@@ -87,7 +87,7 @@ void Graph::declare_alias(TensorId child, TensorId parent) {
         }
         walk = link->aliases;
     }
-    _declared_aliases.insert_or_assign(child, parent);
+    _registry.declared_aliases().insert_or_assign(child, parent);
     child_handle->aliases = parent;
     // A declaration says WHICH buffer, never WHICH REGION - the manifest schema
     // carries no box - so the declared alias conflicts as the whole parent.
@@ -98,7 +98,7 @@ void Graph::declare_alias(TensorId child, TensorId parent) {
 }
 
 void Graph::clear_alias_links() noexcept {
-    for (auto &[id, handle] : _tensors) {
+    for (auto &[id, handle] : _registry.handles()) {
         handle.aliases = 0;
         handle.alias_box.clear();
     }
@@ -108,9 +108,9 @@ void Graph::clear_alias_links() noexcept {
 }
 
 void Graph::apply_declared_aliases() {
-    for (auto const &[child, parent] : _declared_aliases) {
+    for (auto const &[child, parent] : _registry.declared_aliases()) {
         auto *handle = find_mutable_tensor(child);
-        if (handle == nullptr || child == parent || !_tensors.contains(parent)) {
+        if (handle == nullptr || child == parent || !_registry.handles().contains(parent)) {
             continue;
         }
         handle->aliases = parent;
@@ -137,7 +137,7 @@ void Graph::link_alias_structural() {
         AliasBox box;
     };
     std::vector<Update> updates;
-    for (auto const &[id, handle] : _tensors) {
+    for (auto const &[id, handle] : _registry.handles()) {
         if (!resolver.is_view(id)) {
             continue;
         }
@@ -185,10 +185,10 @@ void Graph::link_alias_structural() {
 }
 
 void Graph::link_alias_storage() {
-    if (_aliases_linked) {
+    if (_registry.aliases_linked()) {
         return;
     }
-    _aliases_linked = true;
+    _registry.set_aliases_linked(true);
 
     // A DERIVATION IS ABOUT TO RUN, so anything stamped with analysis_version is stale. That
     // counter reads as a node-list version and UsageAnalysis is keyed by alias OWNER, so a
@@ -219,7 +219,8 @@ void Graph::link_alias_storage() {
     // derivation takes the whole graph only when NO handle carries one. What
     // spans the two modes is the declaration, which is applied above in both and
     // is the only way an alias between two address-less operands is expressible.
-    if (!_tensors.empty() && std::ranges::none_of(_tensors, [](auto const &kv) { return kv.second.data_ptr != nullptr; })) {
+    if (!_registry.handles().empty() &&
+        std::ranges::none_of(_registry.handles(), [](auto const &kv) { return kv.second.data_ptr != nullptr; })) {
         link_alias_structural();
         return;
     }
@@ -230,8 +231,8 @@ void Graph::link_alias_storage() {
         TensorId    id;
     };
     std::vector<Entry> spans;
-    spans.reserve(_tensors.size());
-    for (auto const &[id, h] : _tensors) {
+    spans.reserve(_registry.handles().size());
+    for (auto const &[id, h] : _registry.handles()) {
         char const *lo = nullptr;
         char const *hi = nullptr;
         if (handle_byte_span(h, lo, hi)) {
@@ -274,8 +275,8 @@ void Graph::link_alias_storage() {
     // emitted no edge between their accesses - DLPNO's singleton shape
     // classes hit this (`_W_pair` covers `_W` when a class has one pair).
     for (size_t i = 0; i < spans.size(); ++i) {
-        auto self = _tensors.find(spans[i].id);
-        if (self == _tensors.end() || self->second.aliases != 0) {
+        auto self = _registry.handles().find(spans[i].id);
+        if (self == _registry.handles().end() || self->second.aliases != 0) {
             continue;
         }
         // Last span starting at or before this one.
@@ -288,8 +289,8 @@ void Graph::link_alias_storage() {
                 break; // nothing at or before j reaches far enough
             }
             if (spans[j].id != spans[i].id && spans[j].lo <= spans[i].lo && spans[i].hi <= spans[j].hi) {
-                auto const owner = _tensors.find(spans[j].id);
-                if (owner != _tensors.end() &&
+                auto const owner = _registry.handles().find(spans[j].id);
+                if (owner != _registry.handles().end() &&
                     (owner->second.total_elems() > self->second.total_elems() ||
                      (owner->second.total_elems() == self->second.total_elems() && owner->first < self->first))) {
                     // Link to the owner's ROOT, not to the owner. Containment

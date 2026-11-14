@@ -167,6 +167,7 @@ struct LoaderAccess;
 } // namespace graph_ir
 namespace detail {
 struct PipelineAccess;
+struct RunnerAccess;
 } // namespace detail
 class OptimizerPass;
 enum class OptLevel : std::uint8_t; // Optimizer.hpp
@@ -547,6 +548,193 @@ class EINSUMS_EXPORT ReplayState {
     std::shared_ptr<Executor> _executor;
 };
 
+/**
+ * @brief Every tensor a graph knows: the handles and their ids, the by-address index, the
+ *        tensors and cleanups the graph owns, the slots and their redirects, and the alias
+ *        declarations and link state.
+ *
+ * The registry keeps its own invariants: ids start at 1 and only grow, the address index names
+ * the tensor that lives at an address now, redirects always name a terminal id. The algorithms
+ * that relate tensors through the node list (alias linking, the hazard scan, rebinding) stay on
+ * @ref Graph and edit the table through @ref handles, since they also say what their change
+ * invalidates.
+ *
+ * @ref NodeRunner reaches one member, @ref mark_host_resident, through the graph's runner
+ * access.
+ */
+class EINSUMS_EXPORT TensorRegistry {
+  public:
+    using HandleMap   = std::unordered_map<TensorId, TensorHandle>;
+    using SlotMap     = std::unordered_map<TensorId, std::unique_ptr<TensorSlot>>;
+    using RedirectMap = std::unordered_map<TensorId, TensorId>;
+
+    // ── Handles ───────────────────────────────────────────────────────────
+
+    [[nodiscard]] HandleMap const &handles() const noexcept { return _tensors; }
+    [[nodiscard]] HandleMap       &handles() noexcept { return _tensors; }
+
+    [[nodiscard]] TensorHandle const *find(TensorId id) const noexcept;
+    [[nodiscard]] TensorHandle       *find(TensorId id) noexcept;
+
+    /// The id the next registration gets.
+    [[nodiscard]] TensorId next_id() const noexcept { return _next_tensor_id; }
+
+    /// Give @p handle the next id, store it, and index the addresses it can be found by.
+    /// @return The stored handle.
+    TensorHandle const &insert(TensorHandle handle);
+
+    /// The id filed under @p ptr, or 0. A raw lookup: whether the entry is still live is the
+    /// caller's question.
+    [[nodiscard]] TensorId indexed(void const *ptr) const noexcept;
+
+    /// File @p id under @p ptr, replacing whatever was filed there.
+    void index(void const *ptr, TensorId id);
+
+    /// Drop the entry under @p ptr, but only while it still names @p id: a later registration
+    /// at a reused address is the one that must survive.
+    void unindex(TensorId id, void const *ptr);
+
+    /// Record that a GPU-placed node which fell back to the CPU left @p id current on the host.
+    ///
+    /// For the replay alone: it runs on whichever worker ran the node, so it moves no counter.
+    /// Each node writes only its own outputs, so no two calls in one replay share a handle.
+    void mark_host_resident(TensorId id) noexcept;
+
+    // ── Change counters ───────────────────────────────────────────────────
+
+    /// Moved by an edit to an already registered handle that no other counter records: a
+    /// backing attached, a bare scalar bound.
+    [[nodiscard]] std::uint64_t handle_version() const noexcept { return _handle_version; }
+    void                        bump_handle_version() noexcept { ++_handle_version; }
+
+    [[nodiscard]] bool aliases_linked() const noexcept { return _aliases_linked; }
+    void               set_aliases_linked(bool linked) noexcept { _aliases_linked = linked; }
+
+    [[nodiscard]] bool slots_validated() const noexcept { return _slots_validated; }
+    void               set_slots_validated(bool validated) noexcept { _slots_validated = validated; }
+
+    // ── Declared aliases and ownership scopes ─────────────────────────────
+
+    [[nodiscard]] RedirectMap const &declared_aliases() const noexcept { return _declared_aliases; }
+    [[nodiscard]] RedirectMap       &declared_aliases() noexcept { return _declared_aliases; }
+
+    [[nodiscard]] std::vector<TensorScopeMapPtr> const &scope_maps() const noexcept { return _scope_maps; }
+
+    /// Add @p map unless it is already held.
+    /// @return Whether it was added.
+    bool add_scope_map(TensorScopeMapPtr map);
+
+    // ── What the graph owns ───────────────────────────────────────────────
+
+    [[nodiscard]] bool owns(void const *ptr) const noexcept { return _owned_tensor_ptrs.contains(ptr); }
+
+    /// Take ownership of @p ptr, destroyed by @p deleter with the graph.
+    void own(void *ptr, void (*deleter)(void *));
+
+    /// Give back the tensor @ref own took last, @p ptr.
+    void disown_last(void const *ptr);
+
+    void add_cleanup(std::function<void()> cleanup) { _adopted_cleanups.push(std::move(cleanup)); }
+    void run_cleanups() noexcept { _adopted_cleanups.run(); }
+
+    // ── Slots ─────────────────────────────────────────────────────────────
+
+    [[nodiscard]] SlotMap const &slots() const noexcept { return _slot_map; }
+    [[nodiscard]] SlotMap       &slots() noexcept { return _slot_map; }
+
+    [[nodiscard]] TensorSlot *find_slot(TensorId id) noexcept;
+
+    [[nodiscard]] RedirectMap const &redirects() const noexcept { return _slot_redirects; }
+    [[nodiscard]] RedirectMap       &redirects() noexcept { return _slot_redirects; }
+
+    // ── Per-replay bookkeeping ────────────────────────────────────────────
+
+    /// Give every leasable intermediate registered since the last call a scratch lease, naming
+    /// @p graph_name and answering from @p context whether a replay is running.
+    void lease_scratch(std::string const &graph_name, std::shared_ptr<RunContext> const &context);
+
+    /// The distinct ids @p nodes name, in first-use order, cached against @p version and the
+    /// node count.
+    [[nodiscard]] std::vector<TensorId> const &resync_ids(std::span<Node const> nodes, std::uint64_t version);
+
+  private:
+    HandleMap _tensors;
+
+    /// Ownership-scope tables published by a declaring Workspace or Pipeline.
+    /// Shared, so a declaration made after this graph was created still reaches it.
+    std::vector<TensorScopeMapPtr> _scope_maps;
+
+    /// Manifest-declared alias relations: child entry id -> the entry whose storage it
+    /// is part of.
+    ///
+    /// Kept beside the handles rather than only on them because a declaration is an
+    /// INPUT to alias discovery, not an output: it is the only relation that survives
+    /// a save (no address, no ``View`` node), so it has to be reapplied by every
+    /// linking pass and must not be lost when the links are cleared.
+    RedirectMap _declared_aliases;
+
+    // Starts at 1: id 0 is reserved as the "no tensor" / "no alias" sentinel
+    // (TensorHandle::aliases defaults to 0 and the codebase tests `aliases == 0`
+    // for "not a view"). If a real tensor could be id 0, a view of it would have
+    // aliases == 0 and silently fail to resolve to its parent in the scheduler.
+    TensorId _next_tensor_id{1};
+
+    /// False once a tensor has been registered since the last link pass.
+    bool _aliases_linked{true};
+
+    /// ``TensorHandle::tensor_ptr`` to id, and the handle's ``caller_ptr`` and stand-in to the same
+    /// id where they differ from it. Capture asks "is this object already registered?" for every
+    /// operand, which was a linear scan of the tensor table and so quadratic over a capture; a
+    /// DLPNO-MP2 graph registers ~13k tensors.
+    ///
+    /// LAST registration wins (``insert_or_assign``): an address freed during a capture can be
+    /// reused by a different tensor, and the index must name the one that lives there now. Every
+    /// by-address lookup goes through it; scanning the table would depend on hash order.
+    std::unordered_map<void const *, TensorId> _ptr_index;
+
+    /// Type-erased storage for graph-owned tensors (from create_tensor()).
+    /// Each entry uses a typed deleter captured at creation time.
+    std::vector<std::unique_ptr<void, void (*)(void *)>> _owned_tensors;
+
+    /// Addresses of the wrappers in @ref _owned_tensors, for the "do I already own this one?" test.
+    std::unordered_set<void const *> _owned_tensor_ptrs;
+
+    /// Captured cleanup callbacks from ``adopt()``, invoked in
+    /// reverse-insertion order when the graph is destroyed or assigned over.
+    /// Used by capture-time helpers (``cg::view``) that allocate auxiliary
+    /// state on the heap.
+    CleanupStack _adopted_cleanups;
+
+    /// Tensor slots for rebindable tensor references (TensorId → TensorSlot).
+    SlotMap _slot_map;
+
+    /// Whether every slot pointer has been checked since the last change to
+    /// the slot table. The check catches cross-pipeline tensor misuse before
+    /// it segfaults, but nothing can invalidate a pointer between two replays
+    /// of an unchanged graph, so walking the whole map per replay only taxed
+    /// iterative workloads.
+    bool _slots_validated{false};
+
+    std::uint64_t _handle_version{0};
+
+    /// lease_scratch() has visited every tensor id below this one. Ids only
+    /// grow, and every write that makes a handle leasable happens as it is
+    /// registered, so a table with no new id has nothing new to lease.
+    TensorId _scratch_leased_below{1};
+
+    /// The distinct ids the node list names, and the node list they were collected from
+    /// (analysis version and node count: the contract the dependency lists the executors
+    /// schedule by already rely on).
+    std::vector<TensorId> _resync_ids;
+    std::uint64_t         _resync_ids_version{0};
+    std::size_t           _resync_ids_nodes{0};
+    bool                  _resync_ids_valid{false};
+
+    /// Durable slot redirects: key resolves to value's buffer. Chains are collapsed at insert,
+    /// so values are always terminal ids.
+    RedirectMap _slot_redirects;
+};
+
 /// Everything a @ref Graph holds.
 ///
 /// Graph derives from this so that moving one is the defaulted move of its members plus the
@@ -576,29 +764,13 @@ struct GraphState {
     /// @see bind, bind_begin, set_setup_key, bind_ragged_extents
     BindingSession _binding;
 
-    std::string                                _name;
-    std::string                                _pipeline_name;   ///< Parent pipeline name (empty if standalone)
-    std::string                                _workspace_name;  ///< Parent workspace name (empty if none)
-    std::string                                _stage_name;      ///< Stage name within pipeline
-    std::string                                _stage_type;      ///< "graph" or "loop"
-    int                                        _stage_index{-1}; ///< Order within pipeline
-    std::vector<Node>                          _nodes;
-    std::unordered_map<TensorId, TensorHandle> _tensors;
-
-    /// Ownership-scope tables published by a declaring Workspace or Pipeline.
-    /// Shared, so a declaration made after this graph was created still reaches it.
-    /// @see add_scope_map
-    std::vector<TensorScopeMapPtr> _scope_maps;
-
-    /// Manifest-declared alias relations: child entry id -> the entry whose storage it
-    /// is part of.
-    ///
-    /// Kept beside the handles rather than only on them because a declaration is an
-    /// INPUT to alias discovery, not an output: it is the only relation that survives
-    /// a save (no address, no ``View`` node), so it has to be reapplied by every
-    /// linking pass and must not be lost to @ref clear_alias_links.
-    /// @see declare_alias
-    std::unordered_map<TensorId, TensorId> _declared_aliases;
+    std::string       _name;
+    std::string       _pipeline_name;   ///< Parent pipeline name (empty if standalone)
+    std::string       _workspace_name;  ///< Parent workspace name (empty if none)
+    std::string       _stage_name;      ///< Stage name within pipeline
+    std::string       _stage_type;      ///< "graph" or "loop"
+    int               _stage_index{-1}; ///< Order within pipeline
+    std::vector<Node> _nodes;
 
     /// Which symbol each index space ties to, what each measures, how each is tiled, and the
     /// registry their ids came from. @see symbol_spaces, space_extent, space_tiling, space_registry
@@ -609,31 +781,6 @@ struct GraphState {
     ParamStore _param_store;
 
     NodeId _next_node_id{0};
-    // Starts at 1: id 0 is reserved as the "no tensor" / "no alias" sentinel
-    // (TensorHandle::aliases defaults to 0 and the codebase tests `aliases == 0`
-    // for "not a view"). If a real tensor could be id 0, a view of it would have
-    // aliases == 0 and silently fail to resolve to its parent in the scheduler.
-    TensorId _next_tensor_id{1};
-
-    /// Registration-time byte spans, for the containment search in
-    /// link_alias_storage. ``TensorHandle::data_ptr`` is a registration-time
-    /// snapshot that nothing refreshes, so these stay valid for the life of the
-    /// handle and the search need not recompute an extent per candidate.
-    /// False once a tensor has been registered since the last link pass.
-    bool _aliases_linked{true};
-
-    /// ``TensorHandle::tensor_ptr`` to id, and the handle's ``caller_ptr`` and stand-in to the same
-    /// id where they differ from it. Capture asks "is this object already registered?" for every
-    /// operand, which was a linear scan of the tensor
-    /// table and so quadratic over a capture; a DLPNO-MP2 graph registers ~13k
-    /// tensors.
-    ///
-    /// LAST registration wins (``insert_or_assign``): an address freed during a capture can be
-    /// reused by a different tensor, and the index must name the one that lives there now. Every
-    /// by-address lookup goes through it; scanning @ref _tensors would depend on hash order.
-    ///
-    /// ``rebind_impl`` keeps it in step when a repoint moves a handle's ``tensor_ptr``.
-    std::unordered_map<void const *, TensorId> _ptr_index;
 
     bool _sorted{false};
 
@@ -679,64 +826,13 @@ struct GraphState {
     /// own across a move (see @ref ContentMutex).
     mutable ContentMutex _content_mutex;
 
-    /// Type-erased storage for graph-owned tensors (from create_tensor()).
-    /// Each entry uses a typed deleter captured at creation time.
-    std::vector<std::unique_ptr<void, void (*)(void *)>> _owned_tensors;
-
-    /// Addresses of the wrappers in @ref _owned_tensors, for the "do I already
-    /// own this one?" test in @ref adopt_operand.
-    std::unordered_set<void const *> _owned_tensor_ptrs;
-
-    /// Captured cleanup callbacks from ``adopt()``, invoked in
-    /// reverse-insertion order when the graph is destroyed or assigned over.
-    /// Used by capture-time helpers (``cg::view``) that allocate auxiliary
-    /// state on the heap.
-    CleanupStack _adopted_cleanups;
-
     /// What executors baked by passes hold to reach this graph; see @ref GraphAnchor. Created on
     /// first request, carried by a move, and re-pointed by @ref Graph's move operations.
     std::shared_ptr<GraphAnchor> _anchor;
 
-    /// Tensor slots for rebindable tensor references (TensorId → TensorSlot).
-    std::unordered_map<TensorId, std::unique_ptr<TensorSlot>> _slot_map;
-
-    /// Whether every slot pointer has been checked since the last change to
-    /// the slot table. The check catches cross-pipeline tensor misuse before
-    /// it segfaults, but nothing can invalidate a pointer between two replays
-    /// of an unchanged graph, so walking the whole map per replay only taxed
-    /// iterative workloads. Cleared wherever a slot is created, rebound,
-    /// redirected, or handed to a pass.
-    bool _slots_validated{false};
-
-    // ── Per-replay bookkeeping, kept between replays ───────────────────────
-    //
-    // Each replay used to rebuild these from the whole node list and tensor
-    // table, which on a graph of a few thousand small nodes was half the
-    // replay: the calling thread scanning while every worker sat idle. Each is
-    // keyed on counters that move whenever its answer can.
-
-    /// Moved by an edit to an already registered handle that no other
-    /// counter records: a backing attached, a bare scalar bound.
-    std::uint64_t _handle_version{0};
-
-    /// lease_scratch() has visited every tensor id below this one. Ids only
-    /// grow, and every write that makes a handle leasable happens as it is
-    /// registered, so a table with no new id has nothing new to lease.
-    TensorId _scratch_leased_below{1};
-
-    /// The distinct ids the node list names, for resync_slot_storage(), and
-    /// the node list they were collected from (@ref analysis_version and node
-    /// count: the contract the dependency lists the executors schedule by
-    /// already rely on).
-    std::vector<TensorId> _resync_ids;
-    std::uint64_t         _resync_ids_version{0};
-    std::size_t           _resync_ids_nodes{0};
-    bool                  _resync_ids_valid{false};
-
-    /// Durable slot redirects recorded by redirect_slot(): key resolves to
-    /// value's buffer. Chains are collapsed at insert, so values are always
-    /// terminal ids. rebind() re-applies these so redirected slots follow.
-    std::unordered_map<TensorId, TensorId> _slot_redirects;
+    /// Every tensor this graph knows, what it owns, its slots and redirects, and the alias
+    /// declarations. @see tensor, find_tensor, tensors_map, slot_redirects
+    TensorRegistry _registry;
 
     /// What the replays record and cache between them: profiler payloads, timings, run
     /// metrics, the run context, device shadows, the arena and the executor.
@@ -1021,59 +1117,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @see link_alias_structural
      */
     APIARY_EXPOSE void link_alias_storage();
-
-    /**
-     * @brief Re-seat the cached data pointer of every slot this graph's nodes name on its tensor's current buffer.
-     *
-     * ``Graph::adopt_operand`` gives a graph a STAND-IN for an operand it does not own: a
-     * wrapper that shares the caller's storage block so the caller's own wrapper may die
-     * between capture and replay. The stand-in shares the block, not the cached address
-     * inside it - ``TensorImpl`` holds its own copy of that - and a Free followed by the next
-     * replay's Materialize relocates the block under it. From that replay on the stand-in
-     * names memory the block has already freed, which is a read of freed storage for a
-     * sub-graph body and, where the allocator has not reused the bytes, a silently correct
-     * one.
-     *
-     * This is where @ref einsums::detail::StorageBase::generation is consumed. ``execute()``
-     * runs it before the first node, and a sub-graph body runs it at its own ``execute()``,
-     * which is after the parent's Materialize has placed the buffer the body is about to
-     * read. A slot whose tensor has not moved costs one comparison.
-     *
-     * A stand-in is shared by every graph that adopted the same tensor, so every re-seat in the
-     * process is serialized: two graphs, or two nodes of one, may reach one stand-in at once.
-     *
-     * A slot no node names is left alone. The node that replays a body is ordered against the
-     * tensors the body's nodes touch, so a stand-in that outlived its readers (a hoisted node
-     * took them) may belong to a tensor another thread is freeing.
-     *
-     * @see TensorSlot::resync_of
-     */
-    void resync_slot_storage();
-
-    /**
-     * @brief Give every intermediate this graph holds a scratch lease on its storage block.
-     *
-     * An intermediate is the graph's to free, reuse or hold a tile at a time, so its values mean
-     * something only while the graph replays; the lease is what lets a read from outside a replay
-     * say so instead of returning whatever the passes left (see @ref einsums::detail::ScratchLease).
-     * Run at the start of every @ref execute; each handle is leased once, and a tensor that already
-     * carries a lease keeps the one it has.
-     */
-    void lease_scratch();
-
-    /**
-     * @brief Re-seat the adopted stand-ins of @p ids only.
-     *
-     * For a node that runs outside this graph's own ``execute()`` but reaches its operands
-     * through this graph's slots, as a node LoopInvariantHoisting lifts out of a body does. Its
-     * dataflow edges order it after the Materialize and Free of the tensors it touches and of
-     * no others, so it may read the storage of those alone: a re-seat of the whole graph would
-     * read a block another thread is relocating and rewrite a stand-in another node is reading.
-     * A redirected id is re-seated through the slot it redirects to.
-     *
-     * @param[in] ids Tensors of this graph, as the node names them.
-     */
-    void resync_slot_storage(std::span<TensorId const> ids);
 
     /**
      * @brief Derive the alias relation from ``View`` nodes and manifest
@@ -2386,8 +2429,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return True when any node's inputs changed.
      */
     bool                               sync_destination_inputs();
-    APIARY_EXPOSE [[nodiscard]] size_t num_nodes() const { return _nodes.size(); }     ///< Number of operation nodes.
-    APIARY_EXPOSE [[nodiscard]] size_t num_tensors() const { return _tensors.size(); } ///< Number of registered tensors.
+    APIARY_EXPOSE [[nodiscard]] size_t num_nodes() const { return _nodes.size(); }                ///< Number of operation nodes.
+    APIARY_EXPOSE [[nodiscard]] size_t num_tensors() const { return _registry.handles().size(); } ///< Number of registered tensors.
 
     /**
      * @brief Drop nodes flagged for removal, preserving the survivors' order.
@@ -2560,10 +2603,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// must read the winner's buffer.
     /// @see redirect_slot
     /// @versionadded{2.0.0}
-    [[nodiscard]] std::unordered_map<TensorId, TensorId> const &slot_redirects() const noexcept { return _slot_redirects; }
+    [[nodiscard]] std::unordered_map<TensorId, TensorId> const &slot_redirects() const noexcept { return _registry.redirects(); }
 
     /// The tensor registry, read-only; see @ref tensor.
-    [[nodiscard]] std::unordered_map<TensorId, TensorHandle> const &tensors_map() const { return _tensors; }
+    [[nodiscard]] std::unordered_map<TensorId, TensorHandle> const &tensors_map() const { return _registry.handles(); }
 
     /**
      * @brief Invoke @p visitor on each immediate child sub-graph.
@@ -4408,7 +4451,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void redirect_slot(TensorId from, TensorId to);
 
     /// @brief Whether @p id has a slot @ref redirect_slot can repoint.
-    [[nodiscard]] bool has_slot(TensorId id) const noexcept { return _slot_map.contains(id); }
+    [[nodiscard]] bool has_slot(TensorId id) const noexcept { return _registry.slots().contains(id); }
 
     // ── Operand ownership ───────────────────────────────────────────────────
 
@@ -4964,7 +5007,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void add_scope_map(TensorScopeMapPtr map);
 
     /// The scope tables attached by @ref add_scope_map, in attachment order.
-    [[nodiscard]] std::vector<TensorScopeMapPtr> const &scope_maps() const noexcept { return _scope_maps; }
+    [[nodiscard]] std::vector<TensorScopeMapPtr> const &scope_maps() const noexcept { return _registry.scope_maps(); }
 
     /**
      * @brief The ownership scope this graph holds for @p ptr, consulting attached tables.
@@ -5014,10 +5057,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// check that a guard catches it; defined only in the tests' own header.
     friend struct detail::GraphBackdoor;
 
-    /// Runs the nodes of a replay. Reaches the replay state, which names it a friend too, and
-    /// marks a fallen-back node's outputs host-resident without the handle-version bump, from
-    /// whichever worker thread ran the node.
-    friend class NodeRunner;
+    /// What @ref NodeRunner reaches: the replay state (which names the runner a friend), the
+    /// no-bump residency write a CPU fallback makes from a worker thread, and the timings a
+    /// replay records. Defined in ``NodeRunner.cpp``.
+    friend struct detail::RunnerAccess;
 
     /// Restores a saved graph, including handle state no pass may set (whether an annotation was
     /// inferred, how a backed tensor starts), which the file recorded.
@@ -5050,6 +5093,59 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /// Record a run's per-node timings, under a single lock acquisition, as a replay ends.
     void record_node_timings(std::vector<NodeTimingSample> &&samples);
+
+    /**
+     * @brief Re-seat the cached data pointer of every slot this graph's nodes name on its tensor's current buffer.
+     *
+     * ``Graph::adopt_operand`` gives a graph a STAND-IN for an operand it does not own: a
+     * wrapper that shares the caller's storage block so the caller's own wrapper may die
+     * between capture and replay. The stand-in shares the block, not the cached address
+     * inside it - ``TensorImpl`` holds its own copy of that - and a Free followed by the next
+     * replay's Materialize relocates the block under it. From that replay on the stand-in
+     * names memory the block has already freed, which is a read of freed storage for a
+     * sub-graph body and, where the allocator has not reused the bytes, a silently correct
+     * one.
+     *
+     * This is where @ref einsums::detail::StorageBase::generation is consumed. ``execute()``
+     * runs it before the first node, and a sub-graph body runs it at its own ``execute()``,
+     * which is after the parent's Materialize has placed the buffer the body is about to
+     * read. A slot whose tensor has not moved costs one comparison.
+     *
+     * A stand-in is shared by every graph that adopted the same tensor, so every re-seat in the
+     * process is serialized: two graphs, or two nodes of one, may reach one stand-in at once.
+     *
+     * A slot no node names is left alone. The node that replays a body is ordered against the
+     * tensors the body's nodes touch, so a stand-in that outlived its readers (a hoisted node
+     * took them) may belong to a tensor another thread is freeing.
+     *
+     * @see TensorSlot::resync_of
+     */
+    void resync_slot_storage();
+
+    /**
+     * @brief Re-seat the adopted stand-ins of @p ids only.
+     *
+     * For a node that runs outside this graph's own ``execute()`` but reaches its operands
+     * through this graph's slots, as a node LoopInvariantHoisting lifts out of a body does. Its
+     * dataflow edges order it after the Materialize and Free of the tensors it touches and of
+     * no others, so it may read the storage of those alone: a re-seat of the whole graph would
+     * read a block another thread is relocating and rewrite a stand-in another node is reading.
+     * A redirected id is re-seated through the slot it redirects to.
+     *
+     * @param[in] ids Tensors of this graph, as the node names them.
+     */
+    void resync_slot_storage(std::span<TensorId const> ids);
+
+    /**
+     * @brief Give every intermediate this graph holds a scratch lease on its storage block.
+     *
+     * An intermediate is the graph's to free, reuse or hold a tile at a time, so its values mean
+     * something only while the graph replays; the lease is what lets a read from outside a replay
+     * say so instead of returning whatever the passes left (see @ref einsums::detail::ScratchLease).
+     * Run at the start of every @ref execute; each handle is leased once, and a tensor that already
+     * carries a lease keeps the one it has.
+     */
+    void lease_scratch();
 
     /// A value that moves whenever any graph below this one has a declared edit: each
     /// descendant's analysis version and node count, folded in walk order. A body edit moves the
@@ -5263,21 +5359,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     template <typename TensorType, typename... Args>
     TensorType *own_tensor(Args &&...args) {
         auto *ptr = new TensorType(std::forward<Args>(args)...);
-        _owned_tensors.emplace_back(ptr, [](void *p) {
+        _registry.own(ptr, [](void *p) {
             detail::forget_graph_owned(p);
             delete static_cast<TensorType *>(p);
         });
-        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
         detail::note_graph_owned(ptr);
         return ptr;
     }
 
     /// @brief Drop the tensor @ref own_tensor made last, for a declaration refused after it.
     /// @param[in] ptr That tensor.
-    void disown_last(void const *ptr) {
-        _owned_tensor_ptrs.erase(ptr);
-        _owned_tensors.pop_back();
-    }
+    void disown_last(void const *ptr) { _registry.disown_last(ptr); }
 
     /// @brief Check @p backing against @p handle and attach it, as @ref annotate_backing does.
     /// @param[in,out] handle The tensor's handle, registered or about to be.
@@ -5670,7 +5762,7 @@ auto Graph::adopt_operand(TensorType const &tensor) -> std::shared_ptr<void> {
     if constexpr (!requires(Clean const &t) { t.shallow_alias(); }) {
         return {};
     } else {
-        if (_owned_tensor_ptrs.contains(static_cast<void const *>(&tensor))) {
+        if (_registry.owns(static_cast<void const *>(&tensor))) {
             return {};
         }
         if (detail::is_maintained_view(static_cast<void const *>(&tensor))) {
@@ -5765,8 +5857,8 @@ auto Graph::register_operand(TensorType const &tensor) -> TensorId {
 }
 template <GraphCapturableTensor TensorType>
 auto Graph::get_or_create_slot(TensorType const &tensor, TensorId tensor_id) -> TensorSlot * {
-    auto it = _slot_map.find(tensor_id);
-    if (it != _slot_map.end()) {
+    auto it = _registry.slots().find(tensor_id);
+    if (it != _registry.slots().end()) {
         return it->second.get();
     }
     auto slot          = std::make_unique<TensorSlot>();
@@ -5787,8 +5879,8 @@ auto Graph::get_or_create_slot(TensorType const &tensor, TensorId tensor_id) -> 
         slot->owner = handle->owner;
     }
 
-    auto *raw            = slot.get();
-    _slot_map[tensor_id] = std::move(slot);
+    auto *raw                    = slot.get();
+    _registry.slots()[tensor_id] = std::move(slot);
     note(Change::SlotsChanged);
     return raw;
 }
@@ -5806,9 +5898,9 @@ auto Graph::rebind(TensorType const &old_tensor, TensorType &new_tensor) -> void
     // than whichever duplicate the map yields first.
     bool     have_fallback = false;
     TensorId fallback{};
-    for (auto &[id, slot] : _slot_map) {
+    for (auto &[id, slot] : _registry.slots()) {
         if (slot->ptr == old_ptr) {
-            if (!_slot_redirects.contains(id)) {
+            if (!_registry.redirects().contains(id)) {
                 rebind(id, new_tensor);
                 return;
             }
@@ -5840,8 +5932,8 @@ auto Graph::bind_add(std::string const &name, TensorType &tensor) -> void {
 }
 template <GraphCapturableTensor TensorType>
 auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_change, bool descend) -> void {
-    auto it = _slot_map.find(id);
-    if (it == _slot_map.end()) {
+    auto it = _registry.slots().find(id);
+    if (it == _registry.slots().end()) {
         EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no slot for tensor id {}", _name, id);
     }
     auto *slot = it->second.get();
@@ -5890,11 +5982,11 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
 
     // An explicit rebind of a merged-away tensor overrides its pass
     // redirect; otherwise a later rebind of the survivor would stomp it.
-    _slot_redirects.erase(id);
+    _registry.redirects().erase(id);
 
     // Slots that a pass redirected to this tensor (CSE duplicates,
     // fused permute outputs) must follow the new buffer.
-    for (auto const &[f, t] : _slot_redirects) {
+    for (auto const &[f, t] : _registry.redirects()) {
         if (t == id) {
             if (auto *fs = find_slot(f)) {
                 fs->ptr       = slot->ptr;
@@ -5905,14 +5997,14 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
     }
 
     // Update the TensorHandle too
-    auto th_it = _tensors.find(id);
-    if (th_it != _tensors.end()) {
+    auto th_it = _registry.handles().find(id);
+    if (th_it != _registry.handles().end()) {
         // The pointer index is keyed on ``tensor_ptr``, so a repoint has to move this
         // handle's entry with it: leaving it behind makes the index answer about the
         // storage the graph was captured over and report the storage it was just
         // rebound to as unregistered, and every by-address lookup on this class reads
         // that index. The old key is dropped only while it still names THIS id -
-        // register_tensor's last-registration-wins rule (see @ref _ptr_index) means an
+        // register_tensor's last-registration-wins rule (see TensorRegistry) means an
         // address freed during a capture may already have been reassigned to another
         // tensor, and that later registration is the one that must survive.
         //
@@ -5925,15 +6017,13 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
             if (previous == nullptr) {
                 continue;
             }
-            if (auto const stale = _ptr_index.find(previous); stale != _ptr_index.end() && stale->second == id) {
-                _ptr_index.erase(stale);
-            }
+            _registry.unindex(id, previous);
         }
         th_it->second.caller_ptr = nullptr;
         th_it->second.owner.reset();
         th_it->second.tensor_ptr = slot->ptr;
         if (th_it->second.tensor_ptr != nullptr) {
-            _ptr_index.insert_or_assign(th_it->second.tensor_ptr, id);
+            _registry.index(th_it->second.tensor_ptr, id);
         }
         // The token is the LIFETIME of whatever ``tensor_ptr`` names, so it moves with
         // the pointer or the pair describes a tensor that never existed: the new
@@ -5991,7 +6081,7 @@ auto Graph::rebind_subgraphs(void *old_ptr, TensorType &new_tensor, bool allow_e
     // NOLINTNEXTLINE(misc-no-recursion): see above.
     for_each_subgraph([&](Graph &sub) {
         std::vector<TensorId> matches;
-        for (auto const &[id, slot] : sub._slot_map) {
+        for (auto const &[id, slot] : sub._registry.slots()) {
             if (slot == nullptr) {
                 continue;
             }

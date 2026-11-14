@@ -29,6 +29,20 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
+/// What of Graph the runner reaches past its public surface: the replay state it records into,
+/// the no-bump residency write a CPU fallback makes from a worker thread, and the timings a
+/// replay hands back as it ends.
+struct detail::RunnerAccess {
+    static ReplayState &replay(Graph &graph) noexcept { return graph._replay; }
+
+    static void mark_host_resident(Graph &graph, TensorId id) noexcept { graph._registry.mark_host_resident(id); }
+
+    static void record_node_timings(Graph &graph, std::vector<NodeTimingSample> &&samples) {
+        graph.record_node_timings(std::move(samples));
+    }
+};
+
+using detail::RunnerAccess;
 using namespace gpu_dispatch;
 
 namespace {
@@ -69,7 +83,7 @@ bool download(TensorHandle const *handle, void const *shadow, std::size_t bytes)
 
 NodeRunner::NodeRunner(Graph &graph, bool recording) : _graph(graph), _recording(recording) {
     // assign() reuses the slots' storage, so a replay of an unchanged graph allocates nothing.
-    _graph._replay._run_slots.assign(_graph.nodes().size(), detail::NodeRunSlot{});
+    RunnerAccess::replay(_graph)._run_slots.assign(_graph.nodes().size(), detail::NodeRunSlot{});
     if constexpr (!gpu::has_unified_memory) {
         for (Node const &node : _graph.nodes()) {
             if (node.target == Target::GPU || node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
@@ -88,7 +102,7 @@ void NodeRunner::prepare_device_work() {
     std::vector<TensorId> tracked;
     auto const            track = [&](TensorId id, std::size_t bytes) {
         tracked.push_back(id);
-        _graph._replay._device_shadows.ensure(id, bytes);
+        RunnerAccess::replay(_graph)._device_shadows.ensure(id, bytes);
     };
     for (Node const &node : _graph.nodes()) {
         if (node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
@@ -119,8 +133,9 @@ void NodeRunner::prepare_device_work() {
 
 void NodeRunner::host_current(TensorId id) {
     TensorHandle const *handle = _graph.find_tensor(id);
-    _coherence.need_on_host(
-        id, [&]() { return download(handle, _graph._replay._device_shadows.get(id), handle != nullptr ? handle->total_bytes() : 0); });
+    _coherence.need_on_host(id, [&]() {
+        return download(handle, RunnerAccess::replay(_graph)._device_shadows.get(id), handle != nullptr ? handle->total_bytes() : 0);
+    });
 }
 
 void NodeRunner::open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t idx) const {
@@ -132,10 +147,10 @@ void NodeRunner::open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t 
     // A node whose cache entry does not match falls back to its bare label
     // (defensive: an undeclared mutation after the profile strings were built).
     static detail::ReplayState::NodeProfileStrings const kEmptyEntry{};
-    detail::ReplayState::NodeProfileStrings const       &ps =
-        (idx < _graph._replay._profile_strings.size() && _graph._replay._profile_strings[idx].node_id == node.id)
-            ? _graph._replay._profile_strings[idx]
-            : kEmptyEntry;
+    detail::ReplayState::NodeProfileStrings const       &ps = (idx < RunnerAccess::replay(_graph)._profile_strings.size() &&
+                                                               RunnerAccess::replay(_graph)._profile_strings[idx].node_id == node.id)
+                                                                  ? RunnerAccess::replay(_graph)._profile_strings[idx]
+                                                                  : kEmptyEntry;
 
     if (ps.zone_id != 0) {
         zone.emplace(graph_node_site(), ps.zone_id);
@@ -169,7 +184,7 @@ void NodeRunner::start_async(std::size_t idx) {
     open_zone(zone, idx);
     // The two halves are separate calls, possibly on two threads: the observer hears the node
     // begin here and end where finish_async completes.
-    detail::notify_node(*_graph._replay._run_context, EventKind::NodeStart, _graph, node, 0.0);
+    detail::notify_node(*RunnerAccess::replay(_graph)._run_context, EventKind::NodeStart, _graph, node, 0.0);
     if (_device_work) {
         for (auto const *ids : {&node.inputs, &node.outputs}) {
             for (TensorId const id : *ids) {
@@ -191,9 +206,9 @@ void NodeRunner::finish_async(std::size_t idx) {
             _coherence.wrote_on_host(id);
         }
     }
-    double const ms                   = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_start).count();
-    _graph._replay._run_slots[idx].ms = ms;
-    detail::notify_node(*_graph._replay._run_context, EventKind::NodeEnd, _graph, node, ms);
+    double const ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_start).count();
+    RunnerAccess::replay(_graph)._run_slots[idx].ms = ms;
+    detail::notify_node(*RunnerAccess::replay(_graph)._run_context, EventKind::NodeEnd, _graph, node, ms);
 }
 
 void NodeRunner::run(std::size_t idx, unsigned width) {
@@ -203,7 +218,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
     open_zone(node_zone, idx);
 
     // An attached observer hears the node begin here and end however this call ends.
-    detail::NodeObservation const observed(*_graph._replay._run_context, _graph, node);
+    detail::NodeObservation const observed(*RunnerAccess::replay(_graph)._run_context, _graph, node);
     auto                          t_start = std::chrono::steady_clock::now();
 
     if (node.kind == OpKind::HostToDevice) {
@@ -216,7 +231,8 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 // exactly as defined as the host one.
                 TensorId const      id     = tdesc->tensor_id;
                 TensorHandle const *handle = _graph.find_tensor(id);
-                _coherence.need_on_device(id, [&]() { return upload(handle, _graph._replay._device_shadows.get(id), tdesc->size_bytes); });
+                _coherence.need_on_device(
+                    id, [&]() { return upload(handle, RunnerAccess::replay(_graph)._device_shadows.get(id), tdesc->size_bytes); });
             }
         }
     } else if (node.kind == OpKind::DeviceToHost) {
@@ -232,7 +248,8 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 // come out zero.
                 TensorId const      id     = tdesc->tensor_id;
                 TensorHandle const *handle = _graph.find_tensor(id);
-                _coherence.need_on_host(id, [&]() { return download(handle, _graph._replay._device_shadows.get(id), tdesc->size_bytes); });
+                _coherence.need_on_host(
+                    id, [&]() { return download(handle, RunnerAccess::replay(_graph)._device_shadows.get(id), tdesc->size_bytes); });
             }
         }
     } else if (node.target == Target::GPU) {
@@ -274,7 +291,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 for (auto const *ids : {&node.inputs, &node.outputs}) {
                     for (TensorId const id : *ids) {
                         TensorHandle const *handle = _graph.find_tensor(id);
-                        void               *shadow = _graph._replay._device_shadows.get(id);
+                        void               *shadow = RunnerAccess::replay(_graph)._device_shadows.get(id);
                         if (!_coherence.need_on_device(id, [&]() { return upload(handle, shadow, handle->total_bytes()); })) {
                             // No device buffer to compute in: the node runs on the host below.
                             operands_ready = false;
@@ -290,7 +307,8 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
         // Execute via GPU BLAS dispatch if possible, otherwise CPU fallback.
         bool gpu_dispatched = false;
         try {
-            gpu_dispatched = operands_ready && try_gpu_blas_dispatch(node, _graph.tensors_map(), _graph._replay._device_shadows);
+            gpu_dispatched =
+                operands_ready && try_gpu_blas_dispatch(node, _graph.tensors_map(), RunnerAccess::replay(_graph)._device_shadows);
             if (gpu_dispatched) {
                 waggle::annotate("gpu_dispatch", "gemm");
             }
@@ -325,9 +343,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 node.execute();
             }
             for (TensorId const id : node.outputs) {
-                if (auto *handle = _graph.find_mutable_tensor(id)) {
-                    handle->residency = Residency::Host;
-                }
+                RunnerAccess::mark_host_resident(_graph, id);
                 if constexpr (!gpu::has_unified_memory) {
                     _coherence.wrote_on_host(id);
                 }
@@ -383,7 +399,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
 
     double const ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
     // This node's own slot: concurrent runs of other nodes write other slots.
-    _graph._replay._run_slots[idx] = {.ms = ms, .width = width};
+    RunnerAccess::replay(_graph)._run_slots[idx] = {.ms = ms, .width = width};
     // node_zone pops here (and on any early return / thrown node).
 }
 
@@ -395,13 +411,13 @@ void NodeRunner::finish() {
     std::vector<NodeTimingSample> samples;
     samples.reserve(_graph.nodes().size());
     for (std::size_t i = 0; i < _graph.nodes().size(); ++i) {
-        detail::NodeRunSlot const &slot = _graph._replay._run_slots[i];
+        detail::NodeRunSlot const &slot = RunnerAccess::replay(_graph)._run_slots[i];
         if (slot.ms >= 0.0) {
             Node const &node = _graph.nodes()[i];
             samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = slot.ms, .width = slot.width});
         }
     }
-    _graph.record_node_timings(std::move(samples));
+    RunnerAccess::record_node_timings(_graph, std::move(samples));
 }
 
 void NodeRunner::flush_device() {
@@ -416,7 +432,8 @@ void NodeRunner::flush_device() {
         if (_device_work) {
             _coherence.flush([&](TensorId id) {
                 TensorHandle const *handle = _graph.find_tensor(id);
-                return download(handle, _graph._replay._device_shadows.get(id), handle != nullptr ? handle->total_bytes() : 0);
+                return download(handle, RunnerAccess::replay(_graph)._device_shadows.get(id),
+                                handle != nullptr ? handle->total_bytes() : 0);
             });
         }
     }

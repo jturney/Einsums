@@ -26,6 +26,9 @@ struct GraphBackdoor {
     /// A registered handle to write, for a test that builds a state the graph's methods refuse.
     static TensorHandle &tensor(Graph &graph, TensorId id) { return graph.mutable_tensor(id); }
 
+    /// Re-seat a graph's adopted stand-ins outside a replay, for a test of what the re-seat does.
+    static void resync_slot_storage(Graph &graph) { graph.resync_slot_storage(); }
+
     /// Place a graph in a pipeline without building one, for a test of what a graph carries.
     static void set_stage(Graph &graph, std::string const &pipeline, std::string const &workspace, std::string const &stage,
                           std::string const &type, int index) {

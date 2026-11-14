@@ -173,6 +173,7 @@ set(ComputeGraphSources
     Graph/BindingSession.cpp
     Graph/ParamStore.cpp
     Graph/ReplayState.cpp
+    Graph/TensorRegistry.cpp
     Graph/ControlFlow.cpp
     Graph/Operations.cpp
     Graph/Edit.cpp

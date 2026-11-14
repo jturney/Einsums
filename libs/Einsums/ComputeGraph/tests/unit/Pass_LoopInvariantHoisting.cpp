@@ -22,6 +22,8 @@
 #include <tuple>
 #include <vector>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using einsums::testing::reference_einsum;
@@ -969,7 +971,7 @@ TEST_CASE("LoopInvariantHoisting - a body re-seats only the stand-ins its nodes 
     double const *before = gone_in_body->impl().data();
     gone.release();
     kept.release();
-    body_graph.resync_slot_storage();
+    cg::detail::GraphBackdoor::resync_slot_storage(body_graph);
     CHECK(gone_in_body->impl().data() == before);
     CHECK(kept_in_body->impl().data() == kept.impl().data());
 }

@@ -42,7 +42,7 @@ TensorHandle &registered(std::unordered_map<TensorId, TensorHandle> &tensors, st
 } // namespace
 
 bool Graph::infer_spaces(TensorId id, std::vector<SpaceId> spaces) {
-    TensorHandle &handle = registered(_tensors, _name, id);
+    TensorHandle &handle = registered(_registry.handles(), _name, id);
     if (!handle.is_intermediate) {
         return false; // never change a tensor the caller owns
     }
@@ -64,7 +64,7 @@ bool Graph::infer_spaces(TensorId id, std::vector<SpaceId> spaces) {
 }
 
 bool Graph::infer_symmetry(TensorId id, SymmetryDescriptor descriptor, SymmetryReach reach) {
-    TensorHandle &handle = registered(_tensors, _name, id);
+    TensorHandle &handle = registered(_registry.handles(), _name, id);
     if (reach == SymmetryReach::Tensor && !handle.is_intermediate) {
         return false; // never give the caller's own tensor a declaration it did not make
     }
@@ -80,7 +80,7 @@ bool Graph::infer_symmetry(TensorId id, SymmetryDescriptor descriptor, SymmetryR
 }
 
 void Graph::relayout(TensorId id, std::span<std::size_t const> order) {
-    TensorHandle &handle = registered(_tensors, _name, id);
+    TensorHandle &handle = registered(_registry.handles(), _name, id);
     if (handle.alloc_state != AllocState::Deferred || !handle.resize_deferred_fn) {
         EINSUMS_THROW_EXCEPTION(std::logic_error,
                                 "Graph '{}': relayout of tensor '{}' needs a deferred tensor with a resize hook; re-laying out a live "
@@ -133,7 +133,7 @@ void Graph::relayout(TensorId id, std::span<std::size_t const> order) {
 }
 
 void Graph::set_distribution(TensorId id, std::optional<comm::DistributionDescriptor> distributed) {
-    TensorHandle &handle = registered(_tensors, _name, id);
+    TensorHandle &handle = registered(_registry.handles(), _name, id);
     if (distributed.has_value()) {
         handle.is_distributed    = true;
         handle.is_replicated     = false;
@@ -149,7 +149,7 @@ void Graph::set_distribution(TensorId id, std::optional<comm::DistributionDescri
 }
 
 void Graph::adopt_lifecycle(TensorId id, TensorHandle const &from) {
-    TensorHandle &handle  = registered(_tensors, _name, id);
+    TensorHandle &handle  = registered(_registry.handles(), _name, id);
     handle.alloc_state    = from.alloc_state;
     handle.init_kind      = from.init_kind;
     handle.materialize_fn = from.materialize_fn;
@@ -159,7 +159,7 @@ void Graph::adopt_lifecycle(TensorId id, TensorHandle const &from) {
 }
 
 void Graph::set_residency(TensorId id, Residency residency) {
-    TensorHandle &handle = registered(_tensors, _name, id);
+    TensorHandle &handle = registered(_registry.handles(), _name, id);
     if (handle.residency != residency) {
         handle.residency = residency;
         note(Change::HandleChanged);
@@ -167,7 +167,7 @@ void Graph::set_residency(TensorId id, Residency residency) {
 }
 
 void Graph::mark_materialized(TensorId id) {
-    TensorHandle &handle = registered(_tensors, _name, id);
+    TensorHandle &handle = registered(_registry.handles(), _name, id);
     handle.alloc_state   = AllocState::Materialized;
     handle.init_kind     = InitKind::None;
     note(Change::HandleChanged);

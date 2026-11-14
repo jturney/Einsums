@@ -140,14 +140,13 @@ void Graph::add_scope_map(TensorScopeMapPtr map) {
         return;
     }
     std::scoped_lock const lock(_content_mutex);
-    if (std::ranges::find(_scope_maps, map) != _scope_maps.end()) {
+    if (!_registry.add_scope_map(std::move(map))) {
         return;
     }
-    _scope_maps.push_back(std::move(map));
 
     // Handles registered before the table arrived would otherwise keep the
     // default scope forever; capture order is not something a caller controls.
-    for (auto &[id, handle] : _tensors) {
+    for (auto &[id, handle] : _registry.handles()) {
         if (handle.tensor_ptr != nullptr && !handle.is_intermediate) {
             handle.ownership = scope_for_ptr(handle.lookup_ptr());
         }
@@ -161,7 +160,7 @@ TensorOwnership Graph::scope_for_ptr(void const *ptr) const noexcept {
     // Last attached table wins, which is the narrower scope in the plumbing
     // Pipeline sets up (the workspace table is attached first).
     TensorOwnership scope = TensorOwnership::Graph;
-    for (auto const &map : _scope_maps) {
+    for (auto const &map : _registry.scope_maps()) {
         if (map == nullptr) {
             continue;
         }
@@ -191,14 +190,14 @@ InterfaceManifest Graph::manifest() {
     // read it, and the slot goes into the file with literal extents where the caller had
     // written a dim symbol. One extra round, and only when something was registered.
     static_cast<void>(usage());
-    if (!_aliases_linked) {
+    if (!_registry.aliases_linked()) {
         link_alias_storage();
     }
 
     UsageAnalysis const &uses = usage();
 
     std::vector<ManifestEntry> collected;
-    for (auto const &[id, handle] : _tensors) {
+    for (auto const &[id, handle] : _registry.handles()) {
         if (handle.is_intermediate) {
             continue;
         }

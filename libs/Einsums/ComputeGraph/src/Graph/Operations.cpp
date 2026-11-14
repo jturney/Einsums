@@ -304,7 +304,7 @@ void Graph::materialize_internal_tensors() {
             referenced.insert(node.inputs.begin(), node.inputs.end());
             referenced.insert(node.outputs.begin(), node.outputs.end());
         }
-        for (auto &[id, handle] : graph._tensors) {
+        for (auto &[id, handle] : graph._registry.handles()) {
             if (!handle.materialize_on_execute || handle.alloc_state != AllocState::Deferred || !referenced.contains(id) ||
                 (handle.is_materialized_fn && handle.is_materialized_fn()) ||
                 (handle.tensor_ptr != nullptr && covered.contains(handle.tensor_ptr)) || !handle.materialize_fn) {
@@ -328,7 +328,7 @@ expected<void, GraphError> Graph::validate_tensors() const {
     std::unordered_set<void const *> materialize_ptrs;
     std::unordered_set<TensorId>     referenced_tids;
 
-    for (auto const &[id, handle] : _tensors) {
+    for (auto const &[id, handle] : _registry.handles()) {
         if (handle.alloc_state == AllocState::Deferred) {
             if (!materialize_targets_built) {
                 materialize_targets_built = true;
@@ -385,7 +385,7 @@ expected<void, GraphError> Graph::validate_tensors() const {
             // A redirected id's slot reads another tensor's storage, so its own deferred shell is
             // never touched; the tensor it was redirected to is the one that needs storage, and
             // this loop checks that one on its own.
-            if (_slot_redirects.contains(id))
+            if (_registry.redirects().contains(id))
                 continue;
             if (materialize_tids.contains(id))
                 continue;

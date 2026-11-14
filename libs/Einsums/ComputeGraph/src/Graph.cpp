@@ -74,7 +74,7 @@ Graph::~Graph() {
 void Graph::release() noexcept {
     // Cleanups first, newest first, while everything they might reach is still alive: later-
     // adopted objects may depend on earlier ones.
-    _adopted_cleanups.run();
+    _registry.run_cleanups();
     // An executor that outlives the graph, in a sub-graph body someone else still holds, now
     // throws instead of reading a destroyed graph.
     if (_anchor) {
@@ -102,7 +102,7 @@ std::shared_ptr<GraphAnchor const> Graph::anchor() {
 
 void Graph::adopt(std::function<void()> deleter) {
     if (deleter) {
-        _adopted_cleanups.push(std::move(deleter));
+        _registry.add_cleanup(std::move(deleter));
     }
 }
 
@@ -242,32 +242,14 @@ size_t Graph::replace_nodes(std::vector<bool> const &remove, std::vector<std::pa
 
 TensorId Graph::register_tensor(TensorHandle handle) {
     std::scoped_lock const lock(_content_mutex);
-    TensorId               id = _next_tensor_id++;
-    handle.id                 = id;
     // A tensor another scope declared arrives here as a fresh, default handle
     // (make_handle knows nothing about workspaces), so the scope tables the
     // declaring Workspace/Pipeline published are what recover its ownership.
     // An intermediate is graph-owned by construction and is never looked up.
-    if (!handle.is_intermediate && !_scope_maps.empty()) {
+    if (!handle.is_intermediate && !_registry.scope_maps().empty()) {
         handle.ownership = scope_for_ptr(handle.lookup_ptr());
     }
-    auto const &stored = _tensors.emplace(id, std::move(handle)).first->second;
-    if (stored.tensor_ptr != nullptr) {
-        // insert_or_assign, not emplace: an address freed during a capture can
-        // be reused by a different tensor, and the index has to name the tensor
-        // that lives there NOW. The stale-entry case is caught upstream by the
-        // liveness-token check in CaptureContext::get_or_register, which is
-        // what routes a recycled address here for re-registration.
-        _ptr_index.insert_or_assign(stored.tensor_ptr, id);
-    }
-    // The caller's address only while the caller lives: once it is gone the address may already
-    // belong to a tensor this graph indexed since, and that entry is the one that is right now.
-    if (stored.caller_ptr != nullptr && stored.caller_ptr != stored.tensor_ptr && !stored.caller_token.expired()) {
-        _ptr_index.insert_or_assign(stored.caller_ptr, id);
-    }
-    if (stored.owner != nullptr && stored.owner.get() != stored.tensor_ptr) {
-        _ptr_index.insert_or_assign(stored.owner.get(), id);
-    }
+    TensorId const id = _registry.insert(std::move(handle)).id;
     // Deliberately not linked here: containment is resolved in one amortized
     // pass (see link_alias_storage), because doing it per registration is
     // O(n) each and quadratic overall. A DLPNO-MP2 capture registers ~13k
@@ -297,8 +279,8 @@ void Graph::note(Change change) noexcept {
     case Change::NodeEdited:
         _replay.mark_unexecuted();
         _replay.invalidate_profile_strings();
-        _deps_valid      = false;
-        _slots_validated = false;
+        _deps_valid = false;
+        _registry.set_slots_validated(false);
         _analysis_version++;
         break;
     case Change::BufferIdentityChanged:
@@ -308,21 +290,21 @@ void Graph::note(Change change) noexcept {
         _analysis_version++;
         break;
     case Change::AliasLinksStale:
-        _aliases_linked = false;
+        _registry.set_aliases_linked(false);
         break;
     case Change::AliasesRelinked:
         _analysis_version++;
         break;
     case Change::SlotsChanged:
-        _slots_validated = false;
+        _registry.set_slots_validated(false);
         break;
     case Change::TensorRebound:
         _replay.invalidate_profile_strings();
-        _slots_validated = false;
+        _registry.set_slots_validated(false);
         _analysis_version++;
         break;
     case Change::HandleChanged:
-        _handle_version++;
+        _registry.bump_handle_version();
         break;
     case Change::NodesReordered:
         _analysis_version++;
@@ -337,29 +319,27 @@ void Graph::note(Change change) noexcept {
 }
 
 TensorHandle &Graph::mutable_tensor(TensorId id) {
-    auto it = _tensors.find(id);
-    if (it == _tensors.end()) {
+    TensorHandle *handle = _registry.find(id);
+    if (handle == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no tensor with id {}", _name, id);
     }
-    return it->second;
+    return *handle;
 }
 
 TensorHandle *Graph::find_mutable_tensor(TensorId id) noexcept {
-    auto it = _tensors.find(id);
-    return it == _tensors.end() ? nullptr : &it->second;
+    return _registry.find(id);
 }
 
 TensorHandle const *Graph::find_tensor(TensorId id) const noexcept {
-    auto it = _tensors.find(id);
-    return it == _tensors.end() ? nullptr : &it->second;
+    return _registry.find(id);
 }
 
 TensorHandle const &Graph::tensor(TensorId id) const {
-    auto it = _tensors.find(id);
-    if (it == _tensors.end()) {
+    TensorHandle const *handle = _registry.find(id);
+    if (handle == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no tensor with id {}", _name, id);
     }
-    return it->second;
+    return *handle;
 }
 
 SpaceRegistry &Graph::space_registry() const noexcept {
@@ -606,7 +586,7 @@ void Graph::for_each_descendant(std::function<void(Graph const &)> const &visito
 
 void Graph::refresh_declared_symmetry() {
     auto const refresh = [](Graph &graph) {
-        for (auto &[tid, handle] : graph._tensors) {
+        for (auto &[tid, handle] : graph._registry.handles()) {
             if (!handle.declared_symmetry_fn) {
                 continue;
             }
@@ -632,19 +612,19 @@ SpaceTiling tiles(std::vector<int> sizes) {
 }
 
 TensorId Graph::find_tensor_id_by_ptr(void const *ptr) const noexcept {
-    auto const it = _ptr_index.find(ptr);
-    if (it == _ptr_index.end()) {
+    TensorId const id = _registry.indexed(ptr);
+    if (id == 0) {
         return 0;
     }
     // An entry filed under a caller's address is a lookup key for that caller's object while it
     // lives. Once its token has expired the address is free, and whatever lives there now is a
     // different tensor: a loop body's buffer allocated on it would otherwise resolve to the dead
     // operand's id in the enclosing graph, and every pass mapping it outward would rewire it.
-    if (TensorHandle const *handle = find_tensor(it->second); handle != nullptr && handle->caller_ptr == ptr && handle->tensor_ptr != ptr &&
-                                                              !detail::untracked(handle->caller_token) && handle->caller_token.expired()) {
+    if (TensorHandle const *handle = find_tensor(id); handle != nullptr && handle->caller_ptr == ptr && handle->tensor_ptr != ptr &&
+                                                      !detail::untracked(handle->caller_token) && handle->caller_token.expired()) {
         return 0;
     }
-    return it->second;
+    return id;
 }
 
 TensorId Graph::live_tensor_id_by_ptr(void const *ptr, std::weak_ptr<void> const &token) const noexcept {
@@ -670,9 +650,9 @@ void *Graph::live_tensor_ptr(TensorId id) const noexcept {
     // A redirected id's slot reads the survivor's storage, and so must anything that reaches the
     // tensor by id: the id's own object is the merged-away duplicate nothing writes any more.
     // Bounded by the redirect count, since redirect_slot keeps every entry pointing at a terminal.
-    for (std::size_t hops = 0; hops < _slot_redirects.size(); ++hops) {
-        auto const next = _slot_redirects.find(id);
-        if (next == _slot_redirects.end()) {
+    for (std::size_t hops = 0; hops < _registry.redirects().size(); ++hops) {
+        auto const next = _registry.redirects().find(id);
+        if (next == _registry.redirects().end()) {
             break;
         }
         id = next->second;
@@ -695,7 +675,7 @@ std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> 
 }
 
 TensorId Graph::resolve_alias(TensorId id) const {
-    for (size_t hops = 0; hops <= _tensors.size(); ++hops) {
+    for (size_t hops = 0; hops <= _registry.handles().size(); ++hops) {
         auto const *handle = find_tensor(id);
         if (handle == nullptr || handle->aliases == 0) {
             return id;
@@ -705,16 +685,16 @@ TensorId Graph::resolve_alias(TensorId id) const {
     EINSUMS_THROW_EXCEPTION(std::runtime_error,
                             "Graph '{}': alias chain from tensor {} exceeds the tensor count ({}), which means a "
                             "cycle in the alias links; the hazard scan cannot order accesses to it",
-                            _name, id, _tensors.size());
+                            _name, id, _registry.handles().size());
 }
 
 TensorId Graph::buffer_of(TensorId id) const {
     // Each redirect names a terminal id (redirect_slot collapses chains), and a terminal may
     // itself be a view, so the two relations alternate at most once per redirect.
-    for (size_t hops = 0; hops <= _slot_redirects.size(); ++hops) {
+    for (size_t hops = 0; hops <= _registry.redirects().size(); ++hops) {
         TensorId const root     = resolve_alias(id);
-        auto const     redirect = _slot_redirects.find(root);
-        if (redirect == _slot_redirects.end()) {
+        auto const     redirect = _registry.redirects().find(root);
+        if (redirect == _registry.redirects().end()) {
             return root;
         }
         id = redirect->second;
@@ -786,13 +766,12 @@ void Graph::free_tensor(TensorId id, std::string name, size_t size_bytes) {
 }
 
 TensorSlot *Graph::find_slot(TensorId id) {
-    auto it = _slot_map.find(id);
-    return it != _slot_map.end() ? it->second.get() : nullptr;
+    return _registry.find_slot(id);
 }
 
 void Graph::redirect_slot(TensorId from, TensorId to) {
     // Collapse chains so every recorded redirect points at a terminal id.
-    for (auto it = _slot_redirects.find(to); it != _slot_redirects.end(); it = _slot_redirects.find(to)) {
+    for (auto it = _registry.redirects().find(to); it != _registry.redirects().end(); it = _registry.redirects().find(to)) {
         to = it->second;
     }
     if (from == to) {
@@ -816,15 +795,15 @@ void Graph::redirect_slot(TensorId from, TensorId to) {
     // accessor was baked for @p from's static type, and the object behind
     // the redirect is @p to's, so keeping the old one would decode a
     // different type's layout.
-    from_slot->ptr        = to_slot->ptr;
-    from_slot->impl_of    = to_slot->impl_of;
-    from_slot->resync_of  = to_slot->resync_of;
-    _slot_redirects[from] = to;
+    from_slot->ptr              = to_slot->ptr;
+    from_slot->impl_of          = to_slot->impl_of;
+    from_slot->resync_of        = to_slot->resync_of;
+    _registry.redirects()[from] = to;
     note(Change::SlotsChanged);
     // Buffer-keyed analyses (UsageAnalysis, the hazard scan) keyed @p from on its own id.
     note(Change::BufferIdentityChanged);
     // Anything already redirected to `from` now follows the same terminal.
-    for (auto &[f, t] : _slot_redirects) {
+    for (auto &[f, t] : _registry.redirects()) {
         if (t == from) {
             t = to;
             if (auto *fs = find_slot(f)) {
