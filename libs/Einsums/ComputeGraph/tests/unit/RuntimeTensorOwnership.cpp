@@ -79,9 +79,9 @@ TEST_CASE("Workspace::declare_runtime_tensor — deferred allocation lifecycle",
     REQUIRE(ws.tensor_handles().size() == 1);
     REQUIRE(ws.tensor_handles()[0].alloc_state == cg::AllocState::Deferred);
 
-    // The handle's materialize_fn invokes the tensor's materialize(),
-    // afterwards data() returns a valid pointer.
-    ws.tensor_handles()[0].materialize_fn();
+    // The handle's table materializes the tensor; afterwards data() returns a valid pointer.
+    auto const &handle = ws.tensor_handles()[0];
+    handle.ops->materialize(handle.live_ptr());
     REQUIRE(t.is_materialized());
     REQUIRE(t.data() != nullptr);
 }
@@ -95,7 +95,7 @@ TEST_CASE("Workspace::declare_zero_runtime_tensor — zero init via handle", "[C
     auto const &h = ws.tensor_handles().back();
     REQUIRE(h.init_kind == cg::InitKind::Zero);
 
-    h.zero_fn(); // materialize + zero
+    h.ops->fill_zero(h.live_ptr()); // materialize + zero
     REQUIRE(t.is_materialized());
     for (size_t i = 0; i < 2; i++)
         for (size_t j = 0; j < 3; j++)

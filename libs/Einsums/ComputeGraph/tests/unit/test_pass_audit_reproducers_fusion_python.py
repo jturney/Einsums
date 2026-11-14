@@ -520,7 +520,7 @@ def test_lccf_reads_a_redirected_operand_through_its_own_object():
 def test_stream_fusion_reads_a_redirected_stream_through_its_own_object():
     """StreamContractionFusion reads a redirected stream through its slot.
 
-    Defends against ``run_stream`` resolving operands through the handle's ``impl_fn``, which
+    Defends against ``run_stream`` resolving operands through the handle's own tensor, which
     belongs to the duplicate, not through the redirected slot, so that the fused J/K stream
     walked zeros.
     """

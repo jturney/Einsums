@@ -106,7 +106,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
         // Tag the tensor itself so the same init kind reaches any Graph
         // that captures this tensor later, make_handle reads
         // tensor.pending_init() and populates the new handle's
-        // init_kind / zero_fn. Without this the workspace's canonical
+        // init_kind. Without this the workspace's canonical
         // handle would have init metadata, but each per-graph handle
         // built from this tensor via capture would not, so the
         // Materialization pass couldn't emit an Initialize node for
@@ -131,7 +131,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
      * @brief Runtime-rank analog of declare_tensor().
      *
      * Same deferred-allocation lifecycle as the typed version (no data until
-     * materialize_fn fires) but the rank is carried at runtime. Suitable for
+     * its Materialize runs) but the rank is carried at runtime. Suitable for
      * Python-bound workflows or any workflow that wants a single dispatch
      * surface across ranks.
      */

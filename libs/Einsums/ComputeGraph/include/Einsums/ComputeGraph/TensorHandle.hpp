@@ -260,18 +260,18 @@ concept GraphCapturableTensor =
  *
  * One table per tensor type, built at compile time by ``tensor_ops_for``, and shared by every
  * handle naming a tensor of that type. Its entries are called on @ref TensorHandle::live_ptr, read
- * at call time, so repointing a handle at another tensor is repointing two pointers rather than
- * rebuilding a set of closures each bound to one object.
+ * at call time, so repointing a handle at another tensor is repointing two pointers, with nothing
+ * bound to the old object left behind.
  *
- * An entry is null when the type lacks the method behind it, decided once per type by the same
- * requirement @ref make_handle tests before installing the matching closure. The object pointer is
+ * An entry is null when the type lacks the method behind it, decided once per type at compile
+ * time. The object pointer is
  * always the type the table was built for; nothing checks it.
  *
  * Tables are per shared library (each one that instantiates a type has its own copy), so compare
  * the entries, never the table addresses.
  */
 struct TensorOps {
-    /// The tensor's rank-erased ``detail::TensorImpl<T>``, as @ref TensorHandle::impl_fn returns it.
+    /// The tensor's rank-erased ``detail::TensorImpl<T>``, type-erased; @ref TensorHandle::impl calls it.
     void *(*impl)(void *object){nullptr};
     /// Whether the tensor has storage now. Null means "always materialized".
     bool (*is_materialized)(void const *object){nullptr};
@@ -283,7 +283,8 @@ struct TensorOps {
     einsums::detail::StorageBase *(*storage)(void *object){nullptr};
     /// Materialize, then zero.
     void (*fill_zero)(void *object){nullptr};
-    /// Materialize, then fill uniformly on ``[-1, 1)``; see @ref make_random_fn.
+    /// Materialize, then fill uniformly on ``[-1, 1)`` through ``std::rand``, which is what every
+    /// ``declare_random_*`` has always given: scratch whose values nothing reads for their distribution.
     void (*fill_random)(void *object){nullptr};
     /// Give a deferred tensor new extents before it is allocated.
     void (*resize_deferred)(void *object, std::span<std::size_t const> dims){nullptr};
@@ -519,7 +520,7 @@ struct TensorHandle {
     /// @ref is_runtime says the object is rank-erased and nothing more, and the two rank-erased
     /// types have different layouts, so a pass that has to name the STATIC type in order to call
     /// a templated capture entry point needs this second bit as well. Reading a tensor's data
-    /// needs neither: @ref impl_fn answers that for both without asking.
+    /// needs neither: @ref impl answers that for both without asking.
     bool is_tensor_view{false};
     bool is_distributed{false}; ///< True if this tensor is distributed across ranks
     /// True for a deferred intermediate a library helper declared on its caller's behalf, such as a
@@ -567,46 +568,6 @@ struct TensorHandle {
     InitKind   init_kind{InitKind::None};             ///< How to initialize after materialization
     Residency  residency{Residency::Host};            ///< Where the tensor data currently lives (updated by GPU passes)
 
-    /// Type-erased function to allocate backing storage for a deferred tensor.
-    /// Called by MaterializationPass. Null for already-materialized tensors.
-    std::function<void()> materialize_fn;
-
-    /// Live query: does the tensor currently have backing storage?
-    /// ``alloc_state`` is a snapshot from registration time and goes stale if
-    /// the user calls ``tensor.materialize()`` directly; execute-time
-    /// validation uses this to avoid false "still deferred" diagnostics.
-    /// Null means "assume materialized".
-    std::function<bool()> is_materialized_fn;
-
-    /// Live pointer to the tensor's rank-erased ``detail::TensorImpl<T>``,
-    /// type-erased to ``void *``. Cast it to ``TensorImpl<T>*`` once the element
-    /// type is known (from @ref dtype).
-    ///
-    /// This is how a pass reaches a tensor's CURRENT data pointer, dims, and
-    /// strides without knowing its static rank -- ``TensorImpl`` carries all
-    /// three as runtime values, so one dtype dispatch covers every rank. The
-    /// @ref data_ptr / @ref dims / @ref strides fields above are registration-time
-    /// snapshots that nothing refreshes (``data_ptr`` is even null for a tensor
-    /// that was deferred when registered), so they must not be used to build an
-    /// executor; read through here instead, at call time.
-    ///
-    /// Null for tile-wise sparse tensors, which have no single impl. Gate on it.
-    std::function<void *()> impl_fn;
-
-    /// Attach caller-provided storage instead of allocating (type-erased
-    /// Tensor::materialize_into). Set only for owning tensor types that
-    /// support external storage; the MemoryPlanning arena requires it.
-    std::function<void(void *)> materialize_into_fn;
-
-    /// Type-erased function to release backing storage (free memory, return to deferred state).
-    /// Set by make_handle() or declare_tensor(). Called by Free nodes from FreeInsertion pass.
-    std::function<void()> release_fn;
-
-    /// Type-erased access to the tensor's own storage block, for the scratch lease
-    /// @ref Graph::execute gives an intermediate. Set only for owning types: a view's block is its
-    /// parent's, and leasing it would make the parent scratch.
-    std::function<einsums::detail::StorageBase *()> storage_of;
-
     /// Whether @ref Graph::execute has leased this intermediate's storage, so it does it once.
     bool scratch_leased{false};
 
@@ -617,42 +578,11 @@ struct TensorHandle {
     /// that the tensor's type could be resized does not make it this graph's to resize.
     bool resizable{false};
 
-    /// Type-erased function to zero the tensor data.
-    /// Set by declare_tensor on Workspace/Pipeline/Graph. Called by Initialize nodes.
-    std::function<void()> zero_fn;
-
-    /// Type-erased function to fill tensor with random values.
-    /// Set by declare_tensor on Workspace/Pipeline/Graph. Called by Initialize nodes.
-    std::function<void()> random_fn;
-
     /// The caller's fill for an @ref InitKind::Custom tensor, called on @ref live_ptr once the
     /// tensor is materialized; it materializes first. The one initializer that is code rather than
     /// a property of the tensor's type, so a graph holding one cannot be saved.
     /// @see Graph::declare_tensor_filled
     std::function<void(void *)> custom_init;
-
-    /// Type-erased begin/end local view for input slicing.
-    /// begin_local_view_fn(dim, start, count) → opaque state token
-    /// end_local_view_fn(token) → restores original state
-    std::function<size_t(size_t, size_t, size_t)> begin_local_view_fn;
-    std::function<void(size_t)>                   end_local_view_fn;
-
-    /// Type-erased in-place allreduce sum across MPI ranks (synchronous).
-    /// Set by make_handle(). Reads tensor data at execution time.
-    std::function<void()> allreduce_sum_fn;
-
-    /// Type-erased non-blocking allreduce (async). Returns a Request to wait on.
-    /// Used by CommunicationScheduling to overlap communication with computation.
-    std::function<comm::Request()> iallreduce_sum_fn;
-
-    /// Type-erased function to resize a deferred tensor's dimensions before allocation.
-    /// Called by MaterializationPass when distribution_info is set.
-    /// Argument: vector of new local dimensions for this rank.
-    std::function<void(std::vector<size_t> const &)> resize_deferred_fn;
-
-    /// Type-erased function to set distribution metadata on the tensor after materialization.
-    /// Args: (global_dims, local_offsets), enabling T.range(dim) and T.global(indices...).
-    std::function<void(std::vector<size_t> const &, std::vector<size_t> const &)> set_distribution_fn;
 
     /// Distribution metadata (set by DistributionPlanningPass, read by MaterializationPass).
     /// Stores the index of the dimension to block-distribute as shared_ptr<size_t>.
@@ -665,21 +595,10 @@ struct TensorHandle {
     /// again before its first pass (@ref Graph::refresh_declared_symmetry), so a
     /// symmetry declared on a tensor the graph already holds is seen. The
     /// ``SymmetryPropagation`` pass may later infer additional symmetry and
-    /// update this hint plus the backing tensor (via ``set_symmetry_fn``).
+    /// update this hint plus the backing tensor (through @ref TensorOps::set_symmetry).
     /// ``nullptr`` means "no declared symmetry", so downstream dispatch falls
     /// through.
     std::shared_ptr<SymmetryDescriptor const> symmetry_hint;
-
-    /// Type-erased getter for the symmetry the backing tensor declares now, or
-    /// ``nullptr`` when it declares none. Populated by ``make_handle()`` for a
-    /// tensor type that carries a descriptor.
-    std::function<std::shared_ptr<SymmetryDescriptor const>()> declared_symmetry_fn;
-
-    /// Type-erased setter that pushes a SymmetryDescriptor back to the
-    /// backing tensor. Populated by ``make_handle()``. Called by the
-    /// SymmetryPropagation pass so inferred symmetries take effect on the
-    /// next ``graph.execute()`` through the rank-2 BLAS dispatch path.
-    std::function<void(SymmetryDescriptor)> set_symmetry_fn;
 
     /**
      * @brief Per-axis index-space annotation, parallel to @ref dims.
@@ -876,8 +795,8 @@ struct TensorHandle {
      * @brief The graph's stand-in for this operand, when it adopted one.
      *
      * Set by capture to a wrapper sharing the caller's storage that the graph
-     * keeps alive (see ``Graph::adopt_operand``). Every lambda above is baked
-     * over this object, and the operand's TensorSlot points at it, which is
+     * keeps alive (see ``Graph::adopt_operand``). @ref live_ptr names this
+     * object, and the operand's TensorSlot points at it, which is
      * what lets the caller's own wrapper be destroyed before ``execute()``.
      *
      * Empty when the graph adopted nothing: a tensor it already owns, a
@@ -987,60 +906,10 @@ struct TensorHandle {
 };
 
 /**
- * @brief The post-materialize zero fill a deferred tensor's @ref TensorHandle::zero_fn runs.
- *
- * @tparam TensorType The tensor's type. Must expose ``materialize()`` and ``zero()``.
- * @param[in] tensor The tensor to fill. Must outlive the handle.
- * @return The callable.
- *
- * Materializing first is the whole reason this is not simply ``zero()``: a deferred tensor has
- * no storage until the @ref passes::Materialization pass reaches it, and an Initialize node runs
- * against whatever the handle was given at declaration time.
- *
- * @see make_random_fn
- */
-template <typename TensorType>
-[[nodiscard]] std::function<void()> make_zero_fn(TensorType *tensor) {
-    return [tensor]() {
-        tensor->materialize();
-        tensor->zero();
-    };
-}
-
-/**
- * @brief The post-materialize random fill a deferred tensor's @ref TensorHandle::random_fn runs.
- *
- * @tparam TensorType The tensor's type. Must expose ``materialize()``, ``data()`` and ``size()``.
- * @param[in] tensor The tensor to fill. Must outlive the handle.
- * @return The callable.
- *
- * Uniform on ``[-1, 1)`` through @c std::rand, which is what every ``declare_random_*`` spelled
- * inline. Deliberately NOT the library's seeded generator: this is scratch initialization whose
- * values nothing reads for their distribution, and the six copies it replaces all used
- * @c std::rand, so keeping it is what makes the consolidation a refactor rather than a change of
- * what a random workspace tensor contains.
- *
- * @see make_zero_fn
- */
-template <typename TensorType>
-[[nodiscard]] std::function<void()> make_random_fn(TensorType *tensor) {
-    return [tensor]() {
-        using Value = typename std::remove_cvref_t<TensorType>::ValueType;
-        tensor->materialize();
-        auto        *data = tensor->data();
-        size_t const size = tensor->size();
-        for (size_t idx = 0; idx < size; idx++) {
-            // NOLINTNEXTLINE(misc-predictable-rand)
-            data[idx] = static_cast<Value>(static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0);
-        }
-    };
-}
-
-/**
  * @brief Construct a TensorHandle from a typed tensor.
  *
- * Extracts metadata (name, rank, dims, strides, dtype) from the tensor and
- * sets up a validation function that can detect if the tensor is destroyed.
+ * Extracts metadata (name, rank, dims, strides, dtype) from the tensor, points the handle at
+ * its type's @ref TensorOps table, and takes the liveness token @ref TensorHandle::alive reads.
  *
  * @tparam TensorType Any type satisfying CoreBasicTensorConcept.
  * @param[in] tensor The tensor to create a handle for. The tensor must outlive the graph.
@@ -1048,8 +917,8 @@ template <typename TensorType>
  * @param[in] identity Address to record as @ref TensorHandle::tensor_ptr, when
  *            that must differ from @p tensor's own. Capture passes the caller's
  *            wrapper here while handing @p tensor the graph's stand-in (see
- *            ``Graph::adopt_operand``): the lambdas below then bake in an object
- *            the graph keeps alive, while ``tensor_ptr`` keeps naming the tensor
+ *            ``Graph::adopt_operand``): the liveness token is then the stand-in's,
+ *            an object the graph keeps alive, while ``tensor_ptr`` keeps naming the tensor
  *            the caller knows, which is what every identity comparison against a
  *            user-held tensor relies on. Null means "use @p tensor's address".
  * @return A fully populated TensorHandle.
@@ -1068,10 +937,8 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
 
     // data_ptr may be nullptr for deferred (shell) tensors, that's expected.
     if constexpr (requires { tensor.is_materialized(); }) {
-        h.data_ptr           = tensor.is_materialized() ? const_cast<void *>(static_cast<void const *>(tensor.data())) : nullptr;
-        h.alloc_state        = tensor.is_materialized() ? AllocState::Materialized : AllocState::Deferred;
-        auto const *live_ptr = &tensor;
-        h.is_materialized_fn = [live_ptr]() { return live_ptr->is_materialized(); };
+        h.data_ptr    = tensor.is_materialized() ? const_cast<void *>(static_cast<void const *>(tensor.data())) : nullptr;
+        h.alloc_state = tensor.is_materialized() ? AllocState::Materialized : AllocState::Deferred;
     } else {
         h.data_ptr = const_cast<void *>(static_cast<void const *>(tensor.data()));
     }
@@ -1086,80 +953,11 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
     h.dims                 = detail::tensor_dims(tensor);
     h.strides              = detail::tensor_strides(tensor);
 
-    // Live rank-erased geometry accessor. make_handle knows T and Rank, so it can
-    // bake the lookup that a pass cannot express; tiled tensors have no single
-    // impl and are left null.
-    if constexpr (requires(CleanTensorEarly &t) { t.impl(); }) {
-        auto *impl_owner = const_cast<CleanTensorEarly *>(&tensor);
-        h.impl_fn        = [impl_owner]() -> void        *{ return static_cast<void *>(&impl_owner->impl()); };
-    }
-
     // Tile-wise sparse tensors (TiledRuntimeTensor) advertise themselves so the
     // graph can flag the handle and keep them out of dense buffer-level passes;
     // their data_ptr is null (multi-tile) since there is no single buffer.
     if constexpr (requires { tensor.is_tiled_tensor(); }) {
         h.is_tiled = tensor.is_tiled_tensor();
-    }
-
-    // The type-erased hooks below act on the tensor itself, through a mutable pointer.
-    using CleanTensor = std::remove_cvref_t<TensorType>;
-    using ValType     = typename CleanTensor::ValueType;
-    auto *tensor_mut  = const_cast<CleanTensor *>(&tensor);
-
-    // begin_local_view_fn / end_local_view_fn: temporarily restrict tensor to a slice.
-    // Only available on owning tensors that expose the local-view machinery.
-    if constexpr (requires(CleanTensor &t) {
-                      typename CleanTensor::LocalViewState;
-                      t.begin_local_view(size_t{}, size_t{}, size_t{});
-                  }) {
-        auto view_states      = std::make_shared<std::vector<typename CleanTensor::LocalViewState>>();
-        h.begin_local_view_fn = [tensor_mut, view_states](size_t dim, size_t start, size_t count) -> size_t {
-            auto   state = tensor_mut->begin_local_view(dim, start, count);
-            size_t token = view_states->size();
-            view_states->push_back(state);
-            return token;
-        };
-        h.end_local_view_fn = [tensor_mut, view_states](size_t token) {
-            if (token < view_states->size()) {
-                tensor_mut->end_local_view((*view_states)[token]);
-            }
-        };
-    }
-
-    // release_fn: free backing storage, return to deferred-like state. Non-owning
-    // views don't have anything to release.
-    if constexpr (requires(CleanTensor &t) { t.release(); }) {
-        h.release_fn = [tensor_mut]() { tensor_mut->release(); };
-        if constexpr (requires(CleanTensor &t) { t.storage().get(); }) {
-            h.storage_of = [tensor_mut]() -> einsums::detail::StorageBase * { return tensor_mut->storage().get(); };
-        }
-    }
-
-    // materialize_fn: allocate backing storage for a deferred tensor. When a
-    // workspace-declared tensor is later referenced by ops in some Graph's
-    // capture, that Graph's tensor_map gets a fresh handle made by this
-    // function: workspace's canonical handle (with its own ``materialize_fn``)
-    // is *not* shared. Synthesizing the callback here means the Materialization
-    // pass can hoist allocation of body-resident workspace tensors out of a
-    // loop without having to look up workspace's canonical handle.
-    //
-    // Owning tensors expose ``materialize()``; TensorView / RuntimeTensorView
-    // do not, the if-constexpr keeps the function type-erased for both. For
-    // workspace-declared tensors, the workspace's own canonical handle also
-    // sets ``materialize_fn`` (so ``Workspace::materialize_all()`` still works
-    // unchanged), both closures end up calling the same ``ptr->materialize()``,
-    // which is idempotent.
-    if constexpr (requires(CleanTensor &t) { t.materialize(); }) {
-        h.materialize_fn = [tensor_mut]() { tensor_mut->materialize(); };
-    }
-
-    // materialize_into_fn: place the tensor at caller-provided storage (the
-    // MemoryPlanning arena). Only owning tensors with external-storage
-    // support (Tensor::materialize_into) qualify.
-    if constexpr (requires(CleanTensor &t, typename CleanTensor::ValueType *p) { t.materialize_into(p); }) {
-        h.materialize_into_fn = [tensor_mut](void *ptr) {
-            tensor_mut->materialize_into(static_cast<typename CleanTensor::ValueType *>(ptr));
-        };
     }
 
     // Post-materialize init: if the tensor was tagged with a pending-init
@@ -1168,68 +966,26 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
     // an Initialize node alongside the Materialize. ``pending_init()`` lives
     // on the tensor itself, not on workspace's _handles vector, so the
     // information survives capture into bodies the workspace doesn't own.
+    using CleanTensor = std::remove_cvref_t<TensorType>;
     if constexpr (requires(CleanTensor const &t) { t.pending_init(); }) {
         switch (tensor.pending_init()) {
         case PendingInit::Zero:
             h.init_kind = InitKind::Zero;
-            if constexpr (requires(CleanTensor &t) {
-                              t.materialize();
-                              t.zero();
-                          }) {
-                h.zero_fn = make_zero_fn(tensor_mut);
-            }
             break;
         case PendingInit::Random:
             h.init_kind = InitKind::Random;
-            // Installed here so a body-resident handle can self-initialize without consulting
-            // the workspace that declared the tensor.
-            if constexpr (requires(CleanTensor &t) {
-                              t.materialize();
-                              t.data();
-                              t.size();
-                          }) {
-                h.random_fn = make_random_fn(tensor_mut);
-            }
             break;
         case PendingInit::None:
             break;
         }
     }
 
-    // Symmetry metadata: seed the handle from the backing tensor's current
-    // descriptor (if any) and wire a setter that SymmetryPropagation can
-    // use to push an inferred descriptor back to the tensor. The setter is
-    // unconditional on the tensor type having a set_symmetry method;
-    // CoreBasicTensorConcept types (GeneralTensor, TensorView, etc.) all
-    // expose one or can be no-ops.
+    // Seed the symmetry hint from the backing tensor's current descriptor, if any; a pipeline
+    // reads it again before its first pass (Graph::refresh_declared_symmetry).
     if constexpr (requires { tensor.symmetry(); }) {
         if (auto const *desc = tensor.symmetry())
             h.symmetry_hint = std::make_shared<SymmetryDescriptor>(*desc);
-        h.declared_symmetry_fn = [tensor_mut]() -> std::shared_ptr<SymmetryDescriptor const> {
-            auto const *desc = tensor_mut->symmetry();
-            return desc != nullptr ? std::make_shared<SymmetryDescriptor const>(*desc) : nullptr;
-        };
     }
-    if constexpr (requires(SymmetryDescriptor d) { tensor_mut->set_symmetry(std::move(d)); }) {
-        h.set_symmetry_fn = [tensor_mut](SymmetryDescriptor d) { tensor_mut->set_symmetry(std::move(d)); };
-    }
-
-    // allreduce_sum_fn: in-place sum across MPI ranks. Uses the tensor's data() and size()
-    // at execution time (after materialization). Safe for both pre-allocated and deferred tensors.
-    h.allreduce_sum_fn = [tensor_mut]() {
-        auto span = std::span<ValType>(tensor_mut->data(), tensor_mut->size());
-        (void)comm::allreduce_inplace<ValType>(span, comm::ReduceOp::Sum);
-    };
-
-    // iallreduce_sum_fn: non-blocking version for async overlap.
-    // Returns a Request that must be waited on before reading the result.
-    h.iallreduce_sum_fn = [tensor_mut]() -> comm::Request {
-        auto span   = std::span<ValType>(tensor_mut->data(), tensor_mut->size());
-        auto result = comm::iallreduce_inplace<ValType>(span, comm::ReduceOp::Sum);
-        if (result.has_value())
-            return std::move(result.value());
-        return comm::Request{}; // Fallback: default request (immediately complete)
-    };
 
     h.name_hash  = std::hash<std::string>{}(h.name);
     h.live_token = detail::liveness_token_of(tensor);
@@ -1243,25 +999,13 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
  * @tparam TensorType The tensor's type.
  * @param[in] tensor The shell tensor. Must outlive the handle.
  * @return The handle, ready for whatever the declaring site adds to it (its ownership scope,
- *         its intermediate flag, its @ref TensorHandle::init_kind, a rank-specific resize or
- *         distribution hook).
+ *         its intermediate flag, its @ref TensorHandle::init_kind, whether it is
+ *         @ref TensorHandle::resizable).
  *
- * @ref make_handle plus the two things a declaration knows and a handle built from the tensor
- * alone cannot:
- *
- * - the state is DEFERRED because the declaration says so, not because the tensor currently
- *   reads as unmaterialized. A zero-extent tensor reports itself materialized from
- *   construction, and taking that answer would leave it outside the lifecycle its declaration
- *   asked for;
- * - the initialization hooks are installed unconditionally. ``make_handle`` installs them from
- *   the tensor's @ref PendingInit tag, and a declaration sets that tag AFTER this handle exists
- *   (``declare_zero_tensor`` is ``declare_tensor`` plus a tag), so the handle a declaration
- *   registers would otherwise have no way to initialize itself.
- *
- * Everything else a deferred declaration needs - ``materialize_fn``, ``release_fn``,
- * ``is_materialized_fn``, ``allreduce_sum_fn`` - is what ``make_handle`` already installs for
- * any tensor type exposing the method behind it. Five declaration sites across three headers
- * restated those closures on top of it.
+ * @ref make_handle, with the state DEFERRED because the declaration says so, not because the
+ * tensor currently reads as unmaterialized. A zero-extent tensor reports itself materialized from
+ * construction, and taking that answer would leave it outside the lifecycle its declaration
+ * asked for. How the tensor is allocated, filled and freed is its type's @ref TensorOps table.
  *
  * @see make_handle
  * @versionadded{2.0.0}
@@ -1270,19 +1014,6 @@ template <GraphCapturableTensor TensorType>
 [[nodiscard]] TensorHandle make_deferred_handle(TensorType *tensor) {
     TensorHandle h = make_handle(*tensor, 0);
     h.alloc_state  = AllocState::Deferred;
-    if constexpr (requires(TensorType &t) {
-                      t.materialize();
-                      t.zero();
-                  }) {
-        h.zero_fn = make_zero_fn(tensor);
-    }
-    if constexpr (requires(TensorType &t) {
-                      t.materialize();
-                      t.data();
-                      t.size();
-                  }) {
-        h.random_fn = make_random_fn(tensor);
-    }
     return h;
 }
 
@@ -1310,12 +1041,6 @@ TensorHandle make_scalar_handle(T *scalar, TensorId id, std::string name = "scal
     h.dtype        = packed_gemm::get_scalar_type<T>();
     h.raw_scalar   = true;
     h.ops          = &scalar_ops_for<T>;
-
-    // Enable allreduce on scalar results from distributed computations
-    h.allreduce_sum_fn = [scalar]() {
-        auto span = std::span<T>(scalar, 1);
-        (void)comm::allreduce_inplace<T>(span, comm::ReduceOp::Sum);
-    };
 
     return h;
 }

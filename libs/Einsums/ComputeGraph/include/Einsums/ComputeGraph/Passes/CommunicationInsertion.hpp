@@ -19,8 +19,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * The distributed analogue of @ref TransferInsertion. Walks the graph and, for any compute node
  * (Einsum, Scale, Axpy, …) that reads a distributed (non-replicated) input but writes a replicated
  * output, inserts an in-place `Allreduce` immediately after it — the output holds a per-rank partial
- * sum that must be combined into the full result. The allreduce executor is the tensor handle's
- * type-erased `allreduce_sum_fn`.
+ * sum that must be combined into the full result. The allreduce executor calls the `allreduce_sum`
+ * entry of the tensor's type table.
  *
  * @note **Ordering semantics**: the Allreduce is placed right after the producing node, so element-wise
  * ops captured later operate on the globally-reduced result — correct for the common pattern:
@@ -55,7 +55,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - Infrastructure and control-flow nodes (Materialize, Initialize, transfers, existing collectives,
  *   Loop, Conditional, …) are skipped; distributed reductions inside a loop body are not inserted by
  *   this top-level walk.
- * - Requires the tensor handle to carry a valid `allreduce_sum_fn`; otherwise the inserted node is a no-op.
+ * - Requires the tensor's type table to have an `allreduce_sum` entry; otherwise the inserted node is a no-op.
  * - `BatchedGemm` is not handled (batched + distributed is unsupported, `docs/gemm_batching.rst`).
  *
  * @par Future improvements

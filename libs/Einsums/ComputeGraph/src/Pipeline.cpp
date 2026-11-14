@@ -125,8 +125,8 @@ void Pipeline::execute(Executor &executor) {
 
 bool Pipeline::apply(PassManager &pm) {
     // Pre-register pipeline-declared tensors with each stage graph.
-    // This ensures that MaterializationPass can find them and their
-    // materialize_fn/zero_fn/random_fn lambdas.
+    // This ensures that MaterializationPass can find them and how each is
+    // initialized.
     // Track which tensors have been assigned a Materialize node (first use only).
     std::unordered_set<void *> materialized_in_earlier_stage;
 

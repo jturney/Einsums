@@ -1416,8 +1416,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /**
      * @brief Take a tensor's lifecycle from the handle a declaring scope (a Pipeline or a
-     *        Workspace) holds for it: its allocation state, initialization, and the hooks that
-     *        allocate and fill it.
+     *        Workspace) holds for it: its allocation state and how it is initialized. How it is
+     *        allocated and filled is its type's @ref TensorOps table, which both handles share.
      *
      * @param[in] id   The tensor in this graph.
      * @param[in] from The declaring scope's handle.
@@ -4034,22 +4034,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // between stages. This is the manifest's default and its most common case,
         // and is_intermediate stays false for the same reason: use create_tensor or
         // scratch for an intermediate.
-        handle.ownership          = TensorOwnership::Graph;
-        handle.resizable          = true;
-        handle.resize_deferred_fn = [ptr](std::vector<size_t> const &new_dims) {
-            Dim<Rank> d;
-            for (size_t i = 0; i < Rank && i < new_dims.size(); i++)
-                d[i] = new_dims[i];
-            ptr->resize_deferred(d);
-        };
-        handle.set_distribution_fn = [ptr](std::vector<size_t> const &global_dims, std::vector<size_t> const &offsets) {
-            std::array<size_t, Rank> gd{}, off{};
-            for (size_t i = 0; i < Rank && i < global_dims.size(); i++)
-                gd[i] = global_dims[i];
-            for (size_t i = 0; i < Rank && i < offsets.size(); i++)
-                off[i] = offsets[i];
-            ptr->set_distribution(gd, off);
-        };
+        handle.ownership = TensorOwnership::Graph;
+        handle.resizable = true;
         register_tensor(std::move(handle));
 
         // No Alloc node inserted, MaterializationPass will insert
@@ -4902,7 +4888,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * this graph's to resize, and the mismatch is reported against the node that reads it.
      *
      * @throws std::invalid_argument When a derived shape cannot be applied (an intermediate
-     *         that is already materialized, or one whose handle carries no resize hook), or
+     *         that is already materialized, or one this graph may not resize), or
      *         when a node's operands no longer agree on an extent.
      * @versionadded{2.0.0}
      */
@@ -5574,11 +5560,10 @@ auto Graph::declare_deferred_runtime(std::string name, std::vector<size_t> dims,
         ptr->set_pending_init(PendingInit::Zero);
     }
     // Without this a bind CANNOT move this tensor's extents, whatever its dim symbols
-    // say: resize_derived_extent requires the hook as well as the deferred state, so a
-    // runtime-rank intermediate that lacked it was refused with a message blaming the
-    // storage. The static-rank declare_tensor has always installed one.
-    handle.resizable          = true;
-    handle.resize_deferred_fn = [ptr](std::vector<size_t> const &new_dims) { ptr->resize_deferred(new_dims); };
+    // say: resize_derived_extent requires it as well as the deferred state, so a
+    // runtime-rank intermediate without it was refused with a message blaming the
+    // storage. The static-rank declare_tensor sets it too.
+    handle.resizable = true;
     if (backing) {
         try {
             attach_backing(handle, std::move(*backing));
@@ -6049,14 +6034,6 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
             }
             th_it->second.symmetry_hint =
                 th_it->second.ops->declared_symmetry != nullptr ? th_it->second.ops->declared_symmetry(th_it->second.live_ptr()) : nullptr;
-        }
-        // ``impl_fn`` was baked over the OLD tensor object, so leaving it
-        // alone hands every pass-built executor that reads through it (see
-        // ``make_einsum_node``) a rebound node's PREVIOUS storage. It is
-        // rebuilt here for the same reason the slot's accessor is.
-        if constexpr (requires(std::remove_cvref_t<TensorType> &t) { t.impl(); }) {
-            auto *bound           = &new_tensor;
-            th_it->second.impl_fn = [bound]() -> void * { return static_cast<void *>(&bound->impl()); };
         }
         th_it->second.name       = new_tensor.name();
         th_it->second.name_hash  = std::hash<std::string>{}(new_tensor.name());

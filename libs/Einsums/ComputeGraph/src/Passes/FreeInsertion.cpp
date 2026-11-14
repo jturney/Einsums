@@ -42,7 +42,7 @@ struct FreePlan {
     /// for none. Deferred tensors already got a Materialize node from the
     /// Materialization pass; eager create_tensor intermediates did not, so a
     /// bare Free left the second execute() reading released storage (the
-    /// buffer is reclaimed by release_fn but nothing reallocates it).
+    /// buffer is released but nothing reallocates it).
     size_t materialize_before{SIZE_MAX};
 };
 
@@ -126,8 +126,8 @@ bool FreeInsertion::transform(Graph &graph) {
     // a loop body has its real last use at the Loop node, and without the
     // subtree view Part A freed it right after its Initialize - before the
     // loop ever ran. (Part B cannot cover that case: the body-map handles of
-    // parent-declared tensors carry neither is_intermediate nor release_fn,
-    // so its collect filter never sees them.) Overlap with Part B for
+    // parent-declared tensors do not carry is_intermediate, so its collect
+    // filter never sees them.) Overlap with Part B for
     // body-CREATED buffers is prevented by the planned-name dedup below.
     auto const &ua = graph.usage();
 

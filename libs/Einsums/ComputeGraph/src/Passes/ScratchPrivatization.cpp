@@ -37,7 +37,7 @@ struct Access {
 
 /// Can rebuild_node() below reproduce this node's computation with a renamed
 /// operand? Rebuilding replaces the executor, so every operand must resolve
-/// through the graph (impl_fn) and the descriptor must actually describe what
+/// through the graph (TensorHandle::impl) and the descriptor must actually describe what
 /// the baked lambda computes.
 bool rebuildable(Graph &graph, Node const &nd) {
     auto const operands_resolve = [&]() {

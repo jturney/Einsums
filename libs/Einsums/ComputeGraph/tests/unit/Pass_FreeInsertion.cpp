@@ -284,8 +284,8 @@ TEST_CASE("FreeInsertion - hoists a deeply-nested body intermediate past every l
 }
 
 TEST_CASE("FreeInsertion - eager create_tensor intermediate survives replay", "[ComputeGraph][FreeInsertion][Replay]") {
-    // Eager graph-owned intermediates (create_tensor) DO carry a release_fn
-    // via make_handle, so once they cross the pass's min-bytes threshold a
+    // Eager graph-owned intermediates (create_tensor) are releasable through
+    // their type's table, so once they cross the pass's min-bytes threshold a
     // real Free is inserted - but unlike deferred tensors they had no paired
     // Materialize, so the SECOND execute() touched released storage. Every
     // prior test tensor sat under the 1MB threshold, hiding this. 400x400
@@ -327,7 +327,7 @@ TEST_CASE("FreeInsertion - parent-declared scratch used only in a loop body free
     // Initialize writes of PARENT-declared, body-only-used scratch and freed
     // it BEFORE the loop (execute then failed validation: "still deferred").
     // Part B never covers these: the body-map handles of parent-declared
-    // tensors carry neither is_intermediate nor release_fn, so its collect
+    // tensors do not carry is_intermediate, so its collect
     // filter skips them. Python intermediate=True scratch driving a captured
     // loop (the CCSD example) is exactly this shape.
     constexpr size_t n   = 6;

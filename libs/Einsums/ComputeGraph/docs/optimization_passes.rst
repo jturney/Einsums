@@ -1175,9 +1175,9 @@ own allocation.
    // Analysis only: compute and report the statistics, place nothing.
    pm.add<cg::passes::MemoryPlanning>(/*apply_arena=*/false);
 
-Only intermediates that are materialized, not viewed or aliased, with
-``materialize_into_fn`` and ``release_fn`` and a nonzero byte size, are
-arena-placed. Device statistics are reporting-only; no device arena is applied.
+Only intermediates that are materialized, not viewed or aliased, of a type
+that can attach external storage and release it, and with a nonzero byte size,
+are arena-placed. Device statistics are reporting-only; no device arena is applied.
 
 Reports ``total_memory()``, ``peak_memory()``, ``num_planned()``,
 ``planned_arena_bytes()`` and ``planned_tensor_bytes()``.

@@ -2596,9 +2596,9 @@ TEST_CASE("ExecutorBuilder - a setup body's Initialize reaches the parent's decl
     auto const *desc = init->op_data.get_if<cg::InitializeDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->kind == cg::InitKind::Zero);
-    // The shape this case pins: the node and a hook-less copy in the body, the declaration in the
-    // parent.
-    REQUIRE_FALSE(static_cast<bool>(body->tensor(init->outputs.front()).zero_fn));
+    // The shape this case pins: the node and a copy in the body that says nothing about how to
+    // initialize the tensor, the declaration in the parent.
+    REQUIRE(body->tensor(init->outputs.front()).init_kind == cg::InitKind::None);
     REQUIRE(desc->declared.graph != nullptr);
     REQUIRE(&desc->declared.graph->graph() == &graph);
 

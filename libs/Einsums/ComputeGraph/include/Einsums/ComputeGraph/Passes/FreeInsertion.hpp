@@ -15,9 +15,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 /**
  * @brief FreeInsertion pass: insert Free nodes to release intermediate tensors after their last consumer.
  *
- * For each graph-owned intermediate (is_intermediate == true, with a release_fn, not a view), the
+ * For each graph-owned intermediate (is_intermediate == true, releasable by its type, not a view), the
  * last node that reads or writes it is found via the shared UsageAnalysis and a Free node is inserted
- * immediately after. The Free node calls release_fn() on the TensorHandle, freeing the backing storage
+ * immediately after. The Free node calls the type's release on the tensor, freeing the backing storage
  * and returning the tensor to a deferred-like state; it lists the tensor as BOTH input and output so a
  * concurrent executor orders it after every prior reader and writer, not merely by node position.
  *

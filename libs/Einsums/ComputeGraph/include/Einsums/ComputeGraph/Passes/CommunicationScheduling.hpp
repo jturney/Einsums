@@ -17,7 +17,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *       MPI-enabled (or mock) builds, and the distributed backend is not yet complete.
  *
  * The distributed analogue of `IOPrefetch` for disk I/O. It converts each synchronous `Allreduce` into
- * a two-phase asynchronous node using the tensor handle's `iallreduce_sum_fn`: `async_start` fires a
+ * a two-phase asynchronous node using the `iallreduce_sum` entry of the tensor's type table: `async_start` fires a
  * non-blocking `iallreduce` (storing the `comm::Request`), and `async_finish` waits on it. The
  * synchronous `execute` is cleared, and the `DataflowExecutor` — which already supports
  * `Node::async_start` / `async_finish` — is then free to schedule independent work between the start and
@@ -47,7 +47,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @par Limitations
  * - A no-op on a single rank; exercised only under real MPI (or the mock backend with `world_size() > 1`).
  * - Splits **Allreduce**, the only collective kind there is.
- * - Requires the tensor handle to provide `iallreduce_sum_fn`; nodes without it are left synchronous.
+ * - Requires the tensor's type table to have an `iallreduce_sum` entry; nodes without it are left synchronous.
  * - Only marks the node as two-phase — actual overlap depends on the DataflowExecutor finding
  *   independent work between start and finish; it does not itself reorder nodes to create that slack.
  *

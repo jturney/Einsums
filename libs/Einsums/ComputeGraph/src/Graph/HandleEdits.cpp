@@ -149,13 +149,10 @@ void Graph::set_distribution(TensorId id, std::optional<comm::DistributionDescri
 }
 
 void Graph::adopt_lifecycle(TensorId id, TensorHandle const &from) {
-    TensorHandle &handle  = registered(_registry.handles(), _name, id);
-    handle.alloc_state    = from.alloc_state;
-    handle.init_kind      = from.init_kind;
-    handle.materialize_fn = from.materialize_fn;
-    handle.zero_fn        = from.zero_fn;
-    handle.random_fn      = from.random_fn;
-    handle.custom_init    = from.custom_init;
+    TensorHandle &handle = registered(_registry.handles(), _name, id);
+    handle.alloc_state   = from.alloc_state;
+    handle.init_kind     = from.init_kind;
+    handle.custom_init   = from.custom_init;
     note(Change::HandleChanged);
 }
 

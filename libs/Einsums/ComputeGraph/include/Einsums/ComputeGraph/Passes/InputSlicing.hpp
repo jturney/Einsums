@@ -21,9 +21,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * When an einsum (or permute) has a distributed output — say C distributed along dim 0 — any
  * pre-allocated, non-distributed input that shares that index must be presented to each rank as only
  * its local partition. This pass brackets such a node with a `begin_slice` `Custom` node before and an
- * `end_slice` `Custom` node after: `begin_slice` calls the tensor's `begin_local_view_fn` to retarget
+ * `end_slice` `Custom` node after: `begin_slice` calls its type's `begin_local_view` entry to retarget
  * the input's data pointer and dims to the local range for this rank, and `end_slice` restores the
- * original view via `end_local_view_fn`. The distributed output's `DistributionDescriptor` supplies the
+ * original view through `end_local_view` with the state the begin returned. The distributed output's
+ * `DistributionDescriptor` supplies the
  * per-rank `local_range`, and the operand index lists identify which input dims carry the distributed
  * index.
  *
@@ -55,7 +56,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   block-distributed input is left alone.
  * - Handles `Einsum` and `Permute`/`Transpose` only; other kinds (including `BatchedGemm`, whose
  *   distributed form is unsupported) are skipped because they expose no index list to reason about.
- * - Depends on the tensor providing `begin_local_view_fn` / `end_local_view_fn`; without those hooks the
+ * - Depends on the tensor's type providing `begin_local_view` / `end_local_view`; without those entries the
  *   slice nodes execute as no-ops.
  * - Matching is positional (`inp_indices[d] == dist_index`), assuming operand dims line up with the
  *   descriptor's dims.

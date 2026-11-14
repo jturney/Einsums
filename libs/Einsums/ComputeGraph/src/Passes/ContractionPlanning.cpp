@@ -407,7 +407,7 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
         // on a later Materialization pass: the restructured graph must be
         // executable even when this pass is applied standalone. The
         // allocation still happens at execute time (deferred until then),
-        // and materialize_fn is idempotent if anything downstream adds
+        // and materialize() is idempotent if anything downstream adds
         // bookkeeping of its own.
         {
             auto const &handle   = graph.tensor(out_id);

@@ -596,7 +596,7 @@ def test_tiled_heev_block_diagonal(dtype):
 #      DistributionPlanning) skips it structurally;
 #   2. TiledRuntimeTensor does not derive from RuntimeTensorNoType, so the
 #      is_runtime gate that guards GeneralRuntimeTensor casts rejects it;
-#   3. it exposes no rank-erased impl, so TensorHandle::impl_fn is null and
+#   3. it exposes no rank-erased impl, so its TensorOps impl entry is null and
 #      Graph::make_einsum_node refuses it outright.
 #
 # The default pipeline now LOWERS tiled ops instead of skipping them:

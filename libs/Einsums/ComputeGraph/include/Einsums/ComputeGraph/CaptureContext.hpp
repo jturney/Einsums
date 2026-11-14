@@ -172,7 +172,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      *  - ``FreeInsertion`` Part B, ``InplaceOptimization``, ``MemoryPlanning``,
      *    and ``DeadNodeElimination`` all gate on the body-map
      *    ``is_intermediate``. Because a parent-declared tensor arrives in the
-     *    body with ``is_intermediate == false`` (and no ``release_fn``), those
+     *    body with ``is_intermediate == false``, those
      *    passes skip it - they are *conservative by loss*. A body-local pass
      *    cannot see the parent's readers, so treating a parent tensor as a
      *    body-owned intermediate would let it be freed, aliased, or

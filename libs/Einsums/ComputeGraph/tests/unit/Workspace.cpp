@@ -106,17 +106,17 @@ TEMPLATE_LIST_TEST_CASE("Workspace - shell tensor materializes", "[ComputeGraph]
     CHECK(A(0, 0) == marker<T>());
 }
 
-TEMPLATE_LIST_TEST_CASE("Workspace - materialize_fn works", "[ComputeGraph][Workspace]", testing::AllScalarTypes) {
+TEMPLATE_LIST_TEST_CASE("Workspace - a declared tensor materializes through its handle", "[ComputeGraph][Workspace]",
+                        testing::AllScalarTypes) {
     using T = TestType;
     cg::Workspace ws("test");
 
     auto &A = ws.declare_tensor<T, 2>("A", 3, 3);
 
-    // materialize_fn is set by declare_tensor
     auto const &handle = ws.tensor_handles().back();
-    CHECK(handle.materialize_fn);
+    REQUIRE(handle.ops->materialize != nullptr);
 
-    handle.materialize_fn();
+    handle.ops->materialize(handle.live_ptr());
 
     CHECK(A.is_materialized());
     CHECK(A.data() != nullptr);
@@ -697,7 +697,7 @@ TEMPLATE_LIST_TEST_CASE("Workspace declare_zero_tensor propagates pending_init t
     // Materialize would allocate but not zero, the body had to
     // overwrite the tensor before any read. After Step 2.5, the
     // tensor's ``pending_init()`` survives through ``make_handle``, the
-    // body handle gets ``InitKind::Zero`` + ``zero_fn``, and the
+    // body handle gets ``InitKind::Zero`` and a table that can zero it, and the
     // Materialization pass emits both Materialize and Initialize at the
     // parent level.
     auto B = create_random_tensor<T>("B", 3, 3);
@@ -718,7 +718,7 @@ TEMPLATE_LIST_TEST_CASE("Workspace declare_zero_tensor propagates pending_init t
     bool body_handle_has_init = false;
     for (auto const &[tid, h] : body.tensors_map()) {
         if (h.lookup_ptr() == static_cast<void *>(&A)) {
-            body_handle_has_init = (h.init_kind == cg::InitKind::Zero) && static_cast<bool>(h.zero_fn);
+            body_handle_has_init = (h.init_kind == cg::InitKind::Zero) && h.ops->fill_zero != nullptr;
             break;
         }
     }

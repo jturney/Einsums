@@ -299,7 +299,7 @@ bool AntisymmetryDetection::transform(Graph &graph) {
             continue;
         }
 
-        // The graph's metadata only. handle.set_symmetry_fn would push this onto
+        // The graph's metadata only. The table's set_symmetry would push this onto
         // the user's own tensor, and a pass that looked at someone's data has no
         // business writing a declaration back onto it.
         if (handle->symmetry_hint != nullptr) {

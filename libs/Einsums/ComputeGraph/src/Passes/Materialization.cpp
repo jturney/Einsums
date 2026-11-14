@@ -40,9 +40,8 @@ namespace {
 //
 // @param graph          The graph the nodes land in, which resolves ``emit_tid``.
 // @param owner          The graph that declares the tensor, whose registry holds ``handle``.
-// @param handle         Mutable handle whose ``materialize_fn`` /
-//                       ``init_kind`` / distribution metadata drives the
-//                       node's execute closure.
+// @param handle         Mutable handle whose ``init_kind`` and distribution
+//                       metadata decide which nodes are emitted.
 // @param emit_tid       TensorId this graph resolves the buffer to; the
 //                       synthetic nodes carry it as their output so the
 //                       dependency builder orders the control-flow node
@@ -504,8 +503,8 @@ bool Materialization::transform(Graph &graph) {
         // one. ContractionPlanning emits its own Materialize for the scratch it declares, so that
         // a standalone application of it produces an executable graph, and this pass then found
         // the same deferred declaration and emitted another. Two allocations of one buffer is
-        // survivable only because materialize_fn happens to be idempotent, which is a property of
-        // today's hook rather than a contract, and the node it adds carries an edge that serializes
+        // survivable only because materialize() happens to be idempotent, which is a property of
+        // today's tensors rather than a contract, and the node it adds carries an edge that serializes
         // the chain against itself for nothing. Name-keyed, matching what the setup-body arm above
         // already does through already_materialized_in and for the same reason.
         if (already_materialized_in(graph, handle.name)) {

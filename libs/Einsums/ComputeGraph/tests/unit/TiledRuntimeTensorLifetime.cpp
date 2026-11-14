@@ -109,15 +109,16 @@ TEST_CASE("TiledRuntimeTensor - ComputeGraph make_handle integration", "[Compute
     REQUIRE(h.data_ptr == nullptr);
     REQUIRE(h.alloc_state == cg::AllocState::Deferred);
 
-    // The captured lifecycle callbacks (what MaterializationPass / FreeInsertion
-    // drive) operate tile-by-tile on the backing tensor.
-    REQUIRE(static_cast<bool>(h.materialize_fn));
-    REQUIRE(static_cast<bool>(h.release_fn));
+    // The lifecycle entries of its type's table (what the Materialize and Free
+    // nodes call) operate tile-by-tile on the backing tensor.
+    REQUIRE(h.ops->materialize != nullptr);
+    REQUIRE(h.ops->release != nullptr);
 
     // No rank-erased impl: a tiled tensor has no single buffer to describe, so
-    // impl_fn stays null and the buffer-level paths that read through it exclude
-    // it by construction. Graph::make_einsum_node throws on a null impl_fn rather
-    // than emitting a node that would read a tile container as if it were dense.
+    // the table's impl entry stays null and the buffer-level paths that read
+    // through it exclude it by construction. Graph::make_einsum_node throws on a
+    // tensor with no impl rather than emitting a node that would read a tile
+    // container as if it were dense.
     REQUIRE_FALSE(h.has_impl());
     // Nor does it look like a dense runtime tensor: the is_runtime gate that
     // LCCF / SymmetrizedAccumulation use to guard their GeneralRuntimeTensor
@@ -125,10 +126,10 @@ TEST_CASE("TiledRuntimeTensor - ComputeGraph make_handle integration", "[Compute
     // RuntimeTensorNoType.
     REQUIRE_FALSE(h.is_runtime);
 
-    h.materialize_fn();
+    h.ops->materialize(h.live_ptr());
     REQUIRE(t.is_materialized());
 
-    h.release_fn();
+    h.ops->release(h.live_ptr());
     REQUIRE_FALSE(t.is_materialized());
     REQUIRE(t.num_filled_tiles() == 2);
 }

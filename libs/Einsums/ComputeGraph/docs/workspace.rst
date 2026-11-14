@@ -246,8 +246,8 @@ overlap then share the same bytes instead of each holding their own allocation:
    //   - [tuning]     arena: 184.20 MB hosting 31 intermediate(s) (512.75 MB of buffers)
 
 A tensor is arena-placed only if it is a materialized graph-owned intermediate,
-not viewed or aliased, with ``materialize_into_fn`` and ``release_fn`` and a
-nonzero byte size. Everything else keeps its own allocation.
+not viewed or aliased, of a type that can attach external storage and release
+it, and with a nonzero byte size. Everything else keeps its own allocation.
 
 Pass ``apply_arena=false`` to get the statistics without the placement:
 

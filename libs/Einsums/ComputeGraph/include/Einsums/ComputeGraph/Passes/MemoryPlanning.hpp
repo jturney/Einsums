@@ -73,7 +73,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   the tensors its body reaches (@ref EscapeAnalysis::touched_by_subtree), plus any tensor with no
  *   attached pointer, which that query cannot answer for.
  * - Only graph-owned is_intermediate tensors bracketed by exactly one Materialize and one Free node,
- *   not viewed or aliased, with materialize_into_fn + release_fn and nonzero bytes, are arena-placed.
+ *   not viewed or aliased, whose type can attach external storage and release it, and with nonzero
+ *   bytes, are arena-placed.
  * - The interval test uses body-LOCAL node positions and is blind to cross-iteration (loop-carried)
  *   liveness; today no in-body Materialize/Free bracket is ever reachable and a wraparound canary
  *   fires if FreeInsertion ever places one.

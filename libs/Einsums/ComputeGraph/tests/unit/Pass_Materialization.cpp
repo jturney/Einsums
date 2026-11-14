@@ -567,8 +567,8 @@ TEMPLATE_LIST_TEST_CASE("Materialization - a tensor another pass already gave a 
     // standalone produces an executable graph, and this pass then found the same deferred
     // declaration and emitted another.
     //
-    // Tolerated on the grounds that materialize_fn is idempotent, and that is the wrong test:
-    // idempotence is a property of today's hook rather than a contract, the second node carries a
+    // Tolerated on the grounds that materialize() is idempotent, and that is the wrong test:
+    // idempotence is a property of today's tensors rather than a contract, the second node carries a
     // dependency edge that serializes the chain against itself, and every question this module
     // asks about a lifecycle is name-keyed, so a graph holding two of them has no single answer to
     // "who materializes this". Materialization now leaves a tensor that already has one alone,

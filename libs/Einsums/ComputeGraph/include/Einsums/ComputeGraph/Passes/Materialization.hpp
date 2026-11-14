@@ -23,7 +23,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * 1. Finds the earliest node that writes to or reads from the tensor, via the shared
  *    UsageAnalysis (a view of a deferred tensor counts as a use of its owner, and a use buried
  *    in a loop body / conditional branch surfaces at the enclosing control-flow node's position).
- * 2. Inserts a Materialize node just before that point; its executor calls materialize_fn() to
+ * 2. Inserts a Materialize node just before that point; its executor calls the type's materialize to
  *    allocate the backing storage (for a distributed, non-replicated tensor it first resizes to
  *    this rank's local partition using the DistributionDescriptor that DistributionPlanning attached).
  * 3. If init_kind is set (Zero, Random), inserts an Initialize node immediately after.
@@ -171,7 +171,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
  * @brief Tensors with more than one Materialize node, anywhere in @p graph's tree.
  *
  * A tensor's storage is allocated once. Two lifecycles for one buffer survive only because
- * ``materialize_fn`` happens to be idempotent, which is a property of today's hook rather than a
+ * ``materialize()`` happens to be idempotent, which is a property of today's tensors rather than a
  * contract, and the extra node carries a dependency edge that serializes work against itself for
  * nothing. Two passes each emitting one is how it happens, and no numeric oracle can see it: both
  * allocations produce the same buffer and the answer does not move.
