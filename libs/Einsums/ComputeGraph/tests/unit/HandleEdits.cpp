@@ -184,15 +184,15 @@ TEST_CASE("Handle edits - a stage adopts a declaring scope's lifecycle, or finds
 
     cg::TensorHandle from;
     from.alloc_state = cg::AllocState::Deferred;
-    from.init_kind   = cg::InitKind::Zero;
-    bool zeroed      = false;
-    from.zero_fn     = [&zeroed]() { zeroed = true; };
+    from.init_kind   = cg::InitKind::Custom;
+    void *filled     = nullptr;
+    from.custom_init = [&filled](void *object) { filled = object; };
     graph.adopt_lifecycle(id, from);
     CHECK(graph.tensor(id).alloc_state == cg::AllocState::Deferred);
-    CHECK(graph.tensor(id).init_kind == cg::InitKind::Zero);
-    REQUIRE(graph.tensor(id).zero_fn);
-    graph.tensor(id).zero_fn();
-    CHECK(zeroed);
+    CHECK(graph.tensor(id).init_kind == cg::InitKind::Custom);
+    REQUIRE(graph.tensor(id).custom_init);
+    graph.tensor(id).custom_init(graph.tensor(id).live_ptr());
+    CHECK(filled == graph.tensor(id).live_ptr());
 
     graph.mark_materialized(id);
     CHECK(graph.tensor(id).alloc_state == cg::AllocState::Materialized);

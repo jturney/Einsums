@@ -158,6 +158,9 @@ methods that handle the distribution mapping automatically. See the
 The initialization happens as an ``Initialize`` graph node that runs during
 ``execute()`` after the ``Materialize`` node allocates storage.
 
+A fill function is code, which a saved graph cannot carry, so a graph holding a
+``declare_tensor_filled`` tensor refuses ``save_graph`` and names the tensor.
+
 Runtime-rank variants
 ---------------------
 

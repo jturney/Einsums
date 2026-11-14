@@ -4172,6 +4172,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *     });
      * @endcode
      *
+     * The fill is code, which a saved graph cannot carry: a graph holding such a tensor is named in
+     * @ref serializability_report and refused by ``save_graph``.
+     *
      * @param name  Tensor name.
      * @param dims  Global dimensions.
      * @param fill  Lambda called with a reference to the materialized tensor.
@@ -4184,10 +4187,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         auto *ptr     = &t;
         auto  fill_fn = std::forward<FillFn>(fill);
         if (auto *handle = find_mutable_tensor(find_tensor_id_by_ptr(ptr)); handle != nullptr) {
-            handle->init_kind = InitKind::Zero; // Triggers an init node
-            handle->zero_fn   = [ptr, fill_fn]() {
-                ptr->materialize();
-                fill_fn(*ptr);
+            handle->init_kind   = InitKind::Custom;
+            handle->custom_init = [fill_fn](void *object) {
+                auto *tensor = static_cast<Tensor<T, Rank> *>(object);
+                tensor->materialize();
+                fill_fn(*tensor);
             };
         }
         return t;

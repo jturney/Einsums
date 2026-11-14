@@ -35,12 +35,14 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -1455,8 +1457,29 @@ void collect_blockers(Graph const &graph, std::string const &path, std::vector<S
         }
     };
 
+    // A tensor initialized by a fill function is code no file can carry. It is reported at the
+    // first node that touches it, once, so the report stays one entry per blocking node.
+    std::unordered_set<TensorId> filled_reported;
+    auto const                   filled_tensor_of = [&graph, &filled_reported](Node const &node) -> TensorHandle const                   *{
+        for (auto const &ids : {std::cref(node.inputs), std::cref(node.outputs)}) {
+            for (TensorId const id : ids.get()) {
+                TensorHandle const *handle = graph.find_tensor(id);
+                if (handle != nullptr && handle->init_kind == InitKind::Custom && filled_reported.insert(id).second) {
+                    return handle;
+                }
+            }
+        }
+        return nullptr;
+    };
+
     for (auto const &node : graph.nodes()) {
-        if (std::string reason = reconstruction_blocker(node); !reason.empty()) {
+        std::string reason = reconstruction_blocker(node);
+        if (TensorHandle const *filled = reason.empty() ? filled_tensor_of(node) : nullptr; filled != nullptr) {
+            reason = fmt::format("touches tensor '{}', which is initialized by a fill function (declare_tensor_filled) that a saved "
+                                 "graph cannot carry; declare it without one and bind its contents after loading",
+                                 filled->name);
+        }
+        if (!reason.empty()) {
             out.push_back(SerializabilityBlocker{.node_id       = node.id,
                                                  .label         = node.label,
                                                  .kind_name     = std::string{op_kind_name(node.kind)},

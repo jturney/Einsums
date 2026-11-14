@@ -155,6 +155,7 @@ void Graph::adopt_lifecycle(TensorId id, TensorHandle const &from) {
     handle.materialize_fn = from.materialize_fn;
     handle.zero_fn        = from.zero_fn;
     handle.random_fn      = from.random_fn;
+    handle.custom_init    = from.custom_init;
     note(Change::HandleChanged);
 }
 

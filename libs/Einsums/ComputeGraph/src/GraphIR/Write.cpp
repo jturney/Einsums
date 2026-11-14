@@ -568,6 +568,18 @@ void write_rank0_kind(Object &out, std::size_t rank, TensorHandle const *handle)
     }
 }
 
+/// The saved spelling of a tensor's initializer. A custom fill is the caller's code, which a file
+/// cannot carry: written as anything else, a loaded graph would initialize the tensor some other
+/// way (it once came back zeroed, silently), so the save is refused instead.
+std::string_view saved_init_name(TensorHandle const &handle) {
+    if (handle.init_kind == InitKind::Custom) {
+        throw SaveRefusal(fmt::format("tensor '{}' is initialized by a fill function (declare_tensor_filled), which a saved graph "
+                                      "cannot carry; declare it without one and bind its contents after loading",
+                                      handle.name));
+    }
+    return init_kind_name(handle.init_kind);
+}
+
 /// One tensor's storage-side record.
 Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t dense, Frame const &frame) {
     require_storable_dtype(handle.name, handle.dtype);
@@ -584,7 +596,7 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
     write_rank0_kind(out, handle.rank, &handle);
     out.set("intermediate", Value{handle.is_intermediate});
     out.set("scope", Value{tensor_ownership_name(handle.ownership)});
-    out.set("init", Value{init_kind_name(handle.init_kind)});
+    out.set("init", Value{saved_init_name(handle)});
     // Whether the tensor has storage yet, which is NOT what "init" says: that one is what to
     // fill it with once it does. Dropping this turned every loaded intermediate into a
     // materialized one, and a materialized intermediate refuses the extent-changing bind that
@@ -801,7 +813,7 @@ Object write_structure(Graph const &graph) {
         // without them a result declared at zero came back allocated, zeroed once at load, and
         // added into its previous replay's value from the second replay on.
         if (handle != nullptr) {
-            record.set("init", Value{init_kind_name(handle->init_kind)});
+            record.set("init", Value{saved_init_name(*handle)});
             record.set("alloc", Value{alloc_state_name(handle->alloc_state)});
         }
 

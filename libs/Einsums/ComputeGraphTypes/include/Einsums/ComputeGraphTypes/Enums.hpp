@@ -147,6 +147,7 @@ enum class InitKind : std::uint8_t {
     Zero,     ///< Fill with zeros after materialization
     Random,   ///< Fill with random values after materialization
     FromDisk, ///< Load from file after materialization
+    Custom,   ///< Run the caller's fill function after materialization; never saved
 };
 
 /**
@@ -344,7 +345,7 @@ inline std::string_view op_kind_name(OpKind kind) {
 /**
  * @brief The name of an initialization strategy, for diagnostics and the saved form.
  * @param[in] kind The strategy to name.
- * @return A stable spelling ("none", "zero", "random", "from_disk").
+ * @return A stable spelling ("none", "zero", "random", "from_disk", "custom").
  * @versionadded{2.0.0}
  */
 [[nodiscard]] inline std::string_view init_kind_name(InitKind kind) noexcept {
@@ -357,6 +358,8 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "random";
     case InitKind::FromDisk:
         return "from_disk";
+    case InitKind::Custom:
+        return "custom";
     }
     return "none";
 }
@@ -370,7 +373,8 @@ inline std::string_view op_kind_name(OpKind kind) {
 /**
  * @brief The @ref InitKind spelled @p name, if there is one.
  * @param[in] name A spelling @ref init_kind_name produces.
- * @return The strategy, or an empty optional.
+ * @return The strategy, or an empty optional. Never @ref InitKind::Custom: a fill function is code,
+ *         which a save refuses rather than writes, so no saved graph spells it.
  * @versionadded{2.0.0}
  */
 [[nodiscard]] inline std::optional<InitKind> init_kind_from_name(std::string_view name) noexcept {

@@ -213,16 +213,20 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
             if (h.alloc_state == AllocState::Deferred) {
                 switch (h.init_kind) {
                 case InitKind::Zero:
-                    if (h.zero_fn)
-                        h.zero_fn();
+                    if (h.ops->fill_zero != nullptr)
+                        h.ops->fill_zero(h.live_ptr());
                     break;
                 case InitKind::Random:
-                    if (h.random_fn)
-                        h.random_fn();
+                    if (h.ops->fill_random != nullptr)
+                        h.ops->fill_random(h.live_ptr());
+                    break;
+                case InitKind::Custom:
+                    if (h.custom_init)
+                        h.custom_init(h.live_ptr());
                     break;
                 default:
-                    if (h.materialize_fn)
-                        h.materialize_fn();
+                    if (h.ops->materialize != nullptr)
+                        h.ops->materialize(h.live_ptr());
                     break;
                 }
                 h.alloc_state = AllocState::Materialized;

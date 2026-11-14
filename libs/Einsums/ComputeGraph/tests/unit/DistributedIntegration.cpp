@@ -359,8 +359,8 @@ TEST_CASE("Distributed - embarrassingly parallel GEMM", "[ComputeGraph][Distribu
     for (auto const &[tid, handle] : graph.tensors_map()) {
         if (handle.lookup_ptr() == &A) {
             cg::TensorHandle lifecycle = handle;
-            lifecycle.init_kind        = cg::InitKind::Zero; // Triggers an Initialize node
-            lifecycle.zero_fn          = [&A, &A_full, M, K]() {
+            lifecycle.init_kind        = cg::InitKind::Custom; // Triggers an Initialize node
+            lifecycle.custom_init      = [&A, &A_full, M, K](void      */*object*/) {
                 // A is distributed along Row (dim 0), use grid coordinates
                 auto        &grid      = comm::ProcessGrid::default_grid();
                 size_t const local_m   = A.dim(0);
@@ -472,8 +472,8 @@ TEST_CASE("Distributed - SUMMA GEMM on 2D grid", "[ComputeGraph][Distributed]") 
     for (auto const &[tid, handle] : graph.tensors_map()) {
         cg::TensorHandle lifecycle = handle;
         if (handle.lookup_ptr() == &A) {
-            lifecycle.init_kind = cg::InitKind::Zero;
-            lifecycle.zero_fn   = [&A, &A_full, M, K]() {
+            lifecycle.init_kind   = cg::InitKind::Custom;
+            lifecycle.custom_init = [&A, &A_full, M, K](void * /*object*/) {
                 auto        &grid = comm::ProcessGrid::default_grid();
                 int const    pr = grid.rows(), pc = grid.cols();
                 size_t const row_chunk = (M + static_cast<size_t>(pr) - 1) / static_cast<size_t>(pr);
@@ -485,8 +485,8 @@ TEST_CASE("Distributed - SUMMA GEMM on 2D grid", "[ComputeGraph][Distributed]") 
                         A(ii, jj) = A_full(row_start + ii, col_start + jj);
             };
         } else if (handle.lookup_ptr() == &B) {
-            lifecycle.init_kind = cg::InitKind::Zero;
-            lifecycle.zero_fn   = [&B, &B_full, K, N]() {
+            lifecycle.init_kind   = cg::InitKind::Custom;
+            lifecycle.custom_init = [&B, &B_full, K, N](void * /*object*/) {
                 auto        &grid = comm::ProcessGrid::default_grid();
                 int const    pr = grid.rows(), pc = grid.cols();
                 size_t const row_chunk = (K + static_cast<size_t>(pr) - 1) / static_cast<size_t>(pr);

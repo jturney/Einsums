@@ -2206,3 +2206,50 @@ TEST_CASE("SaveLoad - a rank-0 kind must be one of the two", "[ComputeGraph][Sav
     CHECK(load_refusal(patched(text, R"("rank0": "tensor")", R"("rank0": "matrix")")).find(R"(expected "tensor" or "scalar")") !=
           std::string::npos);
 }
+
+// A fill function is code, which a file cannot carry. The save once wrote such a tensor as
+// initialized to zero, so a loaded graph zeroed it and computed with the zeros, silently, where the
+// captured graph computed with the fill. The save now refuses it, naming the tensor.
+TEST_CASE("SaveLoad - a tensor with a fill function refuses a save", "[ComputeGraph][SaveLoad]") {
+    auto      B = create_random_tensor<double>("B", 3, 4);
+    auto      C = create_zero_tensor<double>("C", 3, 4);
+    cg::Graph graph("filled");
+    auto     &T = graph.declare_tensor_filled<double, 2>(std::string("T"), Dim<2>{3, 3}, [](Tensor<double, 2> &t) {
+        for (size_t i = 0; i < 3; ++i) {
+            for (size_t j = 0; j < 3; ++j) {
+                t(i, j) = 3.0;
+            }
+        }
+    });
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, T, B);
+    }
+
+    // The report that answers "can this graph be saved" says so too, at the node that reads T.
+    auto const report = graph.serializability_report();
+    REQUIRE(report.size() == 1);
+    CHECK_THAT(report.front().reason, Catch::Matchers::ContainsSubstring("'T'"));
+
+    std::string const message = save_refusal(graph);
+    CHECK_THAT(message, Catch::Matchers::ContainsSubstring("'T'"));
+    CHECK_THAT(message, Catch::Matchers::ContainsSubstring("fill function"));
+
+    // The graph itself still fills: the refusal is about the file, not the tensor.
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    graph.execute();
+    auto expected = create_zero_tensor<double>("expected", 3, 4);
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            for (size_t k = 0; k < 3; ++k) {
+                expected(i, j) += 3.0 * B(k, j);
+            }
+        }
+    }
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            CHECK_THAT(C(i, j), Catch::Matchers::WithinAbs(expected(i, j), 1e-12));
+        }
+    }
+}

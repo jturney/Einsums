@@ -895,7 +895,10 @@ allocating closure, and allocation is a resource decision a load re-derives
 rather than reads. ``Graph.serializability_report()`` names any node that blocks
 a save and the field that blocks it, so "can this graph be saved" has an
 actionable answer rather than a boolean; a graph holding a grouped batched GEMM,
-a parametric view, or an ``outer_sum`` is refused with that reason.
+a parametric view, or an ``outer_sum`` is refused with that reason. So is a graph
+holding a tensor declared with a fill function (``declare_tensor_filled``): the
+function is code a file cannot carry, so declare the tensor without one and bind
+its contents after loading.
 
 Space names are what a file carries, and a load resolves them against the
 loading process's registry. That is why the default registry is process-global.

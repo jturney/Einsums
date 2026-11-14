@@ -606,6 +606,12 @@ struct TensorHandle {
     /// Set by declare_tensor on Workspace/Pipeline/Graph. Called by Initialize nodes.
     std::function<void()> random_fn;
 
+    /// The caller's fill for an @ref InitKind::Custom tensor, called on @ref live_ptr once the
+    /// tensor is materialized; it materializes first. The one initializer that is code rather than
+    /// a property of the tensor's type, so a graph holding one cannot be saved.
+    /// @see Graph::declare_tensor_filled
+    std::function<void(void *)> custom_init;
+
     /// Type-erased begin/end local view for input slicing.
     /// begin_local_view_fn(dim, start, count) → opaque state token
     /// end_local_view_fn(token) → restores original state

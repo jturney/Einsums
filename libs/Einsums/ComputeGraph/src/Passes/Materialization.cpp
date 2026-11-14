@@ -73,6 +73,8 @@ std::vector<Node> build_lifecycle_nodes(Graph &graph, Graph &owner, TensorHandle
             init_node.label = fmt::format("init_zero({})", handle.name);
         } else if (init == InitKind::Random) {
             init_node.label = fmt::format("init_random({})", handle.name);
+        } else if (init == InitKind::Custom) {
+            init_node.label = fmt::format("init_custom({})", handle.name);
         } else if (init == InitKind::FromDisk) {
             // Carries the storage's name, so the scheduler orders it after every node that writes
             // the storage: a tensor produced a slab at a time into storage is read back here.

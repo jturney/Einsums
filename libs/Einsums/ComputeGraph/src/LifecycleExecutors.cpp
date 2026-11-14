@@ -111,17 +111,21 @@ std::function<void()> build_detach(TensorHandle const &handle) {
 std::function<void()> build_initialize(InitKind init, TensorHandle const &handle) {
     switch (init) {
     case InitKind::Zero:
-        return [zero_fn = handle.zero_fn]() {
-            if (zero_fn) {
-                zero_fn();
-            }
-        };
+        if (handle.ops->fill_zero == nullptr) {
+            return [] {};
+        }
+        return [fill = handle.ops->fill_zero, object = handle.live_ptr()]() { fill(object); };
     case InitKind::Random:
-        return [random_fn = handle.random_fn]() {
-            if (random_fn) {
-                random_fn();
-            }
-        };
+        if (handle.ops->fill_random == nullptr) {
+            return [] {};
+        }
+        return [fill = handle.ops->fill_random, object = handle.live_ptr()]() { fill(object); };
+    case InitKind::Custom:
+        if (!handle.custom_init) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error, "build_executor(Initialize): tensor '{}' has a custom initializer and no function",
+                                    handle.name);
+        }
+        return [fill = handle.custom_init, object = handle.live_ptr()]() { fill(object); };
     case InitKind::FromDisk:
         return load_whole(handle);
     case InitKind::None:
