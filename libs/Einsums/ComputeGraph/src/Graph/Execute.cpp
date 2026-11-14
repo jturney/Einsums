@@ -380,9 +380,9 @@ bool Graph::optimize(OptLevel level) {
     auto       pm       = PassManager::create_for(level);
     bool const modified = apply(pm);
 
-    _last_optimize_report =
-        fmt::format("optimize(O{}) on '{}': {} -> {} node(s)\n{}", static_cast<int>(level), _name, before, _nodes.size(), pm.explain());
-    _last_decisions = pm.decisions();
+    _optimization.record_optimize(
+        fmt::format("optimize(O{}) on '{}': {} -> {} node(s)\n{}", static_cast<int>(level), _name, before, _nodes.size(), pm.explain()),
+        pm.decisions());
     return modified;
 }
 

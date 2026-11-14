@@ -775,7 +775,7 @@ bool Graph::run_thread_planner(unsigned threads) {
     // anything, and if not which gate declined, is otherwise invisible.
     planner.set_verbosity(static_cast<int>(config::get(option::PassVerbosity)));
     planner.run(*this);
-    _planned_thread_count = static_cast<std::uint16_t>(threads);
+    _thread_plan.record_planned_threads(threads);
     return planner.num_widened() > 0;
 }
 
@@ -802,139 +802,28 @@ bool Graph::plan_threads(bool freeze) {
     // re-planned candidate has to beat the cold plan on the wall clock before
     // it may replace it (see finish_replay_thread_plan for why estimates
     // cannot referee that contest).
-    _plan_trial = (!freeze && !have_timings) ? ThreadPlanTrial::Armed : ThreadPlanTrial::None;
-    _plan_incumbent.clear();
-    _plan_candidate.clear();
+    if (!freeze && !have_timings) {
+        _thread_plan.arm();
+    } else {
+        _thread_plan.settle();
+    }
     return widened;
 }
 
-namespace {
-
-using PlanSnapshot = std::vector<std::pair<std::uint16_t, std::int64_t>>;
-
-/// Record every node's planned width and admission priority, container bodies
-/// included, in one deterministic walk order shared with apply_thread_plan.
-///
-/// Setup bodies are deliberately left out of both walks: the widths these two
-/// snapshot and restore are the ones ThreadPlanning::plan_graph writes, and that
-/// planner descends into loop bodies and conditional branches only.
-void collect_thread_plan(Graph const &graph, PlanSnapshot &out) {
-    for (auto const &node : graph.nodes()) {
-        out.emplace_back(node.thread_width, node.admission_priority);
-        for_each_child_graph(node, [&out](Graph const &sub) { collect_thread_plan(sub, out); }, /*include_setup=*/false);
-    }
-}
-
-void apply_thread_plan(Graph &graph, PlanSnapshot const &plan, size_t &pos) {
-    for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
-        if (pos >= plan.size()) {
-            return; // structure changed under the trial; leave the rest alone
-        }
-        NodeSchedule schedule       = schedule_of(graph.nodes()[i]);
-        schedule.thread_width       = plan[pos].first;
-        schedule.admission_priority = plan[pos].second;
-        graph.set_schedule(i, schedule);
-        pos++;
-        graph.for_each_child(i, [&](Graph &sub) { apply_thread_plan(sub, plan, pos); }, /*include_setup=*/false);
-    }
-}
-
-[[nodiscard]] bool same_widths(PlanSnapshot const &a, PlanSnapshot const &b) {
-    if (a.size() != b.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < a.size(); i++) {
-        if (a[i].first != b[i].first) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/// How much faster the candidate's replay must be before it replaces the cold
-/// plan. Consecutive replays of one graph differ by a few percent on a machine
-/// doing anything else, and the trial reads exactly one replay of each side,
-/// so a candidate inside this band is indistinguishable from noise - and the
-/// incumbent is the plan a calibrated model chose on purpose.
-constexpr double kThreadPlanTrialMargin = 0.05;
-
-} // namespace
-
 void Graph::begin_replay_thread_plan() {
-    if (_plan_trial != ThreadPlanTrial::Measured) {
+    if (!_thread_plan.begin_replan(*this)) {
         return;
     }
-    // The re-plan runs here, as the second replay starts, and not where the
-    // first replay ends. That is the same point in a graph's life whenever a
-    // second replay comes, and it never comes for a graph built and executed
-    // once (one per chunk of a sweep): a full planner run there bought nothing
-    // and took longer than the graph's own work.
-    //
-    // Disarmed BEFORE planning, so a planner that throws does not leave the
-    // graph re-planning at the start of every replay from here on.
-    _plan_trial = ThreadPlanTrial::None;
-
-    _plan_incumbent.clear();
-    collect_thread_plan(*this, _plan_incumbent);
-
     // The first replay's timings are still on the graph: a replay clears them
     // only after this.
     auto &budget = task_pool::WidthBudget::get_singleton();
     budget.sync_machine_width();
     run_thread_planner(std::max(1U, budget.total()));
-
-    _plan_candidate.clear();
-    collect_thread_plan(*this, _plan_candidate);
-    if (same_widths(_plan_candidate, _plan_incumbent)) {
-        // The timings agree with the model about the widths, so there is
-        // nothing to referee; the re-plan's measured admission priorities
-        // are kept and the plan is final.
-        _plan_incumbent.clear();
-        _plan_candidate.clear();
-        return;
-    }
-    // The candidate's widths are live now; the replay starting times them.
-    _plan_trial = ThreadPlanTrial::Candidate;
+    _thread_plan.offer_candidate(*this);
 }
 
 void Graph::finish_replay_thread_plan(double replay_ms) {
-    switch (_plan_trial) {
-    case ThreadPlanTrial::None:
-    case ThreadPlanTrial::Measured:
-        return;
-
-    case ThreadPlanTrial::Armed:
-        // This replay's timings are what the re-plan reads, when the next one starts.
-        _plan_trial = ThreadPlanTrial::Measured;
-        return;
-
-    case ThreadPlanTrial::Candidate: {
-        _plan_candidate_ms = replay_ms;
-        size_t pos         = 0;
-        apply_thread_plan(*this, _plan_incumbent, pos);
-        _plan_trial = ThreadPlanTrial::Incumbent;
-        return;
-    }
-
-    case ThreadPlanTrial::Incumbent: {
-        _plan_trial          = ThreadPlanTrial::None;
-        bool const candidate = _plan_candidate_ms < (1.0 - kThreadPlanTrialMargin) * replay_ms;
-        if (candidate) {
-            size_t pos = 0;
-            apply_thread_plan(*this, _plan_candidate, pos);
-        }
-        if (config::get(option::PassVerbosity) >= 1) {
-            einsums::detail::get_passes_logger().info(
-                "[ThreadPlanning] trial on '{}': candidate replay {:.1f} ms vs incumbent replay {:.1f} ms; keeping the {}", _name,
-                _plan_candidate_ms, replay_ms, candidate ? "re-planned widths" : "cold plan");
-        }
-        _plan_incumbent.clear();
-        _plan_incumbent.shrink_to_fit();
-        _plan_candidate.clear();
-        _plan_candidate.shrink_to_fit();
-        return;
-    }
-    }
+    _thread_plan.finish_replay(*this, replay_ms);
 }
 
 size_t Graph::schedule_edge_count() {

@@ -25,28 +25,29 @@
 /// Saved, because it is structure:
 ///   `_name`, `_nodes` (kind, label, inputs, outputs, descriptor), `_tensors`
 ///   (name, dtype, rank, dims, dim symbols, spaces, intermediate flag, scope,
-///   init kind, alias parent), `_symbol_spaces`, `_params`' entries,
-///   `_named_gate_flags`, `_slot_redirects`.
+///   init kind, alias parent), the symbol ties in `_spaces`, the parameter
+///   table's entries and the named gate-flag arrays in `_param_store`,
+///   `_slot_redirects`, and the pass lists and approximation records in
+///   `_optimization`.
 ///
 /// NOT saved, because it is machine-dependent tuning that a load re-derives:
 ///   `Node::thread_width`, `Node::admission_priority`, `Node::stream_id`,
-///   `Node::estimated_flops`, `Node::estimated_bytes`, `_planned_thread_count`,
-///   `_plan_trial` and the two plan snapshots, `_timing_samples`,
-///   `_timing_report`, `_last_optimize_report`.
+///   `Node::estimated_flops`, `Node::estimated_bytes`, `_thread_plan`,
+///   `_timing_samples`, `_timing_report`, and the last optimize() report in
+///   `_optimization`.
 ///
 /// NOT saved, because it is a live-process resource with no meaning in a file:
 ///   every `std::function` on a `TensorHandle`, `_owned_tensors`,
 ///   `_adopted_cleanups`, `_slot_map`, `_ptr_index`, `_device_shadows`,
-///   `_executor`, `_content_mutex`, `_pending_binds`,
-///   `_deps` / `_usage` and the version counters that guard them,
-///   `_profile_strings`, `_bound_operands`, `_ragged_extents`, `_space_extents`,
-///   `_space_tiles`, `_scope_maps`. `_ragged_extents`, `_bound_operands` and the
-///   two space maps are bind-time state about the CALLER's problem (what each
-///   space measures, how it is partitioned), and a loaded graph is bound afresh.
+///   `_executor`, `_content_mutex`, `_deps` / `_usage` and the version counters
+///   that guard them, `_profile_strings`, `_binding`, the extents and tilings in
+///   `_spaces`, `_scope_maps`. `_binding` and the space extents and tilings are
+///   bind-time state about the CALLER's problem (what is bound, what each space
+///   measures, how it is partitioned), and a loaded graph is bound afresh.
 ///
-/// `_space_registry` is a non-owning pointer into a registry the caller owns, so
-/// what travels is the space NAMES; a loaded graph resolves them against the
-/// registry it is given.
+/// The registry in `_spaces` is a non-owning pointer into a registry the caller
+/// owns, so what travels is the space NAMES; a loaded graph resolves them against
+/// the registry it is given.
 
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/GraphIR.hpp>

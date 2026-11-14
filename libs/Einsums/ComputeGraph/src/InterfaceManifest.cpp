@@ -224,9 +224,9 @@ InterfaceManifest Graph::manifest() {
         ManifestEntry entry;
         entry.id = id;
         // A slot bound once keeps the name the contract was written with; see
-        // Graph::_interface_names for why the handle's own name cannot serve.
-        auto const pinned = _interface_names.find(id);
-        entry.name        = pinned != _interface_names.end() ? pinned->second : handle.name;
+        // detail::BindingSession for why the handle's own name cannot serve.
+        std::string const *pinned = _binding.interface_name(id);
+        entry.name                = pinned != nullptr ? *pinned : handle.name;
         entry.direction   = writes == 0 ? ManifestDirection::Input : reads == 0 ? ManifestDirection::Output : ManifestDirection::InOut;
         entry.dtype       = handle.dtype;
         entry.rank        = handle.rank;
@@ -377,7 +377,7 @@ InterfaceManifest Graph::manifest() {
 std::vector<std::string> Graph::unbound_manifest_entries() {
     std::vector<std::string> out;
     for (auto const &entry : manifest().entries()) {
-        if (!_bound_operands.contains(entry.id)) {
+        if (!_binding.is_bound(entry.id)) {
             out.push_back(entry.name);
         }
     }
@@ -393,43 +393,34 @@ void Graph::name_gate_flags(std::string name, std::shared_ptr<std::vector<std::u
     if (buffer == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': name_gate_flags('{}'): the array is null", _name, name);
     }
-    for (auto const &[existing_name, existing_buffer] : _named_gate_flags) {
-        if (existing_name == name) {
-            if (existing_buffer == buffer) {
-                return; // the same registration, made twice
-            }
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                    "Graph '{}': name_gate_flags('{}'): that name already names a different gate-flag array", _name, name);
+    if (auto const *named = _param_store.gate_flags_named(name); named != nullptr) {
+        if (*named == buffer) {
+            return; // the same registration, made twice
         }
-        if (existing_buffer == buffer) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                    "Graph '{}': name_gate_flags('{}'): this array is already named '{}'; one array carries one name, so "
-                                    "that a saved file's name identifies it",
-                                    _name, name, existing_name);
-        }
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "Graph '{}': name_gate_flags('{}'): that name already names a different gate-flag array", _name, name);
     }
-    _named_gate_flags.emplace_back(std::move(name), std::move(buffer));
-    std::ranges::sort(_named_gate_flags, [](auto const &lhs, auto const &rhs) { return lhs.first < rhs.first; });
+    if (auto const *existing_name = _param_store.gate_flag_name(buffer); existing_name != nullptr) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "Graph '{}': name_gate_flags('{}'): this array is already named '{}'; one array carries one name, so "
+                                "that a saved file's name identifies it",
+                                _name, name, *existing_name);
+    }
+    _param_store.add_gate_flags(std::move(name), std::move(buffer));
 }
 
 std::string Graph::gate_flag_name(std::shared_ptr<std::vector<std::uint8_t>> const &buffer) const {
-    for (auto const &[name, candidate] : _named_gate_flags) {
-        if (candidate == buffer) {
-            return name;
-        }
-    }
-    return {};
+    std::string const *name = _param_store.gate_flag_name(buffer);
+    return name != nullptr ? *name : std::string{};
 }
 
 GateFlags Graph::gate_flags(std::string_view name) const {
-    for (auto const &[candidate, buffer] : _named_gate_flags) {
-        if (candidate == name) {
-            return GateFlags::adopt(buffer);
-        }
+    if (auto const *buffer = _param_store.gate_flags_named(name); buffer != nullptr) {
+        return GateFlags::adopt(*buffer);
     }
     std::vector<std::string> known;
-    known.reserve(_named_gate_flags.size());
-    for (auto const &[candidate, buffer] : _named_gate_flags) {
+    known.reserve(_param_store.named_gate_flags().size());
+    for (auto const &[candidate, buffer] : _param_store.named_gate_flags()) {
         known.push_back(candidate);
     }
     EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': no gate-flag array is named '{}'. Known names: [{}]", _name, name,
@@ -471,12 +462,12 @@ void Graph::bind_scalar_impl(std::string const &name, void *storage, packed_gemm
     note(Change::HandleChanged);
     // The interface name is what the contract is written in; pin it exactly as
     // rebind() does, so a second bind_scalar of the same slot still finds it.
-    _interface_names.emplace(entry.id, entry.name);
+    _binding.pin_interface_name_once(entry.id, entry.name);
     // A rank-0 handle has no strided span to reason about, so it is recorded as
     // bound with an empty one: it counts as supplied and cannot participate in
     // the undeclared-aliasing check, which is the same treatment a deferred
     // shell gets.
-    _bound_operands[entry.id] = BoundSpan{};
+    _binding.mark_bound(entry.id, BoundSpan{});
 }
 
 ManifestEntry const &Graph::lookup_manifest_entry(InterfaceManifest const &contract, std::string const &name) const {
@@ -543,7 +534,7 @@ void Graph::note_bound_operand(InterfaceManifest const &contract, ManifestEntry 
     // does, so an identity test calls them unrelated and the hazard edges
     // between the two slots are silently lost - the same failure shape as the
     // full-cover alias bug, arriving through a different door.
-    for (auto const &[other_id, other_span] : _bound_operands) {
+    for (auto const &[other_id, other_span] : _binding.bound_spans()) {
         if (other_id == entry.id || !span.overlaps(other_span)) {
             continue;
         }
@@ -571,8 +562,8 @@ void Graph::note_bound_operand(InterfaceManifest const &contract, ManifestEntry 
 
     // Recorded whether or not it has an address to offer: an operand with no
     // address is still bound, it simply cannot participate in the check above.
-    _bound_operands.insert_or_assign(entry.id, span);
-    _interface_names.insert_or_assign(entry.id, entry.name);
+    _binding.mark_bound(entry.id, span);
+    _binding.pin_interface_name(entry.id, entry.name);
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)

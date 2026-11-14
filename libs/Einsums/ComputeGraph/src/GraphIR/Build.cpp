@@ -54,6 +54,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::graph_ir)
 /// The loader's access to handle state a saved file restores and no pass may set.
 struct LoaderAccess {
     static TensorHandle &tensor(Graph &graph, TensorId id) { return graph.mutable_tensor(id); }
+
+    /// A body is a scope of the graph that holds it, so it reads the root's parameter table.
+    static void share_params(Graph &body, Graph const &root) { body.set_params_ptr(root.params_ptr()); }
 };
 
 namespace {
@@ -168,7 +171,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
 std::shared_ptr<Graph> build_fragment(Graph &root, IrFragment const &fragment, std::vector<LoadedTensor> const &parent,
                                       GateFlagTable const &gates, SpaceRegistry const &registry) {
     auto body = std::make_shared<Graph>(fragment.name);
-    body->set_params_ptr(root.params_ptr());
+    LoaderAccess::share_params(*body, root);
     root.share_run_context(*body);
     build_frame(root, *body, fragment.tensors, fragment.nodes, &parent, gates, registry);
     return body;
@@ -384,7 +387,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
                 conditional->else_branch = build_fragment(root, *spec.else_branch, loaded, gates, registry);
             } else {
                 conditional->else_branch = std::make_shared<Graph>("else");
-                conditional->else_branch->set_params_ptr(root.params_ptr());
+                LoaderAccess::share_params(*conditional->else_branch, root);
                 root.share_run_context(*conditional->else_branch);
             }
         }

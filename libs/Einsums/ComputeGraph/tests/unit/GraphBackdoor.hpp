@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <string>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
@@ -24,6 +25,12 @@ struct GraphBackdoor {
 
     /// A registered handle to write, for a test that builds a state the graph's methods refuse.
     static TensorHandle &tensor(Graph &graph, TensorId id) { return graph.mutable_tensor(id); }
+
+    /// Place a graph in a pipeline without building one, for a test of what a graph carries.
+    static void set_stage(Graph &graph, std::string const &pipeline, std::string const &workspace, std::string const &stage,
+                          std::string const &type, int index) {
+        graph.set_stage(pipeline, workspace, stage, type, index);
+    }
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

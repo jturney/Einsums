@@ -1428,11 +1428,7 @@ TEST_CASE("Graph - a move carries every member", "[ComputeGraph][Move]") {
 
     cg::Graph original("moved_graph");
     original.set_space_registry(registry);
-    original.set_pipeline_name("pipe");
-    original.set_workspace_name("ws");
-    original.set_stage_name("stage");
-    original.set_stage_type("scf");
-    original.set_stage_index(3);
+    cg::detail::GraphBackdoor::set_stage(original, "pipe", "ws", "stage", "scf", 3);
     original.set_setup_key("a-setup-key");
     original.note_structural_pass("DeltaElimination");
     original.note_structural_pass("MultiTermFactorization");
@@ -1441,9 +1437,7 @@ TEST_CASE("Graph - a move carries every member", "[ComputeGraph][Move]") {
         cg::make_approximation_record("MetricFitFactorization", cg::ApproximationEffect::NormRelative, 1e-5, 1e-6, {"C"}, {"occ"}, "fit"));
     original.name_gate_flags("live", std::make_shared<std::vector<std::uint8_t>>(std::vector<std::uint8_t>{1, 0, 1}));
 
-    auto params = std::make_shared<cg::ParamTable>();
-    params->set("iteration", 7);
-    original.set_params_ptr(params);
+    original.params_ptr()->set("iteration", 7);
 
     {
         cg::CaptureGuard const guard(original);

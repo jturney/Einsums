@@ -363,28 +363,19 @@ TensorHandle const &Graph::tensor(TensorId id) const {
 }
 
 SpaceRegistry &Graph::space_registry() const noexcept {
-    return _space_registry != nullptr ? *_space_registry : global_space_registry();
+    return _spaces.registry();
 }
 
 void Graph::set_space_registry(SpaceRegistry &registry) noexcept {
-    _space_registry = &registry;
+    _spaces.set_registry(registry);
 }
 
 void Graph::note_structural_pass(std::string pass_name) {
-    // Once per pass, however many times it ran. The list says what shaped this graph; a count
-    // of applies would say something about the caller's pipeline instead, and the two get
-    // confused the moment anyone applies a manager twice.
-    if (std::ranges::find(_structural_passes, pass_name) != _structural_passes.end()) {
-        return;
-    }
-    _structural_passes.push_back(std::move(pass_name));
+    _optimization.note_structural_pass(std::move(pass_name));
 }
 
 void Graph::note_machine_dependent_pass(std::string pass_name) {
-    if (std::ranges::find(_machine_dependent_passes, pass_name) != _machine_dependent_passes.end()) {
-        return;
-    }
-    _machine_dependent_passes.push_back(std::move(pass_name));
+    _optimization.note_machine_dependent_pass(std::move(pass_name));
 }
 
 void Graph::annotate_tag(TensorId id, ProvenanceTag tag) {
@@ -710,7 +701,7 @@ void Graph::clear_timing_report() {
 }
 
 std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> const &Graph::named_gate_flags() const noexcept {
-    return _named_gate_flags;
+    return _param_store.named_gate_flags();
 }
 
 TensorId Graph::resolve_alias(TensorId id) const {
@@ -760,15 +751,16 @@ void Graph::assign_node_ids() {
 }
 
 double Graph::accuracy_budget_value() const noexcept {
-    return _accuracy_budget.has_value() ? _accuracy_budget->second : -1.0;
+    auto const &budget = _optimization.budget();
+    return budget.has_value() ? budget->second : -1.0;
 }
 
 unsigned Graph::planned_thread_count() const {
-    return _planned_thread_count;
+    return _thread_plan.planned_threads();
 }
 
 bool Graph::thread_replan_armed() const {
-    return _plan_trial != ThreadPlanTrial::None;
+    return _thread_plan.trial_open();
 }
 
 void Graph::set_thread_width(NodeId id, unsigned width) {
@@ -783,9 +775,7 @@ void Graph::set_thread_width(NodeId id, unsigned width) {
     it->thread_width = static_cast<std::uint16_t>(width);
     // A width set by hand is a decision, and a trial still open would re-plan over it or put
     // the cold widths back at the next replay.
-    _plan_trial = ThreadPlanTrial::None;
-    _plan_incumbent.clear();
-    _plan_candidate.clear();
+    _thread_plan.settle();
 }
 
 void Graph::free_tensor(TensorId id, std::string name, size_t size_bytes) {
@@ -860,7 +850,7 @@ void Graph::bind_commit() {
     // The slots are taken off the graph BEFORE the transaction runs, which is what
     // clears the pending list whatever happens: a refused transaction must not leak
     // into the next one.
-    run_bind(std::exchange(_pending_binds, {}));
+    run_bind(_binding.take_pending());
 }
 
 void Graph::rederive_intermediate_extents() {
@@ -873,15 +863,14 @@ void Graph::resize_intermediate(TensorId id, std::vector<std::size_t> const &dim
 }
 
 void Graph::clear_bindings() noexcept {
-    _bound_operands.clear();
-    _ragged_extents.clear();
+    _binding.clear();
 }
 
-bool detail::GraphState::BoundSpan::overlaps(BoundSpan const &other) const noexcept {
+bool detail::BindingSession::BoundSpan::overlaps(BoundSpan const &other) const noexcept {
     return lo != nullptr && other.lo != nullptr && lo < other.hi && other.lo < hi;
 }
 
-std::size_t detail::GraphState::BoundSpan::overlap_bytes(BoundSpan const &other) const noexcept {
+std::size_t detail::BindingSession::BoundSpan::overlap_bytes(BoundSpan const &other) const noexcept {
     if (!overlaps(other)) {
         return 0;
     }

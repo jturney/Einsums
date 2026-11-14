@@ -38,6 +38,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/DescriptorConformance.hpp
     Einsums/ComputeGraph/DescriptorHooks.hpp
     Einsums/ComputeGraph/DescriptorRegistry.hpp
+    Einsums/ComputeGraph/Detail/BindingSession.hpp
     Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp
     Einsums/ComputeGraph/Detail/DenseElementTransform.hpp
     Einsums/ComputeGraph/Detail/DeviceCoherence.hpp
@@ -47,9 +48,13 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Detail/RunContext.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/Detail/MaintainedViews.hpp
+    Einsums/ComputeGraph/Detail/OptimizationRecord.hpp
+    Einsums/ComputeGraph/Detail/ParamStore.hpp
     Einsums/ComputeGraph/Detail/StandIns.hpp
+    Einsums/ComputeGraph/Detail/ThreadPlan.hpp
     Einsums/ComputeGraph/Detail/MixedPrecision.hpp
     Einsums/ComputeGraph/Detail/ScalarTypes.hpp
+    Einsums/ComputeGraph/Detail/SpaceTable.hpp
     Einsums/ComputeGraph/Detail/WidthGuard.hpp
     Einsums/ComputeGraph/CostModel.hpp
     Einsums/ComputeGraph/Moldability.hpp
@@ -162,6 +167,11 @@ set(ComputeGraphSources
     Graph/AliasGeometry.cpp
     Graph/Alias.cpp
     Graph/Schedule.cpp
+    Graph/ThreadPlan.cpp
+    Graph/OptimizationRecord.cpp
+    Graph/SpaceTable.cpp
+    Graph/BindingSession.cpp
+    Graph/ParamStore.cpp
     Graph/ControlFlow.cpp
     Graph/Operations.cpp
     Graph/Edit.cpp

@@ -28,10 +28,21 @@ void Pipeline::attach_scope_maps(Graph &stage) const {
     stage.add_scope_map(_scopes);
 }
 
+/// What of Graph a pipeline reaches past its public surface: giving a stage the pipeline's
+/// parameter table, and telling it where in the pipeline it sits.
+struct detail::PipelineAccess {
+    static void share_params(Graph &graph, std::shared_ptr<ParamTable> const &params) { graph.set_params_ptr(params); }
+
+    static void set_stage(Graph &graph, std::string const &pipeline, std::string const &workspace, std::string const &stage,
+                          std::string const &type, int index) {
+        graph.set_stage(pipeline, workspace, stage, type, index);
+    }
+};
+
 Graph &Pipeline::add_stage(std::string const &name) {
     _stages.push_back(Stage{.name = name, .content = Graph{name}});
     auto &g = std::get<Graph>(_stages.back().content);
-    g.set_params_ptr(_params);
+    detail::PipelineAccess::share_params(g, _params);
     attach_scope_maps(g);
     return g;
 }
@@ -43,7 +54,7 @@ Graph &Pipeline::add_loop(std::string name, size_t max_iterations, LoopCondition
     loop.condition      = std::move(condition);
     _stages.push_back(Stage{.name = std::move(name), .content = std::move(loop)});
     auto &g = std::get<LoopNode>(_stages.back().content).body;
-    g.set_params_ptr(_params);
+    detail::PipelineAccess::share_params(g, _params);
     attach_scope_maps(g);
     return g;
 }
@@ -69,11 +80,7 @@ void Pipeline::propagate_stage_metadata() {
 
     int si = 0;
     for_each_stage([&](Stage &stage, Graph &g, LoopNode *loop) {
-        g.set_pipeline_name(_name);
-        g.set_workspace_name(ws_name);
-        g.set_stage_name(stage.name);
-        g.set_stage_type(loop != nullptr ? "loop" : "graph");
-        g.set_stage_index(si++);
+        detail::PipelineAccess::set_stage(g, _name, ws_name, stage.name, loop != nullptr ? "loop" : "graph", si++);
     });
 }
 

@@ -64,8 +64,8 @@ std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, PredExpr 
     auto else_graph = std::make_shared<Graph>(label + "/else");
     // Branches are scopes of this graph: a parameter written before the conditional is the one
     // they resolve against.
-    then_graph->set_params_ptr(_params);
-    else_graph->set_params_ptr(_params);
+    then_graph->set_params_ptr(_param_store.table());
+    else_graph->set_params_ptr(_param_store.table());
     // And one run context, so a branch's replay counts into this graph's (last_run).
     share_run_context(*then_graph);
     share_run_context(*else_graph);
@@ -100,9 +100,9 @@ std::tuple<Graph &, Graph &> Graph::add_conditional_flag(std::string label, Gate
 
 // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
 void Graph::set_params_ptr(std::shared_ptr<ParamTable> params) {
-    _params = std::move(params);
+    _param_store.set_table(std::move(params));
     for (auto &node : _nodes) {
-        for_each_child_graph(node, [this](Graph &child) { child.set_params_ptr(_params); });
+        for_each_child_graph(node, [this](Graph &child) { child.set_params_ptr(_param_store.table()); });
     }
 }
 
@@ -121,7 +121,7 @@ Graph &Graph::add_loop_at(std::string label, size_t max_iterations, PredExpr con
     // One table with the parent, as for a setup body below. The loop's condition is evaluated
     // against this graph's table, so a body holding its own would write parameters the condition
     // never sees, and could not read one written before the loop.
-    body_graph->set_params_ptr(_params);
+    body_graph->set_params_ptr(_param_store.table());
     share_run_context(*body_graph);
 
     LoopDescriptor desc;
@@ -171,7 +171,7 @@ Graph &Graph::add_setup_at(std::string label, std::size_t position) {
     // be read by the caller or by a later node here, and a body holding its own table would
     // write it somewhere nobody looks. That is how the fitting diagnostic went missing the
     // first time it was asked for.
-    body_graph->set_params_ptr(_params);
+    body_graph->set_params_ptr(_param_store.table());
     share_run_context(*body_graph);
 
     SetupDescriptor desc;
@@ -181,7 +181,7 @@ Graph &Graph::add_setup_at(std::string label, std::size_t position) {
     desc.state = std::make_shared<SetupState>();
     // A setup node added after a key was declared still belongs to the problem the caller
     // named; the key is graph state and the node is where it has to be readable from.
-    desc.state->pending_key = _setup_key;
+    desc.state->pending_key = _binding.setup_key();
 
     OpData op_data(std::move(desc));
     auto   executor = build_executor(OpKind::Setup, packed_gemm::ScalarType::Unknown, 0, op_data, *this, {}, {});
@@ -249,124 +249,31 @@ void Graph::invalidate_setup() {
 
 // ── The accuracy contract ───────────────────────────────────────────────────
 
-namespace {
-
-/// Whether @p record's bound applies to @p output.
-///
-/// A record naming no outputs applies to all of them, which is the honest answer for a pass
-/// that rewrote something feeding every result; and an EMPTY question means "the graph-wide
-/// worst case", which every record answers.
-bool record_covers(ApproximationRecord const &record, std::string_view output) {
-    if (output.empty() || record.outputs.empty()) {
-        return true;
-    }
-    return std::find(record.outputs.begin(), record.outputs.end(), output) != record.outputs.end();
-}
-
-/// The outputs @p candidate could collide with an existing record over.
-bool records_overlap(ApproximationRecord const &a, ApproximationRecord const &b) {
-    if (a.outputs.empty() || b.outputs.empty()) {
-        return true;
-    }
-    return std::any_of(a.outputs.begin(), a.outputs.end(),
-                       [&b](std::string const &name) { return std::find(b.outputs.begin(), b.outputs.end(), name) != b.outputs.end(); });
-}
-
-} // namespace
-
 std::string Graph::can_approximate(ApproximationRecord const &candidate) const {
-    if (!std::isfinite(candidate.bound) || candidate.bound < 0) {
-        return fmt::format("pass '{}' states a bound of {}, which is not a number an accuracy budget can be measured against; a lossy "
-                           "rewrite has to say how large its effect is",
-                           candidate.pass_name, candidate.bound);
-    }
-
-    // Records of DIFFERENT effects are allowed to coexist, and deliberately. They do not
-    // convert into one another, but neither do they need to: composition is per effect
-    // (@ref accuracy_spent counts one kind at a time) and @ref approximation_tolerance
-    // carries the two sides separately, which is the honest representation of "this result
-    // is off by so much in norm and so much per element". Refusing the second one would
-    // make an ordinary pipeline, a factorization followed by a precision change,
-    // unexpressible for no gain.
-    //
-    // Whether a pass's own error model still holds once something else has perturbed its
-    // inputs is a question only that pass can answer, so it is asked of the pass rather
-    // than decided here: @ref approximations is readable, and a pass that finds its bound
-    // no longer defensible declines through @ref OptimizerPass::approximate like any other
-    // refusal.
-    if (!_accuracy_budget.has_value()) {
-        return {};
-    }
-    auto const [budget_effect, budget] = *_accuracy_budget;
-    if (budget_effect != candidate.effect) {
-        return fmt::format("pass '{}' bounds itself {}, and this graph's accuracy budget is stated {}; a budget in other units is not a "
-                           "budget this pass can spend against",
-                           candidate.pass_name, candidate.effect, budget_effect);
-    }
-
-    // A budget IS the one place mixed effects have to be refused, and only because of what a
-    // budget claims to be. It caps one kind of error; a record of another kind over the same
-    // output is not counted by it and cannot be, so letting this through would leave a
-    // caller with a cap they reasonably read as covering everything and that covers part.
-    // Saying so is better than capping half of it in silence.
-    for (auto const &existing : _approximations) {
-        if (existing.effect == budget_effect || !records_overlap(existing, candidate)) {
-            continue;
-        }
-        return fmt::format("pass '{}' would be spent against a {} budget, but '{}' has already been applied to the same outputs with a "
-                           "{} bound, which that budget does not cap and cannot; clear the budget or state it in the other units",
-                           candidate.pass_name, budget_effect, existing.pass_name, existing.effect);
-    }
-
-    // Checked per named output rather than graph-wide, so two passes over DISJOINT outputs
-    // each get the whole budget, which is what a budget on one output means.
-    std::vector<std::string> const targets = candidate.outputs.empty() ? std::vector<std::string>{std::string{}} : candidate.outputs;
-    for (auto const &target : targets) {
-        double const composed = compose_approximation(candidate.effect, accuracy_spent(candidate.effect, target), candidate.bound);
-        if (composed > budget) {
-            return fmt::format("pass '{}' would take {} to {:g} on {}, over this graph's budget of {:g}", candidate.pass_name,
-                               candidate.effect, composed, target.empty() ? std::string{"every output"} : fmt::format("'{}'", target),
-                               budget);
-        }
-    }
-    return {};
+    return _optimization.refusal(candidate);
 }
 
 void Graph::note_approximation(ApproximationRecord record) {
-    if (std::string reason = can_approximate(record); !reason.empty()) {
+    if (std::string reason = _optimization.refusal(record); !reason.empty()) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': {}", _name, reason);
     }
-    _approximations.push_back(std::move(record));
+    _optimization.add_approximation(std::move(record));
     // A record is saved structure, so adding one changes what a save writes and what a
     // content hash covers.
     note(Change::NodeSetChanged);
 }
 
 void Graph::restore_approximations(std::vector<ApproximationRecord> records) {
-    _approximations = std::move(records);
+    _optimization.restore_approximations(std::move(records));
     note(Change::NodeSetChanged);
 }
 
 double Graph::accuracy_spent(ApproximationEffect effect, std::string const &output) const {
-    double spent = 0;
-    for (auto const &record : _approximations) {
-        if (record.effect == effect && record_covers(record, output)) {
-            spent = compose_approximation(effect, spent, record.bound);
-        }
-    }
-    return spent;
+    return _optimization.accuracy_spent(effect, output);
 }
 
 ApproximationTolerance Graph::approximation_tolerance(std::string const &output) const {
-    ApproximationTolerance out;
-    for (auto const &record : _approximations) {
-        if (!record_covers(record, output)) {
-            continue;
-        }
-        double &side = is_absolute_effect(record.effect) ? out.absolute : out.relative;
-        side         = compose_approximation(record.effect, side, record.bound);
-    }
-    return out;
+    return _optimization.approximation_tolerance(output);
 }
 
 void Graph::set_accuracy_budget(ApproximationEffect effect, double value) {
@@ -374,21 +281,21 @@ void Graph::set_accuracy_budget(ApproximationEffect effect, double value) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "Graph '{}': an accuracy budget of {} is not a bound anything can be checked against", _name, value);
     }
-    _accuracy_budget = std::pair{effect, value};
+    _optimization.set_budget(effect, value);
 }
 
 void Graph::clear_accuracy_budget() {
-    _accuracy_budget.reset();
+    _optimization.clear_budget();
 }
 
 void Graph::set_setup_key(std::string key) {
-    _setup_key = std::move(key);
+    _binding.set_setup_key(std::move(key));
     for (auto &node : _nodes) {
         auto *desc = node.op_data.get_if<SetupDescriptor>();
         if (desc == nullptr || desc->state == nullptr) {
             continue;
         }
-        desc->state->pending_key = _setup_key;
+        desc->state->pending_key = _binding.setup_key();
     }
 }
 

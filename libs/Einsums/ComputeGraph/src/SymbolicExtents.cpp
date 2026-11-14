@@ -131,13 +131,12 @@ void Graph::record_symbol_space_ties(TensorHandle const &handle) {
         if (symbol.empty() || is_ragged_symbol(symbol) || !space.valid()) {
             continue;
         }
-        auto const [it, inserted] = _symbol_spaces.emplace(symbol, space);
-        if (!inserted && it->second != space) {
+        if (auto const other = _spaces.tie_symbol(symbol, space); other.has_value()) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                     "Graph '{}': dim symbol '{}' is tied to index space '{}' on tensor '{}' axis {}, and to '{}' "
                                     "elsewhere in this graph; one symbol names one extent, so it cannot range over two sets",
                                     _name, symbol, space_registry().space(space).name, handle.name, axis,
-                                    space_registry().space(it->second).name);
+                                    space_registry().space(*other).name);
         }
     }
 }
@@ -154,14 +153,7 @@ void Graph::learn_space_extents(TensorHandle const &handle) {
         if (!space.valid()) {
             continue;
         }
-        auto const [it, inserted] = _space_extents.try_emplace(space, handle.dims[axis], true);
-        if (!inserted && it->second.first != handle.dims[axis]) {
-            // Not an error. Two axes over one space with different extents is exactly what a
-            // ragged family is, and the design says so: PNO domains have a different virtual
-            // extent per pair. What it costs is the ability to SIZE an axis from the space,
-            // so the space stops being usable that way and says so if anyone asks.
-            it->second.second = false;
-        }
+        _spaces.learn_extent(space, handle.dims[axis]);
     }
 }
 
@@ -169,33 +161,21 @@ std::optional<std::size_t> Graph::space_extent(SpaceId space) const noexcept {
     if (!space.valid()) {
         return std::nullopt;
     }
-    auto const it = _space_extents.find(space);
-    if (it == _space_extents.end() || !it->second.second) {
-        return std::nullopt;
-    }
-    return it->second.first;
+    return _spaces.extent(space);
 }
 
 void Graph::pin_space_extent(SpaceId space, std::size_t extent) {
     if (!space.valid()) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': pin_space_extent: the id does not name a space", _name);
     }
-    if (extent == 0) {
-        _space_extents.erase(space);
-        return;
-    }
-    _space_extents[space] = {extent, true};
+    _spaces.pin_extent(space, extent);
 }
 
 std::optional<std::vector<int>> Graph::space_tiling(SpaceId space) const {
     if (!space.valid()) {
         return std::nullopt;
     }
-    auto const it = _space_tiles.find(space);
-    if (it == _space_tiles.end() || !it->second.second) {
-        return std::nullopt;
-    }
-    return it->second.first;
+    return _spaces.tiling(space);
 }
 
 void Graph::pin_space_tiling(SpaceId space, std::vector<int> tile_sizes) {
@@ -203,7 +183,7 @@ void Graph::pin_space_tiling(SpaceId space, std::vector<int> tile_sizes) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': pin_space_tiling: the id does not name a space", _name);
     }
     if (tile_sizes.empty()) {
-        _space_tiles.erase(space);
+        _spaces.clear_tiling(space);
         return;
     }
 
@@ -228,13 +208,7 @@ void Graph::pin_space_tiling(SpaceId space, std::vector<int> tile_sizes) {
                                 _name, name, total, *known);
     }
 
-    auto const [it, inserted] = _space_tiles.try_emplace(space, tile_sizes, true);
-    if (!inserted && it->second.first != tile_sizes) {
-        // Mirrors the extent rule: a second, different statement is not an error but it does
-        // leave the space without a canonical answer, so an axis has to bring its own.
-        it->second.second = false;
-    }
-    _space_extents[space] = {total, true};
+    _spaces.pin_tiling(space, tile_sizes, total);
 }
 
 Graph::ResolvedTiledShape Graph::resolve_tiled_shape(std::vector<SpaceTiling> const &shape, std::string const &name) const {
@@ -267,8 +241,7 @@ Graph::ResolvedTiledShape Graph::resolve_tiled_shape(std::vector<SpaceTiling> co
         if (axis_tiles.empty()) {
             auto const canonical = space_tiling(entry.space);
             if (!canonical.has_value()) {
-                auto const it = _space_tiles.find(entry.space);
-                if (it != _space_tiles.end() && !it->second.second) {
+                if (_spaces.tiling_conflicted(entry.space)) {
                     EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                             "Graph '{}': tensor '{}' axis {} takes its tiling from index space '{}', which has been "
                                             "given two different ones; give this axis the partition it wants",
@@ -338,8 +311,7 @@ Graph::ResolvedSpaceShape Graph::resolve_space_shape(std::vector<SpaceDim> const
         if (!extent.has_value()) {
             SpaceRegistry const &registry = space_registry();
             std::string const    space    = registry.space(dim.space).name;
-            auto const           it       = _space_extents.find(dim.space);
-            if (it != _space_extents.end() && !it->second.second) {
+            if (_spaces.extent_ragged(dim.space)) {
                 EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                         "Graph '{}': tensor '{}' axis {} is shaped by index space '{}', whose extent differs between "
                                         "the tensors already annotated with it; that is a ragged family and has no single size to "
@@ -762,7 +734,7 @@ void Graph::bind_ragged_extents(std::string const &name, std::size_t axis, std::
     // The table's length is the instance COUNT, which belongs to the space (how many pairs
     // there are) rather than to one operand. Two tables over one space disagreeing about it
     // describes nothing, so it is the arity this validates.
-    for (auto const &held : _ragged_extents) {
+    for (auto const &held : _binding.ragged_tables()) {
         if (held.space == space && held.extents.size() != extents.size()) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                     "Graph '{}': bind_ragged_extents('{}', {}) supplies {} instances of index space '{}', but the "
@@ -771,23 +743,12 @@ void Graph::bind_ragged_extents(std::string const &name, std::size_t axis, std::
         }
     }
 
-    auto const existing =
-        std::ranges::find_if(_ragged_extents, [&](RaggedExtentTable const &held) { return held.id == entry.id && held.axis == axis; });
-    if (existing != _ragged_extents.end()) {
-        existing->name    = entry.name;
-        existing->space   = space;
-        existing->extents = std::move(extents);
-        return;
-    }
-
-    _ragged_extents.push_back(
+    _binding.hold_ragged(
         RaggedExtentTable{.id = entry.id, .name = entry.name, .axis = axis, .space = space, .extents = std::move(extents)});
 }
 
 RaggedExtentTable const *Graph::find_ragged_extents(std::string_view name, std::size_t axis) const noexcept {
-    auto const it =
-        std::ranges::find_if(_ragged_extents, [&](RaggedExtentTable const &held) { return held.name == name && held.axis == axis; });
-    return it == _ragged_extents.end() ? nullptr : &*it;
+    return _binding.find_ragged(name, axis);
 }
 
 // ── Rebind staleness ───────────────────────────────────────────────────────

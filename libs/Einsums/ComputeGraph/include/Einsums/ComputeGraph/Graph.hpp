@@ -11,10 +11,15 @@
 #include <Einsums/ComputeGraph/Approximation.hpp>
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
 #include <Einsums/ComputeGraph/Decision.hpp>
+#include <Einsums/ComputeGraph/Detail/BindingSession.hpp>
 #include <Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp>
 #include <Einsums/ComputeGraph/Detail/MaintainedViews.hpp>
+#include <Einsums/ComputeGraph/Detail/OptimizationRecord.hpp>
+#include <Einsums/ComputeGraph/Detail/ParamStore.hpp>
 #include <Einsums/ComputeGraph/Detail/RunContext.hpp>
+#include <Einsums/ComputeGraph/Detail/SpaceTable.hpp>
 #include <Einsums/ComputeGraph/Detail/StandIns.hpp>
+#include <Einsums/ComputeGraph/Detail/ThreadPlan.hpp>
 #include <Einsums/ComputeGraph/DeviceShadowMap.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
@@ -160,6 +165,9 @@ class NodeRunner;
 namespace graph_ir {
 struct LoaderAccess;
 } // namespace graph_ir
+namespace detail {
+struct PipelineAccess;
+} // namespace detail
 class OptimizerPass;
 enum class OptLevel : std::uint8_t; // Optimizer.hpp
 
@@ -366,59 +374,14 @@ struct GraphState {
     GraphState &operator=(GraphState const &)     = delete;
     ~GraphState()                                 = default;
 
-    /// Half-open byte span of a bound operand's storage; a null @ref lo means the
-    /// operand offered none.
-    ///
-    /// A span rather than a base address, because two DISJOINT slices of one buffer
-    /// have distinct base addresses and must still bind without complaint, while two
-    /// OVERLAPPING ones share no address at all when neither starts where the other
-    /// does. Comparing base pointers answers the second case wrong, and answering it
-    /// wrong is how a bind loses the hazard edges between two slots.
-    struct BoundSpan {
-        char const *lo{nullptr}; ///< First byte, or null when there is no span.
-        char const *hi{nullptr}; ///< One past the last byte.
+    using BoundSpan   = BindingSession::BoundSpan;
+    using DimSolution = BindingSession::DimSolution;
+    using PendingBind = BindingSession::PendingBind;
 
-        /// Whether the two spans share a byte. False whenever either is absent:
-        /// an operand with no address cannot be shown to alias anything.
-        [[nodiscard]] bool overlaps(BoundSpan const &other) const noexcept;
-
-        /// Number of bytes the two spans share, for the diagnostic.
-        [[nodiscard]] std::size_t overlap_bytes(BoundSpan const &other) const noexcept;
-    };
-
-    /**
-     * @brief What one @ref bind call's first walk worked out about the symbols.
-     *
-     * Values only, no storage identities: the second walk repoints, this one decides
-     * whether it may.
-     */
-    struct DimSolution {
-        /// Symbol name to the extent this bind solved it at.
-        std::unordered_map<std::string, std::size_t> values;
-        /// Symbol name to the manifest slot that first supplied its extent, so a
-        /// disagreement can name both sides rather than only the loser.
-        std::unordered_map<std::string, std::string> witness;
-        /// True when at least one bound entry declares a symbolic or ragged axis.
-        bool any_symbolic{false};
-        /// True when some bound extent differs from the one the graph holds. Everything
-        /// expensive below this is gated on it, so the ordinary same-shape bind - a replay
-        /// loop's - pays for one comparison per axis and nothing else.
-        bool extents_changed{false};
-    };
-
-    /// One slot handed to @ref bind_add, held until @ref bind_commit runs the transaction.
-    /// The two steps are stored type-erased because the pairs are heterogeneous and the
-    /// commit has to walk them twice, once to solve and once to repoint.
-    ///
-    /// The steps take the graph as an argument rather than capturing it, so a pending bind
-    /// stays valid when the graph it was added to is moved before the commit.
-    struct PendingBind {
-        std::string                                                                  name;
-        std::function<void(Graph &, InterfaceManifest const &, DimSolution &)>       collect;
-        std::function<void(Graph &, InterfaceManifest const &, DimSolution const &)> apply;
-    };
-
-    std::vector<PendingBind> _pending_binds;
+    /// What binds have recorded about the caller's problem: the slots bound, their interface
+    /// names, the ragged extent tables, the setup key, and a bind still being assembled.
+    /// @see bind, bind_begin, set_setup_key, bind_ragged_extents
+    BindingSession _binding;
 
     std::string                                _name;
     std::string                                _pipeline_name;   ///< Parent pipeline name (empty if standalone)
@@ -434,14 +397,6 @@ struct GraphState {
     /// @see add_scope_map
     std::vector<TensorScopeMapPtr> _scope_maps;
 
-    /// Manifest slots @ref bind has supplied storage for, and the byte span each was
-    /// given. Keyed by TensorId, not by name: @ref rebind renames the handle after
-    /// the tensor it now points at, so a name is not stable across the very
-    /// operation this records. The span is empty when the operand offered no address
-    /// (a deferred shell, a tile-wise sparse tensor), which still counts as bound and
-    /// simply cannot participate in the aliasing check.
-    std::unordered_map<TensorId, BoundSpan> _bound_operands;
-
     /// Manifest-declared alias relations: child entry id -> the entry whose storage it
     /// is part of.
     ///
@@ -452,53 +407,15 @@ struct GraphState {
     /// @see declare_alias
     std::unordered_map<TensorId, TensorId> _declared_aliases;
 
-    /// Interface names pinned by @ref bind, by TensorId.
-    ///
-    /// A manifest name is the contract, and a contract that renamed itself every
-    /// time a caller bound different storage to it would be unusable: the second
-    /// ``bind("t2", ...)`` of a replay loop would report "no such interface tensor"
-    /// because the first one renamed the slot after the tensor it was handed.
-    /// @ref rebind's rename is right for the handle (which names a tensor) and wrong
-    /// for the interface (which names a slot), so the interface keeps its own record.
-    std::unordered_map<TensorId, std::string> _interface_names;
+    /// Which symbol each index space ties to, what each measures, how each is tiled, and the
+    /// registry their ids came from. @see symbol_spaces, space_extent, space_tiling, space_registry
+    SpaceTable _spaces;
 
-    /// Ties established by @ref annotate_dims and @ref annotate_spaces between a dim
-    /// symbol and the index space its axes range over.
-    ///
-    /// Graph-level rather than per-handle, because the property worth enforcing is a
-    /// GLOBAL one: one symbol standing for two different spaces in two places is a
-    /// contradiction no single handle can see.
-    /// @see symbol_spaces
-    std::unordered_map<std::string, SpaceId> _symbol_spaces;
+    /// The parameter table this graph shares with its pipeline and bodies, and the gate-flag
+    /// arrays it can name. @see params_ptr, name_gate_flags
+    ParamStore _param_store;
 
-    /// What each space measures on the problem currently annotated, learned from
-    /// @ref annotate_spaces. The bool is "still uniform": two annotated axes over one space
-    /// that disagree set it false and the extent stops being usable, which is a ragged family
-    /// rather than a mistake.
-    std::unordered_map<SpaceId, std::pair<std::size_t, bool>> _space_extents;
-
-    /// The canonical partition of each space, from @ref pin_space_tiling. The bool mirrors
-    /// @ref _space_extents: two disagreeing statements leave the space with no usable tiling.
-    std::unordered_map<SpaceId, std::pair<std::vector<int>, bool>> _space_tiles;
-
-    /// Per-instance extent tables @ref bind_ragged_extents has accepted, in supply order.
-    /// Cleared by @ref clear_bindings with the rest of the bind state.
-    std::vector<RaggedExtentTable> _ragged_extents;
-
-    /// Gate-flag arrays this graph can name, sorted by name.
-    ///
-    /// A vector rather than a map because the order is part of what a saved file
-    /// records and a hash is taken over: a map's iteration order is not a
-    /// property of the graph.
-    /// @see name_gate_flags
-    std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> _named_gate_flags;
-
-    /// Registry the @ref SpaceId values on this graph's handles were issued by. Null means the
-    /// process-global one, which is what @ref space_registry substitutes; a non-owning pointer
-    /// because a registry is a long-lived object the caller owns, and because Graph stays
-    /// movable.
-    SpaceRegistry *_space_registry{nullptr};
-    NodeId         _next_node_id{0};
+    NodeId _next_node_id{0};
     // Starts at 1: id 0 is reserved as the "no tensor" / "no alias" sentinel
     // (TensorHandle::aliases defaults to 0 and the codebase tests `aliases == 0`
     // for "not a view"). If a real tensor could be id 0, a view of it would have
@@ -569,27 +486,9 @@ struct GraphState {
     bool                            _profile_strings_valid{false};
     uint32_t                        _exec_zone_id{0};
 
-    /// Threads the node widths were planned for; 0 = never recorded.
-    /// @see planned_thread_count
-    std::uint16_t _planned_thread_count{0};
-
-    /// Where a cold thread plan is in its measured trial. @see plan_threads
-    enum class ThreadPlanTrial : std::uint8_t {
-        None,      ///< No decision pending: the widths on the nodes are final.
-        Armed,     ///< Cold model plan is live; the next replay records the timings the re-plan reads.
-        Measured,  ///< A replay has recorded timings; the re-plan runs when the next replay starts.
-        Candidate, ///< The re-planned widths are live and this replay is timing them.
-        Incumbent, ///< The cold widths are back and this replay is timing them.
-    };
-
-    /// Every planned width and admission priority in the graph tree, in walk
-    /// order: this graph's nodes, then each container body's, recursively.
-    using ThreadPlanSnapshot = std::vector<std::pair<std::uint16_t, std::int64_t>>;
-
-    ThreadPlanTrial    _plan_trial{ThreadPlanTrial::None};
-    ThreadPlanSnapshot _plan_incumbent;         ///< The cold model plan, held during the trial.
-    ThreadPlanSnapshot _plan_candidate;         ///< The timings re-plan, held during the trial.
-    double             _plan_candidate_ms{0.0}; ///< Wall clock of the candidate's replay.
+    /// The thread count the node widths assume, and the trial a cold plan is in.
+    /// @see planned_thread_count, plan_threads
+    ThreadPlan _thread_plan;
 
     /// Mutation counter for cached analyses. Bumped at every
     /// mutation-declaration point; UsageAnalysis caches against it.
@@ -597,10 +496,6 @@ struct GraphState {
     /// Node-set counter for the pass phase rule. @see structure_version
     std::uint64_t _structure_version{0};
 
-    /// Structural-algebraic passes that rewrote this graph, in the order they did. @see note_structural_pass
-    std::vector<std::string> _structural_passes;
-    /// Structural-resource and tuning passes that changed this graph. @see note_machine_dependent_pass
-    std::vector<std::string> _machine_dependent_passes;
     /// Version _usage was built at (UINT64_MAX = never built).
     std::uint64_t _usage_version{std::numeric_limits<std::uint64_t>::max()};
     UsageAnalysis _usage;
@@ -642,11 +537,6 @@ struct GraphState {
     /// What executors baked by passes hold to reach this graph; see @ref GraphAnchor. Created on
     /// first request, carried by a move, and re-pointed by @ref Graph's move operations.
     std::shared_ptr<GraphAnchor> _anchor;
-
-    /// Runtime parameter table. ``View`` executors and the @c WriteParam
-    /// node read/write through this. Pipeline plumbs its own table down
-    /// at stage construction; standalone graphs get a default empty table.
-    std::shared_ptr<ParamTable> _params{std::make_shared<ParamTable>()};
 
     /// Tensor slots for rebindable tensor references (TensorId → TensorSlot).
     std::unordered_map<TensorId, std::unique_ptr<TensorSlot>> _slot_map;
@@ -699,12 +589,6 @@ struct GraphState {
     std::vector<BackedTensor> _tree_backings;
     std::uint64_t             _tree_backings_stamp{0};
     bool                      _tree_backings_valid{false};
-
-    /// Summary of the last optimize() run (see explain()).
-    std::string _last_optimize_report;
-
-    /// The decisions behind _last_optimize_report.
-    std::vector<Decision> _last_decisions;
 
     /// Durable slot redirects recorded by redirect_slot(): key resolves to
     /// value's buffer. Chains are collapsed at insert, so values are always
@@ -764,18 +648,9 @@ struct GraphState {
     /// the built-in sequential path. Loop bodies replay through this.
     std::shared_ptr<Executor> _executor;
 
-    /// The problem identity a caller declared, or empty when none was.
-    /// @see set_setup_key
-    std::string _setup_key;
-
-    /// Every lossy rewrite applied to this graph, in order. Saved with the structure.
-    /// @see note_approximation
-    std::vector<ApproximationRecord> _approximations;
-
-    /// The cap lossy passes compose against, or unset for no cap. NOT saved: a budget is
-    /// what a caller was willing to spend, which is a property of the run rather than of
-    /// the graph, and a loaded graph's caller gets to state their own.
-    std::optional<std::pair<ApproximationEffect, double>> _accuracy_budget;
+    /// The passes that shaped this graph, the last optimize() report, and the lossy rewrites it
+    /// carries. @see structural_passes, explain, approximations
+    OptimizationRecord _optimization;
 };
 
 } // namespace detail
@@ -1894,7 +1769,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @ref annotate_dims itself, which refuses a second, different tie for one symbol.
      * @versionadded{2.0.0}
      */
-    [[nodiscard]] std::unordered_map<std::string, SpaceId> const &symbol_spaces() const noexcept { return _symbol_spaces; }
+    [[nodiscard]] std::unordered_map<std::string, SpaceId> const &symbol_spaces() const noexcept { return _spaces.symbol_spaces(); }
 
     /**
      * @brief The tensor object a node may legally dereference at EXECUTE time.
@@ -2018,12 +1893,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * inserted, arena size vs the buffers it hosts, batches formed and
      * profitability-gate skips). Empty until optimize() has run.
      */
-    APIARY_EXPOSE APIARY_GETTER("explain") [[nodiscard]] std::string const &explain() const { return _last_optimize_report; }
+    APIARY_EXPOSE APIARY_GETTER("explain") [[nodiscard]] std::string const &explain() const { return _optimization.last_report(); }
 
     /// @brief What the last optimize() decided, as records: the ones @ref explain prints from.
     /// @return Every pass's decisions, in pipeline order. Empty until optimize() has run.
     /// @versionadded{2.0.0}
-    APIARY_EXPOSE APIARY_GETTER("decisions") [[nodiscard]] std::vector<Decision> const &decisions() const { return _last_decisions; }
+    APIARY_EXPOSE APIARY_GETTER("decisions") [[nodiscard]] std::vector<Decision> const &decisions() const {
+        return _optimization.last_decisions();
+    }
 
     /**
      * @brief Apply a single pass by type (convenience).
@@ -2384,13 +2261,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string const &name() const { return _name; } ///< Graph name.
 
-    // Parent context for profiler hierarchy (Workspace > Pipeline > Graph)
-    void set_pipeline_name(std::string const &n) { _pipeline_name = n; }
-    void set_workspace_name(std::string const &n) { _workspace_name = n; }
-    void set_stage_name(std::string const &n) { _stage_name = n; }
-    void set_stage_type(std::string const &t) { _stage_type = t; } ///< "graph" or "loop"
-    void set_stage_index(int idx) { _stage_index = idx; }
-
     /// Hand a custom cleanup function to the graph. Used by capture-time
     /// helpers (e.g., ``cg::view``) that allocate auxiliary objects on the
     /// heap whose lifetime must match the graph's. The deleter runs when
@@ -2407,19 +2277,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         return raw;
     }
 
-    /// Set/read the @ref ParamTable used by the View executor and
-    /// ``BoundExpr::Param`` resolution. Pipeline plumbs its own table
-    /// down to each stage Graph at construction. Standalone graphs get
-    /// a default empty table; callers can replace it via
-    /// ``set_params_ptr`` if they want to share with another scope.
+    /// The @ref ParamTable used by the View executor and ``BoundExpr::Param``
+    /// resolution. A pipeline hands its own table to each stage graph at
+    /// construction; a standalone graph starts with an empty table of its own.
+    /// Write a parameter through the table this returns.
     ///
     /// A loop body, a conditional branch and a setup body are scopes of the
     /// graph that holds them, not separate ones: each is created holding this
-    /// graph's table, and ``set_params_ptr`` hands the new table to every graph
-    /// this one contains. A node already captured keeps the table it captured,
-    /// so set the table before capturing into the graph.
-    void                                             set_params_ptr(std::shared_ptr<ParamTable> params);
-    [[nodiscard]] std::shared_ptr<ParamTable> const &params_ptr() const { return _params; }
+    /// graph's table.
+    [[nodiscard]] std::shared_ptr<ParamTable> const &params_ptr() const { return _param_store.table(); }
     [[nodiscard]] int                                stage_index() const { return _stage_index; }
     [[nodiscard]] std::string const                 &pipeline_name() const { return _pipeline_name; }
     [[nodiscard]] std::string const                 &workspace_name() const { return _workspace_name; }
@@ -3014,7 +2880,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * it was written rather than starting blank.
      * @versionadded{2.0.0}
      */
-    APIARY_EXPOSE [[nodiscard]] std::vector<std::string> const &structural_passes() const noexcept { return _structural_passes; }
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::string> const &structural_passes() const noexcept {
+        return _optimization.structural_passes();
+    }
 
     /**
      * @brief Record that a structural-resource or tuning pass has changed this graph.
@@ -3036,7 +2904,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     APIARY_EXPOSE [[nodiscard]] std::vector<std::string> const &machine_dependent_passes() const noexcept {
-        return _machine_dependent_passes;
+        return _optimization.machine_dependent_passes();
     }
 
     // ── The accuracy contract ───────────────────────────────────────────────
@@ -3053,7 +2921,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @see note_approximation
      * @versionadded{2.0.0}
      */
-    APIARY_EXPOSE [[nodiscard]] std::vector<ApproximationRecord> const &approximations() const noexcept { return _approximations; }
+    APIARY_EXPOSE [[nodiscard]] std::vector<ApproximationRecord> const &approximations() const noexcept {
+        return _optimization.approximations();
+    }
 
     /**
      * @brief Record a lossy rewrite this graph has just had applied.
@@ -3168,7 +3038,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return The effect and value, or an empty optional when none is set.
      * @versionadded{2.0.0}
      */
-    [[nodiscard]] std::optional<std::pair<ApproximationEffect, double>> accuracy_budget() const noexcept { return _accuracy_budget; }
+    [[nodiscard]] std::optional<std::pair<ApproximationEffect, double>> accuracy_budget() const noexcept { return _optimization.budget(); }
 
     /**
      * @brief The budget's value, for a caller that cannot hold an optional pair.
@@ -3194,7 +3064,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /// Record the thread count the current widths were planned for.
     /// @see planned_thread_count
-    void set_planned_thread_count(unsigned threads) { _planned_thread_count = static_cast<std::uint16_t>(threads); }
+    void set_planned_thread_count(unsigned threads) { _thread_plan.record_planned_threads(threads); }
 
     /**
      * @brief Choose a thread width for every node, for this machine, now.
@@ -3574,7 +3444,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return The key, empty when none was set.
      * @versionadded{2.0.0}
      */
-    APIARY_EXPOSE APIARY_GETTER("setup_key") [[nodiscard]] std::string const &setup_key() const noexcept { return _setup_key; }
+    APIARY_EXPOSE APIARY_GETTER("setup_key") [[nodiscard]] std::string const &setup_key() const noexcept { return _binding.setup_key(); }
 
     /**
      * @brief Mark a tensor's lifetime end with a Free node.
@@ -4776,7 +4646,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @see bind_commit
      * @versionadded{2.0.0}
      */
-    APIARY_EXPOSE void bind_begin() { _pending_binds.clear(); }
+    APIARY_EXPOSE void bind_begin() { _binding.begin_pending(); }
 
     /**
      * @brief Add one slot to the bind opened by @ref bind_begin.
@@ -4979,7 +4849,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return The tables, in the order they were supplied.
      * @versionadded{2.0.0}
      */
-    [[nodiscard]] std::vector<RaggedExtentTable> const &ragged_extent_tables() const noexcept { return _ragged_extents; }
+    [[nodiscard]] std::vector<RaggedExtentTable> const &ragged_extent_tables() const noexcept { return _binding.ragged_tables(); }
 
     /**
      * @brief The ragged extent table stored for one slot's axis.
@@ -5093,6 +4963,26 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Restores a saved graph, including handle state no pass may set (whether an annotation was
     /// inferred, how a backed tensor starts), which the file recorded.
     friend struct graph_ir::LoaderAccess;
+
+    /// Hands a pipeline's parameter table to the stage graphs it creates.
+    friend struct detail::PipelineAccess;
+
+    /// Place this graph in its pipeline, for the profiler hierarchy (Workspace > Pipeline > Graph):
+    /// the pipeline and workspace it belongs to, its stage's name, whether the stage is a
+    /// ``"graph"`` or a ``"loop"``, and the stage's position.
+    void set_stage(std::string const &pipeline, std::string const &workspace, std::string const &stage, std::string const &type,
+                   int index) {
+        _pipeline_name  = pipeline;
+        _workspace_name = workspace;
+        _stage_name     = stage;
+        _stage_type     = type;
+        _stage_index    = index;
+    }
+
+    /// Use @p params as this graph's parameter table, and hand it to every graph this one
+    /// contains. A node already captured keeps the table it captured, so this runs before
+    /// anything is captured: as a stage or a body is created.
+    void set_params_ptr(std::shared_ptr<ParamTable> params);
 
     /// A value that moves whenever any graph below this one has a declared edit: each
     /// descendant's analysis version and node count, folded in walk order. A body edit moves the
@@ -5383,7 +5273,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     template <GraphCapturableTensor TensorType>
     void bind_one(InterfaceManifest const &contract, DimSolution const &solution, std::string const &name, TensorType &tensor);
 
-    /// One space-typed TILED shape, resolved against @ref _space_tiles.
+    /// One space-typed TILED shape, resolved against the space table's tilings.
     struct ResolvedTiledShape {
         std::vector<std::vector<int>> tile_sizes;
         std::vector<SpaceId>          spaces;
@@ -5399,7 +5289,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     ///         with a canonical one, or when the two disagree about the total.
     [[nodiscard]] ResolvedTiledShape resolve_tiled_shape(std::vector<SpaceTiling> const &shape, std::string const &name) const;
 
-    /// One space-typed shape, resolved against @ref _space_extents.
+    /// One space-typed shape, resolved against the space table's extents.
     struct ResolvedSpaceShape {
         std::vector<std::size_t> dims;
         std::vector<SpaceId>     spaces;
@@ -5879,7 +5769,7 @@ auto Graph::rebind(TensorType const &old_tensor, TensorType &new_tensor) -> void
 }
 template <GraphCapturableTensor TensorType>
 auto Graph::bind_add(std::string const &name, TensorType &tensor) -> void {
-    _pending_binds.push_back(make_pending_bind(name, tensor));
+    _binding.add_pending(make_pending_bind(name, tensor));
 }
 template <GraphCapturableTensor TensorType>
 auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_change, bool descend) -> void {
@@ -6144,7 +6034,7 @@ auto Graph::bind_one(InterfaceManifest const &contract, DimSolution const &solut
             get_or_create_slot(tensor, other);
         }
         rebind_impl(other, tensor, relax);
-        _interface_names.insert_or_assign(other, entry.name);
+        _binding.pin_interface_name(other, entry.name);
     }
 }
 
