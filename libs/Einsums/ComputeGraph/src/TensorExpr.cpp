@@ -461,10 +461,10 @@ struct MemberShape {
 MemberShape member_shape(Graph const &graph, TensorId id) {
     MemberShape         out;
     TensorHandle const *handle = graph.find_tensor(id);
-    if (handle == nullptr || handle->impl_fn == nullptr) {
+    if (handle == nullptr || !handle->has_impl()) {
         return out;
     }
-    void *raw = handle->impl_fn();
+    void *raw = handle->impl();
     if (raw == nullptr) {
         return out;
     }

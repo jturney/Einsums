@@ -27,9 +27,9 @@ std::function<void()> build_store_whole(TensorHandle const &handle) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "build_executor(DiskWrite): tensor '{}' is stored whole into a backing but carries none",
                                 handle.name);
     }
-    return [backing = handle.backing, impl_fn = handle.impl_fn, dtype = handle.dtype, name = handle.name]() {
+    return [backing = handle.backing, ops = handle.ops, object = handle.live_ptr(), dtype = handle.dtype, name = handle.name]() {
         dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-            auto const *impl = static_cast<einsums::detail::TensorImpl<T> const *>(impl_fn());
+            auto const *impl = static_cast<einsums::detail::TensorImpl<T> const *>(ops->impl(object));
             if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
                 EINSUMS_THROW_EXCEPTION(std::logic_error, "write-backed tensor '{}' has no storage to store into {}", name,
                                         backing->describe());
@@ -71,7 +71,7 @@ namespace {
 /// A box: the region the window's axes select, resolved against the parameters when it runs.
 std::function<void()> build_box(bool store, TensorHandle const &handle, std::shared_ptr<BackingWindow const> window,
                                 std::shared_ptr<ParamTable> params) {
-    return [window = std::move(window), impl_fn = handle.impl_fn, params = std::move(params), store]() {
+    return [window = std::move(window), ops = handle.ops, object = handle.live_ptr(), params = std::move(params), store]() {
         auto const &backing = window->backing;
         auto const &axes    = window->axes;
         auto const &name    = window->name;
@@ -79,7 +79,7 @@ std::function<void()> build_box(bool store, TensorHandle const &handle, std::sha
             EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' has no parameter table", name);
         }
         dispatch_scalar_type(backing->dtype, [&]<typename T>(T) {
-            auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(impl_fn());
+            auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(ops->impl(object));
             if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
                 EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the box of '{}' has no storage", name);
             }
@@ -127,12 +127,12 @@ std::function<void()> build_slab(bool store, TensorHandle const &handle, std::sh
                                                     static_cast<std::int64_t>(slab.offset));
     auto        last  = passes::detail::slice_bound(std::make_shared<passes::detail::TileCursor>(), 1, 0, 1, slab.count, slab.step,
                                                     static_cast<std::int64_t>(slab.offset) + static_cast<std::int64_t>(slab.length));
-    return [window = std::move(window), impl_fn = handle.impl_fn, dtype = handle.dtype, first = std::move(first), last = std::move(last),
-            store]() {
+    return [window = std::move(window), ops = handle.ops, object = handle.live_ptr(), dtype = handle.dtype, first = std::move(first),
+            last = std::move(last), store]() {
         auto const &backing = window->backing;
         auto const &dims    = backing->dims;
         dispatch_scalar_type(dtype, [&]<typename T>(T) {
-            auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(impl_fn());
+            auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(ops->impl(object));
             if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
                 EINSUMS_THROW_EXCEPTION(std::logic_error, "SlabStreaming: the slab of '{}' has no storage", window->name);
             }
@@ -165,7 +165,7 @@ std::function<void()> build_window(bool store, TensorHandle const &handle, std::
         EINSUMS_THROW_EXCEPTION(std::logic_error, "build_executor({}): the window of '{}' must be exactly one of a box and a slab",
                                 store ? "DiskWrite" : "DiskRead", window->name);
     }
-    if (!handle.impl_fn) {
+    if (!handle.has_impl()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "build_executor({}): '{}' has no storage accessor", store ? "DiskWrite" : "DiskRead",
                                 handle.name);
     }

@@ -630,7 +630,7 @@ bool ContractionPlanning::transform(Graph &graph) {
                     auto const *handle = graph.find_tensor(tid);
                     if (handle == nullptr)
                         continue;
-                    if (handle->rank != 2 || (handle->is_runtime && !handle->impl_fn)) {
+                    if (handle->rank != 2 || (handle->is_runtime && !handle->has_impl())) {
                         all_rank2 = false;
                         break;
                     }

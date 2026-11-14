@@ -118,7 +118,7 @@ TEST_CASE("TiledRuntimeTensor - ComputeGraph make_handle integration", "[Compute
     // impl_fn stays null and the buffer-level paths that read through it exclude
     // it by construction. Graph::make_einsum_node throws on a null impl_fn rather
     // than emitting a node that would read a tile container as if it were dense.
-    REQUIRE_FALSE(static_cast<bool>(h.impl_fn));
+    REQUIRE_FALSE(h.has_impl());
     // Nor does it look like a dense runtime tensor: the is_runtime gate that
     // LCCF / SymmetrizedAccumulation use to guard their GeneralRuntimeTensor
     // casts must reject it, since TiledRuntimeTensor does not derive from
@@ -141,6 +141,6 @@ TEST_CASE("TiledRuntimeTensor - dense RuntimeTensor handle is not tiled", "[Comp
     REQUIRE(h.data_ptr != nullptr);
     // A dense tensor does expose a rank-erased impl, so the buffer-level paths
     // accept it. This is the positive half of the tiled assertion above.
-    REQUIRE(static_cast<bool>(h.impl_fn));
+    REQUIRE(h.has_impl());
     REQUIRE(h.is_runtime);
 }

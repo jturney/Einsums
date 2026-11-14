@@ -130,7 +130,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   C index and every W index must be drawn from @f$S@f$'s index pattern (the
  *   GEMV-shaped class - each element of @f$S@f$ read exactly once).
  * - @f$S@f$, @f$W@f$ and C must all be **runtime** tensors (owning or view) of one
- *   dtype, each with a live ``TensorHandle::impl_fn``; a mixed-dtype member declines
+ *   dtype, each with a live ``TensorHandle::impl``; a mixed-dtype member declines
  *   (the kernel casts all three to @f$S@f$'s element type) and so does a tile-wise
  *   sparse operand, which has no single geometry to read.
  * - A group declines when its operands share a buffer, or when a node between its

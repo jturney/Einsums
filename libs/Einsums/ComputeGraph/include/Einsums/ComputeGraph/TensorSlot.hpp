@@ -90,7 +90,7 @@ struct TensorSlot {
     ///
     /// This is how a data-built executor (@ref build_executor) reaches the LIVE
     /// data pointer, dims and strides of an operand. Going through the slot
-    /// rather than through ``TensorHandle::impl_fn`` is what makes such an
+    /// rather than through ``TensorHandle::impl`` is what makes such an
     /// executor follow ``Graph::rebind`` and ``Graph::redirect_slot``, which is
     /// the same guarantee a capture-baked lambda gets from casting @ref ptr to
     /// its capture-time static type.

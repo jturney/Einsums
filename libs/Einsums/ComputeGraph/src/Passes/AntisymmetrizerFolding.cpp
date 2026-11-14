@@ -102,7 +102,7 @@ std::vector<std::pair<TensorId, SymmetryDescriptor>> detected_leaves(EscapeAnaly
     }
     std::vector<std::pair<TensorId, SymmetryDescriptor>> leaves;
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (writers.writer_count(tid) != 0 || handle.symmetry_hint == nullptr || !handle.impl_fn) {
+        if (writers.writer_count(tid) != 0 || handle.symmetry_hint == nullptr || !handle.has_impl()) {
             continue;
         }
         if (!read.contains(graph.buffer_of(tid)) && !writers.touched_by_subtree(tid)) {
@@ -360,13 +360,13 @@ bool AntisymmetrizerFolding::transform(Graph &graph) {
         use_custom_executor(check, [anchor, leaves = std::move(leaves)]() {
             for (auto const &[tid, desc] : leaves) {
                 auto const *handle = anchor->graph().find_tensor(anchor->graph().buffer_of(tid));
-                if (handle == nullptr || !handle->impl_fn) {
+                if (handle == nullptr || !handle->has_impl()) {
                     continue;
                 }
                 bool ok = false;
                 detail::dispatch_scalar_type(handle->dtype, [&]<typename T>(T /*tag*/) {
                     using Impl       = ::einsums::detail::TensorImpl<T>;
-                    auto const *impl = static_cast<Impl const *>(handle->impl_fn());
+                    auto const *impl = static_cast<Impl const *>(handle->impl());
                     if (impl == nullptr || impl->data() == nullptr) {
                         ok = true; // nothing bound to contradict the fact
                         return;

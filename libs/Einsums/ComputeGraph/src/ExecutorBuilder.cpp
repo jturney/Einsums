@@ -1119,8 +1119,8 @@ OperandAccessor try_resolve_operand(Graph &graph, TensorId id) {
     if (TensorSlot *slot = graph.find_slot(id); slot != nullptr && slot->ptr != nullptr && slot->impl_of != nullptr) {
         return OperandAccessor{slot, dtype};
     }
-    if (handle != nullptr && handle->impl_fn) {
-        return OperandAccessor{handle->impl_fn, dtype};
+    if (handle != nullptr && handle->has_impl()) {
+        return OperandAccessor{*handle->ops, handle->live_ptr(), dtype};
     }
     return OperandAccessor{};
 }

@@ -43,13 +43,13 @@ bool rebuildable(Graph &graph, Node const &nd) {
     auto const operands_resolve = [&]() {
         for (auto const tid : nd.inputs) {
             auto const *h = graph.find_tensor(tid);
-            if (h == nullptr || !h->impl_fn || !compute_graph::detail::is_dispatchable(h->dtype)) {
+            if (h == nullptr || !h->has_impl() || !compute_graph::detail::is_dispatchable(h->dtype)) {
                 return false;
             }
         }
         for (auto const tid : nd.outputs) {
             auto const *h = graph.find_tensor(tid);
-            if (h == nullptr || !h->impl_fn || !compute_graph::detail::is_dispatchable(h->dtype)) {
+            if (h == nullptr || !h->has_impl() || !compute_graph::detail::is_dispatchable(h->dtype)) {
                 return false;
             }
         }
@@ -224,7 +224,7 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
             skip(d->second);
             continue;
         }
-        if (handle == nullptr || !handle->impl_fn || handle->dims.empty() || !compute_graph::detail::is_dispatchable(handle->dtype)) {
+        if (handle == nullptr || !handle->has_impl() || handle->dims.empty() || !compute_graph::detail::is_dispatchable(handle->dtype)) {
             skip("its storage or element type cannot be cloned");
             continue;
         }

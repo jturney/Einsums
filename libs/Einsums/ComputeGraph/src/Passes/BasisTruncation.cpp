@@ -661,7 +661,7 @@ bool BasisTruncation::transform(Graph &graph) {
         found.rank         = handle.rank;
         found.intermediate = handle.is_intermediate;
         found.graph_sized  = graph.decides_extents(tid);
-        found.usable       = handle.dtype == packed_gemm::ScalarType::Float64 && handle.impl_fn != nullptr;
+        found.usable       = handle.dtype == packed_gemm::ScalarType::Float64 && handle.has_impl();
         for (std::size_t axis = 0; axis < spaces.size(); ++axis) {
             if (spaces[axis] == *space) {
                 found.axes.push_back(axis);
@@ -787,7 +787,7 @@ bool BasisTruncation::transform(Graph &graph) {
                       fmt::format("'{}'", candidate->name));
             return false;
         }
-        auto const *impl = static_cast<::einsums::detail::TensorImpl<double> const *>(handle->impl_fn());
+        auto const *impl = static_cast<::einsums::detail::TensorImpl<double> const *>(handle->impl());
         if (impl == nullptr) {
             note_skip("a rank-1 tensor over the space being replaced has no live storage to check against the Fock block",
                       fmt::format("'{}'", candidate->name));
@@ -866,7 +866,7 @@ bool BasisTruncation::transform(Graph &graph) {
         TensorId const projected = graph.find_tensor_id_by_ptr(&destination);
         graph.annotate_spaces(projected, std::move(spaces));
 
-        auto const *impl = static_cast<::einsums::detail::TensorImpl<double> const *>(handle->impl_fn());
+        auto const *impl = static_cast<::einsums::detail::TensorImpl<double> const *>(handle->impl());
         targets.push_back(Target{.source      = candidate->id,
                                  .projected   = projected,
                                  .input       = projection_input(RuntimeTensorView<double>{*impl}, candidate->name),

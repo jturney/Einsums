@@ -101,10 +101,10 @@ bool is_extent_preserving(OpKind kind) {
 /// the tensor disagreeing, so reading the snapshot would answer the wrong question.
 /// @return False when the handle exposes no impl (a tile-wise sparse tensor).
 bool live_impl_geometry(TensorHandle const &handle, std::vector<std::size_t> &dims, std::vector<std::size_t> &strides) {
-    if (!handle.impl_fn || handle.dtype == packed_gemm::ScalarType::Unknown) {
+    if (!handle.has_impl() || handle.dtype == packed_gemm::ScalarType::Unknown) {
         return false;
     }
-    void *raw = handle.impl_fn();
+    void *raw = handle.impl();
     if (raw == nullptr) {
         return false;
     }

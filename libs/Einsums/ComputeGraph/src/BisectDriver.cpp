@@ -75,11 +75,11 @@ bool graph_writes(Graph const &graph, TensorId id) {
 /// the norms. Strides are honoured rather than assumed away: an interface output may be a view.
 bool read_values(Graph const &graph, TensorId id, std::vector<std::complex<double>> &into) {
     TensorHandle const *handle = graph.find_tensor(id);
-    if (handle == nullptr || handle->is_tiled || !handle->impl_fn) {
+    if (handle == nullptr || handle->is_tiled || !handle->has_impl()) {
         return false;
     }
     return detail::dispatch_scalar_type(handle->dtype, [&]<typename T>(T /*tag*/) {
-        auto const *impl = static_cast<einsums::detail::TensorImpl<T> const *>(handle->impl_fn());
+        auto const *impl = static_cast<einsums::detail::TensorImpl<T> const *>(handle->impl());
         if (impl == nullptr || impl->data() == nullptr) {
             return false;
         }

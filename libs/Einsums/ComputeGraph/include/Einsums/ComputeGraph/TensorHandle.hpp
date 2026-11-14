@@ -887,6 +887,14 @@ struct TensorHandle {
      */
     TensorOps const *ops{&detail::no_tensor_ops};
 
+    /// @brief Whether the tensor's type has a single rank-erased ``detail::TensorImpl<T>`` (a
+    ///        tile-wise sparse tensor has none).
+    [[nodiscard]] bool has_impl() const noexcept { return ops->impl != nullptr; }
+
+    /// @brief The tensor's CURRENT ``detail::TensorImpl<T>``, type-erased, or null when
+    ///        @ref has_impl is false. Cast it once the element type is known from @ref dtype.
+    [[nodiscard]] void *impl() const { return ops->impl != nullptr ? ops->impl(live_ptr()) : nullptr; }
+
     /// @brief The address the caller knows this tensor by: @ref caller_ptr when set, else @ref tensor_ptr.
     [[nodiscard]] void *lookup_ptr() const noexcept { return caller_ptr != nullptr ? caller_ptr : tensor_ptr; }
 

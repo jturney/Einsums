@@ -381,7 +381,7 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
         }
         // The factory reaches both operands through their rank-erased impls; only a tile-wise
         // sparse tensor has none.
-        if (!th_tmp->impl_fn || !th_r2->impl_fn) {
+        if (!th_tmp->has_impl() || !th_r2->has_impl()) {
             note_skip("an operand has no rank-erased impl", fmt::format("permute #{}", s.permute_idx));
             continue;
         }

@@ -1233,7 +1233,7 @@ TEST_CASE("make_einsum_node - works on statically typed operands", "[ComputeGrap
 
     // Typed captures, not runtime tensors.
     CHECK_FALSE(graph.tensor(a_id).is_runtime);
-    REQUIRE(graph.tensor(a_id).impl_fn != nullptr);
+    REQUIRE(graph.tensor(a_id).has_impl());
 
     auto        node = graph.make_einsum_node(a_id, b_id, c_id, matmul_spec(), 0.0, 1.0);
     auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();

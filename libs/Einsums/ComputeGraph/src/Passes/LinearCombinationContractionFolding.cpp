@@ -313,7 +313,7 @@ bool LinearCombinationContractionFolding::transform(Graph &graph) {
         auto const dtype   = b_handle->dtype;
         auto const same_dt = [&](TensorId tid) {
             auto const *h = graph.find_tensor(tid);
-            return h != nullptr && h->dtype == dtype && static_cast<bool>(h->impl_fn);
+            return h != nullptr && h->dtype == dtype && h->has_impl();
         };
         if (!same_dt(vg.key.output_id) || !same_dt(vg.key.shared_id) || !same_dt(vg.key.non_shared_id)) {
             note_skip("the output and both operands must share one element type and a rank-erased geometry",

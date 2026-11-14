@@ -75,15 +75,15 @@ bool einsum_is_strided_batch(EinsumDescriptor const &desc, Node const &node, Gra
     auto const &a = graph.tensor(node.inputs[0]);
     auto const &b = graph.tensor(node.inputs[1]);
     auto const &c = graph.tensor(node.outputs[0]);
-    if (!a.impl_fn || !b.impl_fn || !c.impl_fn || a.dtype != c.dtype || b.dtype != c.dtype) {
+    if (!a.has_impl() || !b.has_impl() || !c.has_impl() || a.dtype != c.dtype || b.dtype != c.dtype) {
         return false;
     }
     bool batched = false;
     ::einsums::compute_graph::detail::dispatch_scalar_type(c.dtype, [&]<typename T>(T /*tag*/) {
         using Impl     = ::einsums::detail::TensorImpl<T>;
-        auto const *ai = static_cast<Impl const *>(a.impl_fn());
-        auto const *bi = static_cast<Impl const *>(b.impl_fn());
-        auto const *ci = static_cast<Impl const *>(c.impl_fn());
+        auto const *ai = static_cast<Impl const *>(a.impl());
+        auto const *bi = static_cast<Impl const *>(b.impl());
+        auto const *ci = static_cast<Impl const *>(c.impl());
         batched = ai != nullptr && bi != nullptr && ci != nullptr &&
                   ::einsums::compute_graph::detail::plan_strided_batch(lists.c, lists.a, lists.b, lists.link, *ai, *bi, *ci).has_value();
     });

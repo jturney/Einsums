@@ -150,11 +150,11 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     // strides as runtime values, so one dtype dispatch serves every rank and no
     // static-rank cast is needed. Only tile-wise sparse tensors lack an impl; they have no single
     // buffer to contract over, so a pass must not route them here.
-    if (!a_h.impl_fn || !b_h.impl_fn || !c_h.impl_fn) {
+    if (!a_h.has_impl() || !b_h.has_impl() || !c_h.has_impl()) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "Graph::make_einsum_node: every operand needs a rank-erased impl (a={} b={} c={}); tile-wise sparse "
                                 "tensors have none and cannot be contracted through this path",
-                                static_cast<bool>(a_h.impl_fn), static_cast<bool>(b_h.impl_fn), static_cast<bool>(c_h.impl_fn));
+                                a_h.has_impl(), b_h.has_impl(), c_h.has_impl());
     }
     if (a_h.dtype != c_h.dtype || b_h.dtype != c_h.dtype) {
         // Operands of different element types contract through the mixed-precision generic loop,
@@ -234,11 +234,11 @@ Node Graph::make_permute_node(TensorId a_id, TensorId c_id, ParsedPermuteSpec co
     // The rank-erased impl gate make_einsum_node states, for the same reason:
     // only tile-wise sparse tensors lack one, and they have no single buffer to
     // permute.
-    if (!a_h.impl_fn || !c_h.impl_fn) {
+    if (!a_h.has_impl() || !c_h.has_impl()) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "Graph::make_permute_node: both operands need a rank-erased impl (a={} c={}); tile-wise sparse "
                                 "tensors have none",
-                                static_cast<bool>(a_h.impl_fn), static_cast<bool>(c_h.impl_fn));
+                                a_h.has_impl(), c_h.has_impl());
     }
     if (a_h.dtype != c_h.dtype) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph::make_permute_node: operand dtypes disagree; a permute does not convert");

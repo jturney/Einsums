@@ -82,13 +82,13 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
     // calling a virtual jumped through the wrong slot: a view-operand group
     // reached rank() and landed in set_name(), which is a segfault at the first
     // fused node. TensorImpl<T> is the one representation both types agree on,
-    // and impl_fn() re-reads it at call time so a re-emplaced view is seen.
+    // and impl() re-reads it at call time so a re-emplaced view is seen.
     auto const impl_of = [graph](TensorId id) -> Impl * {
         auto const *handle = graph->find_tensor(id);
-        if (handle == nullptr || !handle->impl_fn) {
+        if (handle == nullptr || !handle->has_impl()) {
             EINSUMS_THROW_EXCEPTION(std::runtime_error, "StreamContractionFusion: fused operand {} has no live tensor impl", id);
         }
-        return static_cast<Impl *>(handle->impl_fn());
+        return static_cast<Impl *>(handle->impl());
     };
     auto const layout_of = [](Impl const *X) {
         packed_gemm::StreamLayout l;
@@ -213,7 +213,7 @@ bool StreamContractionFusion::transform(Graph &graph) {
             // live TensorImpl, which is the one representation an owning runtime
             // tensor and a runtime view share. A handle without one (a tile-wise
             // sparse tensor) has no such geometry to read.
-            if (!sh->impl_fn || !wh->impl_fn || !ch->impl_fn) {
+            if (!sh->has_impl() || !wh->has_impl() || !ch->has_impl()) {
                 note_skip("operand has no live tensor impl",
                           fmt::format("streamed tensor '{}' or an operand of node {} is tile-wise sparse", sh->name, ni));
                 continue;

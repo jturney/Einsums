@@ -26,7 +26,7 @@ namespace {
 
 /// The executor that fills a backed tensor whole from its backing, after its Materialize.
 ///
-/// Reads the tensor's storage through @ref TensorHandle::impl_fn at run time rather than any
+/// Reads the tensor's storage through its type's @ref TensorOps::impl at run time rather than any
 /// pointer known now, since the memory planner may place it anywhere. The backing writes its
 /// storage's column-major order, and a tensor laid out otherwise (row-major, as Python declares
 /// one) is filled through a scatter by its strides.
@@ -35,13 +35,13 @@ std::function<void()> load_whole(TensorHandle const &handle) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "build_executor(Initialize): tensor '{}' is initialized from a backing but carries none",
                                 handle.name);
     }
-    if (!handle.impl_fn) {
+    if (!handle.has_impl()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "build_executor(Initialize): backed tensor '{}' has no storage accessor to fill",
                                 handle.name);
     }
-    return [backing = handle.backing, impl_fn = handle.impl_fn, dtype = handle.dtype, name = handle.name]() {
+    return [backing = handle.backing, ops = handle.ops, object = handle.live_ptr(), dtype = handle.dtype, name = handle.name]() {
         dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-            auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(impl_fn());
+            auto *impl = static_cast<einsums::detail::TensorImpl<T> *>(ops->impl(object));
             if (impl == nullptr || (impl->data() == nullptr && impl->size() != 0)) {
                 EINSUMS_THROW_EXCEPTION(std::logic_error, "backed tensor '{}' has no storage to fill from {}", name, backing->describe());
             }

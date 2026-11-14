@@ -61,13 +61,13 @@ SymmetryDescriptor operator_invariance(std::vector<std::vector<int>> const &grou
 bool holds_in_data(TensorHandle const &handle, SymmetryDescriptor const &desc) {
     // Only storage that is really there. A declared tensor not yet allocated is a shell whose impl
     // can carry a sentinel base rather than null, and reading it as data crashed the probe.
-    if (!handle.impl_fn || desc.empty() || handle.alloc_state != AllocState::Materialized) {
+    if (!handle.has_impl() || desc.empty() || handle.alloc_state != AllocState::Materialized) {
         return false;
     }
     bool result = false;
     detail::dispatch_scalar_type(handle.dtype, [&]<typename T>(T /*tag*/) {
         using Impl       = ::einsums::detail::TensorImpl<T>;
-        auto const *impl = static_cast<Impl const *>(handle.impl_fn());
+        auto const *impl = static_cast<Impl const *>(handle.impl());
         if (impl == nullptr || impl->data() == nullptr) {
             result = false;
             return;
@@ -276,7 +276,7 @@ bool AntisymmetryDetection::transform(Graph &graph) {
 
     for (auto &[tid, generators] : wanted) {
         auto *handle = graph.find_tensor(tid);
-        if (handle == nullptr || !handle->impl_fn) {
+        if (handle == nullptr || !handle->has_impl()) {
             continue;
         }
 

@@ -59,10 +59,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::gpu_dispatch)
 /// @see GpuDispatch.hpp for why this exists rather than reading
 /// TensorHandle::data_ptr.
 [[nodiscard]] void *live_host_ptr(TensorHandle const &h) {
-    if (!h.impl_fn || h.dtype == packed_gemm::ScalarType::Unknown) {
+    if (!h.has_impl() || h.dtype == packed_gemm::ScalarType::Unknown) {
         return h.data_ptr; // no impl to read through; snapshot is all there is
     }
-    void *raw = h.impl_fn();
+    void *raw = h.impl();
     if (raw == nullptr) {
         return h.data_ptr;
     }
@@ -89,10 +89,10 @@ namespace {
 /// column-major rank-2 buffer, in which case the caller must decline and let
 /// the CPU path handle it.
 [[nodiscard]] bool live_colmajor_2d(TensorHandle const &h, int64_t &rows, int64_t &cols) {
-    if (!h.impl_fn || h.dtype == packed_gemm::ScalarType::Unknown) {
+    if (!h.has_impl() || h.dtype == packed_gemm::ScalarType::Unknown) {
         return false;
     }
-    void *raw = h.impl_fn();
+    void *raw = h.impl();
     if (raw == nullptr) {
         return false;
     }
@@ -533,8 +533,8 @@ bool try_gpu_strided_einsum(EinsumDescriptor const &desc, Node const &node, std:
     auto const a_it = tensors.find(node.inputs[0]);
     auto const b_it = tensors.find(node.inputs[1]);
     auto const c_it = tensors.find(node.outputs[0]);
-    if (a_it == tensors.end() || b_it == tensors.end() || c_it == tensors.end() || !a_it->second.impl_fn || !b_it->second.impl_fn ||
-        !c_it->second.impl_fn || a_it->second.dtype != c_it->second.dtype || b_it->second.dtype != c_it->second.dtype) {
+    if (a_it == tensors.end() || b_it == tensors.end() || c_it == tensors.end() || !a_it->second.has_impl() || !b_it->second.has_impl() ||
+        !c_it->second.has_impl() || a_it->second.dtype != c_it->second.dtype || b_it->second.dtype != c_it->second.dtype) {
         return false;
     }
 
@@ -548,9 +548,9 @@ bool try_gpu_strided_einsum(EinsumDescriptor const &desc, Node const &node, std:
     bool dispatched = false;
     detail::dispatch_scalar_type(c_it->second.dtype, [&]<typename T>(T /*tag*/) {
         using Impl    = ::einsums::detail::TensorImpl<T>;
-        auto const *a = static_cast<Impl const *>(a_it->second.impl_fn());
-        auto const *b = static_cast<Impl const *>(b_it->second.impl_fn());
-        auto const *c = static_cast<Impl const *>(c_it->second.impl_fn());
+        auto const *a = static_cast<Impl const *>(a_it->second.impl());
+        auto const *b = static_cast<Impl const *>(b_it->second.impl());
+        auto const *c = static_cast<Impl const *>(c_it->second.impl());
         if (a == nullptr || b == nullptr || c == nullptr) {
             return;
         }

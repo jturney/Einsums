@@ -57,7 +57,7 @@
  * graph's lifetime and is what ``Graph::rebind`` and ``Graph::redirect_slot``
  * repoint, so a built executor follows both. Live geometry comes from
  * @ref TensorSlot::impl_of: one indirect call per operand, no allocation. An
- * operand with no slot falls back to @ref TensorHandle::impl_fn.
+ * operand with no slot falls back to @ref TensorHandle::impl.
  *
  * @par How live-mutable scalars reach a built executor
  * Through the descriptor's shared params block (@ref ElementwiseParams,
@@ -100,6 +100,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
@@ -125,7 +126,7 @@ class Graph;
  * Resolution order is slot first, handle second, and the order is the point.
  * A @ref TensorSlot is what ``Graph::rebind`` and ``Graph::redirect_slot``
  * repoint, so reading through it is what makes a built executor honor both
- * without the pass author having to think about it. ``TensorHandle::impl_fn``
+ * without the pass author having to think about it. ``TensorHandle::impl``
  * is the fallback for a tensor that reached the graph without ever being
  * captured through a slot, which is only ever a node some pass assembled.
  *
@@ -144,19 +145,20 @@ class OperandAccessor {
     explicit OperandAccessor(TensorSlot *slot, packed_gemm::ScalarType dtype = packed_gemm::ScalarType::Unknown)
         : _slot(slot), _dtype(dtype) {}
 
-    /// Read through a handle's own rank-erased accessor.
-    explicit OperandAccessor(std::function<void *()> handle_impl, packed_gemm::ScalarType dtype = packed_gemm::ScalarType::Unknown)
-        : _handle_impl(std::move(handle_impl)), _dtype(dtype) {}
+    /// Read through @p ops, a handle's type table, on @p object, the tensor it names; @p ops must
+    /// have an @ref TensorOps::impl entry.
+    OperandAccessor(TensorOps const &ops, void *object, packed_gemm::ScalarType dtype = packed_gemm::ScalarType::Unknown)
+        : _ops(&ops), _object(object), _dtype(dtype) {}
 
     /// Whether this accessor was bound to anything.
-    [[nodiscard]] bool valid() const noexcept { return _slot != nullptr || static_cast<bool>(_handle_impl); }
+    [[nodiscard]] bool valid() const noexcept { return _slot != nullptr || _ops != nullptr; }
 
     /// The operand's element type, recorded from its tensor when the accessor was resolved; Unknown
     /// when nothing recorded one. An einsum's executor reads its three operands' types from here.
     [[nodiscard]] packed_gemm::ScalarType dtype() const noexcept { return _dtype; }
 
     /// The operand's CURRENT rank-erased geometry, type-erased.
-    [[nodiscard]] void *raw() const { return _slot != nullptr ? _slot->impl_of(_slot->ptr) : _handle_impl(); }
+    [[nodiscard]] void *raw() const { return _slot != nullptr ? _slot->impl_of(_slot->ptr) : _ops->impl(_object); }
 
     /// The operand's CURRENT rank-erased geometry, as element type @p T.
     ///
@@ -176,7 +178,8 @@ class OperandAccessor {
     [[noreturn]] EINSUMS_EXPORT static void throw_operand_type_mismatch(packed_gemm::ScalarType held, packed_gemm::ScalarType asked);
 
     TensorSlot             *_slot{nullptr};
-    std::function<void *()> _handle_impl;
+    TensorOps const        *_ops{nullptr};
+    void                   *_object{nullptr};
     packed_gemm::ScalarType _dtype{packed_gemm::ScalarType::Unknown};
 };
 

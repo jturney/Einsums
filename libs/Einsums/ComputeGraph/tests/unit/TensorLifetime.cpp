@@ -158,7 +158,7 @@ TEST_CASE("Graph validation - a destroyed operand's storage outlives it", "[Comp
     auto const &handle = graph.tensor(graph.tensors_map().begin()->first);
     REQUIRE(handle.dims == std::vector<size_t>{3, 3});
     auto const *data =
-        static_cast<double const *>(handle.impl_fn ? static_cast<detail::TensorImpl<double> *>(handle.impl_fn())->data() : nullptr);
+        static_cast<double const *>(handle.has_impl() ? static_cast<detail::TensorImpl<double> *>(handle.impl())->data() : nullptr);
     REQUIRE(data != nullptr);
     for (size_t idx = 0; idx < 9; idx++) {
         REQUIRE_THAT(data[idx], Catch::Matchers::WithinAbs(2.0 * expected.data()[idx], 1e-12));
