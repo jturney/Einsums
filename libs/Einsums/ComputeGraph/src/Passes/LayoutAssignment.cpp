@@ -558,7 +558,7 @@ bool LayoutAssignment::transform(Graph &graph) {
         // re-laying out a live buffer is a data movement this pass does not perform. Whether the
         // tensor is the GRAPH's is not asked here: the escape verdict below reports a
         // user-visible tensor as `UserOwned`, and asking twice is how the two answers drift.
-        if (handle->alloc_state != AllocState::Deferred || !handle->resize_deferred_fn) {
+        if (handle->alloc_state != AllocState::Deferred || !handle->resizable || handle->ops->resize_deferred == nullptr) {
             note_skip("tensor's storage is already allocated", fmt::format("tensor '{}'", handle->name));
             return false;
         }

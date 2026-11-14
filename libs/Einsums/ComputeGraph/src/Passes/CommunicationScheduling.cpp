@@ -57,11 +57,11 @@ bool CommunicationScheduling::transform(Graph &graph) {
             continue;
 
         auto const &handle = it->second;
-        if (!handle.iallreduce_sum_fn)
+        if (handle.ops->iallreduce_sum == nullptr)
             continue;
 
         // Split into async_start (iallreduce) and async_finish (wait)
-        auto iallreduce_fn = handle.iallreduce_sum_fn;
+        auto iallreduce_fn = [iallreduce = handle.ops->iallreduce_sum, object = handle.live_ptr()] { return iallreduce(object); };
         auto request       = std::make_shared<comm::Request>();
 
         // The DataflowExecutor runs the two halves when both are set; the serial executors run the

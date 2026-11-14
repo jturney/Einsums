@@ -4035,6 +4035,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // and is_intermediate stays false for the same reason: use create_tensor or
         // scratch for an intermediate.
         handle.ownership          = TensorOwnership::Graph;
+        handle.resizable          = true;
         handle.resize_deferred_fn = [ptr](std::vector<size_t> const &new_dims) {
             Dim<Rank> d;
             for (size_t i = 0; i < Rank && i < new_dims.size(); i++)
@@ -5557,6 +5558,7 @@ auto Graph::declare_deferred_runtime(std::string name, std::vector<size_t> dims,
     // say: resize_derived_extent requires the hook as well as the deferred state, so a
     // runtime-rank intermediate that lacked it was refused with a message blaming the
     // storage. The static-rank declare_tensor has always installed one.
+    handle.resizable          = true;
     handle.resize_deferred_fn = [ptr](std::vector<size_t> const &new_dims) { ptr->resize_deferred(new_dims); };
     if (backing) {
         try {
@@ -6008,6 +6010,21 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
         // holding the old token disowns the tensor it was just rebound to.
         th_it->second.caller_token = detail::liveness_token_of(new_tensor);
         th_it->second.ops          = &tensor_ops_for<TensorType>;
+        // A rebind redefines the tensor: the bound tensor's contents are its value. What the graph
+        // knew from the tensor it replaced goes with it (how to initialize it, whether it still
+        // needs storage, the symmetry it declared); what the graph's author said about the slot
+        // (spaces, dim symbols, tag) stays. Without this, a bind made before the passes run, as
+        // bind's documentation recommends, had Materialization give the caller's tensor an
+        // Initialize that zeroed its contents on every replay.
+        th_it->second.init_kind   = InitKind::None;
+        th_it->second.custom_init = nullptr;
+        if constexpr (requires { new_tensor.is_materialized(); }) {
+            th_it->second.alloc_state = new_tensor.is_materialized() ? AllocState::Materialized : AllocState::Deferred;
+        } else {
+            th_it->second.alloc_state = AllocState::Materialized;
+        }
+        th_it->second.symmetry_hint =
+            th_it->second.ops->declared_symmetry != nullptr ? th_it->second.ops->declared_symmetry(th_it->second.live_ptr()) : nullptr;
         // ``impl_fn`` was baked over the OLD tensor object, so leaving it
         // alone hands every pass-built executor that reads through it (see
         // ``make_einsum_node``) a rebound node's PREVIOUS storage. It is

@@ -137,7 +137,8 @@ bool InputSlicing::transform(Graph &graph) {
     std::map<std::size_t, std::vector<Node>> at;
 
     for (auto const &ins : insertions) {
-        auto tokens = std::make_shared<std::vector<std::pair<TensorId, size_t>>>();
+        // The state each local view returns, held here until the node after the einsum ends it.
+        auto tokens = std::make_shared<std::vector<std::pair<TensorId, std::any>>>();
         // The executors look the hooks up through the anchor, never a reference into this graph:
         // the graph may be moved after the pass, and a reference to its tensor table would then
         // name the moved-from object.
@@ -151,10 +152,10 @@ bool InputSlicing::transform(Graph &graph) {
         end_node.effects = opaque_effects;
         use_custom_executor(end_node, [tokens, anchor]() {
             auto const &tensor_map = anchor->graph().tensors_map();
-            for (auto const &[tid, token] : *tokens) {
+            for (auto &[tid, token] : *tokens) {
                 auto it = tensor_map.find(tid);
-                if (it != tensor_map.end() && it->second.end_local_view_fn) {
-                    it->second.end_local_view_fn(token);
+                if (it != tensor_map.end() && it->second.ops->end_local_view != nullptr) {
+                    it->second.ops->end_local_view(it->second.live_ptr(), token);
                 }
             }
         });
@@ -171,9 +172,8 @@ bool InputSlicing::transform(Graph &graph) {
             tokens->clear();
             for (auto const &s : slices_copy) {
                 auto it = tensor_map.find(s.tid);
-                if (it != tensor_map.end() && it->second.begin_local_view_fn) {
-                    size_t token = it->second.begin_local_view_fn(s.dim, s.start, s.count);
-                    tokens->emplace_back(s.tid, token);
+                if (it != tensor_map.end() && it->second.ops->begin_local_view != nullptr) {
+                    tokens->emplace_back(s.tid, it->second.ops->begin_local_view(it->second.live_ptr(), s.dim, s.start, s.count));
                 }
             }
         });

@@ -531,14 +531,14 @@ double fold_after(RuntimeTensor<double> const &wsrc, RuntimeTensor<double> const
 
 } // namespace
 
-// Known bug: a rebind leaves the handle's declared-symmetry getter on the tensor it replaced, and
-// the hint is only ever upgraded, so a pass pipeline run after the rebind still reads the old
-// tensor's declared antisymmetry. The fold fires for a tensor that declares none, its replay guard
-// then refuses the data, and re-running the pipeline as the refusal advises folds again. The graph
-// can never be optimized for the new tensor. Fixed by the per-type operations table: a rebind
-// re-reads the new tensor's declaration.
+// A rebind once left the handle's declared-symmetry getter on the tensor it replaced, and the hint
+// was only ever upgraded, so a pass pipeline run after the rebind still read the old tensor's
+// declared antisymmetry. The fold fired for a tensor that declares none, its replay guard refused
+// the data, and re-running the pipeline as the refusal advises folded again: the graph could never
+// be optimized for the new tensor. A rebind now resets the hint from the new tensor, and the
+// pipeline reads declarations through the handle's type table.
 TEST_CASE("AntisymmetrizerFolding - a pipeline run after a rebind sees the new tensor's symmetry",
-          "[ComputeGraph][AntisymmetrizerFolding][Rebind][!shouldfail]") {
+          "[ComputeGraph][AntisymmetrizerFolding][Rebind]") {
     size_t const          n = 4;
     auto const            r = create_random_tensor<double>("r", n, n, n);
     RuntimeTensor<double> wsrc("wsrc", {n, n, n});

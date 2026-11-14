@@ -757,7 +757,7 @@ bool Materialization::transform(Graph &graph) {
             // exactly the body's copy of a tensor the PARENT declared, which the block above
             // has already placed a Materialize for; emitting a second one here would double
             // the node and, since the copy carries no hook, the second would allocate nothing.
-            if (!handle.materialize_fn) {
+            if (handle.ops->materialize == nullptr) {
                 continue;
             }
             if ((handle.tensor_ptr != nullptr && placed.contains(handle.tensor_ptr)) || already_materialized_in(body, handle.name)) {

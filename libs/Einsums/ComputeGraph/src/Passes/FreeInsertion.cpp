@@ -52,7 +52,8 @@ struct FreePlan {
 // intermediate. A write or update backing is excluded: the graph produces that tensor, and its Store
 // or publish is what the replay is for. Workspace and pipeline tensors outlive the graph.
 bool rereadable(TensorHandle const &handle) {
-    return handle.backing != nullptr && !handle.backing->write && handle.ownership == TensorOwnership::Graph && handle.materialize_fn;
+    return handle.backing != nullptr && !handle.backing->write && handle.ownership == TensorOwnership::Graph &&
+           handle.ops->materialize != nullptr;
 }
 
 // Is `name` already freed by an existing Free node anywhere in `nodes`?
@@ -86,7 +87,7 @@ struct DescendantFreeable {
 // exclusion happens one level at a time, where the descent is chosen.
 void collect_freeable(Graph &graph, std::vector<DescendantFreeable> &out) {
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (!handle.is_intermediate || !handle.release_fn || handle.aliases != 0) {
+        if (!handle.is_intermediate || handle.ops->release == nullptr || handle.aliases != 0) {
             continue;
         }
         // A declaration no node of the body uses has no storage to free, and the Materialize this
@@ -162,7 +163,7 @@ bool FreeInsertion::transform(Graph &graph) {
 
         auto const &handle = it->second;
 
-        if (!(handle.is_intermediate || rereadable(handle)) || !handle.release_fn)
+        if (!(handle.is_intermediate || rereadable(handle)) || handle.ops->release == nullptr)
             continue;
         if (setup_outputs.contains(tid))
             continue;
@@ -195,7 +196,7 @@ bool FreeInsertion::transform(Graph &graph) {
         // reallocates it before the next replay reads released storage.
         size_t       mat_before = SIZE_MAX;
         size_t const fw         = use.first_writer(/*ignore_alloc=*/true, /*include_subtree=*/true);
-        if (fw != TensorUsage::npos && handle.materialize_fn && !already_has_materialize_named(nodes, handle.name)) {
+        if (fw != TensorUsage::npos && handle.ops->materialize != nullptr && !already_has_materialize_named(nodes, handle.name)) {
             mat_before = fw;
         }
 
@@ -218,7 +219,7 @@ bool FreeInsertion::transform(Graph &graph) {
                     continue;
                 }
                 size_t mat_before = SIZE_MAX;
-                if (handle.materialize_fn && !already_has_materialize_named(nodes, handle.name) &&
+                if (handle.ops->materialize != nullptr && !already_has_materialize_named(nodes, handle.name) &&
                     !already_has_materialize_named(f.owner->nodes(), handle.name)) {
                     mat_before = i;
                 }
@@ -284,8 +285,7 @@ bool FreeInsertion::transform(Graph &graph) {
     for (auto const &plan : plans) {
         auto &handle = plan.owner->tensor(plan.tid);
 
-        auto         rel_fn = handle.release_fn;
-        size_t const bytes  = handle.total_bytes();
+        size_t const bytes = handle.total_bytes();
 
         // A parent-owned plan frees its own id; a hoisted body plan resolves
         // the buffer to a parent id (the same one effective_io maps it to) so

@@ -306,11 +306,11 @@ void Graph::materialize_internal_tensors() {
         }
         for (auto &[id, handle] : graph._registry.handles()) {
             if (!handle.materialize_on_execute || handle.alloc_state != AllocState::Deferred || !referenced.contains(id) ||
-                (handle.is_materialized_fn && handle.is_materialized_fn()) ||
-                (handle.tensor_ptr != nullptr && covered.contains(handle.tensor_ptr)) || !handle.materialize_fn) {
+                handle.materialized_now().value_or(false) || (handle.tensor_ptr != nullptr && covered.contains(handle.tensor_ptr)) ||
+                handle.ops->materialize == nullptr) {
                 continue;
             }
-            handle.materialize_fn();
+            handle.ops->materialize(handle.live_ptr());
             handle.alloc_state = AllocState::Materialized;
         }
     };
@@ -380,7 +380,7 @@ expected<void, GraphError> Graph::validate_tensors() const {
             // the body's nodes name and no others. Asking a tensor none of
             // them names read its storage while a Materialize on another
             // branch of the parent was allocating it.
-            if (handle.is_materialized_fn && handle.is_materialized_fn())
+            if (handle.materialized_now().value_or(false))
                 continue;
             // A redirected id's slot reads another tensor's storage, so its own deferred shell is
             // never touched; the tensor it was redirected to is the one that needs storage, and

@@ -98,11 +98,11 @@ void TensorRegistry::lease_scratch(std::string const &graph_name, std::shared_pt
         return;
     }
     for (auto &[tid, handle] : _tensors) {
-        if (handle.scratch_leased || !handle.is_intermediate || !handle.storage_of) {
+        if (handle.scratch_leased || !handle.is_intermediate || handle.ops->storage == nullptr) {
             continue;
         }
         handle.scratch_leased = true;
-        auto *storage         = handle.storage_of();
+        auto *storage         = handle.ops->storage(handle.live_ptr());
         if (storage == nullptr || storage->scratch != nullptr) {
             continue;
         }

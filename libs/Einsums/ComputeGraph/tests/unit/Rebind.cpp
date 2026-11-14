@@ -378,18 +378,24 @@ struct DeclaredAccumulator {
     Tensor<double, 2> &C;
     Tensor<double, 2>  user{"user", 3, 5};
 
-    DeclaredAccumulator() : C(graph.declare_zero_tensor<double, 2>(std::string("C"), 3, 5)) {
+    explicit DeclaredAccumulator(bool optimized = true) : C(graph.declare_zero_tensor<double, 2>(std::string("C"), 3, 5)) {
         {
             cg::CaptureGuard const guard(graph);
             cg::einsum("ik;kj->ij", 1.0, &C, 1.0, A, B);
         }
-        auto pm = cg::PassManager::create_default();
-        graph.apply(pm);
+        if (optimized) {
+            optimize();
+        }
         for (size_t i = 0; i < 3; ++i) {
             for (size_t j = 0; j < 5; ++j) {
                 user(i, j) = 7.0;
             }
         }
+    }
+
+    void optimize() {
+        auto pm = cg::PassManager::create_default();
+        graph.apply(pm);
     }
 
     /// A rebind redefines C: the bound tensor's contents are its value, so the accumulation
@@ -433,4 +439,24 @@ TEST_CASE("Rebind - a declared tensor bound by name leaves its lifecycle", "[Com
     fixture.graph.bind("C", fixture.user);
     fixture.graph.execute();
     fixture.check_redefined();
+}
+
+// The order Graph::bind's documentation recommends: bind, then optimize. The passes then see a
+// tensor the caller supplied, so they must give it no Materialize and no Initialize; an Initialize
+// built over the handle at that point would zero the caller's contents on every replay.
+TEST_CASE("Rebind - a declared tensor bound before optimizing keeps the caller's contents", "[ComputeGraph][Rebind]") {
+    SECTION("rebind") {
+        DeclaredAccumulator fixture(/*optimized=*/false);
+        fixture.graph.rebind(fixture.C, fixture.user);
+        fixture.optimize();
+        fixture.graph.execute();
+        fixture.check_redefined();
+    }
+    SECTION("bind by name") {
+        DeclaredAccumulator fixture(/*optimized=*/false);
+        fixture.graph.bind("C", fixture.user);
+        fixture.optimize();
+        fixture.graph.execute();
+        fixture.check_redefined();
+    }
 }

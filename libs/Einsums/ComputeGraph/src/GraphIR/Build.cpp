@@ -112,6 +112,7 @@ LoadedTensor allocate_tensor(Graph &root, Graph &graph, IrTensor const &spec) {
         handle.release_fn         = [tensor]() { tensor->release(); };
         handle.is_materialized_fn = [tensor]() { return tensor->is_materialized(); };
         handle.resize_deferred_fn = [tensor](std::vector<size_t> const &new_dims) { tensor->resize_deferred(new_dims); };
+        handle.resizable          = true;
         handle.zero_fn            = make_zero_fn(tensor);
     }
     TensorId const id = graph.register_tensor(std::move(handle));

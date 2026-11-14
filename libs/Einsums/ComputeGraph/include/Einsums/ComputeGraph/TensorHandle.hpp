@@ -598,6 +598,13 @@ struct TensorHandle {
     /// Whether @ref Graph::execute has leased this intermediate's storage, so it does it once.
     bool scratch_leased{false};
 
+    /// Whether this graph may give the deferred tensor new extents (a bind's derived extents, a
+    /// relayout, a distribution's local shape). Set by the declarations that give the graph the
+    /// tensor's shape: ``Graph::declare_tensor``, the deferred runtime declarations, and the
+    /// loader. Never set for a tensor another scope declared, whose storage other stages share:
+    /// that the tensor's type could be resized does not make it this graph's to resize.
+    bool resizable{false};
+
     /// Type-erased function to zero the tensor data.
     /// Set by declare_tensor on Workspace/Pipeline/Graph. Called by Initialize nodes.
     std::function<void()> zero_fn;
@@ -900,6 +907,15 @@ struct TensorHandle {
     /// @brief The tensor's CURRENT ``detail::TensorImpl<T>``, type-erased, or null when
     ///        @ref has_impl is false. Cast it once the element type is known from @ref dtype.
     [[nodiscard]] void *impl() const { return ops->impl != nullptr ? ops->impl(live_ptr()) : nullptr; }
+
+    /// @brief Whether the tensor has storage now, as its type reports it; empty for a type that
+    ///        cannot say. @ref alloc_state is the graph's record, which this is the live answer to.
+    [[nodiscard]] std::optional<bool> materialized_now() const {
+        if (ops->is_materialized == nullptr) {
+            return std::nullopt;
+        }
+        return ops->is_materialized(live_ptr());
+    }
 
     /// @brief The address the caller knows this tensor by: @ref caller_ptr when set, else @ref tensor_ptr.
     [[nodiscard]] void *lookup_ptr() const noexcept { return caller_ptr != nullptr ? caller_ptr : tensor_ptr; }

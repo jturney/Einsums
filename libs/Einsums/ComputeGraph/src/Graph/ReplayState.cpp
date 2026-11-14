@@ -64,11 +64,11 @@ void ReplayState::begin_run_metrics(Graph const &graph, std::uint64_t tree_stamp
             }
             auto const *desc   = node.op_data.get_if<AllocDescriptor>();
             auto const *handle = desc != nullptr ? g.find_tensor(g.buffer_of(desc->tensor_id)) : nullptr;
-            if (handle == nullptr || handle->tensor_ptr == nullptr || !handle->is_materialized_fn ||
+            if (handle == nullptr || handle->tensor_ptr == nullptr || !handle->materialized_now().has_value() ||
                 !seen.insert(handle->tensor_ptr).second) {
                 continue;
             }
-            if (handle->is_materialized_fn()) {
+            if (*handle->materialized_now()) {
                 held += handle->total_bytes();
             }
         }

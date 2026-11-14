@@ -87,10 +87,9 @@ bool CommunicationInsertion::transform(Graph &graph) {
                 ar_node.op_data = desc;
 
                 // Use the type-erased allreduce function from the handle
-                auto ar_fn = handle.allreduce_sum_fn;
-                use_custom_executor(ar_node, [ar_fn, name = handle.name]() {
-                    if (ar_fn) {
-                        ar_fn();
+                use_custom_executor(ar_node, [allreduce = handle.ops->allreduce_sum, object = handle.live_ptr(), name = handle.name]() {
+                    if (allreduce != nullptr) {
+                        allreduce(object);
                         EINSUMS_LOG_DEBUG("allreduce({}) completed", name);
                     }
                 });

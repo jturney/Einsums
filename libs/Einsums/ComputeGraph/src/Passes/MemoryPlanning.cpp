@@ -278,8 +278,8 @@ ArenaPlan plan_arena(Graph &graph, NoteSkip const &note) {
             continue;
         }
         auto const &handle = it->second;
-        if (!handle.is_intermediate || handle.aliases != 0 || view_targets.contains(tid) || !handle.materialize_into_fn ||
-            !handle.release_fn || handle.total_bytes() == 0) {
+        if (!handle.is_intermediate || handle.aliases != 0 || view_targets.contains(tid) || handle.ops->materialize_into == nullptr ||
+            handle.ops->release == nullptr || handle.total_bytes() == 0) {
             continue;
         }
         // A tensor viewed in a body, or one with no object to compare against the views there.
@@ -419,7 +419,7 @@ struct ManagedCount {
             if ((node.kind == OpKind::Materialize || node.kind == OpKind::Free) && node.estimated_bytes != 0) {
                 auto const *desc   = node.op_data.get_if<AllocDescriptor>();
                 auto const *handle = desc != nullptr ? graph.find_tensor(graph.buffer_of(desc->tensor_id)) : nullptr;
-                if (handle != nullptr && handle->tensor_ptr != nullptr && handle->is_materialized_fn &&
+                if (handle != nullptr && handle->tensor_ptr != nullptr && handle->materialized_now().has_value() &&
                     (hosted == nullptr || !hosted->contains(handle->tensor_ptr))) {
                     if (node.kind == OpKind::Materialize) {
                         if (live.try_emplace(handle->tensor_ptr, handle->total_bytes()).second) {

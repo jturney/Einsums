@@ -406,7 +406,7 @@ void Graph::attach_backing(TensorHandle &handle, TensorBacking backing) {
     // already held: filling it from storage would overwrite whatever the caller put there. A
     // tensor with no elements counts as allocated from the moment it is declared, and holds
     // nothing a fill could overwrite, so it is accepted.
-    bool const materialized = handle.is_materialized_fn ? handle.is_materialized_fn() : handle.alloc_state != AllocState::Deferred;
+    bool const materialized = handle.materialized_now().value_or(handle.alloc_state != AllocState::Deferred);
     bool const empty        = std::ranges::find(handle.dims, std::size_t{0}) != handle.dims.end();
     if (materialized && !empty) {
         refuse("the tensor is already allocated; declare it on the graph (declare_tensor) so it stays deferred");
@@ -586,10 +586,10 @@ void Graph::for_each_descendant(std::function<void(Graph const &)> const &visito
 void Graph::refresh_declared_symmetry() {
     auto const refresh = [](Graph &graph) {
         for (auto &[tid, handle] : graph._registry.handles()) {
-            if (!handle.declared_symmetry_fn) {
+            if (handle.ops->declared_symmetry == nullptr) {
                 continue;
             }
-            if (auto declared = handle.declared_symmetry_fn();
+            if (auto declared = handle.ops->declared_symmetry(handle.live_ptr());
                 declared != nullptr && (handle.symmetry_hint == nullptr || !(*handle.symmetry_hint == *declared))) {
                 handle.symmetry_hint = std::move(declared);
                 graph.note(Change::HandleChanged);

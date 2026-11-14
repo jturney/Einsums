@@ -523,13 +523,12 @@ void Graph::resize_derived_extent(TensorId id, std::vector<std::size_t> const &d
                                 "create the graph with deferred intermediates (Graph::scratch)",
                                 _name, handle->name, producer, fmt::join(derived, ", "), fmt::join(handle->dims, ", "));
     }
-    if (!handle->resize_deferred_fn) {
+    if (!handle->resizable || handle->ops->resize_deferred == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "Graph '{}': binding these extents makes intermediate '{}' (written by {}) [{}] instead of [{}]. Its "
-                                "storage is deferred, so the shape could move, but the handle carries no resize hook and nothing here "
-                                "can reshape it. A hook is installed by whichever declare_* created the tensor; one that registers a "
-                                "deferred handle without a resize_deferred_fn produces a tensor whose dim symbols are read and then "
-                                "cannot be acted on",
+                                "storage is deferred, so the shape could move, but this graph did not declare its shape and nothing "
+                                "here may reshape it. A declare_* that gives the graph a tensor's shape marks it resizable; one that "
+                                "does not produces a tensor whose dim symbols are read and then cannot be acted on",
                                 _name, handle->name, producer, fmt::join(derived, ", "), fmt::join(handle->dims, ", "));
     }
 
@@ -537,18 +536,18 @@ void Graph::resize_derived_extent(TensorId id, std::vector<std::size_t> const &d
     // previous problem. Its lifecycle already says that buffer is disposable - a
     // Materialize node re-attaches one at the right position - so give it back rather than
     // refuse a second bind.
-    if (handle->is_materialized_fn && handle->is_materialized_fn()) {
-        if (!handle->release_fn) {
+    if (handle->materialized_now().value_or(false)) {
+        if (handle->ops->release == nullptr) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                     "Graph '{}': binding these extents makes intermediate '{}' (written by {}) [{}] instead of [{}], "
                                     "but it holds storage it cannot release. Re-bind before materialization, or create the graph with "
                                     "deferred intermediates (Graph::scratch)",
                                     _name, handle->name, producer, fmt::join(derived, ", "), fmt::join(handle->dims, ", "));
         }
-        handle->release_fn();
+        handle->ops->release(handle->live_ptr());
     }
 
-    handle->resize_deferred_fn(derived);
+    handle->ops->resize_deferred(handle->live_ptr(), derived);
 
     // Snapshots. ``dims`` lives in three places - here, on the slot, and inside the live
     // impl - and the two snapshots are what every extent check and the alias derivation

@@ -72,8 +72,8 @@ bool Graph::infer_symmetry(TensorId id, SymmetryDescriptor descriptor, SymmetryR
         return false; // already says this, so a re-run reports no new inference
     }
     handle.symmetry_hint = std::make_shared<SymmetryDescriptor const>(descriptor);
-    if (reach == SymmetryReach::Tensor && handle.set_symmetry_fn) {
-        handle.set_symmetry_fn(std::move(descriptor));
+    if (reach == SymmetryReach::Tensor && handle.ops->set_symmetry != nullptr) {
+        handle.ops->set_symmetry(handle.live_ptr(), std::move(descriptor));
     }
     note(Change::HandleChanged);
     return true;
@@ -81,7 +81,7 @@ bool Graph::infer_symmetry(TensorId id, SymmetryDescriptor descriptor, SymmetryR
 
 void Graph::relayout(TensorId id, std::span<std::size_t const> order) {
     TensorHandle &handle = registered(_registry.handles(), _name, id);
-    if (handle.alloc_state != AllocState::Deferred || !handle.resize_deferred_fn) {
+    if (handle.alloc_state != AllocState::Deferred || !handle.resizable || handle.ops->resize_deferred == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::logic_error,
                                 "Graph '{}': relayout of tensor '{}' needs a deferred tensor with a resize hook; re-laying out a live "
                                 "buffer is a data movement, not a change of declaration",
@@ -120,7 +120,7 @@ void Graph::relayout(TensorId id, std::span<std::size_t const> order) {
         handle.dim_symbols = permuted(handle.dim_symbols);
     }
 
-    handle.resize_deferred_fn(dims);
+    handle.ops->resize_deferred(handle.live_ptr(), dims);
     handle.dims = dims;
     handle.strides.assign(dims.size(), 1);
     for (std::size_t axis = 1; axis < dims.size(); axis++) {

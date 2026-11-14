@@ -58,54 +58,61 @@ std::function<void()> load_whole(TensorHandle const &handle) {
 } // namespace
 
 std::function<void()> build_materialize(TensorHandle const &handle, std::shared_ptr<RunContext> context) {
-    return [mat_fn = handle.materialize_fn, resize_fn = handle.resize_deferred_fn, set_dist_fn = handle.set_distribution_fn,
-            is_dist = handle.is_distributed && !handle.is_replicated, dist_info = handle.distribution_info,
-            held_fn = handle.is_materialized_fn, bytes = static_cast<std::uint64_t>(handle.total_bytes()), context = std::move(context)]() {
-        bool const held_before = held_fn ? held_fn() : true;
-        if (is_dist && resize_fn && dist_info) {
-            auto const desc       = std::static_pointer_cast<comm::DistributionDescriptor>(dist_info);
-            int const  rank       = comm::world_rank();
-            auto const local_dims = desc->local_dims_for(rank);
-            resize_fn(local_dims);
+    // Resizing for a distribution is this graph's to do only for a tensor it declared; see
+    // TensorHandle::resizable.
+    auto const resize_fn   = handle.resizable ? handle.ops->resize_deferred : nullptr;
+    auto const set_dist_fn = handle.resizable ? handle.ops->set_distribution : nullptr;
+    return
+        [ops = handle.ops, object = handle.live_ptr(), resize_fn, set_dist_fn, is_dist = handle.is_distributed && !handle.is_replicated,
+         dist_info = handle.distribution_info, bytes = static_cast<std::uint64_t>(handle.total_bytes()), context = std::move(context)]() {
+            auto const held        = [ops, object] { return ops->is_materialized(object); };
+            bool const held_before = ops->is_materialized != nullptr ? held() : true;
+            if (is_dist && resize_fn != nullptr && dist_info) {
+                auto const desc       = std::static_pointer_cast<comm::DistributionDescriptor>(dist_info);
+                int const  rank       = comm::world_rank();
+                auto const local_dims = desc->local_dims_for(rank);
+                resize_fn(object, local_dims);
 
-            if (set_dist_fn) {
-                std::vector<size_t> offsets(desc->dim_to_axis.size());
-                for (size_t d = 0; d < desc->dim_to_axis.size(); d++) {
-                    auto [start, end] = desc->local_range(d, rank);
-                    offsets[d]        = start;
+                if (set_dist_fn != nullptr) {
+                    std::vector<size_t> offsets(desc->dim_to_axis.size());
+                    for (size_t d = 0; d < desc->dim_to_axis.size(); d++) {
+                        auto [start, end] = desc->local_range(d, rank);
+                        offsets[d]        = start;
+                    }
+                    set_dist_fn(object, desc->global_dims, offsets);
                 }
-                set_dist_fn(desc->global_dims, offsets);
             }
-        }
-        if (mat_fn) {
-            mat_fn();
-        }
-        if (context && !held_before && held_fn && held_fn()) {
-            context->allocated(bytes);
-        }
-    };
+            if (ops->materialize != nullptr) {
+                ops->materialize(object);
+            }
+            if (context && !held_before && ops->is_materialized != nullptr && held()) {
+                context->allocated(bytes);
+            }
+        };
 }
 
 std::function<void()> build_free(TensorHandle const &handle, std::shared_ptr<RunContext> context) {
     // No logging here: this fires once per freed tensor per REPLAY.
-    return [rel_fn = handle.release_fn, held_fn = handle.is_materialized_fn, bytes = static_cast<std::uint64_t>(handle.total_bytes()),
+    return [ops = handle.ops, object = handle.live_ptr(), bytes = static_cast<std::uint64_t>(handle.total_bytes()),
             context = std::move(context)]() {
-        bool const held_before = held_fn && held_fn();
-        if (rel_fn) {
-            rel_fn();
+        bool const held_before = ops->is_materialized != nullptr && ops->is_materialized(object);
+        if (ops->release != nullptr) {
+            ops->release(object);
         }
-        if (context && held_before && !held_fn()) {
+        if (context && held_before && !ops->is_materialized(object)) {
             context->released(bytes);
         }
     };
 }
 
 std::function<void()> build_attach(TensorHandle const &handle, std::shared_ptr<ArenaBlock> arena, std::size_t offset) {
-    return [arena = std::move(arena), offset, attach = handle.materialize_into_fn]() { attach(static_cast<void *>(arena->data + offset)); };
+    return [arena = std::move(arena), offset, attach = handle.ops->materialize_into, object = handle.live_ptr()]() {
+        attach(object, static_cast<void *>(arena->data + offset));
+    };
 }
 
 std::function<void()> build_detach(TensorHandle const &handle) {
-    return [rel = handle.release_fn]() { rel(); };
+    return [release = handle.ops->release, object = handle.live_ptr()]() { release(object); };
 }
 
 std::function<void()> build_initialize(InitKind init, TensorHandle const &handle) {
