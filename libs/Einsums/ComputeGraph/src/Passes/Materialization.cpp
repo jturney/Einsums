@@ -110,7 +110,7 @@ struct DeferredEntry {
 // order would vary by platform.
 void collect_deferred(Graph &graph, std::vector<DeferredEntry> &out, std::vector<std::pair<Graph *, std::string>> &nested_setups) {
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (handle.alloc_state == AllocState::Deferred) {
+        if (handle.alloc_state == AllocState::Deferred && !handle.caller_bound) {
             out.push_back({.handle_owner = &graph, .tid = tid});
         }
     }
@@ -377,9 +377,11 @@ bool Materialization::transform(Graph &graph) {
     };
 
     // ── 1. The parent graph's own deferred tensors ────────────────────────
+    // A slot a rebind gave to the caller's storage is not this graph's to allocate (see
+    // TensorHandle::caller_bound), deferred or not; execute() reports one with no storage.
     std::vector<TensorId> own_deferred;
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (handle.alloc_state == AllocState::Deferred && !planned(handle)) {
+        if (handle.alloc_state == AllocState::Deferred && !handle.caller_bound && !planned(handle)) {
             own_deferred.push_back(tid);
         }
     }
@@ -750,7 +752,7 @@ bool Materialization::transform(Graph &graph) {
 
         std::vector<Node> body_lifecycle;
         for (auto &[tid, handle] : body.tensors_map()) {
-            if (handle.alloc_state != AllocState::Deferred) {
+            if (handle.alloc_state != AllocState::Deferred || handle.caller_bound) {
                 continue;
             }
             // A handle with no allocating hook is not this graph's to allocate. That is

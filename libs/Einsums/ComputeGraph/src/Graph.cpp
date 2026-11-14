@@ -300,6 +300,9 @@ void Graph::note(Change change) noexcept {
         _replay.invalidate_profile_strings();
         _registry.set_slots_validated(false);
         _node_list.bump_analysis_version();
+        // The graph now reads a tensor the first replay never checked: one that may already be
+        // destroyed, or bound with no storage. The next execute() validates again, as after a pass.
+        _replay.mark_unexecuted();
         break;
     case Change::HandleChanged:
         _registry.bump_handle_version();

@@ -518,3 +518,48 @@ TEST_CASE("Rebind - a Free built before a rebind leaves the caller's storage alo
         }
     }
 }
+
+// A slot bound to a tensor that has no storage yet, here another graph's deferred declaration. The
+// bound tensor's storage is the caller's, so this graph does not allocate it, whether the bind
+// comes before the passes, after them, or after a replay; execute() used to run the contraction
+// through its null buffer and crash. It now says what is wrong, and once the caller gives the
+// tensor storage the graph uses it, unzeroed.
+TEST_CASE("Rebind - a slot bound to a tensor with no storage is reported, not run", "[ComputeGraph][Rebind]") {
+    enum class When { BeforeOptimizing, AfterOptimizing, AfterAReplay };
+    for (When const when : {When::BeforeOptimizing, When::AfterOptimizing, When::AfterAReplay}) {
+        INFO("when: " << static_cast<int>(when));
+        DeclaredAccumulator fixture(/*optimized=*/when != When::BeforeOptimizing);
+        if (when == When::AfterAReplay) {
+            fixture.graph.execute();
+        }
+        cg::Graph other("other");
+        auto     &D = other.declare_tensor<double, 2>(std::string("D"), 3, 5);
+        REQUIRE_FALSE(D.is_materialized());
+        fixture.graph.rebind(fixture.C, D);
+        if (when == When::BeforeOptimizing) {
+            fixture.optimize();
+        }
+        REQUIRE_THROWS_WITH(fixture.graph.execute(), Catch::Matchers::ContainsSubstring("has no storage"));
+        CHECK_FALSE(D.is_materialized());
+
+        D.materialize();
+        for (size_t i = 0; i < 3; ++i) {
+            for (size_t j = 0; j < 5; ++j) {
+                D(i, j) = 7.0;
+            }
+        }
+        fixture.graph.execute();
+        auto expected = create_zero_tensor<double>("expected", 3, 5);
+        for (size_t i = 0; i < 3; ++i) {
+            for (size_t j = 0; j < 5; ++j) {
+                expected(i, j) = 7.0;
+            }
+        }
+        reference_einsum("ik;kj->ij", 1.0, &expected, 1.0, fixture.A, fixture.B);
+        for (size_t i = 0; i < 3; ++i) {
+            for (size_t j = 0; j < 5; ++j) {
+                CHECK_THAT(D(i, j), Catch::Matchers::WithinAbs(expected(i, j), 1e-12));
+            }
+        }
+    }
+}

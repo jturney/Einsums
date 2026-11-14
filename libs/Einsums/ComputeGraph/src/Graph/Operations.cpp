@@ -382,6 +382,15 @@ expected<void, GraphError> Graph::validate_tensors() const {
             // branch of the parent was allocating it.
             if (handle.materialized_now().value_or(false))
                 continue;
+            // A bound tensor's storage is the caller's, so no Materialize gives it any, and running
+            // on it would read through a null buffer.
+            if (handle.caller_bound) {
+                return unexpected(GraphError::validation(
+                    fmt::format("Graph '{}': tensor '{}' (id={}) is bound to a tensor that has no storage. A bound tensor's storage "
+                                "is the caller's, so the graph does not allocate it: materialize it, or run the graph that declared "
+                                "it, before execute(), or bind a tensor that has storage.",
+                                _name, handle.name, id)));
+            }
             // A redirected id's slot reads another tensor's storage, so its own deferred shell is
             // never touched; the tensor it was redirected to is the one that needs storage, and
             // this loop checks that one on its own.

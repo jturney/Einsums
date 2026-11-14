@@ -119,7 +119,10 @@ do so.
 
 Validation runs while the graph has not executed yet, and a modifying optimizer
 pass puts it back in that state (``Graph::mark_sorted`` clears the executed flag).
-The first replay after such a pass therefore re-validates every handle.
+So does a rebind, since the graph then reads a tensor no replay has checked.
+The first replay after either therefore re-validates every handle.
+A slot bound to a tensor that has no storage yet is reported there too: a bound
+tensor's storage is the caller's, so the graph does not allocate it.
 
 Graph-owned views are their own liveness class.
 The slice a ``cg::view`` / ``cg::view_runtime`` / ``cg::tile_view`` node
