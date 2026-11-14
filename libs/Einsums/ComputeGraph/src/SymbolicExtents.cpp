@@ -471,7 +471,7 @@ void Graph::prepare_bind_solution(DimSolution const &solution) const {
     // and not here. Refuse rather than rebind a batch whose group table describes the old
     // problem: this runs before anything is repointed, so a refusal leaves the graph
     // untouched.
-    for (auto const &node : _nodes) {
+    for (auto const &node : _node_list.nodes()) {
         if (node.kind == OpKind::BatchedGemm || node.kind == OpKind::GroupedBatchedGemm) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                     "Graph '{}': this bind changes an extent, but node '{}' is a {} whose group shapes were planned "
@@ -585,7 +585,7 @@ void Graph::rederive_owned_extents() {
     // The same traversal shape SpacePropagation uses, carrying extents instead of spaces.
     topological_sort();
 
-    for (auto const &node : _nodes) {
+    for (auto const &node : _node_list.nodes()) {
         // A registered descriptor says what its outputs come to, one or many. An answer of the
         // wrong length is reported by validate_node_extents, which names the node.
         if (auto derived = hooked_output_extents(*this, node)) {
@@ -650,7 +650,7 @@ void Graph::rederive_owned_extents() {
 }
 
 void Graph::validate_node_extents() const {
-    for (auto const &node : _nodes) {
+    for (auto const &node : _node_list.nodes()) {
         if (auto const problem = hooked_extent_mismatch(*this, node)) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': after binding, {}", _name, *problem);
         }

@@ -14,6 +14,7 @@
 #include <Einsums/ComputeGraph/Detail/BindingSession.hpp>
 #include <Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp>
 #include <Einsums/ComputeGraph/Detail/MaintainedViews.hpp>
+#include <Einsums/ComputeGraph/Detail/NodeList.hpp>
 #include <Einsums/ComputeGraph/Detail/OptimizationRecord.hpp>
 #include <Einsums/ComputeGraph/Detail/ParamStore.hpp>
 #include <Einsums/ComputeGraph/Detail/RunContext.hpp>
@@ -764,13 +765,16 @@ struct GraphState {
     /// @see bind, bind_begin, set_setup_key, bind_ragged_extents
     BindingSession _binding;
 
-    std::string       _name;
-    std::string       _pipeline_name;   ///< Parent pipeline name (empty if standalone)
-    std::string       _workspace_name;  ///< Parent workspace name (empty if none)
-    std::string       _stage_name;      ///< Stage name within pipeline
-    std::string       _stage_type;      ///< "graph" or "loop"
-    int               _stage_index{-1}; ///< Order within pipeline
-    std::vector<Node> _nodes;
+    std::string _name;
+    std::string _pipeline_name;   ///< Parent pipeline name (empty if standalone)
+    std::string _workspace_name;  ///< Parent workspace name (empty if none)
+    std::string _stage_name;      ///< Stage name within pipeline
+    std::string _stage_type;      ///< "graph" or "loop"
+    int         _stage_index{-1}; ///< Order within pipeline
+
+    /// The nodes in program order, their dependency lists, the change counters and the analyses
+    /// cached against them. @see nodes, dependencies, analysis_version, usage
+    NodeList _node_list;
 
     /// Which symbol each index space ties to, what each measures, how each is tiled, and the
     /// registry their ids came from. @see symbol_spaces, space_extent, space_tiling, space_registry
@@ -780,43 +784,11 @@ struct GraphState {
     /// arrays it can name. @see params_ptr, name_gate_flags
     ParamStore _param_store;
 
-    NodeId _next_node_id{0};
-
-    bool _sorted{false};
-
-    /// Whether _deps matches the current node order. Distinct from _sorted:
-    /// mark_sorted() vouches for the order without rebuilding _deps, so
-    /// topological_sort() can skip the Kahn pass but must refresh the lists.
-    bool _deps_valid{false};
-
-    /// Sub-graph stamp _deps was built at: a control-flow node's edges come from its bodies, so a
-    /// declared edit below this graph makes them stale too. @see Graph::subtree_stamp
-    std::uint64_t _deps_subtree_stamp{0};
-
     /// The thread count the node widths assume, and the trial a cold plan is in.
     /// @see planned_thread_count, plan_threads
     ThreadPlan _thread_plan;
 
-    /// Mutation counter for cached analyses. Bumped at every
-    /// mutation-declaration point; UsageAnalysis caches against it.
-    std::uint64_t _analysis_version{0};
-    /// Node-set counter for the pass phase rule. @see structure_version
-    std::uint64_t _structure_version{0};
-
-    /// Version _usage was built at (UINT64_MAX = never built).
-    std::uint64_t _usage_version{std::numeric_limits<std::uint64_t>::max()};
-    UsageAnalysis _usage;
-    /// Sub-graph stamp _usage was built at. @see Graph::subtree_stamp
-    std::uint64_t _usage_subtree_stamp{0};
-    /// Positions of the nodes that hold a sub-graph, and the version and node count they were
-    /// found at. Positions rather than pointers: a body is re-read from the node each time, so a
-    /// body swapped in a node's descriptor is never held past its life.
-    std::vector<std::uint32_t> _subgraph_positions;
-    std::uint64_t              _subgraph_positions_version{std::numeric_limits<std::uint64_t>::max()};
-    std::size_t                _subgraph_positions_count{0};
-    DependencyInfo             _deps; ///< Populated by topological_sort()
-
-    /// Serializes structural reads/writes of _nodes / _tensors / _timing_report
+    /// Serializes structural reads/writes of the node list, the tensor table and the timing report
     /// so the profiler server thread's to_json() cannot observe a torn or
     /// half-moved node vector while the owning thread mutates the graph. Locked
     /// by to_json (reader) and by the mutating entry points: add_node,
@@ -1039,7 +1011,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * that does not can leave the node at @ref unassigned_node_id and let
      * @ref assign_node_ids issue one.
      */
-    NodeId reserve_node_id() { return _next_node_id++; }
+    NodeId reserve_node_id() { return _node_list.reserve_id(); }
 
     /**
      * @brief Issue a fresh id to every node still carrying @ref unassigned_node_id.
@@ -2416,7 +2388,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     [[nodiscard]] std::string const                 &stage_type() const { return _stage_type; }
     /// @brief The nodes, in schedule order. A pass changes them through @ref edit,
     ///        @ref set_schedule and the node-set functions, which keep what follows from a change in step.
-    [[nodiscard]] std::vector<Node> const &nodes() const { return _nodes; }
+    [[nodiscard]] std::vector<Node> const &nodes() const { return _node_list.nodes(); }
 
     /**
      * @brief Make every node's input list follow the destination rule (see DestinationRead.hpp),
@@ -2429,7 +2401,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return True when any node's inputs changed.
      */
     bool                               sync_destination_inputs();
-    APIARY_EXPOSE [[nodiscard]] size_t num_nodes() const { return _nodes.size(); }                ///< Number of operation nodes.
+    APIARY_EXPOSE [[nodiscard]] size_t num_nodes() const { return _node_list.nodes().size(); }    ///< Number of operation nodes.
     APIARY_EXPOSE [[nodiscard]] size_t num_tensors() const { return _registry.handles().size(); } ///< Number of registered tensors.
 
     /**
@@ -2850,7 +2822,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     [[nodiscard]] TensorId buffer_of(TensorId id) const;
 
     /// Access dependency info (populated by topological_sort()).
-    [[nodiscard]] DependencyInfo const &dependencies() const { return _deps; }
+    [[nodiscard]] DependencyInfo const &dependencies() const { return _node_list.deps(); }
 
     /**
      * @brief How many hazard edges the schedule holds, and how wide its levels are.
@@ -2928,7 +2900,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// mark_sorted, topological_sort, rebind). Anything caching a derived
     /// property of the node list - UsageAnalysis, an executor's per-node
     /// scratch - can stamp itself with this and rebuild when it goes stale.
-    [[nodiscard]] std::uint64_t analysis_version() const { return _analysis_version; }
+    [[nodiscard]] std::uint64_t analysis_version() const { return _node_list.analysis_version(); }
 
     /**
      * @brief Counter of changes to the NODE SET, distinct from @ref analysis_version.
@@ -2957,7 +2929,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Sub-graph mutations bump the SUB-graph's counter, not the parent's; a
      * caller reasoning about a whole tree must walk it.
      */
-    [[nodiscard]] std::uint64_t structure_version() const { return _structure_version; }
+    [[nodiscard]] std::uint64_t structure_version() const { return _node_list.structure_version(); }
 
     /**
      * @brief Declare that a direct mutation of @ref nodes changed the node set.
@@ -5490,10 +5462,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Rebuild _profile_strings for the current node list.
     void rebuild_profile_strings();
 
-    /// Rebuild the position-keyed _deps lists for the current node order.
+    /// Rebuild the position-keyed dependency lists for the current node order.
     void rebuild_deps(EffectiveIoCache &cache);
 
-    /// Partition the current _deps.successors/predecessors into levels.
+    /// Partition the current dependency lists into levels.
     /// Split out of rebuild_deps so topological_sort can reach it without
     /// repeating the hazard scan when the sort leaves the node order alone.
     void rebuild_levels();

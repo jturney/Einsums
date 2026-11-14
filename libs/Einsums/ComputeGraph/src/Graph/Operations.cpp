@@ -55,8 +55,8 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 void Graph::update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorScalar ab_pf) {
-    auto const it = std::ranges::find(_nodes, node_id, &Node::id);
-    if (it == _nodes.end()) {
+    auto const it = std::ranges::find(_node_list.nodes(), node_id, &Node::id);
+    if (it == _node_list.nodes().end()) {
         EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no node with id {}", _name, node_id);
     }
     if (!it->op_data.holds<EinsumDescriptor>()) {
@@ -66,7 +66,7 @@ void Graph::update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorSca
     }
     // An edit, so the commit builds the executor from the new prefactors and lists C as an input
     // exactly when the new C prefactor reads it.
-    edit(static_cast<std::size_t>(it - _nodes.begin()), [&](NodeEdit &e) {
+    edit(static_cast<std::size_t>(it - _node_list.nodes().begin()), [&](NodeEdit &e) {
         auto *desc         = e->op_data.get_if<EinsumDescriptor>();
         desc->c_prefactor  = c_pf;
         desc->ab_prefactor = ab_pf;
@@ -282,7 +282,7 @@ void Graph::materialize_internal_tensors() {
     // tensor pointer two graphs' handles share.
     std::unordered_set<void const *> covered;
     auto const                       note = [&covered](Graph const &graph) {
-        for (auto const &node : graph._nodes) {
+        for (auto const &node : graph._node_list.nodes()) {
             if (node.kind != OpKind::Materialize) {
                 continue;
             }
@@ -300,7 +300,7 @@ void Graph::materialize_internal_tensors() {
     // block buffer stands in for it, and storage then would be the memory the tiling saved.
     auto const give = [&covered](Graph &graph) {
         std::unordered_set<TensorId> referenced;
-        for (auto const &node : graph._nodes) {
+        for (auto const &node : graph._node_list.nodes()) {
             referenced.insert(node.inputs.begin(), node.inputs.end());
             referenced.insert(node.outputs.begin(), node.outputs.end());
         }
@@ -332,7 +332,7 @@ expected<void, GraphError> Graph::validate_tensors() const {
         if (handle.alloc_state == AllocState::Deferred) {
             if (!materialize_targets_built) {
                 materialize_targets_built = true;
-                for (auto const &node : _nodes) {
+                for (auto const &node : _node_list.nodes()) {
                     for (auto in : node.inputs)
                         referenced_tids.insert(in);
                     for (auto out : node.outputs)
@@ -353,7 +353,7 @@ expected<void, GraphError> Graph::validate_tensors() const {
                 // skipped on the replays that skip the fitting. Matched by tensor_ptr, which
                 // is the identity two graphs share; ids are per-graph and would not.
                 std::as_const(*this).for_each_descendant([&](Graph const &sub) {
-                    for (auto const &node : sub._nodes) {
+                    for (auto const &node : sub._node_list.nodes()) {
                         if (node.kind != OpKind::Materialize) {
                             continue;
                         }
@@ -411,7 +411,7 @@ expected<void, GraphError> Graph::validate_tensors() const {
 
 void Graph::validate_shapes_at_capture() const {
     // Verify tensor ranks match index counts for Einsum nodes
-    for (auto const &node : _nodes) {
+    for (auto const &node : _node_list.nodes()) {
         if (node.kind != OpKind::Einsum)
             continue;
 

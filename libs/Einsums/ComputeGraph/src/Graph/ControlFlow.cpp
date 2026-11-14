@@ -101,7 +101,7 @@ std::tuple<Graph &, Graph &> Graph::add_conditional_flag(std::string label, Gate
 // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
 void Graph::set_params_ptr(std::shared_ptr<ParamTable> params) {
     _param_store.set_table(std::move(params));
-    for (auto &node : _nodes) {
+    for (auto &node : _node_list.nodes()) {
         for_each_child_graph(node, [this](Graph &child) { child.set_params_ptr(_param_store.table()); });
     }
 }
@@ -113,7 +113,7 @@ Graph &Graph::add_loop(std::string label, size_t max_iterations, std::function<b
 }
 
 Graph &Graph::add_loop(std::string label, size_t max_iterations, PredExpr condition) {
-    return add_loop_at(std::move(label), max_iterations, std::move(condition), _nodes.size());
+    return add_loop_at(std::move(label), max_iterations, std::move(condition), _node_list.nodes().size());
 }
 
 Graph &Graph::add_loop_at(std::string label, size_t max_iterations, PredExpr condition, std::size_t position) {
@@ -145,7 +145,7 @@ Graph &Graph::add_loop_at(std::string label, size_t max_iterations, PredExpr con
     node.id = reserve_node_id();
 
     std::vector<std::pair<std::size_t, std::vector<Node>>> group;
-    group.emplace_back(std::min(position, _nodes.size()), std::vector<Node>{std::move(node)});
+    group.emplace_back(std::min(position, _node_list.nodes().size()), std::vector<Node>{std::move(node)});
     insert_node_groups(std::move(group));
 
     return *body_graph;
@@ -160,7 +160,7 @@ void Graph::add_loop(std::string label, size_t max_iterations, std::function<boo
 // ── Setup subgraphs ─────────────────────────────────────────────────────────
 
 Graph &Graph::add_setup(std::string label) {
-    return add_setup_at(std::move(label), _nodes.size());
+    return add_setup_at(std::move(label), _node_list.nodes().size());
 }
 
 Graph &Graph::add_setup_at(std::string label, std::size_t position) {
@@ -197,7 +197,7 @@ Graph &Graph::add_setup_at(std::string label, std::size_t position) {
     // already knows how to keep positions valid; appending and then moving would be a second
     // way of doing it and one more thing to keep in step.
     std::vector<std::pair<std::size_t, std::vector<Node>>> group;
-    group.emplace_back(std::min(position, _nodes.size()), std::vector<Node>{std::move(node)});
+    group.emplace_back(std::min(position, _node_list.nodes().size()), std::vector<Node>{std::move(node)});
     insert_node_groups(std::move(group));
 
     return *body_graph;
@@ -215,11 +215,11 @@ void Graph::add_setup(std::string label, std::function<void()> body_fn) {
 }
 
 bool Graph::has_setup() const noexcept {
-    return std::any_of(_nodes.begin(), _nodes.end(), [](Node const &node) { return node.kind == OpKind::Setup; });
+    return std::any_of(_node_list.nodes().begin(), _node_list.nodes().end(), [](Node const &node) { return node.kind == OpKind::Setup; });
 }
 
 void Graph::run_setup(bool force) {
-    for (auto &node : _nodes) {
+    for (auto &node : _node_list.nodes()) {
         auto *desc = node.op_data.get_if<SetupDescriptor>();
         if (desc == nullptr || !desc->body) {
             continue;
@@ -238,7 +238,7 @@ void Graph::run_setup(bool force) {
 }
 
 void Graph::invalidate_setup() {
-    for (auto &node : _nodes) {
+    for (auto &node : _node_list.nodes()) {
         auto *desc = node.op_data.get_if<SetupDescriptor>();
         if (desc == nullptr || desc->state == nullptr) {
             continue;
@@ -290,7 +290,7 @@ void Graph::clear_accuracy_budget() {
 
 void Graph::set_setup_key(std::string key) {
     _binding.set_setup_key(std::move(key));
-    for (auto &node : _nodes) {
+    for (auto &node : _node_list.nodes()) {
         auto *desc = node.op_data.get_if<SetupDescriptor>();
         if (desc == nullptr || desc->state == nullptr) {
             continue;

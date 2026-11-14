@@ -125,7 +125,7 @@ void Graph::collect_subtree_referenced_ptrs(std::unordered_set<void const *> &ou
                 *saw_unresolved = true;
             }
         };
-        for (auto const &node : g._nodes) {
+        for (auto const &node : g._node_list.nodes()) {
             for (auto tid : node.inputs) {
                 add(tid);
             }
@@ -152,7 +152,7 @@ Graph::SubtreeBuffers Graph::subtree_buffers(Node const &node) const {
     auto                              &write_ptrs = found.writes;
     auto                              &rep_handle = found.handles;
     std::function<void(Graph const &)> collect    = [&](Graph const &sub) {
-        for (auto const &nd : sub._nodes) {
+        for (auto const &nd : sub._node_list.nodes()) {
             if (is_lifecycle(nd.kind)) {
                 continue;
             }
@@ -256,7 +256,7 @@ void Graph::refresh_setup_io() {
     // actually moves, because PassManager::run calls this before every pass and an unchanged graph
     // must keep its caches.
     bool changed = false;
-    for (auto &node : _nodes) {
+    for (auto &node : _node_list.nodes()) {
         if (node.kind != OpKind::Setup) {
             continue;
         }
@@ -314,7 +314,7 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     std::unordered_map<TensorId, Box>      view_box;    // view tid -> box in root axis space
     std::unordered_map<TensorId, TensorId> view_parent; // view tid -> alias ROOT tid
     StructuralAliasResolver                resolver(*this);
-    for (auto const &nd : _nodes) {
+    for (auto const &nd : _node_list.nodes()) {
         if (nd.kind != OpKind::View || nd.outputs.size() != 1 || !nd.op_data.holds<ViewDescriptor>()) {
             continue;
         }
@@ -407,12 +407,12 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     // named_reads in Node.hpp.
     detail::NamedHazards named;
 
-    size_t const n = _nodes.size();
+    size_t const n = _node_list.nodes().size();
     for (size_t i = 0; i < n; i++) {
-        auto [eff_in, eff_out] = effective_io_cached(_nodes[i], cache);
+        auto [eff_in, eff_out] = effective_io_cached(_node_list.nodes()[i], cache);
         for (auto raw : eff_in) {
             TensorId const tid = buffer_of(raw);
-            Box const     *box = box_of(_nodes[i], raw, tid);
+            Box const     *box = box_of(_node_list.nodes()[i], raw, tid);
             for (auto const &w : writers[tid]) {
                 if (w.pos != i && may_overlap(w.box, box)) {
                     emit(w.pos, i); // RAW: writer -> reader
@@ -422,7 +422,7 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
         }
         for (auto raw : eff_out) {
             TensorId const tid = buffer_of(raw);
-            Box const     *box = box_of(_nodes[i], raw, tid);
+            Box const     *box = box_of(_node_list.nodes()[i], raw, tid);
             auto          &wl  = writers[tid];
             for (auto const &w : wl) {
                 if (w.pos != i && may_overlap(w.box, box)) {
@@ -449,19 +449,19 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
             wl.push_back({.pos = i, .box = box});
         }
 
-        named.visit(i, named_reads(_nodes[i]), named_writes(_nodes[i]), emit);
+        named.visit(i, named_reads(_node_list.nodes()[i]), named_writes(_node_list.nodes()[i]), emit);
     }
 }
 
 void Graph::rebuild_deps(EffectiveIoCache &cache) {
     // Position-keyed dependency lists for the current node order.
-    size_t const n = _nodes.size();
-    _deps.successors.assign(n, {});
-    _deps.predecessors.assign(n, {});
+    size_t const n = _node_list.nodes().size();
+    _node_list.deps().successors.assign(n, {});
+    _node_list.deps().predecessors.assign(n, {});
 
     for_each_hazard_edge(cache, [&](size_t producer, size_t consumer) {
-        _deps.successors[producer].push_back(consumer);
-        _deps.predecessors[consumer].push_back(producer);
+        _node_list.deps().successors[producer].push_back(consumer);
+        _node_list.deps().predecessors[consumer].push_back(producer);
     });
 
     rebuild_levels();
@@ -474,7 +474,7 @@ std::vector<std::string> Graph::unjustified_hazard_edges() {
     // is rebuilt from the graph's own View NODES instead. A view's parent is its first input,
     // which is what the node records and what no pass rewrites.
     std::unordered_map<TensorId, TensorId> view_parent;
-    for (auto const &node : _nodes) {
+    for (auto const &node : _node_list.nodes()) {
         if (node.kind == OpKind::View && node.outputs.size() == 1 && !node.inputs.empty()) {
             view_parent.emplace(node.outputs[0], node.inputs[0]);
         }
@@ -511,10 +511,10 @@ std::vector<std::string> Graph::unjustified_hazard_edges() {
     };
 
     EffectiveIoCache                                    cache;
-    std::vector<std::vector<std::pair<TensorId, bool>>> touched(_nodes.size());
-    std::vector<std::unordered_set<std::string>>        params(_nodes.size());
-    for (std::size_t i = 0; i < _nodes.size(); ++i) {
-        auto [eff_in, eff_out] = effective_io_cached(_nodes[i], cache);
+    std::vector<std::vector<std::pair<TensorId, bool>>> touched(_node_list.nodes().size());
+    std::vector<std::unordered_set<std::string>>        params(_node_list.nodes().size());
+    for (std::size_t i = 0; i < _node_list.nodes().size(); ++i) {
+        auto [eff_in, eff_out] = effective_io_cached(_node_list.nodes()[i], cache);
         for (TensorId const tid : eff_in) {
             touched[i].emplace_back(tid, false);
         }
@@ -523,17 +523,17 @@ std::vector<std::string> Graph::unjustified_hazard_edges() {
         }
         // The other half of what the hazard scan orders: a parameter write and the slice that
         // resolves against it touch no tensor at all.
-        for (auto const &name : named_reads(_nodes[i])) {
+        for (auto const &name : named_reads(_node_list.nodes()[i])) {
             params[i].insert(name);
         }
-        for (auto const &name : named_writes(_nodes[i])) {
+        for (auto const &name : named_writes(_node_list.nodes()[i])) {
             params[i].insert(name);
         }
     }
 
     std::vector<std::string> out;
-    for (std::size_t from = 0; from < _deps.successors.size(); ++from) {
-        for (std::size_t const to : _deps.successors[from]) {
+    for (std::size_t from = 0; from < _node_list.deps().successors.size(); ++from) {
+        for (std::size_t const to : _node_list.deps().successors[from]) {
             bool justified = false;
             for (auto const &[tu, wu] : touched[from]) {
                 for (auto const &[tv, wv] : touched[to]) {
@@ -553,7 +553,7 @@ std::vector<std::string> Graph::unjustified_hazard_edges() {
                 });
             }
             if (!justified) {
-                out.push_back(fmt::format("{} ({}) -> {} ({})", from, _nodes[from].label, to, _nodes[to].label));
+                out.push_back(fmt::format("{} ({}) -> {} ({})", from, _node_list.nodes()[from].label, to, _node_list.nodes()[to].label));
             }
         }
     }
@@ -644,8 +644,8 @@ void Graph::verify_level_independence() const {
     };
 
     EffectiveIoCache cache;
-    for (size_t level_index = 0; level_index < _deps.levels.size(); ++level_index) {
-        auto const &level = _deps.levels[level_index];
+    for (size_t level_index = 0; level_index < _node_list.deps().levels.size(); ++level_index) {
+        auto const &level = _node_list.deps().levels[level_index];
         if (level.size() < 2) {
             continue;
         }
@@ -658,7 +658,7 @@ void Graph::verify_level_independence() const {
         std::unordered_map<TensorId, std::vector<size_t>> bound;
         std::unordered_map<TensorId, std::vector<size_t>> named;
         for (size_t const pos : level) {
-            auto const &node       = _nodes[pos];
+            auto const &node       = _node_list.nodes()[pos];
             auto [eff_in, eff_out] = const_cast<Graph *>(this)->effective_io_cached(node, cache);
             // A View node writes its slice handle's dims, strides and data
             // pointer, and no element of the parent: the executor re-emplaces
@@ -723,7 +723,7 @@ void Graph::verify_level_independence() const {
                                     "Graph '{}': nodes {} ({}) and {} ({}) share execution level {} but one binds tensor {}'s view "
                                     "metadata while the other uses it. A level-scheduling executor launches them together, so this is "
                                     "a data race on the handle; the hazard scan should have ordered them.",
-                                    _name, self, _nodes[self].label, other, _nodes[other].label, level_index, tid);
+                                    _name, self, _node_list.nodes()[self].label, other, _node_list.nodes()[other].label, level_index, tid);
         }
 
         for (auto const &[g, accesses] : touched) {
@@ -739,8 +739,8 @@ void Graph::verify_level_independence() const {
                                             "Graph '{}': nodes {} ({}) and {} ({}) share execution level {} but both touch overlapping "
                                             "storage (tensors {} and {}, at least one written). A level-scheduling executor launches them "
                                             "together, so this is a data race; the hazard scan should have ordered them.",
-                                            _name, accesses[a].pos, _nodes[accesses[a].pos].label, accesses[b].pos,
-                                            _nodes[accesses[b].pos].label, level_index, accesses[a].tid, accesses[b].tid);
+                                            _name, accesses[a].pos, _node_list.nodes()[accesses[a].pos].label, accesses[b].pos,
+                                            _node_list.nodes()[accesses[b].pos].label, level_index, accesses[a].tid, accesses[b].tid);
                 }
             }
         }
@@ -751,18 +751,18 @@ void Graph::rebuild_levels() {
     // Level partition for level-scheduling executors. Edges always point
     // from earlier to later positions (the hazard scan links prior
     // writers/readers to the current node), so one forward pass suffices.
-    size_t const        n = _deps.predecessors.size();
+    size_t const        n = _node_list.deps().predecessors.size();
     std::vector<size_t> level(n, 0);
     size_t              max_level = 0;
     for (size_t i = 0; i < n; i++) {
-        for (size_t const pred : _deps.predecessors[i]) {
+        for (size_t const pred : _node_list.deps().predecessors[i]) {
             level[i] = std::max(level[i], level[pred] + 1);
         }
         max_level = std::max(max_level, level[i]);
     }
-    _deps.levels.assign(max_level + 1, {});
+    _node_list.deps().levels.assign(max_level + 1, {});
     for (size_t i = 0; i < n; i++) {
-        _deps.levels[level[i]].push_back(i);
+        _node_list.deps().levels[level[i]].push_back(i);
     }
 }
 
@@ -829,7 +829,7 @@ void Graph::finish_replay_thread_plan(double replay_ms) {
 size_t Graph::schedule_edge_count() {
     topological_sort();
     size_t edges = 0;
-    for (auto const &succ : _deps.successors) {
+    for (auto const &succ : _node_list.deps().successors) {
         edges += succ.size();
     }
     return edges;
@@ -838,8 +838,8 @@ size_t Graph::schedule_edge_count() {
 std::vector<size_t> Graph::schedule_level_sizes() {
     topological_sort();
     std::vector<size_t> sizes;
-    sizes.reserve(_deps.levels.size());
-    for (auto const &level : _deps.levels) {
+    sizes.reserve(_node_list.deps().levels.size());
+    for (auto const &level : _node_list.deps().levels) {
         sizes.push_back(level.size());
     }
     return sizes;
@@ -848,32 +848,21 @@ std::vector<size_t> Graph::schedule_level_sizes() {
 void Graph::topological_sort() {
     std::scoped_lock const lock(_content_mutex);
     assign_node_ids();
-    // Defense in depth: a pass that mutates the node list without declaring
-    // it (mark_sorted / add_node) leaves stale flags. A count mismatch is the
-    // detectable symptom; downgrade to a full re-sort instead of letting a
-    // consumer index _deps out of range.
-    if (_deps.successors.size() != _nodes.size()) {
-        _deps_valid = false;
-    }
     // A control-flow node's edges come from its bodies, and a declared edit in a body moves the
-    // body's counters, not this graph's flags. The order stands; only the lists are rebuilt.
-    if (_deps_valid && _deps_subtree_stamp != subtree_stamp()) {
-        _deps_valid = false;
-    }
-
-    if (_sorted && _deps_valid) {
+    // body's counters, not this graph's flags, so the lists are current only at the stamp they
+    // were built at. The node count is checked too, as defense in depth: a pass that mutates the
+    // node list without declaring it (mark_sorted / add_node) leaves stale flags, and a count
+    // mismatch is the detectable symptom; it downgrades to a rebuild instead of letting a
+    // consumer index the lists out of range.
+    if (_node_list.deps_current(subtree_stamp())) {
         // Node order and dependency lists both current; the ~20-pass default
         // pipeline hits this on every pass that follows a non-mutating one.
         return;
     }
 
-    if (_nodes.empty()) {
-        _deps.successors.clear();
-        _deps.predecessors.clear();
-        _deps.levels.clear();
-        _sorted             = true;
-        _deps_valid         = true;
-        _deps_subtree_stamp = subtree_stamp();
+    if (_node_list.nodes().empty()) {
+        _node_list.deps() = {};
+        _node_list.deps_built(subtree_stamp());
         return;
     }
 
@@ -881,15 +870,14 @@ void Graph::topological_sort() {
     // the first consumer of them. Idempotent, and a no-op on the graphs that hold no setup.
     refresh_setup_io();
 
-    if (_sorted) {
+    if (_node_list.sorted()) {
         // A pass rebuilt or filtered the node list and vouched for the order
-        // via mark_sorted(); only the position-keyed _deps are stale. This
+        // via mark_sorted(); only the position-keyed lists are stale. This
         // also means a pass-chosen order (e.g. Reorder's memory-aware
         // schedule) survives instead of being re-derived by a fresh Kahn.
         EffectiveIoCache cache;
         rebuild_deps(cache);
-        _deps_valid         = true;
-        _deps_subtree_stamp = subtree_stamp();
+        _node_list.deps_built(subtree_stamp());
         return;
     }
 
@@ -897,7 +885,7 @@ void Graph::topological_sort() {
     // If node A writes tensor T and node B reads tensor T (and B comes after A),
     // then A → B (A must execute before B).
 
-    size_t const n = _nodes.size();
+    size_t const n = _node_list.nodes().size();
 
     // Track dependencies: read-after-write, write-after-write, write-after-read.
     // Keyed by the owning buffer (buffer_of), so reads/writes through a view or
@@ -919,14 +907,14 @@ void Graph::topological_sort() {
     // operands each) is 28 ms of a 83 ms graph build - paid twice. They are
     // only valid if the sort leaves the nodes where they are, which is why the
     // Kahn loop below reports whether anything moved.
-    _deps.successors.assign(n, {});
-    _deps.predecessors.assign(n, {});
+    _node_list.deps().successors.assign(n, {});
+    _node_list.deps().predecessors.assign(n, {});
 
     for_each_hazard_edge(eff_cache, [&](size_t producer, size_t consumer) {
         adj[producer].push_back(consumer);
         in_degree[consumer]++;
-        _deps.successors[producer].push_back(consumer);
-        _deps.predecessors[consumer].push_back(producer);
+        _node_list.deps().successors[producer].push_back(consumer);
+        _node_list.deps().predecessors[consumer].push_back(producer);
     });
 
     // Kahn's algorithm, taking the smallest ready POSITION rather than FIFO.
@@ -951,7 +939,7 @@ void Graph::topological_sort() {
         if (idx != sorted.size()) {
             reordered = true;
         }
-        sorted.push_back(std::move(_nodes[idx]));
+        sorted.push_back(std::move(_node_list.nodes()[idx]));
 
         for (size_t const succ : adj[idx]) {
             if (--in_degree[succ] == 0) {
@@ -964,7 +952,7 @@ void Graph::topological_sort() {
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "Graph '{}': topological sort failed — cycle detected", _name);
     }
 
-    _nodes = std::move(sorted);
+    _node_list.nodes() = std::move(sorted);
 
     if (reordered) {
         // Positions moved, so the lists built during the scan are keyed to the
@@ -982,9 +970,7 @@ void Graph::topological_sort() {
         rebuild_levels();
     }
 
-    _sorted             = true;
-    _deps_valid         = true;
-    _deps_subtree_stamp = subtree_stamp();
+    _node_list.deps_built(subtree_stamp());
     // Positions changed but the node COUNT did not, so cached position-keyed
     // analyses (UsageAnalysis) must be invalidated explicitly - the count
     // defense in usage() cannot see a same-size reorder.

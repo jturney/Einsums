@@ -109,10 +109,11 @@ void Graph::give_executor(Node &node, bool placed) {
 
 void Graph::edit(std::size_t index, std::function<void(NodeEdit &)> const &change) {
     std::scoped_lock const lock(_content_mutex);
-    if (index >= _nodes.size()) {
-        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': edit of node {}, but the graph holds {}", _name, index, _nodes.size());
+    if (index >= _node_list.nodes().size()) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': edit of node {}, but the graph holds {}", _name, index,
+                                _node_list.nodes().size());
     }
-    Node      &node   = _nodes[index];
+    Node      &node   = _node_list.nodes()[index];
     Node const before = node;
 
     try {
@@ -168,17 +169,18 @@ void Graph::edit(std::size_t index, std::function<void(NodeEdit &)> const &chang
 
 void Graph::restore_nodes(std::vector<Node> saved) {
     std::scoped_lock const lock(_content_mutex);
-    _nodes = std::move(saved);
+    _node_list.nodes() = std::move(saved);
     note_node_edit();
     note_structural_change();
 }
 
 void Graph::set_schedule(std::size_t index, NodeSchedule const &schedule) {
     std::scoped_lock const lock(_content_mutex);
-    if (index >= _nodes.size()) {
-        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': schedule of node {}, but the graph holds {}", _name, index, _nodes.size());
+    if (index >= _node_list.nodes().size()) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': schedule of node {}, but the graph holds {}", _name, index,
+                                _node_list.nodes().size());
     }
-    Node &node              = _nodes[index];
+    Node &node              = _node_list.nodes()[index];
     node.thread_width       = schedule.thread_width;
     node.admission_priority = schedule.admission_priority;
     node.stream_id          = schedule.stream_id;
@@ -186,7 +188,7 @@ void Graph::set_schedule(std::size_t index, NodeSchedule const &schedule) {
 
 void Graph::reorder(std::span<std::size_t const> order) {
     std::scoped_lock const lock(_content_mutex);
-    std::size_t const      count = _nodes.size();
+    std::size_t const      count = _node_list.nodes().size();
     if (order.size() != count) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': reorder names {} positions, but the graph holds {} nodes", _name,
                                 order.size(), count);
@@ -202,22 +204,22 @@ void Graph::reorder(std::span<std::size_t const> order) {
     std::vector<Node> ordered;
     ordered.reserve(count);
     for (std::size_t const from : order) {
-        ordered.push_back(std::move(_nodes[from]));
+        ordered.push_back(std::move(_node_list.nodes()[from]));
     }
-    _nodes = std::move(ordered);
+    _node_list.nodes() = std::move(ordered);
     mark_sorted();
 }
 
 void Graph::move_node(std::size_t from, std::size_t to) {
     std::scoped_lock const lock(_content_mutex);
-    if (from >= _nodes.size() || to >= _nodes.size()) {
+    if (from >= _node_list.nodes().size() || to >= _node_list.nodes().size()) {
         EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': move of node {} to {}, but the graph holds {}", _name, from, to,
-                                _nodes.size());
+                                _node_list.nodes().size());
     }
     if (from == to) {
         return;
     }
-    auto const at = [this](std::size_t i) { return _nodes.begin() + static_cast<std::ptrdiff_t>(i); };
+    auto const at = [this](std::size_t i) { return _node_list.nodes().begin() + static_cast<std::ptrdiff_t>(i); };
     if (from < to) {
         std::rotate(at(from), at(from + 1), at(to + 1));
     } else {
@@ -229,19 +231,19 @@ void Graph::move_node(std::size_t from, std::size_t to) {
 std::vector<std::size_t> Graph::hoist(Graph &child, std::span<std::size_t const> picks, std::size_t position) {
     std::scoped_lock const lock(_content_mutex, child._content_mutex);
     bool                   is_body = false;
-    for (auto const &node : _nodes) {
+    for (auto const &node : _node_list.nodes()) {
         for_each_child_graph(node, [&](Graph const &sub) { is_body = is_body || &sub == &child; });
     }
     if (!is_body) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': hoist from '{}', which is not a body of this graph's nodes", _name,
                                 child._name);
     }
-    if (position > _nodes.size()) {
+    if (position > _node_list.nodes().size()) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': hoist to position {}, past the end of {} nodes", _name, position,
-                                _nodes.size());
+                                _node_list.nodes().size());
     }
     for (std::size_t k = 0; k < picks.size(); ++k) {
-        if (picks[k] >= child._nodes.size() || (k > 0 && picks[k] <= picks[k - 1])) {
+        if (picks[k] >= child._node_list.nodes().size() || (k > 0 && picks[k] <= picks[k - 1])) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': hoist picks must be ascending positions in '{}'", _name,
                                     child._name);
         }
@@ -252,7 +254,7 @@ std::vector<std::size_t> Graph::hoist(Graph &child, std::span<std::size_t const>
     // Refused before anything moves: a node with no executor its pass gave must be one the
     // builder can make. It is asked in the body, where the node's ids still resolve.
     for (std::size_t const pick : picks) {
-        Node const &node = child._nodes[pick];
+        Node const &node = child._node_list.nodes()[pick];
         if (node.custom_execute || node.folded) {
             continue;
         }
@@ -286,7 +288,7 @@ std::vector<std::size_t> Graph::hoist(Graph &child, std::span<std::size_t const>
     auto const body_anchor = child.anchor();
     // Copies, so that nothing in the body has moved until every one of them has its executor.
     for (std::size_t const pick : picks) {
-        Node node = child._nodes[pick];
+        Node node = child._node_list.nodes()[pick];
         // The body numbered this node; this graph issues its own id.
         node.id = unassigned_node_id;
         if (node.custom_execute) {
@@ -309,15 +311,15 @@ std::vector<std::size_t> Graph::hoist(Graph &child, std::span<std::size_t const>
     }
 
     std::vector<Node> kept;
-    kept.reserve(child._nodes.size() - picks.size());
-    for (std::size_t i = 0, k = 0; i < child._nodes.size(); ++i) {
+    kept.reserve(child._node_list.nodes().size() - picks.size());
+    for (std::size_t i = 0, k = 0; i < child._node_list.nodes().size(); ++i) {
         if (k < picks.size() && picks[k] == i) {
             ++k;
             continue;
         }
-        kept.push_back(std::move(child._nodes[i]));
+        kept.push_back(std::move(child._node_list.nodes()[i]));
     }
-    child._nodes = std::move(kept);
+    child._node_list.nodes() = std::move(kept);
 
     // The writer of a deferred intermediate the body declared moves out with it, so the declaration
     // does too. Left the body's, a pass run on the body alone would see only the body's readers and
@@ -334,8 +336,8 @@ std::vector<std::size_t> Graph::hoist(Graph &child, std::span<std::size_t const>
     child.note_structural_change();
     child.mark_sorted();
 
-    _nodes.insert(_nodes.begin() + static_cast<std::ptrdiff_t>(position), std::make_move_iterator(moved.begin()),
-                  std::make_move_iterator(moved.end()));
+    _node_list.nodes().insert(_node_list.nodes().begin() + static_cast<std::ptrdiff_t>(position), std::make_move_iterator(moved.begin()),
+                              std::make_move_iterator(moved.end()));
     note_structural_change();
     mark_sorted();
 

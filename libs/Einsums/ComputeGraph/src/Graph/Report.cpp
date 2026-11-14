@@ -73,8 +73,8 @@ std::uint64_t Graph::tensor_tree_stamp() const {
     std::uint64_t stamp = 1469598103934665603ULL;
     auto const    mix   = [&stamp](std::uint64_t value) { stamp = (stamp ^ value) * 1099511628211ULL; };
     auto const    graph = [&mix](Graph const &g) {
-        mix(g._analysis_version);
-        mix(g._nodes.size());
+        mix(g._node_list.analysis_version());
+        mix(g._node_list.nodes().size());
         mix(g._registry.next_id());
         mix(g._registry.handle_version());
     };
@@ -100,7 +100,7 @@ RunMetrics const &Graph::last_run() const {
 }
 
 std::vector<NodeTiming> const &Graph::timing_report() const {
-    return _replay.timing_report(_nodes);
+    return _replay.timing_report(_node_list.nodes());
 }
 
 void Graph::print_timing_report(std::ostream &os) const {
@@ -127,10 +127,10 @@ void Graph::print_timing_report(std::ostream &os) const {
 
 void Graph::rebuild_profile_strings() {
     auto &profile_strings =
-        _replay.rebuild_profile_strings(waggle::intern_string(fmt::format("ComputeGraph::execute({})", _name)), _nodes.size());
+        _replay.rebuild_profile_strings(waggle::intern_string(fmt::format("ComputeGraph::execute({})", _name)), _node_list.nodes().size());
 
-    for (size_t idx = 0; idx < _nodes.size(); idx++) {
-        auto const         &node  = _nodes[idx];
+    for (size_t idx = 0; idx < _node_list.nodes().size(); idx++) {
+        auto const         &node  = _node_list.nodes()[idx];
         NodeProfileStrings &entry = profile_strings[idx];
         entry.node_id             = node.id;
         entry.zone_id             = waggle::intern_string(fmt::format("graph:{}/{}", _name, node.label));
@@ -226,7 +226,7 @@ void Graph::print_dot(std::ostream &os) const {
     }
 
     // Operation nodes (ellipses, colored by target/type)
-    for (auto const &node : _nodes) {
+    for (auto const &node : _node_list.nodes()) {
         std::string style;
         if (node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
             style = ", style=filled, fillcolor=\"#FFA500\""; // orange for transfers
@@ -277,8 +277,8 @@ void Graph::print_summary(std::ostream &os) const {
         return fmt::format("{}", fmt::join(names, ", "));
     };
 
-    os << fmt::format("Graph '{}': {} nodes, {} tensors\n", _name, _nodes.size(), _registry.handles().size());
-    for (auto const &node : _nodes) {
+    os << fmt::format("Graph '{}': {} nodes, {} tensors\n", _name, _node_list.nodes().size(), _registry.handles().size());
+    for (auto const &node : _node_list.nodes()) {
         os << fmt::format("  [{}] {} ({})\n", node.id, node.label, node.kind);
         if (!node.inputs.empty()) {
             os << fmt::format("    inputs: {}\n", name_list(node.inputs));
@@ -324,8 +324,8 @@ std::string Graph::to_json() const {
         timing_map[t.id] = t.duration_ms;
 
     // Nodes: use array index as ID
-    for (size_t ni = 0; ni < _nodes.size(); ni++) {
-        auto const   &node = _nodes[ni];
+    for (size_t ni = 0; ni < _node_list.nodes().size(); ni++) {
+        auto const   &node = _node_list.nodes()[ni];
         GraphNodeData nd;
         nd.id        = ni;
         nd.kind      = std::string(op_kind_name(node.kind));
@@ -376,14 +376,14 @@ std::string Graph::to_json() const {
         // The snapshot may not change the graph, so a body's buffers are looked up rather than
         // registered (see subtree_buffers); a buffer no sort has yet given a parent id is left out.
         std::unordered_map<TensorId, std::vector<size_t>> writers, readers;
-        for (size_t i = 0; i < _nodes.size(); i++) {
+        for (size_t i = 0; i < _node_list.nodes().size(); i++) {
             std::set<TensorId> node_reads, node_writes; // one entry per node and buffer
-            for (auto in_tid : _nodes[i].inputs)
+            for (auto in_tid : _node_list.nodes()[i].inputs)
                 node_reads.insert(buffer_of(in_tid));
-            for (auto out_tid : _nodes[i].outputs)
+            for (auto out_tid : _node_list.nodes()[i].outputs)
                 node_writes.insert(buffer_of(out_tid));
-            if (is_control_flow(_nodes[i].kind)) {
-                auto const sub = subtree_buffers(_nodes[i]);
+            if (is_control_flow(_node_list.nodes()[i].kind)) {
+                auto const sub = subtree_buffers(_node_list.nodes()[i]);
                 for (auto const [ptrs, into] : {std::pair{&sub.reads, &node_reads}, std::pair{&sub.writes, &node_writes}}) {
                     for (void const *ptr : *ptrs) {
                         if (TensorId const id = find_tensor_id_by_ptr(ptr); id != 0)

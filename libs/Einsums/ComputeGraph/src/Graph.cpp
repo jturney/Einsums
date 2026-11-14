@@ -128,9 +128,7 @@ Graph &Graph::operator=(Graph &&other) noexcept {
 
 NodeId Graph::add_node(Node node) {
     std::scoped_lock const lock(_content_mutex);
-    node.id         = _next_node_id++;
-    NodeId const id = node.id;
-    _nodes.push_back(std::move(node));
+    NodeId const           id = _node_list.append(std::move(node));
     note(Change::NodeAppended);
     note_node_edit();
     return id;
@@ -140,7 +138,7 @@ bool Graph::sync_destination_inputs() {
     // Each graph syncs its own nodes; for_each_descendant already reaches every depth.
     auto const sync_own = [](Graph &graph) {
         bool changed = false;
-        for (auto &node : graph._nodes) {
+        for (auto &node : graph._node_list.nodes()) {
             auto const before = node.inputs;
             sync_destination_input(node);
             changed = changed || node.inputs != before;
@@ -162,16 +160,16 @@ void Graph::note_node_edit() noexcept {
 size_t Graph::erase_nodes(std::vector<bool> const &remove) {
     std::scoped_lock const lock(_content_mutex);
     std::vector<Node>      filtered;
-    filtered.reserve(_nodes.size());
+    filtered.reserve(_node_list.nodes().size());
     size_t removed = 0;
-    for (size_t i = 0; i < _nodes.size(); ++i) {
+    for (size_t i = 0; i < _node_list.nodes().size(); ++i) {
         if (i < remove.size() && remove[i]) {
             ++removed;
             continue;
         }
-        filtered.push_back(std::move(_nodes[i]));
+        filtered.push_back(std::move(_node_list.nodes()[i]));
     }
-    _nodes = std::move(filtered);
+    _node_list.nodes() = std::move(filtered);
     if (removed != 0) {
         // Erasing keeps the survivors' relative order, so a sorted graph stays sorted; what the
         // positions keyed is stale all the same.
@@ -209,8 +207,8 @@ void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<No
             sync_destination_input(node);
         }
         note(Change::NodeSetChanged);
-        _nodes.insert(_nodes.begin() + static_cast<std::ptrdiff_t>(at), std::make_move_iterator(nodes.begin()),
-                      std::make_move_iterator(nodes.end()));
+        _node_list.nodes().insert(_node_list.nodes().begin() + static_cast<std::ptrdiff_t>(at), std::make_move_iterator(nodes.begin()),
+                                  std::make_move_iterator(nodes.end()));
     }
     mark_sorted();
 }
@@ -270,30 +268,30 @@ TensorId Graph::find_or_register_tensor_ptr(TensorHandle const &handle) {
 void Graph::note(Change change) noexcept {
     switch (change) {
     case Change::NodeAppended:
-        _sorted = false;
-        _structure_version++;
+        _node_list.invalidate_order();
+        _node_list.bump_structure_version();
         break;
     case Change::NodeSetChanged:
-        _structure_version++;
+        _node_list.bump_structure_version();
         break;
     case Change::NodeEdited:
         _replay.mark_unexecuted();
         _replay.invalidate_profile_strings();
-        _deps_valid = false;
+        _node_list.invalidate_deps();
         _registry.set_slots_validated(false);
-        _analysis_version++;
+        _node_list.bump_analysis_version();
         break;
     case Change::BufferIdentityChanged:
         // The hazard edges and every per-buffer analysis (usage() is keyed on the version) are
         // derived from which buffer each tensor resolves to.
-        _deps_valid = false;
-        _analysis_version++;
+        _node_list.invalidate_deps();
+        _node_list.bump_analysis_version();
         break;
     case Change::AliasLinksStale:
         _registry.set_aliases_linked(false);
         break;
     case Change::AliasesRelinked:
-        _analysis_version++;
+        _node_list.bump_analysis_version();
         break;
     case Change::SlotsChanged:
         _registry.set_slots_validated(false);
@@ -301,13 +299,13 @@ void Graph::note(Change change) noexcept {
     case Change::TensorRebound:
         _replay.invalidate_profile_strings();
         _registry.set_slots_validated(false);
-        _analysis_version++;
+        _node_list.bump_analysis_version();
         break;
     case Change::HandleChanged:
         _registry.bump_handle_version();
         break;
     case Change::NodesReordered:
-        _analysis_version++;
+        _node_list.bump_analysis_version();
         break;
     case Change::TimingsRecorded:
         _replay.invalidate_timing_report();
@@ -546,26 +544,27 @@ std::vector<SpaceId> const &Graph::tensor_spaces(TensorId id) const {
 }
 
 void Graph::for_each_subgraph(std::function<void(Graph &)> const &visitor, bool include_setup) {
-    for (auto &node : _nodes) {
+    for (auto &node : _node_list.nodes()) {
         for_each_child_graph(node, visitor, include_setup);
     }
 }
 
 void Graph::for_each_child(std::size_t index, std::function<void(Graph &)> const &visitor, bool include_setup) {
-    if (index >= _nodes.size()) {
-        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': bodies of node {}, but the graph holds {}", _name, index, _nodes.size());
+    if (index >= _node_list.nodes().size()) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': bodies of node {}, but the graph holds {}", _name, index,
+                                _node_list.nodes().size());
     }
     // A body is owned through a pointer in the descriptor, so its address survives the node
     // vector moving; the descriptor's does not.
     std::vector<Graph *> bodies;
-    for_each_child_graph(_nodes[index], [&bodies](Graph &body) { bodies.push_back(&body); }, include_setup);
+    for_each_child_graph(_node_list.nodes()[index], [&bodies](Graph &body) { bodies.push_back(&body); }, include_setup);
     for (Graph *body : bodies) {
         visitor(*body);
     }
 }
 
 void Graph::for_each_subgraph(std::function<void(Graph const &)> const &visitor) const {
-    for (auto const &node : _nodes) {
+    for (auto const &node : _node_list.nodes()) {
         for_each_child_graph(node, visitor);
     }
 }
@@ -707,17 +706,13 @@ TensorId Graph::buffer_of(TensorId id) const {
 void Graph::mark_sorted() {
     // The caller vouches for the node ORDER, but node positions, labels, descriptors and slot
     // pointers may all have changed.
-    _sorted = true;
+    _node_list.vouch_order();
     assign_node_ids();
     note_node_edit();
 }
 
 void Graph::assign_node_ids() {
-    for (auto &node : _nodes) {
-        if (node.id == unassigned_node_id) {
-            node.id = _next_node_id++;
-        }
-    }
+    _node_list.assign_ids();
 }
 
 double Graph::accuracy_budget_value() const noexcept {
@@ -738,8 +733,8 @@ void Graph::set_thread_width(NodeId id, unsigned width) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': a thread width of {} does not fit a node", _name, width);
     }
     std::scoped_lock const lock(_content_mutex);
-    auto const             it = std::ranges::find_if(_nodes, [id](Node const &node) { return node.id == id; });
-    if (it == _nodes.end()) {
+    auto const             it = std::ranges::find_if(_node_list.nodes(), [id](Node const &node) { return node.id == id; });
+    if (it == _node_list.nodes().end()) {
         EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no node with id {} to give a thread width", _name, id);
     }
     it->thread_width = static_cast<std::uint16_t>(width);

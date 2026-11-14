@@ -114,7 +114,7 @@ void Graph::resync_slot_storage() {
     // Each id once: the nodes name a few thousand slots between them, most of
     // them many times over, and re-seating one twice changes nothing.
     std::scoped_lock const lock(resync_mutex());
-    for (TensorId const id : _registry.resync_ids(_nodes, _analysis_version)) {
+    for (TensorId const id : _registry.resync_ids(_node_list.nodes(), _node_list.analysis_version())) {
         resync_slot(id);
     }
 }
@@ -187,10 +187,10 @@ void Graph::replay(Executor &executor) {
     }
 
     // Rebuild when the order is unknown OR a pass vouched for the order via
-    // mark_sorted() but left the position-keyed _deps stale (_deps_valid
-    // false). topological_sort() takes the cheap rebuild_deps path in that
-    // second case, keeping the pass-chosen order. Concurrent executors read
-    // _deps directly, so stale lists would drop storage-reuse and lifecycle
+    // mark_sorted() but left the position-keyed dependency lists stale.
+    // topological_sort() takes the cheap rebuild_deps path in that second
+    // case, keeping the pass-chosen order. Concurrent executors read the
+    // lists directly, so stale ones would drop storage-reuse and lifecycle
     // edges a serial run never needed.
     if (!deps_current()) {
         topological_sort();
@@ -239,7 +239,7 @@ void Graph::replay(Executor &executor) {
     // All fmt::format work for zones/annotations is precomputed, and so is the
     // string interning behind them; replays of an unchanged graph only pay the
     // profiler's event write. A run that records nothing builds none of it.
-    if (recording && !_replay.profile_strings_current(_nodes.size())) {
+    if (recording && !_replay.profile_strings_current(_node_list.nodes().size())) {
         rebuild_profile_strings();
     }
 
@@ -279,27 +279,14 @@ void Graph::replay(Executor &executor) {
 
 // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest, so the stamp does too.
 std::uint64_t Graph::subtree_stamp() {
-    if (_subgraph_positions_version != _analysis_version || _subgraph_positions_count != _nodes.size()) {
-        _subgraph_positions.clear();
-        for (std::size_t i = 0; i < _nodes.size(); ++i) {
-            bool holds = false;
-            for_each_child_graph(_nodes[i], [&holds](Graph &) { holds = true; });
-            if (holds) {
-                _subgraph_positions.push_back(static_cast<std::uint32_t>(i));
-            }
-        }
-        _subgraph_positions_version = _analysis_version;
-        _subgraph_positions_count   = _nodes.size();
-    }
-
     // FNV-1a over (version, node count, its own subtree) per child, in walk order, so a body
     // edited back to an earlier count still moves the stamp through its version.
     std::uint64_t stamp = 14695981039346656037ULL;
     auto const    mix   = [&stamp](std::uint64_t value) { stamp = (stamp ^ value) * 1099511628211ULL; };
-    for (std::uint32_t const pos : _subgraph_positions) {
-        for_each_child_graph(_nodes[pos], [&mix](Graph &child) {
-            mix(child._analysis_version);
-            mix(child._nodes.size());
+    for (std::uint32_t const pos : _node_list.subgraph_positions()) {
+        for_each_child_graph(_node_list.nodes()[pos], [&mix](Graph &child) {
+            mix(child._node_list.analysis_version());
+            mix(child._node_list.nodes().size());
             mix(child.subtree_stamp());
         });
     }
@@ -307,17 +294,11 @@ std::uint64_t Graph::subtree_stamp() {
 }
 
 bool Graph::deps_current() {
-    return _sorted && _deps_valid && _deps_subtree_stamp == subtree_stamp();
+    return _node_list.deps_current(subtree_stamp());
 }
 
 UsageAnalysis const &Graph::usage() {
-    std::uint64_t const stamp = subtree_stamp();
-    if (_usage_version != _analysis_version || _usage.node_count() != _nodes.size() || _usage_subtree_stamp != stamp) {
-        _usage               = UsageAnalysis::build(*this);
-        _usage_version       = _analysis_version;
-        _usage_subtree_stamp = stamp;
-    }
-    return _usage;
+    return _node_list.usage(*this, subtree_stamp());
 }
 
 bool Graph::apply(PassManager &pm) {
@@ -343,14 +324,14 @@ bool Graph::optimize() {
 }
 
 bool Graph::optimize(OptLevel level) {
-    size_t const before = _nodes.size();
+    size_t const before = _node_list.nodes().size();
 
     auto       pm       = PassManager::create_for(level);
     bool const modified = apply(pm);
 
-    _optimization.record_optimize(
-        fmt::format("optimize(O{}) on '{}': {} -> {} node(s)\n{}", static_cast<int>(level), _name, before, _nodes.size(), pm.explain()),
-        pm.decisions());
+    _optimization.record_optimize(fmt::format("optimize(O{}) on '{}': {} -> {} node(s)\n{}", static_cast<int>(level), _name, before,
+                                              _node_list.nodes().size(), pm.explain()),
+                                  pm.decisions());
     return modified;
 }
 

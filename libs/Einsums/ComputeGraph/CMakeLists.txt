@@ -48,6 +48,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Detail/RunContext.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/Detail/MaintainedViews.hpp
+    Einsums/ComputeGraph/Detail/NodeList.hpp
     Einsums/ComputeGraph/Detail/OptimizationRecord.hpp
     Einsums/ComputeGraph/Detail/ParamStore.hpp
     Einsums/ComputeGraph/Detail/StandIns.hpp
@@ -174,6 +175,7 @@ set(ComputeGraphSources
     Graph/ParamStore.cpp
     Graph/ReplayState.cpp
     Graph/TensorRegistry.cpp
+    Graph/NodeList.cpp
     Graph/ControlFlow.cpp
     Graph/Operations.cpp
     Graph/Edit.cpp

@@ -23,7 +23,7 @@
 ///
 /// @par The member walk (every member of detail::GraphState)
 /// Saved, because it is structure:
-///   `_name`, `_nodes` (kind, label, inputs, outputs, descriptor), the handles
+///   `_name`, the nodes in `_node_list` (kind, label, inputs, outputs, descriptor), the handles
 ///   in `_registry` (name, dtype, rank, dims, dim symbols, spaces, intermediate
 ///   flag, scope, init kind, alias parent) and its slot redirects, the symbol
 ///   ties in `_spaces`, the parameter table's entries and the named gate-flag
@@ -40,8 +40,8 @@
 ///   tensors, adopted cleanups, slots, the address index, the scope maps, the
 ///   lease and resync bookkeeping), the rest of `_replay`
 ///   (run context, run metrics, device shadows, arena, executor, profiler
-///   payloads), `_content_mutex`, `_deps` / `_usage` and the version counters
-///   that guard them, `_binding`, the extents and tilings in
+///   payloads), `_content_mutex`, the rest of `_node_list` (the dependency lists,
+///   the usage and sub-graph caches and the counters that guard them), `_binding`, the extents and tilings in
 ///   `_spaces`. `_binding` and the space extents and tilings are
 ///   bind-time state about the CALLER's problem (what is bound, what each space
 ///   measures, how it is partitioned), and a loaded graph is bound afresh.

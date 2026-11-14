@@ -21,7 +21,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 /// returns or writing a live parameter with no rebuild, to check the builder and the executors
 /// alone. Everything else edits through Graph::edit and the node-set functions, as a pass does.
 struct GraphBackdoor {
-    static std::vector<Node> &nodes(Graph &graph) { return graph._nodes; }
+    static std::vector<Node> &nodes(Graph &graph) { return graph._node_list.nodes(); }
 
     /// A registered handle to write, for a test that builds a state the graph's methods refuse.
     static TensorHandle &tensor(Graph &graph, TensorId id) { return graph.mutable_tensor(id); }
