@@ -498,3 +498,75 @@ TEST_CASE("AntisymmetrizerFolding - the guard runs per bind, and invalidate_setu
     graph.invalidate_setup();
     REQUIRE_THROWS_AS(graph.execute(), std::runtime_error);
 }
+
+namespace {
+
+/// `dot(P(i/jk) w, P(i/jk) v)` over @p wsrc, optionally rebound to @p rebind_to before the
+/// inference and fold passes run. Reports whether the fold fired.
+double fold_after(RuntimeTensor<double> const &wsrc, RuntimeTensor<double> const &vsrc, RuntimeTensor<double> *rebind_to,
+                  RuntimeTensor<double> &result, std::size_t &folded) {
+    size_t const n = 4;
+    cg::Graph    graph("fold_after");
+    {
+        auto                  &W = graph.create_zero_runtime_tensor<double>("W", {n, n, n}, true);
+        auto                  &V = graph.create_zero_runtime_tensor<double>("V", {n, n, n}, true);
+        cg::CaptureGuard const capture(graph);
+        cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &W, 1.0, wsrc);
+        cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &V, 1.0, vsrc);
+        cg::dot_python(&result, W, V);
+    }
+    if (rebind_to != nullptr) {
+        graph.rebind(wsrc, *rebind_to);
+    }
+    auto            inference = std::make_shared<cg::passes::AntisymmetryInference>();
+    auto            fold      = std::make_shared<cg::passes::AntisymmetrizerFolding>();
+    cg::PassManager manager;
+    manager.add(inference);
+    manager.add(fold);
+    graph.apply(manager);
+    folded = fold->num_folded();
+    graph.execute();
+    return result(std::vector<size_t>{0});
+}
+
+} // namespace
+
+// Known bug: a rebind leaves the handle's declared-symmetry getter on the tensor it replaced, and
+// the hint is only ever upgraded, so a pass pipeline run after the rebind still reads the old
+// tensor's declared antisymmetry. The fold fires for a tensor that declares none, its replay guard
+// then refuses the data, and re-running the pipeline as the refusal advises folds again. The graph
+// can never be optimized for the new tensor. Fixed by the per-type operations table: a rebind
+// re-reads the new tensor's declaration.
+TEST_CASE("AntisymmetrizerFolding - a pipeline run after a rebind sees the new tensor's symmetry",
+          "[ComputeGraph][AntisymmetrizerFolding][Rebind][!shouldfail]") {
+    size_t const          n = 4;
+    auto const            r = create_random_tensor<double>("r", n, n, n);
+    RuntimeTensor<double> wsrc("wsrc", {n, n, n});
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            for (size_t k = 0; k < n; ++k) {
+                wsrc(std::vector<size_t>{i, j, k}) = r(i, j, k) - r(i, k, j);
+            }
+        }
+    }
+    wsrc.set_symmetry(SymmetryDescriptor::antisymmetric_pair(1, 2));
+    auto const            v_typed    = create_random_tensor<double>("vsrc", n, n, n);
+    auto const            junk_typed = create_random_tensor<double>("junk", n, n, n);
+    RuntimeTensor<double> vsrc(v_typed);
+    RuntimeTensor<double> junk(junk_typed);
+    REQUIRE_FALSE(check_symmetry(junk, SymmetryDescriptor::antisymmetric_pair(1, 2)));
+
+    // What the passes do for a graph captured over junk in the first place: nothing to fold.
+    RuntimeTensor<double> direct_result("direct", {1});
+    std::size_t           direct_folded = 0;
+    double const          direct        = fold_after(junk, vsrc, nullptr, direct_result, direct_folded);
+    REQUIRE(direct_folded == 0);
+
+    // A graph captured over wsrc and rebound to junk before its pipeline runs is the same graph.
+    RuntimeTensor<double> rebound_result("rebound", {1});
+    std::size_t           rebound_folded = 0;
+    double                rebound        = 0.0;
+    REQUIRE_NOTHROW(rebound = fold_after(wsrc, vsrc, &junk, rebound_result, rebound_folded));
+    CHECK(rebound_folded == 0);
+    CHECK_THAT(rebound, Catch::Matchers::WithinRel(direct, 1e-12));
+}

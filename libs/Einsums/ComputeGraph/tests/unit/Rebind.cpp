@@ -366,3 +366,71 @@ TEST_CASE("Rebind - a tensor allocated over a dropped operand's address leaves t
     check_against(e, kept, b);
     check_against(f, a3, b);
 }
+
+namespace {
+
+/// A declared zero tensor `C` that an accumulating einsum writes, optimized so the graph holds
+/// its Materialize and Initialize nodes, and caller storage holding 7.0 to bind it to.
+struct DeclaredAccumulator {
+    Tensor<double, 2>  A = create_random_tensor<double>("A", 3, 4);
+    Tensor<double, 2>  B = create_random_tensor<double>("B", 4, 5);
+    cg::Graph          graph{"declared_accumulator"};
+    Tensor<double, 2> &C;
+    Tensor<double, 2>  user{"user", 3, 5};
+
+    DeclaredAccumulator() : C(graph.declare_zero_tensor<double, 2>(std::string("C"), 3, 5)) {
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", 1.0, &C, 1.0, A, B);
+        }
+        auto pm = cg::PassManager::create_default();
+        graph.apply(pm);
+        for (size_t i = 0; i < 3; ++i) {
+            for (size_t j = 0; j < 5; ++j) {
+                user(i, j) = 7.0;
+            }
+        }
+    }
+
+    /// A rebind redefines C: the bound tensor's contents are its value, so the accumulation
+    /// starts from 7, and the graph's own shell, which nothing reads any more, is never given
+    /// storage.
+    void check_redefined() {
+        auto expected = create_zero_tensor<double>("expected", 3, 5);
+        for (size_t i = 0; i < 3; ++i) {
+            for (size_t j = 0; j < 5; ++j) {
+                expected(i, j) = 7.0;
+            }
+        }
+        reference_einsum("ik;kj->ij", 1.0, &expected, 1.0, A, B);
+        for (size_t i = 0; i < 3; ++i) {
+            for (size_t j = 0; j < 5; ++j) {
+                CHECK_THAT(user(i, j), Catch::Matchers::WithinAbs(expected(i, j), 1e-12));
+            }
+        }
+        CHECK_FALSE(C.is_materialized());
+    }
+};
+
+} // namespace
+
+// Known bug: a rebind leaves the handle's lifecycle closures on the tensor it replaced, and the
+// Materialize and Initialize executors copied those closures when the pass built them. So every
+// replay allocates and zeroes the graph's shell for C, which nothing reads; the value in `user` is
+// right only because those closures miss it. Fixed by the per-type operations table, whose
+// lifecycle executors look the handle up at replay and skip a tensor the graph no longer owns.
+TEST_CASE("Rebind - a declared tensor rebound to caller storage leaves its lifecycle", "[ComputeGraph][Rebind][!shouldfail]") {
+    DeclaredAccumulator fixture;
+    fixture.graph.rebind(fixture.C, fixture.user);
+    fixture.graph.execute();
+    fixture.check_redefined();
+}
+
+// Known bug: the same defect reached through bind by manifest name, which repoints the slot through
+// the same rebind. Fixed with the case above.
+TEST_CASE("Rebind - a declared tensor bound by name leaves its lifecycle", "[ComputeGraph][Rebind][!shouldfail]") {
+    DeclaredAccumulator fixture;
+    fixture.graph.bind("C", fixture.user);
+    fixture.graph.execute();
+    fixture.check_redefined();
+}
