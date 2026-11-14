@@ -398,7 +398,7 @@ expected<void, GraphError> Graph::validate_tensors() const {
                             "before execute().",
                             _name, handle.name, id)));
         }
-        if (handle.validator && !handle.validator()) {
+        if (!handle.alive()) {
             return unexpected(
                 GraphError::validation(fmt::format("Graph '{}': tensor '{}' (id={}) appears to have been destroyed. "
                                                    "Ensure all tensors outlive the graph, or use graph.create_tensor() for intermediates.",

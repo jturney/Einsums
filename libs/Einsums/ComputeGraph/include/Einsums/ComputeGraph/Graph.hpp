@@ -4370,9 +4370,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /**
      * @brief Validate that all registered tensors are still alive.
      *
-     * Calls each tensor's validator function (set by make_handle() at registration time).
-     * If any validator returns false, throws a descriptive error message suggesting
-     * to use create_tensor() for intermediates.
+     * Asks each referenced tensor's handle whether its tensor still exists
+     * (@ref TensorHandle::alive). If one does not, returns a descriptive error
+     * suggesting create_tensor() for intermediates.
      *
      * Called automatically at the start of execute().
      *
@@ -6033,15 +6033,9 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
             auto *bound           = &new_tensor;
             th_it->second.impl_fn = [bound]() -> void * { return static_cast<void *>(&bound->impl()); };
         }
-        th_it->second.name      = new_tensor.name();
-        th_it->second.name_hash = std::hash<std::string>{}(new_tensor.name());
-        th_it->second.validator = [&new_tensor, hash = th_it->second.name_hash]() -> bool {
-            try {
-                return std::hash<std::string>{}(new_tensor.name()) == hash;
-            } catch (...) {
-                return false;
-            }
-        };
+        th_it->second.name       = new_tensor.name();
+        th_it->second.name_hash  = std::hash<std::string>{}(new_tensor.name());
+        th_it->second.live_token = detail::liveness_token_of(new_tensor);
 
         // Geometry snapshots. The alias relation, the manifest, and every
         // extent check read these, and nothing else refreshed them.

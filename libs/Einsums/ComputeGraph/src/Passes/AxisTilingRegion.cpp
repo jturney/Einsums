@@ -36,7 +36,7 @@ bool RegionAnalysis::collect() {
             // reaches only the handle, so a caller whose tensor has already been destroyed gets
             // a decline here rather than a dereference of freed storage. Execute-time
             // validation reports the same thing later; this is the same check asked earlier.
-            if (handle->validator && !handle->validator()) {
+            if (!handle->alive()) {
                 return false;
             }
             // The rewrite emits through the capture API, which is templated on the operand's

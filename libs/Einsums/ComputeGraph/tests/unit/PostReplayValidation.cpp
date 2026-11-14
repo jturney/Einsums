@@ -38,7 +38,7 @@ namespace {
 /// Grid type for the tiled cases below: one tile per axis keeps the graph
 /// trivial while still giving the handle table a tensor the graph does NOT
 /// adopt (TiledRuntimeTensor exposes no shallow_alias, so its handle's
-/// validator watches the caller's own object - which is what makes it the
+/// liveness token is the caller's own object's, which is what makes it the
 /// vehicle for testing genuine destruction).
 using Grid = std::vector<std::vector<int>>;
 
@@ -232,4 +232,37 @@ TEST_CASE("Validation catches a destroyed operand after a replay and mark_sorted
     // something this fix narrowed.
     graph.mark_sorted();
     REQUIRE_THROWS_WITH(graph.execute(), Catch::Matchers::ContainsSubstring("appears to have been destroyed"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3. A live operand renamed after capture is not a destroyed one
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The liveness check compared the tensor's current name against the one it had at capture even
+// when its type publishes a liveness token, so renaming a live operand the graph had not adopted
+// failed execute() with "appears to have been destroyed". A live token is definitive; the name is
+// only the canary for a type that has none.
+
+TEST_CASE("Validation does not report a renamed live operand as destroyed", "[ComputeGraph][Lifetime][Validation]") {
+    TiledRuntimeTensor<double> A("A", Grid{{2}, {2}});
+    TiledRuntimeTensor<double> B("B", Grid{{2}, {2}});
+    fill_tile(A, {0, 0}, 1.0);
+    fill_tile(B, {0, 0}, 0.5);
+    TiledRuntimeTensor<double> C("C", Grid{{2}, {2}});
+
+    cg::Graph graph("renamed_operand");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+
+    A.set_name("left");
+
+    REQUIRE_NOTHROW(graph.execute());
+    // A = [[1, 2], [3, 4]] and B = [[0.5, 1.5], [2.5, 3.5]] by fill_tile.
+    auto const &c = C.tile({0, 0});
+    CHECK_THAT(c(0, 0), Catch::Matchers::WithinAbs(5.5, 1e-12));
+    CHECK_THAT(c(0, 1), Catch::Matchers::WithinAbs(8.5, 1e-12));
+    CHECK_THAT(c(1, 0), Catch::Matchers::WithinAbs(11.5, 1e-12));
+    CHECK_THAT(c(1, 1), Catch::Matchers::WithinAbs(18.5, 1e-12));
 }

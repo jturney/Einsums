@@ -804,8 +804,8 @@ struct TensorHandle {
     /**
      * @brief Hash of the tensor name at registration time.
      *
-     * Used by the runtime validation system to detect destroyed tensors.
-     * Compared against the tensor's current name hash before execution.
+     * The canary @ref alive compares against the tensor's current name for a type that
+     * publishes no liveness token.
      */
     size_t name_hash{0};
 
@@ -921,16 +921,41 @@ struct TensorHandle {
     [[nodiscard]] void *lookup_ptr() const noexcept { return caller_ptr != nullptr ? caller_ptr : tensor_ptr; }
 
     /**
-     * @brief Optional validation function to check if the tensor is still alive.
+     * @brief The lifetime of the object @ref live_ptr names, which @ref alive reads.
      *
-     * Set automatically by make_handle() at registration time. The function captures
-     * a reference to the original tensor and checks that its name hash still matches.
-     * Returns true if the tensor appears valid, false if it may have been destroyed.
+     * Taken by @ref make_handle from the tensor it is given and by a rebind from the tensor it
+     * binds. A graph-owned view's handle holds its holder's token instead, because the view
+     * instance inside the holder is re-made on every replay. Untracked for a type that publishes
+     * no token.
      *
-     * @note This is a best-effort check, it catches most use-after-free cases but
-     *       is not guaranteed to detect all memory corruption.
+     * Not @ref caller_token: that one watches the caller's wrapper, which may legitimately be
+     * gone while the graph's stand-in keeps the storage alive.
      */
-    std::function<bool()> validator;
+    std::weak_ptr<void> live_token;
+
+    /**
+     * @brief Whether the tensor this handle reads at execute time still exists.
+     *
+     * Definitive when @ref live_token is tracked: an expired token is a destroyed tensor, and
+     * a live one is the tensor itself, whatever it has since been renamed to. A type with no
+     * token gets a best-effort check instead, the tensor's current name against @ref name_hash,
+     * which reads the object and so cannot be certain; a handle whose type has no name says yes.
+     *
+     * @return False when the tensor has been destroyed (or, untracked, appears to have been).
+     */
+    [[nodiscard]] bool alive() const noexcept {
+        if (!detail::untracked(live_token)) {
+            return !live_token.expired();
+        }
+        if (ops->name == nullptr) {
+            return true;
+        }
+        try {
+            return std::hash<std::string>{}(ops->name(live_ptr())) == name_hash;
+        } catch (...) {
+            return false;
+        }
+    }
 
     /**
      * @brief Compute the total element count of this tensor.
@@ -1194,25 +1219,8 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
         return comm::Request{}; // Fallback: default request (immediately complete)
     };
 
-    h.name_hash = std::hash<std::string>{}(h.name);
-    // Capture a liveness token (weak_ptr) so destruction is detected WITHOUT
-    // dereferencing a possibly-freed tensor. Types without the token skip the
-    // check (they were unchecked before too). `life_token` is empty for those,
-    // and `has_life_token` gates the .expired() probe so an empty weak_ptr (which
-    // reports expired) is never mistaken for a destroyed tensor.
-    constexpr bool            has_life_token = requires { tensor_mut->liveness_token(); };
-    std::weak_ptr<void> const life_token     = detail::liveness_token_of(tensor);
-    h.validator                              = [tensor_mut, life_token, expected_hash = h.name_hash]() -> bool {
-        try {
-            if constexpr (has_life_token) {
-                if (life_token.expired())
-                    return false; // tensor destroyed, definitive, no UB
-            }
-            return std::hash<std::string>{}(tensor_mut->name()) == expected_hash;
-        } catch (...) {
-            return false;
-        }
-    };
+    h.name_hash  = std::hash<std::string>{}(h.name);
+    h.live_token = detail::liveness_token_of(tensor);
 
     return h;
 }

@@ -140,7 +140,7 @@ struct RuntimeViewHolder {
 /// and the parent carries its own handle and its own check.
 template <typename Holder>
 void bind_holder_liveness(TensorHandle &handle, Holder const *holder) {
-    handle.validator = [life = std::weak_ptr<void>(holder->life)]() -> bool { return !life.expired(); };
+    handle.live_token = holder->life;
 }
 
 } // namespace detail

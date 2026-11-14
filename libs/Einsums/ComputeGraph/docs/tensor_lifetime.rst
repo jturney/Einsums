@@ -106,13 +106,16 @@ destroyed, a descriptive ``std::runtime_error`` is thrown instead of a segfault:
    Ensure all tensors outlive the graph, or use graph.create_tensor()
    for intermediates.
 
-The validation uses a weak liveness token plus a name-hash canary: at registration
-time the handle takes a ``std::weak_ptr`` to a token the tensor owns, and records
-the tensor's name hash.
-An expired token is definitive - the tensor is gone, and reporting it needs no
-read of freed memory.
-Otherwise the hash is re-computed and compared, which catches memory that was
-reused or corrupted.
+The validation uses a weak liveness token: at registration time the handle takes a
+``std::weak_ptr`` to a token the tensor owns.
+The token is definitive in both directions.
+An expired token means the tensor is gone, and reporting it needs no read of freed
+memory; a live one means the tensor still exists, so renaming it after capture is
+not mistaken for its destruction.
+A tensor type that publishes no token gets a name-hash canary instead: the handle
+records the tensor's name hash at registration and compares it with the current
+name, which catches memory that was reused or corrupted but reads the object to
+do so.
 
 Validation runs while the graph has not executed yet, and a modifying optimizer
 pass puts it back in that state (``Graph::mark_sorted`` clears the executed flag).
@@ -129,8 +132,10 @@ parent carries its own handle and its own check.
 
 .. note::
 
-   This is a best-effort check. It catches most use-after-free cases but is
-   not guaranteed to detect all memory corruption.
+   For a type with no liveness token this is a best-effort check. It catches
+   most use-after-free cases but is not guaranteed to detect all memory
+   corruption, and renaming such a tensor after capture reads as its
+   destruction.
 
 When to Use What
 =================
