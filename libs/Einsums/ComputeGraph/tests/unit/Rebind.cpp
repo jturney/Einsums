@@ -10,6 +10,7 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <optional>
 #include <vector>
@@ -420,21 +421,19 @@ struct DeclaredAccumulator {
 
 } // namespace
 
-// Known bug: a rebind leaves the handle's lifecycle closures on the tensor it replaced, and the
-// Materialize and Initialize executors copied those closures when the pass built them. So every
-// replay allocates and zeroes the graph's shell for C, which nothing reads; the value in `user` is
-// right only because those closures miss it. Fixed by the per-type operations table, whose
-// lifecycle executors look the handle up at replay and skip a tensor the graph no longer owns.
-TEST_CASE("Rebind - a declared tensor rebound to caller storage leaves its lifecycle", "[ComputeGraph][Rebind][!shouldfail]") {
+// A rebind after optimizing, so the Materialize and Initialize nodes were built over the graph's
+// shell for C. They used to keep acting on it: every replay allocated and zeroed a tensor nothing
+// read, and the value in `user` was right only because they missed it. The lifecycle executors now
+// look the tensor up when they run and do nothing for one a rebind gave to the caller's storage.
+TEST_CASE("Rebind - a declared tensor rebound to caller storage leaves its lifecycle", "[ComputeGraph][Rebind]") {
     DeclaredAccumulator fixture;
     fixture.graph.rebind(fixture.C, fixture.user);
     fixture.graph.execute();
     fixture.check_redefined();
 }
 
-// Known bug: the same defect reached through bind by manifest name, which repoints the slot through
-// the same rebind. Fixed with the case above.
-TEST_CASE("Rebind - a declared tensor bound by name leaves its lifecycle", "[ComputeGraph][Rebind][!shouldfail]") {
+// The same, reached through bind by manifest name, which repoints the slot through the same rebind.
+TEST_CASE("Rebind - a declared tensor bound by name leaves its lifecycle", "[ComputeGraph][Rebind]") {
     DeclaredAccumulator fixture;
     fixture.graph.bind("C", fixture.user);
     fixture.graph.execute();
@@ -458,5 +457,64 @@ TEST_CASE("Rebind - a declared tensor bound before optimizing keeps the caller's
         fixture.optimize();
         fixture.graph.execute();
         fixture.check_redefined();
+    }
+}
+
+// Binding a slot to the tensor it already reads redefines nothing: C keeps its lifecycle, so the
+// graph still allocates and zeroes it, and the accumulation starts from zero. Marking it as the
+// caller's would leave the graph's own tensor without storage.
+TEST_CASE("Rebind - a declared tensor rebound to itself keeps its lifecycle", "[ComputeGraph][Rebind]") {
+    DeclaredAccumulator fixture;
+    fixture.graph.rebind(fixture.C, fixture.C);
+    fixture.graph.execute();
+
+    REQUIRE(fixture.C.is_materialized());
+    auto expected = create_zero_tensor<double>("expected", 3, 5);
+    reference_einsum("ik;kj->ij", 0.0, &expected, 1.0, fixture.A, fixture.B);
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 5; ++j) {
+            CHECK_THAT(fixture.C(i, j), Catch::Matchers::WithinAbs(expected(i, j), 1e-12));
+        }
+    }
+}
+
+// A scratch the graph frees after its last use, rebound to caller storage once the Free exists.
+// The Free looks its tensor up when it runs, which after the rebind is the caller's, and releasing
+// that would hand the caller back a tensor with no storage. It does nothing instead.
+TEST_CASE("Rebind - a Free built before a rebind leaves the caller's storage alone", "[ComputeGraph][Rebind]") {
+    constexpr size_t n = 8;
+    auto             A = create_random_tensor<double>("A", n, n);
+    auto             B = create_random_tensor<double>("B", n, n);
+    auto             C = create_zero_tensor<double>("C", n, n);
+
+    cg::Graph          graph("freed_scratch");
+    Tensor<double, 2> *scratch = nullptr;
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &tmp = graph.create_zero_tensor<double, 2>("tmp", n, n);
+        scratch                    = &tmp;
+        cg::einsum("ik;kj->ij", 0.0, &tmp, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, tmp, B);
+    }
+    cg::PassManager pm;
+    pm.add<cg::passes::Materialization>();
+    pm.add<cg::passes::FreeInsertion>(std::size_t{0});
+    graph.apply(pm);
+    REQUIRE(std::ranges::any_of(graph.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::Free; }));
+
+    Tensor<double, 2> user("user", n, n);
+    graph.rebind(*scratch, user);
+    graph.execute();
+
+    REQUIRE(user.is_materialized());
+    Tensor<double, 2> AB("AB", n, n);
+    Tensor<double, 2> ABB("ABB", n, n);
+    reference_einsum("ik;kj->ij", 0.0, &AB, 1.0, A, B);
+    reference_einsum("ik;kj->ij", 0.0, &ABB, 1.0, AB, B);
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            CHECK_THAT(user(i, j), Catch::Matchers::WithinAbs(AB(i, j), 1e-12));
+            CHECK_THAT(C(i, j), Catch::Matchers::WithinAbs(ABB(i, j), 1e-12));
+        }
     }
 }

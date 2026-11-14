@@ -364,6 +364,15 @@ Swap a tensor for a different one without re-capturing:
     graph.rebind(A1, A2);
     graph.execute();  // Now uses A2 (same graph structure)
 
+A rebind redefines the tensor: the bound tensor, contents included, is the value the
+graph reads and writes from then on.
+For a tensor the graph declared, such as one from ``declare_zero_tensor``, that means the
+declaration's initialization no longer applies.
+Initialization belongs to storage the graph owns, so an accumulating write into a rebound
+accumulator adds to whatever the bound tensor already holds; zero it first if the sum should
+start from zero.
+``Graph::bind`` repoints slots by name through the same rebind.
+
 TaskPool Integration
 ====================
 

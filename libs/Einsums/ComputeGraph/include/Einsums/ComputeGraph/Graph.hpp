@@ -4059,6 +4059,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     }
 
     /// Declare a graph-scoped tensor initialized to zero after materialization.
+    ///
+    /// The zeroing belongs to the storage the graph gives it: once a @ref rebind or @ref bind
+    /// hands the slot to caller storage, the caller's contents are the tensor's value and are
+    /// not zeroed.
     template <typename T, size_t Rank, std::integral... Dims>
         requires(sizeof...(Dims) == Rank)
     Tensor<T, Rank> &declare_zero_tensor(std::string name, Dims... dims) {
@@ -4542,6 +4546,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * The new tensor must have the same rank, element type, and dimensions.
      * After rebinding, subsequent execute() calls will use the new tensor.
      *
+     * @par A rebind redefines the tensor
+     * The slot now holds @p new_tensor as it is, and its contents are the slot's value. The
+     * graph's lifecycle for the slot lapses: a tensor declared with @ref declare_zero_tensor,
+     * a fill function or a backing is no longer allocated, initialized or freed by the graph,
+     * whether its Materialize, Initialize and Free nodes were built before the rebind or the
+     * passes run after it. Initialization belongs to storage the graph owns, so an
+     * accumulating write into a rebound accumulator adds to whatever the bound tensor holds.
+     * The symmetry the graph knew from the previous tensor is replaced by what @p new_tensor
+     * declares. What the graph's author said about the slot (its spaces, dim symbols and
+     * provenance tag) stays. Rebinding a slot to the tensor it already holds changes nothing.
+     *
      * @tparam TensorType The tensor type (must match the original).
      * @param[in] id The TensorId to rebind.
      * @param[in] new_tensor The new tensor to bind to.
@@ -4570,6 +4585,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * Finds the slot currently pointing to ``old_tensor`` and redirects it
      * to ``new_tensor``. The new tensor must have the same rank and dimensions.
+     * The rebind redefines the tensor, as the ``rebind`` overload taking a TensorId describes.
      *
      * @tparam TensorType The tensor type (must match for both old and new).
      * @param[in] old_tensor The tensor currently bound in the graph.
@@ -4638,6 +4654,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Manifest-driven @ref rebind: takes ``(name, tensor)`` pairs, validates each against
      * the named @ref ManifestEntry, and delegates the actual repointing to @ref rebind so
      * slot pointers, impl accessors, and redirect chains are updated in exactly one place.
+     * Each slot bound is redefined as the ``rebind`` overload taking a TensorId describes: the
+     * caller's tensor, contents included, is the slot's value, and a declared tensor's
+     * initialization does not apply to it.
      *
      * @tparam Args Alternating ``std::string``-convertible names and tensor lvalues.
      * @param[in] args The ``(name, tensor)`` pairs, applied left to right.
@@ -5977,6 +5996,9 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
     // Update the TensorHandle too
     auto th_it = _registry.handles().find(id);
     if (th_it != _registry.handles().end()) {
+        // Binding a slot to the object it already reads is no redefinition: the tensor keeps the
+        // lifecycle it has, and a declared tensor bound to itself is still the graph's to allocate.
+        bool const redefines = th_it->second.live_ptr() != static_cast<void const *>(&new_tensor);
         // The pointer index is keyed on ``tensor_ptr``, so a repoint has to move this
         // handle's entry with it: leaving it behind makes the index answer about the
         // storage the graph was captured over and report the storage it was just
@@ -6016,15 +6038,18 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
         // (spaces, dim symbols, tag) stays. Without this, a bind made before the passes run, as
         // bind's documentation recommends, had Materialization give the caller's tensor an
         // Initialize that zeroed its contents on every replay.
-        th_it->second.init_kind   = InitKind::None;
-        th_it->second.custom_init = nullptr;
-        if constexpr (requires { new_tensor.is_materialized(); }) {
-            th_it->second.alloc_state = new_tensor.is_materialized() ? AllocState::Materialized : AllocState::Deferred;
-        } else {
-            th_it->second.alloc_state = AllocState::Materialized;
+        if (redefines) {
+            th_it->second.caller_bound = true;
+            th_it->second.init_kind    = InitKind::None;
+            th_it->second.custom_init  = nullptr;
+            if constexpr (requires { new_tensor.is_materialized(); }) {
+                th_it->second.alloc_state = new_tensor.is_materialized() ? AllocState::Materialized : AllocState::Deferred;
+            } else {
+                th_it->second.alloc_state = AllocState::Materialized;
+            }
+            th_it->second.symmetry_hint =
+                th_it->second.ops->declared_symmetry != nullptr ? th_it->second.ops->declared_symmetry(th_it->second.live_ptr()) : nullptr;
         }
-        th_it->second.symmetry_hint =
-            th_it->second.ops->declared_symmetry != nullptr ? th_it->second.ops->declared_symmetry(th_it->second.live_ptr()) : nullptr;
         // ``impl_fn`` was baked over the OLD tensor object, so leaving it
         // alone hands every pass-built executor that reads through it (see
         // ``make_einsum_node``) a rebound node's PREVIOUS storage. It is

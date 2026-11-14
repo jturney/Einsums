@@ -1234,13 +1234,15 @@ void refresh_gemm_hint(Graph &graph, Node &node) {
 
 namespace {
 
-/// The handle a lifecycle node's executor reads: the declaration, wherever it lives. A copy
+/// The tensor a lifecycle node's executor acts on: the declaration, wherever it lives. A copy
 /// registered in the node's own graph need not carry the declaration's hooks.
-TensorHandle const &lifecycle_handle(Graph &graph, DeclaredTensor const &declared, TensorId operand) {
-    if (declared.graph) {
-        return declared.graph->graph().tensor(declared.id);
-    }
-    return graph.tensor(operand);
+/// Looked up once here too, so a node naming no tensor fails when it is built rather than when it
+/// first runs.
+detail::LifecycleTarget lifecycle_target(Graph &graph, DeclaredTensor const &declared, TensorId operand) {
+    detail::LifecycleTarget target = declared.graph ? detail::LifecycleTarget{.graph = declared.graph, .id = declared.id}
+                                                    : detail::LifecycleTarget{.graph = graph.anchor(), .id = operand};
+    (void)target.handle();
+    return target;
 }
 
 } // namespace
@@ -1671,22 +1673,22 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
                                         "build_executor(Materialize): '{}' is placed at arena offset {}, but graph '{}' holds no arena",
                                         d.tensor_name, *d.arena_offset, graph.name());
             }
-            return detail::build_attach(lifecycle_handle(graph, d.declared, outputs[0]), graph.arena(), *d.arena_offset);
+            return detail::build_attach(lifecycle_target(graph, d.declared, outputs[0]), graph.arena(), *d.arena_offset);
         }
-        return detail::build_materialize(lifecycle_handle(graph, d.declared, outputs[0]), graph.run_context());
+        return detail::build_materialize(lifecycle_target(graph, d.declared, outputs[0]), graph.run_context());
     }
     case OpKind::Free: {
         need(kind, "inputs", inputs, 1);
         auto const &d = expect<AllocDescriptor>(kind, desc, "AllocDescriptor");
         if (d.arena_offset.has_value()) {
-            return detail::build_detach(lifecycle_handle(graph, d.declared, inputs[0]));
+            return detail::build_detach(lifecycle_target(graph, d.declared, inputs[0]));
         }
-        return detail::build_free(lifecycle_handle(graph, d.declared, inputs[0]), graph.run_context());
+        return detail::build_free(lifecycle_target(graph, d.declared, inputs[0]), graph.run_context());
     }
     case OpKind::Initialize: {
         need(kind, "outputs", outputs, 1);
         auto const &d = expect<InitializeDescriptor>(kind, desc, "InitializeDescriptor");
-        return detail::build_initialize(d.kind, lifecycle_handle(graph, d.declared, outputs[0]));
+        return detail::build_initialize(d.kind, lifecycle_target(graph, d.declared, outputs[0]));
     }
     // The storage transfers, by what the descriptor says each moves.
     case OpKind::DiskRead:

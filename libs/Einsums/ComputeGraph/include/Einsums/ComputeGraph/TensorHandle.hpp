@@ -551,9 +551,21 @@ struct TensorHandle {
      * MetadataBoundary contract.
      */
     TensorOwnership ownership{TensorOwnership::Graph};
-    AllocState      alloc_state{AllocState::Materialized}; ///< Whether data is allocated (Materialized) or deferred
-    InitKind        init_kind{InitKind::None};             ///< How to initialize after materialization
-    Residency       residency{Residency::Host};            ///< Where the tensor data currently lives (updated by GPU passes)
+
+    /**
+     * @brief Set by a rebind, or a bind by name: the slot now holds the caller's tensor, as it is.
+     *
+     * The bound tensor's contents are its value, so the graph's lifecycle for the slot lapses. A
+     * Materialize, Initialize or Free node built before the rebind does nothing when it runs, since
+     * allocating, filling and freeing belong to storage the graph owns, and a Free acting on the
+     * bound tensor would release the caller's. A rebind also resets @ref init_kind and
+     * @ref alloc_state from the bound tensor, so the passes give it no new lifecycle nodes.
+     */
+    bool caller_bound{false};
+
+    AllocState alloc_state{AllocState::Materialized}; ///< Whether data is allocated (Materialized) or deferred
+    InitKind   init_kind{InitKind::None};             ///< How to initialize after materialization
+    Residency  residency{Residency::Host};            ///< Where the tensor data currently lives (updated by GPU passes)
 
     /// Type-erased function to allocate backing storage for a deferred tensor.
     /// Called by MaterializationPass. Null for already-materialized tensors.
