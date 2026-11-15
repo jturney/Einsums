@@ -57,6 +57,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -769,9 +770,133 @@ TEST_CASE("SaveLoad - a tiled Hermitian eigendecomposition refuses although its 
     CHECK_THAT(save_refusal(graph), Catch::Matchers::ContainsSubstring("Heev"));
 }
 
-// Gemv, Ger, Gesv, Invert and Heev became saveable at 1.15.0. The golden holds one of each, all
-// complex128, so the conjugate transpose and gerc are in the corpus too.
-TEST_CASE("SaveLoad - the BLAS-2 and LAPACK kinds of 1.15.0 write a golden and refuse a missing key", "[ComputeGraph][SaveLoad]") {
+TEMPLATE_LIST_TEST_CASE("SaveLoad - every norm round-trips against brute force", "[ComputeGraph][SaveLoad]", testing::AllScalarTypes) {
+    using T    = TestType;
+    using Real = RemoveComplexT<T>;
+    // A general matrix for the four elementwise norms, and a rank-1 matrix u v^T for the spectral
+    // one, whose 2-norm is |u| |v| exactly: a value the oracle can compute without an SVD.
+    auto const A0 = create_random_tensor<T>("A", 4, 3);
+    auto const u0 = create_random_tensor<T>("u", 4);
+    auto const v0 = create_random_tensor<T>("v", 3);
+    auto       R0 = create_zero_tensor<T>("R", 4, 3);
+    for (size_t i = 0; i < 4; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            R0(i, j) = u0(i) * v0(j);
+        }
+    }
+
+    std::vector<std::pair<linear_algebra::Norm, std::string>> const kinds{{linear_algebra::Norm::MAXABS, "nM"},
+                                                                          {linear_algebra::Norm::ONE, "n1"},
+                                                                          {linear_algebra::Norm::INFTY, "nI"},
+                                                                          {linear_algebra::Norm::FROBENIUS, "nF"},
+                                                                          {linear_algebra::Norm::TWO, "n2"}};
+
+    RuntimeTensor<T>                 A(A0);
+    RuntimeTensor<T>                 R(R0);
+    std::vector<RuntimeTensor<Real>> results;
+    results.reserve(kinds.size());
+    for (auto const &[kind, name] : kinds) {
+        results.emplace_back(name, std::vector<size_t>{1});
+    }
+    Real raw{0};
+
+    cg::Graph graph("norms");
+    {
+        cg::CaptureGuard const guard(graph);
+        for (size_t k = 0; k < kinds.size(); ++k) {
+            cg::norm_python(&results[k], kinds[k].first, kinds[k].first == linear_algebra::Norm::TWO ? R : A);
+        }
+        // The raw-scalar form, whose destination is a registered scalar rather than a tensor.
+        cg::norm(&raw, linear_algebra::Norm::FROBENIUS, A);
+    }
+    REQUIRE(graph.serializability_report().empty());
+
+    std::string const text   = must_save(graph);
+    cg::Graph         loaded = must_load(text);
+
+    std::string codes;
+    for (auto const &node : loaded.nodes()) {
+        auto const *desc = node.op_data.get_if<cg::NormDescriptor>();
+        REQUIRE(desc != nullptr);
+        codes.push_back(desc->norm_type);
+    }
+    REQUIRE(codes == "M1IF2F");
+
+    RuntimeTensor<T>                 A2(A0);
+    RuntimeTensor<T>                 R2(R0);
+    std::vector<RuntimeTensor<Real>> results2;
+    results2.reserve(kinds.size());
+    for (auto const &[kind, name] : kinds) {
+        results2.emplace_back(name, std::vector<size_t>{1});
+    }
+    Real loaded_raw{0};
+    loaded.bind("A", A2, "R", R2);
+    for (size_t k = 0; k < kinds.size(); ++k) {
+        loaded.bind(kinds[k].second, results2[k]);
+    }
+    loaded.bind_scalar("norm_result", &loaded_raw);
+    REQUIRE(loaded.unbound_manifest_entries().empty());
+    loaded.execute();
+
+    // Brute force over A0, in double, with no library kernel in the loop.
+    double max_abs = 0.0, frobenius = 0.0, max_col = 0.0, max_row = 0.0;
+    for (size_t j = 0; j < 3; ++j) {
+        double col = 0.0;
+        for (size_t i = 0; i < 4; ++i) {
+            double const a = std::abs(A0(i, j));
+            max_abs        = std::max(max_abs, a);
+            frobenius += a * a;
+            col += a;
+        }
+        max_col = std::max(max_col, col);
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        double row = 0.0;
+        for (size_t j = 0; j < 3; ++j) {
+            row += std::abs(A0(i, j));
+        }
+        max_row = std::max(max_row, row);
+    }
+    double u_norm = 0.0, v_norm = 0.0;
+    for (size_t i = 0; i < 4; ++i) {
+        u_norm += std::norm(std::complex<double>(u0(i)));
+    }
+    for (size_t j = 0; j < 3; ++j) {
+        v_norm += std::norm(std::complex<double>(v0(j)));
+    }
+    std::vector<double> const expected{max_abs, max_col, max_row, std::sqrt(frobenius), std::sqrt(u_norm) * std::sqrt(v_norm)};
+
+    double const tol = blas_tolerance<T>().rtol;
+    for (size_t k = 0; k < kinds.size(); ++k) {
+        INFO("norm " << kinds[k].second);
+        CHECK_THAT(static_cast<double>(results2[k](0)), Catch::Matchers::WithinRel(expected[k], tol));
+    }
+    CHECK_THAT(static_cast<double>(loaded_raw), Catch::Matchers::WithinRel(std::sqrt(frobenius), tol));
+}
+
+TEST_CASE("SaveLoad - a tiled norm refuses although its kind is reconstructible", "[ComputeGraph][SaveLoad][TiledRuntime]") {
+    using Grid = std::vector<std::vector<int>>;
+    TiledRuntimeTensor<double> A("A", Grid{{2, 3}, {2, 3}});
+    A.add_tile({0, 0});
+    A.materialize();
+    RuntimeTensor<double> r("r", std::vector<size_t>{1});
+
+    cg::Graph graph("tiled_norm");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::norm_python(&r, linear_algebra::Norm::FROBENIUS, A);
+    }
+
+    auto const report = graph.serializability_report();
+    REQUIRE(report.size() == 1);
+    CHECK(report.front().kind_name == "Norm");
+    CHECK_THAT(report.front().reason, Catch::Matchers::ContainsSubstring("tiled and block variants record none"));
+}
+
+// Gemv, Ger, Gesv, Invert, Heev and Norm became saveable at 1.15.0. The golden holds one of each,
+// all complex128, so the conjugate transpose, gerc and a real norm of a complex operand are in the
+// corpus too.
+TEST_CASE("SaveLoad - the kinds that joined at 1.15.0 write a golden and refuse a missing key", "[ComputeGraph][SaveLoad]") {
     using T   = std::complex<double>;
     auto A    = create_random_tensor<T>("A", 4, 3);
     auto x    = create_random_tensor<T>("x", 3);
@@ -793,6 +918,7 @@ TEST_CASE("SaveLoad - the BLAS-2 and LAPACK kinds of 1.15.0 write a golden and r
     auto rN   = RuntimeTensor<T>(N);
     auto rH   = RuntimeTensor<T>(H);
     auto rW   = RuntimeTensor<double>(Wr);
+    auto rn   = RuntimeTensor<double>("n", std::vector<size_t>{1});
     auto pf_a = T{0.75, -0.25};
     auto pf_b = T{0.5, 0.125};
 
@@ -805,6 +931,7 @@ TEST_CASE("SaveLoad - the BLAS-2 and LAPACK kinds of 1.15.0 write a golden and r
         cg::gesv(&rS, &rB);
         cg::invert(&rN);
         cg::heev(&rH, &rW);
+        cg::norm_python(&rn, linear_algebra::Norm::INFTY, rA);
     }
     REQUIRE(graph.serializability_report().empty());
 
@@ -823,6 +950,13 @@ TEST_CASE("SaveLoad - the BLAS-2 and LAPACK kinds of 1.15.0 write a golden and r
     SECTION("a ger without its conjugation flag is refused") {
         CHECK_THAT(load_refusal(patched(saved, R"("conjugated":true)", R"("conjugate":true)")),
                    Catch::Matchers::ContainsSubstring("conjugated"));
+    }
+    SECTION("a norm without its norm character is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("norm_type":)", R"("normtype":)")), Catch::Matchers::ContainsSubstring("norm_type"));
+    }
+    SECTION("a norm whose character is not one character is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("norm_type":"I")", R"("norm_type":"II")")),
+                   Catch::Matchers::ContainsSubstring("one-character"));
     }
     SECTION("a heev without its job flag is refused") {
         CHECK_THAT(load_refusal(patched(saved, R"("compute_eigenvectors":true)", R"("eigenvectors":true)")),

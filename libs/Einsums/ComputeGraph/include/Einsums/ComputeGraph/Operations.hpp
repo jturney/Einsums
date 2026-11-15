@@ -4252,7 +4252,7 @@ void norm(RemoveComplexT<typename AType::ValueType> *result, linear_algebra::Nor
         }
         auto const     a_ref = ctx.get_slot(A);
         TensorId const r_id  = ctx.get_or_register_scalar(result, "norm_result");
-        detail::capture_norm<T>(ctx, static_cast<char>(norm_type), a_ref, r_id, result);
+        detail::capture_norm<T>(ctx, static_cast<char>(norm_type), a_ref, r_id);
     } else {
         auto &ctx = CaptureContext::current();
         if (detail::runs_eagerly(ctx, "cg::norm", A)) {
@@ -4332,7 +4332,7 @@ void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const
         }
         auto const a_ref = ctx.get_slot(A);
         auto const r_ref = ctx.get_slot(*result);
-        detail::capture_norm_into<T>(ctx, static_cast<char>(norm_type), a_ref, r_ref);
+        detail::capture_norm_into<T>(ctx, static_cast<char>(norm_type), a_ref, r_ref, detail::tensor_rank(*result));
     } else {
         auto compute = [](linear_algebra::Norm nt, AType const &a) -> R {
             // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.

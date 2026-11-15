@@ -181,6 +181,7 @@ TEST_CASE("ExecutorBuilder - the reconstructible set holds every kind converted 
         cg::OpKind::Invert,
         cg::OpKind::Gemv,
         cg::OpKind::Ger,
+        cg::OpKind::Norm,
     };
 
     for (auto kind : converted) {
@@ -533,6 +534,37 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Gesv, Invert and Heev are bitwise 
         REQUIRE(bytes_of(H) == captured_vectors);
         REQUIRE(bytes_of(W) == captured_values);
     }
+}
+
+TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Norm is bitwise identical through either destination", "[ComputeGraph][ExecutorBuilder]",
+                   float, double, std::complex<float>, std::complex<double>) {
+    using T    = TestType;
+    using Real = RemoveComplexT<T>;
+
+    // The node's dtype is its REAL destination's, so a builder that dispatched on it instead of on
+    // the operand would read a complex matrix as a real one of twice the size.
+    RuntimeTensor<T>    A(create_random_tensor<T>("A", 4, 3));
+    RuntimeTensor<Real> r("r", std::vector<size_t>{1});
+    Real                raw{0};
+
+    cg::Graph graph("builder_norm");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::norm_python(&r, linear_algebra::Norm::ONE, A);
+        cg::norm(&raw, linear_algebra::Norm::FROBENIUS, A);
+    }
+    graph.execute();
+    auto const captured_r   = bytes_of(r);
+    auto const captured_raw = bytes_of_scalar(raw);
+    REQUIRE(raw > Real{0});
+
+    r(0) = Real{0};
+    raw  = Real{0};
+    REQUIRE(rebuild_executors(graph) == 2);
+    graph.execute();
+
+    REQUIRE(bytes_of(r) == captured_r);
+    REQUIRE(bytes_of_scalar(raw) == captured_raw);
 }
 
 TEST_CASE("ExecutorBuilder - rebuilt Transpose is bitwise identical", "[ComputeGraph][ExecutorBuilder]") {

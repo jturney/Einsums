@@ -319,13 +319,13 @@ EINSUMS_EXPORT void capture_shift(CaptureContext &ctx, T beta, SlotRef a, std::s
 template <typename T>
 EINSUMS_EXPORT RemoveComplexT<T> eager_norm(char norm_type, einsums::detail::TensorImpl<T> const &A);
 
-/// Record a norm written to the registered scalar @p result (id @p r_id).
+/// Record a norm written to the registered scalar @p r_id, keyed on rank 0 as for @ref capture_dot.
 template <typename T>
-EINSUMS_EXPORT void capture_norm(CaptureContext &ctx, char norm_type, SlotRef a, TensorId r_id, RemoveComplexT<T> *result);
+EINSUMS_EXPORT void capture_norm(CaptureContext &ctx, char norm_type, SlotRef a, TensorId r_id);
 
-/// Record a norm written to the first element of the tensor @p r.
+/// Record a norm written to the first element of the tensor @p r, keyed on its @p rank.
 template <typename T>
-EINSUMS_EXPORT void capture_norm_into(CaptureContext &ctx, char norm_type, SlotRef a, SlotRef r);
+EINSUMS_EXPORT void capture_norm_into(CaptureContext &ctx, char norm_type, SlotRef a, SlotRef r, std::size_t rank);
 
 /// The sum of every element, walked stride-correctly so a view reduces correctly, eagerly.
 template <typename T>

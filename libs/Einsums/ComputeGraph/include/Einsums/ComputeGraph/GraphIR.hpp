@@ -144,13 +144,16 @@
  * hold one, so nothing defaults.
  *
  * Since 1.15.0 a file may hold the dense @ref OpKind::Heev, @ref OpKind::Gesv,
- * @ref OpKind::Invert, @ref OpKind::Gemv and @ref OpKind::Ger nodes. A Heev descriptor carries
- * ``compute_eigenvectors`` as Syev's does; a Gemv's carries ``alpha``, ``beta`` and ``trans`` as
- * a Gemm's does; a Ger's carries ``alpha`` and ``conjugated``, which tells ``gerc`` from ``ger``.
+ * @ref OpKind::Invert, @ref OpKind::Gemv, @ref OpKind::Ger and @ref OpKind::Norm nodes. A Heev
+ * descriptor carries ``compute_eigenvectors`` as Syev's does; a Gemv's carries ``alpha``, ``beta``
+ * and ``trans`` as a Gemm's does; a Ger's carries ``alpha`` and ``conjugated``, which tells
+ * ``gerc`` from ``ger``; a Norm's carries ``norm_type``, the one-character LAPACK norm code.
  * Gesv and Invert descriptors are written empty, since a solve and an inversion are fully
- * described by their kind, dtype and operands. Every key is REQUIRED: no earlier file could hold
- * one of these kinds, so an absent key is a malformed document rather than an older one. The
- * tiled heev records no descriptor and is refused at save, as the tiled syev is.
+ * described by their kind, dtype and operands. A Norm node's ``dtype`` is its destination's, so
+ * the norm of a complex operand records the REAL type, and the operand's own record says what it
+ * holds. Every key is REQUIRED: no earlier file could hold one of these kinds, so an absent key
+ * is a malformed document rather than an older one. The tiled heev and the tiled and block norms
+ * record no descriptor and are refused at save, as the tiled syev is.
  *
  * @par The hash domain
  * @ref Graph::content_hash digests the canonical bytes of that object with

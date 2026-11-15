@@ -15,7 +15,9 @@
 
 #include <cmath>
 #include <complex>
+#include <cstddef>
 #include <limits>
+#include <span>
 #include <vector>
 
 #include "Record.hpp"
@@ -78,27 +80,20 @@ RemoveComplexT<T> eager_norm(char norm_type, Impl<T> const &A) {
 }
 
 template <typename T>
-void capture_norm(CaptureContext &ctx, char norm_type, SlotRef a, TensorId r_id, RemoveComplexT<T> *result) {
+void capture_norm(CaptureContext &ctx, char norm_type, SlotRef a, TensorId r_id) {
     WAGGLE_ZONE("norm capture");
-    OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
-    auto                  executor = [result, norm_type, a_access]() {
-        WAGGLE_ZONE("norm execute");
-        *result = run_norm<T>(norm_type, *a_access.impl<T>());
-    };
-    ctx.record(OpKind::Norm, "norm", {a.first}, {r_id}, std::move(executor));
+    // The destination is a registered raw scalar, so the node is keyed on rank 0. Its dtype is
+    // the REAL type a norm produces, which is what the node's destination says; see NormDescriptor.
+    ctx.record_built(OpKind::Norm, "norm", packed_gemm::get_scalar_type<RemoveComplexT<T>>(), 0, NormDescriptor{.norm_type = norm_type},
+                     std::span<TensorId const>{&a.first, 1}, std::span<TensorId const>{&r_id, 1}, {a.first}, {r_id});
 }
 
 template <typename T>
-void capture_norm_into(CaptureContext &ctx, char norm_type, SlotRef a, SlotRef r) {
+void capture_norm_into(CaptureContext &ctx, char norm_type, SlotRef a, SlotRef r, std::size_t rank) {
     WAGGLE_ZONE("norm_python capture");
-    using R = RemoveComplexT<T>;
-    OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
-    OperandAccessor const r_access(r.second, packed_gemm::get_scalar_type<R>());
-    auto                  executor = [norm_type, a_access, r_access]() {
-        WAGGLE_ZONE("norm_python execute");
-        r_access.impl<R>()->data()[0] = run_norm<T>(norm_type, *a_access.impl<T>());
-    };
-    ctx.record(OpKind::Norm, "norm", {a.first}, {r.first}, std::move(executor));
+    // The same node with a tensor destination, whose element 0 receives the norm.
+    ctx.record_built(OpKind::Norm, "norm", packed_gemm::get_scalar_type<RemoveComplexT<T>>(), rank, NormDescriptor{.norm_type = norm_type},
+                     std::span<TensorId const>{&a.first, 1}, std::span<TensorId const>{&r.first, 1}, {a.first}, {r.first});
 }
 
 // ── sum / max ─────────────────────────────────────────────────────────────────
@@ -131,8 +126,8 @@ void capture_max(CaptureContext &ctx, SlotRef r, SlotRef a) {
 
 #define EINSUMS_REDUCTION_OPERATIONS(T)                                                                                                    \
     template EINSUMS_EXPORT RemoveComplexT<T> eager_norm<T>(char, Impl<T> const &);                                                        \
-    template EINSUMS_EXPORT void              capture_norm<T>(CaptureContext &, char, SlotRef, TensorId, RemoveComplexT<T> *);             \
-    template EINSUMS_EXPORT void              capture_norm_into<T>(CaptureContext &, char, SlotRef, SlotRef);                              \
+    template EINSUMS_EXPORT void              capture_norm<T>(CaptureContext &, char, SlotRef, TensorId);                                  \
+    template EINSUMS_EXPORT void              capture_norm_into<T>(CaptureContext &, char, SlotRef, SlotRef, std::size_t);                 \
     template EINSUMS_EXPORT T                 eager_sum<T>(Impl<T> const &);                                                               \
     template EINSUMS_EXPORT void              capture_sum<T>(CaptureContext &, SlotRef, SlotRef);
 

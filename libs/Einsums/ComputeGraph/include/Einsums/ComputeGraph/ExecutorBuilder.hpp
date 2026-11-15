@@ -346,9 +346,9 @@ EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
  * @note The bit is per KIND, which is coarser than per node: ``DirectDivision``
  *       is reconstructible, yet a TILED direct division records under that kind
  *       with a @ref TiledElementwiseDescriptor and is not. Ask
- *       @ref reconstruction_blocker for the per-node answer. ``Syev`` and
- *       ``Heev`` split the same way, with the tiled arm recording no descriptor
- *       at all.
+ *       @ref reconstruction_blocker for the per-node answer. ``Syev``,
+ *       ``Heev`` and ``Norm`` split the same way, with the tiled arm recording
+ *       no descriptor at all.
  *
  * @note ``Syev`` and ``Heev`` are the entries whose builders refuse a DTYPE
  *       rather than a descriptor. A symmetric eigendecomposition is real and a
@@ -404,6 +404,7 @@ EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
     case OpKind::Invert:
     case OpKind::Gemv:
     case OpKind::Ger:
+    case OpKind::Norm:
         return true;
     default:
         return false;

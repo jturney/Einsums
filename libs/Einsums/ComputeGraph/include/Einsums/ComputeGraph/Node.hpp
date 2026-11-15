@@ -516,6 +516,32 @@ struct GemvDescriptor {
 };
 
 /**
+ * @brief Metadata for the DENSE @ref OpKind::Norm nodes: ``result = ||A||``.
+ *
+ * @ref norm_type is the LAPACK norm character the capture site was given:
+ * ``'M'`` (largest absolute element), ``'1'`` (largest column sum), ``'I'``
+ * (largest row sum), ``'F'`` (Frobenius) or ``'2'`` (spectral). It selects a
+ * different number rather than a different route to the same one, so a file
+ * has to carry it.
+ *
+ * The result is REAL for a complex operand, so this is the one kind whose
+ * destination does not share its operand's element type. The node's dtype,
+ * which is read off its destination, is therefore the REAL type, and the
+ * builder takes the operand's element type from the operand itself.
+ *
+ * The TILED and block-sparse norms share the kind and record NO descriptor:
+ * they reduce over a grid of buffers and have no builder entry. Ask
+ * @ref reconstruction_blocker for the per-node answer.
+ *
+ * @versionadded{2.0.0}
+ */
+struct NormDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "NormDescriptor";
+    char                              norm_type{'F'}; ///< LAPACK norm character: 'M', '1', 'I', 'F' or '2'.
+};
+
+/**
  * @brief Metadata for @ref OpKind::Ger nodes: the rank-1 update
  *        ``A += alpha * x * y^T``, or ``A += alpha * x * y^H`` when @ref conjugated.
  *

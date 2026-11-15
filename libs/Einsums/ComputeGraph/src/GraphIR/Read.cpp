@@ -210,6 +210,18 @@ class Fields {
         return text[0];
     }
 
+    /// A one-character code such as a LAPACK norm character. Unlike @ref transpose, an empty string
+    /// is reported too: there is no code it could stand for.
+    [[nodiscard]] char character(std::string_view key, char fallback) const {
+        Value const      *value = _object.peek(key);
+        std::string const text  = str(key);
+        if (value != nullptr && value->is_string() && text.size() != 1) {
+            note(key, value->position, "expected a one-character string");
+            return fallback;
+        }
+        return text.empty() ? fallback : text[0];
+    }
+
     [[nodiscard]] PrefactorScalar prefactor(std::string_view key, PrefactorScalar fallback) const;
 
     /// Walk the array under @p key, calling @p visit with each element and its path. A missing
@@ -836,7 +848,7 @@ void read_descriptor(IrNode &node, Fields const &fields, GateFlagTable const &ga
         node.descriptor           = desc;
         return;
     }
-    // The five kinds below arrived together at 1.15.0, so no file predates any of their fields
+    // The kinds below arrived together at 1.15.0, so no file predates any of their fields
     // and every one is REQUIRED, as Syev's flag is. The fallbacks passed alongside are only what
     // the field holds after its absence has been reported; the load refuses either way.
     case OpKind::Heev: {
@@ -856,6 +868,12 @@ void read_descriptor(IrNode &node, Fields const &fields, GateFlagTable const &ga
         desc.alpha      = fields.prefactor("alpha", PrefactorScalar{double{1}});
         desc.beta       = fields.prefactor("beta", PrefactorScalar{double{0}});
         desc.trans      = fields.transpose("trans", 'n');
+        node.descriptor = desc;
+        return;
+    }
+    case OpKind::Norm: {
+        NormDescriptor desc;
+        desc.norm_type  = fields.character("norm_type", 'F');
         node.descriptor = desc;
         return;
     }

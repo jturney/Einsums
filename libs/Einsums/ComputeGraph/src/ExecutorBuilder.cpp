@@ -971,6 +971,62 @@ std::function<void()> build_gemv(packed_gemm::ScalarType dtype, GemvDescriptor c
 }
 
 /**
+ * @brief ``result = ||A||`` under the descriptor's norm character. Rank-erased;
+ *        the kernel is ``linear_algebra::detail::norm``.
+ *
+ * The element type is the OPERAND's, read off its accessor, and not @p dtype:
+ * a norm of a complex matrix is real, so the node's own dtype, which is its
+ * destination's, names the real type underneath. @p dtype is checked against
+ * that instead, so a file pairing a complex operand with a complex result is
+ * refused rather than written through the wrong width.
+ *
+ * The vendor BLAS is held to one thread, because a norm is a reduction and its
+ * summation order is its thread count's; see @ref build_dot.
+ *
+ * @p into_tensor only picks the zone name, which tells a norm written into
+ * element 0 of a tensor apart from one written through a registered scalar.
+ */
+std::function<void()> build_norm(packed_gemm::ScalarType dtype, NormDescriptor const &desc, OperandAccessor const &a,
+                                 ScalarAccessor const &result, bool into_tensor) {
+    auto const real_of = [](packed_gemm::ScalarType t) {
+        switch (t) {
+        case packed_gemm::ScalarType::Complex64:
+            return packed_gemm::ScalarType::Float32;
+        case packed_gemm::ScalarType::Complex128:
+            return packed_gemm::ScalarType::Float64;
+        default:
+            return t;
+        }
+    };
+    packed_gemm::ScalarType const operand = a.dtype();
+    if (operand == packed_gemm::ScalarType::Unknown) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Norm): the operand's element type is unknown");
+    }
+    if (dtype != packed_gemm::ScalarType::Unknown && dtype != real_of(operand)) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "build_executor(Norm): a norm of a {} operand is {}, but this node's destination is {}", operand,
+                                real_of(operand), dtype);
+    }
+
+    char const norm_type = desc.norm_type;
+    return detail::dispatch_scalar_type(operand, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        using Real = RemoveComplexT<T>;
+        if (into_tensor) {
+            return [norm_type, a, result]() {
+                WAGGLE_ZONE("norm_python execute");
+                blas::SerialVendorScope const serial;
+                *result.address<Real>() = linear_algebra::detail::norm(norm_type, *a.impl<T>());
+            };
+        }
+        return [norm_type, a, result]() {
+            WAGGLE_ZONE("norm execute");
+            blas::SerialVendorScope const serial;
+            *result.address<Real>() = linear_algebra::detail::norm(norm_type, *a.impl<T>());
+        };
+    });
+}
+
+/**
  * @brief ``A += alpha * x * y^T``, or ``y^H`` when the descriptor says
  *        ``conjugated``. Rank-erased; the kernels are
  *        ``linear_algebra::detail::ger`` and ``gerc``.
@@ -1574,6 +1630,14 @@ std::string reconstruction_blocker(Node const &node) {
                    : fmt::format("Heev: expected a HeevDescriptor, found {}; the tiled variant records none, and its per-block "
                                  "decomposition has no builder entry",
                                  descriptor_name(node.op_data));
+    case OpKind::Norm:
+        // The tiled and block-sparse norms share the kind and record no descriptor, as the
+        // tiled syev does, because they reduce over a grid of buffers.
+        return node.op_data.holds<NormDescriptor>()
+                   ? std::string{}
+                   : fmt::format("Norm: expected a NormDescriptor, found {}; the tiled and block variants record none, and their "
+                                 "per-block reduction has no builder entry",
+                                 descriptor_name(node.op_data));
     case OpKind::Gesv:
         return node.op_data.holds<GesvDescriptor>()
                    ? std::string{}
@@ -1695,13 +1759,13 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
     }
 
     // Rank is keyed on the DESTINATION, and several kinds legitimately have a
-    // rank-0 one: an einsum whose spec has no C indices ("<- i ; i"), a dot and
-    // a trace writing a registered scalar, a write_param, whose destination is a
+    // rank-0 one: an einsum whose spec has no C indices ("<- i ; i"), a dot, a
+    // trace and a norm writing a registered scalar, a write_param, whose destination is a
     // ParamTable entry that no tensor names at all, and the two control-flow
     // kinds, which have no tensor destination of any rank. Rank is not
     // dispatched on anyway; see the header. The lifecycle kinds name a tensor of any rank,
     // a registered scalar included, and do nothing that depends on it.
-    bool const scalar_destination_ok = kind == OpKind::Einsum || kind == OpKind::Dot || kind == OpKind::Trace ||
+    bool const scalar_destination_ok = kind == OpKind::Einsum || kind == OpKind::Dot || kind == OpKind::Trace || kind == OpKind::Norm ||
                                        kind == OpKind::WriteParam || is_control_flow(kind) || is_lifecycle(kind) ||
                                        kind == OpKind::DiskRead || kind == OpKind::DiskWrite;
     if (rank == 0 && !scalar_destination_ok) {
@@ -1828,6 +1892,16 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
         need(kind, "outputs", outputs, 2);
         auto const &d = expect<HeevDescriptor>(kind, desc, "HeevDescriptor");
         return build_heev(dtype, d, resolve_operand(graph, outputs[0], kind, "A"), resolve_operand(graph, outputs[1], kind, "W"));
+    }
+    case OpKind::Norm: {
+        need(kind, "inputs", inputs, 1);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<NormDescriptor>(kind, desc, "NormDescriptor");
+        // The destination is element 0 of a tensor or a registered raw scalar, exactly as a
+        // dot's is; the tensor route is the one resolve_scalar_operand tries first.
+        bool const into_tensor = try_resolve_operand(graph, outputs[0]).valid();
+        return build_norm(dtype, d, resolve_operand(graph, inputs[0], kind, "A"),
+                          resolve_scalar_operand(graph, outputs[0], scalar_context(kind), "result"), into_tensor);
     }
     case OpKind::Gesv: {
         // Both operands are overwritten, so both are listed as inputs AND outputs, and both are

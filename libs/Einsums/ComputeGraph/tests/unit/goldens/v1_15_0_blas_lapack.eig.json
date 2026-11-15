@@ -110,6 +110,21 @@
     },
     {
       "id": 7,
+      "name": "n",
+      "direction": "output",
+      "dtype": "float64",
+      "rank": 1,
+      "dims": [1],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "init": "none",
+      "alloc": "materialized",
+      "aliases_input": null
+    },
+    {
+      "id": 8,
       "name": "x",
       "direction": "input",
       "dtype": "complex128",
@@ -124,7 +139,7 @@
       "aliases_input": null
     },
     {
-      "id": 8,
+      "id": 9,
       "name": "y",
       "direction": "inout",
       "dtype": "complex128",
@@ -139,7 +154,7 @@
       "aliases_input": null
     },
     {
-      "id": 9,
+      "id": 10,
       "name": "z",
       "direction": "output",
       "dtype": "complex128",
@@ -165,8 +180,8 @@
       "id": 0,
       "kind": "Gemv",
       "label": "gemv(N)",
-      "inputs": [0,7,8],
-      "outputs": [8],
+      "inputs": [0,8,9],
+      "outputs": [9],
       "dtype": "complex128",
       "rank": 1,
       "descriptor": {"alpha":{"dtype":"complex128","re":0.75,"im":-0.25},"beta":{"dtype":"complex128","re":0.5,"im":0.125},"trans":"N"}
@@ -175,8 +190,8 @@
       "id": 1,
       "kind": "Gemv",
       "label": "gemv(C)",
-      "inputs": [0,8],
-      "outputs": [9],
+      "inputs": [0,9],
+      "outputs": [10],
       "dtype": "complex128",
       "rank": 1,
       "descriptor": {"alpha":{"dtype":"complex128","re":0.75,"im":-0.25},"beta":{"dtype":"complex128","re":0.0,"im":0.0},"trans":"C"}
@@ -185,7 +200,7 @@
       "id": 2,
       "kind": "Ger",
       "label": "gerc",
-      "inputs": [8,7,3],
+      "inputs": [9,8,3],
       "outputs": [3],
       "dtype": "complex128",
       "rank": 2,
@@ -193,6 +208,7 @@
     },
     {"id":3,"kind":"Gesv","label":"gesv","inputs":[5,1],"outputs":[5,1],"dtype":"complex128","rank":2,"descriptor":{}},
     {"id":4,"kind":"Invert","label":"invert","inputs":[4],"outputs":[4],"dtype":"complex128","rank":2,"descriptor":{}},
-    {"id":5,"kind":"Heev","label":"heev","inputs":[2],"outputs":[2,6],"dtype":"complex128","rank":2,"descriptor":{"compute_eigenvectors":true}}
+    {"id":5,"kind":"Heev","label":"heev","inputs":[2],"outputs":[2,6],"dtype":"complex128","rank":2,"descriptor":{"compute_eigenvectors":true}},
+    {"id":6,"kind":"Norm","label":"norm","inputs":[0],"outputs":[7],"dtype":"float64","rank":1,"descriptor":{"norm_type":"I"}}
   ]
 }
