@@ -41,10 +41,12 @@ inline bool is_hermitian_rank2(SymmetryDescriptor const *desc) {
 }
 
 /// If ``A`` or ``B`` is rank-2 symmetric (or Hermitian for complex types),
-/// dispatch to ``blas::symm`` / ``blas::hemm`` and return ``true``. For
-/// symmetric matrices the trans flag is irrelevant (Aᵀ = A); for Hermitian
-/// matrices ``'n'`` and ``'c'`` are both valid (Aᴴ = A); ``'t'`` on a
-/// Hermitian matrix has no free shortcut and falls through.
+/// dispatch to ``blas::symm`` / ``blas::hemm`` and return ``true``. A
+/// symmetric matrix is itself under ``'n'`` and ``'t'`` (Aᵀ = A), and under
+/// ``'c'`` only when it is real: a complex symmetric matrix has Aᴴ = conj(A).
+/// A Hermitian matrix is itself under ``'n'`` and ``'c'`` (Aᴴ = A); ``'t'``
+/// on one has no free shortcut. Either way the OTHER operand must be ``'n'``,
+/// because symm and hemm multiply it as stored. Anything else falls through.
 ///
 /// Only handles the "all three tensors share element type ``T``" case;
 /// mixed-precision / mixed-type gemms stay on the general path.
@@ -55,10 +57,17 @@ bool try_symmetric_gemm(char transA, char transB, T alpha, einsums::detail::Tens
     char const tA = static_cast<char>(std::tolower(transA));
     char const tB = static_cast<char>(std::tolower(transB));
 
-    // Eligibility per operand: symmetric = any trans (T/N/C collapse to N
-    // since Aᵀ = A); Hermitian = N or C (both produce A).
-    auto sym_eligible = [](char t, SymmetryDescriptor const *d) { return is_symmetric_rank2(d) && (t == 'n' || t == 't' || t == 'c'); };
-    auto her_eligible = [](char t, SymmetryDescriptor const *d) { return is_hermitian_rank2(d) && (t == 'n' || t == 'c'); };
+    // Eligibility per operand: the flag on the symmetric operand must leave it
+    // unchanged, and the flag on the other must be 'n', since symm and hemm
+    // take no op on it. A symmetric matrix is unchanged by 'n' and 't', and by
+    // 'c' only when real: for a complex one Aᴴ = conj(A), a different matrix.
+    // A Hermitian matrix is unchanged by 'n' and 'c'.
+    auto sym_eligible = [](char t, SymmetryDescriptor const *d, char t_other) {
+        return is_symmetric_rank2(d) && t_other == 'n' && (t == 'n' || t == 't' || (!einsums::IsComplexV<T> && t == 'c'));
+    };
+    auto her_eligible = [](char t, SymmetryDescriptor const *d, char t_other) {
+        return is_hermitian_rank2(d) && t_other == 'n' && (t == 'n' || t == 'c');
+    };
 
     // Both tensors must be gemmable (contiguous, no broadcasting, matching LD).
     if (!A.is_gemmable() || !B.is_gemmable() || !C->is_gemmable())
@@ -92,11 +101,11 @@ bool try_symmetric_gemm(char transA, char transB, T alpha, einsums::detail::Tens
         }
     };
 
-    if (sym_eligible(tA, desc_a)) {
+    if (sym_eligible(tA, desc_a, tB)) {
         call_symm('L', A.data(), A.get_lda(), B.data(), B.get_lda());
         return true;
     }
-    if (sym_eligible(tB, desc_b)) {
+    if (sym_eligible(tB, desc_b, tA)) {
         call_symm('R', B.data(), B.get_lda(), A.data(), A.get_lda());
         return true;
     }
@@ -113,11 +122,11 @@ bool try_symmetric_gemm(char transA, char transB, T alpha, einsums::detail::Tens
         auto call_hemm = [&](char side, T const *sym_ptr, int sym_lda, T const *oth_ptr, int oth_lda) {
             blas::hemm<T>(side, 'U', m, n, alpha, sym_ptr, sym_lda, oth_ptr, oth_lda, beta, C->data(), C->get_lda());
         };
-        if (her_eligible(tA, desc_a)) {
+        if (her_eligible(tA, desc_a, tB)) {
             call_hemm('L', A.data(), A.get_lda(), B.data(), B.get_lda());
             return true;
         }
-        if (her_eligible(tB, desc_b)) {
+        if (her_eligible(tB, desc_b, tA)) {
             call_hemm('R', B.data(), B.get_lda(), A.data(), A.get_lda());
             return true;
         }

@@ -203,3 +203,106 @@ TEMPLATE_TEST_CASE("symm dispatch - no descriptor falls through to gemm", "[line
         for (int j = 0; j < N; ++j)
             REQUIRE(C_auto(i, j) == Catch::Approx(C_ref(i, j)).margin(::einsums::tolerance<T>()));
 }
+
+namespace {
+
+/// ``op(A) op(B)`` by loops, reading each operand through its own flag: ``'n'``, ``'t'`` or ``'c'``.
+template <typename T>
+Tensor<T, 2> product_by_loops(char ta, Tensor<T, 2> const &A, char tb, Tensor<T, 2> const &B, bool row_major) {
+    auto const op = [](char t, Tensor<T, 2> const &M, size_t i, size_t j) -> T {
+        T value = (t == 'n') ? M(i, j) : M(j, i);
+        if constexpr (IsComplexV<T>) {
+            if (t == 'c') {
+                value = std::conj(value);
+            }
+        }
+        return value;
+    };
+    size_t const m = ta == 'n' ? A.dim(0) : A.dim(1);
+    size_t const k = ta == 'n' ? A.dim(1) : A.dim(0);
+    size_t const n = tb == 'n' ? B.dim(1) : B.dim(0);
+    auto         C = create_zero_tensor<T>(row_major, "C_loops", m, n);
+    for (size_t i = 0; i < m; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            T sum{0};
+            for (size_t p = 0; p < k; ++p) {
+                sum += op(ta, A, i, p) * op(tb, B, p, j);
+            }
+            C(i, j) = sum;
+        }
+    }
+    return C;
+}
+
+template <typename T>
+void require_close_to_loops(Tensor<T, 2> const &got, Tensor<T, 2> const &want) {
+    for (size_t i = 0; i < want.dim(0); ++i) {
+        for (size_t j = 0; j < want.dim(1); ++j) {
+            CAPTURE(i, j);
+            REQUIRE(std::abs(got(i, j) - want(i, j)) < 100 * ::einsums::tolerance<T>());
+        }
+    }
+}
+
+} // namespace
+
+TEMPLATE_TEST_CASE("symm dispatch - a complex symmetric operand under 'c' is its conjugate, not itself", "[linear-algebra][symmetry]",
+                   std::complex<float>, std::complex<double>) {
+    // A complex SYMMETRIC matrix has A^T = A but A^H = conj(A). The dispatch took 'c' on a
+    // symmetric operand for 'n', as it may for a real one, and handed A itself to symm, so
+    // gemm('c', 'n', A, B) computed A B instead of conj(A) B.
+    using T         = TestType;
+    constexpr int N = 4;
+    for (bool const row_major : {false, true}) {
+        CAPTURE(row_major);
+        auto A = create_random_tensor<T>(row_major, "A", N, N);
+        A.set_symmetry(SymmetryDescriptor::symmetric_pair(0, 1));
+        symmetrize(A);
+        auto B = create_random_tensor<T>(row_major, "B", N, N);
+        auto C = create_zero_tensor<T>(row_major, "C", N, N);
+
+        gemm('c', 'n', T{1}, A, B, T{0}, &C);
+        require_close_to_loops(C, product_by_loops('c', A, 'n', B, row_major));
+
+        // The same operand on the right.
+        auto D = create_zero_tensor<T>(row_major, "D", N, N);
+        gemm('n', 'c', T{1}, B, A, T{0}, &D);
+        require_close_to_loops(D, product_by_loops('n', B, 'c', A, row_major));
+    }
+}
+
+TEMPLATE_TEST_CASE("symm dispatch - the other operand keeps its transpose", "[linear-algebra][symmetry]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    // symm and hemm multiply the symmetric operand by the OTHER one as stored. The dispatch fired on
+    // the symmetric operand's flag alone, so gemm('n', 't', A, B) with a symmetric A computed A B
+    // rather than A B^T, and likewise with the symmetric operand on the right.
+    using T         = TestType;
+    constexpr int N = 4;
+    for (bool const row_major : {false, true}) {
+        CAPTURE(row_major);
+        for (bool const hermitian : {false, true}) {
+            if (hermitian && !IsComplexV<T>) {
+                continue;
+            }
+            CAPTURE(hermitian);
+            auto S = create_random_tensor<T>(row_major, "S", N, N);
+            S.set_symmetry(hermitian ? SymmetryDescriptor::hermitian_pair(0, 1) : SymmetryDescriptor::symmetric_pair(0, 1));
+            symmetrize(S);
+            auto B = create_random_tensor<T>(row_major, "B", N, N);
+
+            auto C = create_zero_tensor<T>(row_major, "C", N, N);
+            gemm('n', 't', T{1}, S, B, T{0}, &C);
+            require_close_to_loops(C, product_by_loops('n', S, 't', B, row_major));
+
+            auto D = create_zero_tensor<T>(row_major, "D", N, N);
+            gemm('t', 'n', T{1}, B, S, T{0}, &D);
+            require_close_to_loops(D, product_by_loops('t', B, 'n', S, row_major));
+
+            if constexpr (IsComplexV<T>) {
+                auto E = create_zero_tensor<T>(row_major, "E", N, N);
+                gemm('n', 'c', T{1}, S, B, T{0}, &E);
+                require_close_to_loops(E, product_by_loops('n', S, 'c', B, row_major));
+            }
+        }
+    }
+}
