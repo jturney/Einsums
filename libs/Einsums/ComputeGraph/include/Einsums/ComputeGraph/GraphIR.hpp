@@ -20,13 +20,13 @@
  * be, which is why it refuses a graph it cannot write instead of writing a
  * partial one.
  *
- * @par The schema: ``einsums_graph_ir``, semver, currently 1.6.0
+ * @par The schema: ``einsums_graph_ir``, semver, currently 1.15.0
  * One JSON object with a FIXED top-level key order, so a tool can validate the
  * interface before it parses a single node:
  *
  * @code{.json}
  * {
- *   "einsums_graph_ir": "1.6.0",
+ *   "einsums_graph_ir": "1.15.0",
  *   "provenance":       { ... },
  *   "name":             "ccsd_doubles",
  *   "manifest":         [ ... ],
@@ -142,6 +142,15 @@
  * empty: the tensor it brings into use is the node's one output, and that tensor's record already
  * says its name and size, so the reader rebuilds the descriptor from it. No earlier file could
  * hold one, so nothing defaults.
+ *
+ * Since 1.15.0 a file may hold the dense @ref OpKind::Heev, @ref OpKind::Gesv,
+ * @ref OpKind::Invert, @ref OpKind::Gemv and @ref OpKind::Ger nodes. A Heev descriptor carries
+ * ``compute_eigenvectors`` as Syev's does; a Gemv's carries ``alpha``, ``beta`` and ``trans`` as
+ * a Gemm's does; a Ger's carries ``alpha`` and ``conjugated``, which tells ``gerc`` from ``ger``.
+ * Gesv and Invert descriptors are written empty, since a solve and an inversion are fully
+ * described by their kind, dtype and operands. Every key is REQUIRED: no earlier file could hold
+ * one of these kinds, so an absent key is a malformed document rather than an older one. The
+ * tiled heev records no descriptor and is refused at save, as the tiled syev is.
  *
  * @par The hash domain
  * @ref Graph::content_hash digests the canonical bytes of that object with
@@ -279,7 +288,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.14.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.15.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

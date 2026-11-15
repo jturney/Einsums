@@ -176,6 +176,11 @@ TEST_CASE("ExecutorBuilder - the reconstructible set holds every kind converted 
         cg::OpKind::Syev,
         cg::OpKind::LaplaceQuadrature,
         cg::OpKind::Alloc,
+        cg::OpKind::Heev,
+        cg::OpKind::Gesv,
+        cg::OpKind::Invert,
+        cg::OpKind::Gemv,
+        cg::OpKind::Ger,
     };
 
     for (auto kind : converted) {
@@ -229,8 +234,10 @@ TEST_CASE("ExecutorBuilder - the predicate and the builder's dispatch agree", "[
 TEST_CASE("ExecutorBuilder - an unconvertible kind names itself when refused", "[ComputeGraph][ExecutorBuilder]") {
     cg::Graph        graph("refusal");
     cg::OpData const empty{};
-    REQUIRE_THROWS_WITH(cg::build_executor(cg::OpKind::Gemv, packed_gemm::ScalarType::Float64, 2, empty, graph, {}, {}),
-                        Catch::Matchers::ContainsSubstring("Gemv"));
+    // Getrf still bakes its executor at capture: its pivots live in a buffer the node shares
+    // with a later getrs, which no descriptor holds yet.
+    REQUIRE_THROWS_WITH(cg::build_executor(cg::OpKind::Getrf, packed_gemm::ScalarType::Float64, 2, empty, graph, {}, {}),
+                        Catch::Matchers::ContainsSubstring("Getrf"));
 }
 
 // ── Identity: rebuilt executors reproduce captured ones bit for bit ─────────
@@ -379,6 +386,153 @@ TEST_CASE("ExecutorBuilder - a complex Syev node is refused, naming Heev", "[Com
     REQUIRE_THROWS_WITH(cg::build_executor(cg::OpKind::Syev, packed_gemm::ScalarType::Complex128, 2, descriptor, graph,
                                            std::span<cg::TensorId const>{inputs}, std::span<cg::TensorId const>{outputs}),
                         Catch::Matchers::ContainsSubstring("Heev"));
+}
+
+TEST_CASE("ExecutorBuilder - a real Heev node is refused, naming Syev", "[ComputeGraph][ExecutorBuilder]") {
+    // The mirror image of the case above: the heev overloads require a complex operand, so
+    // only a file can name a real Heev node, and its reader needs the kind it should have held.
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto W = create_random_tensor<double>("W", 4);
+
+    cg::Graph graph("real_heev");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(1.0, &A);
+        cg::scale(1.0, &W);
+    }
+    REQUIRE(graph.num_nodes() == 2);
+    cg::TensorId const a_id = graph.nodes()[0].outputs.front();
+    cg::TensorId const w_id = graph.nodes()[1].outputs.front();
+
+    std::vector<cg::TensorId> const inputs{a_id};
+    std::vector<cg::TensorId> const outputs{a_id, w_id};
+    cg::OpData const                descriptor{cg::HeevDescriptor{}};
+
+    REQUIRE_THROWS_WITH(cg::build_executor(cg::OpKind::Heev, packed_gemm::ScalarType::Float64, 2, descriptor, graph,
+                                           std::span<cg::TensorId const>{inputs}, std::span<cg::TensorId const>{outputs}),
+                        Catch::Matchers::ContainsSubstring("Syev"));
+}
+
+TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Gemv and Ger are bitwise identical", "[ComputeGraph][ExecutorBuilder]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using T = TestType;
+
+    // RuntimeTensor operands so the runtime-flag gemv overload, the one that reaches the
+    // conjugate transpose, is captured beside the compile-time-flag one.
+    RuntimeTensor<T> A(create_random_tensor<T>("A", 4, 3));
+    RuntimeTensor<T> x(create_random_tensor<T>("x", 3));
+    RuntimeTensor<T> u(create_random_tensor<T>("u", 4));
+    RuntimeTensor<T> y(create_random_tensor<T>("y", 4));
+    RuntimeTensor<T> z(create_random_tensor<T>("z", 3));
+    RuntimeTensor<T> M(create_random_tensor<T>("M", 4, 3));
+
+    auto const y_initial = bytes_of(y);
+    auto const z_initial = bytes_of(z);
+    auto const m_initial = bytes_of(M);
+
+    cg::Graph graph("builder_blas2");
+    {
+        cg::CaptureGuard const guard(graph);
+        // beta != 0 on both gemvs, so y's and z's prior contents take part, and a builder that
+        // read the trailing destination entry as the vector operand would show up here.
+        cg::gemv<false>(testing::prefactor<T>(0.7, -0.2), A, x, testing::prefactor<T>(0.3, 0.4), &y);
+        cg::gemv(testing::prefactor<T>(1.1, 0.5), A, u, testing::prefactor<T>(-0.6, 0.1), &z, linear_algebra::Transpose::C);
+        cg::ger(testing::prefactor<T>(0.25, 0.75), u, x, &M);
+        if constexpr (IsComplexV<T>) {
+            cg::gerc(testing::prefactor<T>(-0.5, 0.35), u, x, &M);
+        }
+    }
+
+    graph.execute();
+    auto const captured_y = bytes_of(y);
+    auto const captured_z = bytes_of(z);
+    auto const captured_m = bytes_of(M);
+    REQUIRE(captured_y != y_initial);
+    REQUIRE(captured_m != m_initial);
+
+    restore(&y, y_initial);
+    restore(&z, z_initial);
+    restore(&M, m_initial);
+    REQUIRE(rebuild_executors(graph) == graph.num_nodes());
+    graph.execute();
+
+    REQUIRE(bytes_of(y) == captured_y);
+    REQUIRE(bytes_of(z) == captured_z);
+    REQUIRE(bytes_of(M) == captured_m);
+}
+
+TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Gesv, Invert and Heev are bitwise identical", "[ComputeGraph][ExecutorBuilder]", float,
+                   double, std::complex<float>, std::complex<double>) {
+    using T = TestType;
+
+    // Diagonally dominant, so both factorizations are well away from singular, and Hermitian, so
+    // the same matrix serves heev for the complex types.
+    auto const matrix = [](char const *name) {
+        auto out = create_zero_tensor<T>(name, 4, 4);
+        for (size_t i = 0; i < 4; ++i) {
+            for (size_t j = 0; j < 4; ++j) {
+                double const re = i == j ? 5.0 + static_cast<double>(i) : 1.0 / (1.0 + static_cast<double>(i + j));
+                double const im = i == j ? 0.0 : (i < j ? 0.3 : -0.3) / (1.0 + static_cast<double>(i + j));
+                out(i, j)       = testing::prefactor<T>(re, im);
+            }
+        }
+        return out;
+    };
+    auto S = matrix("S");
+    auto I = matrix("I");
+    auto B = create_random_tensor<T>("B", 4, 2);
+
+    auto const s_initial = bytes_of(S);
+    auto const i_initial = bytes_of(I);
+    auto const b_initial = bytes_of(B);
+
+    cg::Graph graph("builder_lapack");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::gesv(&S, &B);
+        cg::invert(&I);
+    }
+    graph.execute();
+    auto const captured_s = bytes_of(S);
+    auto const captured_b = bytes_of(B);
+    auto const captured_i = bytes_of(I);
+    REQUIRE(captured_b != b_initial);
+
+    // Both gesv operands are overwritten, so both are read from the output list; restoring
+    // both is what makes a builder that swapped them visible.
+    restore(&S, s_initial);
+    restore(&B, b_initial);
+    restore(&I, i_initial);
+    REQUIRE(rebuild_executors(graph) == 2);
+    graph.execute();
+
+    REQUIRE(bytes_of(S) == captured_s);
+    REQUIRE(bytes_of(B) == captured_b);
+    REQUIRE(bytes_of(I) == captured_i);
+
+    if constexpr (IsComplexV<T>) {
+        auto H = matrix("H");
+        auto W = create_zero_tensor<RemoveComplexT<T>>("W", 4);
+
+        auto const h_initial = bytes_of(H);
+
+        cg::Graph eigen("builder_heev");
+        {
+            cg::CaptureGuard const guard(eigen);
+            cg::heev(&H, &W);
+        }
+        eigen.execute();
+        auto const captured_vectors = bytes_of(H);
+        auto const captured_values  = bytes_of(W);
+        REQUIRE(captured_vectors != h_initial);
+
+        restore(&H, h_initial);
+        REQUIRE(rebuild_executors(eigen) == 1);
+        eigen.execute();
+
+        REQUIRE(bytes_of(H) == captured_vectors);
+        REQUIRE(bytes_of(W) == captured_values);
+    }
 }
 
 TEST_CASE("ExecutorBuilder - rebuilt Transpose is bitwise identical", "[ComputeGraph][ExecutorBuilder]") {

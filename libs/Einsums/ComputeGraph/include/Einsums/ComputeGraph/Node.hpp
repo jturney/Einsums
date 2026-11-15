@@ -430,6 +430,113 @@ struct SyevDescriptor {
 };
 
 /**
+ * @brief Metadata for the DENSE @ref OpKind::Heev nodes: the Hermitian
+ *        eigendecomposition @f$A = V \operatorname{diag}(W) V^H@f$, in place.
+ *
+ * The complex counterpart of @ref SyevDescriptor, and a separate type for the
+ * reason the kinds are separate: a Hermitian decomposition takes a complex ``A``
+ * and writes a REAL ``W``, so the node's operands do not share one element type,
+ * and a pass that probed ``get_if<SyevDescriptor>`` would otherwise reason about
+ * a complex node as if both operands were real.
+ *
+ * The one field is the same job flag, for the same reason: ``cg::heev`` takes
+ * ``ComputeEigenvectors`` as a TEMPLATE parameter, so the choice between
+ * LAPACK's eigenvalues-only job and its full one lived in the type of the baked
+ * lambda. A file has to carry it, because the eigenvalues-only job leaves ``A``
+ * holding the reduction's scratch rather than the eigenvectors.
+ *
+ * The TILED heev shares the kind and records NO descriptor, exactly as the
+ * tiled syev does; @ref reconstruction_blocker gives the per-node answer.
+ *
+ * @versionadded{2.0.0}
+ */
+struct HeevDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "HeevDescriptor";
+    /// Whether the eigenvectors are written into ``A`` (LAPACK ``jobz='v'``) or
+    /// only the eigenvalues are computed (``jobz='n'``).
+    bool compute_eigenvectors{true};
+};
+
+/**
+ * @brief Metadata for @ref OpKind::Gesv nodes: solve ``A X = B`` in place.
+ *
+ * Deliberately EMPTY, as @ref TraceDescriptor is. A solve has no prefactor, no
+ * transpose and no variant to choose between: ``B`` is overwritten with ``X``
+ * and ``A`` with its LU factors, so the kind, dtype and operand ids carry the
+ * whole operation. LAPACK's info code is not recorded either: the capturing
+ * call returns 0 before anything has run, and a replay discards the code.
+ *
+ * What the empty type buys is that the node HOLDS a descriptor: a node with
+ * none is one whose executor is an opaque closure, and @ref reconstruction_blocker
+ * refuses it rather than guessing.
+ *
+ * @versionadded{2.0.0}
+ */
+struct GesvDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GesvDescriptor";
+};
+
+/**
+ * @brief Metadata for @ref OpKind::Invert nodes: ``A := A^{-1}``, in place.
+ *
+ * Empty for the reason @ref GesvDescriptor is: the inversion is fully described
+ * by its kind, dtype and the one operand it overwrites.
+ *
+ * @versionadded{2.0.0}
+ */
+struct InvertDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "InvertDescriptor";
+};
+
+/**
+ * @brief Metadata for @ref OpKind::Gemv nodes: ``y = alpha*op(A)*x + beta*y``.
+ *
+ * @ref trans is a BLAS transpose character, ``'n'``, ``'t'`` or ``'c'`` in either
+ * case, for the reason @ref GemmDescriptor gives: the runtime-flag capture
+ * overload accepts ``Transpose::C``, and a bool cannot spell a conjugate
+ * transpose.
+ *
+ * The prefactors are SNAPSHOTS with no live params block, as for
+ * @ref GemmDescriptor and under the same rule: no pass rewrites a gemv's
+ * prefactors, so a pass that changes one rewrites these fields and calls
+ * @ref build_executor again. ``beta`` also decides whether the node lists ``y``
+ * as a trailing input, so such a pass keeps that list in step too.
+ *
+ * @versionadded{2.0.0}
+ */
+struct GemvDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GemvDescriptor";
+    PrefactorScalar                   alpha{double{1}}; ///< Prefactor on the matrix-vector product (at-capture snapshot).
+    PrefactorScalar                   beta{double{0}};  ///< Prefactor on the destination (0 = overwrite).
+    char                              trans{'n'};       ///< BLAS transpose character for A: 'n', 't' or 'c'.
+};
+
+/**
+ * @brief Metadata for @ref OpKind::Ger nodes: the rank-1 update
+ *        ``A += alpha * x * y^T``, or ``A += alpha * x * y^H`` when @ref conjugated.
+ *
+ * @ref conjugated is the whole difference between ``ger`` and ``gerc``, and it
+ * has to be recorded for the reason @ref DotDescriptor records its flag: for a
+ * complex operand the two are different updates, and both record under one
+ * kind. There is no destination prefactor, since the update always accumulates
+ * into ``A``, so the node always lists ``A`` as a trailing input.
+ *
+ * @ref alpha is a snapshot, as @ref GemvDescriptor's prefactors are.
+ *
+ * @versionadded{2.0.0}
+ */
+struct GerDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GerDescriptor";
+    PrefactorScalar                   alpha{double{1}};  ///< Prefactor on the outer product (at-capture snapshot).
+    bool                              conjugated{false}; ///< true for ``gerc`` (conjugate y), false for ``ger``.
+};
+
+/**
  * @brief Metadata for @ref OpKind::GroupedDot nodes.
  *
  * A grouped dot is a run of independent `result_i = sum(A_i * B_i)` reductions

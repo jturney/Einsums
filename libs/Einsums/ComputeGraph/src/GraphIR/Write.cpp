@@ -381,6 +381,29 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("compute_eigenvectors", Value{node.op_data.get<SyevDescriptor>().compute_eigenvectors});
         return Value{std::move(out)};
     }
+    case OpKind::Heev: {
+        // The same job flag as Syev's, and for the same reason the only field.
+        out.set("compute_eigenvectors", Value{node.op_data.get<HeevDescriptor>().compute_eigenvectors});
+        return Value{std::move(out)};
+    }
+    case OpKind::Gesv:
+    case OpKind::Invert:
+        // Empty: a solve and an inversion are fully described by their kind, dtype, rank and
+        // operands, as a trace is.
+        return Value{std::move(out)};
+    case OpKind::Gemv: {
+        auto const &desc = node.op_data.get<GemvDescriptor>();
+        out.set("alpha", write_prefactor(desc.alpha));
+        out.set("beta", write_prefactor(desc.beta));
+        out.set("trans", char_value(desc.trans));
+        return Value{std::move(out)};
+    }
+    case OpKind::Ger: {
+        auto const &desc = node.op_data.get<GerDescriptor>();
+        out.set("alpha", write_prefactor(desc.alpha));
+        out.set("conjugated", Value{desc.conjugated});
+        return Value{std::move(out)};
+    }
     case OpKind::ElementTransform: {
         auto const &desc = node.op_data.get<ElementTransformDescriptor>();
         out.set("op", Value{desc.op_name});

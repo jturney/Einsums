@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <complex>
 #include <cstdint>
+#include <span>
 #include <tuple>
 #include <vector>
 
@@ -49,25 +50,21 @@ void capture_syev(CaptureContext &ctx, bool compute_eigenvectors, SlotRef a, Slo
     constexpr bool hermitian = IsComplexV<T>;
     WAGGLE_ZONE(hermitian ? "heev capture" : "syev capture");
 
-    OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
-    OperandAccessor const w_access(w.second, packed_gemm::get_scalar_type<RemoveComplexT<T>>());
-    auto                  executor = [compute_eigenvectors, a_access, w_access]() {
-        WAGGLE_ZONE(hermitian ? "heev execute" : "syev execute");
-        auto *A = a_access.impl<T>();
-        WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(0)));
-        run_syev<T>(compute_eigenvectors, A, w_access.impl<RemoveComplexT<T>>());
-    };
-
     // A is BOTH an input and an output: the decomposition overwrites it. Listing it only as
     // an output would let a reader of the original matrix be ordered after this node, and
     // listing it only as an input would leave the overwrite unordered against a later writer.
+    //
+    // The job flag is the one piece of state a saved file cannot recover from the operand lists,
+    // because it is a template argument rather than a value. See SyevDescriptor and HeevDescriptor.
+    std::vector<TensorId> const inputs{a.first};
+    std::vector<TensorId> const outputs{a.first, w.first};
+    constexpr auto              dtype = packed_gemm::get_scalar_type<T>();
     if constexpr (hermitian) {
-        ctx.record(OpKind::Heev, "heev", {a.first}, {a.first, w.first}, std::move(executor));
+        ctx.record_built(OpKind::Heev, "heev", dtype, 2, HeevDescriptor{.compute_eigenvectors = compute_eigenvectors}, inputs, outputs,
+                         inputs, outputs);
     } else {
-        // The descriptor carries the one piece of state a saved file cannot recover from the
-        // operand lists, because it is a template argument rather than a value. See SyevDescriptor.
-        ctx.record(OpKind::Syev, "syev", {a.first}, {a.first, w.first}, std::move(executor),
-                   SyevDescriptor{.compute_eigenvectors = compute_eigenvectors});
+        ctx.record_built(OpKind::Syev, "syev", dtype, 2, SyevDescriptor{.compute_eigenvectors = compute_eigenvectors}, inputs, outputs,
+                         inputs, outputs);
     }
 }
 
@@ -82,19 +79,10 @@ int eager_gesv(Impl<T> &A, Impl<T> &B) {
 template <typename T>
 void capture_gesv(CaptureContext &ctx, SlotRef a, SlotRef b) {
     WAGGLE_ZONE("gesv capture");
-    constexpr auto        dtype = packed_gemm::get_scalar_type<T>();
-    OperandAccessor const a_access(a.second, dtype);
-    OperandAccessor const b_access(b.second, dtype);
-    auto                  executor = [a_access, b_access]() {
-        WAGGLE_ZONE("gesv execute");
-        auto *A = a_access.impl<T>();
-        auto *B = b_access.impl<T>();
-        WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(0)));
-        // A rank-1 right-hand side is one column; dim(1) would be out of range.
-        WAGGLE_ANNOTATE("nrhs", static_cast<int64_t>(B->rank() > 1 ? B->dim(1) : 1));
-        std::ignore = linear_algebra::detail::gesv(A, B);
-    };
-    ctx.record(OpKind::Gesv, "gesv", {a.first, b.first}, {a.first, b.first}, std::move(executor));
+    // Both operands are overwritten (B with X, A with its LU factors), so each is an input and
+    // an output for the reason capture_syev gives for A.
+    std::vector<TensorId> const ids{a.first, b.first};
+    ctx.record_built(OpKind::Gesv, "gesv", packed_gemm::get_scalar_type<T>(), 2, GesvDescriptor{}, ids, ids, ids, ids);
 }
 
 // ── invert ────────────────────────────────────────────────────────────────────
@@ -108,14 +96,8 @@ void eager_invert(Impl<T> &A) {
 template <typename T>
 void capture_invert(CaptureContext &ctx, SlotRef a) {
     WAGGLE_ZONE("invert capture");
-    OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
-    auto                  executor = [a_access]() {
-        WAGGLE_ZONE("invert execute");
-        auto *A = a_access.impl<T>();
-        WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(0)));
-        linear_algebra::detail::invert(A);
-    };
-    ctx.record(OpKind::Invert, "invert", {a.first}, {a.first}, std::move(executor));
+    ctx.record_built(OpKind::Invert, "invert", packed_gemm::get_scalar_type<T>(), 2, InvertDescriptor{},
+                     std::span<TensorId const>{&a.first, 1}, std::span<TensorId const>{&a.first, 1}, {a.first}, {a.first});
 }
 
 // ── getrf / getrs ─────────────────────────────────────────────────────────────

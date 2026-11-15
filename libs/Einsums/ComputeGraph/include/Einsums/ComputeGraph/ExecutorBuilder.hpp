@@ -346,14 +346,15 @@ EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
  * @note The bit is per KIND, which is coarser than per node: ``DirectDivision``
  *       is reconstructible, yet a TILED direct division records under that kind
  *       with a @ref TiledElementwiseDescriptor and is not. Ask
- *       @ref reconstruction_blocker for the per-node answer. ``Syev`` splits the
- *       same way, with the tiled arm recording no descriptor at all.
+ *       @ref reconstruction_blocker for the per-node answer. ``Syev`` and
+ *       ``Heev`` split the same way, with the tiled arm recording no descriptor
+ *       at all.
  *
- * @note ``Syev`` is the first entry whose builder refuses a DTYPE rather than a
- *       descriptor. A symmetric eigendecomposition is real; the complex operand
- *       is a Hermitian one and records as ``Heev``, which has no entry yet. No
- *       capture can produce a complex ``Syev`` node, so the refusal is aimed at
- *       a file that describes one.
+ * @note ``Syev`` and ``Heev`` are the entries whose builders refuse a DTYPE
+ *       rather than a descriptor. A symmetric eigendecomposition is real and a
+ *       Hermitian one is complex, and each builder names the other kind when
+ *       handed the other element type. No capture can produce either mismatch,
+ *       so the refusal is aimed at a file that describes one.
  *
  * @note For four kinds the true bit covers only PART of what the kind records:
  *       the arm that blocks is a closure held in an otherwise data-shaped
@@ -398,6 +399,11 @@ EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
     case OpKind::Syev:
     case OpKind::LaplaceQuadrature:
     case OpKind::Alloc:
+    case OpKind::Heev:
+    case OpKind::Gesv:
+    case OpKind::Invert:
+    case OpKind::Gemv:
+    case OpKind::Ger:
         return true;
     default:
         return false;

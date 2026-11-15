@@ -836,6 +836,36 @@ void read_descriptor(IrNode &node, Fields const &fields, GateFlagTable const &ga
         node.descriptor           = desc;
         return;
     }
+    // The five kinds below arrived together at 1.15.0, so no file predates any of their fields
+    // and every one is REQUIRED, as Syev's flag is. The fallbacks passed alongside are only what
+    // the field holds after its absence has been reported; the load refuses either way.
+    case OpKind::Heev: {
+        HeevDescriptor desc;
+        desc.compute_eigenvectors = fields.flag("compute_eigenvectors");
+        node.descriptor           = desc;
+        return;
+    }
+    case OpKind::Gesv:
+        node.descriptor = GesvDescriptor{};
+        return;
+    case OpKind::Invert:
+        node.descriptor = InvertDescriptor{};
+        return;
+    case OpKind::Gemv: {
+        GemvDescriptor desc;
+        desc.alpha      = fields.prefactor("alpha", PrefactorScalar{double{1}});
+        desc.beta       = fields.prefactor("beta", PrefactorScalar{double{0}});
+        desc.trans      = fields.transpose("trans", 'n');
+        node.descriptor = desc;
+        return;
+    }
+    case OpKind::Ger: {
+        GerDescriptor desc;
+        desc.alpha      = fields.prefactor("alpha", PrefactorScalar{double{1}});
+        desc.conjugated = fields.flag("conjugated");
+        node.descriptor = desc;
+        return;
+    }
     case OpKind::ElementTransform: {
         ElementTransformDescriptor desc;
         desc.op_name = fields.str("op");

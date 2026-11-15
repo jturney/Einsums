@@ -122,33 +122,21 @@ void eager_gemv(char ta, T alpha, Impl<T> const &A, Impl<T> const &x, T beta, Im
 template <typename T>
 void capture_gemv(CaptureContext &ctx, char ta, bool from_flags, T alpha, T beta, bool reads_y, SlotRef a, SlotRef x, SlotRef y) {
     WAGGLE_ZONE("gemv capture");
-    constexpr auto dtype = packed_gemm::get_scalar_type<T>();
 
     auto label = from_flags ? fmt::format("gemv<{}>", ta == 't' ? "T" : "N") : fmt::format("gemv({})", ta);
 
-    // The operands are re-read through their slots on every run, so the node
-    // follows rebind() and the memory planner moving a tensor's storage.
-    OperandAccessor const a_access(a.second, dtype);
-    OperandAccessor const x_access(x.second, dtype);
-    OperandAccessor const y_access(y.second, dtype);
-    auto                  executor = [alpha, beta, ta, from_flags, a_access, x_access, y_access]() {
-        WAGGLE_ZONE("gemv execute");
-        auto const *A = a_access.impl<T>();
-        if (from_flags) {
-            WAGGLE_ANNOTATE("trans", ta == 't' ? "T" : "N");
-            WAGGLE_ANNOTATE("m", static_cast<int64_t>(A->dim(0)));
-            WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(1)));
-        }
-        linear_algebra::detail::gemv(ta, alpha, *A, *x_access.impl<T>(), beta, y_access.impl<T>());
-    };
-
     // beta != 0 → gemv reads y as well as writing it; list it as an input so
-    // loop-invariance and scheduling see the read (see capture_gemm).
-    std::vector<TensorId> inputs = {a.first, x.first};
+    // loop-invariance and scheduling see the read (see capture_gemm). The
+    // builder is handed only A and x: the trailing y is the read, not an operand.
+    std::vector<TensorId> const operands{a.first, x.first};
+    std::vector<TensorId>       inputs = operands;
     if (reads_y) {
         inputs.push_back(y.first);
     }
-    ctx.record(OpKind::Gemv, std::move(label), std::move(inputs), {y.first}, std::move(executor));
+    // The transpose char goes in as given, conjugate transpose included, as for capture_gemm.
+    ctx.record_built(OpKind::Gemv, std::move(label), packed_gemm::get_scalar_type<T>(), 1,
+                     GemvDescriptor{.alpha = PrefactorScalar{alpha}, .beta = PrefactorScalar{beta}, .trans = ta}, operands,
+                     std::span<TensorId const>{&y.first, 1}, std::move(inputs), {y.first});
 }
 
 template <typename T>
@@ -164,28 +152,14 @@ void eager_ger(bool conjugated, T alpha, Impl<T> const &x, Impl<T> const &y, Imp
 template <typename T>
 void capture_ger(CaptureContext &ctx, bool conjugated, T alpha, SlotRef x, SlotRef y, SlotRef a) {
     WAGGLE_ZONE(conjugated ? "gerc capture" : "ger capture");
-    constexpr auto dtype = packed_gemm::get_scalar_type<T>();
-
-    OperandAccessor const x_access(x.second, dtype);
-    OperandAccessor const y_access(y.second, dtype);
-    OperandAccessor const a_access(a.second, dtype);
-    auto                  executor = [alpha, conjugated, x_access, y_access, a_access]() {
-        WAGGLE_ZONE(conjugated ? "gerc execute" : "ger execute");
-        auto const *X = x_access.impl<T>();
-        auto const *Y = y_access.impl<T>();
-        if (conjugated) {
-            linear_algebra::detail::gerc(alpha, *X, *Y, a_access.impl<T>());
-        } else {
-            WAGGLE_ANNOTATE("m", static_cast<int64_t>(X->dim(0)));
-            WAGGLE_ANNOTATE("n", static_cast<int64_t>(Y->dim(0)));
-            linear_algebra::detail::ger(alpha, *X, *Y, a_access.impl<T>());
-        }
-    };
 
     // ger always accumulates (``A += α·X·Y^T``), so it reads A as well as
     // writing it: list A as an input so loop-invariance and scheduling see the
-    // read-modify-write.
-    ctx.record(OpKind::Ger, conjugated ? "gerc" : "ger", {x.first, y.first, a.first}, {a.first}, std::move(executor));
+    // read-modify-write. The builder is handed only X and Y as inputs.
+    std::vector<TensorId> const operands{x.first, y.first};
+    ctx.record_built(OpKind::Ger, conjugated ? "gerc" : "ger", packed_gemm::get_scalar_type<T>(), 2,
+                     GerDescriptor{.alpha = PrefactorScalar{alpha}, .conjugated = conjugated}, operands,
+                     std::span<TensorId const>{&a.first, 1}, {x.first, y.first, a.first}, {a.first});
 }
 
 #define EINSUMS_BLAS_OPERATIONS(T)                                                                                                         \

@@ -479,6 +479,357 @@ TEMPLATE_LIST_TEST_CASE("SaveLoad - an eigenvalues-only decomposition stays eige
     REQUIRE(bytes_of(A2) != bytes_of(V));
 }
 
+namespace {
+
+/// How far a replayed BLAS-2 or LAPACK result may sit from its oracle: a few hundred units of
+/// rounding at the element type's precision, over operands of extent four.
+template <typename T>
+testing::Tolerance blas_tolerance() {
+    if constexpr (std::is_same_v<RemoveComplexT<T>, float>) {
+        return {.rtol = 1e-4, .atol = 1e-4};
+    } else {
+        return {.rtol = 1e-11, .atol = 1e-11};
+    }
+}
+
+/// A 4x4 matrix far from singular: a dominant real diagonal and small off-diagonal entries. With
+/// @p hermitian the off-diagonal imaginary parts are conjugate across the diagonal, so the matrix
+/// is Hermitian for a complex @p T and symmetric for a real one; without it they are not, so a
+/// solve that only read one triangle would be caught.
+template <typename T>
+Tensor<T, 2> dominant_matrix(std::string const &name, bool hermitian) {
+    auto out = create_zero_tensor<T>(name, 4, 4);
+    for (size_t i = 0; i < 4; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            double const scale = 1.0 / (1.0 + static_cast<double>(i + 2 * j));
+            double const re = i == j ? 4.0 + 1.5 * static_cast<double>(i) : (hermitian ? 1.0 / (1.0 + static_cast<double>(i + j)) : scale);
+            double const im = i == j ? 0.0 : (hermitian ? (i < j ? 0.4 : -0.4) / (1.0 + static_cast<double>(i + j)) : 0.3 * scale);
+            out(i, j)       = testing::prefactor<T>(re, im);
+        }
+    }
+    return out;
+}
+
+/// The n x n identity.
+template <typename T>
+Tensor<T, 2> identity_matrix(size_t n) {
+    auto out = create_zero_tensor<T>("I", n, n);
+    for (size_t i = 0; i < n; ++i) {
+        out(i, i) = T{1};
+    }
+    return out;
+}
+
+} // namespace
+
+TEMPLATE_LIST_TEST_CASE("SaveLoad - gemv, ger and gerc round-trip against the reference", "[ComputeGraph][SaveLoad]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    // The originals stay untouched: they seed both the oracle and the storage the loaded graph is
+    // bound to, so the captured graph is never executed and cannot be what the answer matches.
+    auto const A0 = create_random_tensor<T>("A", 4, 3);
+    auto const x0 = create_random_tensor<T>("x", 3);
+    auto const u0 = create_random_tensor<T>("u", 4);
+    auto const y0 = create_random_tensor<T>("y", 4);
+    auto const w0 = create_random_tensor<T>("w", 3);
+    auto const z0 = create_random_tensor<T>("z", 3);
+    auto const M0 = create_random_tensor<T>("M", 4, 3);
+
+    // Every prefactor complex where the type is and none exact in binary, so a file that dropped
+    // an imaginary part or rounded through another precision lands somewhere else.
+    T const a_n = testing::prefactor<T>(0.7, -0.2);
+    T const b_n = testing::prefactor<T>(0.3, 0.4);
+    T const a_t = testing::prefactor<T>(-1.3, 0.6);
+    T const a_c = testing::prefactor<T>(1.1, 0.5);
+    T const b_c = testing::prefactor<T>(-0.6, 0.1);
+    T const a_r = testing::prefactor<T>(0.25, 0.75);
+    T const a_h = testing::prefactor<T>(-0.5, 0.35);
+
+    // RuntimeTensor operands, because the runtime-flag gemv overload is the one that reaches the
+    // conjugate transpose, and gerc is declared over runtime-rank operands only.
+    RuntimeTensor<T> A(A0);
+    RuntimeTensor<T> x(x0);
+    RuntimeTensor<T> u(u0);
+    RuntimeTensor<T> y(y0);
+    RuntimeTensor<T> w(w0);
+    RuntimeTensor<T> z(z0);
+    RuntimeTensor<T> M(M0);
+
+    cg::Graph graph("blas2");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::gemv<false>(a_n, A, x, b_n, &y);                        // 'n', accumulating: y is a trailing input
+        cg::gemv<true>(a_t, A, u, T{0}, &w);                        // 't', overwriting: w is not an input
+        cg::gemv(a_c, A, u, b_c, &z, linear_algebra::Transpose::C); // 'C' through the runtime flag
+        cg::ger(a_r, u, x, &M);
+        if constexpr (IsComplexV<T>) {
+            cg::gerc(a_h, u, x, &M);
+        }
+    }
+    REQUIRE(graph.serializability_report().empty());
+
+    std::string const text = must_save(graph);
+    REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring("\"Gemv\""));
+    REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring("\"Ger\""));
+
+    cg::Graph loaded = must_load(text);
+
+    // The descriptors come back with every field, the transpose's case and the conjugation flag
+    // included, and the operand lists keep the destination rule the capture applied.
+    std::vector<char> transposes;
+    std::vector<bool> conjugations;
+    for (auto const &node : loaded.nodes()) {
+        if (auto const *desc = node.op_data.get_if<cg::GemvDescriptor>(); desc != nullptr) {
+            transposes.push_back(desc->trans);
+            REQUIRE(std::holds_alternative<T>(desc->alpha));
+            REQUIRE(node.inputs.size() == (cg::is_zero(desc->beta) ? 2U : 3U));
+        } else if (auto const *ger = node.op_data.get_if<cg::GerDescriptor>(); ger != nullptr) {
+            conjugations.push_back(ger->conjugated);
+            REQUIRE(bytes_of_scalar(std::get<T>(ger->alpha)) == bytes_of_scalar(ger->conjugated ? a_h : a_r));
+            REQUIRE(node.inputs.size() == 3);
+        }
+    }
+    REQUIRE(transposes == std::vector<char>{'n', 't', 'C'});
+    REQUIRE(conjugations == (IsComplexV<T> ? std::vector<bool>{false, true} : std::vector<bool>{false}));
+
+    RuntimeTensor<T> A2(A0);
+    RuntimeTensor<T> x2(x0);
+    RuntimeTensor<T> u2(u0);
+    RuntimeTensor<T> y2(y0);
+    RuntimeTensor<T> w2(w0);
+    RuntimeTensor<T> z2(z0);
+    RuntimeTensor<T> M2(M0);
+    loaded.bind("A", A2, "x", x2, "u", u2, "y", y2, "w", w2, "z", z2, "M", M2);
+    REQUIRE(loaded.unbound_manifest_entries().empty());
+    loaded.execute();
+
+    auto y_ref = y0;
+    auto w_ref = w0;
+    auto z_ref = z0;
+    auto M_ref = M0;
+    reference_einsum("i <- ij ; j", b_n, &y_ref, a_n, A0, x0);
+    reference_einsum("j <- ij ; i", T{0}, &w_ref, a_t, A0, u0);
+    reference_einsum("j <- ij ; i", b_c, &z_ref, a_c, A0, u0, /*conj_a=*/true);
+    reference_einsum("ij <- i ; j", T{1}, &M_ref, a_r, u0, x0);
+    if constexpr (IsComplexV<T>) {
+        reference_einsum("ij <- i ; j", T{1}, &M_ref, a_h, u0, x0, /*conj_a=*/false, /*conj_b=*/true);
+    }
+
+    testing::require_tensors_close(y2, y_ref, blas_tolerance<T>());
+    testing::require_tensors_close(w2, w_ref, blas_tolerance<T>());
+    testing::require_tensors_close(z2, z_ref, blas_tolerance<T>());
+    testing::require_tensors_close(M2, M_ref, blas_tolerance<T>());
+}
+
+TEMPLATE_LIST_TEST_CASE("SaveLoad - gesv and invert round-trip and solve what they were given", "[ComputeGraph][SaveLoad]",
+                        testing::AllScalarTypes) {
+    using T       = TestType;
+    auto const S0 = dominant_matrix<T>("S", false);
+    auto const R0 = dominant_matrix<T>("R", false);
+    auto const N0 = dominant_matrix<T>("N", false);
+    auto const B0 = create_random_tensor<T>("B", 4, 2);
+    auto const b0 = create_random_tensor<T>("b", 4);
+
+    RuntimeTensor<T> S(S0);
+    RuntimeTensor<T> R(R0);
+    RuntimeTensor<T> N(N0);
+    RuntimeTensor<T> B(B0);
+    RuntimeTensor<T> b(b0);
+
+    cg::Graph graph("lapack_solve");
+    {
+        cg::CaptureGuard const guard(graph);
+        // Two right-hand-side columns and one rank-1 right-hand side, which takes the kernel's
+        // other branch on the column count.
+        REQUIRE(cg::gesv(&S, &B) == 0);
+        REQUIRE(cg::gesv(&R, &b) == 0);
+        cg::invert(&N);
+    }
+    REQUIRE(graph.serializability_report().empty());
+
+    std::string const text   = must_save(graph);
+    cg::Graph         loaded = must_load(text);
+    REQUIRE(std::ranges::count_if(loaded.nodes(), [](cg::Node const &n) { return n.op_data.holds<cg::GesvDescriptor>(); }) == 2);
+    REQUIRE(std::ranges::count_if(loaded.nodes(), [](cg::Node const &n) { return n.op_data.holds<cg::InvertDescriptor>(); }) == 1);
+
+    RuntimeTensor<T> S2(S0);
+    RuntimeTensor<T> R2(R0);
+    RuntimeTensor<T> N2(N0);
+    RuntimeTensor<T> B2(B0);
+    RuntimeTensor<T> b2(b0);
+    loaded.bind("S", S2, "R", R2, "N", N2, "B", B2, "b", b2);
+    REQUIRE(loaded.unbound_manifest_entries().empty());
+    loaded.execute();
+
+    // The defining identities, against the untouched originals: S0 X = B0, R0 x = b0, and
+    // N0 N^{-1} = I. A loaded node that solved the wrong system, or left an operand alone, fails
+    // one of them.
+    auto SX = create_zero_tensor<T>("SX", 4, 2);
+    reference_einsum("ij <- ik ; kj", &SX, S0, B2);
+    testing::require_tensors_close(SX, B0, blas_tolerance<T>());
+
+    auto Rx = create_zero_tensor<T>("Rx", 4);
+    reference_einsum("i <- ik ; k", &Rx, R0, b2);
+    testing::require_tensors_close(Rx, b0, blas_tolerance<T>());
+
+    auto NN = create_zero_tensor<T>("NN", 4, 4);
+    reference_einsum("ij <- ik ; kj", &NN, N0, N2);
+    testing::require_tensors_close(NN, identity_matrix<T>(4), blas_tolerance<T>());
+}
+
+TEMPLATE_LIST_TEST_CASE("SaveLoad - a Hermitian eigendecomposition round-trips and keeps its job", "[ComputeGraph][SaveLoad]",
+                        testing::ComplexScalarTypes) {
+    using T    = TestType;
+    using Real = RemoveComplexT<T>;
+    // The job flag is a template argument at the capture site, as it is for syev, so a file has
+    // to carry it: the eigenvalues-only job leaves A holding the reduction's scratch.
+    auto const H0 = dominant_matrix<T>("H", true);
+    auto const G0 = dominant_matrix<T>("G", true);
+
+    RuntimeTensor<T>    H(H0);
+    RuntimeTensor<T>    G(G0);
+    RuntimeTensor<Real> W("W", std::vector<size_t>{4});
+    RuntimeTensor<Real> E("E", std::vector<size_t>{4});
+
+    cg::Graph graph("hermitian");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::heev(&H, &W);
+        cg::heev<false>(&G, &E);
+    }
+    REQUIRE(graph.serializability_report().empty());
+
+    std::string const text = must_save(graph);
+    REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring("\"Heev\""));
+    cg::Graph loaded = must_load(text);
+
+    std::vector<bool> jobs;
+    for (auto const &node : loaded.nodes()) {
+        auto const *desc = node.op_data.get_if<cg::HeevDescriptor>();
+        REQUIRE(desc != nullptr);
+        jobs.push_back(desc->compute_eigenvectors);
+    }
+    REQUIRE(jobs == std::vector<bool>{true, false});
+
+    RuntimeTensor<T>    H2(H0);
+    RuntimeTensor<T>    G2(G0);
+    RuntimeTensor<Real> W2("W", std::vector<size_t>{4});
+    RuntimeTensor<Real> E2("E", std::vector<size_t>{4});
+    loaded.bind("H", H2, "G", G2, "W", W2, "E", E2);
+    REQUIRE(loaded.unbound_manifest_entries().empty());
+    loaded.execute();
+
+    // H0 V = V diag(W), and V^H V = I: the decomposition is a decomposition OF H0, which an
+    // eager-against-replay comparison could not tell from one of some other matrix.
+    auto HV = create_zero_tensor<T>("HV", 4, 4);
+    auto VW = create_zero_tensor<T>("VW", 4, 4);
+    reference_einsum("ij <- ik ; kj", &HV, H0, H2);
+    for (size_t i = 0; i < 4; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            VW(i, j) = H2(i, j) * static_cast<T>(W2(j));
+        }
+    }
+    testing::require_tensors_close(HV, VW, blas_tolerance<T>());
+
+    auto VV = create_zero_tensor<T>("VV", 4, 4);
+    reference_einsum("ij <- ki ; kj", T{0}, &VV, T{1}, H2, H2, /*conj_a=*/true);
+    testing::require_tensors_close(VV, identity_matrix<T>(4), blas_tolerance<T>());
+
+    // The eigenvalues-only job agrees on the eigenvalues, and leaves something other than the
+    // eigenvectors in its matrix, which is what makes the flag observable in the numbers.
+    for (size_t i = 0; i < 4; ++i) {
+        CHECK_THAT(static_cast<double>(E2(i)), Catch::Matchers::WithinAbs(static_cast<double>(W2(i)), blas_tolerance<T>().atol * 10));
+    }
+    REQUIRE(bytes_of(G2) != bytes_of(H2));
+}
+
+TEST_CASE("SaveLoad - a tiled Hermitian eigendecomposition refuses although its kind is reconstructible",
+          "[ComputeGraph][SaveLoad][TiledRuntime]") {
+    // The Heev counterpart of the tiled syev case: the dense node saves, the tiled one records
+    // no descriptor, and the message says that is what a tiled node looks like.
+    using Grid = std::vector<std::vector<int>>;
+    TiledRuntimeTensor<std::complex<double>> A("A", Grid{{2, 3}, {2, 3}});
+    TiledRuntimeTensor<double>               W("W", Grid{{2, 3}});
+
+    A.add_tile({0, 0});
+    A.add_tile({1, 1});
+    A.materialize();
+
+    cg::Graph graph("tiled_hermitian");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::heev(&A, &W);
+    }
+
+    auto const report = graph.serializability_report();
+    REQUIRE(report.size() == 1);
+    CHECK(report.front().kind_name == "Heev");
+    CHECK_THAT(report.front().reason, Catch::Matchers::ContainsSubstring("tiled variant records none"));
+
+    CHECK_THAT(save_refusal(graph), Catch::Matchers::ContainsSubstring("Heev"));
+}
+
+// Gemv, Ger, Gesv, Invert and Heev became saveable at 1.15.0. The golden holds one of each, all
+// complex128, so the conjugate transpose and gerc are in the corpus too.
+TEST_CASE("SaveLoad - the BLAS-2 and LAPACK kinds of 1.15.0 write a golden and refuse a missing key", "[ComputeGraph][SaveLoad]") {
+    using T   = std::complex<double>;
+    auto A    = create_random_tensor<T>("A", 4, 3);
+    auto x    = create_random_tensor<T>("x", 3);
+    auto y    = create_random_tensor<T>("y", 4);
+    auto M    = create_random_tensor<T>("M", 4, 3);
+    auto S    = dominant_matrix<T>("S", false);
+    auto B    = create_random_tensor<T>("B", 4, 2);
+    auto N    = dominant_matrix<T>("N", false);
+    auto H    = dominant_matrix<T>("H", true);
+    auto Wr   = create_zero_tensor<double>("W", 4);
+    auto z    = create_random_tensor<T>("z", 3);
+    auto rA   = RuntimeTensor<T>(A);
+    auto rx   = RuntimeTensor<T>(x);
+    auto ry   = RuntimeTensor<T>(y);
+    auto rz   = RuntimeTensor<T>(z);
+    auto rM   = RuntimeTensor<T>(M);
+    auto rS   = RuntimeTensor<T>(S);
+    auto rB   = RuntimeTensor<T>(B);
+    auto rN   = RuntimeTensor<T>(N);
+    auto rH   = RuntimeTensor<T>(H);
+    auto rW   = RuntimeTensor<double>(Wr);
+    auto pf_a = T{0.75, -0.25};
+    auto pf_b = T{0.5, 0.125};
+
+    cg::Graph graph("blas_lapack");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::gemv(pf_a, rA, rx, pf_b, &ry, linear_algebra::Transpose::N);
+        cg::gemv(pf_a, rA, ry, T{0}, &rz, linear_algebra::Transpose::C);
+        cg::gerc(pf_b, ry, rx, &rM);
+        cg::gesv(&rS, &rB);
+        cg::invert(&rN);
+        cg::heev(&rH, &rW);
+    }
+    REQUIRE(graph.serializability_report().empty());
+
+    std::string const saved = must_save(graph);
+    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+        std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_15_0_blas_lapack.eig.json", std::ios::binary);
+        out << saved;
+    }
+    (void)must_load(saved);
+
+    // Every new field is required: no earlier file could hold these kinds, so an absent key is a
+    // malformed document, and a guessed default would be a different operation.
+    SECTION("a gemv without its transpose is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("trans":)", R"("trnas":)")), Catch::Matchers::ContainsSubstring("trans"));
+    }
+    SECTION("a ger without its conjugation flag is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("conjugated":true)", R"("conjugate":true)")),
+                   Catch::Matchers::ContainsSubstring("conjugated"));
+    }
+    SECTION("a heev without its job flag is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("compute_eigenvectors":true)", R"("eigenvectors":true)")),
+                   Catch::Matchers::ContainsSubstring("compute_eigenvectors"));
+    }
+}
+
 TEMPLATE_LIST_TEST_CASE("SaveLoad - a named element transform round-trips", "[ComputeGraph][SaveLoad]", testing::AllScalarTypes) {
     using T = TestType;
     auto A  = create_random_tensor<T>("A", 3, 3);

@@ -15,8 +15,8 @@ prefactor's dtype widened, an index list reordered, a body left pointing at the
 loader's placeholder buffer instead of the bound one - and none of those shows
 up as an error. They show up here as a wrong number.
 
-Programs the IR cannot carry yet (a ``View`` node, a ``gemv``, an anonymous
-element transform) are skipped, and the refusal from ``save_graph`` is what
+Programs the IR cannot carry yet (a ``View`` node, an anonymous element
+transform, a ``symm_gemm``) are skipped, and the refusal from ``save_graph`` is what
 decides that: there is exactly one list of what is reconstructible and it lives
 in the library. ``test_roundtrip_corpus_is_not_all_skips`` is the guard that
 keeps the skip rule from turning the shard into a no-op.
@@ -37,10 +37,11 @@ from _fuzz_diff_common import *  # shared fuzz/differential harness
 # Statement kinds whose captured nodes are reconstructible today. Drawing only
 # these is a DENSITY choice, not a correctness one: an unlisted kind still gets
 # refused at save and skipped, and the pinned case plus the not-all-skips guard
-# below are what catch the list going stale. Without it roughly nine trials in
-# ten skip, because the generator draws views and BLAS-2 ops freely and neither
-# survives a save yet.
-_SAVEABLE_KINDS = frozenset({"scale", "axpy", "axpby", "gemm", "einsum", "beinsum", "perm", "loop", "cond"})
+# below are what catch the list going stale. Without it most trials skip,
+# because the generator draws views freely and no view survives a save yet.
+_SAVEABLE_KINDS = frozenset(
+    {"scale", "axpy", "axpby", "gemm", "gemv", "ger", "einsum", "beinsum", "perm", "loop", "cond"}
+)
 
 
 def _all_saveable(stmts):
@@ -115,9 +116,13 @@ def test_roundtrip_of_a_pinned_reconstructible_program():
         ("axpby", 0.25, 0, 0.75, 1),
         ("gemm", 1.5, 0, 1, 0.0, 2),
         ("perm", 2.0, 0.0, 2, 3),
+        # One accumulating gemv, which lists its destination as a trailing
+        # input, and one rank-1 update, which always does.
+        ("gemv", 0.5, 3, 0, 1.0, 1),
+        ("ger", -0.75, 1, 2, 0),
     ]
     got = _run_program_roundtrip(prog, m, v, t, "rtpinned")
-    assert got is not None, "a program of scale/axpby/gemm/permute must be saveable"
+    assert got is not None, "a program of scale/axpby/gemm/permute/gemv/ger must be saveable"
     _assert_pools(got, _oracle(prog, m, v, t), prog, "ROUND-TRIPPED")
 
 

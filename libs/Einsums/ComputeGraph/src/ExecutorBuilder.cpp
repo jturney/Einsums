@@ -41,6 +41,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -831,7 +832,7 @@ std::function<void()> build_syev(packed_gemm::ScalarType dtype, SyevDescriptor c
     if (detail::is_complex(dtype)) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "build_executor(Syev): a symmetric eigendecomposition is real, and this node names a complex operand. "
-                                "The complex counterpart is Hermitian and records as OpKind::Heev, which has no builder entry yet");
+                                "The complex counterpart is Hermitian and records as OpKind::Heev");
     }
 
     bool const compute_eigenvectors = desc.compute_eigenvectors;
@@ -856,6 +857,150 @@ std::function<void()> build_syev(packed_gemm::ScalarType dtype, SyevDescriptor c
             // branch exists because the dispatch instantiates all four.
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Syev): a complex dtype reached the real-only builder");
         }
+    });
+}
+
+/**
+ * @brief ``A = V diag(W) V^H``, in place. Rank-erased; the kernel is the same
+ *        ``linear_algebra::detail::syev`` @ref build_syev calls, whose complex
+ *        overload is LAPACK's Hermitian driver with a real ``W``.
+ *
+ * Complex ONLY, the mirror image of @ref build_syev's guard: a real Hermitian
+ * matrix is a symmetric one, the capture sites record it as @ref OpKind::Syev,
+ * and a real Heev node is a file naming the wrong kind. The node's dtype is the
+ * MATRIX's, so ``W`` is read as the real type underneath it.
+ *
+ * ``compute_eigenvectors`` is read once, at build time, and there is no vendor
+ * fence, both for the reasons @ref build_syev gives.
+ */
+std::function<void()> build_heev(packed_gemm::ScalarType dtype, HeevDescriptor const &desc, OperandAccessor const &a,
+                                 OperandAccessor const &w) {
+    if (!detail::is_complex(dtype)) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "build_executor(Heev): a Hermitian eigendecomposition is complex, and this node names a real operand. "
+                                "The real counterpart is symmetric and records as OpKind::Syev");
+    }
+
+    bool const compute_eigenvectors = desc.compute_eigenvectors;
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        if constexpr (IsComplexV<T>) {
+            using Real = RemoveComplexT<T>;
+            if (compute_eigenvectors) {
+                return [a, w]() {
+                    WAGGLE_ZONE("heev execute");
+                    auto *matrix = a.impl<T>();
+                    WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(matrix->dim(0)));
+                    linear_algebra::detail::syev<true>(matrix, w.impl<Real>());
+                };
+            }
+            return [a, w]() {
+                WAGGLE_ZONE("heev execute");
+                auto *matrix = a.impl<T>();
+                WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(matrix->dim(0)));
+                linear_algebra::detail::syev<false>(matrix, w.impl<Real>());
+            };
+        } else {
+            // Unreachable: the guard above returned for both real arms.
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Heev): a real dtype reached the complex-only builder");
+        }
+    });
+}
+
+/**
+ * @brief Solve ``A X = B`` in place: ``B`` becomes ``X``, ``A`` its LU factors.
+ *        Rank-erased; the kernel is ``linear_algebra::detail::gesv``.
+ *
+ * LAPACK's info code is discarded, as the capture-baked executor discarded it:
+ * the capturing ``cg::gesv`` returns 0 before anything has run, and a replay has
+ * no caller to hand the code to. A singular ``A`` therefore leaves ``B`` holding
+ * whatever the factorization reached, exactly as before.
+ */
+std::function<void()> build_gesv(packed_gemm::ScalarType dtype, OperandAccessor const &a, OperandAccessor const &b) {
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        return [a, b]() {
+            WAGGLE_ZONE("gesv execute");
+            auto *matrix = a.impl<T>();
+            auto *rhs    = b.impl<T>();
+            WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(matrix->dim(0)));
+            // A rank-1 right-hand side is one column; dim(1) would be out of range.
+            WAGGLE_ANNOTATE("nrhs", static_cast<std::int64_t>(rhs->rank() > 1 ? rhs->dim(1) : 1));
+            std::ignore = linear_algebra::detail::gesv(matrix, rhs);
+        };
+    });
+}
+
+/// ``A := A^{-1}``, in place. Rank-erased; the kernel is ``linear_algebra::detail::invert``.
+std::function<void()> build_invert(packed_gemm::ScalarType dtype, OperandAccessor const &a) {
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        return [a]() {
+            WAGGLE_ZONE("invert execute");
+            auto *matrix = a.impl<T>();
+            WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(matrix->dim(0)));
+            linear_algebra::detail::invert(matrix);
+        };
+    });
+}
+
+/**
+ * @brief ``y = alpha*op(A)*x + beta*y``. Rank-erased; the kernel is
+ *        ``linear_algebra::detail::gemv``, where both ``cg::gemv`` capture
+ *        overloads already landed.
+ *
+ * The prefactors are the descriptor's snapshots, for the reason
+ * @ref GemvDescriptor gives. The transpose character goes to the kernel exactly
+ * as recorded, case included; only the annotation folds it to upper case.
+ */
+std::function<void()> build_gemv(packed_gemm::ScalarType dtype, GemvDescriptor const &desc, OperandAccessor const &a,
+                                 OperandAccessor const &x, OperandAccessor const &y) {
+    char const  ta          = desc.trans;
+    char const  folded      = static_cast<char>(std::toupper(static_cast<unsigned char>(ta)));
+    char const *trans_label = folded == 'T' ? "T" : (folded == 'C' ? "C" : "N");
+
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        auto const alpha = as<T>(desc.alpha);
+        auto const beta  = as<T>(desc.beta);
+        return [alpha, beta, ta, trans_label, a, x, y]() {
+            WAGGLE_ZONE("gemv execute");
+            auto const *matrix = a.impl<T>();
+            WAGGLE_ANNOTATE("trans", trans_label);
+            WAGGLE_ANNOTATE("m", static_cast<std::int64_t>(matrix->dim(0)));
+            WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(matrix->dim(1)));
+            linear_algebra::detail::gemv(ta, alpha, *matrix, *x.impl<T>(), beta, y.impl<T>());
+        };
+    });
+}
+
+/**
+ * @brief ``A += alpha * x * y^T``, or ``y^H`` when the descriptor says
+ *        ``conjugated``. Rank-erased; the kernels are
+ *        ``linear_algebra::detail::ger`` and ``gerc``.
+ *
+ * The conjugation is read once, at build time, because it selects between two
+ * BLAS routines rather than scaling anything.
+ */
+std::function<void()> build_ger(packed_gemm::ScalarType dtype, GerDescriptor const &desc, OperandAccessor const &x,
+                                OperandAccessor const &y, OperandAccessor const &a) {
+    bool const conjugated = desc.conjugated;
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        auto const alpha = as<T>(desc.alpha);
+        if (conjugated) {
+            return [alpha, x, y, a]() {
+                WAGGLE_ZONE("gerc execute");
+                auto const *left  = x.impl<T>();
+                auto const *right = y.impl<T>();
+                WAGGLE_ANNOTATE("m", static_cast<std::int64_t>(left->dim(0)));
+                WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(right->dim(0)));
+                linear_algebra::detail::gerc(alpha, *left, *right, a.impl<T>());
+            };
+        }
+        return [alpha, x, y, a]() {
+            WAGGLE_ZONE("ger execute");
+            auto const *left  = x.impl<T>();
+            auto const *right = y.impl<T>();
+            WAGGLE_ANNOTATE("m", static_cast<std::int64_t>(left->dim(0)));
+            WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(right->dim(0)));
+            linear_algebra::detail::ger(alpha, *left, *right, a.impl<T>());
+        };
     });
 }
 
@@ -1422,6 +1567,28 @@ std::string reconstruction_blocker(Node const &node) {
                    : fmt::format("Syev: expected a SyevDescriptor, found {}; the tiled variant records none, and its per-block "
                                  "decomposition has no builder entry",
                                  descriptor_name(node.op_data));
+    case OpKind::Heev:
+        // The same split as Syev's, for the same reason: the tiled heev records no descriptor.
+        return node.op_data.holds<HeevDescriptor>()
+                   ? std::string{}
+                   : fmt::format("Heev: expected a HeevDescriptor, found {}; the tiled variant records none, and its per-block "
+                                 "decomposition has no builder entry",
+                                 descriptor_name(node.op_data));
+    case OpKind::Gesv:
+        return node.op_data.holds<GesvDescriptor>()
+                   ? std::string{}
+                   : fmt::format("Gesv: expected a GesvDescriptor, found {}", descriptor_name(node.op_data));
+    case OpKind::Invert:
+        return node.op_data.holds<InvertDescriptor>()
+                   ? std::string{}
+                   : fmt::format("Invert: expected an InvertDescriptor, found {}", descriptor_name(node.op_data));
+    case OpKind::Gemv:
+        return node.op_data.holds<GemvDescriptor>()
+                   ? std::string{}
+                   : fmt::format("Gemv: expected a GemvDescriptor, found {}", descriptor_name(node.op_data));
+    case OpKind::Ger:
+        return node.op_data.holds<GerDescriptor>() ? std::string{}
+                                                   : fmt::format("Ger: expected a GerDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::LaplaceQuadrature: {
         auto const *desc = node.op_data.get_if<LaplaceQuadratureDescriptor>();
         if (desc == nullptr) {
@@ -1655,6 +1822,42 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
         need(kind, "outputs", outputs, 2);
         auto const &d = expect<SyevDescriptor>(kind, desc, "SyevDescriptor");
         return build_syev(dtype, d, resolve_operand(graph, outputs[0], kind, "A"), resolve_operand(graph, outputs[1], kind, "W"));
+    }
+    case OpKind::Heev: {
+        // Laid out as Syev is: A in both lists and read from outputs[0], W as outputs[1].
+        need(kind, "outputs", outputs, 2);
+        auto const &d = expect<HeevDescriptor>(kind, desc, "HeevDescriptor");
+        return build_heev(dtype, d, resolve_operand(graph, outputs[0], kind, "A"), resolve_operand(graph, outputs[1], kind, "W"));
+    }
+    case OpKind::Gesv: {
+        // Both operands are overwritten, so both are listed as inputs AND outputs, and both are
+        // read from the output list for the reason the Syev case gives.
+        need(kind, "outputs", outputs, 2);
+        (void)expect<GesvDescriptor>(kind, desc, "GesvDescriptor");
+        return build_gesv(dtype, resolve_operand(graph, outputs[0], kind, "A"), resolve_operand(graph, outputs[1], kind, "B"));
+    }
+    case OpKind::Invert: {
+        need(kind, "outputs", outputs, 1);
+        (void)expect<InvertDescriptor>(kind, desc, "InvertDescriptor");
+        return build_invert(dtype, resolve_operand(graph, outputs[0], kind, "A"));
+    }
+    case OpKind::Gemv: {
+        // y repeated in inputs[2] is the RMW convention of an accumulating gemv, not a third
+        // operand; only the leading two inputs are read.
+        need(kind, "inputs", inputs, 2);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<GemvDescriptor>(kind, desc, "GemvDescriptor");
+        return build_gemv(dtype, d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, inputs[1], kind, "x"),
+                          resolve_operand(graph, outputs[0], kind, "y"));
+    }
+    case OpKind::Ger: {
+        // A is always repeated in inputs[2], because the update always accumulates; the matrix
+        // is read from outputs[0], which is the buffer the update lands in.
+        need(kind, "inputs", inputs, 2);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<GerDescriptor>(kind, desc, "GerDescriptor");
+        return build_ger(dtype, d, resolve_operand(graph, inputs[0], kind, "x"), resolve_operand(graph, inputs[1], kind, "y"),
+                         resolve_operand(graph, outputs[0], kind, "A"));
     }
     case OpKind::Conditional:
         return build_conditional(expect<ConditionalDescriptor>(kind, desc, "ConditionalDescriptor"), graph.params_ptr());

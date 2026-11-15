@@ -226,7 +226,8 @@ EINSUMS_EXPORT void eager_syev(bool compute_eigenvectors, einsums::detail::Tenso
                                einsums::detail::TensorImpl<RemoveComplexT<T>> &W);
 
 /// Record the eigendecomposition: an @c OpKind::Syev node carrying a @c SyevDescriptor for real
-/// @p T, an @c OpKind::Heev node for complex @p T. A is both an input and an output.
+/// @p T, an @c OpKind::Heev node carrying a @c HeevDescriptor for complex @p T. A is both an input
+/// and an output.
 template <typename T>
 EINSUMS_EXPORT void capture_syev(CaptureContext &ctx, bool compute_eigenvectors, SlotRef a, SlotRef w);
 
