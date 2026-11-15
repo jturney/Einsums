@@ -57,10 +57,10 @@ struct OutputSnapshot {
 /// view of the same buffer has not stopped writing the output, and a check that compared ids
 /// directly would report the rewrite as a lost output.
 bool graph_writes(Graph const &graph, TensorId id) {
-    TensorId const root = graph.resolve_alias(id);
+    TensorId const root = graph.buffer_of(id);
     for (auto const &node : graph.nodes()) {
         for (auto const output : node.outputs) {
-            if (graph.resolve_alias(output) == root) {
+            if (graph.buffer_of(output) == root) {
                 return true;
             }
         }

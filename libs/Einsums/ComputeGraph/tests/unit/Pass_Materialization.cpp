@@ -816,7 +816,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - a factor's lifecycle follows the setu
         // The mechanism: each setup names what its body produces, and nothing else's.
         auto const writes = [&](std::size_t pos, cg::TensorId tid) {
             auto const &outs = g.nodes()[pos].outputs;
-            return std::ranges::any_of(outs, [&](cg::TensorId out) { return g.resolve_alias(out) == g.resolve_alias(tid); });
+            return std::ranges::any_of(outs, [&](cg::TensorId out) { return g.buffer_of(out) == g.buffer_of(tid); });
         };
         CHECK(writes(pos_a, id_a));
         CHECK_FALSE(writes(pos_a, id_b));
@@ -967,7 +967,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - a body handle whose last use a rewrit
                 continue;
             }
             auto const note = [&](cg::TensorId tid) {
-                if (cg::TensorHandle const *handle = graph.find_tensor(graph.resolve_alias(tid)); handle != nullptr) {
+                if (cg::TensorHandle const *handle = graph.find_tensor(graph.buffer_of(tid)); handle != nullptr) {
                     seen += static_cast<size_t>(handle->name == name);
                 }
             };

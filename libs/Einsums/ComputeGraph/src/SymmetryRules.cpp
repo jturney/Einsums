@@ -162,7 +162,7 @@ std::optional<SymmetryDescriptor> scaled_by(std::optional<SymmetryDescriptor> de
 
 /// Does @p graph's tensor @p id share its buffer with @p root?
 bool same_buffer(Graph const &graph, TensorId id, TensorId root) {
-    return graph.resolve_alias(id) == root;
+    return graph.buffer_of(id) == root;
 }
 
 /// Most writes the chain rule follows through a tensor's sources before giving up. A cycle cannot
@@ -188,7 +188,7 @@ std::optional<SymmetryDescriptor> symmetry_at_depth(EscapeAnalysis const &escape
     if (escape.touched_by_subtree(tensor))
         return std::nullopt; // A loop body or branch writes it where this node list cannot see.
 
-    auto const  root  = graph.resolve_alias(tensor);
+    auto const  root  = graph.buffer_of(tensor);
     auto const &nodes = graph.nodes();
     auto const  stop  = std::ranges::find(nodes, reader, &Node::id);
     if (stop == nodes.end())
@@ -478,7 +478,7 @@ struct Matcher {
 /// can trade places only if both read the same values.
 bool written_between(EscapeAnalysis const &escape, TensorId id, std::vector<NodeId> const &readers) {
     auto const &graph = escape.graph();
-    auto const  root  = graph.resolve_alias(id);
+    auto const  root  = graph.buffer_of(id);
     bool        open  = false;
     std::size_t seen  = 0;
     for (auto const &node : graph.nodes()) {
@@ -528,7 +528,7 @@ std::optional<SymmetryOp> contribution_symmetry(EscapeAnalysis const &escape, No
     ReliedOn relying;
 
     // A factor that reads the output makes the contribution depend on what the output held.
-    auto const                                        out_root = graph.resolve_alias(at->outputs[0]);
+    auto const                                        out_root = graph.buffer_of(at->outputs[0]);
     std::unordered_map<TensorId, std::vector<NodeId>> readers;
     std::vector<std::vector<SymmetryOp>>              groups;
     for (auto const &factor : product.factors) {

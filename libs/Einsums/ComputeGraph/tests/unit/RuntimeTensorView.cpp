@@ -9,6 +9,8 @@
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
+#include "GraphBackdoor.hpp"
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -124,8 +126,8 @@ TEST_CASE("cg::view_runtime - views of two deferred parents keep the parents apa
     cg::TensorId const r_id = graph.find_tensor_id_by_ptr(&r2);
     REQUIRE(t_id != 0);
     REQUIRE(r_id != 0);
-    CHECK(graph.resolve_alias(t_id) == t_id);
-    CHECK(graph.resolve_alias(r_id) == r_id);
+    CHECK(cg::detail::GraphBackdoor::resolve_alias(graph, t_id) == t_id);
+    CHECK(cg::detail::GraphBackdoor::resolve_alias(graph, r_id) == r_id);
     size_t views = 0;
     for (auto const &[id, handle] : graph.tensors_map()) {
         if (!handle.name.starts_with("view_rt")) {
@@ -133,7 +135,7 @@ TEST_CASE("cg::view_runtime - views of two deferred parents keep the parents apa
         }
         views++;
         CHECK(handle.data_ptr == nullptr);
-        CHECK((graph.resolve_alias(id) == t_id || graph.resolve_alias(id) == r_id));
+        CHECK((cg::detail::GraphBackdoor::resolve_alias(graph, id) == t_id || cg::detail::GraphBackdoor::resolve_alias(graph, id) == r_id));
     }
     CHECK(views == 2);
 

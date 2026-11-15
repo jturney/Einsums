@@ -77,7 +77,7 @@ using Relation = std::map<cg::TensorId, std::pair<cg::TensorId, std::vector<std:
 Relation relation_of(cg::Graph &graph) {
     Relation out;
     for (auto const &[id, handle] : graph.tensors_map()) {
-        out.emplace(id, std::pair{graph.resolve_alias(id), handle.alias_box});
+        out.emplace(id, std::pair{cg::detail::GraphBackdoor::resolve_alias(graph, id), handle.alias_box});
     }
     return out;
 }
@@ -397,7 +397,7 @@ TEST_CASE("structural derivation composes a view of a view", "[ComputeGraph][Ali
     // above it: path compression, which is what the 32-hop cap bug was about.
     for (auto const &[id, handle] : graph.tensors_map()) {
         if (handle.aliases != 0) {
-            CHECK(graph.resolve_alias(handle.aliases) == handle.aliases);
+            CHECK(cg::detail::GraphBackdoor::resolve_alias(graph, handle.aliases) == handle.aliases);
         }
     }
     CHECK(widest_level(graph) == chains);
@@ -552,7 +552,7 @@ TEST_CASE("a declared alias conflicts as the whole parent", "[ComputeGraph][Alia
     }
     graph.link_alias_structural();
     for (cg::TensorId const half : halves) {
-        CHECK(graph.resolve_alias(half) == parent_id);
+        CHECK(cg::detail::GraphBackdoor::resolve_alias(graph, half) == parent_id);
         CHECK(graph.find_tensor(half)->alias_box.empty());
     }
     // Structural is never allowed to emit FEWER edges than the pointer path.
@@ -642,14 +642,14 @@ TEST_CASE("a graph with no addresses and no View nodes still links its declarati
         // precisely why the manifest has to carry one.
         graph.clear_alias_links();
         graph.link_alias_storage();
-        CHECK(graph.resolve_alias(slice_id) == slice_id);
+        CHECK(cg::detail::GraphBackdoor::resolve_alias(graph, slice_id) == slice_id);
     }
 
     SECTION("declared, it survives with no address consulted") {
         graph.clear_alias_links();
         graph.declare_alias(slice_id, parent_id); // what a loader installs from the file
         graph.link_alias_storage();
-        CHECK(graph.resolve_alias(slice_id) == parent_id);
+        CHECK(cg::detail::GraphBackdoor::resolve_alias(graph, slice_id) == parent_id);
         CHECK(graph.find_tensor(slice_id)->alias_box.empty()); // buffer, not region
         CHECK(widest_level(graph) == 1);
     }
@@ -681,11 +681,11 @@ TEST_CASE("a declaration survives clearing the derived links", "[ComputeGraph][A
     REQUIRE(b_id != 0);
 
     graph.declare_alias(b_id, a_id);
-    CHECK(graph.resolve_alias(b_id) == a_id);
+    CHECK(cg::detail::GraphBackdoor::resolve_alias(graph, b_id) == a_id);
     graph.clear_alias_links();
-    CHECK(graph.resolve_alias(b_id) == b_id); // cleared, as asked
+    CHECK(cg::detail::GraphBackdoor::resolve_alias(graph, b_id) == b_id); // cleared, as asked
     graph.link_alias_storage();
-    CHECK(graph.resolve_alias(b_id) == a_id); // and reapplied by the next pass
+    CHECK(cg::detail::GraphBackdoor::resolve_alias(graph, b_id) == a_id); // and reapplied by the next pass
 
     // Containment is not symmetric, and the reverse declaration would make every
     // later resolve_alias throw about a corrupt link rather than about the
@@ -782,7 +782,7 @@ TEST_CASE("a declared aliasing bind installs the hazard link", "[ComputeGraph][A
     REQUIRE_NOTHROW(graph.bind(parent_name, parent2));
     REQUIRE_NOTHROW(graph.bind(slice_name, slice2));
 
-    CHECK(graph.resolve_alias(declared.id) == declared.aliases_input);
+    CHECK(cg::detail::GraphBackdoor::resolve_alias(graph, declared.id) == declared.aliases_input);
     // The whole-parent write and the slice write are ordered against each other,
     // so they cannot share a level.
     CHECK(widest_level(graph) == 1);

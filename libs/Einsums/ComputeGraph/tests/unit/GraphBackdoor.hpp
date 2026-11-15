@@ -29,6 +29,9 @@ struct GraphBackdoor {
     /// Re-seat a graph's adopted stand-ins outside a replay, for a test of what the re-seat does.
     static void resync_slot_storage(Graph &graph) { graph.resync_slot_storage(); }
 
+    /// Follow @p id's alias links alone, ignoring slot redirects, for a test of the links themselves.
+    static TensorId resolve_alias(Graph const &graph, TensorId id) { return graph.resolve_alias(id); }
+
     /// Place a graph in a pipeline without building one, for a test of what a graph carries.
     static void set_stage(Graph &graph, std::string const &pipeline, std::string const &workspace, std::string const &stage,
                           std::string const &type, int index) {

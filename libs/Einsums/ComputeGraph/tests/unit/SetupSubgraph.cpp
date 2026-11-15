@@ -394,7 +394,7 @@ TEST_CASE("Setup - a saved graph reloads having fitted nothing, and fits once", 
     REQUIRE(loaded_setup != nullptr);
     auto const named = [&](std::vector<cg::TensorId> const &ids, std::string_view want) {
         return std::ranges::any_of(ids, [&](cg::TensorId id) {
-            cg::TensorHandle const *handle = loaded->find_tensor(loaded->resolve_alias(id));
+            cg::TensorHandle const *handle = loaded->find_tensor(loaded->buffer_of(id));
             return handle != nullptr && handle->name == want;
         });
     };

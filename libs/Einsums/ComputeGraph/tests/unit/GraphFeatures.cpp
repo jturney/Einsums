@@ -1488,7 +1488,7 @@ TEST_CASE("Graph - a move carries every member", "[ComputeGraph][Move]") {
     auto const          tensors_before        = original.tensors_map().size();
     auto const          edges_before          = original.dependencies().successors;
     auto const          levels_before         = original.schedule_level_sizes();
-    auto const          alias_root_before     = original.resolve_alias(c_id);
+    auto const          alias_root_before     = cg::detail::GraphBackdoor::resolve_alias(original, c_id);
     auto const         *ragged_before         = original.find_ragged_extents("C", 0);
     REQUIRE(ragged_before != nullptr);
     auto const ragged_extents_before = ragged_before->extents;
@@ -1527,7 +1527,7 @@ TEST_CASE("Graph - a move carries every member", "[ComputeGraph][Move]") {
     CHECK(moved.tensors_map().size() == tensors_before);
     CHECK(moved.dependencies().successors == edges_before);
     CHECK(moved.schedule_level_sizes() == levels_before);
-    CHECK(moved.resolve_alias(c_id) == alias_root_before);
+    CHECK(cg::detail::GraphBackdoor::resolve_alias(moved, c_id) == alias_root_before);
     REQUIRE(moved.find_ragged_extents("C", 0) != nullptr);
     CHECK(moved.find_ragged_extents("C", 0)->extents == ragged_extents_before);
     CHECK(moved.ragged_extent_tables().size() == 1);

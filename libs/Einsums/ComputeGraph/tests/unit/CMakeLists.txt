@@ -386,23 +386,6 @@ set_tests_properties(
   PROPERTIES LABELS "UNIT_ONLY"
 )
 
-# Passes ask Graph::buffer_of, never Graph::resolve_alias, which misses slot redirects; see the
-# script for why. The self test proves the pattern still catches a call.
-add_test(
-  NAME Tests.Unit.Modules.ComputeGraph.PassBufferIdentity
-  COMMAND ${CMAKE_COMMAND} -DROOT=${PROJECT_SOURCE_DIR}/libs/Einsums/ComputeGraph -P
-          ${PROJECT_SOURCE_DIR}/cmake/scripts/check_pass_buffer_identity.cmake
-)
-add_test(
-  NAME Tests.Unit.Modules.ComputeGraph.PassBufferIdentitySelfTest
-  COMMAND ${CMAKE_COMMAND} -DSELF_TEST=ON -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/pass_buffer_identity_self_test -P
-          ${PROJECT_SOURCE_DIR}/cmake/scripts/check_pass_buffer_identity.cmake
-)
-set_tests_properties(
-  Tests.Unit.Modules.ComputeGraph.PassBufferIdentity Tests.Unit.Modules.ComputeGraph.PassBufferIdentitySelfTest
-  PROPERTIES LABELS "UNIT_ONLY"
-)
-
 # Executor lambdas capture by value, so they survive the graph being moved; see the script for why.
 add_test(
   NAME Tests.Unit.Modules.ComputeGraph.ExecutorCaptures

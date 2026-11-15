@@ -338,10 +338,10 @@ std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> observed_writes(G
     std::unordered_set<TensorId>                                   written;
     for (auto const &node : graph.nodes()) {
         for (auto const tid : node.inputs) {
-            seen[node.id][tid] = written.contains(graph.resolve_alias(tid));
+            seen[node.id][tid] = written.contains(graph.buffer_of(tid));
         }
         for (auto const tid : graph.effective_io(node).second) {
-            written.insert(graph.resolve_alias(tid));
+            written.insert(graph.buffer_of(tid));
         }
     }
     return seen;
