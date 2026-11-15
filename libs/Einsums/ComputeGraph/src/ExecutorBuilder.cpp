@@ -971,6 +971,41 @@ std::function<void()> build_gemv(packed_gemm::ScalarType dtype, GemvDescriptor c
 }
 
 /**
+ * @brief ``C = op(B)^T op(A) op(B)``, or ``op(B)^H op(A) op(B)``. Rank-erased; the
+ *        kernel is ``linear_algebra::detail::symm_gemm``, which every typed
+ *        ``symm_gemm`` and ``hermitian_symm_gemm`` reduces to.
+ *
+ * No symmetry descriptor is passed, so the conjugating product never takes the
+ * ``symm`` / ``hemm`` switch an eager call over a declared-symmetric B can take.
+ * That is the rule a built @ref OpKind::Gemm already follows; see the
+ * dispatch-routes note in ExecutorBuilder.hpp.
+ *
+ * Whether a copy of B is densified is asked of the operand at every run rather
+ * than fixed here: it decides the layout of the conjugated copy the
+ * ``op(B) = B^T`` case makes, exactly as the typed copy would have laid it out,
+ * and a rebind can seat another kind of tensor under the node.
+ */
+std::function<void()> build_symm_gemm(packed_gemm::ScalarType dtype, SymmGemmDescriptor const &desc, OperandAccessor const &a,
+                                      OperandAccessor const &b, OperandAccessor const &c) {
+    char const ta        = desc.trans_a;
+    char const tb        = desc.trans_b;
+    bool const conjugate = desc.conjugate;
+    // Checked here rather than left to the kernel, so a file naming any other flag is refused when
+    // it is loaded instead of at its first replay.
+    auto const valid = [](char t) { return t == 'n' || t == 'N' || t == 't' || t == 'T'; };
+    if (!valid(ta) || !valid(tb)) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(SymmGemm): a transpose flag is 'n' or 't'; got {:?} and {:?}", ta,
+                                tb);
+    }
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        return [ta, tb, conjugate, a, b, c]() {
+            WAGGLE_ZONE("symm_gemm execute");
+            linear_algebra::detail::symm_gemm(ta, tb, conjugate, *a.impl<T>(), *b.impl<T>(), c.impl<T>(), nullptr, b.densifies_on_copy());
+        };
+    });
+}
+
+/**
  * @brief ``result = ||A||`` under the descriptor's norm character. Rank-erased;
  *        the kernel is ``linear_algebra::detail::norm``.
  *
@@ -1630,6 +1665,10 @@ std::string reconstruction_blocker(Node const &node) {
                    : fmt::format("Heev: expected a HeevDescriptor, found {}; the tiled variant records none, and its per-block "
                                  "decomposition has no builder entry",
                                  descriptor_name(node.op_data));
+    case OpKind::SymmGemm:
+        return node.op_data.holds<SymmGemmDescriptor>()
+                   ? std::string{}
+                   : fmt::format("SymmGemm: expected a SymmGemmDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::Norm:
         // The tiled and block-sparse norms share the kind and record no descriptor, as the
         // tiled syev does, because they reduce over a grid of buffers.
@@ -1892,6 +1931,13 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
         need(kind, "outputs", outputs, 2);
         auto const &d = expect<HeevDescriptor>(kind, desc, "HeevDescriptor");
         return build_heev(dtype, d, resolve_operand(graph, outputs[0], kind, "A"), resolve_operand(graph, outputs[1], kind, "W"));
+    }
+    case OpKind::SymmGemm: {
+        need(kind, "inputs", inputs, 2);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<SymmGemmDescriptor>(kind, desc, "SymmGemmDescriptor");
+        return build_symm_gemm(dtype, d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, inputs[1], kind, "B"),
+                               resolve_operand(graph, outputs[0], kind, "C"));
     }
     case OpKind::Norm: {
         need(kind, "inputs", inputs, 1);

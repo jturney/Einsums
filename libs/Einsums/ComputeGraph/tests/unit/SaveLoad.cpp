@@ -770,6 +770,131 @@ TEST_CASE("SaveLoad - a tiled Hermitian eigendecomposition refuses although its 
     CHECK_THAT(save_refusal(graph), Catch::Matchers::ContainsSubstring("Heev"));
 }
 
+namespace {
+
+/// ``op(B)^T op(A) op(B)``, or ``op(B)^H op(A) op(B)`` when @p conjugate, by loops in the widened
+/// type: op(A) is n x n and op(B) is n x m, so the result is m x m.
+template <typename T>
+Tensor<T, 2> congruence_by_loops(Tensor<T, 2> const &A, Tensor<T, 2> const &B, bool trans_a, bool trans_b, bool conjugate) {
+    size_t const n    = trans_b ? B.dim(1) : B.dim(0);
+    size_t const m    = trans_b ? B.dim(0) : B.dim(1);
+    auto const   op_a = [&](size_t i, size_t j) { return std::complex<double>(trans_a ? A(j, i) : A(i, j)); };
+    auto const   op_b = [&](size_t i, size_t j) { return std::complex<double>(trans_b ? B(j, i) : B(i, j)); };
+    auto         C    = create_zero_tensor<T>("C_ref", m, m);
+    for (size_t i = 0; i < m; ++i) {
+        for (size_t j = 0; j < m; ++j) {
+            std::complex<double> sum{0.0};
+            for (size_t k = 0; k < n; ++k) {
+                std::complex<double> const outer = conjugate ? std::conj(op_b(k, i)) : op_b(k, i);
+                for (size_t l = 0; l < n; ++l) {
+                    sum += outer * op_a(k, l) * op_b(l, j);
+                }
+            }
+            if constexpr (IsComplexV<T>) {
+                C(i, j) = static_cast<T>(sum);
+            } else {
+                C(i, j) = static_cast<T>(sum.real());
+            }
+        }
+    }
+    return C;
+}
+
+} // namespace
+
+TEMPLATE_LIST_TEST_CASE("SaveLoad - symm_gemm round-trips against brute force for every flag", "[ComputeGraph][SaveLoad]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    // Every transpose pair the capture site reaches, conjugate on and off, in one graph: eight
+    // nodes writing eight results, A shared and B laid out for its flag.
+    constexpr size_t n  = 4;
+    constexpr size_t m  = 3;
+    auto const       A0 = create_random_tensor<T>("A", n, n);
+    auto const       N0 = create_random_tensor<T>("Bn", n, m); // op(B) = B
+    auto const       T0 = create_random_tensor<T>("Bt", m, n); // op(B) = B^T
+
+    struct Case {
+        bool        trans_a, trans_b, conjugate;
+        std::string name;
+    };
+    std::vector<Case> cases;
+    for (bool const ta : {false, true}) {
+        for (bool const tb : {false, true}) {
+            for (bool const cj : {false, true}) {
+                cases.push_back({ta, tb, cj, fmt::format("C_{}{}{}", ta ? 't' : 'n', tb ? 't' : 'n', cj ? 'h' : 'b')});
+            }
+        }
+    }
+
+    RuntimeTensor<T>              A(A0);
+    RuntimeTensor<T>              Bn(N0);
+    RuntimeTensor<T>              Bt(T0);
+    std::vector<RuntimeTensor<T>> results;
+    results.reserve(cases.size());
+    for (auto const &c : cases) {
+        results.emplace_back(c.name, std::vector<size_t>{m, m});
+    }
+
+    cg::Graph graph("congruences");
+    {
+        cg::CaptureGuard const guard(graph);
+        for (size_t k = 0; k < cases.size(); ++k) {
+            auto const &c = cases[k];
+            if (c.trans_a && c.trans_b) {
+                cg::symm_gemm<true, true>(A, Bt, &results[k], c.conjugate);
+            } else if (c.trans_a) {
+                cg::symm_gemm<true, false>(A, Bn, &results[k], c.conjugate);
+            } else if (c.trans_b) {
+                cg::symm_gemm<false, true>(A, Bt, &results[k], c.conjugate);
+            } else {
+                cg::symm_gemm<false, false>(A, Bn, &results[k], c.conjugate);
+            }
+        }
+    }
+    REQUIRE(graph.serializability_report().empty());
+
+    std::string const text   = must_save(graph);
+    cg::Graph         loaded = must_load(text);
+
+    REQUIRE(loaded.num_nodes() == cases.size());
+    for (size_t k = 0; k < cases.size(); ++k) {
+        auto const *desc = loaded.nodes()[k].op_data.get_if<cg::SymmGemmDescriptor>();
+        REQUIRE(desc != nullptr);
+        CHECK(desc->trans_a == (cases[k].trans_a ? 't' : 'n'));
+        CHECK(desc->trans_b == (cases[k].trans_b ? 't' : 'n'));
+        CHECK(desc->conjugate == cases[k].conjugate);
+    }
+
+    // Bound to a VIEW of B^T's data, which is where the conjugated copy's layout is decided.
+    RuntimeTensor<T>              A2(A0);
+    RuntimeTensor<T>              Bn2(N0);
+    RuntimeTensor<T>              owner(create_zero_tensor<T>("owner", n, m));
+    auto                          Bt2 = owner.transpose_view();
+    std::vector<RuntimeTensor<T>> results2;
+    results2.reserve(cases.size());
+    for (size_t i = 0; i < m; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            Bt2(i, j) = T0(i, j);
+        }
+    }
+    for (auto const &c : cases) {
+        results2.emplace_back(c.name, std::vector<size_t>{m, m});
+    }
+    loaded.bind("A", A2, "Bn", Bn2, "Bt", Bt2);
+    for (size_t k = 0; k < cases.size(); ++k) {
+        loaded.bind(cases[k].name, results2[k]);
+    }
+    REQUIRE(loaded.unbound_manifest_entries().empty());
+    loaded.execute();
+
+    for (size_t k = 0; k < cases.size(); ++k) {
+        auto const &c = cases[k];
+        INFO(c.name);
+        testing::require_tensors_close(results2[k], congruence_by_loops<T>(A0, c.trans_b ? T0 : N0, c.trans_a, c.trans_b, c.conjugate),
+                                       blas_tolerance<T>());
+    }
+}
+
 TEMPLATE_LIST_TEST_CASE("SaveLoad - every norm round-trips against brute force", "[ComputeGraph][SaveLoad]", testing::AllScalarTypes) {
     using T    = TestType;
     using Real = RemoveComplexT<T>;
@@ -893,9 +1018,9 @@ TEST_CASE("SaveLoad - a tiled norm refuses although its kind is reconstructible"
     CHECK_THAT(report.front().reason, Catch::Matchers::ContainsSubstring("tiled and block variants record none"));
 }
 
-// Gemv, Ger, Gesv, Invert, Heev and Norm became saveable at 1.15.0. The golden holds one of each,
-// all complex128, so the conjugate transpose, gerc and a real norm of a complex operand are in the
-// corpus too.
+// Gemv, Ger, Gesv, Invert, Heev, Norm and SymmGemm became saveable at 1.15.0. The golden holds one
+// of each, all complex128, so the conjugate transpose, gerc, a real norm of a complex operand and the
+// Hermitian congruence over B^T are in the corpus too.
 TEST_CASE("SaveLoad - the kinds that joined at 1.15.0 write a golden and refuse a missing key", "[ComputeGraph][SaveLoad]") {
     using T   = std::complex<double>;
     auto A    = create_random_tensor<T>("A", 4, 3);
@@ -919,6 +1044,7 @@ TEST_CASE("SaveLoad - the kinds that joined at 1.15.0 write a golden and refuse 
     auto rH   = RuntimeTensor<T>(H);
     auto rW   = RuntimeTensor<double>(Wr);
     auto rn   = RuntimeTensor<double>("n", std::vector<size_t>{1});
+    auto rG   = RuntimeTensor<T>("G", std::vector<size_t>{4, 4});
     auto pf_a = T{0.75, -0.25};
     auto pf_b = T{0.5, 0.125};
 
@@ -932,6 +1058,7 @@ TEST_CASE("SaveLoad - the kinds that joined at 1.15.0 write a golden and refuse 
         cg::invert(&rN);
         cg::heev(&rH, &rW);
         cg::norm_python(&rn, linear_algebra::Norm::INFTY, rA);
+        cg::symm_gemm<false, true>(rN, rS, &rG, true);
     }
     REQUIRE(graph.serializability_report().empty());
 
@@ -957,6 +1084,13 @@ TEST_CASE("SaveLoad - the kinds that joined at 1.15.0 write a golden and refuse 
     SECTION("a norm whose character is not one character is refused") {
         CHECK_THAT(load_refusal(patched(saved, R"("norm_type":"I")", R"("norm_type":"II")")),
                    Catch::Matchers::ContainsSubstring("one-character"));
+    }
+    SECTION("a symm_gemm without its conjugation flag is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("conjugate":true)", R"("conj":true)")), Catch::Matchers::ContainsSubstring("conjugate"));
+    }
+    SECTION("a symm_gemm with a conjugate transpose flag is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("trans_b":"t","conjugate")", R"("trans_b":"c","conjugate")")),
+                   Catch::Matchers::ContainsSubstring("transpose flag is 'n' or 't'"));
     }
     SECTION("a heev without its job flag is refused") {
         CHECK_THAT(load_refusal(patched(saved, R"("compute_eigenvectors":true)", R"("eigenvectors":true)")),

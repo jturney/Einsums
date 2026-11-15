@@ -533,6 +533,23 @@ TEST_CASE("Graph - a node lists its destination as an input exactly when it read
         CHECK(graph.verify().empty());
     }
 
+    SECTION("a symm_gemm overwrites C and lists only A and B") {
+        auto       S  = create_random_tensor<double>("S", 4, 4);
+        auto const At = A.transpose_view();
+        auto       G  = create_zero_tensor<double>("G", 3, 3);
+        cg::Graph  graph("symm_gemm");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::symm_gemm<false, false>(S, At, &G);
+        }
+        auto const &node = graph.nodes().front();
+        CHECK(node.inputs.size() == 2);
+        CHECK_FALSE(cg::reads_destination(node));
+        CHECK(cg::destination_operand_count(node) == std::optional<std::size_t>{2});
+        CHECK(cg::operand_inputs(node).size() == 2);
+        CHECK(graph.verify().empty());
+    }
+
     SECTION("the same kinds without a descriptor are left to their lists") {
         // A node a pass assembled by hand under one of these kinds, with no descriptor, is the
         // opaque closure the descriptor replaced; nothing vouches for its lists.

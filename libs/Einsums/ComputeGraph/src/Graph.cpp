@@ -793,10 +793,11 @@ void Graph::redirect_slot(TensorId from, TensorId to) {
     // accessor was baked for @p from's static type, and the object behind
     // the redirect is @p to's, so keeping the old one would decode a
     // different type's layout.
-    from_slot->ptr              = to_slot->ptr;
-    from_slot->impl_of          = to_slot->impl_of;
-    from_slot->resync_of        = to_slot->resync_of;
-    _registry.redirects()[from] = to;
+    from_slot->ptr               = to_slot->ptr;
+    from_slot->impl_of           = to_slot->impl_of;
+    from_slot->resync_of         = to_slot->resync_of;
+    from_slot->densifies_on_copy = to_slot->densifies_on_copy;
+    _registry.redirects()[from]  = to;
     note(Change::SlotsChanged);
     // Buffer-keyed analyses (UsageAnalysis, the hazard scan) keyed @p from on its own id.
     note(Change::BufferIdentityChanged);
@@ -805,9 +806,10 @@ void Graph::redirect_slot(TensorId from, TensorId to) {
         if (t == from) {
             t = to;
             if (auto *fs = find_slot(f)) {
-                fs->ptr       = to_slot->ptr;
-                fs->impl_of   = to_slot->impl_of;
-                fs->resync_of = to_slot->resync_of;
+                fs->ptr               = to_slot->ptr;
+                fs->impl_of           = to_slot->impl_of;
+                fs->resync_of         = to_slot->resync_of;
+                fs->densifies_on_copy = to_slot->densifies_on_copy;
             }
         }
     }

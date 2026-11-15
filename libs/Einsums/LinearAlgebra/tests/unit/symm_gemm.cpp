@@ -5,13 +5,18 @@
 
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/Tensor/SymmetryOps.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <algorithm>
 #include <complex>
 #include <limits>
+#include <stdexcept>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -117,4 +122,176 @@ TEMPLATE_LIST_TEST_CASE("symm_gemm: op(B)^T op(A) op(B) with a B that is not squ
     SECTION("A^T, B^T") {
         check_combination<true, true, T>();
     }
+}
+
+namespace {
+
+// The two-GEMM bodies each typed overload held before all of them reduced to the one rank-erased
+// entry, transcribed call for call: the same GEMM entries, the same temporaries, the same
+// conjugated copy of B. The entry has to land on exactly these bits, so that no eager caller sees a
+// different answer, and the cases below compare bytes rather than values. The kernel choices that
+// could move a bit are the ones in play: which gemm entry runs (the tensor-object one consults a
+// declared symmetry), and the layout of the conjugated copy (an owning B's copy keeps B's layout, a
+// view's is densified in the default storage order).
+
+/// The compile-time-rank body.
+template <bool TransA, bool TransB, typename AType, typename BType, typename CType>
+void two_gemm_body(AType const &A, BType const &B, CType *C, bool conjugate) {
+    using T             = typename AType::ValueType;
+    int const temp_rows = static_cast<int>(TransA ? A.dim(1) : A.dim(0));
+    int const temp_cols = static_cast<int>(TransB ? B.dim(0) : B.dim(1));
+    *C                  = T(0.0);
+    Tensor<T, 2> temp{"temp", temp_rows, temp_cols};
+    linear_algebra::detail::gemm<TransA, TransB>(T{1.0}, A, B, T{0.0}, &temp);
+    if (!conjugate) {
+        linear_algebra::detail::gemm<!TransB, false>(T{1.0}, B, temp, T{0.0}, C);
+    } else if constexpr (!TransB) {
+        linear_algebra::detail::gemm('c', 'n', T{1.0}, B, temp, T{0.0}, C);
+    } else {
+        RemoveViewT<BType> Bc = B;
+        einsums::detail::impl_conj(Bc.impl());
+        linear_algebra::detail::gemm('n', 'n', T{1.0}, Bc, temp, T{0.0}, C);
+    }
+}
+
+/// The runtime-rank body.
+template <bool TransA, bool TransB, typename AType, typename BType, typename CType>
+void two_gemm_body_runtime(AType const &A, BType const &B, CType *C, bool conjugate) {
+    using T                = typename AType::ValueType;
+    size_t const temp_rows = TransA ? A.dim(1) : A.dim(0);
+    size_t const temp_cols = TransB ? B.dim(0) : B.dim(1);
+    *C                     = T(0.0);
+    Tensor<T, 2> temp{"temp", temp_rows, temp_cols};
+    linear_algebra::gemm<TransA, TransB>(T{1.0}, A, B, T{0.0}, &temp);
+    if (!conjugate) {
+        linear_algebra::gemm<!TransB, false>(T{1.0}, B, temp, T{0.0}, C);
+    } else if constexpr (!TransB) {
+        linear_algebra::gemm('c', 'n', T{1.0}, B, temp, T{0.0}, C);
+    } else {
+        RemoveViewT<BType> Bc = B;
+        einsums::detail::impl_conj(Bc.impl());
+        linear_algebra::gemm('n', 'n', T{1.0}, Bc, temp, T{0.0}, C);
+    }
+}
+
+template <bool TransA, bool TransB, typename AType, typename BType>
+void require_compile_time_bits(AType const &A, BType const &B, size_t m, bool conjugate) {
+    using T     = typename AType::ValueType;
+    auto now    = create_zero_tensor<T>("C", m, m);
+    auto before = create_zero_tensor<T>("C_before", m, m);
+    if (conjugate) {
+        linear_algebra::hermitian_symm_gemm<TransA, TransB>(A, B, &now);
+    } else {
+        linear_algebra::symm_gemm<TransA, TransB>(A, B, &now);
+    }
+    two_gemm_body<TransA, TransB>(A, B, &before, conjugate);
+    REQUIRE(testing::bytes_of(now) == testing::bytes_of(before));
+}
+
+template <bool TransA, bool TransB, typename AType, typename BType>
+void require_runtime_bits(AType const &A, BType const &B, size_t m, bool conjugate) {
+    using T = typename AType::ValueType;
+    RuntimeTensor<T> now("C", std::vector<size_t>{m, m});
+    RuntimeTensor<T> before("C_before", std::vector<size_t>{m, m});
+    if (conjugate) {
+        linear_algebra::hermitian_symm_gemm<TransA, TransB>(A, B, &now);
+    } else {
+        linear_algebra::symm_gemm<TransA, TransB>(A, B, &now);
+    }
+    two_gemm_body_runtime<TransA, TransB>(A, B, &before, conjugate);
+    REQUIRE(testing::bytes_of(now) == testing::bytes_of(before));
+}
+
+/// Every operand kind the copy and the symmetry switch tell apart, for one transpose pair.
+template <bool TransA, bool TransB, typename T>
+void require_unchanged_bits() {
+    constexpr size_t n  = 4;
+    constexpr size_t m  = 3;
+    size_t const     b0 = TransB ? m : n;
+    size_t const     b1 = TransB ? n : m;
+
+    auto const A         = create_random_tensor<T>("A", n, n);
+    auto const B_col     = create_random_tensor<T>("B", b0, b1);
+    auto const B_row     = create_random_tensor<T>(true, "B", b0, b1);
+    auto       B_owner   = create_random_tensor<T>("B_owner", b1, b0);
+    auto const B_view    = B_owner.transpose_view(); // row-major contiguous, a VIEW
+    auto       B_declare = create_random_tensor<T>("B_sym", n, n);
+    B_declare.set_symmetry(IsComplexV<T> ? SymmetryDescriptor::hermitian_pair(0, 1) : SymmetryDescriptor::symmetric_pair(0, 1));
+    symmetrize(B_declare);
+
+    RuntimeTensor<T> const rA(A);
+    RuntimeTensor<T> const rB_col(B_col);
+    RuntimeTensor<T> const rB_row(B_row);
+    RuntimeTensor<T>       rB_owner(B_owner);
+    auto const             rB_view = rB_owner.transpose_view();
+
+    for (bool const conjugate : {false, true}) {
+        CAPTURE(conjugate);
+        INFO("compile-time rank: column-major, row-major, a view, a declared symmetry");
+        require_compile_time_bits<TransA, TransB>(A, B_col, m, conjugate);
+        require_compile_time_bits<TransA, TransB>(A, B_row, m, conjugate);
+        require_compile_time_bits<TransA, TransB>(A, B_view, m, conjugate);
+        require_compile_time_bits<TransA, TransB>(A, B_declare, n, conjugate);
+        INFO("runtime rank: column-major, row-major, a view");
+        require_runtime_bits<TransA, TransB>(rA, rB_col, m, conjugate);
+        require_runtime_bits<TransA, TransB>(rA, rB_row, m, conjugate);
+        require_runtime_bits<TransA, TransB>(rA, rB_view, m, conjugate);
+    }
+}
+
+} // namespace
+
+TEMPLATE_LIST_TEST_CASE("symm_gemm: the rank-erased entry computes the bits the typed overloads computed", "[linear-algebra][symm_gemm]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    SECTION("A, B") {
+        require_unchanged_bits<false, false, T>();
+    }
+    SECTION("A^T, B") {
+        require_unchanged_bits<true, false, T>();
+    }
+    SECTION("A, B^T") {
+        require_unchanged_bits<false, true, T>();
+    }
+    SECTION("A^T, B^T") {
+        require_unchanged_bits<true, true, T>();
+    }
+}
+
+TEST_CASE("symm_gemm: the rank-erased entry refuses a transpose flag it cannot honour", "[linear-algebra][symm_gemm]") {
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto B = create_random_tensor<double>("B", 3, 3);
+    auto C = create_zero_tensor<double>("C", 3, 3);
+    CHECK_THROWS_AS(linear_algebra::detail::symm_gemm('c', 'n', false, A.impl(), B.impl(), &C.impl()), std::invalid_argument);
+    CHECK_THROWS_AS(linear_algebra::detail::symm_gemm('n', 'x', true, A.impl(), B.impl(), &C.impl()), std::invalid_argument);
+}
+
+TEMPLATE_LIST_TEST_CASE("symm_gemm: the conjugating product over B^T leaves B as it found it", "[linear-algebra][symm_gemm]",
+                        testing::ComplexScalarTypes) {
+    // op(B)^H with op(B) = B^T is conj(B), formed in a conjugated copy of B. A RuntimeTensorView
+    // names no underlying_type, so RemoveViewT of one is the view type itself, and copying that
+    // object shares B's storage: conjugating the "copy" conjugated the caller's B in place. The
+    // product was right and B came back conjugated, so a second identical call computed with a
+    // different B.
+    using T      = TestType;
+    auto const A = create_random_tensor<T>("A", 4, 4);
+
+    RuntimeTensor<T> rA(A);
+    RuntimeTensor<T> owner(create_random_tensor<T>("owner", 4, 3));
+    auto             view   = owner.transpose_view(); // B^T is 4 x 3, so B is the 3 x 4 view
+    auto const       before = testing::bytes_of(owner);
+
+    RuntimeTensor<T> C1("C1", std::vector<size_t>{3, 3});
+    RuntimeTensor<T> C2("C2", std::vector<size_t>{3, 3});
+    linear_algebra::hermitian_symm_gemm<false, true>(rA, view, &C1);
+    REQUIRE(testing::bytes_of(owner) == before);
+    linear_algebra::hermitian_symm_gemm<false, true>(rA, view, &C2);
+    REQUIRE(testing::bytes_of(C1) == testing::bytes_of(C2));
+
+    Tensor<T, 2> static_owner  = create_random_tensor<T>("static_owner", 4, 3);
+    auto const   static_view   = static_owner.transpose_view();
+    auto const   static_before = testing::bytes_of(static_owner);
+    auto         C3            = create_zero_tensor<T>("C3", 3, 3);
+    linear_algebra::hermitian_symm_gemm<false, true>(A, static_view, &C3);
+    REQUIRE(testing::bytes_of(static_owner) == static_before);
 }

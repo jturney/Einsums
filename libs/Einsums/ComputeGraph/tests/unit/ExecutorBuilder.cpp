@@ -22,7 +22,9 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/Tensor/SymmetryOps.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
@@ -36,6 +38,7 @@
 #include <map>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -182,6 +185,7 @@ TEST_CASE("ExecutorBuilder - the reconstructible set holds every kind converted 
         cg::OpKind::Gemv,
         cg::OpKind::Ger,
         cg::OpKind::Norm,
+        cg::OpKind::SymmGemm,
     };
 
     for (auto kind : converted) {
@@ -565,6 +569,135 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Norm is bitwise identical through 
 
     REQUIRE(bytes_of(r) == captured_r);
     REQUIRE(bytes_of_scalar(raw) == captured_raw);
+}
+
+namespace {
+
+/// The typed call a rebuilt SymmGemm node has to reproduce. A built node is handed no symmetry
+/// declaration, and none of the operands here declares one, so the typed call is the same entry
+/// with the same arguments.
+/// An m x m destination of the same rank kind as @p A: the runtime-rank typed overloads take a
+/// runtime-rank C.
+template <typename AType>
+auto congruence_destination(std::string const &name, size_t m) {
+    using T = typename AType::ValueType;
+    if constexpr (std::is_same_v<AType, RuntimeTensor<T>>) {
+        return RuntimeTensor<T>(create_zero_tensor<T>(name, m, m));
+    } else {
+        return create_zero_tensor<T>(name, m, m);
+    }
+}
+
+template <bool TransA, bool TransB, typename AType, typename BType>
+std::vector<unsigned char> typed_congruence(AType const &A, BType const &B, size_t m, bool conjugate) {
+    auto C = congruence_destination<AType>("C_typed", m);
+    if (conjugate) {
+        linear_algebra::hermitian_symm_gemm<TransA, TransB>(A, B, &C);
+    } else {
+        linear_algebra::symm_gemm<TransA, TransB>(A, B, &C);
+    }
+    return bytes_of(C);
+}
+
+/// Capture ``C = op(B)^T op(A) op(B)`` (or ``^H``) over @p B, rebuild the node from its
+/// descriptor, replay, and require the typed call's bytes; then rebind B to @p other and require
+/// the typed call's bytes for that one too. The conjugated copy the B^T case makes is densified
+/// for a TensorView and keeps the layout of anything else, so a builder that fixed that when it
+/// was built would follow the first B and not the second.
+template <bool TransA, bool TransB, typename AType, typename BType, typename OtherType>
+void require_symm_gemm_matches(AType const &A, BType &B, OtherType &other, size_t m) {
+    for (bool const conjugate : {false, true}) {
+        CAPTURE(TransA, TransB, conjugate);
+        auto      C = congruence_destination<AType>("C", m);
+        cg::Graph graph("builder_symm_gemm");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::symm_gemm<TransA, TransB>(A, B, &C, conjugate);
+        }
+        REQUIRE(graph.num_nodes() == 1);
+        auto const *desc = graph.nodes().front().op_data.get_if<cg::SymmGemmDescriptor>();
+        REQUIRE(desc != nullptr);
+        CHECK(desc->trans_a == (TransA ? 't' : 'n'));
+        CHECK(desc->trans_b == (TransB ? 't' : 'n'));
+        CHECK(desc->conjugate == conjugate);
+
+        REQUIRE(rebuild_executors(graph) == 1);
+        graph.execute();
+        REQUIRE(bytes_of(C) == typed_congruence<TransA, TransB>(A, B, m, conjugate));
+
+        graph.rebind(graph.nodes().front().inputs[1], other);
+        graph.execute();
+        REQUIRE(bytes_of(C) == typed_congruence<TransA, TransB>(A, other, m, conjugate));
+    }
+}
+
+template <bool TransA, bool TransB, typename T>
+void require_symm_gemm_combination() {
+    constexpr size_t n  = 4;
+    constexpr size_t m  = 3;
+    size_t const     b0 = TransB ? m : n;
+    size_t const     b1 = TransB ? n : m;
+
+    Tensor<T, 2> A      = create_random_tensor<T>("A", n, n);
+    Tensor<T, 2> B_col  = create_random_tensor<T>("B", b0, b1);
+    Tensor<T, 2> B_row  = create_random_tensor<T>(true, "B", b0, b1);
+    Tensor<T, 2> owner  = create_random_tensor<T>("owner", b1, b0);
+    auto         B_view = owner.transpose_view(); // row-major contiguous; a copy densifies it
+
+    INFO("compile-time rank: an owning column-major B, then a TensorView");
+    require_symm_gemm_matches<TransA, TransB>(A, B_col, B_view, m);
+    INFO("compile-time rank: a TensorView, then an owning row-major B");
+    require_symm_gemm_matches<TransA, TransB>(A, B_view, B_row, m);
+
+    RuntimeTensor<T> rA(A);
+    RuntimeTensor<T> rB(B_col);
+    RuntimeTensor<T> r_owner(owner);
+    auto             rB_view = r_owner.transpose_view(); // a copy keeps this layout
+    INFO("runtime rank: an owning column-major B, then a RuntimeTensorView");
+    require_symm_gemm_matches<TransA, TransB>(rA, rB, rB_view, m);
+}
+
+} // namespace
+
+TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt SymmGemm computes the typed call's bits for owning and view operands",
+                   "[ComputeGraph][ExecutorBuilder]", float, double, std::complex<float>, std::complex<double>) {
+    using T = TestType;
+    SECTION("A, B") {
+        require_symm_gemm_combination<false, false, T>();
+    }
+    SECTION("A^T, B") {
+        require_symm_gemm_combination<true, false, T>();
+    }
+    SECTION("A, B^T") {
+        require_symm_gemm_combination<false, true, T>();
+    }
+    SECTION("A^T, B^T") {
+        require_symm_gemm_combination<true, true, T>();
+    }
+}
+
+TEMPLATE_TEST_CASE("ExecutorBuilder - a captured SymmGemm ignores the symmetry B declares", "[ComputeGraph][ExecutorBuilder]",
+                   std::complex<float>, std::complex<double>) {
+    // An eager call hands B's declaration to the conjugating product, which may then run as hemm;
+    // a captured node is handed none, as a captured gemm is not. So the replay lands on the bits of
+    // the rank-erased entry called with no declaration, whatever B says about itself.
+    using T        = TestType;
+    Tensor<T, 2> A = create_random_tensor<T>("A", 4, 4);
+    Tensor<T, 2> B = create_random_tensor<T>("B", 4, 4);
+    B.set_symmetry(SymmetryDescriptor::hermitian_pair(0, 1));
+    symmetrize(B);
+    Tensor<T, 2> C = create_zero_tensor<T>("C", 4, 4);
+
+    cg::Graph graph("symm_gemm_declared");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::symm_gemm<false, false>(A, B, &C, true);
+    }
+    graph.execute();
+
+    auto plain = create_zero_tensor<T>("plain", 4, 4);
+    linear_algebra::detail::symm_gemm('n', 'n', true, A.impl(), B.impl(), &plain.impl(), nullptr, false);
+    REQUIRE(bytes_of(C) == bytes_of(plain));
 }
 
 TEST_CASE("ExecutorBuilder - rebuilt Transpose is bitwise identical", "[ComputeGraph][ExecutorBuilder]") {

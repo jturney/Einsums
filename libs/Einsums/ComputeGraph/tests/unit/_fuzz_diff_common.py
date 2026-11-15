@@ -1785,9 +1785,9 @@ def check_program_region_identity(prog, m_arrays, v_arrays, t_arrays, label, dty
 # written to a file and read back, with its answer unchanged?
 #
 # The skip rule mirrors _usable's. A random program routinely holds something
-# the IR cannot yet carry (a View node, an anonymous element transform, a
-# symm_gemm), and `Graph.serializability_report` is what names those; a save
-# refuses exactly that set, so the refusal IS the skip signal and there is no
+# the IR cannot yet carry (a View node, an anonymous element transform), and
+# `Graph.serializability_report` is what names those; a save refuses exactly
+# that set, so the refusal IS the skip signal and there is no
 # second list to keep in step. `_ROUNDTRIP_STATS` counts what actually round
 # tripped so a shard can assert the corpus has not quietly degraded to all
 # skips.

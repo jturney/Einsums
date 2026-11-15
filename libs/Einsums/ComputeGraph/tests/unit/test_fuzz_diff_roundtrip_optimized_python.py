@@ -86,7 +86,7 @@ from _fuzz_diff_common import (
 # Statement kinds whose captured nodes are reconstructible today; see the
 # captured-graph shard for why the filter is a density choice and not a
 # correctness one.
-_SAVEABLE_KINDS = frozenset({"scale", "axpy", "axpby", "gemm", "gemv", "ger", "einsum", "beinsum", "perm"})
+_SAVEABLE_KINDS = frozenset({"scale", "axpy", "axpby", "gemm", "gemv", "ger", "symm", "einsum", "beinsum", "perm"})
 
 # Statement kinds that capture a View node. Kept separate so a refusal of a
 # program holding one can be told apart from a refusal nothing explains.
@@ -398,10 +398,11 @@ def test_optimized_roundtrip_of_a_pinned_fusable_program():
         # whose results the file must still carry.
         ("gemv", 0.5, 0, 0, 1.0, 1),
         ("ger", -0.75, 1, 2, 3),
+        ("symm", 3, 0, 2),
     ]
     oracle = _oracle(prog, m, v, t)
     in_memory, loaded, refusal = _run_optimized_roundtrip(prog, m, v, t, "ortpinned")
-    assert loaded is not None, f"an optimized einsum/scale/axpby/permute/gemv/ger program must be saveable: {refusal}"
+    assert loaded is not None, f"an optimized einsum/scale/axpby/permute/gemv/ger/symm_gemm program must be saveable: {refusal}"
     _compare(in_memory, oracle, prog, "OPTIMIZED (in memory) disagrees with oracle", "float64", 1e-10, 1e-10)
     _compare(loaded, oracle, prog, "OPTIMIZED + ROUND-TRIPPED disagrees with oracle", "float64", 1e-10, 1e-10)
 

@@ -871,6 +871,14 @@ void read_descriptor(IrNode &node, Fields const &fields, GateFlagTable const &ga
         node.descriptor = desc;
         return;
     }
+    case OpKind::SymmGemm: {
+        SymmGemmDescriptor desc;
+        desc.trans_a    = fields.character("trans_a", 'n');
+        desc.trans_b    = fields.character("trans_b", 'n');
+        desc.conjugate  = fields.flag("conjugate");
+        node.descriptor = desc;
+        return;
+    }
     case OpKind::Norm: {
         NormDescriptor desc;
         desc.norm_type  = fields.character("norm_type", 'F');

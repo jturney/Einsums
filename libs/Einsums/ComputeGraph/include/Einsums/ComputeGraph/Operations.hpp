@@ -4599,14 +4599,15 @@ void symm_gemm(AType const &A, BType const &B, CType *C, bool conjugate = false)
         return;
     }
     WAGGLE_ZONE("symm_gemm capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    auto [c_id, c_slot] = ctx.get_slot(*C);
-    auto executor       = [a_slot, b_slot, c_slot, run]() {
-        WAGGLE_ZONE("symm_gemm execute");
-        run(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), static_cast<CType *>(c_slot->ptr));
-    };
-    ctx.record(OpKind::SymmGemm, "symm_gemm", {a_id, b_id}, {c_id}, std::move(executor));
+    // The node is data, built by build_executor from the descriptor, and reaches the same
+    // rank-erased kernel the eager call above does. It is handed no symmetry declaration for B,
+    // as a captured gemm is not, so a replay never switches to symm or hemm on one.
+    using T                          = typename AType::ValueType;
+    std::vector<TensorId> const ids  = {ctx.get_slot(A).first, ctx.get_slot(B).first};
+    TensorId const              c_id = ctx.get_slot(*C).first;
+    ctx.record_built(OpKind::SymmGemm, "symm_gemm", packed_gemm::get_scalar_type<T>(), 2,
+                     SymmGemmDescriptor{.trans_a = TransA ? 't' : 'n', .trans_b = TransB ? 't' : 'n', .conjugate = conjugate}, ids,
+                     std::span<TensorId const>{&c_id, 1}, ids, {c_id});
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

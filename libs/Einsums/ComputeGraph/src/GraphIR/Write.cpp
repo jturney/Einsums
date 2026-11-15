@@ -398,6 +398,13 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("trans", char_value(desc.trans));
         return Value{std::move(out)};
     }
+    case OpKind::SymmGemm: {
+        auto const &desc = node.op_data.get<SymmGemmDescriptor>();
+        out.set("trans_a", char_value(desc.trans_a));
+        out.set("trans_b", char_value(desc.trans_b));
+        out.set("conjugate", Value{desc.conjugate});
+        return Value{std::move(out)};
+    }
     case OpKind::Norm:
         out.set("norm_type", char_value(node.op_data.get<NormDescriptor>().norm_type));
         return Value{std::move(out)};

@@ -95,6 +95,9 @@ std::optional<std::size_t> destination_operand_count(Node const &node) {
     if (node.op_data.holds<GemvDescriptor>() || node.op_data.holds<GerDescriptor>()) {
         return 2; // gemv: A, x; ger: x, y
     }
+    if (node.op_data.holds<SymmGemmDescriptor>()) {
+        return 2; // A, B; C is overwritten and never read
+    }
     if (node.op_data.holds<EinsumDescriptor>() || node.op_data.holds<TiledEinsumDescriptor>() ||
         node.op_data.holds<ElementwiseBinaryDescriptor>() || node.op_data.holds<GemmDescriptor>()) {
         return 2; // A, B

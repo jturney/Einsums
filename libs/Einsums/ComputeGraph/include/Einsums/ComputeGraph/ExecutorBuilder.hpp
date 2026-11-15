@@ -78,7 +78,9 @@
  * ``Gemm`` reaches ``linear_algebra::detail::gemm(char, char, alpha, impl,
  * impl, beta, impl*)``, not the tensor-object overload with the
  * ``symm``/``hemm`` fast path, because that is the entry ``cg::gemm`` capture
- * has always used.
+ * has always used. ``SymmGemm`` follows the same rule: its rank-erased kernel
+ * is handed no symmetry descriptor, so a built node never switches to
+ * ``symm``/``hemm`` on a declaration B carries.
  *
  * ``Einsum`` wraps each operand's live impl in a ``RuntimeTensorView<T>``: one
  * dtype dispatch instead of one instantiation per rank triple. The views are
@@ -156,6 +158,11 @@ class OperandAccessor {
     /// The operand's element type, recorded from its tensor when the accessor was resolved; Unknown
     /// when nothing recorded one. An einsum's executor reads its three operands' types from here.
     [[nodiscard]] packed_gemm::ScalarType dtype() const noexcept { return _dtype; }
+
+    /// Whether a copy of the operand CURRENTLY bound is densified in the default storage order.
+    /// Read through the slot, so a rebind to another kind of tensor is honored; see
+    /// TensorSlot::densifies_on_copy.
+    [[nodiscard]] bool densifies_on_copy() const noexcept { return _slot != nullptr ? _slot->densifies_on_copy : _ops->densifies_on_copy; }
 
     /// The operand's CURRENT rank-erased geometry, type-erased.
     [[nodiscard]] void *raw() const { return _slot != nullptr ? _slot->impl_of(_slot->ptr) : _ops->impl(_object); }
@@ -405,6 +412,7 @@ EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
     case OpKind::Gemv:
     case OpKind::Ger:
     case OpKind::Norm:
+    case OpKind::SymmGemm:
         return true;
     default:
         return false;

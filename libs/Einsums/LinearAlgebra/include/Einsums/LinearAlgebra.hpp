@@ -299,16 +299,7 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
-
-    size_t const temp_rows = TransA ? A.dim(1) : A.dim(0);
-    size_t const temp_cols = TransB ? B.dim(0) : B.dim(1);
-
-    using T = typename AType::ValueType;
-    *C      = typename CType::ValueType(0.0);
-
-    Tensor<T, 2> temp{"temp", temp_rows, temp_cols};
-    gemm<TransA, TransB>(T{1.0}, A, B, T{0.0}, &temp);
-    gemm<!TransB, false>(T{1.0}, B, temp, T{0.0}, C);
+    detail::symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', false, A.impl(), B.impl(), &C->impl(), nullptr, IsTensorViewV<BType>);
 }
 
 // Hermitian congruence C = op(B)^H op(A) op(B) for compile-time-rank operands.
@@ -339,22 +330,14 @@ void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
         EINSUMS_THROW_EXCEPTION(RankError, "hermitian_symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(),
                                 C->rank());
     }
-
-    size_t const temp_rows = TransA ? A.dim(1) : A.dim(0);
-    size_t const temp_cols = TransB ? B.dim(0) : B.dim(1);
-
-    using T = typename AType::ValueType;
-    *C      = typename CType::ValueType(0.0);
-
-    Tensor<T, 2> temp{"temp", temp_rows, temp_cols};
-    gemm<TransA, TransB>(T{1.0}, A, B, T{0.0}, &temp);
-    if constexpr (!TransB) {
-        gemm('c', 'n', T{1.0}, B, temp, T{0.0}, C);
-    } else {
-        RemoveViewT<BType> Bc = B;
-        einsums::detail::impl_conj(Bc.impl());
-        gemm('n', 'n', T{1.0}, Bc, temp, T{0.0}, C);
+    // The conjugating product reaches the tensor-object gemm, which consults B's declared
+    // symmetry, only when B and C both have compile-time rank; with either runtime-rank it goes
+    // through the rank-erased gemm, which does not.
+    SymmetryDescriptor const *b_symmetry = nullptr;
+    if constexpr (MatrixConcept<BType> && MatrixConcept<CType>) {
+        b_symmetry = B.symmetry();
     }
+    detail::symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', true, A.impl(), B.impl(), &C->impl(), b_symmetry, IsTensorViewV<BType>);
 }
 
 /**

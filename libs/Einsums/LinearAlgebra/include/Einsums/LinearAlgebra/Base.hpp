@@ -31,9 +31,11 @@
 #include <Einsums/TensorImpl/TensorImplOperations.hpp>
 #include <Einsums/TensorUtilities/CreateTensorLike.hpp>
 
+#include <cctype>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(linear_algebra::detail)
 
@@ -921,40 +923,106 @@ void gerc(typename XYType::ValueType alpha, XYType const &X, XYType const &Y, AT
     gerc(alpha, X.impl(), Y.impl(), &A->impl());
 }
 
+/**
+ * @brief ``C = op(B)^T op(A) op(B)``, or ``op(B)^H op(A) op(B)`` when @p conjugate, over rank-erased
+ *        operands. Every typed ``symm_gemm`` and ``hermitian_symm_gemm`` reduces to this.
+ *
+ * @p trans_a and @p trans_b are ``'n'`` or ``'t'``, either case. The product is formed as two
+ * GEMMs through a temporary ``temp = op(A) op(B)``, and the outer factor is ``op(B)^T`` or
+ * ``op(B)^H``. With ``op(B) = B^T``, ``op(B)^H`` is ``conj(B)``, which no BLAS op flag spells, so
+ * that one case conjugates a COPY of B and multiplies by it untransposed.
+ *
+ * Two parameters exist so this one implementation reproduces what each typed caller computed
+ * when it held its own copy of this body. Neither changes the value a correct product has; both
+ * decide which kernel forms it, and so its rounding:
+ *
+ * - @p b_symmetry is the symmetry B declares, or null. A typed tensor's conjugating outer
+ *   product went through the tensor-object ``gemm``, which hands a declared symmetric or
+ *   Hermitian B to ``symm`` / ``hemm`` (see try_symmetric_gemm); a runtime-rank one went through
+ *   the rank-erased ``gemm``, which never looks. Only the conjugating product reads it.
+ * - @p b_densifies_on_copy says how ``RemoveViewT<BType> Bc = B``, the conjugated copy, was laid
+ *   out. For a view type that names an ``underlying_type`` (``TensorView``) the copy is that
+ *   owning type, densified in the default storage order (default_row_major()); for an owning
+ *   tensor it keeps B's layout, and so it does for ``RuntimeTensorView``, which names none and
+ *   so copied into another view. The copy's layout picks the BLAS flag the outer GEMM sees.
+ *
+ * The copy is always a separate buffer with that layout, never B's own storage, so B is left as
+ * it was whatever kind of tensor it is. Copying a ``RuntimeTensorView`` object would share B's
+ * storage, and conjugating that copy would conjugate the caller's B.
+ *
+ * @throws RankError When an operand is not rank 2.
+ * @throws std::invalid_argument When a transpose character is not ``'n'`` or ``'t'``.
+ * @throws TensorCompatError When the shapes do not compose.
+ */
+template <typename T>
+void symm_gemm(char trans_a, char trans_b, bool conjugate, einsums::detail::TensorImpl<T> const &A, einsums::detail::TensorImpl<T> const &B,
+               einsums::detail::TensorImpl<T> *C, SymmetryDescriptor const *b_symmetry = nullptr, bool b_densifies_on_copy = false) {
+    if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(RankError, "symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
+    }
+    char const ta = static_cast<char>(std::tolower(static_cast<unsigned char>(trans_a)));
+    char const tb = static_cast<char>(std::tolower(static_cast<unsigned char>(trans_b)));
+    if ((ta != 'n' && ta != 't') || (tb != 'n' && tb != 't')) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "symm_gemm: a transpose character is 'n' or 't'; got {:?} and {:?}.", trans_a,
+                                trans_b);
+    }
+    bool const transposed_a = ta == 't';
+    bool const transposed_b = tb == 't';
+
+    // op(A) is n x n and op(B) is n x m, so C is m x m. Square A makes its transpose irrelevant here.
+    size_t const n          = transposed_b ? B.dim(1) : B.dim(0);
+    size_t const m          = transposed_b ? B.dim(0) : B.dim(1);
+    bool const   shape_test = A.dim(0) == n && A.dim(1) == n && C->dim(0) == m && C->dim(1) == m;
+    if (!shape_test) {
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "The shapes of the input and output tensors are incompatible!");
+    }
+
+    int const temp_rows = static_cast<int>(transposed_a ? A.dim(1) : A.dim(0));
+    int const temp_cols = static_cast<int>(transposed_b ? B.dim(0) : B.dim(1));
+
+    einsums::detail::copy_to(T{0.0}, *C);
+    Tensor<T, 2> temp{"temp", temp_rows, temp_cols};
+
+    gemm(ta, tb, T{1.0}, A, B, T{0.0}, &temp.impl()); // temp = op(A) op(B)
+
+    // The outer product. A declared symmetry reaches symm / hemm exactly as the tensor-object gemm
+    // would have taken it, and the rank-erased gemm runs otherwise.
+    auto const outer = [&](char t_outer, einsums::detail::TensorImpl<T> const &left) {
+        if (b_symmetry != nullptr && try_symmetric_gemm<T>(t_outer, 'n', T{1.0}, left, b_symmetry, temp.impl(), nullptr, T{0.0}, C)) {
+            return;
+        }
+        gemm(t_outer, 'n', T{1.0}, left, temp.impl(), T{0.0}, C);
+    };
+
+    if (!conjugate) {
+        gemm(transposed_b ? 'n' : 't', 'n', T{1.0}, B, temp.impl(), T{0.0}, C);
+    } else if (!transposed_b) {
+        outer('c', B); // op(B)^H = B^H
+    } else {
+        // op(B)^H = conj(B): a conjugated copy, laid out as the typed copy would have been.
+        einsums::detail::TensorImpl<T> copy =
+            b_densifies_on_copy ? einsums::detail::TensorImpl<T>(nullptr, B.dims(), einsums::default_row_major()) : B;
+        // Sized from the extent and stride vectors themselves: dim() reports 0 for a layout with no
+        // data pointer yet, which is what a deferred tensor looks like.
+        size_t span = copy.size() == 0 ? 0 : 1;
+        for (size_t d = 0; d < copy.rank() && span != 0; ++d) {
+            span += (copy.dims()[d] - 1) * copy.strides()[d];
+        }
+        std::vector<T> storage(span);
+        copy.set_data(storage.data());
+        einsums::detail::copy_to(B, copy);
+        einsums::detail::impl_conj(copy);
+        outer('n', copy);
+    }
+}
+
 template <bool TransA, bool TransB, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
     requires requires {
         requires SameUnderlyingAndRank<AType, BType, CType>;
         requires MatrixConcept<AType>;
     }
 void symm_gemm(AType const &A, BType const &B, CType *C) {
-    int temp_rows, temp_cols;
-    // op(A) is n x n and op(B) is n x m, so C is m x m. Square A makes its transpose irrelevant here.
-    size_t const n          = TransB ? B.dim(1) : B.dim(0);
-    size_t const m          = TransB ? B.dim(0) : B.dim(1);
-    bool const   shape_test = A.dim(0) == n && A.dim(1) == n && C->dim(0) == m && C->dim(1) == m;
-
-    if (!shape_test) {
-        EINSUMS_THROW_EXCEPTION(TensorCompatError, "The shapes of the input and output tensors are incompatible!");
-    }
-
-    if constexpr (TransA) {
-        temp_rows = A.dim(1);
-    } else {
-        temp_rows = A.dim(0);
-    }
-
-    if constexpr (TransB) {
-        temp_cols = B.dim(0);
-    } else {
-        temp_cols = B.dim(1);
-    }
-
-    *C = typename CType::ValueType(0.0);
-
-    Tensor<typename AType::ValueType, 2> temp{"temp", temp_rows, temp_cols};
-
-    gemm<TransA, TransB>(typename AType::ValueType{1.0}, A, B, typename CType::ValueType{0.0}, &temp);
-    gemm<!TransB, false>(typename AType::ValueType{1.0}, B, temp, typename CType::ValueType{0.0}, C);
+    symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', false, A.impl(), B.impl(), &C->impl(), nullptr, IsTensorViewV<BType>);
 }
 
 // Hermitian congruence: C = op(B)^H op(A) op(B), the conjugating counterpart of
@@ -966,41 +1034,7 @@ template <bool TransA, bool TransB, CoreBasicTensorConcept AType, CoreBasicTenso
         requires MatrixConcept<AType>;
     }
 void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
-    int temp_rows, temp_cols;
-    // op(A) is n x n and op(B) is n x m, so C is m x m. Square A makes its transpose irrelevant here.
-    size_t const n          = TransB ? B.dim(1) : B.dim(0);
-    size_t const m          = TransB ? B.dim(0) : B.dim(1);
-    bool const   shape_test = A.dim(0) == n && A.dim(1) == n && C->dim(0) == m && C->dim(1) == m;
-    if (!shape_test) {
-        EINSUMS_THROW_EXCEPTION(TensorCompatError, "The shapes of the input and output tensors are incompatible!");
-    }
-
-    if constexpr (TransA) {
-        temp_rows = A.dim(1);
-    } else {
-        temp_rows = A.dim(0);
-    }
-    if constexpr (TransB) {
-        temp_cols = B.dim(0);
-    } else {
-        temp_cols = B.dim(1);
-    }
-
-    *C = typename CType::ValueType(0.0);
-    Tensor<typename AType::ValueType, 2> temp{"temp", temp_rows, temp_cols};
-
-    gemm<TransA, TransB>(typename AType::ValueType{1.0}, A, B, typename CType::ValueType{0.0}, &temp); // temp = op(A) op(B)
-
-    // C = op(B)^H @ temp. With op(B) = B (when !TransB), op(B)^H = B^H -> BLAS 'c'.
-    // With op(B) = B^T (when TransB), op(B)^H = conj(B), which has no BLAS op flag
-    // (conjugate without transpose), so materialize a conjugated copy.
-    if constexpr (!TransB) {
-        gemm('c', 'n', typename AType::ValueType{1.0}, B, temp, typename CType::ValueType{0.0}, C);
-    } else {
-        RemoveViewT<BType> Bc = B;
-        einsums::detail::impl_conj(Bc.impl());
-        gemm('n', 'n', typename AType::ValueType{1.0}, Bc, temp, typename CType::ValueType{0.0}, C);
-    }
+    symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', true, A.impl(), B.impl(), &C->impl(), B.symmetry(), IsTensorViewV<BType>);
 }
 
 template <typename AType, typename BType, typename CType>

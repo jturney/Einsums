@@ -16,7 +16,7 @@ loader's placeholder buffer instead of the bound one - and none of those shows
 up as an error. They show up here as a wrong number.
 
 Programs the IR cannot carry yet (a ``View`` node, an anonymous element
-transform, a ``symm_gemm``) are skipped, and the refusal from ``save_graph`` is what
+transform) are skipped, and the refusal from ``save_graph`` is what
 decides that: there is exactly one list of what is reconstructible and it lives
 in the library. ``test_roundtrip_corpus_is_not_all_skips`` is the guard that
 keeps the skip rule from turning the shard into a no-op.
@@ -40,7 +40,7 @@ from _fuzz_diff_common import *  # shared fuzz/differential harness
 # below are what catch the list going stale. Without it most trials skip,
 # because the generator draws views freely and no view survives a save yet.
 _SAVEABLE_KINDS = frozenset(
-    {"scale", "axpy", "axpby", "gemm", "gemv", "ger", "einsum", "beinsum", "perm", "loop", "cond"}
+    {"scale", "axpy", "axpby", "gemm", "gemv", "ger", "symm", "einsum", "beinsum", "perm", "loop", "cond"}
 )
 
 
@@ -120,9 +120,11 @@ def test_roundtrip_of_a_pinned_reconstructible_program():
         # input, and one rank-1 update, which always does.
         ("gemv", 0.5, 3, 0, 1.0, 1),
         ("ger", -0.75, 1, 2, 0),
+        # A congruence, which overwrites its destination.
+        ("symm", 0, 1, 3),
     ]
     got = _run_program_roundtrip(prog, m, v, t, "rtpinned")
-    assert got is not None, "a program of scale/axpby/gemm/permute/gemv/ger must be saveable"
+    assert got is not None, "a program of scale/axpby/gemm/permute/gemv/ger/symm_gemm must be saveable"
     _assert_pools(got, _oracle(prog, m, v, t), prog, "ROUND-TRIPPED")
 
 

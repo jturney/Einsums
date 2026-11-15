@@ -144,10 +144,13 @@
  * hold one, so nothing defaults.
  *
  * Since 1.15.0 a file may hold the dense @ref OpKind::Heev, @ref OpKind::Gesv,
- * @ref OpKind::Invert, @ref OpKind::Gemv, @ref OpKind::Ger and @ref OpKind::Norm nodes. A Heev
- * descriptor carries ``compute_eigenvectors`` as Syev's does; a Gemv's carries ``alpha``, ``beta``
- * and ``trans`` as a Gemm's does; a Ger's carries ``alpha`` and ``conjugated``, which tells
- * ``gerc`` from ``ger``; a Norm's carries ``norm_type``, the one-character LAPACK norm code.
+ * @ref OpKind::Invert, @ref OpKind::Gemv, @ref OpKind::Ger, @ref OpKind::Norm and
+ * @ref OpKind::SymmGemm nodes. A Heev descriptor carries ``compute_eigenvectors`` as Syev's does; a
+ * Gemv's carries ``alpha``, ``beta`` and ``trans`` as a Gemm's does; a Ger's carries ``alpha`` and
+ * ``conjugated``, which tells ``gerc`` from ``ger``; a Norm's carries ``norm_type``, the
+ * one-character LAPACK norm code; a SymmGemm's carries ``trans_a`` and ``trans_b`` (``n`` or
+ * ``t``) and ``conjugate``, which tells the Hermitian congruence from the bilinear one. A SymmGemm
+ * node carries no symmetry declaration for B, so a loaded one never runs as ``symm`` or ``hemm``.
  * Gesv and Invert descriptors are written empty, since a solve and an inversion are fully
  * described by their kind, dtype and operands. A Norm node's ``dtype`` is its destination's, so
  * the norm of a complex operand records the REAL type, and the operand's own record says what it

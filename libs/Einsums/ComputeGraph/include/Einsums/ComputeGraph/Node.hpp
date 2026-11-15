@@ -516,6 +516,36 @@ struct GemvDescriptor {
 };
 
 /**
+ * @brief Metadata for @ref OpKind::SymmGemm nodes: the congruence
+ *        ``C = op(B)^T op(A) op(B)``, or ``op(B)^H op(A) op(B)`` when @ref conjugate.
+ *
+ * @ref trans_a and @ref trans_b are ``'n'`` or ``'t'``: the capture site takes
+ * them as template bools, and a file cannot carry a template argument. They are
+ * chars rather than bools to match @ref GemmDescriptor, whose fields mean the
+ * same thing. @ref conjugate chooses the Hermitian congruence over the bilinear
+ * one, which for a complex B is a different matrix.
+ *
+ * What the descriptor deliberately does not carry is B's declared symmetry. An
+ * eager call hands it to the conjugating product, which may then run as
+ * ``symm`` or ``hemm``; a built node does not, as a built @ref OpKind::Gemm
+ * does not, because a declaration is a property of the tensor bound at the
+ * time rather than of the operation. How a copy of B is laid out is read from
+ * the operand at each run for the same reason.
+ *
+ * There is no prefactor and C is overwritten, so the node lists A and B as
+ * inputs and C as its one output.
+ *
+ * @versionadded{2.0.0}
+ */
+struct SymmGemmDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "SymmGemmDescriptor";
+    char                              trans_a{'n'};     ///< 't' when op(A) is A^T.
+    char                              trans_b{'n'};     ///< 't' when op(B) is B^T.
+    bool                              conjugate{false}; ///< true for op(B)^H, false for op(B)^T.
+};
+
+/**
  * @brief Metadata for the DENSE @ref OpKind::Norm nodes: ``result = ||A||``.
  *
  * @ref norm_type is the LAPACK norm character the capture site was given:
