@@ -1526,4 +1526,62 @@ TEST_CASE("GPU dispatch - DataflowExecutor runs a GPU-placed node on the device"
     }
     require_device_dispatch<cg::DataflowExecutor>("gpu_dispatch_dataflow");
 }
+
+// A Loop node's replay opens one zone per iteration that ran, under the Loop node's own zone, so a
+// profile shows each iteration's time and how many there were. Pipeline loop stages had these
+// before they became Loop nodes; this keeps every in-graph loop carrying them.
+TEST_CASE("Loop replay - each iteration that ran gets its own zone under the loop's zone", "[ComputeGraph][Executor][Profile]") {
+    auto value = Tensor<double, 1>("value", 1);
+    value(0)   = 1.0;
+
+    std::string const name  = "iteration_zones";
+    std::string const label = "iteration zones loop";
+    cg::Graph         graph(name);
+    {
+        auto                  &body = graph.add_loop(label, /*max_iterations=*/10, [](size_t iter) { return iter < 2; });
+        cg::CaptureGuard const guard(body);
+        cg::scale(0.5, &value);
+    }
+
+    ProfilerOn const  profiler;
+    std::string const scope = "Executor: iteration zones";
+    {
+        waggle::ScopedZone const zone(scope);
+        graph.execute();
+    }
+    REQUIRE_THAT(value(0), Catch::Matchers::WithinAbs(0.125, 1e-15)); // three iterations ran
+
+    // The first zone named `wanted` at or below `from`, breadth first.
+    auto const find_below = [](waggle::SnapshotNode const &from, std::string const &wanted) -> std::optional<waggle::SnapshotNode> {
+        std::vector<waggle::SnapshotNode> pending{from};
+        for (std::size_t i = 0; i < pending.size(); ++i) {
+            for (auto const &child : pending[i].children()) {
+                if (child.name() == wanted) {
+                    return child;
+                }
+                pending.push_back(child);
+            }
+        }
+        return std::nullopt;
+    };
+    // Named, not a temporary: the nodes point into the snapshot and dangle once it is gone.
+    auto const                          snapshot = waggle::Snapshot::take();
+    std::optional<waggle::SnapshotNode> loop_zone;
+    for (auto const &thread : snapshot.threads()) {
+        if (auto const scoped = find_below(thread.root, scope)) {
+            loop_zone = find_below(*scoped, fmt::format("graph:{}/{}", name, label));
+            break;
+        }
+    }
+    REQUIRE(loop_zone);
+
+    std::vector<std::string> iterations;
+    for (auto const &child : loop_zone->children()) {
+        if (child.name().starts_with("iteration:")) {
+            iterations.emplace_back(child.name());
+        }
+    }
+    std::ranges::sort(iterations);
+    CHECK(iterations == std::vector<std::string>{"iteration:0", "iteration:1", "iteration:2"});
+}
 #endif
