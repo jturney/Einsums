@@ -150,7 +150,9 @@ bool Pipeline::apply(PassManager &pm) {
     // loop stage's work is all in its Loop node's body. The holders are every graph of the stage
     // with a handle for the tensor, so the lifecycle is on the handle Materialization reads, which
     // for a tensor only a body uses is the body's, hoisted into the stage graph ahead of the loop.
-    // Setup bodies are left out, as Materialization's own walk leaves them out.
+    // Setup bodies are included: Materialization gives a Setup body's own deferred handle its
+    // lifecycle inside that body, so it runs once per bind with the setup, and skips it when an
+    // enclosing graph already placed one for the same tensor.
     std::vector<std::pair<Graph *, TensorId>> holders;
     // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
     std::function<void(Graph &, void const *)> collect = [&](Graph &graph, void const *ptr) {
@@ -159,7 +161,7 @@ bool Pipeline::apply(PassManager &pm) {
         if (TensorId const tid = graph.find_tensor_id_by_ptr(ptr); tid != 0) {
             holders.emplace_back(&graph, tid);
         }
-        graph.for_each_subgraph([&](Graph &sub) { collect(sub, ptr); }, /*include_setup=*/false);
+        graph.for_each_subgraph([&](Graph &sub) { collect(sub, ptr); }, /*include_setup=*/true);
     };
 
     for_each_stage([&](Stage &, Graph &graph, Graph *) {

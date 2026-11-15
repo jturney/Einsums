@@ -193,6 +193,47 @@ TEST_CASE("Pipeline - a declared zero tensor first used in a loop stage accumula
     }
 }
 
+// The pipeline's first-use walk passed over Setup bodies, so a stage whose only use of a
+// pipeline-declared tensor was inside its Setup body was not taken as the first user. The next stage
+// to touch the tensor was, and its Initialize zeroed the setup's result just before that stage read
+// it. The lifecycle belongs inside the Setup body, where Materialization places a body's own
+// scratch, so it runs once per bind with the setup and the second execute keeps the result.
+TEST_CASE("Pipeline - a declared zero tensor written only by a setup body keeps the setup's result", "[ComputeGraph][Pipeline]") {
+    constexpr size_t n   = 4;
+    auto             A   = create_random_tensor<double>("A", n, n);
+    auto             B   = create_random_tensor<double>("B", n, n);
+    auto             out = create_zero_tensor<double>("out", n, n);
+
+    cg::Pipeline pipeline("setup_only_writer");
+    auto        &acc = pipeline.declare_zero_tensor<double, 2>("acc", n, n);
+    {
+        auto                  &stage = pipeline.add_stage("fit");
+        auto                  &setup = stage.add_setup("fit_setup");
+        cg::CaptureGuard const guard(setup);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &acc, 1.0, A, B); // reads acc, so it must start at zero
+    }
+    {
+        auto                  &post = pipeline.add_stage("copy_out");
+        cg::CaptureGuard const guard(post);
+        cg::permute("ij <- ij", 0.0, &out, 1.0, acc);
+    }
+    auto pm = cg::PassManager::create_default();
+    pipeline.apply(pm);
+
+    auto product = create_zero_tensor<double>("product", n, n);
+    reference_einsum("i,j <- i,k ; k,j", &product, A, B);
+    // Twice: the setup runs on the first execute only, so the second shows nothing zeroes its result.
+    for (int run = 0; run < 2; ++run) {
+        INFO("execute " << run);
+        pipeline.execute();
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < n; ++j) {
+                CHECK_THAT(out(i, j), Catch::Matchers::WithinAbs(product(i, j), 1e-12));
+            }
+        }
+    }
+}
+
 TEST_CASE("Pipeline - stage references survive later add_stage", "[ComputeGraph][Pipeline]") {
     // add_stage() hands out a reference into the pipeline's stage container.
     // While that container was a std::vector, the next add_stage() could
