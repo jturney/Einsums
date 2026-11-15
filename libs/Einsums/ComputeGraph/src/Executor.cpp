@@ -647,9 +647,16 @@ void DataflowExecutor::execute(Graph &graph, NodeRunner &run) {
     // self-schedules. Submitting them one at a time cost a lock and a
     // condition-variable signal each, which on a wide graph was most of the
     // scheduling time.
+    //
+    // The candidate is submitted first, so it asks for its width before any other root can take
+    // the units: seeded in node order, a lower-priority root ahead of it could leave too few, and
+    // the candidate parked and went to a worker.
     s.root_batch.clear();
+    if (s.caller_candidate != n) {
+        s.submit(s.caller_candidate, &s.root_batch);
+    }
     for (size_t i = 0; i < n; i++) {
-        if (deps.predecessors[i].empty()) {
+        if (i != s.caller_candidate && deps.predecessors[i].empty()) {
             s.submit(i, &s.root_batch);
         }
     }

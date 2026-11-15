@@ -189,9 +189,10 @@ TEST_CASE("ThreadWidth - the calling thread takes the root admitted first", "[Co
         SKIP("build has no OpenMP runtime, so there is no thread ceiling to plan");
     }
 
-    // Two independent roots that fit the budget together (one unit, and the width every other case
-    // here plans), so both are admitted while seeding; the later one in node order carries the
-    // longer path to a sink, so it is the one the plan starts first.
+    // Two independent roots; the later one in node order carries the longer path to a sink, so it
+    // is the one the plan starts first. On a runner with three threads the two do not fit the
+    // budget together, and seeded in node order the first root took the units, the second parked,
+    // and a worker ran it in about four runs of five.
     std::uint16_t const wide = distinct_width(hardware::get_max_threads());
     Observation         low;
     Observation         high;

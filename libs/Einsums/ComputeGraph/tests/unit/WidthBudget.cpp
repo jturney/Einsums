@@ -215,10 +215,11 @@ TEST_CASE("WidthBudget - a parked wide node blocks the head of the line", "[Comp
     graph.topological_sort();
 
     // The scenario needs the holder admitted before the wide node is offered,
-    // and the wide node offered before the narrow ones. Roots are seeded in
-    // node order, so that is a fact about the sorted graph, and it is asserted
-    // rather than assumed: a sort that reordered these would silently turn this
-    // into a different test.
+    // and the wide node offered before the narrow ones. The root with the
+    // highest priority is seeded first and the rest in node order, so the
+    // holder is given the top priority below and the order of the others is a
+    // fact about the sorted graph, asserted rather than assumed: a sort that
+    // reordered these would silently turn this into a different test.
     long const holder_at = node_position(graph, "holder");
     long const wide_at   = holder_at + 1;
     REQUIRE(holder_at == 0);
@@ -234,9 +235,12 @@ TEST_CASE("WidthBudget - a parked wide node blocks the head of the line", "[Comp
             trace.leave();
         });
     });
-    cg::NodeSchedule wide_schedule = cg::schedule_of(graph.nodes()[wide_index]);
-    wide_schedule.thread_width     = static_cast<std::uint16_t>(p);
+    cg::NodeSchedule wide_schedule   = cg::schedule_of(graph.nodes()[wide_index]);
+    wide_schedule.thread_width       = static_cast<std::uint16_t>(p);
+    wide_schedule.admission_priority = 5;
     graph.set_schedule(wide_index, wide_schedule);
+    // Left to the hop counts, the wide node would outrank the holder: it heads the chain.
+    graph.set_schedule(static_cast<size_t>(holder_at), {.thread_width = 1, .admission_priority = 9});
 
     cg::DataflowExecutor df;
     graph.execute(df);
