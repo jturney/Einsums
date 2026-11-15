@@ -153,6 +153,46 @@ TEST_CASE("Pipeline - setup + loop + postprocess", "[ComputeGraph][Pipeline]") {
     }
 }
 
+// A loop stage's body was the stage graph itself, so a pipeline-declared tensor first used in a
+// loop stage had its lifecycle adopted into the body, and its Initialize ran on every iteration:
+// an accumulator declared at zero restarted each iteration and ended holding one iteration's sum.
+// The lifecycle belongs before the loop, once per execute, as an in-graph loop places it.
+TEST_CASE("Pipeline - a declared zero tensor first used in a loop stage accumulates across iterations",
+          "[ComputeGraph][Pipeline][!shouldfail]") {
+    constexpr size_t n   = 4;
+    auto             A   = create_random_tensor<double>("A", n, n);
+    auto             B   = create_random_tensor<double>("B", n, n);
+    auto             out = create_zero_tensor<double>("out", n, n);
+
+    cg::Pipeline pipeline("declared_accumulator");
+    auto        &acc = pipeline.declare_zero_tensor<double, 2>("acc", n, n);
+    {
+        auto                  &body = pipeline.add_loop("accumulate", /*max_iterations=*/10, [](size_t iter) { return iter < 2; });
+        cg::CaptureGuard const guard(body);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &acc, 1.0, A, B);
+    }
+    {
+        auto                  &post = pipeline.add_stage("copy_out");
+        cg::CaptureGuard const guard(post);
+        cg::permute("ij <- ij", 0.0, &out, 1.0, acc);
+    }
+    auto pm = cg::PassManager::create_default();
+    pipeline.apply(pm);
+
+    auto product = create_zero_tensor<double>("product", n, n);
+    reference_einsum("i,j <- i,k ; k,j", &product, A, B);
+    // Twice, so the accumulator is shown to start from zero once per execute rather than once ever.
+    for (int run = 0; run < 2; ++run) {
+        INFO("execute " << run);
+        pipeline.execute();
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < n; ++j) {
+                CHECK_THAT(out(i, j), Catch::Matchers::WithinAbs(3.0 * product(i, j), 1e-12));
+            }
+        }
+    }
+}
+
 TEST_CASE("Pipeline - stage references survive later add_stage", "[ComputeGraph][Pipeline]") {
     // add_stage() hands out a reference into the pipeline's stage container.
     // While that container was a std::vector, the next add_stage() could
