@@ -198,22 +198,172 @@ TEMPLATE_LIST_TEST_CASE("OpenMPExecutor - pipeline with executor", "[ComputeGrap
     require_close(acc, C_ref);
 }
 
-// A pipeline loop stage is a Loop node, and a Loop node runs its body with the body's own
-// executor, not with the one replaying the graph that holds it. Pipeline::execute(executor) is
-// documented to run each stage, loop iterations included, under the executor it is given, so it
-// installs that executor on every loop body for the call and puts back what the body carried.
-TEST_CASE("Pipeline - execute(executor) runs every loop iteration under that executor", "[ComputeGraph][Executor][Pipeline]") {
-    struct Recording final : cg::Executor {
-        std::vector<std::string>  graphs;
-        [[nodiscard]] std::string name() const override { return "recording"; }
-        void                      execute(cg::Graph &graph, cg::NodeRunner &run) override {
-            graphs.push_back(graph.name());
-            for (std::size_t i = 0; i < graph.nodes().size(); ++i) {
-                run.run(i);
-            }
-        }
-    };
+namespace {
 
+/// Runs a graph's nodes in order through the runner, and records every graph it ran. By address:
+/// two graphs' bodies can share a name.
+struct RecordingExecutor final : cg::Executor {
+    std::vector<cg::Graph const *> graphs;
+    [[nodiscard]] std::string      name() const override { return "recording"; }
+    void                           execute(cg::Graph &graph, cg::NodeRunner &run) override {
+        graphs.push_back(&graph);
+        for (std::size_t i = 0; i < graph.nodes().size(); ++i) {
+            run.run(i);
+        }
+    }
+    [[nodiscard]] std::ptrdiff_t runs_of(cg::Graph const &graph) const { return std::ranges::count(graphs, &graph); }
+};
+
+} // namespace
+
+// A Loop, Conditional or Setup node used to replay its body with the body's own executor or the
+// built-in walk, whatever executor was running the graph holding it, so graph.execute(executor)
+// reached only the top level and a loop body ran sequentially under a Dataflow or OpenMP replay
+// with nothing to say so. A body with no executor of its own now runs under the one running its
+// parent, at every depth; a body with its own keeps it.
+TEST_CASE("Executor reach - a loop body, a branch and a setup body run under the parent's executor",
+          "[ComputeGraph][Executor][ControlFlow]") {
+    auto value = Tensor<double, 1>("value", 1);
+    value(0)   = 1.0;
+    auto fit   = Tensor<double, 1>("fit", 1);
+    fit(0)     = 0.0;
+
+    cg::Graph graph("executor_reach_graph");
+    auto     &setup = graph.add_setup("fit");
+    {
+        cg::CaptureGuard const guard(setup);
+        cg::scale(0.0, &fit);
+    }
+    auto &body = graph.add_loop("halve", 10, [](size_t iter) { return iter < 2; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::scale(0.5, &value);
+    }
+    auto [then_branch, else_branch] = graph.add_conditional("check", []() { return true; });
+    {
+        cg::CaptureGuard const guard(then_branch);
+        cg::scale(2.0, &value);
+    }
+
+    RecordingExecutor recording;
+    graph.execute(recording);
+
+    CHECK(value(0) == 0.25); // halved three times, then doubled
+    CHECK(recording.runs_of(graph) == 1);
+    CHECK(recording.runs_of(setup) == 1);
+    CHECK(recording.runs_of(body) == 3);
+    CHECK(recording.runs_of(then_branch) == 1);
+}
+
+TEST_CASE("Executor reach - an installed parent executor reaches the body through a nested loop", "[ComputeGraph][Executor][ControlFlow]") {
+    auto value = Tensor<double, 1>("value", 1);
+    value(0)   = 1.0;
+
+    cg::Graph  graph("executor_reach_nested");
+    auto      &outer = graph.add_loop("outer", 2, [](size_t iter) { return iter < 1; });
+    cg::Graph *inner = nullptr;
+    inner            = &outer.add_loop("inner", 3, [](size_t iter) { return iter < 2; });
+    {
+        cg::CaptureGuard const guard(*inner);
+        cg::scale(0.5, &value);
+    }
+
+    auto const recording = std::make_shared<RecordingExecutor>();
+    graph.set_executor(recording);
+    graph.execute();
+
+    CHECK(value(0) == 1.0 / 64.0); // two outer iterations of three halvings
+    CHECK(recording->runs_of(outer) == 2);
+    CHECK(recording->runs_of(*inner) == 6);
+}
+
+TEST_CASE("Executor reach - a body with its own executor keeps it", "[ComputeGraph][Executor][ControlFlow]") {
+    auto value = Tensor<double, 1>("value", 1);
+    value(0)   = 1.0;
+
+    cg::Graph graph("executor_reach_own");
+    auto     &body = graph.add_loop("halve", 10, [](size_t iter) { return iter < 2; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::scale(0.5, &value);
+    }
+    auto const own = std::make_shared<RecordingExecutor>();
+    body.set_executor(own);
+
+    RecordingExecutor parent;
+    graph.execute(parent);
+
+    CHECK(value(0) == 0.125);
+    CHECK(parent.runs_of(body) == 0);
+    CHECK(own->runs_of(body) == 3);
+}
+
+// The executor a body inherits is named for the duration of the node replaying it and put back
+// however the node ends. Graph::run_setup runs a setup node outside any replay, so it is where a
+// value a throw left behind would be read: the setup body would run under an executor nobody chose
+// for it, and one that may no longer exist.
+TEST_CASE("Executor reach - a throw from a control-flow node leaves no executor behind", "[ComputeGraph][Executor][ControlFlow]") {
+    auto value = Tensor<double, 1>("value", 1);
+    value(0)   = 1.0;
+
+    RecordingExecutor recording;
+    cg::Graph         graph("executor_reach_throws");
+    auto             &body = graph.add_loop("halve", 10, [](size_t) -> bool { throw std::runtime_error("condition failed"); });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::scale(0.5, &value);
+    }
+    CHECK_THROWS_AS(graph.execute(recording), std::runtime_error);
+    CHECK(recording.runs_of(body) == 1);
+
+    cg::Graph next("executor_reach_after_throw");
+    auto     &setup = next.add_setup("fit");
+    {
+        cg::CaptureGuard const guard(setup);
+        cg::scale(0.5, &value);
+    }
+    next.run_setup();
+    CHECK(value(0) == 0.25);
+    CHECK(recording.runs_of(setup) == 0);
+}
+
+// Dataflow nests a body's replay inside a node it is running, lending that node's width back while
+// it waits. The body's nodes are independent of each other here, so a body run under Dataflow
+// runs them concurrently; repeated so an ordering fault has room to show.
+TEST_CASE("Executor reach - a loop body under a Dataflow parent gives the reference result", "[ComputeGraph][Executor][ControlFlow]") {
+    constexpr size_t n = 8;
+    auto const       A = create_random_tensor<double>("A", n, n);
+    auto const       B = create_random_tensor<double>("B", n, n);
+    auto             C = create_zero_tensor<double>("C", n, n);
+    auto             D = create_zero_tensor<double>("D", n, n);
+
+    cg::Graph graph("executor_reach_dataflow");
+    auto     &body = graph.add_loop("accumulate", 10, [](size_t iter) { return iter < 3; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", 1.0, &C, 1.0, A, B);
+        cg::einsum("ik;jk->ij", 1.0, &D, 1.0, A, B);
+    }
+
+    auto C_ref = create_zero_tensor<double>("C_ref", n, n);
+    auto D_ref = create_zero_tensor<double>("D_ref", n, n);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 4.0, A, B);
+    reference_einsum("ij <- ik ; jk", 0.0, &D_ref, 4.0, A, B);
+
+    cg::DataflowExecutor dataflow;
+    for (int run = 0; run < 20; ++run) {
+        INFO("replay " << run);
+        C.zero();
+        D.zero();
+        graph.execute(dataflow);
+        require_close(C, C_ref);
+        require_close(D, D_ref);
+    }
+}
+
+// A pipeline loop stage is a Loop node, so Pipeline::execute(executor) reaches every iteration by
+// the rule an in-graph loop follows: the caller's executor, unless the body has its own.
+TEST_CASE("Pipeline - execute(executor) runs every loop iteration under that executor", "[ComputeGraph][Executor][Pipeline]") {
     auto value = Tensor<double, 1>("value", 1);
     value(0)   = 1.0;
 
@@ -223,16 +373,21 @@ TEST_CASE("Pipeline - execute(executor) runs every loop iteration under that exe
         cg::CaptureGuard const guard(body);
         cg::scale(0.5, &value);
     }
-    auto const own = std::make_shared<cg::SequentialExecutor>();
-    body.set_executor(own);
 
-    Recording recording;
+    RecordingExecutor recording;
     pipeline.execute(recording);
 
     CHECK(pipeline.last_iteration_count(0) == 3);
     CHECK(value(0) == 0.125);
-    CHECK(std::ranges::count(recording.graphs, body.name()) == 3);
-    CHECK(body.executor() == own);
+    CHECK(recording.runs_of(body) == 3);
+
+    // A body with its own executor keeps it, as an in-graph loop's does.
+    auto const own = std::make_shared<RecordingExecutor>();
+    body.set_executor(own);
+    RecordingExecutor second;
+    pipeline.execute(second);
+    CHECK(second.runs_of(body) == 0);
+    CHECK(own->runs_of(body) == 3);
 }
 
 TEST_CASE("DependencyInfo - correct structure", "[ComputeGraph][Executor]") {

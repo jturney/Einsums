@@ -141,10 +141,9 @@ void Graph::lease_scratch() {
 }
 
 void Graph::execute() {
-    // An installed executor (set_executor) takes over the whole run. This is
-    // how loop bodies get a parallel backend: the loop node replays its body
-    // via this argument-less execute(). Otherwise nodes run one at a time, in
-    // the schedule's order.
+    // An installed executor (set_executor) takes over the whole run. Otherwise
+    // nodes run one at a time, in the schedule's order. A body with no executor
+    // of its own runs under whichever executor runs the graph holding it.
     if (auto const &installed = _replay.executor()) {
         execute(*installed);
         return;
@@ -256,7 +255,7 @@ void Graph::replay(Executor &executor) {
 
         // The executor chooses the order and the threads; the runner is what running each node
         // means, the same under every executor.
-        NodeRunner runner(*this, recording);
+        NodeRunner runner(*this, executor, recording);
         executor.execute(*this, runner);
         runner.finish();
     }

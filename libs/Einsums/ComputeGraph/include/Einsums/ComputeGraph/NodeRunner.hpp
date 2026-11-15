@@ -23,6 +23,7 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
+class Executor;
 class Graph;
 
 /**
@@ -33,7 +34,8 @@ class Graph;
  * profile, under every executor. Per node that is: the profiler zone and its annotations, the
  * observer's node events, the host and device transfers, the offer of the node to the GPU and the
  * CPU fallback when it declines, keeping the host and device copies of each tensor coherent, and
- * the node's timing sample.
+ * the node's timing sample, and which executor replays a body the node holds: its own, if it has
+ * one installed, and otherwise the executor running this replay.
  *
  * The graph creates one runner per replay and hands it to the executor; an executor never makes
  * one, and never calls a node's callable itself.
@@ -84,9 +86,11 @@ class EINSUMS_EXPORT NodeRunner {
     friend class Graph;
 
     /// @param[in,out] graph     The graph being replayed; it must outlive the runner.
+    /// @param[in,out] executor  The executor running this replay, which also runs every body a
+    ///                          node replays that has no executor of its own.
     /// @param[in]     recording Whether the profiler records this replay, read once by the
     ///                          caller so every zone this replay opens is also closed.
-    NodeRunner(Graph &graph, bool recording);
+    NodeRunner(Graph &graph, Executor &executor, bool recording);
 
     /// Copy back every tensor whose device copy is the only current one, and hand the graph the
     /// replay's timing samples in node order. Called once by the graph, after the executor returns.
@@ -106,8 +110,9 @@ class EINSUMS_EXPORT NodeRunner {
     /// Open node @p index's profiler zone into @p zone, with its annotations, when recording.
     void open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t index) const;
 
-    Graph &_graph;
-    bool   _recording;
+    Graph    &_graph;
+    Executor &_executor;
+    bool      _recording;
 
     /// Which of each device-touched tensor's two copies is current, on a build whose device memory
     /// is separate; untouched (and empty) on a unified-memory build.

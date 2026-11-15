@@ -129,3 +129,20 @@ Best for multi-phase workflows            Best for in-graph branching/iteration
 A pipeline loop stage is itself a stage graph holding one Loop node, so the two
 loops share one semantics; the pipeline adds only the ordering of stages around
 it.
+
+Executors
+=========
+
+A loop body, a branch and a setup body run under the executor running the graph
+that holds them, at every depth, unless the body has an executor of its own:
+
+.. code-block:: cpp
+
+   cg::DataflowExecutor dataflow;
+   graph.execute(dataflow);   // the loop body's nodes run under dataflow too
+
+   body.set_executor(std::make_shared<cg::OpenMPExecutor>());
+   graph.execute(dataflow);   // the body now runs under its own OpenMP executor
+
+With no executor given anywhere, every graph runs on the built-in sequential
+walk.

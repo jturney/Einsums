@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "../BodyReplay.hpp"
 #include "GpuDispatch.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -79,9 +80,29 @@ bool download(TensorHandle const *handle, void const *shadow, std::size_t bytes)
     return true;
 }
 
+/// The executor running the node in progress on this thread, or null outside any node.
+thread_local Executor *t_enclosing_executor = nullptr;
+
 } // namespace
 
-NodeRunner::NodeRunner(Graph &graph, bool recording) : _graph(graph), _recording(recording) {
+detail::EnclosingExecutor::EnclosingExecutor(Executor &executor) noexcept : _previous(t_enclosing_executor) {
+    t_enclosing_executor = &executor;
+}
+
+detail::EnclosingExecutor::~EnclosingExecutor() {
+    t_enclosing_executor = _previous;
+}
+
+void detail::replay_body(Graph &body) {
+    // The body's own installed executor, or with none the built-in walk, is what execute() runs.
+    if (body.executor() == nullptr && t_enclosing_executor != nullptr) {
+        body.execute(*t_enclosing_executor);
+    } else {
+        body.execute();
+    }
+}
+
+NodeRunner::NodeRunner(Graph &graph, Executor &executor, bool recording) : _graph(graph), _executor(executor), _recording(recording) {
     // assign() reuses the slots' storage, so a replay of an unchanged graph allocates nothing.
     RunnerAccess::replay(_graph)._run_slots.assign(_graph.nodes().size(), detail::NodeRunSlot{});
     if constexpr (!gpu::has_unified_memory) {
@@ -213,6 +234,8 @@ void NodeRunner::finish_async(std::size_t idx) {
 
 void NodeRunner::run(std::size_t idx, unsigned width) {
     Node const &node = _graph.nodes()[idx];
+    // A body this node replays runs under this replay's executor unless it has its own.
+    detail::EnclosingExecutor const enclosing(_executor);
 
     std::optional<waggle::ScopedZone> node_zone;
     open_zone(node_zone, idx);

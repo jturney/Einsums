@@ -161,6 +161,9 @@ Execution
    cg::OpenMPExecutor omp;
    pipeline.execute(omp);       // each stage, and every loop iteration, uses the given executor
 
+A loop body with an executor of its own (``body.set_executor``) keeps it under
+``pipeline.execute(executor)``, as an in-graph loop body does.
+
 Each stage and loop iteration is wrapped in a profiler region automatically.
 ``pipeline.last_iteration_count(i)`` returns how many iterations loop stage
 ``i`` ran in the most recent ``execute()``.

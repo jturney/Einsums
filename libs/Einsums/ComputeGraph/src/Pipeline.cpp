@@ -114,28 +114,8 @@ void Pipeline::execute(Executor &executor) {
     WAGGLE_ZONE("Pipeline::execute({}, executor={})", _name, executor.name());
 
     propagate_stage_metadata();
-
-    // A Loop node runs its body with the body's own executor, not with whatever runs the graph
-    // holding it, so the caller's executor is installed on each loop body for this call: a loop
-    // stage ran every iteration under it before loop stages became Loop nodes, and the
-    // documentation says it does. The body's own executor comes back however the call ends.
-    // Non-owning: the caller's executor outlives this call, and the bodies drop it before return.
-    std::shared_ptr<Executor> const borrowed(std::shared_ptr<Executor>{}, &executor);
-    struct Restore {
-        std::vector<std::pair<Graph *, std::shared_ptr<Executor>>> previous;
-        ~Restore() {
-            for (auto &[body, prior] : previous) {
-                body->set_executor(std::move(prior));
-            }
-        }
-    } restore;
-    for_each_stage([&](Stage &, Graph &, Graph *body) {
-        if (body != nullptr) {
-            restore.previous.emplace_back(body, body->executor());
-            body->set_executor(borrowed);
-        }
-    });
-
+    // A loop stage's Loop node runs its body under this executor too, unless the body has one of
+    // its own.
     run_stages([&executor](Graph &graph) { graph.execute(executor); });
 }
 

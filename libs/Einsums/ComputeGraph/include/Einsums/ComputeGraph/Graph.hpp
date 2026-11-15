@@ -1925,7 +1925,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @brief Execute using a custom executor.
      *
      * Performs topological sorting and validation, then delegates
-     * node execution to the provided executor.
+     * node execution to the provided executor. A loop body, branch or setup
+     * body with no executor of its own runs under @p executor too.
      *
      * @param[in] executor The execution backend (e.g., OpenMPExecutor).
      *
@@ -1941,19 +1942,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @brief Choose the executor plain execute() uses for THIS graph.
      *
      * The stored executor applies wherever this graph is executed without an
-     * explicit executor argument - most importantly loop bodies, which are
-     * replayed by the loop node via the argument-less execute() and had no
-     * other way to run on a parallel backend:
+     * explicit executor argument. A loop body, branch or setup body with no
+     * executor of its own runs under whichever executor runs the graph holding
+     * it; one with its own keeps it, whatever runs its parent:
      *
      * @code{.py}
      * body = g.add_loop("iter", 100, cont)
-     * body.set_executor(cg.DataflowExecutor())   # replays overlap independent nodes
+     * body.set_executor(cg.DataflowExecutor())   # this body overlaps independent nodes
+     * g.execute(cg.OpenMPExecutor())             # the rest of g runs under OpenMP
      * @endcode
      *
-     * Pass nullptr/None to restore the built-in sequential path. The custom
-     * executors dispatch every node's CPU lambda directly, so graphs with
-     * GPU-placed nodes should keep the default (it performs the device
-     * shadow bookkeeping; the executors do not).
+     * Pass nullptr/None to restore the built-in sequential path. Every
+     * executor runs a node through the same node runner, so GPU-placed nodes
+     * and transfers run the same under each.
      *
      * @param[in] executor Shared ownership of the executor, or nullptr to reset.
      */

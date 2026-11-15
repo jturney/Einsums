@@ -48,6 +48,7 @@
 #include <vector>
 
 #include "BackingIoExecutors.hpp"
+#include "BodyReplay.hpp"
 #include "LifecycleExecutors.hpp"
 #include "StridedBatchedEinsum.hpp"
 
@@ -507,9 +508,9 @@ std::function<void()> build_conditional(ConditionalDescriptor const &desc, std::
     }
     return [predicate = desc.predicate, then_branch = desc.then_branch, else_branch = desc.else_branch, params = std::move(params)]() {
         if (predicate.resolve(params.get())) {
-            then_branch->execute();
+            detail::replay_body(*then_branch);
         } else if (else_branch && else_branch->num_nodes() > 0) {
-            else_branch->execute();
+            detail::replay_body(*else_branch);
         }
     };
 }
@@ -544,7 +545,7 @@ std::function<void()> build_loop(LoopDescriptor const &desc, std::shared_ptr<Par
         for (size_t iter = 0; iter < max_iterations; iter++) {
             {
                 WAGGLE_ZONE("iteration:{}", iter);
-                body->execute();
+                detail::replay_body(*body);
             }
             state->last_iteration_count = iter + 1;
             if (!condition.resolve(params.get(), iter)) {
@@ -585,7 +586,7 @@ std::function<void()> build_setup(SetupDescriptor const &desc) {
             state->computed = true;
             return;
         }
-        body->execute();
+        detail::replay_body(*body);
         state->computed     = true;
         state->computed_key = state->pending_key;
     };
