@@ -331,6 +331,32 @@ TEST_CASE("ThreadPlanning - a container is width 1 and its body is planned", "[C
     REQUIRE(graph.nodes()[0].admission_priority > 1);
 }
 
+// The planner reached loop bodies and branches but not setup bodies, so a setup body replayed by
+// the dataflow executor ran unplanned: every independent node at once, each at the machine's full
+// vendor width.
+TEST_CASE("ThreadPlanning - a setup body is planned on its own", "[ComputeGraph][ThreadPlanning]") {
+    unsigned const p = machine_threads();
+    if (p < 4) {
+        SKIP("plan needs at least four threads to have anything to divide");
+    }
+
+    cg::Graph  graph("setup_body");
+    cg::Graph &setup = graph.add_setup("fit");
+    {
+        auto const in  = shell(setup, "setup_in", kFatExtent);
+        auto const out = shell(setup, "setup_out", kFatExtent);
+        setup.add_node(work_node("setup_fat", in, out));
+    }
+
+    cg::passes::ThreadPlanning planner(p);
+    planner.run(graph);
+
+    REQUIRE(graph.num_nodes() == 1);
+    REQUIRE(width_of(graph, 0) == 1); // the Setup itself holds no width
+    REQUIRE(width_of(setup, 0) > 1);  // its body was planned on its own
+    REQUIRE(setup.planned_thread_count() == p);
+}
+
 TEST_CASE("ThreadPlanning - the area never exceeds the makespan estimate", "[ComputeGraph][ThreadPlanning]") {
     unsigned const p = machine_threads();
     if (p < 4) {

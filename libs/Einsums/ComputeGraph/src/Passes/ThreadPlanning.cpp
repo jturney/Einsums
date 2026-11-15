@@ -309,6 +309,13 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         graph.for_each_child(
             i, [&](Graph &child) { body_serial_us[i] = std::max(body_serial_us[i], plan_graph(child, p).serial_us); },
             /*include_setup=*/false);
+        // A setup body runs once per bind rather than once per replay, so it adds nothing to what
+        // this graph's replay costs. Its nodes are planned all the same, because an unplanned body
+        // run by the dataflow executor would run its independent nodes at once, each at the
+        // machine's width.
+        if (auto const *setup = nodes[i].op_data.get_if<SetupDescriptor>(); setup != nullptr && setup->body) {
+            (void)plan_graph(*setup->body, p);
+        }
     }
 
     // Recorded medians, keyed by node id. A replay writes one sample per node
