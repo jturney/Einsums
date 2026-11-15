@@ -4542,6 +4542,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * The symmetry the graph knew from the previous tensor is replaced by what @p new_tensor
      * declares. What the graph's author said about the slot (its spaces, dim symbols and
      * provenance tag) stays. Rebinding a slot to the tensor it already holds changes nothing.
+     * A binding belongs to this process, not to the graph: a graph saved after a rebind writes
+     * the slot as it was declared, so the loaded graph allocates and initializes it again.
      *
      * @tparam TensorType The tensor type (must match the original).
      * @param[in] id The TensorId to rebind.
@@ -6024,6 +6026,9 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
         // bind's documentation recommends, had Materialization give the caller's tensor an
         // Initialize that zeroed its contents on every replay.
         if (redefines) {
+            if (!th_it->second.caller_bound) {
+                th_it->second.declared = {th_it->second.alloc_state, th_it->second.init_kind};
+            }
             th_it->second.caller_bound = true;
             th_it->second.init_kind    = InitKind::None;
             th_it->second.custom_init  = nullptr;

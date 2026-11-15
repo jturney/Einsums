@@ -1680,6 +1680,62 @@ TEST_CASE("SaveLoad - a result declared at zero is zeroed at every replay of the
     }
 }
 
+// A bind redefines the slot, resetting its init and allocation state from the caller's tensor, and
+// the writer once saved those: a result declared at zero and saved after a bind was written as
+// materialized storage with no initializer, so the loaded graph, which holds no binding, never
+// zeroed it. The file describes the graph as declared, whatever this process bound it to.
+TEST_CASE("SaveLoad - a result declared at zero and saved after a bind keeps its declaration", "[ComputeGraph][SaveLoad]") {
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto X = create_random_tensor<double>("X", 3, 2);
+
+    cg::Graph graph("zero_result_bound");
+    graph.declare_zero_runtime_tensor<double>("R", {3, 2});
+    auto &R = *static_cast<RuntimeTensor<double> *>(const_cast<void *>(
+        std::ranges::find_if(graph.tensors_map(), [](auto const &entry) { return entry.second.name == "R"; })->second.tensor_ptr));
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,k ; k,j", 1.0, &R, 1.0, A, X);
+    }
+    std::string const before = must_save(graph);
+    REQUIRE(std::regex_search(before, std::regex(R"("init": ?"zero")")));
+
+    // Bound twice, so the second bind must not record the first binding as the declaration, and to
+    // tensors named otherwise, so the slot keeps its name in the file too.
+    RuntimeTensor<double> first("U1", {3, 2});
+    RuntimeTensor<double> second("U2", {3, 2});
+    first.zero();
+    second.zero();
+    graph.bind("R", first);
+    graph.bind("R", second);
+    graph.execute();
+
+    std::string const after = must_save(graph);
+    CHECK(after == before);
+
+    cg::Graph  loaded = must_load(after);
+    auto const slot   = std::ranges::find_if(loaded.tensors_map(), [](auto const &entry) { return entry.second.name == "R"; });
+    REQUIRE(slot != loaded.tensors_map().end());
+    CHECK(slot->second.init_kind == cg::InitKind::Zero);
+    CHECK(slot->second.alloc_state == cg::AllocState::Deferred);
+    auto const &result = *static_cast<RuntimeTensor<double> const *>(slot->second.tensor_ptr);
+
+    loaded.bind("A", A, "X", X);
+    auto manager = cg::PassManager::create_default();
+    loaded.apply(manager);
+    auto expected = create_zero_tensor<double>("E", 3, 2);
+    reference_einsum("i,j <- i,k ; k,j", &expected, A, X);
+    auto const bound = gemm_rounding_bound(A, X);
+    for (int replay = 0; replay < 2; ++replay) {
+        INFO("replay " << replay);
+        loaded.execute();
+        for (size_t i = 0; i < 3; ++i) {
+            for (size_t j = 0; j < 2; ++j) {
+                CHECK_THAT(result(i, j), Catch::Matchers::WithinAbs(expected(i, j), bound(i, j)));
+            }
+        }
+    }
+}
+
 // A graph that creates its own tensor records an Alloc node where the tensor comes into use, and
 // before 1.14.0 that node refused the save: every graph holding an intermediate made with
 // create_tensor or create_zero_tensor could not be written, even before any pass had run.

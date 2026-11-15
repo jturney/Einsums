@@ -571,13 +571,24 @@ void write_rank0_kind(Object &out, std::size_t rank, TensorHandle const *handle)
 /// The saved spelling of a tensor's initializer. A custom fill is the caller's code, which a file
 /// cannot carry: written as anything else, a loaded graph would initialize the tensor some other
 /// way (it once came back zeroed, silently), so the save is refused instead.
+///
+/// A slot a rebind gave to the caller's tensor is saved as it was declared, as is its allocation
+/// state (saved_alloc_name): the rebind reset both from the bound tensor, and a file written from
+/// them described this process's binding, loading a result declared at zero as caller-owned
+/// storage nobody fills.
 std::string_view saved_init_name(TensorHandle const &handle) {
-    if (handle.init_kind == InitKind::Custom) {
+    InitKind const init = handle.caller_bound ? handle.declared.init_kind : handle.init_kind;
+    if (init == InitKind::Custom) {
         throw SaveRefusal(fmt::format("tensor '{}' is initialized by a fill function (declare_tensor_filled), which a saved graph "
                                       "cannot carry; declare it without one and bind its contents after loading",
                                       handle.name));
     }
-    return init_kind_name(handle.init_kind);
+    return init_kind_name(init);
+}
+
+/// The saved spelling of a tensor's allocation state; see saved_init_name.
+std::string_view saved_alloc_name(TensorHandle const &handle) {
+    return alloc_state_name(handle.caller_bound ? handle.declared.alloc_state : handle.alloc_state);
 }
 
 /// One tensor's storage-side record.
@@ -601,7 +612,7 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
     // fill it with once it does. Dropping this turned every loaded intermediate into a
     // materialized one, and a materialized intermediate refuses the extent-changing bind that
     // cross-problem reuse is made of.
-    out.set("alloc", Value{alloc_state_name(handle.alloc_state)});
+    out.set("alloc", Value{saved_alloc_name(handle)});
     write_backing(out, handle.backing.get());
 
     if (auto const outer = frame.outer_of(handle.tensor_ptr); outer.has_value()) {
@@ -814,7 +825,7 @@ Object write_structure(Graph const &graph) {
         // added into its previous replay's value from the second replay on.
         if (handle != nullptr) {
             record.set("init", Value{saved_init_name(*handle)});
-            record.set("alloc", Value{alloc_state_name(handle->alloc_state)});
+            record.set("alloc", Value{saved_alloc_name(*handle)});
         }
 
         // By NAME, never by id: an alias declaration is part of the interface

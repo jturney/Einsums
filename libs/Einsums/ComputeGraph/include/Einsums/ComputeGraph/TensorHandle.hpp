@@ -564,6 +564,20 @@ struct TensorHandle {
      */
     bool caller_bound{false};
 
+    /**
+     * @brief How the slot was declared, before a rebind handed it to the caller's tensor.
+     *
+     * Meaningful only while @ref caller_bound is set, and recorded by the first rebind that
+     * redefines the slot, so a second one does not overwrite it with the first binding. A saved
+     * graph writes these rather than @ref init_kind and @ref alloc_state: the file describes the
+     * graph, and a loaded graph holds no binding, so a result declared at zero must come back
+     * deferred and zero-initialized whatever this process bound it to before saving.
+     */
+    struct Declaration {
+        AllocState alloc_state{AllocState::Materialized};
+        InitKind   init_kind{InitKind::None};
+    } declared;
+
     AllocState alloc_state{AllocState::Materialized}; ///< Whether data is allocated (Materialized) or deferred
     InitKind   init_kind{InitKind::None};             ///< How to initialize after materialization
     Residency  residency{Residency::Host};            ///< Where the tensor data currently lives (updated by GPU passes)
