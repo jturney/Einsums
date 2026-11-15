@@ -10,9 +10,12 @@
 
 #include <fmt/format.h>
 
+#include <functional>
+#include <memory>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -40,23 +43,26 @@ struct detail::PipelineAccess {
 };
 
 Graph &Pipeline::add_stage(std::string const &name) {
-    _stages.push_back(Stage{.name = name, .content = Graph{name}});
-    auto &g = std::get<Graph>(_stages.back().content);
+    _stages.push_back(Stage{.name = name, .graph = Graph{name}});
+    auto &g = _stages.back().graph;
     detail::PipelineAccess::share_params(g, _params);
     attach_scope_maps(g);
     return g;
 }
 
 Graph &Pipeline::add_loop(std::string name, size_t max_iterations, LoopCondition condition) {
-    LoopNode loop;
-    loop.body           = Graph{name};
-    loop.max_iterations = max_iterations;
-    loop.condition      = std::move(condition);
-    _stages.push_back(Stage{.name = std::move(name), .content = std::move(loop)});
-    auto &g = std::get<LoopNode>(_stages.back().content).body;
-    detail::PipelineAccess::share_params(g, _params);
-    attach_scope_maps(g);
-    return g;
+    // A loop stage is a stage graph holding one Loop node, so that the loop has a parent. A body
+    // that was the stage graph itself had nowhere ahead of the loop to put a tensor's lifecycle,
+    // and a pipeline-declared accumulator first used in the loop was re-zeroed every iteration.
+    Graph &stage = add_stage(name);
+    // The body shares the stage's parameter table (Graph::add_loop sees to that), and needs the
+    // scope tables too, since its manifest is built from its own handles.
+    Graph &body = stage.add_loop(std::move(name), max_iterations, std::move(condition));
+    attach_scope_maps(body);
+    auto const &loop          = stage.nodes().back().op_data.get<LoopDescriptor>();
+    _stages.back().loop_body  = loop.body;
+    _stages.back().loop_state = loop.state;
+    return body;
 }
 
 void Pipeline::run(PassManager &pm) {
@@ -79,33 +85,21 @@ void Pipeline::propagate_stage_metadata() {
     std::string const ws_name = _workspace ? _workspace->name() : "";
 
     int si = 0;
-    for_each_stage([&](Stage &stage, Graph &g, LoopNode *loop) {
-        detail::PipelineAccess::set_stage(g, _name, ws_name, stage.name, loop != nullptr ? "loop" : "graph", si++);
+    for_each_stage([&](Stage &stage, Graph &g, Graph *body) {
+        std::string const type = body != nullptr ? "loop" : "graph";
+        detail::PipelineAccess::set_stage(g, _name, ws_name, stage.name, type, si);
+        if (body != nullptr) {
+            detail::PipelineAccess::set_stage(*body, _name, ws_name, stage.name, type, si);
+        }
+        ++si;
     });
 }
 
 void Pipeline::run_stages(std::function<void(Graph &)> const &run) {
-    for_each_stage([&](Stage &stage, Graph &graph, LoopNode *loop) {
-        if (loop == nullptr) {
-            WAGGLE_ZONE("stage:{}", stage.name);
-            run(graph);
-            return;
-        }
-
-        WAGGLE_ZONE("loop:{}", stage.name);
-        loop->last_iteration_count = 0;
-        for (size_t iter = 0; iter < loop->max_iterations; iter++) {
-            // The iteration zone closes before the bookkeeping below, which
-            // is what the manual push/pop pair it replaces did.
-            {
-                WAGGLE_ZONE("iteration:{}", iter);
-                run(graph);
-            }
-            loop->last_iteration_count = iter + 1;
-            if (loop->condition && !loop->condition(iter)) {
-                break;
-            }
-        }
+    for_each_stage([&](Stage &stage, Graph &graph, Graph *body) {
+        // The iteration zones are the Loop node's own (see build_loop).
+        WAGGLE_ZONE("{}:{}", body != nullptr ? "loop" : "stage", stage.name);
+        run(graph);
     });
 }
 
@@ -120,6 +114,28 @@ void Pipeline::execute(Executor &executor) {
     WAGGLE_ZONE("Pipeline::execute({}, executor={})", _name, executor.name());
 
     propagate_stage_metadata();
+
+    // A Loop node runs its body with the body's own executor, not with whatever runs the graph
+    // holding it, so the caller's executor is installed on each loop body for this call: a loop
+    // stage ran every iteration under it before loop stages became Loop nodes, and the
+    // documentation says it does. The body's own executor comes back however the call ends.
+    // Non-owning: the caller's executor outlives this call, and the bodies drop it before return.
+    std::shared_ptr<Executor> const borrowed(std::shared_ptr<Executor>{}, &executor);
+    struct Restore {
+        std::vector<std::pair<Graph *, std::shared_ptr<Executor>>> previous;
+        ~Restore() {
+            for (auto &[body, prior] : previous) {
+                body->set_executor(std::move(prior));
+            }
+        }
+    } restore;
+    for_each_stage([&](Stage &, Graph &, Graph *body) {
+        if (body != nullptr) {
+            restore.previous.emplace_back(body, body->executor());
+            body->set_executor(borrowed);
+        }
+    });
+
     run_stages([&executor](Graph &graph) { graph.execute(executor); });
 }
 
@@ -130,31 +146,46 @@ bool Pipeline::apply(PassManager &pm) {
     // Track which tensors have been assigned a Materialize node (first use only).
     std::unordered_set<void *> materialized_in_earlier_stage;
 
-    auto register_in_graph = [&](Graph &graph) {
-        for (auto const &handle : _handles) {
-            // The stage graph's own id for this buffer, through the address index rather than a
-            // scan of its tensor table: a pipeline with many declared tensors and stages holding
-            // many tensors made the pair of loops quadratic for a lookup the graph answers in O(1).
-            TensorId const tid = graph.find_tensor_id_by_ptr(handle.tensor_ptr);
-            if (tid == 0) {
-                continue; // this stage does not touch the tensor
-            }
-            if (materialized_in_earlier_stage.count(handle.tensor_ptr)) {
-                // Already materialized in an earlier stage, don't re-materialize/re-initialize
-                graph.mark_materialized(tid);
-            } else {
-                // First stage using this tensor, set up materialization
-                graph.adopt_lifecycle(tid, handle);
-                materialized_in_earlier_stage.insert(handle.tensor_ptr);
-            }
+    // A stage touches a tensor if its graph does or any loop body or branch below it does: a
+    // loop stage's work is all in its Loop node's body. The holders are every graph of the stage
+    // with a handle for the tensor, so the lifecycle is on the handle Materialization reads, which
+    // for a tensor only a body uses is the body's, hoisted into the stage graph ahead of the loop.
+    // Setup bodies are left out, as Materialization's own walk leaves them out.
+    std::vector<std::pair<Graph *, TensorId>> holders;
+    // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
+    std::function<void(Graph &, void const *)> collect = [&](Graph &graph, void const *ptr) {
+        // The address index rather than a scan of the tensor table: a pipeline with many declared
+        // tensors and stages holding many tensors made this quadratic for an O(1) lookup.
+        if (TensorId const tid = graph.find_tensor_id_by_ptr(ptr); tid != 0) {
+            holders.emplace_back(&graph, tid);
         }
+        graph.for_each_subgraph([&](Graph &sub) { collect(sub, ptr); }, /*include_setup=*/false);
     };
 
-    for_each_stage([&](Stage &, Graph &graph, LoopNode *) { register_in_graph(graph); });
+    for_each_stage([&](Stage &, Graph &graph, Graph *) {
+        for (auto const &handle : _handles) {
+            holders.clear();
+            collect(graph, handle.tensor_ptr);
+            if (holders.empty()) {
+                continue; // this stage does not touch the tensor
+            }
+            bool const earlier = materialized_in_earlier_stage.contains(handle.tensor_ptr);
+            for (auto const &[holder, tid] : holders) {
+                if (earlier) {
+                    // Already materialized in an earlier stage, don't re-materialize/re-initialize
+                    holder->mark_materialized(tid);
+                } else {
+                    // First stage using this tensor, set up materialization
+                    holder->adopt_lifecycle(tid, handle);
+                }
+            }
+            materialized_in_earlier_stage.insert(handle.tensor_ptr);
+        }
+    });
 
     // Now run passes on each stage.
     bool modified = false;
-    for_each_stage([&](Stage &, Graph &graph, LoopNode *) { modified |= graph.apply(pm); });
+    for_each_stage([&](Stage &, Graph &graph, Graph *) { modified |= graph.apply(pm); });
     return modified;
 }
 

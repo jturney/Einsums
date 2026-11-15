@@ -524,6 +524,11 @@ std::function<void()> build_conditional(ConditionalDescriptor const &desc, std::
  *
  * The iteration count is written through the descriptor's shared
  * @ref LoopState, so it is observable on the node.
+ *
+ * Each iteration is a profiler zone, ``iteration:<k>``, under the zone the
+ * replay opens for the node itself, so a profile shows how the loop's time
+ * splits across iterations. The zone closes before the condition runs, so a
+ * convergence check is not counted as body time.
  */
 std::function<void()> build_loop(LoopDescriptor const &desc, std::shared_ptr<ParamTable> params) {
     if (!desc.body) {
@@ -537,7 +542,10 @@ std::function<void()> build_loop(LoopDescriptor const &desc, std::shared_ptr<Par
             params = std::move(params)]() {
         state->last_iteration_count = 0;
         for (size_t iter = 0; iter < max_iterations; iter++) {
-            body->execute();
+            {
+                WAGGLE_ZONE("iteration:{}", iter);
+                body->execute();
+            }
             state->last_iteration_count = iter + 1;
             if (!condition.resolve(params.get(), iter)) {
                 break;

@@ -127,11 +127,6 @@ AllocDescriptor
 
 :cpp:class:`einsums::compute_graph::AllocDescriptor`
 
-LoopNode (Pipeline)
--------------------
-
-:cpp:class:`einsums::compute_graph::LoopNode`
-
 String Einsum
 =============
 

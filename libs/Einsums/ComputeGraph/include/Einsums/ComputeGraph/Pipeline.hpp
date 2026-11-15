@@ -21,7 +21,6 @@
 #include <memory>
 #include <string>
 #include <type_traits>
-#include <variant>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -46,27 +45,6 @@ class OptimizerPass;
  * @endcode
  */
 using LoopCondition = std::function<bool(size_t iteration)>;
-
-/**
- * @brief An iterative subgraph with convergence-based early exit.
- *
- * Contains a Graph (the loop body) that is executed repeatedly until either:
- * - The LoopCondition returns false (convergence)
- * - max_iterations is reached (safety limit)
- *
- * The condition is evaluated AFTER each iteration, so the body always runs at
- * least once.
- *
- * @see Pipeline::add_loop()
- */
-struct LoopNode {
-    Graph         body;                 ///< The subgraph to execute each iteration
-    size_t        max_iterations{1000}; ///< Maximum number of iterations (safety limit)
-    LoopCondition condition;            ///< Predicate: return false to stop, true to continue
-
-    /// Set after execution: the actual number of iterations that ran.
-    size_t last_iteration_count{0};
-};
 
 /**
  * @brief A pipeline of sequential stages with optional iterative loops.
@@ -115,7 +93,7 @@ struct LoopNode {
  * @endcode
  *
  * @see Graph for individual stage graphs
- * @see LoopNode for iterative stage configuration
+ * @see Graph::add_loop for the Loop node a loop stage holds
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT Pipeline {
   public:
@@ -155,6 +133,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Returns a reference to the loop body's Graph for use with CaptureGuard.
      * The loop executes the body repeatedly until the condition returns false
      * or max_iterations is reached.
+     *
+     * The stage is a graph named @p name holding one Loop node, the node
+     * @ref Graph::add_loop adds, and the returned body is that node's (named
+     * ``<name>/body``). So a pipeline loop has the semantics of an in-graph
+     * loop: a tensor the body uses gets its allocation and initialization in
+     * the stage graph, ahead of the loop, once per execute rather than once per
+     * iteration, and passes reason about it as a loop (loop-invariant work in
+     * the body can be hoisted out of it).
      *
      * @param[in] name Human-readable name for the loop stage.
      * @param[in] max_iterations Maximum number of iterations (safety limit).
@@ -215,8 +201,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /**
      * @brief Apply a PassManager to all stages.
      *
-     * Runs all passes on each one-shot stage's Graph and each loop stage's
-     * body Graph. Returns true if any stage was modified.
+     * Runs all passes on each stage's Graph. A loop stage's body is reached
+     * as any Loop node's body is, by the passes that descend into sub-graphs.
+     * Returns true if any stage was modified.
      *
      * @code
      * auto pm = cg::PassManager::create_default();
@@ -235,6 +222,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /**
      * @brief Execute all stages using a custom executor.
+     *
+     * The executor also runs every iteration of a loop stage's body: it is installed on the body
+     * for the duration of the call, replacing any executor the body carries, which is restored
+     * afterwards.
+     *
      * @param[in] executor The execution backend for each stage's graph.
      */
     void execute(Executor &executor);
@@ -267,15 +259,26 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     [[nodiscard]] std::string const &name() const { return _name; }                ///< Pipeline name.
     [[nodiscard]] size_t             num_stages() const { return _stages.size(); } ///< Number of stages.
 
-    /// Access the graph for a stage by index. Returns nullptr if out of range.
+    /// Access the graph for a stage by index: a loop stage's body, any other stage's graph.
+    /// Returns nullptr if out of range.
     [[nodiscard]] Graph *stage_graph(size_t index) {
         if (index >= _stages.size())
             return nullptr;
-        if (auto *g = std::get_if<Graph>(&_stages[index].content))
-            return g;
-        if (auto *l = std::get_if<LoopNode>(&_stages[index].content))
-            return &l->body;
-        return nullptr;
+        Stage &stage = _stages[index];
+        return stage.loop_body != nullptr ? stage.loop_body.get() : &stage.graph;
+    }
+
+    /**
+     * @brief How many iterations a loop stage ran in the most recent execute.
+     *
+     * @param[in] index The stage.
+     * @return The count, or 0 for a stage that is not a loop or has not run.
+     * @throws std::out_of_range If there is no stage at @p index.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] size_t last_iteration_count(size_t index) const {
+        Stage const &stage = _stages.at(index);
+        return stage.loop_state != nullptr ? stage.loop_state->last_iteration_count : 0;
     }
 
     /// Access stage name by index.
@@ -294,11 +297,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // Stages added before the workspace was associated must still see its
         // scope table, or their manifests would call a workspace tensor
         // graph-scoped purely because of the order two setup calls were made in.
-        for (std::size_t i = 0; i < _stages.size(); ++i) {
-            if (Graph *g = stage_graph(i); g != nullptr) {
-                g->add_scope_map(ws.scope_map());
+        for_each_stage([&ws](Stage &, Graph &graph, Graph *body) {
+            graph.add_scope_map(ws.scope_map());
+            if (body != nullptr) {
+                body->add_scope_map(ws.scope_map());
             }
-        }
+        });
     }
 
     /// Get the associated workspace (may be nullptr).
@@ -402,27 +406,25 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void attach_scope_maps(Graph &stage) const;
 
     /// Internal stage representation.
+    ///
+    /// Every stage is a graph. A loop stage's graph holds the Loop node @ref add_loop added, and
+    /// the stage keeps the node's body and live state by ``shared_ptr``, as the node's descriptor
+    /// does, so neither depends on where passes move the node within the stage graph.
     struct Stage {
-        std::string                   name;    ///< Stage name for profiling
-        std::variant<Graph, LoopNode> content; ///< Either a one-shot Graph or a LoopNode
+        std::string                name;       ///< Stage name for profiling
+        Graph                      graph;      ///< The stage's graph
+        std::shared_ptr<Graph>     loop_body;  ///< A loop stage's body; null for a one-shot stage
+        std::shared_ptr<LoopState> loop_state; ///< A loop stage's iteration count; null otherwise
     };
 
-    /// @brief Visit every stage in order, whichever shape it has.
-    /// @tparam F Invocable taking ``(Stage &, Graph &, LoopNode *)``.
-    /// @param[in] visit Receives the stage, the graph that carries its work (a loop stage's is
-    ///            its body) and the loop node, which is null unless the stage loops.
-    ///
-    /// "A stage is a graph, or a loop around one" was written out at every walk over
-    /// ``_stages``; this is that sentence, and a caller that does not care which shape a stage
-    /// has simply ignores the third argument.
+    /// @brief Visit every stage in order.
+    /// @tparam F Invocable taking ``(Stage &, Graph &, Graph *)``.
+    /// @param[in] visit Receives the stage, its graph, and a loop stage's body, which is null
+    ///            unless the stage loops.
     template <typename F>
     void for_each_stage(F &&visit) {
         for (auto &stage : _stages) {
-            if (auto *graph = std::get_if<Graph>(&stage.content)) {
-                visit(stage, *graph, static_cast<LoopNode *>(nullptr));
-            } else if (auto *loop = std::get_if<LoopNode>(&stage.content)) {
-                visit(stage, loop->body, loop);
-            }
+            visit(stage, stage.graph, stage.loop_body.get());
         }
     }
 
@@ -431,13 +433,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// replay's zones under the pipeline that ran them.
     void propagate_stage_metadata();
 
-    /// @brief Execute every stage in order, iterating the loop stages.
-    /// @param[in] run Executes one graph; the only thing the two @ref execute overloads
+    /// @brief Execute every stage in order.
+    /// @param[in] run Executes one stage graph; the only thing the two @ref execute overloads
     ///            differ in, the rest of the traversal being identical.
     ///
-    /// A loop stage runs its body until its condition says stop or it hits its iteration
-    /// limit, recording how many iterations it ran; the condition is evaluated AFTER each
-    /// iteration, so a body always runs at least once.
+    /// A loop stage's iteration is its Loop node's, which runs the body until the condition says
+    /// stop or the iteration limit is reached.
     void run_stages(std::function<void(Graph &)> const &run);
 
     std::string _name;

@@ -76,6 +76,7 @@ TEST_CASE("Pipeline - loop with early exit", "[ComputeGraph][Pipeline]") {
 
     // 100 * 0.5^n < 1.0 → n >= 7 (100 * 0.5^7 = 0.78125)
     REQUIRE(actual_iterations == 7);
+    REQUIRE(pipeline.last_iteration_count(0) == 7);
     REQUIRE(value(0) < threshold);
     REQUIRE(std::abs(value(0) - 100.0 * std::pow(0.5, 7)) < 1e-12);
 }
@@ -157,8 +158,7 @@ TEST_CASE("Pipeline - setup + loop + postprocess", "[ComputeGraph][Pipeline]") {
 // loop stage had its lifecycle adopted into the body, and its Initialize ran on every iteration:
 // an accumulator declared at zero restarted each iteration and ended holding one iteration's sum.
 // The lifecycle belongs before the loop, once per execute, as an in-graph loop places it.
-TEST_CASE("Pipeline - a declared zero tensor first used in a loop stage accumulates across iterations",
-          "[ComputeGraph][Pipeline][!shouldfail]") {
+TEST_CASE("Pipeline - a declared zero tensor first used in a loop stage accumulates across iterations", "[ComputeGraph][Pipeline]") {
     constexpr size_t n   = 4;
     auto             A   = create_random_tensor<double>("A", n, n);
     auto             B   = create_random_tensor<double>("B", n, n);

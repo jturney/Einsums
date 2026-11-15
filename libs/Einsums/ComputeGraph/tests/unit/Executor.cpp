@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/NodeRunner.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/Json/Json.hpp>
 #include <Einsums/Profile/Profile.hpp>
@@ -195,6 +196,43 @@ TEMPLATE_LIST_TEST_CASE("OpenMPExecutor - pipeline with executor", "[ComputeGrap
     auto C_ref = create_zero_tensor<T>("Cref", 3, 3);
     reference_einsum("ij <- ik ; kj", T{0}, &C_ref, T{3} * alpha, A, B);
     require_close(acc, C_ref);
+}
+
+// A pipeline loop stage is a Loop node, and a Loop node runs its body with the body's own
+// executor, not with the one replaying the graph that holds it. Pipeline::execute(executor) is
+// documented to run each stage, loop iterations included, under the executor it is given, so it
+// installs that executor on every loop body for the call and puts back what the body carried.
+TEST_CASE("Pipeline - execute(executor) runs every loop iteration under that executor", "[ComputeGraph][Executor][Pipeline]") {
+    struct Recording final : cg::Executor {
+        std::vector<std::string>  graphs;
+        [[nodiscard]] std::string name() const override { return "recording"; }
+        void                      execute(cg::Graph &graph, cg::NodeRunner &run) override {
+            graphs.push_back(graph.name());
+            for (std::size_t i = 0; i < graph.nodes().size(); ++i) {
+                run.run(i);
+            }
+        }
+    };
+
+    auto value = Tensor<double, 1>("value", 1);
+    value(0)   = 1.0;
+
+    cg::Pipeline pipeline("executor_reach");
+    auto        &body = pipeline.add_loop("halve", 10, [](size_t iter) { return iter < 2; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::scale(0.5, &value);
+    }
+    auto const own = std::make_shared<cg::SequentialExecutor>();
+    body.set_executor(own);
+
+    Recording recording;
+    pipeline.execute(recording);
+
+    CHECK(pipeline.last_iteration_count(0) == 3);
+    CHECK(value(0) == 0.125);
+    CHECK(std::ranges::count(recording.graphs, body.name()) == 3);
+    CHECK(body.executor() == own);
 }
 
 TEST_CASE("DependencyInfo - correct structure", "[ComputeGraph][Executor]") {

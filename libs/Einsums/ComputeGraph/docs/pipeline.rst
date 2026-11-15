@@ -91,6 +91,13 @@ The condition can inspect tensor values to check convergence, and it can also
 update runtime parameters (see `Runtime parameters`_) that the next iteration
 reads.
 
+A loop stage is a stage graph holding one Loop node, the node
+``graph.add_loop`` adds (see :doc:`control_flow`), and ``add_loop`` returns that
+node's body, named ``<name>/body``. A pipeline loop therefore behaves as an
+in-graph loop does: a tensor the body uses is allocated and initialized in the
+stage graph ahead of the loop, once per ``execute()``, so a pipeline-declared
+accumulator keeps its sum across iterations.
+
 Runtime parameters
 ==================
 
@@ -115,8 +122,11 @@ Optimization passes treat parameter values as opaque. They may inspect
 Optimization
 ============
 
-``Pipeline::apply`` runs the pass manager on every one-shot stage's Graph and
-every loop stage's body Graph, and returns true if any stage was modified:
+``Pipeline::apply`` runs the pass manager on every stage's Graph, and returns
+true if any stage was modified. A loop stage's body is reached as any Loop
+node's body is: by the passes that descend into sub-graphs, and by those that
+reason about a loop from the graph holding it, such as ``LoopInvariantHoisting``,
+which can move loop-invariant work out of the body:
 
 .. code-block:: cpp
 
@@ -149,10 +159,11 @@ Execution
    pipeline.execute();          // all stages, with profiler instrumentation
 
    cg::OpenMPExecutor omp;
-   pipeline.execute(omp);       // each stage uses the given executor
+   pipeline.execute(omp);       // each stage, and every loop iteration, uses the given executor
 
 Each stage and loop iteration is wrapped in a profiler region automatically.
-``LoopNode::last_iteration_count`` records how many iterations actually ran.
+``pipeline.last_iteration_count(i)`` returns how many iterations loop stage
+``i`` ran in the most recent ``execute()``.
 
 Build, optimize, and run in one call
 ------------------------------------
@@ -191,11 +202,12 @@ Inspecting a pipeline
 
 .. code-block:: cpp
 
-   pipeline.name();               // pipeline name
-   pipeline.num_stages();         // stage count
-   pipeline.stage_name(i);        // name of stage i
-   pipeline.stage_graph(i);       // Graph* for stage i (loop stages give the body)
-   pipeline.workspace();          // associated Workspace*, or nullptr
+   pipeline.name();                  // pipeline name
+   pipeline.num_stages();            // stage count
+   pipeline.stage_name(i);           // name of stage i
+   pipeline.stage_graph(i);          // Graph* for stage i (loop stages give the body)
+   pipeline.last_iteration_count(i); // iterations loop stage i last ran
+   pipeline.workspace();             // associated Workspace*, or nullptr
 
 ``stage_graph(i)`` is how you reach a single stage to apply a pass to it alone,
 read ``graph.explain()`` for it, or install a per-stage executor.

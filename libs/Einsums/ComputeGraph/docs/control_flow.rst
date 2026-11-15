@@ -125,3 +125,7 @@ Each stage is a separate Graph            Subgraphs embedded as node descriptors
 ``pipeline.add_loop()``                   ``graph.add_loop()``
 Best for multi-phase workflows            Best for in-graph branching/iteration
 ========================================= ===========================================
+
+A pipeline loop stage is itself a stage graph holding one Loop node, so the two
+loops share one semantics; the pipeline adds only the ordering of stages around
+it.
