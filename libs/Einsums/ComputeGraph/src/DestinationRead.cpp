@@ -23,6 +23,12 @@ bool reads_destination(Node const &node) {
     case OpKind::Scale:
     case OpKind::ElementTransform:
         return true;
+    case OpKind::Invert:
+        // In place, as a scale is: the inverse overwrites the matrix it is computed from.
+        return node.op_data.holds<InvertDescriptor>();
+    case OpKind::Ger:
+        // A rank-1 update has no destination prefactor; it always adds into A.
+        return node.op_data.holds<GerDescriptor>();
     default:
         break;
     }
@@ -58,6 +64,9 @@ bool reads_destination(Node const &node) {
     if (auto const *g = node.op_data.get_if<GemmDescriptor>()) {
         return !is_zero(g->beta);
     }
+    if (auto const *g = node.op_data.get_if<GemvDescriptor>()) {
+        return !is_zero(g->beta);
+    }
     return false;
 }
 
@@ -76,6 +85,15 @@ std::optional<std::size_t> destination_operand_count(Node const &node) {
         return 1; // x
     default:
         break;
+    }
+    // The BLAS-2 and in-place LAPACK kinds are covered only when they hold their descriptor: a
+    // node without one is the opaque closure the descriptor replaced, whose lists nothing here
+    // can vouch for.
+    if (node.op_data.holds<InvertDescriptor>()) {
+        return 0; // in place: the matrix is the only tensor it lists
+    }
+    if (node.op_data.holds<GemvDescriptor>() || node.op_data.holds<GerDescriptor>()) {
+        return 2; // gemv: A, x; ger: x, y
     }
     if (node.op_data.holds<EinsumDescriptor>() || node.op_data.holds<TiledEinsumDescriptor>() ||
         node.op_data.holds<ElementwiseBinaryDescriptor>() || node.op_data.holds<GemmDescriptor>()) {

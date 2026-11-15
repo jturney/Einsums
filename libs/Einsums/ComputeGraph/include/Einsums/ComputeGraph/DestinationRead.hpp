@@ -35,8 +35,10 @@ class Graph;
 /**
  * @brief True when @p node reads its destination (accumulates into it or updates it in place).
  *
- * The in-place scale and element transform always do. An axpby without a descriptor is assumed to,
- * since nothing says otherwise. Every other kind with a destination prefactor reads its
+ * The in-place scale and element transform always do, as do an inversion and a rank-1 update
+ * (ger, gerc) holding their descriptors: the first overwrites the matrix it reads, the second
+ * always adds into it. An axpby without a descriptor is assumed to, since nothing says otherwise.
+ * Every other kind with a destination prefactor, a gemv's beta included, reads its
  * destination exactly when the LIVE prefactor is nonzero, so a pass that rewrites the prefactor is
  * answered by its rewrite. A node without a destination prefactor (a dot, a trace, a grouped node)
  * returns false. A registered descriptor's @c destination hook answers for its node

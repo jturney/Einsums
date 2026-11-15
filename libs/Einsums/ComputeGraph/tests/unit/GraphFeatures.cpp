@@ -6,10 +6,12 @@
 // Tests for Graph features: to_json, move semantics, empty graph, PassManager default.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/UsageAnalysis.hpp>
 #include <Einsums/Options/Get.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -19,6 +21,8 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -464,6 +468,84 @@ TEST_CASE("Graph - a node lists its destination as an input exactly when it read
         auto const problems = graph.verify();
         REQUIRE(problems.size() == 1);
         CHECK_THAT(problems.front(), Catch::Matchers::ContainsSubstring("reads its destination but lists 2 input(s)"));
+    }
+
+    // The BLAS-2 kinds and the in-place inversion answer from their descriptors. Before they held
+    // one, a ger answered "does not read" although it always adds into A, and the rule covered
+    // none of them, so a list that dropped the read was invisible to verify.
+    SECTION("a gemv lists y exactly when beta is nonzero") {
+        RuntimeTensor<double> M(A);
+        RuntimeTensor<double> x(create_random_tensor<double>("x", 4));
+        RuntimeTensor<double> y(create_random_tensor<double>("y", 3));
+        for (double const beta : {0.0, 1.0}) {
+            INFO("beta " << beta);
+            cg::Graph graph("gemv");
+            {
+                cg::CaptureGuard const guard(graph);
+                cg::gemv(1.0, M, x, beta, &y, linear_algebra::Transpose::N);
+            }
+            auto const &node = graph.nodes().front();
+            CHECK(node.inputs.size() == (beta == 0.0 ? 2U : 3U));
+            CHECK(cg::reads_destination(node) == (beta != 0.0));
+            CHECK(cg::destination_operand_count(node) == std::optional<std::size_t>{2});
+            CHECK(cg::operand_inputs(node).size() == 2);
+            CHECK(graph.verify().empty());
+        }
+    }
+
+    SECTION("a ger always lists A, and verify names one that does not") {
+        RuntimeTensor<double> M(A);
+        RuntimeTensor<double> x(create_random_tensor<double>("x", 3));
+        RuntimeTensor<double> y(create_random_tensor<double>("y", 4));
+        cg::Graph             graph("ger");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::ger(0.5, x, y, &M);
+        }
+        auto const &node = graph.nodes().front();
+        CHECK(node.inputs.size() == 3);
+        CHECK(cg::reads_destination(node));
+        CHECK(cg::destination_operand_count(node) == std::optional<std::size_t>{2});
+        CHECK(cg::operand_inputs(node).size() == 2);
+        CHECK(graph.verify().empty());
+
+        cg::detail::GraphBackdoor::nodes(graph).front().inputs.pop_back();
+        auto const problems = graph.verify();
+        REQUIRE(problems.size() == 1);
+        CHECK_THAT(problems.front(), Catch::Matchers::ContainsSubstring("reads its destination but lists 2 input(s)"));
+    }
+
+    SECTION("an inversion is in place, as a scale is") {
+        auto S = create_random_tensor<double>("S", 3, 3);
+        for (size_t i = 0; i < 3; ++i) {
+            S(i, i) += 4.0;
+        }
+        cg::Graph graph("invert");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::invert(&S);
+        }
+        auto const &node = graph.nodes().front();
+        CHECK(node.inputs == node.outputs);
+        CHECK(cg::reads_destination(node));
+        CHECK(cg::destination_operand_count(node) == std::optional<std::size_t>{0});
+        CHECK(cg::operand_inputs(node).empty());
+        CHECK(graph.verify().empty());
+    }
+
+    SECTION("the same kinds without a descriptor are left to their lists") {
+        // A node a pass assembled by hand under one of these kinds, with no descriptor, is the
+        // opaque closure the descriptor replaced; nothing vouches for its lists.
+        for (auto const kind : {cg::OpKind::Gemv, cg::OpKind::Ger, cg::OpKind::Invert}) {
+            INFO("kind " << cg::op_kind_name(kind));
+            cg::Node node;
+            node.kind    = kind;
+            node.inputs  = {1, 2, 3};
+            node.outputs = {3};
+            CHECK_FALSE(cg::reads_destination(node));
+            CHECK_FALSE(cg::destination_operand_count(node).has_value());
+            CHECK(cg::operand_inputs(node).size() == 3);
+        }
     }
 }
 
