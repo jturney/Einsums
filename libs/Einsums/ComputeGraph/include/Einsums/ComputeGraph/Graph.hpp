@@ -376,6 +376,13 @@ class CleanupStack {
  */
 class EINSUMS_EXPORT ReplayState {
   public:
+    ReplayState()                                   = default;
+    ReplayState(ReplayState &&) noexcept            = default;
+    ReplayState &operator=(ReplayState &&) noexcept = default;
+    ReplayState(ReplayState const &)                = delete;
+    ReplayState &operator=(ReplayState const &)     = delete;
+    ~ReplayState()                                  = default;
+
     /// Pre-interned profiler payloads for one node: the zone name plus every
     /// annotation whose value is invariant across replays. Built once per
     /// graph mutation instead of fmt::format-ing per node per execute() -
