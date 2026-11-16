@@ -112,6 +112,12 @@ class EINSUMS_EXPORT NodeRunner {
     /// when the policy does not simply follow the plan.
     void prepare_choices();
 
+    /// Price every offered node that has a device place on the policy's cost model, group those
+    /// nodes into runs, and record each node's estimates and its run's gain and boundary traffic.
+    /// Only when the policy returns a model; called after the device storage is settled, so the
+    /// places counted are the ones the policy can name.
+    void price_choices();
+
     /// Where the node at @p index runs: the plan, or the policy's answer for a node it is asked about.
     /// @throws std::logic_error When the policy answers with a place the node cannot run.
     [[nodiscard]] Place choose_place(std::size_t index) const;
@@ -144,6 +150,12 @@ class EINSUMS_EXPORT NodeRunner {
         /// False for a transfer node and for a node touching a view or a tensor a view aliases,
         /// which run at their planned place.
         bool offered{false};
+        /// Estimated host and device time of the node, and its run's gain and boundary bytes; see
+        /// PlacementQuery. Empty unless the policy returned a cost model and the node has a device place.
+        std::optional<double>      host_us;
+        std::optional<double>      device_us;
+        std::optional<double>      run_gain_us;
+        std::optional<std::size_t> run_boundary_bytes;
     };
     std::vector<NodeChoice> _choices;
 

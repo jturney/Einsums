@@ -445,7 +445,11 @@ std::optional<ModelledCost> hooked_cost(Graph const &graph, Node const &node, De
     if (hooks == nullptr || !hooks->cost) {
         return std::nullopt;
     }
-    auto const estimate = hooks->cost(node.op_data, CostQuery{.graph = graph, .node = node, .profile = profile, .target = Target::CPU});
+    auto const estimate =
+        hooks->cost(node.op_data, CostQuery{.graph   = graph,
+                                            .node    = node,
+                                            .profile = profile,
+                                            .target  = profile.device_type == DeviceType::GPU ? Target::GPU : Target::CPU});
     if (!estimate) {
         return std::nullopt;
     }

@@ -315,12 +315,13 @@ inline constinit cl::ConfigOption<bool> GpuDisable =
 /// Which placement policy chooses where each node runs as it is dispatched.
 ///
 /// `planned` runs a node where GPUPlacement put it, `host` runs every node on the host, and
-/// `device` runs a node on the device whenever it can (see Node::eligible). A policy installed on a
+/// `device` runs a node on the device whenever it can (see Node::eligible), and `cheapest` runs it
+/// where its estimated time, copies included, is lowest. A policy installed on a
 /// graph with Graph::set_placement_policy takes precedence. Any other value is an error when a graph
 /// is executed, naming the valid ones.
-inline constinit cl::ConfigOption<std::string> GraphPlacement =
-    cl::config_opt<std::string>("einsums:graph:placement", "Where each node of a graph runs when it is dispatched: planned, host or device",
-                                "ComputeGraph Passes", "planned", "POLICY");
+inline constinit cl::ConfigOption<std::string> GraphPlacement = cl::config_opt<std::string>(
+    "einsums:graph:placement", "Where each node of a graph runs when it is dispatched: planned, host, device or cheapest",
+    "ComputeGraph Passes", "planned", "POLICY");
 
 EINSUMS_NAMESPACE_END(option)
 

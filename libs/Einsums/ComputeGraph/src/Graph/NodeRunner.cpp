@@ -20,6 +20,8 @@
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile/Profile.hpp>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -27,11 +29,13 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "../BodyReplay.hpp"
+#include "../Passes/NodeCost.hpp"
 #include "GpuDispatch.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -66,23 +70,27 @@ waggle::ZoneSite const &graph_node_site() {
 /// Copy @p bytes of @p handle's live host data up into @p shadow.
 /// @return Whether a copy happened: a missing shadow (allocation failed) or host buffer (not
 ///         materialized yet) leaves nothing to copy, and the device copy stays as it was.
-bool upload(TensorHandle const *handle, void *shadow, std::size_t bytes) {
+bool upload(TensorHandle const *handle, void *shadow, std::size_t bytes, detail::TransferTally &tally) {
     void *host = handle != nullptr ? live_host_ptr(*handle) : nullptr;
     if (shadow == nullptr || host == nullptr) {
         return false;
     }
     gpu::memcpy_host_to_device(shadow, host, bytes);
+    tally.uploads.fetch_add(1, std::memory_order_relaxed);
+    tally.upload_bytes.fetch_add(bytes, std::memory_order_relaxed);
     return true;
 }
 
 /// Copy @p bytes of @p shadow down into @p handle's live host data.
 /// @return Whether a copy happened; see upload.
-bool download(TensorHandle const *handle, void const *shadow, std::size_t bytes) {
+bool download(TensorHandle const *handle, void const *shadow, std::size_t bytes, detail::TransferTally &tally) {
     void *host = handle != nullptr ? live_host_ptr(*handle) : nullptr;
     if (shadow == nullptr || host == nullptr) {
         return false;
     }
     gpu::memcpy_device_to_host(host, shadow, bytes);
+    tally.downloads.fetch_add(1, std::memory_order_relaxed);
+    tally.download_bytes.fetch_add(bytes, std::memory_order_relaxed);
     return true;
 }
 
@@ -145,6 +153,7 @@ NodeRunner::NodeRunner(Graph &graph, Executor &executor, bool recording)
     : _graph(graph), _executor(executor), _recording(recording), _policy(&resolve_policy(graph)) {
     // assign() reuses the slots' storage, so a replay of an unchanged graph allocates nothing.
     RunnerAccess::replay(_graph)._run_slots.assign(_graph.nodes().size(), detail::NodeRunSlot{});
+    RunnerAccess::replay(_graph)._transfers.reset();
     _asks = !_policy->follows_plan();
     if (_asks) {
         prepare_choices();
@@ -157,6 +166,9 @@ NodeRunner::NodeRunner(Graph &graph, Executor &executor, bool recording)
                 break;
             }
         }
+    }
+    if (_asks && _policy->cost_model() != nullptr) {
+        price_choices();
     }
 }
 
@@ -203,6 +215,149 @@ void NodeRunner::prepare_choices() {
     }
 }
 
+void NodeRunner::price_choices() {
+    CostModel const &model = *_policy->cost_model();
+    auto const      &nodes = _graph.nodes();
+
+    // The nodes a run can hold: offered, and with a device place left after storage was settled.
+    std::vector<std::size_t> members;
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        if (_choices[i].offered && _choices[i].eligible.any_device()) {
+            members.push_back(i);
+        }
+    }
+    if (members.empty()) {
+        return;
+    }
+
+    detail::ContractionPriceMemo host_memo;
+    detail::ContractionPriceMemo device_memo;
+    for (std::size_t const i : members) {
+        _choices[i].host_us = detail::model_cost(_graph, nodes[i], model.cpu, &host_memo).t1_us;
+        if (model.has_gpu()) {
+            _choices[i].device_us = detail::model_cost(_graph, nodes[i], model.gpu, &device_memo).t1_us;
+        }
+    }
+
+    // Runs: members joined through the buffers one writes and another reads. Union-find over the
+    // position in `members`.
+    std::vector<std::size_t> parent(members.size());
+    for (std::size_t m = 0; m < parent.size(); ++m) {
+        parent[m] = m;
+    }
+    auto const find = [&](std::size_t m) {
+        while (parent[m] != m) {
+            parent[m] = parent[parent[m]];
+            m         = parent[m];
+        }
+        return m;
+    };
+    struct Access {
+        std::vector<std::size_t> writers; // positions in `members`
+        std::vector<std::size_t> readers;
+    };
+    std::unordered_map<TensorId, Access> accessed;
+    for (std::size_t m = 0; m < members.size(); ++m) {
+        Node const &node = nodes[members[m]];
+        for (TensorId const id : node.inputs) {
+            accessed[_graph.buffer_of(id)].readers.push_back(m);
+        }
+        for (TensorId const id : node.outputs) {
+            accessed[_graph.buffer_of(id)].writers.push_back(m);
+        }
+    }
+    for (auto const &[buffer, access] : accessed) {
+        if (access.writers.empty()) {
+            continue;
+        }
+        std::size_t const root = find(access.writers.front());
+        for (auto const *group : {&access.writers, &access.readers}) {
+            for (std::size_t const m : *group) {
+                parent[find(m)] = find(root);
+            }
+        }
+    }
+
+    // Which run (root position) each node belongs to, or none; and who reads each buffer.
+    constexpr std::size_t    kNone = static_cast<std::size_t>(-1);
+    std::vector<std::size_t> run_of(nodes.size(), kNone);
+    for (std::size_t m = 0; m < members.size(); ++m) {
+        run_of[members[m]] = find(m);
+    }
+    std::unordered_map<TensorId, std::vector<std::size_t>> read_by; // buffer to reader node positions
+    for (std::size_t j = 0; j < nodes.size(); ++j) {
+        if (auto const io = _control_io.find(j); io != _control_io.end()) {
+            for (TensorId const id : io->second.first) {
+                read_by[_graph.buffer_of(id)].push_back(j);
+            }
+        } else if (is_control_flow(nodes[j].kind)) {
+            for (TensorId const id : _graph.effective_io(nodes[j]).first) {
+                read_by[_graph.buffer_of(id)].push_back(j);
+            }
+        } else {
+            for (TensorId const id : nodes[j].inputs) {
+                read_by[_graph.buffer_of(id)].push_back(j);
+            }
+        }
+    }
+
+    struct Run {
+        double      gain{0.0};
+        bool        priced{false};
+        std::size_t bytes{0};
+    };
+    std::unordered_map<std::size_t, Run> runs;
+    auto const                           bytes_of = [&](TensorId buffer) {
+        TensorHandle const *handle = _graph.find_tensor(buffer);
+        return handle != nullptr ? handle->total_bytes() : std::size_t{0};
+    };
+    for (std::size_t m = 0; m < members.size(); ++m) {
+        NodeChoice const &choice = _choices[members[m]];
+        Run              &run    = runs[find(m)];
+        if (choice.host_us && choice.device_us) {
+            run.gain += *choice.host_us - *choice.device_us;
+            run.priced = true;
+        }
+    }
+    for (auto const &[buffer, access] : accessed) {
+        // Read by a member, produced by none of the run's members: brought in. A buffer's readers
+        // and writers share one run when it has a writer, so the run is the first reader's or writer's.
+        if (access.writers.empty()) {
+            std::unordered_set<std::size_t> seen;
+            for (std::size_t const m : access.readers) {
+                std::size_t const root = find(m);
+                if (seen.insert(root).second) {
+                    Run &run = runs[root];
+                    run.bytes += bytes_of(buffer);
+                }
+            }
+            continue;
+        }
+        // Written by a member: sent out when a node beyond the run reads it or it is a result.
+        std::size_t const   root   = find(access.writers.front());
+        Run                &run    = runs[root];
+        TensorHandle const *handle = _graph.find_tensor(buffer);
+        bool                leaves = handle == nullptr || !handle->is_intermediate;
+        if (!leaves) {
+            if (auto const it = read_by.find(buffer); it != read_by.end()) {
+                leaves = std::ranges::any_of(it->second, [&](std::size_t j) { return run_of[j] != root; });
+            }
+        }
+        if (leaves) {
+            run.bytes += bytes_of(buffer);
+        }
+    }
+
+    for (std::size_t m = 0; m < members.size(); ++m) {
+        Run const  &run    = runs[find(m)];
+        NodeChoice &choice = _choices[members[m]];
+        if (run.priced) {
+            choice.run_gain_us = run.gain;
+        }
+        choice.run_boundary_bytes = run.bytes;
+    }
+}
+
 Place NodeRunner::choose_place(std::size_t index) const {
     Node const &node    = _graph.nodes()[index];
     Place const planned = Place::of(node.target);
@@ -238,11 +393,15 @@ Place NodeRunner::choose_place(std::size_t index) const {
     }
     std::span<PlacementOperand const> const all(operands);
 
-    PlacementQuery const query{.node     = node,
-                               .planned  = planned,
-                               .eligible = choice.eligible,
-                               .inputs   = all.first(node.inputs.size()),
-                               .outputs  = all.subspan(node.inputs.size())};
+    PlacementQuery const query{.node               = node,
+                               .planned            = planned,
+                               .eligible           = choice.eligible,
+                               .inputs             = all.first(node.inputs.size()),
+                               .outputs            = all.subspan(node.inputs.size()),
+                               .host_us            = choice.host_us,
+                               .device_us          = choice.device_us,
+                               .run_gain_us        = choice.run_gain_us,
+                               .run_boundary_bytes = choice.run_boundary_bytes};
 
     Place const chosen = _policy->choose(query);
     if (!choice.eligible.contains(chosen) && chosen != planned) {
@@ -311,7 +470,8 @@ void NodeRunner::prepare_device_work() {
 void NodeRunner::host_current(TensorId id) {
     TensorHandle const *handle = _graph.find_tensor(id);
     _coherence.need_on_host(id, [&]() {
-        return download(handle, RunnerAccess::replay(_graph)._device_shadows.get(id), handle != nullptr ? handle->total_bytes() : 0);
+        return download(handle, RunnerAccess::replay(_graph)._device_shadows.get(id), handle != nullptr ? handle->total_bytes() : 0,
+                        RunnerAccess::replay(_graph)._transfers);
     });
 }
 
@@ -417,8 +577,10 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 // exactly as defined as the host one.
                 TensorId const      id     = tdesc->tensor_id;
                 TensorHandle const *handle = _graph.find_tensor(id);
-                _coherence.need_on_device(
-                    id, [&]() { return upload(handle, RunnerAccess::replay(_graph)._device_shadows.get(id), tdesc->size_bytes); });
+                _coherence.need_on_device(id, [&]() {
+                    return upload(handle, RunnerAccess::replay(_graph)._device_shadows.get(id), tdesc->size_bytes,
+                                  RunnerAccess::replay(_graph)._transfers);
+                });
             }
         }
     } else if (node.kind == OpKind::DeviceToHost) {
@@ -434,8 +596,10 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                 // come out zero.
                 TensorId const      id     = tdesc->tensor_id;
                 TensorHandle const *handle = _graph.find_tensor(id);
-                _coherence.need_on_host(
-                    id, [&]() { return download(handle, RunnerAccess::replay(_graph)._device_shadows.get(id), tdesc->size_bytes); });
+                _coherence.need_on_host(id, [&]() {
+                    return download(handle, RunnerAccess::replay(_graph)._device_shadows.get(id), tdesc->size_bytes,
+                                    RunnerAccess::replay(_graph)._transfers);
+                });
             }
         }
     } else if (on_device) {
@@ -478,7 +642,9 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                     for (TensorId const id : *ids) {
                         TensorHandle const *handle = _graph.find_tensor(id);
                         void               *shadow = RunnerAccess::replay(_graph)._device_shadows.get(id);
-                        if (!_coherence.need_on_device(id, [&]() { return upload(handle, shadow, handle->total_bytes()); })) {
+                        if (!_coherence.need_on_device(id, [&]() {
+                                return upload(handle, shadow, handle->total_bytes(), RunnerAccess::replay(_graph)._transfers);
+                            })) {
                             // No device buffer to compute in: the node runs on the host below.
                             operands_ready = false;
                         }
@@ -619,8 +785,8 @@ void NodeRunner::flush_device() {
         if (_device_work) {
             _coherence.flush([&](TensorId id) {
                 TensorHandle const *handle = _graph.find_tensor(id);
-                return download(handle, RunnerAccess::replay(_graph)._device_shadows.get(id),
-                                handle != nullptr ? handle->total_bytes() : 0);
+                return download(handle, RunnerAccess::replay(_graph)._device_shadows.get(id), handle != nullptr ? handle->total_bytes() : 0,
+                                RunnerAccess::replay(_graph)._transfers);
             });
         }
     }

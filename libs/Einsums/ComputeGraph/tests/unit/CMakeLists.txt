@@ -97,6 +97,7 @@ set(ComputeGraphTests
     Pass_DistributionPasses.cpp
     Pass_DeadNodeElimination.cpp
     Pass_DeviceEligibility.cpp
+    PlacementCheapest.cpp
     PlacementPolicy.cpp
     Pass_ElementWiseFusion.cpp
     Pass_FreeInsertion.cpp

@@ -8,14 +8,17 @@
 /// @file PlacementPolicy.hpp
 /// @brief Where a node runs, chosen as the node is dispatched.
 
+#include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -64,6 +67,27 @@ struct PlacementQuery {
     std::span<PlacementOperand const> inputs;
     /// The node's outputs, in the order of @ref Node::outputs.
     std::span<PlacementOperand const> outputs;
+
+    /// @name Estimates
+    /// Filled only when the policy returns a model from @ref PlacementPolicy::cost_model, and empty
+    /// otherwise, or for a node the model cannot price.
+    /// @{
+
+    /// Estimated time of the node on the host on one thread, in microseconds, operands already in
+    /// place. The threads the node will actually get are not counted.
+    std::optional<double> host_us;
+    /// Estimated time of the node on the device, in microseconds, operands already in place. Empty
+    /// when the node cannot run there or the model has no device.
+    std::optional<double> device_us;
+    /// The run the node belongs to is the largest set of device-eligible nodes of this graph
+    /// connected through the tensors they exchange. This is the sum over its members of the host
+    /// time less the device time, for the members with both estimates.
+    std::optional<double> run_gain_us;
+    /// Bytes that cross between host and device if the whole run is placed on the device: tensors
+    /// its members read that none of them produces, and tensors a member writes that a node outside
+    /// the run reads or that are results the replay copies back.
+    std::optional<std::size_t> run_boundary_bytes;
+    /// @}
 };
 
 /**
@@ -114,6 +138,13 @@ class EINSUMS_EXPORT PlacementPolicy {
     /// the shadow set the plan alone needs, so a graph under it runs exactly as it did before
     /// policies existed. A policy that merely happens to agree with the plan returns false.
     [[nodiscard]] virtual bool follows_plan() const noexcept { return false; }
+
+    /// @brief The cost model this policy prices nodes with, or null when it prices none.
+    ///
+    /// When non-null the node runner estimates every node it offers, and the runs of nodes they
+    /// form, once per replay, and fills the estimate fields of @ref PlacementQuery. When null it
+    /// does none of that work and the fields are empty.
+    [[nodiscard]] virtual CostModel const *cost_model() const noexcept { return nullptr; }
 };
 
 /// @brief Runs each node where the graph's plan put it. The default.
@@ -141,9 +172,44 @@ class EINSUMS_EXPORT EligibleDevicePlacement final : public PlacementPolicy {
 };
 
 /**
+ * @brief Runs each node where its estimated time is lowest, transfers included.
+ *
+ * With @c bw the model's host-device transfer bandwidth and @c launch the device's launch latency,
+ * a node costs @c host_us plus the time to bring its device-only inputs to the host on the host,
+ * and @c device_us plus @c launch plus the time to send its host-only inputs up on the device.
+ * Outputs are never charged: a destination the node reads is already its trailing input.
+ *
+ * - Without a device place, or when either estimate is missing, the node runs where it is planned.
+ * - The device wins when its total is lower.
+ * - A node whose device total is not lower still enters the device when the run it belongs to
+ *   gains more than the run's boundary traffic and one launch cost: the run as a whole pays for
+ *   the entry, and its other members then find their inputs already there.
+ * - Otherwise the host wins, except that an exact tie keeps the planned place.
+ *
+ * The estimates come from the same pricing the thread planner uses, on the model's CPU profile
+ * and, for the device, on its GPU profile. They are dtype-blind and a device profile is a table
+ * entry, not a measurement of the device in use, so a close call is not a reliable one.
+ *
+ * @versionadded{2.0.0}
+ */
+class EINSUMS_EXPORT CheapestPlacement final : public PlacementPolicy {
+  public:
+    /// @param[in] model The model whose CPU and GPU profiles price the node, kept by value.
+    explicit CheapestPlacement(CostModel model) : _model(std::move(model)) {}
+
+    [[nodiscard]] Place            choose(PlacementQuery const &query) const override;
+    [[nodiscard]] std::string      name() const override { return "cheapest"; }
+    [[nodiscard]] CostModel const *cost_model() const noexcept override { return &_model; }
+
+  private:
+    CostModel _model;
+};
+
+/**
  * @brief The built-in policy a value of ``einsums:graph:placement`` names.
  *
- * @param[in] value One of ``planned``, ``host`` or ``device``.
+ * @param[in] value One of ``planned``, ``host``, ``device`` or ``cheapest``. The last is built on first use
+ *                  from the machine's detected cost model.
  * @return A policy that lives for the whole process.
  * @throws std::invalid_argument If @p value names none; the message lists the valid ones.
  * @versionadded{2.0.0}

@@ -473,16 +473,21 @@
   added: "2.0.0"
   body: |
     Which placement policy chooses where each node of a graph runs as the node is dispatched: one of
-    ``planned``, ``host`` or ``device``. Defaults to ``planned``.
+    ``planned``, ``host``, ``device`` or ``cheapest``. Defaults to ``planned``.
 
     ``planned`` runs a node where the graph's GPU placement pass put it, which is the behavior without
     this option. ``host`` runs every node on the host. ``device`` runs a node on the device whenever
-    the device can run it, whether or not the placement pass planned it there. The choice is made for
-    each replay and is never written to the graph, so the same graph runs under any of them.
+    the device can run it, whether or not the placement pass planned it there. ``cheapest`` runs a node
+    wherever its estimated time is lowest, counting the copies between host and device that the
+    choice needs, and counting a group of connected device-capable nodes as a whole when one of them
+    would not pay for the trip alone. It prices nodes with the machine's detected cost model, built
+    on first use, and the device side of that model is a table entry for the device and not a
+    measurement of it. The choice is made for each replay and is never written to the graph, so the
+    same graph runs under any of them.
 
     A transfer node, and a node that touches a view or a tensor a view aliases, runs where the graph
     planned it under every value. Any other value is an error when a graph is executed, naming the
-    three. A policy installed on a graph in C++ takes precedence over this option.
+    four. A policy installed on a graph in C++ takes precedence over this option.
 
 "einsums:graph:tiling-memory-cap":
   added: "2.0.0"

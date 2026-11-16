@@ -46,6 +46,7 @@
 #include <fmt/format.h>
 
 #include <array>
+#include <atomic>
 #include <functional>
 #include <initializer_list>
 #include <iosfwd>
@@ -295,6 +296,14 @@ class EINSUMS_EXPORT GraphAnchor {
     Graph *_graph{nullptr};
 };
 
+/// Copies between host and device memory; see @ref Graph::device_transfers.
+struct DeviceTransferCounts {
+    std::size_t uploads{0};        ///< Host-to-device copies.
+    std::size_t upload_bytes{0};   ///< Bytes they moved.
+    std::size_t downloads{0};      ///< Device-to-host copies.
+    std::size_t download_bytes{0}; ///< Bytes they moved.
+};
+
 namespace detail {
 struct ArenaBlock;
 struct GraphBackdoor;
@@ -311,6 +320,34 @@ struct alignas(64) NodeRunSlot {
     /// it. False for a node that ran on the host, including one dispatched to the device whose
     /// dispatch was declined.
     bool on_device{false};
+};
+
+/// The copies between host and device memory one replay made, counted as they happen from whichever
+/// thread makes them. Copyable and movable like the rest of the replay state: a copy takes the
+/// values it reads.
+struct TransferTally {
+    std::atomic<std::size_t> uploads{0};
+    std::atomic<std::size_t> upload_bytes{0};
+    std::atomic<std::size_t> downloads{0};
+    std::atomic<std::size_t> download_bytes{0};
+
+    TransferTally() = default;
+    TransferTally(TransferTally const &other) noexcept { *this = other; }
+    TransferTally &operator=(TransferTally const &other) noexcept {
+        uploads.store(other.uploads.load());
+        upload_bytes.store(other.upload_bytes.load());
+        downloads.store(other.downloads.load());
+        download_bytes.store(other.download_bytes.load());
+        return *this;
+    }
+    ~TransferTally() = default;
+
+    void reset() noexcept {
+        uploads.store(0);
+        upload_bytes.store(0);
+        downloads.store(0);
+        download_bytes.store(0);
+    }
 };
 
 /// A recursive mutex that stays with its object. Moving the object hands the destination a
@@ -464,6 +501,14 @@ class EINSUMS_EXPORT ReplayState {
     /// Whether a device kernel ran the node at @p index in the last replay.
     [[nodiscard]] bool ran_on_device(std::size_t index) const noexcept { return index < _run_slots.size() && _run_slots[index].on_device; }
 
+    /// The host-device copies the replay running now, or the last one, has made.
+    [[nodiscard]] DeviceTransferCounts device_transfers() const noexcept {
+        return {.uploads        = _transfers.uploads.load(),
+                .upload_bytes   = _transfers.upload_bytes.load(),
+                .downloads      = _transfers.downloads.load(),
+                .download_bytes = _transfers.download_bytes.load()};
+    }
+
     /// The placement policy installed on this graph, or nullptr when it has none.
     [[nodiscard]] std::shared_ptr<PlacementPolicy const> const &placement_policy() const noexcept { return _placement; }
     void set_placement_policy(std::shared_ptr<PlacementPolicy const> policy) noexcept { _placement = std::move(policy); }
@@ -526,6 +571,9 @@ class EINSUMS_EXPORT ReplayState {
     /// and turned into @ref _timing_samples when the replay ends. Kept between replays so that a
     /// replay of an unchanged graph allocates none.
     std::vector<NodeRunSlot> _run_slots;
+
+    /// The host-device copies this replay has made; see @ref TransferTally.
+    TransferTally _transfers;
 
     /// Per-node timing from last execute() call, as recorded (no labels).
     std::vector<NodeTimingSample> _timing_samples;
@@ -2015,6 +2063,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     [[nodiscard]] bool ran_on_device(std::size_t index) const noexcept { return _replay.ran_on_device(index); }
+
+    /**
+     * @brief The copies between host and device memory the last replay of this graph made.
+     *
+     * Counts the copies that happened, not the ones requested: a tensor already current on the
+     * side that needed it costs none, and a build whose device shares the host's memory makes
+     * none. Reset as each replay starts and read after it returns, or by an observer between nodes
+     * of a replay that runs them one at a time. A body a node replays keeps its own counts.
+     * @return The number of uploads and downloads, and the bytes each direction moved.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] DeviceTransferCounts device_transfers() const noexcept { return _replay.device_transfers(); }
 
     /// The policy installed with @ref set_placement_policy, or nullptr when there is none.
     [[nodiscard]] std::shared_ptr<PlacementPolicy const> const &placement_policy() const { return _replay.placement_policy(); }
