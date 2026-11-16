@@ -29,6 +29,9 @@ bool reads_destination(Node const &node) {
     case OpKind::Ger:
         // A rank-1 update has no destination prefactor; it always adds into A.
         return node.op_data.holds<GerDescriptor>();
+    case OpKind::Getrs:
+        // The right-hand sides are solved in place, so the solve reads what it overwrites.
+        return node.op_data.holds<GetrsDescriptor>();
     default:
         break;
     }
@@ -97,6 +100,9 @@ std::optional<std::size_t> destination_operand_count(Node const &node) {
     }
     if (node.op_data.holds<SymmGemmDescriptor>()) {
         return 2; // A, B; C is overwritten and never read
+    }
+    if (node.op_data.holds<GetrsDescriptor>()) {
+        return 2; // the factorization A and its pivots
     }
     if (node.op_data.holds<EinsumDescriptor>() || node.op_data.holds<TiledEinsumDescriptor>() ||
         node.op_data.holds<ElementwiseBinaryDescriptor>() || node.op_data.holds<GemmDescriptor>()) {

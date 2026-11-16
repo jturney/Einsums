@@ -123,14 +123,13 @@ int eager_getrf(Impl<T> &A, LuPivots &pivots) {
 template <typename T>
 void capture_getrf(CaptureContext &ctx, SlotRef a, LuPivots const &pivots) {
     WAGGLE_ZONE("getrf capture");
-    OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<T>());
-    auto                  executor = [a_access, buffer = pivots.buffer()]() {
-        WAGGLE_ZONE("getrf execute");
-        auto *A = a_access.impl<T>();
-        WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(0)));
-        std::ignore = run_getrf<T>(A, buffer.get());
-    };
-    ctx.record(OpKind::Getrf, "getrf", {a.first}, {a.first}, std::move(executor));
+    // The pivots are the node's second output: an operand, so a getrs reading them is ordered
+    // after this node through the node lists. A is an input and an output, as for gesv.
+    std::size_t const           order = a.second->dims.size() == 2 ? std::min(a.second->dims[0], a.second->dims[1]) : 0;
+    TensorId const              p_id  = ctx.get_or_register_pivots(pivots, order);
+    std::vector<TensorId> const inputs{a.first};
+    std::vector<TensorId> const outputs{a.first, p_id};
+    ctx.record_built(OpKind::Getrf, "getrf", packed_gemm::get_scalar_type<T>(), 2, GetrfDescriptor{}, inputs, outputs, inputs, outputs);
 }
 
 template <typename T>
@@ -142,16 +141,12 @@ int eager_getrs(Impl<T> const &A, LuPivots const &pivots, Impl<T> &B) {
 template <typename T>
 void capture_getrs(CaptureContext &ctx, SlotRef a, LuPivots const &pivots, SlotRef b) {
     WAGGLE_ZONE("getrs capture");
-    constexpr auto        dtype = packed_gemm::get_scalar_type<T>();
-    OperandAccessor const a_access(a.second, dtype);
-    OperandAccessor const b_access(b.second, dtype);
-    auto                  executor = [a_access, b_access, buffer = pivots.buffer()]() {
-        WAGGLE_ZONE("getrs execute");
-        auto const *A = a_access.impl<T>();
-        WAGGLE_ANNOTATE("n", static_cast<int64_t>(A->dim(0)));
-        std::ignore = linear_algebra::detail::getrs(*A, *buffer, b_access.impl<T>());
-    };
-    ctx.record(OpKind::Getrs, "getrs", {a.first, b.first}, {b.first}, std::move(executor));
+    // A and the pivots are read, and B is read and overwritten, so B is the trailing input.
+    std::size_t const           order = a.second->dims.empty() ? 0 : a.second->dims[0];
+    TensorId const              p_id  = ctx.get_or_register_pivots(pivots, order);
+    std::vector<TensorId> const operands{a.first, p_id};
+    ctx.record_built(OpKind::Getrs, "getrs", packed_gemm::get_scalar_type<T>(), b.second->rank, GetrsDescriptor{}, operands,
+                     std::span<TensorId const>{&b.first, 1}, {a.first, p_id, b.first}, {b.first});
 }
 
 #define EINSUMS_LAPACK_OPERATIONS(T)                                                                                                       \

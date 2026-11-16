@@ -186,6 +186,8 @@ TEST_CASE("ExecutorBuilder - the reconstructible set holds every kind converted 
         cg::OpKind::Ger,
         cg::OpKind::Norm,
         cg::OpKind::SymmGemm,
+        cg::OpKind::Getrf,
+        cg::OpKind::Getrs,
     };
 
     for (auto kind : converted) {
@@ -239,10 +241,10 @@ TEST_CASE("ExecutorBuilder - the predicate and the builder's dispatch agree", "[
 TEST_CASE("ExecutorBuilder - an unconvertible kind names itself when refused", "[ComputeGraph][ExecutorBuilder]") {
     cg::Graph        graph("refusal");
     cg::OpData const empty{};
-    // Getrf still bakes its executor at capture: its pivots live in a buffer the node shares
-    // with a later getrs, which no descriptor holds yet.
-    REQUIRE_THROWS_WITH(cg::build_executor(cg::OpKind::Getrf, packed_gemm::ScalarType::Float64, 2, empty, graph, {}, {}),
-                        Catch::Matchers::ContainsSubstring("Getrf"));
+    // A DIIS step still bakes its executor at capture: the history it extrapolates over is a
+    // private object the closure holds, which no descriptor names.
+    REQUIRE_THROWS_WITH(cg::build_executor(cg::OpKind::DiisStep, packed_gemm::ScalarType::Float64, 2, empty, graph, {}, {}),
+                        Catch::Matchers::ContainsSubstring("DiisStep"));
 }
 
 // ── Identity: rebuilt executors reproduce captured ones bit for bit ─────────
@@ -698,6 +700,43 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - a captured SymmGemm ignores the symmetry B
     auto plain = create_zero_tensor<T>("plain", 4, 4);
     linear_algebra::detail::symm_gemm('n', 'n', true, A.impl(), B.impl(), &plain.impl(), nullptr);
     REQUIRE(bytes_of(C) == bytes_of(plain));
+}
+
+TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Getrf and Getrs are bitwise identical", "[ComputeGraph][ExecutorBuilder]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using T = TestType;
+
+    // Diagonally dominant, so the factorization is regular and its pivots are well defined.
+    auto A = create_random_tensor<T>("A", 4, 4);
+    for (size_t i = 0; i < 4; ++i) {
+        A(i, i) += T{6};
+    }
+    auto       B         = create_random_tensor<T>("B", 4, 2);
+    auto const a_initial = bytes_of(A);
+    auto const b_initial = bytes_of(B);
+
+    cg::LuPivots pivots;
+    cg::Graph    graph("builder_lu");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::getrf(&A, &pivots);
+        cg::getrs(A, pivots, &B);
+    }
+    graph.execute();
+    auto const captured_lu = bytes_of(A);
+    auto const captured_x  = bytes_of(B);
+    REQUIRE(captured_x != b_initial);
+
+    // The factorization is read from the output list and the pivots are its second output; the
+    // solve reads A and the pivots from its inputs and B from its output. Restoring both is what
+    // makes a builder that read the wrong list visible.
+    restore(&A, a_initial);
+    restore(&B, b_initial);
+    REQUIRE(rebuild_executors(graph) == 2);
+    graph.execute();
+
+    REQUIRE(bytes_of(A) == captured_lu);
+    REQUIRE(bytes_of(B) == captured_x);
 }
 
 TEST_CASE("ExecutorBuilder - rebuilt Transpose is bitwise identical", "[ComputeGraph][ExecutorBuilder]") {

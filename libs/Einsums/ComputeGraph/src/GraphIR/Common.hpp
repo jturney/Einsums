@@ -143,6 +143,10 @@ struct IrTensor {
     /// already defines; the value is that frame's id for it.
     std::optional<std::size_t> outer;
 
+    /// An LU pivot array rather than a tensor: the record says ``"kind": "lu_pivots"`` and carries
+    /// only its id, its name and an outer reference. Absent in every record of a tensor.
+    bool lu_pivots{false};
+
     /// Manifest-only: the entry whose storage this one is part of, by name.
     std::string aliases_input;
 

@@ -101,6 +101,23 @@ void CaptureContext::add_recorded(Node node, bool built) {
     _graph->add_node(std::move(node));
 }
 
+TensorId CaptureContext::get_or_register_pivots(LuPivots const &pivots, std::size_t order) {
+    if (_graph == nullptr) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext::get_or_register_pivots called outside of capture");
+    }
+    void const *key = pivots.buffer().get();
+    if (TensorHandle const *found = _graph->find_tensor_by_ptr(key); found != nullptr) {
+        if (!found->lu_pivots) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                    "CaptureContext::get_or_register_pivots: tensor '{}' is registered at the pivot "
+                                    "array's address and is not a pivot array",
+                                    found->name);
+        }
+        return found->id;
+    }
+    return _graph->register_tensor(make_pivot_handle(pivots.buffer(), order, 0));
+}
+
 void CaptureContext::record_built(OpKind kind, std::string label, packed_gemm::ScalarType dtype, std::size_t rank, OpData op_data,
                                   std::span<TensorId const> build_inputs, std::span<TensorId const> build_outputs,
                                   std::vector<TensorId> inputs, std::vector<TensorId> outputs) {

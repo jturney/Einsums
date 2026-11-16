@@ -151,6 +151,13 @@
  * one-character LAPACK norm code; a SymmGemm's carries ``trans_a`` and ``trans_b`` (``n`` or
  * ``t``) and ``conjugate``, which tells the Hermitian congruence from the bilinear one. A SymmGemm
  * node carries no symmetry declaration for B, so a loaded one never runs as ``symm`` or ``hemm``.
+ * @ref OpKind::Getrf and @ref OpKind::Getrs descriptors are written empty. Their LU pivot operand
+ * is a record in the ``tensors`` section with ``"kind": "lu_pivots"`` and only its ``id``, its
+ * ``name`` and, in a fragment, its ``outer`` reference: it is not a tensor, has no element type a
+ * file could name, and holds no data a file carries. The loader allocates it and sizes it from the
+ * matrix its getrf factors, and a graph whose pivots no getrf in it writes is refused at save,
+ * because the interchanges of a factorization made outside the graph are not in the file. A record
+ * without a ``kind`` is a tensor, which is every record any earlier file holds.
  * Gesv and Invert descriptors are written empty, since a solve and an inversion are fully
  * described by their kind, dtype and operands. A Norm node's ``dtype`` is its destination's, so
  * the norm of a complex operand records the REAL type, and the operand's own record says what it

@@ -479,6 +479,44 @@ struct GesvDescriptor {
 };
 
 /**
+ * @brief Metadata for @ref OpKind::Getrf nodes: the LU factorization
+ *        ``A = P L U`` in place, with the row interchanges written to a pivot array.
+ *
+ * Deliberately EMPTY, as @ref GesvDescriptor is. The pivot array is not a field
+ * here but the node's second OUTPUT: an LU pivot operand (see
+ * @ref TensorHandle::lu_pivots), so the getrs that reads it is ordered after this
+ * node by the node lists rather than by a pointer both executors hold. The node
+ * lists A as its input and A and the pivots as its outputs.
+ *
+ * A singular A is an error at replay. LAPACK still completes the factorization and
+ * reports ``info > 0``, and the eager call returns that code to its caller, but a
+ * replay has no caller to return it to and a solve against the result is
+ * meaningless, so the built executor throws, as a singular gesv does.
+ *
+ * @versionadded{2.0.0}
+ */
+struct GetrfDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GetrfDescriptor";
+};
+
+/**
+ * @brief Metadata for @ref OpKind::Getrs nodes: solve ``A X = B`` in place against
+ *        a factorization @ref OpKind::Getrf produced.
+ *
+ * Empty: the solve has no transpose or prefactor to record. It reads the
+ * factorization A and the pivot operand, and it overwrites B, so it lists A, the
+ * pivots and then B as inputs (B last, because the solve reads it, per the
+ * destination rule) and B as its one output.
+ *
+ * @versionadded{2.0.0}
+ */
+struct GetrsDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GetrsDescriptor";
+};
+
+/**
  * @brief Metadata for @ref OpKind::Invert nodes: ``A := A^{-1}``, in place.
  *
  * Empty for the reason @ref GesvDescriptor is: the inversion is fully described

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/ComputeGraph/LuPivots.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/TensorSlot.hpp>
@@ -225,6 +226,21 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
         _ptr_to_id[ptr] = {.id = handle.id, .token = {}};
         return handle.id;
     }
+
+    /**
+     * @brief Look up or create the TensorId of an LU pivot array.
+     *
+     * The array is an operand, so a getrf that writes it and a getrs that reads it are ordered
+     * by the node lists like any producer and consumer. It is keyed on the shared buffer, which
+     * every copy of one ``LuPivots`` names, through the graph's pointer index; the handle keeps
+     * the buffer alive, so its address cannot be reused while the graph names it.
+     *
+     * @param[in] pivots The pivot array.
+     * @param[in] order ``min(m, n)`` of the matrix it factors, recorded as the array's extent.
+     * @return The pivot array's TensorId in the current graph.
+     * @throws std::logic_error If called outside of a capture context.
+     */
+    TensorId get_or_register_pivots(LuPivots const &pivots, std::size_t order);
 
     /**
      * @brief Get or create a TensorSlot for a tensor (for rebindable capture).

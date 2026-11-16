@@ -388,8 +388,10 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
     }
     case OpKind::Gesv:
     case OpKind::Invert:
-        // Empty: a solve and an inversion are fully described by their kind, dtype, rank and
-        // operands, as a trace is.
+    case OpKind::Getrf:
+    case OpKind::Getrs:
+        // Empty: a solve, an inversion and an LU factorization are fully described by their kind,
+        // dtype, rank and operands, the pivots among them, as a trace is.
         return Value{std::move(out)};
     case OpKind::Gemv: {
         auto const &desc = node.op_data.get<GemvDescriptor>();
@@ -624,8 +626,49 @@ std::string_view saved_alloc_name(TensorHandle const &handle) {
     return alloc_state_name(handle.caller_bound ? handle.declared.alloc_state : handle.alloc_state);
 }
 
+/// Whether a getrf in @p graph, or in any body below it, writes the pivot array at @p buffer.
+// NOLINTNEXTLINE(misc-no-recursion): control-flow bodies nest.
+bool pivots_written(Graph const &graph, void const *buffer) {
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == OpKind::Getrf) {
+            for (TensorId const id : node.outputs) {
+                if (TensorHandle const *h = graph.find_tensor(id); h != nullptr && h->lu_pivots && h->tensor_ptr == buffer) {
+                    return true;
+                }
+            }
+        }
+        bool below = false;
+        for_each_child_graph(node, [&](Graph const &child) { below = below || pivots_written(child, buffer); });
+        if (below) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// An LU pivot array's record. It names the array and nothing about its contents: a loaded graph
+/// allocates the array itself and its getrf fills it, so a file cannot hold pivots that no getrf
+/// in the graph writes, and such a graph is refused rather than saved with a buffer nobody fills.
+Value write_pivot_record(Graph const &graph, TensorHandle const &handle, std::size_t dense, Frame const &frame) {
+    Object out;
+    out.set("id", Value{dense});
+    out.set("name", Value{handle.name});
+    out.set("kind", Value{"lu_pivots"});
+    if (auto const outer = frame.outer_of(handle.tensor_ptr); outer.has_value()) {
+        out.set("outer", Value{*outer});
+    } else if (!pivots_written(graph, handle.tensor_ptr)) {
+        throw SaveRefusal(fmt::format("LU pivot array '{}' is read by a getrs but written by no getrf in the graph; a file cannot carry "
+                                      "the interchanges of a factorization made outside it, so capture the getrf too",
+                                      handle.name));
+    }
+    return Value{std::move(out)};
+}
+
 /// One tensor's storage-side record.
 Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t dense, Frame const &frame) {
+    if (handle.lu_pivots) {
+        return write_pivot_record(graph, handle, dense, frame);
+    }
     require_storable_dtype(handle.name, handle.dtype);
     Object out;
     out.set("id", Value{dense});

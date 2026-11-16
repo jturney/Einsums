@@ -260,6 +260,40 @@ class ScalarAccessor {
 };
 
 /**
+ * @brief An LU pivot operand, resolved once when an executor is built.
+ *
+ * Reads the array through its handle on every call, as @ref ScalarAccessor reads a raw
+ * scalar, so the executor always reaches the array the handle names now.
+ */
+class PivotAccessor {
+  public:
+    PivotAccessor() = default;
+
+    /// Read the pivot array @p handle names, which must outlive the executor.
+    explicit PivotAccessor(TensorHandle const *handle) : _handle(handle) {}
+
+    /// Whether this accessor was bound to anything.
+    [[nodiscard]] bool valid() const noexcept { return _handle != nullptr; }
+
+    /// The pivot array, which a getrf resizes to the order of the matrix it factors.
+    [[nodiscard]] std::vector<blas::int_t> *pivots() const { return static_cast<std::vector<blas::int_t> *>(_handle->live_ptr()); }
+
+  private:
+    TensorHandle const *_handle{nullptr};
+};
+
+/**
+ * @brief Bind a @ref PivotAccessor to @p id, or explain why it cannot be bound.
+ *
+ * @param[in,out] graph   Graph the id belongs to.
+ * @param[in]     id      The pivot operand.
+ * @param[in]     context Caller name for the diagnostic, e.g. ``"build_executor(Getrf)"``.
+ * @return A bound accessor.
+ * @throws std::invalid_argument When @p id names no tensor, or names one that is not a pivot array.
+ */
+[[nodiscard]] EINSUMS_EXPORT PivotAccessor resolve_pivot_operand(Graph &graph, TensorId id, std::string_view context);
+
+/**
  * @brief Bind a @ref ScalarAccessor to @p id, or explain why it cannot be bound.
  *
  * @param[in,out] graph   Graph the id belongs to.
@@ -408,6 +442,8 @@ EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
     case OpKind::Ger:
     case OpKind::Norm:
     case OpKind::SymmGemm:
+    case OpKind::Getrf:
+    case OpKind::Getrs:
         return true;
     default:
         return false;

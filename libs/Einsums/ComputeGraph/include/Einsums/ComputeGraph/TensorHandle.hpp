@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/BLAS/Types.hpp>
 #include <Einsums/Comm/Collectives.hpp>
 #include <Einsums/ComputeGraph/Detail/MaintainedViews.hpp>
 #include <Einsums/ComputeGraph/TensorBacking.hpp>
@@ -452,6 +453,13 @@ inline constexpr TensorOps tensor_ops_for = detail::make_tensor_ops<TensorType>(
 template <typename T>
 inline constexpr TensorOps scalar_ops_for = detail::make_scalar_ops<T>();
 
+/// The operations table of an LU pivot array. Every entry is null: the array has no
+/// ``TensorImpl``, the graph neither allocates nor frees it (its buffer is shared with the
+/// ``LuPivots`` that named it, or owned by a loaded graph), and it is never reduced across ranks.
+/// A distinct table rather than the empty default so that a pivot handle is told from a handle
+/// nothing was ever registered for. @see make_pivot_handle
+inline constexpr TensorOps lu_pivot_ops{};
+
 /**
  * @brief Type-erased handle to a tensor, storing pointer and metadata.
  *
@@ -511,6 +519,13 @@ struct TensorHandle {
     /// a dot writes through) rather than at a tensor object. Rank 0 either way, and the two are not
     /// interchangeable: an executor built for one writes through the pointer as the other.
     bool raw_scalar{false};
+    /// True when @ref tensor_ptr points at the ``std::vector<blas::int_t>`` a ``LuPivots`` shares:
+    /// the row interchanges a getrf writes and a getrs reads. It is an operand so the schedulers
+    /// see that edge through the node lists, and it is not a tensor: its elements are BLAS
+    /// integers, which no ``packed_gemm::ScalarType`` names, so @ref dtype is Unknown, it has no
+    /// ``TensorImpl``, and nothing binds, frees or allocates it. It is rank 1 with the order of the
+    /// factored matrix as its one extent. See @ref make_pivot_handle.
+    bool lu_pivots{false};
     bool is_runtime{false}; ///< True if tensor_ptr points at a GeneralRuntimeTensor<T> (passes that cast tensor_ptr to a
                             ///< runtime-tensor type MUST gate on this: statically-typed Tensor<T, Rank> captures pass through
                             ///< the same handles, and a blind cast is type confusion)
@@ -1056,6 +1071,38 @@ TensorHandle make_scalar_handle(T *scalar, TensorId id, std::string name = "scal
     h.raw_scalar   = true;
     h.ops          = &scalar_ops_for<T>;
 
+    return h;
+}
+
+/**
+ * @brief Create a TensorHandle for an LU pivot array.
+ *
+ * The handle holds @p buffer in @ref TensorHandle::owner, so the array lives as long as any graph
+ * that names it, whatever happens to the ``LuPivots`` it came from, and @ref TensorHandle::tensor_ptr
+ * is the array's address: the identity a second capture against the same ``LuPivots`` finds.
+ *
+ * @param[in] buffer The shared pivot array.
+ * @param[in] order The order of the matrix the pivots factor, ``min(m, n)``: the array's one extent.
+ * @param[in] id Initial ID (will be reassigned by Graph::register_tensor()).
+ * @param[in] name Human-readable name.
+ * @return A rank-1 handle with @ref TensorHandle::lu_pivots set and an Unknown dtype.
+ */
+inline TensorHandle make_pivot_handle(std::shared_ptr<std::vector<blas::int_t>> buffer, std::size_t order, TensorId id,
+                                      std::string name = "lu_pivots") {
+    TensorHandle h;
+    h.tensor_ptr = buffer.get();
+    // No data_ptr: the alias geometry reads it as the start of a byte span over float storage, and
+    // a vector's buffer moves whenever a getrf resizes it, so a snapshot would go stale and could
+    // come to overlap some unrelated tensor's storage.
+    h.owner        = std::move(buffer);
+    h.id           = id;
+    h.name         = std::move(name);
+    h.rank         = 1;
+    h.dims         = {order};
+    h.strides      = {1};
+    h.element_size = sizeof(blas::int_t);
+    h.lu_pivots    = true;
+    h.ops          = &lu_pivot_ops;
     return h;
 }
 

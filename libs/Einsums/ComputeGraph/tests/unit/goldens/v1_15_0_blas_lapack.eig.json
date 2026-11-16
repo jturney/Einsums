@@ -65,6 +65,21 @@
     },
     {
       "id": 4,
+      "name": "L",
+      "direction": "inout",
+      "dtype": "complex128",
+      "rank": 2,
+      "dims": [4,4],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "init": "none",
+      "alloc": "materialized",
+      "aliases_input": null
+    },
+    {
+      "id": 5,
       "name": "M",
       "direction": "inout",
       "dtype": "complex128",
@@ -79,7 +94,7 @@
       "aliases_input": null
     },
     {
-      "id": 5,
+      "id": 6,
       "name": "N",
       "direction": "inout",
       "dtype": "complex128",
@@ -94,7 +109,22 @@
       "aliases_input": null
     },
     {
-      "id": 6,
+      "id": 7,
+      "name": "R",
+      "direction": "inout",
+      "dtype": "complex128",
+      "rank": 2,
+      "dims": [4,2],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "init": "none",
+      "alloc": "materialized",
+      "aliases_input": null
+    },
+    {
+      "id": 8,
       "name": "S",
       "direction": "inout",
       "dtype": "complex128",
@@ -109,7 +139,7 @@
       "aliases_input": null
     },
     {
-      "id": 7,
+      "id": 9,
       "name": "W",
       "direction": "output",
       "dtype": "float64",
@@ -124,7 +154,7 @@
       "aliases_input": null
     },
     {
-      "id": 8,
+      "id": 10,
       "name": "n",
       "direction": "output",
       "dtype": "float64",
@@ -139,7 +169,7 @@
       "aliases_input": null
     },
     {
-      "id": 9,
+      "id": 11,
       "name": "x",
       "direction": "input",
       "dtype": "complex128",
@@ -154,7 +184,7 @@
       "aliases_input": null
     },
     {
-      "id": 10,
+      "id": 12,
       "name": "y",
       "direction": "inout",
       "dtype": "complex128",
@@ -169,7 +199,7 @@
       "aliases_input": null
     },
     {
-      "id": 11,
+      "id": 13,
       "name": "z",
       "direction": "output",
       "dtype": "complex128",
@@ -188,15 +218,15 @@
   "approximations": [],
   "params": [],
   "gate_flags": [],
-  "tensors": [],
+  "tensors": [{"id":14,"name":"lu_pivots","kind":"lu_pivots"}],
   "slot_redirects": [],
   "nodes": [
     {
       "id": 0,
       "kind": "Gemv",
       "label": "gemv(N)",
-      "inputs": [0,9,10],
-      "outputs": [10],
+      "inputs": [0,11,12],
+      "outputs": [12],
       "dtype": "complex128",
       "rank": 1,
       "descriptor": {"alpha":{"dtype":"complex128","re":0.75,"im":-0.25},"beta":{"dtype":"complex128","re":0.5,"im":0.125},"trans":"N"}
@@ -205,8 +235,8 @@
       "id": 1,
       "kind": "Gemv",
       "label": "gemv(C)",
-      "inputs": [0,10],
-      "outputs": [11],
+      "inputs": [0,12],
+      "outputs": [13],
       "dtype": "complex128",
       "rank": 1,
       "descriptor": {"alpha":{"dtype":"complex128","re":0.75,"im":-0.25},"beta":{"dtype":"complex128","re":0.0,"im":0.0},"trans":"C"}
@@ -215,25 +245,27 @@
       "id": 2,
       "kind": "Ger",
       "label": "gerc",
-      "inputs": [10,9,4],
-      "outputs": [4],
+      "inputs": [12,11,5],
+      "outputs": [5],
       "dtype": "complex128",
       "rank": 2,
       "descriptor": {"alpha":{"dtype":"complex128","re":0.5,"im":0.125},"conjugated":true}
     },
-    {"id":3,"kind":"Gesv","label":"gesv","inputs":[6,1],"outputs":[6,1],"dtype":"complex128","rank":2,"descriptor":{}},
-    {"id":4,"kind":"Invert","label":"invert","inputs":[5],"outputs":[5],"dtype":"complex128","rank":2,"descriptor":{}},
-    {"id":5,"kind":"Heev","label":"heev","inputs":[3],"outputs":[3,7],"dtype":"complex128","rank":2,"descriptor":{"compute_eigenvectors":true}},
-    {"id":6,"kind":"Norm","label":"norm","inputs":[0],"outputs":[8],"dtype":"float64","rank":1,"descriptor":{"norm_type":"I"}},
+    {"id":3,"kind":"Gesv","label":"gesv","inputs":[8,1],"outputs":[8,1],"dtype":"complex128","rank":2,"descriptor":{}},
+    {"id":4,"kind":"Invert","label":"invert","inputs":[6],"outputs":[6],"dtype":"complex128","rank":2,"descriptor":{}},
+    {"id":5,"kind":"Heev","label":"heev","inputs":[3],"outputs":[3,9],"dtype":"complex128","rank":2,"descriptor":{"compute_eigenvectors":true}},
+    {"id":6,"kind":"Norm","label":"norm","inputs":[0],"outputs":[10],"dtype":"float64","rank":1,"descriptor":{"norm_type":"I"}},
     {
       "id": 7,
       "kind": "SymmGemm",
       "label": "symm_gemm",
-      "inputs": [5,6],
+      "inputs": [6,8],
       "outputs": [2],
       "dtype": "complex128",
       "rank": 2,
       "descriptor": {"trans_a":"n","trans_b":"t","conjugate":true}
-    }
+    },
+    {"id":8,"kind":"Getrf","label":"getrf","inputs":[4],"outputs":[4,14],"dtype":"complex128","rank":2,"descriptor":{}},
+    {"id":9,"kind":"Getrs","label":"getrs","inputs":[4,14,7],"outputs":[7],"dtype":"complex128","rank":2,"descriptor":{}}
   ]
 }

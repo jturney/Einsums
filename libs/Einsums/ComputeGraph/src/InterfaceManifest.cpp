@@ -207,6 +207,11 @@ InterfaceManifest Graph::manifest() {
         if (handle.backing) {
             continue;
         }
+        // An LU pivot array is state a getrf writes and its getrs read, not data a caller hands
+        // over: it has no element type a bind could check, and a loaded graph allocates its own.
+        if (handle.lu_pivots) {
+            continue;
+        }
         TensorUsage const *use = uses.find(*this, id);
         if (use == nullptr) {
             // Referenced by no node, not even through a control-flow subtree.

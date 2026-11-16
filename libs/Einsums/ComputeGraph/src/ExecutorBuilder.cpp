@@ -929,6 +929,45 @@ std::function<void()> build_gesv(packed_gemm::ScalarType dtype, OperandAccessor 
     });
 }
 
+/**
+ * @brief ``A = P L U`` in place, the interchanges into the pivot operand. Rank-erased; the
+ *        kernel is ``linear_algebra::detail::getrf``, which grows the array to ``min(m, n)``.
+ *
+ * Throws when LAPACK reports a singular factor (``info > 0``), as a singular gesv does. The
+ * eager call returns that code instead, and so may a caller who asked; a replay cannot hand it
+ * to anyone, and a getrs fed the result would compute garbage without a word.
+ */
+std::function<void()> build_getrf(packed_gemm::ScalarType dtype, OperandAccessor const &a, PivotAccessor const &pivots) {
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        return [a, pivots]() {
+            WAGGLE_ZONE("getrf execute");
+            auto *matrix = a.impl<T>();
+            WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(matrix->dim(0)));
+            int const info = linear_algebra::detail::getrf(matrix, pivots.pivots());
+            if (info > 0) {
+                EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                        "getrf: factor U({0},{0}) is exactly zero, so the matrix is singular and no solve against the "
+                                        "factorization means anything",
+                                        info - 1);
+            }
+        };
+    });
+}
+
+/// ``A X = B`` in place against a getrf's factorization and pivots. Rank-erased; the kernel is
+/// ``linear_algebra::detail::getrs``.
+std::function<void()> build_getrs(packed_gemm::ScalarType dtype, OperandAccessor const &a, PivotAccessor const &pivots,
+                                  OperandAccessor const &b) {
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        return [a, pivots, b]() {
+            WAGGLE_ZONE("getrs execute");
+            auto const *matrix = a.impl<T>();
+            WAGGLE_ANNOTATE("n", static_cast<std::int64_t>(matrix->dim(0)));
+            std::ignore = linear_algebra::detail::getrs(*matrix, *pivots.pivots(), b.impl<T>());
+        };
+    });
+}
+
 /// ``A := A^{-1}``, in place. Rank-erased; the kernel is ``linear_algebra::detail::invert``.
 std::function<void()> build_invert(packed_gemm::ScalarType dtype, OperandAccessor const &a) {
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
@@ -1380,6 +1419,17 @@ OperandAccessor resolve_operand(Graph &graph, TensorId id, std::string_view cont
     return accessor;
 }
 
+PivotAccessor resolve_pivot_operand(Graph &graph, TensorId id, std::string_view context) {
+    TensorHandle const *handle = graph.find_tensor(id);
+    if (handle == nullptr) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: the pivot operand (tensor {}) is not registered in this graph", context, id);
+    }
+    if (!handle->lu_pivots || handle->live_ptr() == nullptr) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: operand '{}' (tensor {}) is not an LU pivot array", context, handle->name, id);
+    }
+    return PivotAccessor{handle};
+}
+
 ScalarAccessor resolve_scalar_operand(Graph &graph, TensorId id, std::string_view context, char const *role) {
     // The tensor route first, so a destination that has a slot follows rebind()
     // and redirect_slot(); a registered raw scalar has neither and falls
@@ -1678,6 +1728,14 @@ std::string reconstruction_blocker(Node const &node) {
         return node.op_data.holds<GesvDescriptor>()
                    ? std::string{}
                    : fmt::format("Gesv: expected a GesvDescriptor, found {}", descriptor_name(node.op_data));
+    case OpKind::Getrf:
+        return node.op_data.holds<GetrfDescriptor>()
+                   ? std::string{}
+                   : fmt::format("Getrf: expected a GetrfDescriptor, found {}", descriptor_name(node.op_data));
+    case OpKind::Getrs:
+        return node.op_data.holds<GetrsDescriptor>()
+                   ? std::string{}
+                   : fmt::format("Getrs: expected a GetrsDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::Invert:
         return node.op_data.holds<InvertDescriptor>()
                    ? std::string{}
@@ -1952,6 +2010,23 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
         need(kind, "outputs", outputs, 2);
         (void)expect<GesvDescriptor>(kind, desc, "GesvDescriptor");
         return build_gesv(dtype, resolve_operand(graph, outputs[0], kind, "A"), resolve_operand(graph, outputs[1], kind, "B"));
+    }
+    case OpKind::Getrf: {
+        // A is decomposed in place, so it is read from outputs[0] for the reason the Syev case
+        // gives; the pivot operand is outputs[1].
+        need(kind, "outputs", outputs, 2);
+        (void)expect<GetrfDescriptor>(kind, desc, "GetrfDescriptor");
+        return build_getrf(dtype, resolve_operand(graph, outputs[0], kind, "A"),
+                           resolve_pivot_operand(graph, outputs[1], scalar_context(kind)));
+    }
+    case OpKind::Getrs: {
+        // inputs are A, the pivots and then B, which the solve reads and overwrites; B is read
+        // from outputs[0], the buffer the solution lands in.
+        need(kind, "inputs", inputs, 2);
+        need(kind, "outputs", outputs, 1);
+        (void)expect<GetrsDescriptor>(kind, desc, "GetrsDescriptor");
+        return build_getrs(dtype, resolve_operand(graph, inputs[0], kind, "A"),
+                           resolve_pivot_operand(graph, inputs[1], scalar_context(kind)), resolve_operand(graph, outputs[0], kind, "B"));
     }
     case OpKind::Invert: {
         need(kind, "outputs", outputs, 1);

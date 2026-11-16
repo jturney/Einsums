@@ -634,8 +634,29 @@ bool fits_in_a_buffer(std::vector<std::size_t> const &dims, packed_gemm::ScalarT
 /// whether it is graph-owned and how it is initialized.
 IrTensor read_tensor(Fields const &record, bool manifest_entry) {
     IrTensor out;
-    out.id              = record.count("id").value_or(0);
-    out.name            = record.str("name");
+    out.id   = record.count("id").value_or(0);
+    out.name = record.str("name");
+
+    // A record with a "kind" is an operand that is not a tensor. The only one is an LU pivot array,
+    // which carries nothing but its identity: the loader allocates it and sizes it from the matrix
+    // its getrf factors. Absent, which is every earlier file, means a tensor.
+    if (Value const *kind = record.optional("kind"); kind != nullptr) {
+        if (manifest_entry) {
+            record.note("kind", kind->position, "a manifest entry is a tensor a caller binds and has no kind");
+        } else if (!kind->is_string() || kind->as_string() != "lu_pivots") {
+            record.note("kind", kind->position, R"(expected "lu_pivots")");
+        }
+        out.lu_pivots = true;
+        if (Value const *outer = record.optional("outer"); outer != nullptr) {
+            if (!outer->is_int() || outer->as_int() < 0) {
+                record.note("outer", outer->position, "expected a non-negative integer");
+            } else {
+                out.outer = static_cast<std::size_t>(outer->as_int());
+            }
+        }
+        return out;
+    }
+
     out.dtype           = record.named<packed_gemm::ScalarType>("dtype", scalar_type_from_name, "dtype", packed_gemm::ScalarType::Float64);
     out.rank            = record.count("rank").value_or(0);
     out.dims            = record.counts("dims");
@@ -859,6 +880,12 @@ void read_descriptor(IrNode &node, Fields const &fields, GateFlagTable const &ga
     }
     case OpKind::Gesv:
         node.descriptor = GesvDescriptor{};
+        return;
+    case OpKind::Getrf:
+        node.descriptor = GetrfDescriptor{};
+        return;
+    case OpKind::Getrs:
+        node.descriptor = GetrsDescriptor{};
         return;
     case OpKind::Invert:
         node.descriptor = InvertDescriptor{};

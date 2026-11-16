@@ -550,6 +550,49 @@ TEST_CASE("Graph - a node lists its destination as an input exactly when it read
         CHECK(graph.verify().empty());
     }
 
+    SECTION("getrf writes the factorization and the pivots, and getrs reads both and solves in place") {
+        auto S = create_random_tensor<double>("S", 3, 3);
+        for (size_t i = 0; i < 3; ++i) {
+            S(i, i) += 4.0;
+        }
+        auto         R = create_random_tensor<double>("R", 3, 2);
+        cg::LuPivots pivots;
+        cg::Graph    graph("lu");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::getrf(&S, &pivots);
+            cg::getrs(S, pivots, &R);
+        }
+        REQUIRE(graph.num_nodes() == 2);
+        auto const &factor = graph.nodes()[0];
+        auto const &solve  = graph.nodes()[1];
+        REQUIRE(factor.outputs.size() == 2);
+        cg::TensorId const s_id = factor.outputs[0];
+        cg::TensorId const p_id = factor.outputs[1];
+        CHECK(factor.inputs == std::vector<TensorId>{s_id});
+
+        cg::TensorHandle const *handle = graph.find_tensor(p_id);
+        REQUIRE(handle != nullptr);
+        CHECK(handle->lu_pivots);
+        CHECK(handle->dtype == packed_gemm::ScalarType::Unknown);
+        CHECK(handle->dims == std::vector<size_t>{3});
+
+        REQUIRE(solve.inputs.size() == 3);
+        CHECK(solve.inputs[0] == s_id);
+        CHECK(solve.inputs[1] == p_id);
+        CHECK(solve.inputs[2] == solve.outputs.at(0));
+        CHECK(cg::reads_destination(solve));
+        CHECK(cg::destination_operand_count(solve) == std::optional<std::size_t>{2});
+        CHECK(cg::operand_inputs(solve).size() == 2);
+        CHECK(graph.verify().empty());
+
+        // The pivots are the graph's state rather than data a caller binds, so they have no
+        // manifest entry.
+        for (auto const &entry : graph.manifest().entries()) {
+            CHECK(entry.id != p_id);
+        }
+    }
+
     SECTION("the same kinds without a descriptor are left to their lists") {
         // A node a pass assembled by hand under one of these kinds, with no descriptor, is the
         // opaque closure the descriptor replaced; nothing vouches for its lists.

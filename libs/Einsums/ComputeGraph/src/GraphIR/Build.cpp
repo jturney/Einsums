@@ -71,6 +71,8 @@ struct LoadedTensor {
     TensorId                id{0};
     bool                    scalar{false};
     packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown}; ///< What @ref object holds elements of.
+    /// An LU pivot array's buffer, which its handle and every body's handle for it share.
+    std::shared_ptr<std::vector<blas::int_t>> pivots;
 };
 
 /// Allocate placeholder storage for one tensor and register it.
@@ -148,8 +150,30 @@ LoadedTensor adopt_outer_tensor(Graph &graph, IrTensor const &spec, LoadedTensor
     return LoadedTensor{.object = outer.object, .id = id, .scalar = false, .dtype = outer.dtype};
 }
 
+/// An LU pivot array: a buffer of its own, or the enclosing frame's when the record names one. It
+/// starts empty, and the getrf that writes it gives it its extent once its nodes are known.
+LoadedTensor materialize_pivots(Graph &graph, IrTensor const &spec, LoadedTensor const *outer) {
+    std::shared_ptr<std::vector<blas::int_t>> buffer;
+    if (outer != nullptr) {
+        if (!outer->pivots) {
+            throw BuildFailure(fmt::format("pivot array '{}' names an enclosing tensor that is not a pivot array", spec.name));
+        }
+        buffer = outer->pivots;
+    } else {
+        buffer = std::make_shared<std::vector<blas::int_t>>();
+    }
+    TensorId const id = graph.register_tensor(make_pivot_handle(buffer, 0, 0, spec.name));
+    return LoadedTensor{.object = buffer.get(), .id = id, .scalar = false, .dtype = packed_gemm::ScalarType::Unknown, .pivots = buffer};
+}
+
 /// Dispatch @p spec's dtype and allocate or adopt accordingly.
 LoadedTensor materialize_tensor(Graph &root, Graph &graph, IrTensor const &spec, LoadedTensor const *outer) {
+    if (spec.lu_pivots) {
+        return materialize_pivots(graph, spec, outer);
+    }
+    if (outer != nullptr && outer->pivots) {
+        throw BuildFailure(fmt::format("tensor '{}' names an enclosing pivot array, which is not a tensor", spec.name));
+    }
     if (spec.dtype == packed_gemm::ScalarType::Unknown) {
         throw BuildFailure(fmt::format("tensor '{}' has dtype 'unknown', which names no storage the loader can allocate", spec.name));
     }
@@ -309,6 +333,18 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         node.inputs  = remap(spec.inputs, "input");
         node.outputs = remap(spec.outputs, "output");
         node.op_data = spec.descriptor;
+
+        // A getrf's pivot operand is sized from the matrix it factors, min(m, n), which is what the
+        // captured array was sized to; the factorization grows it again if a bind changes A.
+        if (spec.kind == OpKind::Getrf && spec.outputs.size() == 2 && loaded[spec.outputs[1]].pivots) {
+            TensorHandle const *matrix = graph.find_tensor(node.outputs[0]);
+            if (matrix == nullptr || matrix->rank != 2) {
+                throw BuildFailure(fmt::format("getrf node '{}' must factor a rank-2 tensor", spec.label));
+            }
+            std::size_t const order = std::min(matrix->dims[0], matrix->dims[1]);
+            loaded[spec.outputs[1]].pivots->resize(order);
+            LoaderAccess::tensor(graph, node.outputs[1]).dims = {order};
+        }
 
         if (auto *alloc = node.op_data.get_if<AllocDescriptor>()) {
             // An allocation marks one tensor coming into use and reads nothing, which is the only

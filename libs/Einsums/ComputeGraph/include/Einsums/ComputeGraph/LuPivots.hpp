@@ -19,14 +19,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * @brief The row interchanges @ref getrf produces, as something a graph can outlive.
  *
  * A pivot array is a list of BLAS integers, which is not one of the dtypes a tensor operand may carry, so it cannot be a graph
- * TENSOR and cannot be a slot. It is instead a handle whose buffer is shared: @ref getrf and @ref getrs both bake a copy of the
- * @c shared_ptr into their executors at capture time, so the buffer survives however long the graph does even if the handle the
- * caller held is dropped first, and both see the same array on every replay.
- *
- * Because the pivots ride outside the dataflow, they carry no ordering of their own. What orders a factorization against its
- * solves is the FACTORIZATION TENSOR: @ref getrf writes it, @ref getrs reads it, and the hazard scan serializes the pair on that
- * edge. A @ref getrs against a handle whose matching @ref getrf writes a different tensor has nothing holding the two together
- * and is a bug in the caller.
+ * TENSOR and cannot be a slot. Capture registers it instead as an LU pivot OPERAND (TensorHandle::lu_pivots): @ref getrf
+ * lists it as an output and @ref getrs as an input, so the schedulers order a solve after its factorization through the node
+ * lists. The handle holds a copy of the @c shared_ptr, so the buffer survives however long the graph does even if the
+ * caller drops this object first, and every replay sees the same array.
  *
  * The buffer is sized by @ref getrf on the first execution and reused afterwards.
  */

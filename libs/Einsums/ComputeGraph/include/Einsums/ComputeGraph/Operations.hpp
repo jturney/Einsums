@@ -4873,13 +4873,12 @@ auto gesv(AType *A, BType *B) -> int {
 // ─────────────────────────────────────────────────────────────────────────────
 // getrf / getrs: factor once, solve many
 //
-// The pivots are not a tensor - a BLAS integer array is none of the dtypes an
-// operand may carry - so they ride outside the dataflow in a LuPivots handle
-// whose buffer both executors bake in at capture time. What orders a
-// factorization against its solves is therefore the factorization TENSOR:
-// getrf writes it, getrs reads it, and the hazard scan serializes that pair on
-// its own. A getrs whose handle was filled by a getrf against a DIFFERENT
-// tensor has no edge holding the two together.
+// The pivots are not a tensor (a BLAS integer array is none of the dtypes a
+// tensor may carry), so they are captured as an LU pivot OPERAND: getrf lists
+// them as its second output and getrs as its second input. The schedulers see
+// the factorization's edge to its solves through those lists, on the pivots as
+// well as on the factorization tensor, even when the solve's A is a different
+// tensor than the one getrf wrote.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// LU-factorize ``A`` in place, recording the row interchanges in ``pivots``.
@@ -4892,8 +4891,10 @@ auto gesv(AType *A, BType *B) -> int {
 /// ``i`` if ``U(i,i)`` is exactly zero - the factorization is still complete,
 /// but a solve against it is meaningless.
 ///
-/// The same ``pivots`` object must be handed to the matching ``getrs``, and
-/// ordering rides on ``A`` rather than on the pivots.
+/// The same ``pivots`` object must be handed to the matching ``getrs``. In a
+/// captured graph the pivots are an operand, so the solve is ordered after the
+/// factorization through them, and a replay that meets a singular ``A``
+/// throws, since no caller is there to read a returned code.
 template <MatrixOperand AType>
 // clang-format off
 APIARY_EXPOSE

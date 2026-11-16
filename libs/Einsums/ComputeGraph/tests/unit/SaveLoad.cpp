@@ -678,6 +678,89 @@ TEMPLATE_LIST_TEST_CASE("SaveLoad - gesv and invert round-trip and solve what th
     testing::require_tensors_close(NN, identity_matrix<T>(4), blas_tolerance<T>());
 }
 
+TEMPLATE_LIST_TEST_CASE("SaveLoad - an LU factorization and its solves round-trip with their pivots", "[ComputeGraph][SaveLoad]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    // The pivots are an operand the file names and a loaded graph allocates. They are not in the
+    // manifest, so the loaded graph is bound with A and the right-hand sides alone, and the
+    // factorization fills its own pivot array before the solves read it.
+    auto const A0 = dominant_matrix<T>("A", false);
+    auto const B0 = create_random_tensor<T>("B", 4, 2);
+    auto const b0 = create_random_tensor<T>("b", 4);
+
+    RuntimeTensor<T> A(A0);
+    RuntimeTensor<T> B(B0);
+    RuntimeTensor<T> b(b0);
+    cg::LuPivots     pivots;
+
+    cg::Graph graph("lu");
+    {
+        cg::CaptureGuard const guard(graph);
+        REQUIRE(cg::getrf(&A, &pivots) == 0);
+        REQUIRE(cg::getrs(A, pivots, &B) == 0);
+        REQUIRE(cg::getrs(A, pivots, &b) == 0);
+    }
+    REQUIRE(graph.serializability_report().empty());
+
+    std::string const text = must_save(graph);
+    REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring(R"("kind":"lu_pivots")"));
+    cg::Graph loaded = must_load(text);
+
+    REQUIRE(loaded.num_nodes() == 3);
+    CHECK(loaded.nodes()[0].op_data.holds<cg::GetrfDescriptor>());
+    CHECK(loaded.nodes()[1].op_data.holds<cg::GetrsDescriptor>());
+    cg::TensorId const p_id = loaded.nodes()[0].outputs.at(1);
+    CHECK(loaded.nodes()[1].inputs.at(1) == p_id);
+    CHECK(loaded.nodes()[2].inputs.at(1) == p_id);
+    cg::TensorHandle const *handle = loaded.find_tensor(p_id);
+    REQUIRE(handle != nullptr);
+    CHECK(handle->lu_pivots);
+    CHECK(handle->dims == std::vector<size_t>{4});
+    CHECK(loaded.manifest_names().size() == 3);
+
+    // Twice, with a different matrix the second time, so the solve is checked against the
+    // matrix that is bound and not against one the file or the capture remembered.
+    for (int round = 0; round < 2; ++round) {
+        INFO("round " << round);
+        auto Am = dominant_matrix<T>("A", false);
+        if (round == 1) {
+            for (size_t i = 0; i < 4; ++i) {
+                Am(i, (i + 1) % 4) += testing::prefactor<T>(0.75, -0.5);
+            }
+        }
+        RuntimeTensor<T> A2(Am);
+        RuntimeTensor<T> B2(B0);
+        RuntimeTensor<T> b2(b0);
+        loaded.bind("A", A2, "B", B2, "b", b2);
+        REQUIRE(loaded.unbound_manifest_entries().empty());
+        loaded.execute();
+
+        auto AX = create_zero_tensor<T>("AX", 4, 2);
+        reference_einsum("ij <- ik ; kj", &AX, Am, B2);
+        testing::require_tensors_close(AX, B0, blas_tolerance<T>());
+        auto Ax = create_zero_tensor<T>("Ax", 4);
+        reference_einsum("i <- ik ; k", &Ax, Am, b2);
+        testing::require_tensors_close(Ax, b0, blas_tolerance<T>());
+    }
+}
+
+TEST_CASE("SaveLoad - solves against pivots no getrf in the graph writes refuse to save", "[ComputeGraph][SaveLoad]") {
+    // The interchanges come from a factorization made before the capture, and a file holds no
+    // tensor data, so a loaded graph would solve against an array nobody filled.
+    auto A = dominant_matrix<double>("A", false);
+    auto B = create_random_tensor<double>("B", 4, 1);
+
+    cg::LuPivots pivots;
+    REQUIRE(cg::getrf(&A, &pivots) == 0); // eager
+
+    cg::Graph graph("solve_only");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::getrs(A, pivots, &B);
+    }
+    CHECK_THAT(save_refusal(graph), Catch::Matchers::ContainsSubstring("written by no getrf"));
+}
+
 TEMPLATE_LIST_TEST_CASE("SaveLoad - a Hermitian eigendecomposition round-trips and keeps its job", "[ComputeGraph][SaveLoad]",
                         testing::ComplexScalarTypes) {
     using T    = TestType;
@@ -1019,35 +1102,38 @@ TEST_CASE("SaveLoad - a tiled norm refuses although its kind is reconstructible"
     CHECK_THAT(report.front().reason, Catch::Matchers::ContainsSubstring("tiled and block variants record none"));
 }
 
-// Gemv, Ger, Gesv, Invert, Heev, Norm and SymmGemm became saveable at 1.15.0. The golden holds one
-// of each, all complex128, so the conjugate transpose, gerc, a real norm of a complex operand and the
-// Hermitian congruence over B^T are in the corpus too.
+// Gemv, Ger, Gesv, Invert, Heev, Norm, SymmGemm, Getrf and Getrs became saveable at 1.15.0. The
+// golden holds one of each, all complex128, so the conjugate transpose, gerc, a real norm of a complex
+// operand, the Hermitian congruence over B^T and an LU pivot operand are in the corpus too.
 TEST_CASE("SaveLoad - the kinds that joined at 1.15.0 write a golden and refuse a missing key", "[ComputeGraph][SaveLoad]") {
-    using T   = std::complex<double>;
-    auto A    = create_random_tensor<T>("A", 4, 3);
-    auto x    = create_random_tensor<T>("x", 3);
-    auto y    = create_random_tensor<T>("y", 4);
-    auto M    = create_random_tensor<T>("M", 4, 3);
-    auto S    = dominant_matrix<T>("S", false);
-    auto B    = create_random_tensor<T>("B", 4, 2);
-    auto N    = dominant_matrix<T>("N", false);
-    auto H    = dominant_matrix<T>("H", true);
-    auto Wr   = create_zero_tensor<double>("W", 4);
-    auto z    = create_random_tensor<T>("z", 3);
-    auto rA   = RuntimeTensor<T>(A);
-    auto rx   = RuntimeTensor<T>(x);
-    auto ry   = RuntimeTensor<T>(y);
-    auto rz   = RuntimeTensor<T>(z);
-    auto rM   = RuntimeTensor<T>(M);
-    auto rS   = RuntimeTensor<T>(S);
-    auto rB   = RuntimeTensor<T>(B);
-    auto rN   = RuntimeTensor<T>(N);
-    auto rH   = RuntimeTensor<T>(H);
-    auto rW   = RuntimeTensor<double>(Wr);
-    auto rn   = RuntimeTensor<double>("n", std::vector<size_t>{1});
-    auto rG   = RuntimeTensor<T>("G", std::vector<size_t>{4, 4});
-    auto pf_a = T{0.75, -0.25};
-    auto pf_b = T{0.5, 0.125};
+    using T         = std::complex<double>;
+    auto         A  = create_random_tensor<T>("A", 4, 3);
+    auto         x  = create_random_tensor<T>("x", 3);
+    auto         y  = create_random_tensor<T>("y", 4);
+    auto         M  = create_random_tensor<T>("M", 4, 3);
+    auto         S  = dominant_matrix<T>("S", false);
+    auto         B  = create_random_tensor<T>("B", 4, 2);
+    auto         N  = dominant_matrix<T>("N", false);
+    auto         H  = dominant_matrix<T>("H", true);
+    auto         Wr = create_zero_tensor<double>("W", 4);
+    auto         z  = create_random_tensor<T>("z", 3);
+    auto         rA = RuntimeTensor<T>(A);
+    auto         rx = RuntimeTensor<T>(x);
+    auto         ry = RuntimeTensor<T>(y);
+    auto         rz = RuntimeTensor<T>(z);
+    auto         rM = RuntimeTensor<T>(M);
+    auto         rS = RuntimeTensor<T>(S);
+    auto         rB = RuntimeTensor<T>(B);
+    auto         rN = RuntimeTensor<T>(N);
+    auto         rH = RuntimeTensor<T>(H);
+    auto         rW = RuntimeTensor<double>(Wr);
+    auto         rn = RuntimeTensor<double>("n", std::vector<size_t>{1});
+    auto         rG = RuntimeTensor<T>("G", std::vector<size_t>{4, 4});
+    auto         rL = RuntimeTensor<T>(dominant_matrix<T>("L", false));
+    auto         rR = RuntimeTensor<T>(create_random_tensor<T>("R", 4, 2));
+    cg::LuPivots lu_pivots;
+    auto         pf_a = T{0.75, -0.25};
+    auto         pf_b = T{0.5, 0.125};
 
     cg::Graph graph("blas_lapack");
     {
@@ -1060,6 +1146,8 @@ TEST_CASE("SaveLoad - the kinds that joined at 1.15.0 write a golden and refuse 
         cg::heev(&rH, &rW);
         cg::norm_python(&rn, linear_algebra::Norm::INFTY, rA);
         cg::symm_gemm<false, true>(rN, rS, &rG, true);
+        cg::getrf(&rL, &lu_pivots);
+        cg::getrs(rL, lu_pivots, &rR);
     }
     REQUIRE(graph.serializability_report().empty());
 
@@ -1092,6 +1180,14 @@ TEST_CASE("SaveLoad - the kinds that joined at 1.15.0 write a golden and refuse 
     SECTION("a symm_gemm with a conjugate transpose flag is refused") {
         CHECK_THAT(load_refusal(patched(saved, R"("trans_b":"t","conjugate")", R"("trans_b":"c","conjugate")")),
                    Catch::Matchers::ContainsSubstring("transpose flag is 'n' or 't'"));
+    }
+    SECTION("a pivot record of another kind is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("kind":"lu_pivots")", R"("kind":"pivots")")),
+                   Catch::Matchers::ContainsSubstring("lu_pivots"));
+    }
+    SECTION("a pivot record with a dtype is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("kind":"lu_pivots")", R"("kind":"lu_pivots","dtype":"float64")")),
+                   Catch::Matchers::ContainsSubstring("dtype"));
     }
     SECTION("a heev without its job flag is refused") {
         CHECK_THAT(load_refusal(patched(saved, R"("compute_eigenvectors":true)", R"("eigenvectors":true)")),
