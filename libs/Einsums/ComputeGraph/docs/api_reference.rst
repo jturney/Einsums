@@ -64,6 +64,26 @@ MPIExecutor
 
 :cpp:class:`einsums::compute_graph::MPIExecutor`
 
+PlacementPolicy
+---------------
+
+:cpp:class:`einsums::compute_graph::PlacementPolicy`
+
+PlannedPlacement
+----------------
+
+:cpp:class:`einsums::compute_graph::PlannedPlacement`
+
+HostPlacement
+-------------
+
+:cpp:class:`einsums::compute_graph::HostPlacement`
+
+EligibleDevicePlacement
+-----------------------
+
+:cpp:class:`einsums::compute_graph::EligibleDevicePlacement`
+
 DependencyInfo
 --------------
 

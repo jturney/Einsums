@@ -1538,6 +1538,44 @@ struct NodeEffects {
 inline constexpr NodeEffects opaque_effects{.deterministic = false, .external_effects = true};
 
 /**
+ * @brief One place a node can run: the host, or the device with a given ordinal.
+ *
+ * What a placement policy answers with and what @ref EligiblePlaces is a set of. @ref Target names
+ * the two places a placement pass plans between; @ref Place::of maps it, with
+ * @c Target::CPU as the host and @c Target::GPU as device 0, the only device the runtime drives.
+ *
+ * @versionadded{2.0.0}
+ */
+class Place {
+  public:
+    /// @brief The host.
+    [[nodiscard]] static constexpr Place host() noexcept { return Place{}; }
+
+    /// @brief Device @p ordinal.
+    [[nodiscard]] static constexpr Place device(int ordinal = 0) noexcept { return Place{ordinal}; }
+
+    /// @brief The place a @ref Target names: the host for @c Target::CPU, device 0 for @c Target::GPU.
+    [[nodiscard]] static constexpr Place of(Target target) noexcept { return target == Target::GPU ? device(0) : host(); }
+
+    /// @brief Whether this is the host.
+    [[nodiscard]] constexpr bool is_host() const noexcept { return _ordinal < 0; }
+
+    /// @brief Whether this is a device.
+    [[nodiscard]] constexpr bool is_device() const noexcept { return _ordinal >= 0; }
+
+    /// @brief The device's ordinal; -1 for the host.
+    [[nodiscard]] constexpr int ordinal() const noexcept { return _ordinal; }
+
+    friend constexpr bool operator==(Place const &, Place const &) noexcept = default;
+
+  private:
+    constexpr Place() noexcept = default;
+    constexpr explicit Place(int ordinal) noexcept : _ordinal(ordinal) {}
+
+    int _ordinal{-1}; ///< -1: the host; k at or above 0: device k.
+};
+
+/**
  * @brief Which places a node can run on: always the host, and any number of devices.
  *
  * This answers "can", never "should". A node is eligible for a device when a kernel exists for
@@ -1576,6 +1614,9 @@ class EligiblePlaces {
             _devices |= std::uint32_t{1} << ordinal;
         }
     }
+
+    /// @brief Whether @p place is in the set: the host always, a device when it was added.
+    [[nodiscard]] constexpr bool contains(Place place) const noexcept { return place.is_host() || device(place.ordinal()); }
 
     /// @brief Drop every device, leaving the host.
     constexpr void clear_devices() noexcept { _devices = 0; }

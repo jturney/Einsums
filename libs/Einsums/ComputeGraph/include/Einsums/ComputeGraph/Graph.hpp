@@ -163,6 +163,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") SpaceTiling {
 
 class PassManager; // Forward declaration
 class NodeRunner;
+class PlacementPolicy;
 namespace alias_geometry {
 class StructuralAliasResolver;
 }
@@ -306,6 +307,10 @@ struct GraphBackdoor;
 struct alignas(64) NodeRunSlot {
     double   ms{-1.0}; ///< Milliseconds; negative when the node did not run.
     unsigned width{0}; ///< See NodeTimingSample::width.
+    /// Whether a device kernel ran the node: it was dispatched to the device and the device took
+    /// it. False for a node that ran on the host, including one dispatched to the device whose
+    /// dispatch was declined.
+    bool on_device{false};
 };
 
 /// A recursive mutex that stays with its object. Moving the object hands the destination a
@@ -456,6 +461,13 @@ class EINSUMS_EXPORT ReplayState {
     [[nodiscard]] std::shared_ptr<Executor> const &executor() const noexcept { return _executor; }
     void set_executor(std::shared_ptr<Executor> executor) noexcept { _executor = std::move(executor); }
 
+    /// Whether a device kernel ran the node at @p index in the last replay.
+    [[nodiscard]] bool ran_on_device(std::size_t index) const noexcept { return index < _run_slots.size() && _run_slots[index].on_device; }
+
+    /// The placement policy installed on this graph, or nullptr when it has none.
+    [[nodiscard]] std::shared_ptr<PlacementPolicy const> const &placement_policy() const noexcept { return _placement; }
+    void set_placement_policy(std::shared_ptr<PlacementPolicy const> policy) noexcept { _placement = std::move(policy); }
+
     // ── Run metrics ───────────────────────────────────────────────────────
 
     /// What the outermost replay of @p graph starts from: the managed tensors held now, and
@@ -558,6 +570,9 @@ class EINSUMS_EXPORT ReplayState {
     /// Executor plain execute() delegates to; nullptr means the built-in sequential path.
     /// Loop bodies replay through this.
     std::shared_ptr<Executor> _executor;
+
+    /// Policy installed by the caller; nullptr defers to the enclosing replay's, then the option.
+    std::shared_ptr<PlacementPolicy const> _placement;
 };
 
 /**
@@ -1973,6 +1988,36 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /// The executor plain execute() will use, or nullptr for the built-in sequential path.
     [[nodiscard]] std::shared_ptr<Executor> const &executor() const { return _replay.executor(); }
+
+    /**
+     * @brief Install the policy that chooses where each node of this graph runs as it is dispatched.
+     *
+     * Takes precedence over the ``einsums:graph:placement`` option. A loop body, branch or setup
+     * body with no policy of its own is replayed under the policy of the graph that holds it, as
+     * it is under that graph's executor; one with its own keeps it. Nothing about the policy is
+     * saved with the graph or makes it machine dependent.
+     *
+     * @param[in] policy The policy, or nullptr to defer to the option.
+     * @see PlacementPolicy
+     * @versionadded{2.0.0}
+     */
+    void set_placement_policy(std::shared_ptr<PlacementPolicy const> policy) { _replay.set_placement_policy(std::move(policy)); }
+
+    /**
+     * @brief Whether a device kernel ran the node at @p index in the last replay.
+     *
+     * False for a node that ran on the host, which includes a node that was sent to the device
+     * and whose dispatch was declined. Read after the replay returns. It says where the node ran,
+     * where @ref Node::target says where it was planned and a @ref PlacementPolicy says where it
+     * was sent.
+     * @param[in] index The node's position in this graph.
+     * @return True when a device kernel ran it.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] bool ran_on_device(std::size_t index) const noexcept { return _replay.ran_on_device(index); }
+
+    /// The policy installed with @ref set_placement_policy, or nullptr when there is none.
+    [[nodiscard]] std::shared_ptr<PlacementPolicy const> const &placement_policy() const { return _replay.placement_policy(); }
 
     // Note: execute() always instruments with the profiler (no separate execute_profiled variant).
 

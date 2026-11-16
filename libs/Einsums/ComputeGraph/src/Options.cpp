@@ -32,6 +32,7 @@ int register_Einsums_ComputeGraph_options() {
     cl::register_option(option::GraphProfileGroups);
     cl::register_option(option::GraphVerifyLevels);
     cl::register_option(option::GpuDisable);
+    cl::register_option(option::GraphPlacement);
     return 0;
 }
 

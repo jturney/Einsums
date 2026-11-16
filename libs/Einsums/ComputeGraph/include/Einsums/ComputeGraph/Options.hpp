@@ -312,6 +312,16 @@ inline constinit cl::ConfigOption<bool> GraphVerifyLevels =
 inline constinit cl::ConfigOption<bool> GpuDisable =
     cl::config_flag("einsums:gpu:disable", "Keep every node on the host (GPUPlacement becomes a no-op)", "GPU", false);
 
+/// Which placement policy chooses where each node runs as it is dispatched.
+///
+/// `planned` runs a node where GPUPlacement put it, `host` runs every node on the host, and
+/// `device` runs a node on the device whenever it can (see Node::eligible). A policy installed on a
+/// graph with Graph::set_placement_policy takes precedence. Any other value is an error when a graph
+/// is executed, naming the valid ones.
+inline constinit cl::ConfigOption<std::string> GraphPlacement =
+    cl::config_opt<std::string>("einsums:graph:placement", "Where each node of a graph runs when it is dispatched: planned, host or device",
+                                "ComputeGraph Passes", "planned", "POLICY");
+
 EINSUMS_NAMESPACE_END(option)
 
 EINSUMS_NAMESPACE_BEGIN()

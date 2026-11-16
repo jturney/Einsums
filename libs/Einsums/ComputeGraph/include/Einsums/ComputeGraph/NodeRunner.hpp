@@ -11,6 +11,8 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph/Detail/DeviceCoherence.hpp>
+#include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/PlacementPolicy.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
@@ -36,6 +38,11 @@ class Graph;
  * CPU fallback when it declines, keeping the host and device copies of each tensor coherent, and
  * the node's timing sample, and which executor replays a body the node holds: its own, if it has
  * one installed, and otherwise the executor running this replay.
+ *
+ * Where a node runs is the @ref PlacementPolicy's to say, asked as the node is dispatched: the
+ * graph's own, else the one of the replay that holds this graph, else the one the
+ * ``einsums:graph:placement`` option names. Under the planned policy, the default, the node runs
+ * where @ref Node::target puts it and no query is built.
  *
  * The graph creates one runner per replay and hands it to the executor; an executor never makes
  * one, and never calls a node's callable itself.
@@ -101,6 +108,14 @@ class EINSUMS_EXPORT NodeRunner {
     /// device memory is separate, and only when the graph places a node there or holds a transfer.
     void prepare_device_work();
 
+    /// Decide, for every node, whether a policy is asked about it and which places it may name. Only
+    /// when the policy does not simply follow the plan.
+    void prepare_choices();
+
+    /// Where the node at @p index runs: the plan, or the policy's answer for a node it is asked about.
+    /// @throws std::logic_error When the policy answers with a place the node cannot run.
+    [[nodiscard]] Place choose_place(std::size_t index) const;
+
     /// Make @p id current on the host, copying it down when only its device copy is.
     void host_current(TensorId id);
 
@@ -108,11 +123,29 @@ class EINSUMS_EXPORT NodeRunner {
     void flush_device();
 
     /// Open node @p index's profiler zone into @p zone, with its annotations, when recording.
-    void open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t index) const;
+    void open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t index, Place place) const;
 
     Graph    &_graph;
     Executor &_executor;
     bool      _recording;
+
+    /// The policy this replay asks. Owned by the graph that installed it, by the replay enclosing
+    /// this one, or by the process, and in every case outliving the replay.
+    PlacementPolicy const *_policy;
+
+    /// Whether the policy is asked at all: false when it follows the plan.
+    bool _asks{false};
+
+    /// What the policy may be asked about one node, per node position; empty unless @ref _asks.
+    struct NodeChoice {
+        /// The places the policy may name: the node's eligible set, the planned device, and no
+        /// device whose operands got no storage there.
+        EligiblePlaces eligible;
+        /// False for a transfer node and for a node touching a view or a tensor a view aliases,
+        /// which run at their planned place.
+        bool offered{false};
+    };
+    std::vector<NodeChoice> _choices;
 
     /// Which of each device-touched tensor's two copies is current, on a build whose device memory
     /// is separate; untouched (and empty) on a unified-memory build.

@@ -140,6 +140,7 @@
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
 #include <Einsums/ComputeGraph/Pipeline.hpp>
+#include <Einsums/ComputeGraph/PlacementPolicy.hpp>
 #include <Einsums/ComputeGraph/PredExpr.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
 #include <Einsums/ComputeGraph/SymbolicCost.hpp>

@@ -12,7 +12,10 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/NodeRunner.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
+#include <Einsums/ComputeGraph/PlacementPolicy.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile/Profile.hpp>
@@ -21,6 +24,9 @@
 #include <cstddef>
 #include <exception>
 #include <optional>
+#include <span>
+#include <stdexcept>
+#include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -83,7 +89,40 @@ bool download(TensorHandle const *handle, void const *shadow, std::size_t bytes)
 /// The executor running the node in progress on this thread, or null outside any node.
 thread_local Executor *t_enclosing_executor = nullptr;
 
+/// The placement policy of the node in progress on this thread, or null outside any node.
+thread_local PlacementPolicy const *t_enclosing_placement = nullptr;
+
+/// How a diagnostic names a place.
+std::string place_name(Place place) {
+    return place.is_host() ? std::string{"host"} : "device " + std::to_string(place.ordinal());
+}
+
+/// Whether @p node runs a transfer, which is a coherence request and not work to place.
+bool is_transfer(Node const &node) noexcept {
+    return node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost;
+}
+
+/// The policy a replay of @p graph asks: the graph's own, else the replay enclosing it, else the
+/// option's.
+PlacementPolicy const &resolve_policy(Graph const &graph) {
+    if (auto const &installed = graph.placement_policy(); installed != nullptr) {
+        return *installed;
+    }
+    if (t_enclosing_placement != nullptr) {
+        return *t_enclosing_placement;
+    }
+    return builtin_placement_policy(config::get(option::GraphPlacement));
+}
+
 } // namespace
+
+detail::EnclosingPlacement::EnclosingPlacement(PlacementPolicy const &policy) noexcept : _previous(t_enclosing_placement) {
+    t_enclosing_placement = &policy;
+}
+
+detail::EnclosingPlacement::~EnclosingPlacement() {
+    t_enclosing_placement = _previous;
+}
 
 detail::EnclosingExecutor::EnclosingExecutor(Executor &executor) noexcept : _previous(t_enclosing_executor) {
     t_enclosing_executor = &executor;
@@ -102,17 +141,115 @@ void detail::replay_body(Graph &body) {
     }
 }
 
-NodeRunner::NodeRunner(Graph &graph, Executor &executor, bool recording) : _graph(graph), _executor(executor), _recording(recording) {
+NodeRunner::NodeRunner(Graph &graph, Executor &executor, bool recording)
+    : _graph(graph), _executor(executor), _recording(recording), _policy(&resolve_policy(graph)) {
     // assign() reuses the slots' storage, so a replay of an unchanged graph allocates nothing.
     RunnerAccess::replay(_graph)._run_slots.assign(_graph.nodes().size(), detail::NodeRunSlot{});
+    _asks = !_policy->follows_plan();
+    if (_asks) {
+        prepare_choices();
+    }
     if constexpr (!gpu::has_unified_memory) {
-        for (Node const &node : _graph.nodes()) {
-            if (node.target == Target::GPU || node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
+        for (std::size_t i = 0; i < _graph.nodes().size(); ++i) {
+            Node const &node = _graph.nodes()[i];
+            if (node.target == Target::GPU || is_transfer(node) || (_asks && _choices[i].offered && _choices[i].eligible.any_device())) {
                 prepare_device_work();
                 break;
             }
         }
     }
+}
+
+void NodeRunner::prepare_choices() {
+    // A view and its parent are separate tensor ids, so each would get its own shadow and its own
+    // coherence entry, and a device write through one would not reach the other. A node touching
+    // either is therefore not offered: it runs at its plan, exactly as it did before a policy
+    // could ask.
+    std::unordered_set<TensorId> entangled;
+    for (auto const &[id, handle] : _graph.tensors_map()) {
+        TensorId const buffer = _graph.buffer_of(id);
+        if (buffer != id || handle.is_tensor_view) {
+            entangled.insert(id);
+            entangled.insert(buffer);
+        }
+    }
+
+    auto const &nodes = _graph.nodes();
+    _choices.assign(nodes.size(), NodeChoice{});
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        Node const &node   = nodes[i];
+        NodeChoice &choice = _choices[i];
+
+        choice.eligible = node.eligible;
+        if (node.target == Target::GPU) {
+            // The plan is a pass's statement that the device can run it.
+            choice.eligible.add_device(Place::of(node.target).ordinal());
+        }
+
+        bool offered = !is_transfer(node);
+        for (auto const *ids : {&node.inputs, &node.outputs}) {
+            for (TensorId const id : *ids) {
+                if (entangled.contains(id)) {
+                    offered = false;
+                }
+            }
+        }
+        if (!offered && !is_transfer(node) && node.eligible.any_device()) {
+            EINSUMS_LOG_DEBUG(
+                "Graph::execute: node {} ({}) not offered to placement policy '{}': it touches a view or a tensor a view aliases", node.id,
+                node.label, _policy->name());
+        }
+        choice.offered = offered;
+    }
+}
+
+Place NodeRunner::choose_place(std::size_t index) const {
+    Node const &node    = _graph.nodes()[index];
+    Place const planned = Place::of(node.target);
+    if (!_asks || !_choices[index].offered) {
+        return planned;
+    }
+    NodeChoice const &choice = _choices[index];
+
+    std::vector<PlacementOperand> operands;
+    operands.reserve(node.inputs.size() + node.outputs.size());
+    auto const describe = [&](TensorId id) {
+        TensorHandle const *handle = _graph.find_tensor(id);
+        Validity            valid  = Validity::Host;
+        if constexpr (!gpu::has_unified_memory) {
+            switch (_coherence.state(id)) {
+            case detail::DeviceCoherence::State::HostOnly:
+                break;
+            case detail::DeviceCoherence::State::Both:
+                valid = Validity::Both;
+                break;
+            case detail::DeviceCoherence::State::DeviceOnly:
+                valid = Validity::Device;
+                break;
+            }
+        }
+        operands.push_back({.id = id, .bytes = handle != nullptr ? handle->total_bytes() : 0, .valid = valid});
+    };
+    for (TensorId const id : node.inputs) {
+        describe(id);
+    }
+    for (TensorId const id : node.outputs) {
+        describe(id);
+    }
+    std::span<PlacementOperand const> const all(operands);
+
+    PlacementQuery const query{.node     = node,
+                               .planned  = planned,
+                               .eligible = choice.eligible,
+                               .inputs   = all.first(node.inputs.size()),
+                               .outputs  = all.subspan(node.inputs.size())};
+
+    Place const chosen = _policy->choose(query);
+    if (!choice.eligible.contains(chosen) && chosen != planned) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "placement policy '{}' chose {} for node {} ({}), which cannot run there",
+                                _policy->name(), place_name(chosen), node.id, node.label);
+    }
+    return chosen;
 }
 
 void NodeRunner::prepare_device_work() {
@@ -125,12 +262,13 @@ void NodeRunner::prepare_device_work() {
         tracked.push_back(id);
         RunnerAccess::replay(_graph)._device_shadows.ensure(id, bytes);
     };
-    for (Node const &node : _graph.nodes()) {
+    for (std::size_t i = 0; i < _graph.nodes().size(); ++i) {
+        Node const &node = _graph.nodes()[i];
         if (node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
             if (auto const *tdesc = node.op_data.get_if<TransferDescriptor>()) {
                 track(tdesc->tensor_id, tdesc->size_bytes);
             }
-        } else if (node.target == Target::GPU) {
+        } else if (node.target == Target::GPU || (_asks && _choices[i].offered && _choices[i].eligible.any_device())) {
             for (auto const *ids : {&node.inputs, &node.outputs}) {
                 for (TensorId const id : *ids) {
                     if (auto const *handle = _graph.find_tensor(id)) {
@@ -141,6 +279,24 @@ void NodeRunner::prepare_device_work() {
         }
     }
     _coherence.reset(tracked);
+
+    // A node whose operands could not all be given device storage is host only for this replay,
+    // which is what a planned device node already falls back to when it finds a shadow missing.
+    if (_asks) {
+        for (std::size_t i = 0; i < _graph.nodes().size(); ++i) {
+            Node const &node = _graph.nodes()[i];
+            if (!_choices[i].offered || !_choices[i].eligible.any_device()) {
+                continue;
+            }
+            for (auto const *ids : {&node.inputs, &node.outputs}) {
+                for (TensorId const id : *ids) {
+                    if (RunnerAccess::replay(_graph)._device_shadows.get(id) == nullptr) {
+                        _choices[i].eligible.clear_devices();
+                    }
+                }
+            }
+        }
+    }
 
     // A body replays through its own runner and its own shadows, so what it touches must be
     // current on the host before it runs. effective_io can register a handle, which is why it is
@@ -159,7 +315,7 @@ void NodeRunner::host_current(TensorId id) {
     });
 }
 
-void NodeRunner::open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t idx) const {
+void NodeRunner::open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t idx, Place place) const {
     if (!_recording) {
         return;
     }
@@ -181,7 +337,7 @@ void NodeRunner::open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t 
 
     // These two are static strings, interned once per process.
     waggle::annotate("op_kind", op_kind_name(node.kind));
-    waggle::annotate("device", node.target == Target::GPU ? "GPU" : "CPU");
+    waggle::annotate("device", place.is_device() ? "GPU" : "CPU");
 
     for (auto const &[key, value] : ps.texts) {
         waggle::annotate_interned(key, value);
@@ -202,7 +358,7 @@ bool NodeRunner::is_async(std::size_t idx) const {
 void NodeRunner::start_async(std::size_t idx) {
     Node const                       &node = _graph.nodes()[idx];
     std::optional<waggle::ScopedZone> zone;
-    open_zone(zone, idx);
+    open_zone(zone, idx, Place::of(node.target));
     // The two halves are separate calls, possibly on two threads: the observer hears the node
     // begin here and end where finish_async completes.
     detail::notify_node(*RunnerAccess::replay(_graph)._run_context, EventKind::NodeStart, _graph, node, 0.0);
@@ -219,7 +375,7 @@ void NodeRunner::start_async(std::size_t idx) {
 void NodeRunner::finish_async(std::size_t idx) {
     Node const                       &node = _graph.nodes()[idx];
     std::optional<waggle::ScopedZone> zone;
-    open_zone(zone, idx);
+    open_zone(zone, idx, Place::of(node.target));
     auto const t_start = std::chrono::steady_clock::now();
     node.async_finish();
     if (_device_work) {
@@ -235,14 +391,21 @@ void NodeRunner::finish_async(std::size_t idx) {
 void NodeRunner::run(std::size_t idx, unsigned width) {
     Node const &node = _graph.nodes()[idx];
     // A body this node replays runs under this replay's executor unless it has its own.
-    detail::EnclosingExecutor const enclosing(_executor);
+    detail::EnclosingExecutor const  enclosing(_executor);
+    detail::EnclosingPlacement const enclosing_policy(*_policy);
+
+    // Where the node runs, which is the plan unless the policy is asked and says otherwise.
+    Place const place     = choose_place(idx);
+    bool const  on_device = place.is_device();
 
     std::optional<waggle::ScopedZone> node_zone;
-    open_zone(node_zone, idx);
+    open_zone(node_zone, idx, place);
 
     // An attached observer hears the node begin here and end however this call ends.
     detail::NodeObservation const observed(*RunnerAccess::replay(_graph)._run_context, _graph, node);
     auto                          t_start = std::chrono::steady_clock::now();
+
+    bool device_kernel = false; // whether a device kernel ran the node, for Graph::ran_on_device
 
     if (node.kind == OpKind::HostToDevice) {
         // H2D transfer. On unified memory there is nothing to copy: the GPU reads host memory.
@@ -275,8 +438,8 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
                     id, [&]() { return download(handle, RunnerAccess::replay(_graph)._device_shadows.get(id), tdesc->size_bytes); });
             }
         }
-    } else if (node.target == Target::GPU) {
-        // GPU node execution.
+    } else if (on_device) {
+        // Device execution.
         // Every operand must be transferable before anything is placed on
         // the device. A tensor with no live host storage can neither be
         // uploaded nor receive a result, so a node touching one has to run
@@ -339,6 +502,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
             EINSUMS_LOG_WARN("GPU GEMM dispatch failed for node {} ({}): {}", node.id, node.label, e.what());
         }
 
+        device_kernel = gpu_dispatched;
         if (gpu_dispatched) {
             if constexpr (!gpu::has_unified_memory) {
                 for (TensorId const id : node.outputs) {
@@ -422,7 +586,7 @@ void NodeRunner::run(std::size_t idx, unsigned width) {
 
     double const ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
     // This node's own slot: concurrent runs of other nodes write other slots.
-    RunnerAccess::replay(_graph)._run_slots[idx] = {.ms = ms, .width = width};
+    RunnerAccess::replay(_graph)._run_slots[idx] = {.ms = ms, .width = width, .on_device = device_kernel};
     // node_zone pops here (and on any early return / thrown node).
 }
 

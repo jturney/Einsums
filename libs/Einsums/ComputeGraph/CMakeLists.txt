@@ -120,6 +120,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/NaryEinsum.hpp
     Einsums/ComputeGraph/KhatriRao.hpp
     Einsums/ComputeGraph/Executor.hpp
+    Einsums/ComputeGraph/PlacementPolicy.hpp
     Einsums/ComputeGraph/NodeRunner.hpp
     Einsums/ComputeGraph/StringDispatch.hpp
     Einsums/ComputeGraph/Decision.hpp
@@ -208,6 +209,7 @@ set(ComputeGraphSources
     SymbolicCost.cpp
     Node.cpp
     Optimizer.cpp
+    PlacementPolicy.cpp
     Passes/CommunicationElimination.cpp
     Passes/CommunicationInsertion.cpp
     Passes/CommunicationScheduling.cpp

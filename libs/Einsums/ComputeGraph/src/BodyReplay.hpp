@@ -14,6 +14,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class Executor;
 class Graph;
+class PlacementPolicy;
 
 namespace detail {
 
@@ -38,6 +39,26 @@ class EnclosingExecutor {
 
   private:
     Executor *_previous;
+};
+
+/**
+ * @brief Names the placement policy of the node in progress on this thread, for as long as it lives.
+ *
+ * The same device as @ref EnclosingExecutor, for the same reason: a body with no policy of its own
+ * is replayed under the policy of the replay that holds it, and the callable that replays it takes
+ * no arguments. The node runner reads it when it is made for the body.
+ */
+class EnclosingPlacement {
+  public:
+    explicit EnclosingPlacement(PlacementPolicy const &policy) noexcept;
+    ~EnclosingPlacement();
+    EnclosingPlacement(EnclosingPlacement const &)            = delete;
+    EnclosingPlacement &operator=(EnclosingPlacement const &) = delete;
+    EnclosingPlacement(EnclosingPlacement &&)                 = delete;
+    EnclosingPlacement &operator=(EnclosingPlacement &&)      = delete;
+
+  private:
+    PlacementPolicy const *_previous;
 };
 
 /**
