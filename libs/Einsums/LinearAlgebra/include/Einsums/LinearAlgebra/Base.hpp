@@ -932,23 +932,16 @@ void gerc(typename XYType::ValueType alpha, XYType const &X, XYType const &Y, AT
  * ``op(B)^H``. With ``op(B) = B^T``, ``op(B)^H`` is ``conj(B)``, which no BLAS op flag spells, so
  * that one case conjugates a COPY of B and multiplies by it untransposed.
  *
- * Two parameters exist so this one implementation reproduces what each typed caller computed
- * when it held its own copy of this body. Neither changes the value a correct product has; both
- * decide which kernel forms it, and so its rounding:
+ * @p b_symmetry is the symmetry B declares, or null. It does not change the value a correct
+ * product has, only which kernel forms the conjugating outer product and so its rounding: a
+ * declared symmetric or Hermitian B goes to ``symm`` / ``hemm`` (see try_symmetric_gemm), as the
+ * tensor-object ``gemm`` would take it, and the rank-erased ``gemm`` runs otherwise. A typed
+ * compile-time-rank caller passes the declaration B carries; a runtime-rank caller and a built
+ * graph node pass none.
  *
- * - @p b_symmetry is the symmetry B declares, or null. A typed tensor's conjugating outer
- *   product went through the tensor-object ``gemm``, which hands a declared symmetric or
- *   Hermitian B to ``symm`` / ``hemm`` (see try_symmetric_gemm); a runtime-rank one went through
- *   the rank-erased ``gemm``, which never looks. Only the conjugating product reads it.
- * - @p b_densifies_on_copy says how ``RemoveViewT<BType> Bc = B``, the conjugated copy, was laid
- *   out. For a view type that names an ``underlying_type`` (``TensorView``) the copy is that
- *   owning type, densified in the default storage order (default_row_major()); for an owning
- *   tensor it keeps B's layout, and so it does for ``RuntimeTensorView``, which names none and
- *   so copied into another view. The copy's layout picks the BLAS flag the outer GEMM sees.
- *
- * The copy is always a separate buffer with that layout, never B's own storage, so B is left as
- * it was whatever kind of tensor it is. Copying a ``RuntimeTensorView`` object would share B's
- * storage, and conjugating that copy would conjugate the caller's B.
+ * The conjugated copy has B's own dims and strides, so the outer GEMM sees the same layout
+ * whatever kind of tensor B is, and it lives in a buffer of its own, never in B's storage, so B
+ * is left as it was.
  *
  * @throws RankError When an operand is not rank 2.
  * @throws std::invalid_argument When a transpose character is not ``'n'`` or ``'t'``.
@@ -956,7 +949,7 @@ void gerc(typename XYType::ValueType alpha, XYType const &X, XYType const &Y, AT
  */
 template <typename T>
 void symm_gemm(char trans_a, char trans_b, bool conjugate, einsums::detail::TensorImpl<T> const &A, einsums::detail::TensorImpl<T> const &B,
-               einsums::detail::TensorImpl<T> *C, SymmetryDescriptor const *b_symmetry = nullptr, bool b_densifies_on_copy = false) {
+               einsums::detail::TensorImpl<T> *C, SymmetryDescriptor const *b_symmetry = nullptr) {
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
@@ -999,11 +992,10 @@ void symm_gemm(char trans_a, char trans_b, bool conjugate, einsums::detail::Tens
     } else if (!transposed_b) {
         outer('c', B); // op(B)^H = B^H
     } else {
-        // op(B)^H = conj(B): a conjugated copy, laid out as the typed copy would have been.
-        einsums::detail::TensorImpl<T> copy =
-            b_densifies_on_copy ? einsums::detail::TensorImpl<T>(nullptr, B.dims(), einsums::default_row_major()) : B;
+        // op(B)^H = conj(B): a conjugated copy laid out like B, in a buffer of its own.
+        einsums::detail::TensorImpl<T> copy = B;
         // Sized from the extent and stride vectors themselves: dim() reports 0 for a layout with no
-        // data pointer yet, which is what a deferred tensor looks like.
+        // data pointer, which is what the copy is until it is given one.
         size_t span = copy.size() == 0 ? 0 : 1;
         for (size_t d = 0; d < copy.rank() && span != 0; ++d) {
             span += (copy.dims()[d] - 1) * copy.strides()[d];
@@ -1022,7 +1014,7 @@ template <bool TransA, bool TransB, CoreBasicTensorConcept AType, CoreBasicTenso
         requires MatrixConcept<AType>;
     }
 void symm_gemm(AType const &A, BType const &B, CType *C) {
-    symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', false, A.impl(), B.impl(), &C->impl(), nullptr, IsTensorViewV<BType>);
+    symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', false, A.impl(), B.impl(), &C->impl());
 }
 
 // Hermitian congruence: C = op(B)^H op(A) op(B), the conjugating counterpart of
@@ -1034,7 +1026,7 @@ template <bool TransA, bool TransB, CoreBasicTensorConcept AType, CoreBasicTenso
         requires MatrixConcept<AType>;
     }
 void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
-    symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', true, A.impl(), B.impl(), &C->impl(), B.symmetry(), IsTensorViewV<BType>);
+    symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', true, A.impl(), B.impl(), &C->impl(), B.symmetry());
 }
 
 template <typename AType, typename BType, typename CType>

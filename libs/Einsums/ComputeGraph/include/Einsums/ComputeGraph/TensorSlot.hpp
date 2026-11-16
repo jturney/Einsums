@@ -118,16 +118,6 @@ struct TensorSlot {
     /// stateless, so it costs the slot one word and a replay one indirect call.
     SlotResyncAccessor resync_of{nullptr};
 
-    /// Whether a copy of what @ref ptr addresses, made as ``RemoveViewT<T> copy = operand``, is
-    /// a fresh dense tensor in the default storage order rather than one with the operand's
-    /// own layout. True for a view type that names an ``underlying_type`` (``TensorView``),
-    /// whose copy is that owning type; false for an owning tensor, whose copy keeps its
-    /// layout, and for ``RuntimeTensorView``, which names none, so its copy is another view
-    /// with the same layout. Set and moved together with @ref impl_of, from the same static
-    /// type. An executor that copies an operand reads it because the layout of the copy picks
-    /// the BLAS flag a later GEMM sees.
-    bool densifies_on_copy{false};
-
     /// Keeps whatever @ref ptr addresses alive for as long as the slot exists.
     ///
     /// Set to the graph's stand-in for a captured operand (see

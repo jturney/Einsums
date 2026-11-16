@@ -300,9 +300,6 @@ struct TensorOps {
     std::any (*begin_local_view)(void *object, std::size_t dim, std::size_t start, std::size_t count){nullptr};
     void (*end_local_view)(void *object, std::any &state){nullptr};
     std::string const &(*name)(void const *object){nullptr};
-    /// Whether a copy of the type is a fresh dense tensor in the default storage order; see
-    /// TensorSlot::densifies_on_copy, which a slot carries for the same reason.
-    bool densifies_on_copy{false};
 };
 
 namespace detail {
@@ -315,7 +312,6 @@ consteval TensorOps make_tensor_ops() {
     using Clean = std::remove_cvref_t<TensorType>;
     using Value = typename Clean::ValueType;
     TensorOps ops;
-    ops.densifies_on_copy = IsTensorViewV<Clean>;
 
     if constexpr (requires(Clean &t) { t.impl(); }) {
         ops.impl = [](void *object) -> void * { return static_cast<void *>(&static_cast<Clean *>(object)->impl()); };

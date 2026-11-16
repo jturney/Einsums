@@ -128,11 +128,16 @@ namespace {
 
 // The two-GEMM bodies each typed overload held before all of them reduced to the one rank-erased
 // entry, transcribed call for call: the same GEMM entries, the same temporaries, the same
-// conjugated copy of B. The entry has to land on exactly these bits, so that no eager caller sees a
-// different answer, and the cases below compare bytes rather than values. The kernel choices that
-// could move a bit are the ones in play: which gemm entry runs (the tensor-object one consults a
-// declared symmetry), and the layout of the conjugated copy (an owning B's copy keeps B's layout, a
-// view's is densified in the default storage order).
+// conjugated copy of B. The entry lands on exactly these bits for every case but one, and the cases
+// below compare bytes. The kernel choices that could move a bit are the ones in play: which gemm
+// entry runs (the tensor-object one consults a declared symmetry), and the layout of the conjugated
+// copy of B^T.
+//
+// That copy is where the one case differs. The entry lays the copy out like B. The transcribed body
+// copies through RemoveViewT, which for a TensorView is the owning Tensor and lays the copy out
+// densely in the default storage order, so for a TensorView B under the conjugating product with B^T the two
+// hand the outer GEMM differently laid out operands and may round differently. That case is held to
+// the brute-force congruence instead.
 
 /// The compile-time-rank body.
 template <bool TransA, bool TransB, typename AType, typename BType, typename CType>
@@ -183,6 +188,14 @@ void require_compile_time_bits(AType const &A, BType const &B, size_t m, bool co
         linear_algebra::hermitian_symm_gemm<TransA, TransB>(A, B, &now);
     } else {
         linear_algebra::symm_gemm<TransA, TransB>(A, B, &now);
+    }
+    if (IsTensorViewV<BType> && TransB && conjugate) {
+        // The one case whose copy is laid out differently; see the note above.
+        Tensor<T, 2> const A_dense = A;
+        Tensor<T, 2> const B_dense = B;
+        size_t const       n       = B.dim(1);
+        check_close(now, congruence<TransA, TransB>(A_dense, B_dense, n, m, conjugate && IsComplexV<T>));
+        return;
     }
     two_gemm_body<TransA, TransB>(A, B, &before, conjugate);
     REQUIRE(testing::bytes_of(now) == testing::bytes_of(before));

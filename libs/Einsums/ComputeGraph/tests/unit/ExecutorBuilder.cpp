@@ -601,9 +601,9 @@ std::vector<unsigned char> typed_congruence(AType const &A, BType const &B, size
 
 /// Capture ``C = op(B)^T op(A) op(B)`` (or ``^H``) over @p B, rebuild the node from its
 /// descriptor, replay, and require the typed call's bytes; then rebind B to @p other and require
-/// the typed call's bytes for that one too. The conjugated copy the B^T case makes is densified
-/// for a TensorView and keeps the layout of anything else, so a builder that fixed that when it
-/// was built would follow the first B and not the second.
+/// the typed call's bytes for that one too. The built node and the typed call run the same
+/// kernel on the same operands, so they agree bit for bit whatever kind of tensor B is, and the
+/// conjugated copy the B^T case makes follows the layout of whichever B is bound at the run.
 template <bool TransA, bool TransB, typename AType, typename BType, typename OtherType>
 void require_symm_gemm_matches(AType const &A, BType &B, OtherType &other, size_t m) {
     for (bool const conjugate : {false, true}) {
@@ -642,7 +642,7 @@ void require_symm_gemm_combination() {
     Tensor<T, 2> B_col  = create_random_tensor<T>("B", b0, b1);
     Tensor<T, 2> B_row  = create_random_tensor<T>(true, "B", b0, b1);
     Tensor<T, 2> owner  = create_random_tensor<T>("owner", b1, b0);
-    auto         B_view = owner.transpose_view(); // row-major contiguous; a copy densifies it
+    auto         B_view = owner.transpose_view(); // a row-major contiguous TensorView
 
     INFO("compile-time rank: an owning column-major B, then a TensorView");
     require_symm_gemm_matches<TransA, TransB>(A, B_col, B_view, m);
@@ -652,7 +652,7 @@ void require_symm_gemm_combination() {
     RuntimeTensor<T> rA(A);
     RuntimeTensor<T> rB(B_col);
     RuntimeTensor<T> r_owner(owner);
-    auto             rB_view = r_owner.transpose_view(); // a copy keeps this layout
+    auto             rB_view = r_owner.transpose_view(); // a row-major contiguous RuntimeTensorView
     INFO("runtime rank: an owning column-major B, then a RuntimeTensorView");
     require_symm_gemm_matches<TransA, TransB>(rA, rB, rB_view, m);
 }
@@ -696,7 +696,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - a captured SymmGemm ignores the symmetry B
     graph.execute();
 
     auto plain = create_zero_tensor<T>("plain", 4, 4);
-    linear_algebra::detail::symm_gemm('n', 'n', true, A.impl(), B.impl(), &plain.impl(), nullptr, false);
+    linear_algebra::detail::symm_gemm('n', 'n', true, A.impl(), B.impl(), &plain.impl(), nullptr);
     REQUIRE(bytes_of(C) == bytes_of(plain));
 }
 

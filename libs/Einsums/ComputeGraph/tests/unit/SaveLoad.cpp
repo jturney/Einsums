@@ -865,7 +865,8 @@ TEMPLATE_LIST_TEST_CASE("SaveLoad - symm_gemm round-trips against brute force fo
         CHECK(desc->conjugate == cases[k].conjugate);
     }
 
-    // Bound to a VIEW of B^T's data, which is where the conjugated copy's layout is decided.
+    // Bound to a VIEW of B^T's data, so the conjugated copy the B^T cases make is laid out as
+    // that view is.
     RuntimeTensor<T>              A2(A0);
     RuntimeTensor<T>              Bn2(N0);
     RuntimeTensor<T>              owner(create_zero_tensor<T>("owner", n, m));

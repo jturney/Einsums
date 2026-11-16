@@ -978,12 +978,9 @@ std::function<void()> build_gemv(packed_gemm::ScalarType dtype, GemvDescriptor c
  * No symmetry descriptor is passed, so the conjugating product never takes the
  * ``symm`` / ``hemm`` switch an eager call over a declared-symmetric B can take.
  * That is the rule a built @ref OpKind::Gemm already follows; see the
- * dispatch-routes note in ExecutorBuilder.hpp.
- *
- * Whether a copy of B is densified is asked of the operand at every run rather
- * than fixed here: it decides the layout of the conjugated copy the
- * ``op(B) = B^T`` case makes, exactly as the typed copy would have laid it out,
- * and a rebind can seat another kind of tensor under the node.
+ * dispatch-routes note in ExecutorBuilder.hpp. Everything else the kernel
+ * reads comes from the live operands at each run, so a rebind of any operand is
+ * honored.
  */
 std::function<void()> build_symm_gemm(packed_gemm::ScalarType dtype, SymmGemmDescriptor const &desc, OperandAccessor const &a,
                                       OperandAccessor const &b, OperandAccessor const &c) {
@@ -1000,7 +997,7 @@ std::function<void()> build_symm_gemm(packed_gemm::ScalarType dtype, SymmGemmDes
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         return [ta, tb, conjugate, a, b, c]() {
             WAGGLE_ZONE("symm_gemm execute");
-            linear_algebra::detail::symm_gemm(ta, tb, conjugate, *a.impl<T>(), *b.impl<T>(), c.impl<T>(), nullptr, b.densifies_on_copy());
+            linear_algebra::detail::symm_gemm(ta, tb, conjugate, *a.impl<T>(), *b.impl<T>(), c.impl<T>());
         };
     });
 }

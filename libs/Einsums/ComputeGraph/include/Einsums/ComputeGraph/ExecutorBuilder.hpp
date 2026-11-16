@@ -159,11 +159,6 @@ class OperandAccessor {
     /// when nothing recorded one. An einsum's executor reads its three operands' types from here.
     [[nodiscard]] packed_gemm::ScalarType dtype() const noexcept { return _dtype; }
 
-    /// Whether a copy of the operand CURRENTLY bound is densified in the default storage order.
-    /// Read through the slot, so a rebind to another kind of tensor is honored; see
-    /// TensorSlot::densifies_on_copy.
-    [[nodiscard]] bool densifies_on_copy() const noexcept { return _slot != nullptr ? _slot->densifies_on_copy : _ops->densifies_on_copy; }
-
     /// The operand's CURRENT rank-erased geometry, type-erased.
     [[nodiscard]] void *raw() const { return _slot != nullptr ? _slot->impl_of(_slot->ptr) : _ops->impl(_object); }
 

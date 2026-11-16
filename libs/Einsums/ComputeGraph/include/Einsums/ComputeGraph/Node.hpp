@@ -529,8 +529,7 @@ struct GemvDescriptor {
  * eager call hands it to the conjugating product, which may then run as
  * ``symm`` or ``hemm``; a built node does not, as a built @ref OpKind::Gemm
  * does not, because a declaration is a property of the tensor bound at the
- * time rather than of the operation. How a copy of B is laid out is read from
- * the operand at each run for the same reason.
+ * time rather than of the operation.
  *
  * There is no prefactor and C is overwritten, so the node lists A and B as
  * inputs and C as its one output.

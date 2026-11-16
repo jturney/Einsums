@@ -299,7 +299,7 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
-    detail::symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', false, A.impl(), B.impl(), &C->impl(), nullptr, IsTensorViewV<BType>);
+    detail::symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', false, A.impl(), B.impl(), &C->impl());
 }
 
 // Hermitian congruence C = op(B)^H op(A) op(B) for compile-time-rank operands.
@@ -337,7 +337,7 @@ void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
     if constexpr (MatrixConcept<BType> && MatrixConcept<CType>) {
         b_symmetry = B.symmetry();
     }
-    detail::symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', true, A.impl(), B.impl(), &C->impl(), b_symmetry, IsTensorViewV<BType>);
+    detail::symm_gemm(TransA ? 't' : 'n', TransB ? 't' : 'n', true, A.impl(), B.impl(), &C->impl(), b_symmetry);
 }
 
 /**

@@ -5861,16 +5861,15 @@ auto Graph::get_or_create_slot(TensorType const &tensor, TensorId tensor_id) -> 
     if (it != _registry.slots().end()) {
         return it->second.get();
     }
-    auto slot               = std::make_unique<TensorSlot>();
-    slot->ptr               = const_cast<void *>(static_cast<void const *>(&tensor));
-    slot->impl_of           = slot_impl_accessor<TensorType>();
-    slot->resync_of         = slot_resync_accessor<TensorType>();
-    slot->densifies_on_copy = IsTensorViewV<std::remove_cvref_t<TensorType>>;
-    slot->tensor_id         = tensor_id;
-    slot->name              = tensor.name();
-    slot->rank              = detail::tensor_rank(tensor);
-    slot->element_size      = sizeof(typename std::remove_cvref_t<TensorType>::ValueType);
-    slot->dims              = detail::tensor_dims(tensor);
+    auto slot          = std::make_unique<TensorSlot>();
+    slot->ptr          = const_cast<void *>(static_cast<void const *>(&tensor));
+    slot->impl_of      = slot_impl_accessor<TensorType>();
+    slot->resync_of    = slot_resync_accessor<TensorType>();
+    slot->tensor_id    = tensor_id;
+    slot->name         = tensor.name();
+    slot->rank         = detail::tensor_rank(tensor);
+    slot->element_size = sizeof(typename std::remove_cvref_t<TensorType>::ValueType);
+    slot->dims         = detail::tensor_dims(tensor);
     // If capture adopted a stand-in for this operand, the handle owns it and
     // the slot must point at it and share that ownership: the slot outlives
     // the caller's wrapper, and pointing at a wrapper that may be destroyed
@@ -5971,12 +5970,11 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
         }
     }
 
-    slot->ptr               = const_cast<void *>(static_cast<void const *>(&new_tensor));
-    slot->impl_of           = slot_impl_accessor<TensorType>();
-    slot->resync_of         = slot_resync_accessor<TensorType>();
-    slot->densifies_on_copy = IsTensorViewV<std::remove_cvref_t<TensorType>>;
-    slot->name              = new_tensor.name();
-    slot->dims              = new_dims;
+    slot->ptr       = const_cast<void *>(static_cast<void const *>(&new_tensor));
+    slot->impl_of   = slot_impl_accessor<TensorType>();
+    slot->resync_of = slot_resync_accessor<TensorType>();
+    slot->name      = new_tensor.name();
+    slot->dims      = new_dims;
 
     // Tensor names feed the cached profiler annotations, a fresh pointer has not been through the
     // slot check yet, and rebinding is a mutation-declaration point (see analysis_version).
@@ -5991,10 +5989,9 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
     for (auto const &[f, t] : _registry.redirects()) {
         if (t == id) {
             if (auto *fs = find_slot(f)) {
-                fs->ptr               = slot->ptr;
-                fs->impl_of           = slot->impl_of;
-                fs->resync_of         = slot->resync_of;
-                fs->densifies_on_copy = slot->densifies_on_copy;
+                fs->ptr       = slot->ptr;
+                fs->impl_of   = slot->impl_of;
+                fs->resync_of = slot->resync_of;
             }
         }
     }
