@@ -17,6 +17,7 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <functional>
 #include <optional>
@@ -66,5 +67,43 @@ struct ContractionPriceMemo {
 ///        is looked up in @p memo first and recorded there, when one is given.
 [[nodiscard]] ModelledCost model_cost(Graph const &graph, Node const &node, DeviceProfile const &profile,
                                       ContractionPriceMemo *memo = nullptr);
+
+/// @brief How many times faster than serial @p c runs at @p width. A grouped node's members are
+///        its parallelism, so past that many threads it gains nothing: it runs as it does at its
+///        member count.
+///
+/// @p c is a @ref ModelledCost or anything carrying the same fields.
+template <typename Cost>
+[[nodiscard]] double speedup_at(Cost const &c, DeviceProfile const &profile, unsigned width) {
+    unsigned const w = c.members > 0 ? static_cast<unsigned>(std::min<std::size_t>(width, c.members)) : width;
+    return c.speedup ? c.speedup(w) : profile.parallel_speedup(c.family, c.bytes, w, c.route, c.member_extent);
+}
+
+/// @brief What opening its region costs @p c at @p width, in microseconds, where the curve that
+///        prices it is net of that cost; zero otherwise. See DeviceProfile::region_fee_us.
+template <typename Cost>
+[[nodiscard]] double region_fee_at(Cost const &c, DeviceProfile const &profile, unsigned width) {
+    if (c.speedup || width <= 1) {
+        return 0.0;
+    }
+    unsigned const w = c.members > 0 ? static_cast<unsigned>(std::min<std::size_t>(width, c.members)) : width;
+    return profile.region_fee_us(c.family, w, c.route);
+}
+
+/// @brief The time of @p c on @p width threads, in microseconds.
+///
+/// The part of the serial time above what a kernel costs to start is divided by the speedup; the
+/// start cost is not, and a node whose curve is net of its region's fork pays that fee on top,
+/// once per call.
+template <typename Cost>
+[[nodiscard]] double time_at_width(Cost const &c, DeviceProfile const &profile, unsigned width) {
+    if (width <= 1) {
+        return c.t1_us;
+    }
+    double const overhead_us = profile.kernel_launch_overhead_us;
+    double const scalable    = std::max(0.0, c.t1_us - overhead_us);
+    double const speedup     = std::max(1e-9, speedup_at(c, profile, width));
+    return scalable / speedup + std::min(overhead_us, c.t1_us) + region_fee_at(c, profile, width);
+}
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

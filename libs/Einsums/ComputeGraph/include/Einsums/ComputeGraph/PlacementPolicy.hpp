@@ -73,8 +73,9 @@ struct PlacementQuery {
     /// otherwise, or for a node the model cannot price.
     /// @{
 
-    /// Estimated time of the node on the host on one thread, in microseconds, operands already in
-    /// place. The threads the node will actually get are not counted.
+    /// Estimated time of the node on the host, in microseconds, operands already in place, on the
+    /// threads the graph's thread plan gave it (@ref Node::thread_width), or on one thread when it
+    /// has no plan. An executor that ignores the plan may give the node more.
     std::optional<double> host_us;
     /// Estimated time of the node on the device, in microseconds, operands already in place. Empty
     /// when the node cannot run there or the model has no device.

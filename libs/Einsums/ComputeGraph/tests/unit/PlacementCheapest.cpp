@@ -557,3 +557,44 @@ TEST_CASE("CheapestPlacement - inputs only the device holds keep a host-planned 
         }
     }
 }
+
+// Guards the host price against being the one-thread time whatever the thread plan says: a node
+// the plan gave four threads would then look slower on the host than it is, and the policy would
+// send it to the device on a false saving.
+TEST_CASE("CheapestPlacement - the host is priced on the threads the plan gave the node", "[ComputeGraph][PlacementPolicy][Cheapest]") {
+    CHEAPEST_SKIP_WITHOUT_GPU();
+    constexpr std::size_t E = 96;
+
+    cg::CheapestPlacement const model(make_model(1.867, 2.048, kSlowLink, 20.0));
+    Recording                   recording(model);
+
+    auto      A = mat("A", E), B = mat("B", E), C = mat("C", E), want = mat("want", E);
+    cg::Graph graph{"width"};
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", 0.0F, &C, 1.0F, A, B);
+    }
+    eligibility(graph);
+    graph.set_placement_policy(borrowed(recording));
+
+    auto const host_price = [&] {
+        recording.forget();
+        fill(A, 1);
+        fill(B, 2);
+        poison(C);
+        graph.execute();
+        want.zero();
+        testing::reference_einsum(kGemm, 0.0F, &want.impl(), 1.0F, A.impl(), B.impl());
+        check_close(C, want, "C");
+        auto const *seen = recording.find(&graph.nodes()[0]);
+        REQUIRE(seen != nullptr);
+        REQUIRE(seen->host_us.has_value());
+        return *seen->host_us;
+    };
+
+    double const serial = host_price();
+    graph.set_thread_width(graph.nodes()[0].id, 4);
+    double const wide = host_price();
+    INFO("serial " << serial << " us, at four threads " << wide << " us");
+    CHECK(wide < serial);
+}

@@ -233,7 +233,10 @@ void NodeRunner::price_choices() {
     detail::ContractionPriceMemo host_memo;
     detail::ContractionPriceMemo device_memo;
     for (std::size_t const i : members) {
-        _choices[i].host_us = detail::model_cost(_graph, nodes[i], model.cpu, &host_memo).t1_us;
+        // The host price is at the width the plan gave the node; an unplanned node is priced on
+        // one thread, which is what it gets under the executor that honors widths.
+        unsigned const width = std::max<unsigned>(1U, nodes[i].thread_width);
+        _choices[i].host_us  = detail::time_at_width(detail::model_cost(_graph, nodes[i], model.cpu, &host_memo), model.cpu, width);
         if (model.has_gpu()) {
             _choices[i].device_us = detail::model_cost(_graph, nodes[i], model.gpu, &device_memo).t1_us;
         }

@@ -47,22 +47,8 @@ struct NodeCost {
     std::function<double(unsigned)> speedup;
 };
 
-/// How many times faster than serial @p c runs at @p width. A grouped node's members are its
-/// parallelism, so past that many threads it gains nothing: it runs as it does at its member count.
-double speedup_at(NodeCost const &c, DeviceProfile const &profile, unsigned width) {
-    unsigned const w = c.members > 0 ? static_cast<unsigned>(std::min<std::size_t>(width, c.members)) : width;
-    return c.speedup ? c.speedup(w) : profile.parallel_speedup(c.family, c.bytes, w, c.route, c.member_extent);
-}
-
-/// What opening its region costs @p c at @p width, in microseconds, where the curve that prices
-/// it is net of that cost; zero otherwise. See DeviceProfile::region_fee_us.
-double region_fee_at(NodeCost const &c, DeviceProfile const &profile, unsigned width) {
-    if (c.speedup || width <= 1) {
-        return 0.0;
-    }
-    unsigned const w = c.members > 0 ? static_cast<unsigned>(std::min<std::size_t>(width, c.members)) : width;
-    return profile.region_fee_us(c.family, w, c.route);
-}
+using detail::region_fee_at;
+using detail::speedup_at;
 
 /// Loop and Conditional, which this pass prices by the bodies it plans rather than by the model.
 bool is_control_flow_priced_by_body(Node const &node) {
@@ -420,16 +406,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
     // its way below the floor a kernel costs to start. A node whose curve is net
     // of its region's fork pays that on top, once per call: it is what keeps a
     // short batch narrow on a curve measured for a long one.
-    double const overhead_us = profile.kernel_launch_overhead_us;
-    auto         time_at     = [&](std::size_t i, unsigned width) {
-        NodeCost const &c = cost[i];
-        if (width <= 1) {
-            return c.t1_us;
-        }
-        double const scalable = std::max(0.0, c.t1_us - overhead_us);
-        double const speedup  = std::max(1e-9, speedup_at(c, profile, width));
-        return scalable / speedup + std::min(overhead_us, c.t1_us) + region_fee_at(c, profile, width);
-    };
+    auto time_at = [&](std::size_t i, unsigned width) { return detail::time_at_width(cost[i], profile, width); };
 
     std::vector<unsigned> const rungs = (profile.max_threads == p) ? profile.width_rungs() : width_rungs_for(p);
     std::vector<unsigned>       width(n, 1);
