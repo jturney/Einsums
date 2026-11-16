@@ -96,6 +96,7 @@ set(ComputeGraphTests
     Pass_CSE.cpp
     Pass_DistributionPasses.cpp
     Pass_DeadNodeElimination.cpp
+    Pass_DeviceEligibility.cpp
     Pass_ElementWiseFusion.cpp
     Pass_FreeInsertion.cpp
     Pass_InplaceOptimization.cpp

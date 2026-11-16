@@ -4,12 +4,11 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
-#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
-#include <Einsums/ComputeGraph/Detail/ScalarTypes.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
+#include <Einsums/ComputeGraph/Passes/DeviceEligibility.hpp>
 #include <Einsums/ComputeGraph/Passes/GPUPlacement.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Platform.hpp>
@@ -21,8 +20,6 @@
 #include <algorithm>
 #include <functional>
 #include <vector>
-
-#include "../StridedBatchedEinsum.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -39,158 +36,6 @@ GPUPlacement::GPUPlacement(CostModel const &cost_model, size_t min_bytes) : _min
 }
 
 namespace {
-
-/// Can the executor actually dispatch this node to the GPU?
-///
-/// try_gpu_blas_dispatch in GpuDispatch.cpp keys on the DESCRIPTOR carried by the
-/// node, not on its OpKind, so this predicate does too. OpKind::Gemm for
-/// instance carries a GemmDescriptor, which no dispatcher looks at, so placing
-/// it would buy a round trip for work that runs on the CPU anyway.
-///
-/// Keep it in step with try_gpu_blas_dispatch.
-bool node_is_dispatchable(Node const &node, Graph const &graph);
-
-/// Can the executor actually dispatch THIS einsum to the GPU?
-///
-/// OpKind::Einsum covers every contraction the library can express, but
-/// try_gpu_blas_dispatch in GpuDispatch.cpp only recognizes two shapes: a plain
-/// matrix GEMM (two target indices, one link index, all operands rank 2) and a
-/// GEMV (one target index, one link index, rank-2 matrix into a rank-1 vector).
-/// A rank-4 tensor contraction matches neither and falls straight back to the
-/// CPU.
-///
-/// Placing those anyway is not free: TransferInsertion wraps them in host-to-
-/// device and device-to-host nodes, so the graph pays a full round trip for
-/// work that never leaves the host. It was worse than wasteful until the
-/// executor learned to skip a device-to-host copy whose GPU node fell back -
-/// before that, the stale upload was copied back over the CPU result.
-///
-/// Whether @p node is an einsum the device runs as one strided-batched GEMM: the plan the CPU
-/// executor and try_gpu_strided_einsum both make, over the operands as they are now.
-bool einsum_is_strided_batch(EinsumDescriptor const &desc, Node const &node, Graph const &graph) {
-    auto const lists = einsum_index_lists(desc);
-    if (desc.conj_a || desc.conj_b || !lists.operators.empty() || node.inputs.size() < 2 || node.outputs.empty()) {
-        return false;
-    }
-    auto const &a = graph.tensor(node.inputs[0]);
-    auto const &b = graph.tensor(node.inputs[1]);
-    auto const &c = graph.tensor(node.outputs[0]);
-    if (!a.has_impl() || !b.has_impl() || !c.has_impl() || a.dtype != c.dtype || b.dtype != c.dtype) {
-        return false;
-    }
-    bool batched = false;
-    ::einsums::compute_graph::detail::dispatch_scalar_type(c.dtype, [&]<typename T>(T /*tag*/) {
-        using Impl     = ::einsums::detail::TensorImpl<T>;
-        auto const *ai = static_cast<Impl const *>(a.impl());
-        auto const *bi = static_cast<Impl const *>(b.impl());
-        auto const *ci = static_cast<Impl const *>(c.impl());
-        batched = ai != nullptr && bi != nullptr && ci != nullptr &&
-                  ::einsums::compute_graph::detail::plan_strided_batch(lists.c, lists.a, lists.b, lists.link, *ai, *bi, *ci).has_value();
-    });
-    return batched;
-}
-
-/// Keep this in step with try_gpu_gemm / try_gpu_gemv / try_gpu_strided_einsum.
-bool einsum_is_dispatchable(Node const &node, Graph const &graph) {
-    auto const *desc = node.op_data.get_if<EinsumDescriptor>();
-    if (desc == nullptr) {
-        return false;
-    }
-    if (einsum_is_strided_batch(*desc, node, graph)) {
-        return true;
-    }
-
-    size_t const n_target = desc->spec.target_indices.size();
-    size_t const n_link   = einsum_index_lists(*desc).link.size();
-    if (n_link != 1 || (n_target != 1 && n_target != 2)) {
-        return false;
-    }
-
-    // Every operand must be small-rank in the way the dispatchers require:
-    // rank 2 throughout for GEMM, and rank 2 / rank 1 for GEMV.
-    for (auto tid : node.inputs) {
-        if (graph.tensor(tid).rank > 2) {
-            return false;
-        }
-    }
-    for (auto tid : node.outputs) {
-        if (graph.tensor(tid).rank > 2) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/// Check if the backend supports GPU BLAS for the given element type.
-///
-/// MPS only supports float32. For CUDA/mock this reports the dtypes the
-/// executor's dispatch helpers actually handle: of those, only the
-/// strided-batched GEMM path takes complex - try_gpu_gemm, try_gpu_gemv,
-/// try_gpu_scale and try_gpu_axpy all return false for anything but
-/// Float32/Float64.
-bool backend_supports_dtype(packed_gemm::ScalarType dtype, bool strided_batch) {
-    if constexpr (gpu::has_mps) {
-        return dtype == packed_gemm::ScalarType::Float32;
-    }
-
-    if (compute_graph::detail::is_real(dtype)) {
-        return true;
-    }
-    // Complex reaches the device only through gemm_strided_batched.
-    return compute_graph::detail::is_complex(dtype) && strided_batch;
-}
-
-bool node_is_dispatchable(Node const &node, Graph const &graph) {
-    // Einsum -> try_gpu_gemm / try_gpu_gemv
-    if (node.op_data.holds<EinsumDescriptor>()) {
-        return einsum_is_dispatchable(node, graph);
-    }
-    // A BatchedGemm node is the pointer-array form GEMMBatching and cg::batched_gemm emit, which
-    // is CPU-only; a strided batch is an einsum and is judged above.
-    // Scale -> try_gpu_scale, Axpby -> try_gpu_axpy. Both are real-scalar only,
-    // which the dtype gate also enforces.
-    if (node.kind == OpKind::Scale && node.op_data.holds<ScaleDescriptor>()) {
-        return true;
-    }
-    if (node.kind == OpKind::Axpby && node.op_data.holds<AxpbyDescriptor>()) {
-        return true;
-    }
-    return false;
-}
-
-/// Check if all tensors involved in a node are supported by the GPU backend.
-bool node_dtypes_supported(Node const &node, Graph const &graph) {
-    auto const *einsum        = node.op_data.get_if<EinsumDescriptor>();
-    bool const  strided_batch = einsum != nullptr && einsum_is_strided_batch(*einsum, node, graph);
-    auto const  supported     = [&](TensorId tid) { return backend_supports_dtype(graph.tensor(tid).dtype, strided_batch); };
-    return std::ranges::all_of(node.inputs, supported) && std::ranges::all_of(node.outputs, supported);
-}
-
-/// True when any tensor the node touches is tile-wise sparse.
-///
-/// A tiled tensor has no single contiguous buffer -- its ``data_ptr`` is null and
-/// its storage is one dense tensor per populated tile -- so the H2D/D2H transfer
-/// nodes that placement inserts have nothing to move. Placing such a node makes
-/// TransferInsertion emit a copy from a null pointer.
-///
-/// This was not hypothetical: while every ``dot`` was a placement candidate, a
-/// float32 tiled ``dot`` over ``min_bytes`` was placed, because
-/// ``TensorHandle::total_bytes`` reports the honest GLOBAL size regardless of tile
-/// sparsity. It went unnoticed on Apple Silicon only because
-/// ``gpu::has_unified_memory`` makes the transfers no-ops there; on a discrete
-/// CUDA build the same graph memcpys from nullptr. @ref node_is_dispatchable
-/// no longer admits ``dot``, and the guard stays for every kind it does admit.
-bool node_touches_tiled(Node const &node, Graph const &graph) {
-    for (auto tid : node.inputs) {
-        if (graph.tensor(tid).is_tiled)
-            return true;
-    }
-    for (auto tid : node.outputs) {
-        if (graph.tensor(tid).is_tiled)
-            return true;
-    }
-    return false;
-}
 
 /// Compute estimated bytes from a node's input/output tensor handles.
 size_t compute_bytes_from_tensors(Node const &node, Graph const &graph) {
@@ -228,6 +73,10 @@ bool GPUPlacement::transform(Graph &graph) {
         return false;
     }
 
+    // Which nodes the device CAN run is DeviceEligibility's answer; compute it here too so the
+    // pass works built alone. Everything below is the question of whether it SHOULD.
+    compute_device_eligibility(graph);
+
     // Phase 1: Identify candidates across the whole graph tree (loop
     // bodies, conditional branches, nesting). A hot GEMM inside an SCF
     // loop is the common case, so body candidates must be considered.
@@ -250,20 +99,19 @@ bool GPUPlacement::transform(Graph &graph) {
             if (node.target == Target::GPU)
                 continue;
 
-            if (!node_is_dispatchable(node, g))
+            // The shape test comes first and apart from the rest so that a node with no device
+            // kernel never reaches admits(), as before.
+            if (!node_has_device_kernel(node, g))
                 continue;
 
             if (!admits(g, node)) {
                 continue;
             }
 
-            if (!node_dtypes_supported(node, g)) {
-                EINSUMS_LOG_DEBUG("GPUPlacement: skipping node {} — unsupported dtype for GPU backend", node.id);
-                continue;
-            }
-
-            if (node_touches_tiled(node, g)) {
-                EINSUMS_LOG_DEBUG("GPUPlacement: skipping node {} — tile-wise sparse operand has no single buffer to transfer", node.id);
+            if (!node.eligible.any_device()) {
+                EINSUMS_LOG_DEBUG("GPUPlacement: skipping node {}: not eligible for a device (unsupported dtype for the GPU backend, "
+                                  "or a tile-wise sparse operand with no single buffer to transfer)",
+                                  node.id);
                 continue;
             }
 

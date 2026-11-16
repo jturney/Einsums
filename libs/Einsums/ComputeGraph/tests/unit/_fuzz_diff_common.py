@@ -1640,7 +1640,7 @@ _DEFAULT_PASS_NAMES = (
     "SlabStreaming",
     "GEMMBatching", "Reorder", "IOPrefetch", "DistributionPlanning", "Materialization",
     "SymmetryPropagation", "SpacePropagation", "CrossSpaceValidation", "ScalingAnalysis",
-    "StreamContractionFusion", "GPUPlacement", "TransferInsertion", "TransferElimination",
+    "StreamContractionFusion", "DeviceEligibility", "GPUPlacement", "TransferInsertion", "TransferElimination",
     "GPUDiagnostics", "StreamAssignment", "InputSlicing", "SUMMAExpansion",
     "CommunicationInsertion", "CommunicationElimination", "CommunicationScheduling",
     "InplaceOptimization", "FreeInsertion", "MemoryPlanning",

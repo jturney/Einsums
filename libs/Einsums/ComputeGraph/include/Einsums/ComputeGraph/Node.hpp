@@ -1538,6 +1538,55 @@ struct NodeEffects {
 inline constexpr NodeEffects opaque_effects{.deterministic = false, .external_effects = true};
 
 /**
+ * @brief Which places a node can run on: always the host, and any number of devices.
+ *
+ * This answers "can", never "should". A node is eligible for a device when a kernel exists for
+ * its shape and element type on this machine; whether running it there pays is a separate
+ * question for a placement pass, which reads this set instead of re-deriving the capability.
+ *
+ * The set is a resource fact about this machine and this process. A pass writes it (see
+ * @ref passes::DeviceEligibility), a saved graph never carries it, and a loaded graph starts
+ * host-only until the pass runs again. Devices are named by ordinal so a machine with several
+ * is expressible; today the runtime drives one, ordinal 0.
+ *
+ * @versionadded{2.0.0}
+ */
+class EligiblePlaces {
+  public:
+    /// @brief The most devices one set can name.
+    static constexpr int max_devices = 32;
+
+    /// @brief Host only, which is what a node starts as.
+    constexpr EligiblePlaces() noexcept = default;
+
+    /// @brief The host can run every node, so this is always true.
+    [[nodiscard]] static constexpr bool host() noexcept { return true; }
+
+    /// @brief Whether device @p ordinal can run the node. False for an ordinal outside the range.
+    [[nodiscard]] constexpr bool device(int ordinal) const noexcept {
+        return ordinal >= 0 && ordinal < max_devices && ((_devices >> ordinal) & 1U) != 0;
+    }
+
+    /// @brief Whether any device can run the node.
+    [[nodiscard]] constexpr bool any_device() const noexcept { return _devices != 0; }
+
+    /// @brief Add device @p ordinal to the set. An ordinal outside the range is ignored.
+    constexpr void add_device(int ordinal) noexcept {
+        if (ordinal >= 0 && ordinal < max_devices) {
+            _devices |= std::uint32_t{1} << ordinal;
+        }
+    }
+
+    /// @brief Drop every device, leaving the host.
+    constexpr void clear_devices() noexcept { _devices = 0; }
+
+    friend constexpr bool operator==(EligiblePlaces const &, EligiblePlaces const &) noexcept = default;
+
+  private:
+    std::uint32_t _devices{0}; ///< Bit k set: device k is eligible.
+};
+
+/**
  * @brief A single operation node in the computation graph.
  *
  * Each node represents one captured operation (einsum, scale, gemm, etc.).
@@ -1556,6 +1605,13 @@ struct Node {
     NodeId id{unassigned_node_id}; ///< Unique within its graph, issued by the graph (see @ref unassigned_node_id)
     OpKind kind{OpKind::Custom};   ///< Operation type for pattern matching
     Target target{Target::CPU};    ///< Execution target (set by GPUPlacement pass)
+
+    /// @brief The places this node can run on, set by the DeviceEligibility pass.
+    ///
+    /// Host only until that pass (or GPUPlacement, which calls the same function) has run. A fact
+    /// about this machine, so it is never saved and a loaded graph recomputes it; see
+    /// @ref EligiblePlaces.
+    EligiblePlaces eligible{};
 
     /// @brief Threads this node's kernel is to execute with; 0 means unplanned
     ///        and is executed exactly as width 1.

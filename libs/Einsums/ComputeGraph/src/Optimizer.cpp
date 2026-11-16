@@ -24,6 +24,7 @@
 #include <Einsums/ComputeGraph/Passes/CrossSpaceValidation.hpp>
 #include <Einsums/ComputeGraph/Passes/DeadNodeElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/DeltaElimination.hpp>
+#include <Einsums/ComputeGraph/Passes/DeviceEligibility.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributionPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributiveFactoring.hpp>
 #include <Einsums/ComputeGraph/Passes/ElementWiseFusion.hpp>
@@ -858,9 +859,10 @@ DefaultPassRegistry &default_pass_registry() {
 
 /// The library's default passes that only a build with their backend constructs. An anchor on one
 /// is valid everywhere and simply finds nothing to stand beside on a build without it.
-constexpr std::array<std::string_view, 10> backend_gated_passes{
-    "GPUPlacement", "TransferInsertion", "TransferElimination",    "GPUDiagnostics",           "StreamAssignment",
-    "InputSlicing", "SUMMAExpansion",    "CommunicationInsertion", "CommunicationElimination", "CommunicationScheduling",
+constexpr std::array<std::string_view, 11> backend_gated_passes{
+    "DeviceEligibility",       "GPUPlacement", "TransferInsertion", "TransferElimination",    "GPUDiagnostics",
+    "StreamAssignment",        "InputSlicing", "SUMMAExpansion",    "CommunicationInsertion", "CommunicationElimination",
+    "CommunicationScheduling",
 };
 
 } // namespace
@@ -1368,8 +1370,10 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_builtin_default_p
     list.push_back(std::make_shared<passes::StreamContractionFusion>(cost_model));
 
     // GPU passes, only included when a GPU backend (or mock) is available.
-    // GPUPlacement uses the shared CostModel for its cost model.
+    // GPUPlacement uses the shared CostModel for its cost model. DeviceEligibility runs first and
+    // records which nodes a device can run; GPUPlacement then decides which of those it should.
     if constexpr (gpu::has_gpu || gpu::is_mock) {
+        list.push_back(std::make_shared<passes::DeviceEligibility>());
         list.push_back(std::make_shared<passes::GPUPlacement>(cost_model));
         list.push_back(std::make_shared<passes::TransferInsertion>());
         list.push_back(std::make_shared<passes::TransferElimination>());

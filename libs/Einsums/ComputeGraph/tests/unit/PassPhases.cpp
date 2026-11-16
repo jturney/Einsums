@@ -80,6 +80,7 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         {"TiledExpansion", cg::PassPhase::StructuralResource},
         {"ScratchPrivatization", cg::PassPhase::StructuralResource},
         {"DistributionPlanning", cg::PassPhase::StructuralResource},
+        {"DeviceEligibility", cg::PassPhase::StructuralResource},
         {"GPUPlacement", cg::PassPhase::StructuralResource},
         {"TransferInsertion", cg::PassPhase::StructuralResource},
         {"TransferElimination", cg::PassPhase::StructuralResource},

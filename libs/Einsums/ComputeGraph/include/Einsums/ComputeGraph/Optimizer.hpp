@@ -1151,23 +1151,24 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * 34. StreamContractionFusion (tuning): loop-fuse sibling contractions over one big tensor
      *
      * GPU block (when a GPU backend or mock is available):
-     * 35. GPUPlacement (structural-resource): cost-model based node-to-GPU assignment
-     * 36. TransferInsertion (structural-resource): insert HostToDevice / DeviceToHost nodes
-     * 37. TransferElimination (structural-resource): drop redundant transfers
-     * 38. GPUDiagnostics (diagnostic): log placement decisions
-     * 39. StreamAssignment (tuning): assign CUDA streams for overlap
+     * 35. DeviceEligibility (structural-resource): record which nodes a device can run
+     * 36. GPUPlacement (structural-resource): cost-model based node-to-GPU assignment
+     * 37. TransferInsertion (structural-resource): insert HostToDevice / DeviceToHost nodes
+     * 38. TransferElimination (structural-resource): drop redundant transfers
+     * 39. GPUDiagnostics (diagnostic): log placement decisions
+     * 40. StreamAssignment (tuning): assign CUDA streams for overlap
      *
      * Distributed block (when MPI or its mock is available):
-     * 40. InputSlicing (structural-resource): create per-rank views of distributed inputs
-     * 41. SUMMAExpansion (structural-resource): expand einsums to SUMMA loops on square grids
-     * 42. CommunicationInsertion (structural-resource): insert allreduces for replicated outputs
-     * 43. CommunicationElimination (structural-resource): drop redundant communications
-     * 44. CommunicationScheduling (structural-resource): split allreduce into async iallreduce + wait
+     * 41. InputSlicing (structural-resource): create per-rank views of distributed inputs
+     * 42. SUMMAExpansion (structural-resource): expand einsums to SUMMA loops on square grids
+     * 43. CommunicationInsertion (structural-resource): insert allreduces for replicated outputs
+     * 44. CommunicationElimination (structural-resource): drop redundant communications
+     * 45. CommunicationScheduling (structural-resource): split allreduce into async iallreduce + wait
      *
      * Tail (always registered):
-     * 45. InplaceOptimization (tuning): merge elementwise outputs into dying inputs
-     * 46. FreeInsertion (tuning): free intermediates after last consumer
-     * 47. MemoryPlanning (tuning): tensor liveness, peak memory, and arena planning
+     * 46. InplaceOptimization (tuning): merge elementwise outputs into dying inputs
+     * 47. FreeInsertion (tuning): free intermediates after last consumer
+     * 48. MemoryPlanning (tuning): tensor liveness, peak memory, and arena planning
      *
      * Passes registered with @ref register_default_pass run beside their anchors.
      *

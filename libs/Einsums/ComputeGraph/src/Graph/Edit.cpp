@@ -186,6 +186,15 @@ void Graph::set_schedule(std::size_t index, NodeSchedule const &schedule) {
     node.stream_id          = schedule.stream_id;
 }
 
+void Graph::set_eligible(std::size_t index, EligiblePlaces const &eligible) {
+    std::scoped_lock const lock(_content_mutex);
+    if (index >= _node_list.nodes().size()) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': eligibility of node {}, but the graph holds {}", _name, index,
+                                _node_list.nodes().size());
+    }
+    _node_list.nodes()[index].eligible = eligible;
+}
+
 void Graph::reorder(std::span<std::size_t const> order) {
     std::scoped_lock const lock(_content_mutex);
     std::size_t const      count = _node_list.nodes().size();

@@ -2475,6 +2475,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void set_schedule(std::size_t index, NodeSchedule const &schedule);
 
     /**
+     * @brief Record which places the node at @p index can run on.
+     *
+     * Like @ref set_schedule this rebuilds nothing: the set is a fact about this machine that no
+     * executor is built from and no analysis reads.
+     * @param[in] index    The node's position in this graph.
+     * @param[in] eligible The places to record; see @ref Node::eligible.
+     * @throws std::out_of_range If there is no node at @p index.
+     * @versionadded{2.0.0}
+     */
+    void set_eligible(std::size_t index, EligiblePlaces const &eligible);
+
+    /**
      * @brief Put the nodes in a new order: position @c k takes the node that was at @c order[k].
      *
      * The caller vouches that the order respects every dependency, as @ref mark_sorted has it

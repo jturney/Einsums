@@ -109,6 +109,7 @@
 #include <Einsums/ComputeGraph/Passes/CrossSpaceValidation.hpp>
 #include <Einsums/ComputeGraph/Passes/DeadNodeElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/DeltaElimination.hpp>
+#include <Einsums/ComputeGraph/Passes/DeviceEligibility.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributionPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributiveFactoring.hpp>
 #include <Einsums/ComputeGraph/Passes/ElementWiseFusion.hpp>

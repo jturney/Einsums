@@ -1259,6 +1259,11 @@ GPU Passes
 
 Included only when a GPU backend or its mock is available.
 
+``DeviceEligibility``
+    Record on each node which places it can run on (``Node::eligible``): a
+    device kernel must exist for its shape and every operand's element type
+    must be one the backend handles. This says what can run on the device, not
+    what should; the set is machine-dependent and never saved.
 ``GPUPlacement``
     Decide CPU vs GPU per node, using the shared ``CostModel``. A no-op when
     ``--einsums:gpu:disable`` is set.
@@ -1341,6 +1346,7 @@ mock is present:
    30. SymmetryPropagation       : tag intermediates whose symmetry is provable
    31. ScalingAnalysis           : report cost polynomials and the limiting term
    32. StreamContractionFusion   : one pass over a streamed tensor, not N
+       DeviceEligibility        : record which nodes a device can run (GPU only)
        GPUPlacement             : decide CPU vs GPU per node       (GPU only)
        TransferInsertion        : insert H2D/D2H transfer nodes    (GPU only)
        TransferElimination      : remove redundant transfers       (GPU only)

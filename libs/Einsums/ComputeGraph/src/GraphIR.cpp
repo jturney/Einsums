@@ -31,7 +31,7 @@
 ///   `_optimization`.
 ///
 /// NOT saved, because it is machine-dependent tuning that a load re-derives:
-///   `Node::thread_width`, `Node::admission_priority`, `Node::stream_id`,
+///   `Node::thread_width`, `Node::admission_priority`, `Node::stream_id`, `Node::eligible`,
 ///   `Node::estimated_flops`, `Node::estimated_bytes`, `_thread_plan`, the
 ///   timings in `_replay`, and the last optimize() report in `_optimization`.
 ///

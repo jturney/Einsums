@@ -23,6 +23,12 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * GEMM inside an SCF loop is a candidate) and marks profitable einsums (those that lower
  * to a GEMM or GEMV), scales and axpbys with `Target::GPU`, copying each node's executor
  * to its `cpu_fallback`.
+ *
+ * Which nodes a device CAN run (shape, element type, operand storage) is the
+ * @ref DeviceEligibility pass's answer, read from @ref Node::eligible; this pass calls the same
+ * @ref compute_device_eligibility first so it works when constructed alone, and decides only
+ * which of those nodes it SHOULD place.
+ *
  * It does NOT insert host/device copies — @ref TransferInsertion does that afterward.
  *
  * Two placement strategies decide profitability per node:

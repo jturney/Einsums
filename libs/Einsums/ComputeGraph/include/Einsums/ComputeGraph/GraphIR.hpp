@@ -230,7 +230,7 @@
  * descriptors, dataflow edges, slot redirects, the manifest, index-space and
  * symbolic-extent annotations, parameters, named gate-flag arrays, and the
  * schema version. NOT saved, at all: @ref Node::thread_width,
- * @ref Node::admission_priority, @ref Node::stream_id, per-node timings,
+ * @ref Node::admission_priority, @ref Node::stream_id, @ref Node::eligible, per-node timings,
  * @ref Node::estimated_flops and @ref Node::estimated_bytes, and the planned
  * thread count. Those are tuning artifacts of one machine and one BLAS vendor,
  * and reusing one across machines is not a performance risk to weigh against

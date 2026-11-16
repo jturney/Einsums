@@ -100,6 +100,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp
     Einsums/ComputeGraph/Passes/CrossSpaceValidation.hpp
     Einsums/ComputeGraph/Passes/GPUDiagnostics.hpp
+    Einsums/ComputeGraph/Passes/DeviceEligibility.hpp
     Einsums/ComputeGraph/Passes/GPUPlacement.hpp
     Einsums/ComputeGraph/Passes/ScalingAnalysis.hpp
     Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp
@@ -254,6 +255,7 @@ set(ComputeGraphSources
     Passes/SUMMAExpansion.cpp
     Passes/CrossSpaceValidation.cpp
     Passes/GPUDiagnostics.cpp
+    Passes/DeviceEligibility.cpp
     Passes/GPUPlacement.cpp
     Passes/ScalingAnalysis.cpp
     Passes/ScaleAbsorption.cpp

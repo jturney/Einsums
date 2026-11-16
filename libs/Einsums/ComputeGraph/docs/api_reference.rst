@@ -219,6 +219,7 @@ Memory and symmetry
 GPU (GPU builds only)
 ---------------------
 
+- :cpp:class:`einsums::compute_graph::passes::DeviceEligibility`
 - :cpp:class:`einsums::compute_graph::passes::GPUPlacement`
 - :cpp:class:`einsums::compute_graph::passes::TransferInsertion`
 - :cpp:class:`einsums::compute_graph::passes::TransferElimination`
