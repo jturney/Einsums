@@ -4,7 +4,9 @@ channels:
   - nodefaults
 dependencies:
   # Development
-  - cmake
+  # ctest 4.5.0 handles a test's output in time quadratic in its size: 90k lines take 64 s
+  # against 0.1 s under 4.4.5, and a test that logs freely stalls in write() until it times out.
+  - cmake !=4.5.0
   - ccache
   # NOTE: the C++ compiler is intentionally NOT listed here. The unpinned
   # `cxx-compiler` metapackage lags several major versions behind conda-forge's
