@@ -700,7 +700,9 @@ bool PassManager::run(Graph &graph) {
     for (auto &pass : _passes) {
         if (is_disabled(pass->name())) {
             _last_skipped.push_back(pass->name());
-            EINSUMS_LOG_INFO("PassManager: skipping disabled pass '{}'", pass->name());
+            // TRACE: a pipeline isolated to one pass skips every other pass on each apply, and
+            // disabled_passes() and the verbosity-1 passes logger already report the skips.
+            EINSUMS_LOG_TRACE("PassManager: skipping disabled pass '{}'", pass->name());
             if (_verbosity >= 1) {
                 einsums::detail::get_passes_logger().info("[PassManager] {}: DISABLED", pass->name());
             }
