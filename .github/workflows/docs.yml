@@ -18,7 +18,18 @@ on:
         type: string
         required: false
   # Rehearses the full deploy under /dev-preview/ without touching the real site.
+  # The cache inputs are repeated because workflow_dispatch does not inherit the workflow_call
+  # defaults; without them ccache rejects an empty CCACHE_MAXSIZE on the first compile.
   workflow_dispatch:
+    inputs:
+      build_cache_suffix:
+        type: string
+        required: false
+        default: "default"
+      build_cache_size:
+        type: string
+        required: false
+        default: 2G
 
 permissions:
   contents: write

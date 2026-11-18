@@ -2,6 +2,8 @@ name: Sanitizers
 
 on:
   # Dispatch is the only way to reach the address,leak,undefined leg; the nightly no longer runs it.
+  # The cache inputs are repeated because workflow_dispatch does not inherit the workflow_call
+  # defaults; without them ccache rejects an empty CCACHE_MAXSIZE on the first compile.
   workflow_dispatch:
     inputs:
       full_matrix:
@@ -9,6 +11,14 @@ on:
         type: boolean
         required: false
         default: false
+      build_cache_suffix:
+        type: string
+        required: false
+        default: "default"
+      build_cache_size:
+        type: string
+        required: false
+        default: 2G
   workflow_call:
     inputs:
       full_matrix:
