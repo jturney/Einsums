@@ -880,9 +880,16 @@ TEST_CASE("ContractionPlanning - flop pricing re-brackets a small chain on any m
     CHECK(pass.chain_reports()[0].optimal_time_us == Catch::Approx(0.024));
 
     // The pass materializes the intermediates it declares, so the graph runs as it stands.
+    // A (B C) and (A B) C round differently, and D_i = A_i sum_j B_j C_j can cancel
+    // far below its terms (a Windows nightly drew a sum near 1e-5), so the error is
+    // bounded by the magnitude of the terms, not by D_i itself.
     graph.execute();
     for (size_t ii = 0; ii < 6; ii++) {
-        CHECK(D(ii, 0) == Catch::Approx(D_ref(ii, 0)).epsilon(1e-12));
+        double terms = 0.0;
+        for (size_t jj = 0; jj < 6; jj++) {
+            terms += std::abs(A(ii, 0) * B(0, jj) * C(jj, 0));
+        }
+        CHECK(D(ii, 0) == Catch::Approx(D_ref(ii, 0)).epsilon(0.0).margin(1e-13 * terms));
     }
 }
 
