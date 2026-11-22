@@ -29,6 +29,7 @@ and their ``modified`` verdict is the signal.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import math
 import os
@@ -150,6 +151,10 @@ def apply_pass(g, name):
 
 _uid = itertools.count()
 _IS_COMPLEX = {"complex64", "complex128"}
+
+
+def _digest(array):
+    return hashlib.blake2b(np.ascontiguousarray(array).tobytes(), digest_size=16).hexdigest()
 
 
 def _rand(rng, shape, dtype):
@@ -962,6 +967,7 @@ class Program:
         # which is how the default pipeline builds it; most trials install one.
         self.executor = bool(rng.random() < 0.6)
         self.registry = None
+        self._digests = {(m.tag, k): _digest(v) for m in self.motifs for k, v in m.np.items()}
 
     def build(self):
         g = cg.Graph(self.label)
@@ -987,8 +993,51 @@ class Program:
         for m in self.motifs:
             m.cleanup()
 
+    def corrupted_inputs(self):
+        """Pristine numpy inputs whose bytes changed since construction.
+
+        Nothing in the harness writes them after ``__init__``, so a change is a
+        write from outside numpy: a stale or wild pointer in the library.
+        """
+        return [f"{m.tag}.{k}" for m in self.motifs for k, v in m.np.items() if _digest(v) != self._digests[(m.tag, k)]]
+
     def describe(self):
         return f"executor={self.executor} motifs=[{'; '.join(m.describe() for m in self.motifs)}]"
+
+
+def _offset_ranges(offsets, limit=8):
+    """Sorted flat offsets as ``a-b`` runs, the first @p limit of them."""
+    runs = []
+    for off in offsets:
+        if runs and off == runs[-1][1] + 1:
+            runs[-1][1] = off
+        else:
+            runs.append([off, off])
+    text = ", ".join(f"{a}" if a == b else f"{a}-{b}" for a, b in runs[:limit])
+    return text + (f", ... (+{len(runs) - limit} more runs)" if len(runs) > limit else "")
+
+
+def _mismatch_pattern(value, want, rtol, atol):
+    """Which entries disagree, in the tensor's memory order.
+
+    A fused or threaded kernel hands each thread a contiguous chunk of an
+    output, so whether the bad entries are everything, one stripe, or scattered
+    points at the scale step, one thread's chunk, or a race.
+    """
+    bad = ~np.isclose(value, want, rtol=rtol, atol=atol)
+    flat = np.flatnonzero(bad.ravel(order="K"))
+    finite = np.isfinite(value)
+    ok_err = float(np.max(np.abs(value - want)[finite])) if finite.any() else float("nan")
+    # The oracle is numpy on this machine's BLAS; a non-finite expected value
+    # means the reference broke, not the graph (scale then reads 1, since
+    # max(1.0, nan) is 1.0).
+    want_bad = np.flatnonzero(~np.isfinite(want).ravel(order="K"))
+    return (f"  pattern: {flat.size}/{value.size} entries disagree (shape {value.shape}, "
+            f"{int(np.isnan(value).sum())} NaN, {int(np.isinf(value).sum())} inf, "
+            f"max abs err over finite entries {ok_err:.3g})\n"
+            f"  memory-order offsets: {_offset_ranges(flat.tolist())}\n"
+            f"  numpy oracle: {want_bad.size} non-finite entries"
+            + (f" at offsets {_offset_ranges(want_bad.tolist())}" if want_bad.size else ""))
 
 
 def compare(prog, runs, where):
@@ -1004,6 +1053,7 @@ def compare(prog, runs, where):
                 err = float(np.max(np.abs(value - want)))
                 raise AssertionError(
                     f"{where}: {m.kind} tensor {name} disagrees with numpy (max abs err {err:.3g}, scale {scale:.3g})\n"
+                    f"{_mismatch_pattern(value, want, rtol, atol * scale)}\n"
                     f"motif={m.describe()}\nprogram={prog.describe()}")
 
 
@@ -1015,6 +1065,65 @@ def draw_order(rng, available, neighbours=True):
         order += [str(p) for p in rng.choice(NEIGHBOUR_PASSES, size=k, replace=False)]
     rng.shuffle(order)
     return order
+
+
+_DIAGNOSE_REPLAYS = 5
+
+
+def _replay(prog, runs, optimize):
+    """Rebuild @p prog from its pristine arrays, optimize it, execute and compare.
+
+    Returns ``None`` when it matches numpy, else the first line of what went wrong.
+    """
+    try:
+        g = prog.build()
+        optimize(g)
+        for _ in range(runs):
+            g.execute()
+        compare(prog, runs, "replay")
+        return None
+    except Exception as err:  # noqa: BLE001 - a diagnostic must report, never mask, the failure
+        first = str(err).splitlines()[0] if str(err) else ""
+        return f"{type(err).__name__}: {first}"
+
+
+def _tally(prog, runs, optimize):
+    misses = [r for r in (_replay(prog, runs, optimize) for _ in range(_DIAGNOSE_REPLAYS)) if r is not None]
+    return f"{len(misses)}/{_DIAGNOSE_REPLAYS} fail" + (f" (first: {misses[0]})" if misses else "")
+
+
+def _apply_order(order):
+    def optimize(g):
+        for name in order:
+            apply_pass(g, name)
+        _apply_one_pass(g, "Materialization")
+    return optimize
+
+
+def _diagnose(prog, runs, g, optimize, order=None, fired=()):
+    """What a CI log needs when a trial disagrees and the failure does not reproduce elsewhere.
+
+    The identical program replayed in this process says whether the failure is
+    deterministic on this machine; replays that each leave out one pass that
+    fired say which rewrite it needs. Runs only on failure, so it costs nothing
+    otherwise, and its own errors are reported rather than raised.
+    """
+    lines = ["--- diagnosis ---"]
+    try:
+        omp = os.environ.get("OMP_NUM_THREADS", "unset")
+        lines.append(f"threads: einsums max {einsums.hardware.get_max_threads()}, OMP_NUM_THREADS={omp}")
+        corrupted = prog.corrupted_inputs()
+        lines.append(f"pristine numpy inputs changed since construction: {', '.join(corrupted) if corrupted else 'none'}")
+        lines.append(f"identical replays: {_tally(prog, runs, optimize)}")
+        if order is not None:
+            # Materialization closes every replay, so leaving it out of the order changes nothing.
+            for name in (p for p in fired if p != "Materialization"):
+                without = [p for p in order if p != name]
+                lines.append(f"without {name}: {_tally(prog, runs, _apply_order(without))}")
+        lines.append(f"graph as executed:\n{g.summary()}")
+    except Exception as err:  # noqa: BLE001
+        lines.append(f"diagnosis stopped: {type(err).__name__}: {err}")
+    return "\n".join(lines)
 
 
 def run_trial(prog, order, runs=1, record=True):
@@ -1032,7 +1141,10 @@ def run_trial(prog, order, runs=1, record=True):
         _apply_one_pass(g, "Materialization")
         for _ in range(runs):
             g.execute()
-        compare(prog, runs, f"order={order} runs={runs} fired={fired}")
+        try:
+            compare(prog, runs, f"order={order} runs={runs} fired={fired}")
+        except AssertionError as err:
+            raise AssertionError(f"{err}\n{_diagnose(prog, runs, g, _apply_order(order), order, fired)}") from None
     finally:
         prog.cleanup()
     if record:
@@ -1043,14 +1155,20 @@ def run_trial(prog, order, runs=1, record=True):
 
 def run_default(prog, runs=1, level=None):
     """The same program through ``default_pass_manager()`` or ``graph.optimize(level)``."""
+    def optimize(graph):
+        if level is None:
+            graph.apply(cg.default_pass_manager())
+        else:
+            graph.optimize(level)
+
     g = prog.build()
     try:
-        if level is None:
-            g.apply(cg.default_pass_manager())
-        else:
-            g.optimize(level)
+        optimize(g)
         for _ in range(runs):
             g.execute()
-        compare(prog, runs, f"default level={level} runs={runs}")
+        try:
+            compare(prog, runs, f"default level={level} runs={runs}")
+        except AssertionError as err:
+            raise AssertionError(f"{err}\n{_diagnose(prog, runs, g, optimize)}") from None
     finally:
         prog.cleanup()
