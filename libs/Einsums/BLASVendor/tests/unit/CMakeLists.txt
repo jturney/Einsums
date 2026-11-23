@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(BLASVendorTests VendorDot.cpp)
+set(BLASVendorTests VendorDot.cpp GemmBatchGate.cpp)
 
 foreach(test ${BLASVendorTests})
   get_filename_component(TestName ${test} NAME_WE)

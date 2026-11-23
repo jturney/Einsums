@@ -6,10 +6,12 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLASVendor/Vendor.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Profile.hpp>
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <vector>
 
 #include "Common.hpp"
@@ -121,6 +123,13 @@ inline bool use_small_gemm(int_t m, int_t n, int_t k) {
 #endif
 }
 
+/// The real floating-point operations of @p count GEMMs of shape m x n x k in element type @p T.
+template <typename T>
+double batch_flops(int_t m, int_t n, int_t k, int_t count) {
+    double const real = 2.0 * static_cast<double>(m) * static_cast<double>(n) * static_cast<double>(k) * static_cast<double>(count);
+    return is_complex_v<T> ? 4.0 * real : real;
+}
+
 /// One vendor GEMM, with the Fortran-ABI pointer plumbing hidden.
 ///
 /// Scalars by value, so workers never share the caller's stack slots (which TSan flags).
@@ -152,12 +161,21 @@ void gemm_batch_impl(char transa, char transb, int_t m, int_t n, int_t k, T alph
         return;
     }
 
-    // Static schedule for the uniform small kernel, dynamic for the vendor GEMM. Inside another team,
-    // open no region of our own: a nested team around an OpenMP OpenBLAS miscomputes (the extractor
-    // in ComputeGraph/Detail/GroupedBatchedGemm.hpp guards the same way).
+    // Too little work for a team, or already inside one: the vendor GEMM, member by member, which is
+    // the faster kernel on one thread. Inside another team a region of our own would be wrong as well
+    // as slow: a nested team around an OpenMP OpenBLAS miscomputes (the extractor in
+    // ComputeGraph/Detail/GroupedBatchedGemm.hpp guards the same way).
+    if (!gemm_batch_wants_threads(batch_flops<T>(m, n, k, batch_count))) {
+        for (int_t i = 0; i < batch_count; i++) {
+            vendor_gemm(transa, transb, m, n, k, alpha, a_array[i], lda, b_array[i], ldb, beta, c_array[i], ldc);
+        }
+        return;
+    }
+
+    // Static schedule for the uniform small kernel, dynamic for the vendor GEMM.
     if (use_small_gemm(m, n, k)) {
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(static) if (!omp_in_parallel())
+#    pragma omp parallel for schedule(static)
 #endif
         for (int_t i = 0; i < batch_count; i++) {
             small_gemm<T>(transa, transb, m, n, k, alpha, a_array[i], lda, b_array[i], ldb, beta, c_array[i], ldc);
@@ -166,7 +184,7 @@ void gemm_batch_impl(char transa, char transb, int_t m, int_t n, int_t k, T alph
     }
 
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(dynamic) if (!omp_in_parallel())
+#    pragma omp parallel for schedule(dynamic)
 #endif
     for (int_t i = 0; i < batch_count; i++) {
         vendor_gemm(transa, transb, m, n, k, alpha, a_array[i], lda, b_array[i], ldb, beta, c_array[i], ldc);
@@ -212,11 +230,20 @@ void gemm_batch_grouped_impl(char const *transa_array, char const *transb_array,
     }
     live_start.push_back(total);
 
+    // Fork only for enough work, by the same gate as the uniform batch; a batch that runs inline
+    // takes the vendor GEMM for every group, the faster kernel on one thread.
+    double flops = 0.0;
+    for (size_t s = 0; s < live.size(); ++s) {
+        int_t const g = live[s];
+        flops += batch_flops<T>(m_array[g], n_array[g], k_array[g], live_start[s + 1] - live_start[s]);
+    }
+    bool const threaded = gemm_batch_wants_threads(flops);
+
     // Each group picks its kernel by its own dims.
     std::vector<char> small(live.size());
     for (size_t s = 0; s < live.size(); ++s) {
         int_t const g = live[s];
-        small[s]      = static_cast<char>(use_small_gemm(m_array[g], n_array[g], k_array[g]));
+        small[s]      = static_cast<char>(threaded && use_small_gemm(m_array[g], n_array[g], k_array[g]));
     }
 
     auto const *starts = live_start.data();
@@ -224,7 +251,7 @@ void gemm_batch_grouped_impl(char const *transa_array, char const *transb_array,
 
     // Same guard, same reason as the uniform batch above.
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(dynamic) if (!omp_in_parallel())
+#    pragma omp parallel for schedule(dynamic) if (threaded)
 #endif
     for (int_t t = 0; t < total; ++t) {
         // The last group whose start is <= t. Groups are non-empty, so this
@@ -244,6 +271,17 @@ void gemm_batch_grouped_impl(char const *transa_array, char const *transb_array,
 }
 
 } // namespace
+
+bool gemm_batch_wants_threads(double flops) {
+    // The same gate every contraction uses. Without the work test a batch of two 2x2 GEMMs opened a
+    // full team and took 28 us against 2 us run inline.
+#ifdef _OPENMP
+    return omp_get_max_threads() > 1 && omp_in_parallel() == 0 && flops >= static_cast<double>(einsums::hardware::omp_min_parallel_flops());
+#else
+    (void)flops;
+    return false;
+#endif
+}
 
 void sgemm_batch(char transa, char transb, int_t m, int_t n, int_t k, float alpha, float const **a_array, int_t lda, float const **b_array,
                  int_t ldb, float beta, float **c_array, int_t ldc, int_t batch_count) {

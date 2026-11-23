@@ -75,6 +75,20 @@ EINSUMS_EXPORT void zgemm(char transa, char transb, int_t m, int_t n, int_t k, s
                           int_t ldc);
 
 /**
+ * @brief Whether a GEMM batch of @p flops real floating-point operations runs on an OpenMP team.
+ *
+ * The gate every batched entry point here applies: more than one thread available, no enclosing
+ * team, and at least @c hardware::omp_min_parallel_flops of work. A batch below it runs its
+ * members one after another on the vendor GEMM, which is the faster kernel on one thread, so a
+ * handful of tiny products never pays the tens of microseconds a team costs to open.
+ *
+ * @param[in] flops The batch's total work, counting a complex multiply-add as eight.
+ * @return True when the batch forks.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] EINSUMS_EXPORT bool gemm_batch_wants_threads(double flops);
+
+/**
  * Performs a batch of independent general matrix-matrix multiplications.
  *
  * All batches share the same transa, transb, m, n, k, alpha, beta, lda, ldb, ldc.

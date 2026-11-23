@@ -927,7 +927,13 @@ void blis_contraction_body(PackingPlan const &plan, CType &C, AType const &A, BT
     // ------------------------------------------------------------------------- Per-batch loop
     // (fallback when gemm_batch can't be used)
     // -------------------------------------------------------------------------
-    bool const parallel_batch = (plan.batch_total >= 4) && (M * N < 10000);
+    // Threads take whole batch members, for small members only (large ones thread inside), and only
+    // when the batch as a whole pays for a team: the same flop gate as the NC loop below. Without it a
+    // batch of four 2x2 products opened a full team for 64 flops.
+    double const batch_flops =
+        2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K) * static_cast<double>(plan.batch_total);
+    bool const parallel_batch =
+        (plan.batch_total >= 4) && (M * N < 10000) && batch_flops >= static_cast<double>(min_parallel_flops()) && can_fork_threads();
 
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(dynamic) if (parallel_batch)
