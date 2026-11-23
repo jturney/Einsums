@@ -6165,19 +6165,51 @@ namespace detail {
 /// silent corruption, at execute time.
 template <typename AType, typename BType, typename CType>
 void validate_einsum_dims(ParsedEinsumSpec const &parsed, AType const &A, BType const &B, CType const &C) {
-    std::unordered_map<std::string_view, std::pair<size_t, char>> sizes;
+    // A handful of letters, so a flat table searched linearly: a hash map here allocated a node per
+    // letter on every eager call, which for a small contraction cost more than its arithmetic.
+    struct Extent {
+        std::string_view letter;
+        size_t           dim;
+        char             who;
+    };
+    constexpr size_t            kInline = 24;
+    std::array<Extent, kInline> inline_sizes{};
+    std::vector<Extent>         spill;
+    size_t                      count = 0;
+    auto const                  find  = [&](std::string_view letter) -> Extent const                   *{
+        for (size_t i = 0; i < std::min(count, kInline); ++i) {
+            if (inline_sizes[i].letter == letter) {
+                return &inline_sizes[i];
+            }
+        }
+        for (auto const &e : spill) {
+            if (e.letter == letter) {
+                return &e;
+            }
+        }
+        return nullptr;
+    };
 
     auto scan = [&](std::vector<std::string> const &idx, auto const &t, char who) {
         size_t const rank = detail::tensor_rank(t);
         for (size_t d = 0; d < idx.size() && d < rank; d++) {
-            size_t const dim      = t.dim(static_cast<int>(d));
-            auto [it, first_seen] = sizes.try_emplace(std::string_view{idx[d]}, std::pair{dim, who});
-            if (!first_seen && it->second.first != dim) {
-                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                        "cg::einsum: index '{}' spans {} elements in operand {} but {} in operand {} - the operand "
-                                        "shapes disagree for spec '{}'",
-                                        idx[d], it->second.first, it->second.second, dim, who, parsed.raw);
+            size_t const dim = t.dim(static_cast<int>(d));
+            if (Extent const *seen = find(idx[d])) {
+                if (seen->dim != dim) {
+                    EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                            "cg::einsum: index '{}' spans {} elements in operand {} but {} in operand {} - the operand "
+                                            "shapes disagree for spec '{}'",
+                                            idx[d], seen->dim, seen->who, dim, who, parsed.raw);
+                }
+                continue;
             }
+            Extent const entry{std::string_view{idx[d]}, dim, who};
+            if (count < kInline) {
+                inline_sizes[count] = entry;
+            } else {
+                spill.push_back(entry);
+            }
+            ++count;
         }
     };
     scan(parsed.a_indices, A, 'A');
@@ -6191,15 +6223,15 @@ void validate_einsum_dims(ParsedEinsumSpec const &parsed, AType const &A, BType 
     for (auto const &op : parsed.operators) {
         auto const letters = op.letters();
         for (std::size_t i = 1; i < letters.size(); ++i) {
-            auto const first = sizes.find(std::string_view{letters[0]});
-            auto const other = sizes.find(std::string_view{letters[i]});
-            if (first == sizes.end() || other == sizes.end() || first->second.first == other->second.first) {
+            Extent const *first = find(std::string_view{letters[0]});
+            Extent const *other = find(std::string_view{letters[i]});
+            if (first == nullptr || other == nullptr || first->dim == other->dim) {
                 continue;
             }
             EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                     "cg::einsum: operator '{}' permutes index '{}' ({} elements) with '{}' ({} elements) - a "
                                     "permutation operator requires equal extents, for spec '{}'",
-                                    op.render(), letters[0], first->second.first, letters[i], other->second.first, parsed.raw);
+                                    op.render(), letters[0], first->dim, letters[i], other->dim, parsed.raw);
         }
     }
 }

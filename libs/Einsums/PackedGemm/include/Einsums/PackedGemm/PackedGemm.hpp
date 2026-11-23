@@ -76,12 +76,18 @@ inline bool stream_gemv_preferred(int64_t elems) {
 // Compile-time helpers
 // ---------------------------------------------------------------------------
 
+/// Whether @p v holds @p s. A linear scan: an index list is a handful of letters, and a hash set
+/// built for the question allocated a node per letter on every contraction.
+inline bool contains_index(std::vector<std::string> const &v, std::string_view s) {
+    return std::ranges::find(v, s) != v.end();
+}
+
 /// De-duplicate while preserving first-occurrence order.
 inline std::vector<std::string> unique_ordered(std::vector<std::string> const &v) {
-    std::vector<std::string>        result;
-    std::unordered_set<std::string> seen;
+    std::vector<std::string> result;
+    result.reserve(v.size());
     for (auto const &s : v) {
-        if (seen.insert(s).second) {
+        if (!contains_index(result, s)) {
             result.push_back(s);
         }
     }
@@ -91,12 +97,9 @@ inline std::vector<std::string> unique_ordered(std::vector<std::string> const &v
 /// Compute the unique link indices: A intersection B minus C, preserving order from A.
 inline std::vector<std::string> compute_link_indices(std::vector<std::string> const &a_raw, std::vector<std::string> const &b_raw,
                                                      std::vector<std::string> const &c_unique) {
-    std::unordered_set<std::string> const b_set(b_raw.begin(), b_raw.end());
-    std::unordered_set<std::string> const c_set(c_unique.begin(), c_unique.end());
-    std::vector<std::string>              link;
-    std::unordered_set<std::string>       seen;
+    std::vector<std::string> link;
     for (auto const &idx : a_raw) {
-        if (b_set.count(idx) && !c_set.count(idx) && seen.insert(idx).second) {
+        if (contains_index(b_raw, idx) && !contains_index(c_unique, idx) && !contains_index(link, idx)) {
             link.push_back(idx);
         }
     }
@@ -2946,12 +2949,11 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     bool ttgt_exists  = false;
     bool outer_shaped = false;
     {
-        std::unordered_set<std::string> const a_set(a_raw.begin(), a_raw.end());
-        std::unordered_set<std::string> const b_set(b_raw.begin(), b_raw.end());
-        size_t                                m_count = 0, n_count = 0;
+
+        size_t m_count = 0, n_count = 0;
         for (auto const &ci : target) {
-            bool const in_a = a_set.count(ci) > 0;
-            bool const in_b = b_set.count(ci) > 0;
+            bool const in_a = contains_index(a_raw, ci);
+            bool const in_b = contains_index(b_raw, ci);
             if (in_a && !in_b)
                 ++m_count;
             else if (in_b && !in_a)
@@ -2959,11 +2961,10 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             // in_a && in_b → batch dim (handled by packing plan)
         }
         // A letter summed over one input alone has no axis in the plan: decline to the generic loop.
-        std::unordered_set<std::string> const c_set(c_raw.begin(), c_raw.end());
-        auto const                            has_lone = [&c_set](auto const &raw, std::unordered_set<std::string> const &other) {
-            return std::ranges::any_of(raw, [&](std::string const &x) { return other.count(x) == 0 && c_set.count(x) == 0; });
+        auto const has_lone = [&c_raw](auto const &raw, std::vector<std::string> const &other) {
+            return std::ranges::any_of(raw, [&](std::string const &x) { return !contains_index(other, x) && !contains_index(c_raw, x); });
         };
-        if (has_lone(a_raw, b_set) || has_lone(b_raw, a_set)) {
+        if (has_lone(a_raw, b_raw) || has_lone(b_raw, a_raw)) {
             EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "lone_summed_index");
             remember(key, nullptr);
             return false;
@@ -3179,7 +3180,12 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                                   SupT const &S, VecT const &V, std::vector<std::string> const &sup,
                                   std::vector<std::string> const &other) -> bool {
                 auto const distinct = [](std::vector<std::string> const &v) {
-                    return std::unordered_set<std::string>(v.begin(), v.end()).size() == v.size();
+                    for (size_t i = 0; i < v.size(); ++i) {
+                        if (std::find(v.begin() + static_cast<std::ptrdiff_t>(i) + 1, v.end(), v[i]) != v.end()) {
+                            return false;
+                        }
+                    }
+                    return true;
                 };
                 auto const within_sup = [&](std::vector<std::string> const &v) {
                     return std::ranges::all_of(v, [&](std::string const &x) { return std::ranges::find(sup, x) != sup.end(); });
