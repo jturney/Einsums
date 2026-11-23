@@ -208,6 +208,61 @@ TEST_CASE("Tune - the stream minimum decides whether an interleaved GEMV is stre
     CHECK(above.find("stream") != std::string::npos);
 }
 
+TEST_CASE("Tune - an option written between replays reaches a captured contraction", "[ComputeGraph][Tune]") {
+    // A graph node remembers what PackedGemm decided for it, and that decision reads options. The
+    // memo once ignored them, so a tuner that changed the stream minimum and replayed the graph
+    // measured the old decision. It now records the options' write generation and resolves again
+    // after any write; the eager path, which borrows a per-thread memo, relies on the same check.
+    Tensor<double, 4> A("A", 6, 6, 6, 6);
+    Tensor<double, 2> B("B", 6, 6);
+    Tensor<double, 2> C("C", 6, 6);
+    A.zero();
+    B.zero();
+
+    cg::Graph graph("tuned_between_replays");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ikjl ; kl", 0.0, &C, 1.0, A, B);
+    }
+    cg::SequentialExecutor seq;
+    std::string            below, above;
+    {
+        Pin<std::int64_t> const pin(option::PackedGemmStreamMinElems, never);
+        graph.execute(seq);
+        graph.execute(seq); // the second replay reads the memo the first wrote
+        below = decided();
+    }
+    {
+        Pin<std::int64_t> const pin(option::PackedGemmStreamMinElems, std::int64_t{0});
+        graph.execute(seq);
+        above = decided();
+    }
+    INFO(below << " against " << above);
+    CHECK(below.find("stream") == std::string::npos);
+    CHECK(above.find("stream") != std::string::npos);
+}
+
+TEST_CASE("Tune - a repeated eager contraction sees each option write", "[ComputeGraph][Tune]") {
+    // The same call three times, the option moved between them, so the per-thread memo the eager
+    // path borrows is warm each time the option changes.
+    Tensor<double, 4> A("A", 6, 6, 6, 6);
+    Tensor<double, 2> B("B", 6, 6);
+    Tensor<double, 2> C("C", 6, 6);
+    A.zero();
+    B.zero();
+    std::vector<std::string> seen;
+    for (std::int64_t const minimum : {never, std::int64_t{0}, never}) {
+        Pin<std::int64_t> const pin(option::PackedGemmStreamMinElems, minimum);
+        cg::einsum("ij <- ikjl ; kl", 0.0, &C, 1.0, A, B);
+        cg::einsum("ij <- ikjl ; kl", 0.0, &C, 1.0, A, B);
+        seen.push_back(decided());
+    }
+    INFO(seen[0] << " / " << seen[1] << " / " << seen[2]);
+    CHECK(seen[0].find("stream") == std::string::npos);
+    CHECK(seen[1].find("stream") != std::string::npos);
+    CHECK(seen[2].find("stream") == std::string::npos);
+}
+
 TEST_CASE("Tune - the break-even rate scales the parallel threshold", "[ComputeGraph][Tune]") {
     // The region cost is resolved once per team size, so the threshold is checked against the one
     // in effect.

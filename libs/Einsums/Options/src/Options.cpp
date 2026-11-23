@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cassert>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -161,7 +162,12 @@ bool has(OptionEntry const &entry, ValueKind kind) noexcept {
 
 /// Run an entry's observers holding no lock, which is the point of copying
 /// them out first: an observer is free to read or write any option it likes.
+/// Bumped by every write to any option; see config::write_generation.
+std::atomic<std::uint64_t> g_write_generation{0};
+
 void notify(OptionEntry &entry) {
+    // Before the observers run, so one that reads the generation sees this write counted.
+    g_write_generation.fetch_add(1, std::memory_order_acq_rel);
     std::vector<std::function<void()>> callbacks;
     {
         std::scoped_lock const lock(entry.observer_mutex);
@@ -624,6 +630,10 @@ std::string dynamic_string(std::string const &key, std::string const &default_va
     }
     auto const *value = entry->string_value.load(std::memory_order_acquire);
     return value != nullptr ? *value : default_value;
+}
+
+std::uint64_t write_generation_value() noexcept {
+    return cl::detail::g_write_generation.load(std::memory_order_acquire);
 }
 
 // A write stores, then notifies with no lock held. An unclaimed key gets its own entry.

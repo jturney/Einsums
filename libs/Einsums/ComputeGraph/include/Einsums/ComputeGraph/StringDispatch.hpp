@@ -581,6 +581,35 @@ bool try_fused_gemm(std::vector<std::string> const &c_idx, std::vector<std::stri
     return true;
 }
 
+/**
+ * @brief A memo site for an eager contraction, which has no graph node to hold one.
+ *
+ * A node's ContractionSite lets a repeated contraction skip rebuilding its packing spec and its
+ * cache key, about thirty allocations together, which on a small contraction cost more than its
+ * arithmetic. An eager call gets the same from one of a few per-thread sites: the one whose
+ * remembered spec names these indices, or else the oldest, recycled. PackedGemm re-checks the
+ * remembered layouts, extents and the options' write generation on every call, so a site that no
+ * longer fits simply resolves again; and its route stays Adaptive, which is exactly what passing
+ * no site means, so only the memo changes. Plans are owned by a cache that never evicts, so a
+ * site's plan pointer stays valid.
+ */
+inline packed_gemm::ContractionSite &eager_contraction_site(std::vector<std::string> const &c_idx, std::vector<std::string> const &a_idx,
+                                                            std::vector<std::string> const &b_idx, std::vector<std::string> const &links,
+                                                            bool conj_a, bool conj_b) {
+    constexpr std::size_t                                         kSites = 16;
+    thread_local std::array<packed_gemm::ContractionSite, kSites> sites{};
+    thread_local std::size_t                                      next = 0;
+    for (auto &site : sites) {
+        if (site.resolved && packed_gemm::spec_matches_indices(site.key.spec, c_idx, a_idx, b_idx, links, conj_a, conj_b)) {
+            return site;
+        }
+    }
+    auto &site = sites[next];
+    next       = (next + 1) % kSites;
+    site       = packed_gemm::ContractionSite{};
+    return site;
+}
+
 template <typename CType, typename AType, typename BType>
 void reject_output_alias(ParsedEinsumSpec const &parsed, CType const &C, AType const &A, BType const &B) {
     auto const overlaps_c = [&](auto const &x) { return detail::provably_overlap(x, C); };
@@ -1185,8 +1214,11 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         // still agree it is lent back instead of assembling six vector<string>
         // - about fifteen allocations - on a path a tiled expansion drives
         // thousands of times per replay.
-        bool const reuse_spec = pg_site != nullptr && pg_site->resolved &&
-                                packed_gemm::spec_matches_indices(pg_site->key.spec, c_idx, a_idx, b_idx, links, conj_a, conj_b);
+        // An eager call borrows a per-thread site, so it repeats as cheaply as a graph node does.
+        packed_gemm::ContractionSite *const site =
+            pg_site != nullptr ? pg_site : &eager_contraction_site(c_idx, a_idx, b_idx, links, conj_a, conj_b);
+        bool const reuse_spec =
+            site->resolved && packed_gemm::spec_matches_indices(site->key.spec, c_idx, a_idx, b_idx, links, conj_a, conj_b);
 
         packed_gemm::ContractionSpec built;
         if (!reuse_spec) {
@@ -1199,9 +1231,9 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             built.conj_a = conj_a; // PackedGemm conjugates during packing/transpose (native, no copy)
             built.conj_b = conj_b;
         }
-        packed_gemm::ContractionSpec const &spec = reuse_spec ? pg_site->key.spec : built;
+        packed_gemm::ContractionSpec const &spec = reuse_spec ? site->key.spec : built;
 
-        if (packed_gemm::try_packed_gemm<AType, BType, CType>(spec, c_pf, C, ab_pf, A, B, /*allow_scatter=*/true, pg_site)) {
+        if (packed_gemm::try_packed_gemm<AType, BType, CType>(spec, c_pf, C, ab_pf, A, B, /*allow_scatter=*/true, site)) {
             WAGGLE_ANNOTATE("dispatch", "packed_gemm");
             last_dispatch_route() = "packed_gemm";
             return;

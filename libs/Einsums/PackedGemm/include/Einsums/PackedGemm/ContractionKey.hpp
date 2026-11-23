@@ -138,6 +138,14 @@ struct ContractionSite {
     ///
     /// A decline depends on the route (a plan does not), so a memo is re-derived when the route moves.
     bool declined_packed{false};
+
+    /// @c config::write_generation when the memo was recorded.
+    ///
+    /// The choice between a plan, a decline and the routes a hit skips reads options (the stream,
+    /// outer-product and outer-GEMM thresholds), so a memo recorded before any option write is
+    /// re-derived: without it a tuner that changes an option and runs the contraction again would
+    /// measure the old decision.
+    std::uint64_t options_generation{0};
 };
 
 /// @brief Whether @p spec already describes this contraction's topology.

@@ -871,3 +871,27 @@ TEST_CASE("Dynamic keys reach the same slots, spelled loosely", "[descriptor][dy
     REQUIRE(einsums::config::get_dynamic<std::int64_t>("t25-unclaimed", 7) == 11);
     REQUIRE(einsums::config::get_dynamic<bool>("t25-unclaimed", true) == true);
 }
+
+TEST_CASE("Every option write moves the write generation, and a read does not", "[descriptor][generation]") {
+    // Caches of decisions made from options compare this to tell that one may have changed.
+    CLITestFixture _;
+
+    ConfigOption<std::int64_t> level = config_opt<std::int64_t>("t29:level", "how loud", "T29", 1, "N");
+    register_option(level);
+
+    auto const before = einsums::config::write_generation();
+    (void)einsums::config::get(level);
+    REQUIRE(einsums::config::write_generation() == before);
+
+    einsums::config::set(level, std::int64_t{2});
+    auto const after_set = einsums::config::write_generation();
+    REQUIRE(after_set > before);
+
+    // The same value again is still a write: the generation promises only to move on writes.
+    einsums::config::set(level, std::int64_t{2});
+    REQUIRE(einsums::config::write_generation() > after_set);
+
+    auto const after_typed = einsums::config::write_generation();
+    einsums::config::set_dynamic<bool>("t29-flag", true);
+    REQUIRE(einsums::config::write_generation() > after_typed);
+}

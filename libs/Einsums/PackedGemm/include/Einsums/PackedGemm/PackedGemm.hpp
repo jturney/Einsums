@@ -11,6 +11,7 @@
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/Options/Get.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
 #include <Einsums/PackedGemm/Options.hpp>
@@ -2866,7 +2867,8 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     // route, for operands with this layout and these sizes. The route matters only for a decline: a
     // plan is valid whichever way the contraction is spent, but a decline stands aside for a vendor
     // GEMM, which is right only while the vendor is the route.
-    if (site != nullptr && site->resolved && site->allow_scatter == allow_scatter &&
+    std::uint64_t const options_generation = einsums::config::write_generation();
+    if (site != nullptr && site->resolved && site->allow_scatter == allow_scatter && site->options_generation == options_generation &&
         (site->plan != nullptr || site->declined_packed == prefer_packed) && site_key_matches(site->key, spec_in, st, A, B, *C)) {
         if (site->plan == nullptr) {
             EINSUMS_PACKED_GEMM_PATH("packed_gemm_skip", "site_declined");
@@ -2881,13 +2883,14 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
 
     // Record what this call resolved to, so the next can skip straight to it. A null plan means
     // declined, which is a property of the key too; it records the route it was made under.
-    auto remember = [site, allow_scatter, prefer_packed](ContractionKey const &k, PackingPlan const *p) {
+    auto remember = [site, allow_scatter, prefer_packed, options_generation](ContractionKey const &k, PackingPlan const *p) {
         if (site != nullptr) {
-            site->key             = k;
-            site->plan            = p;
-            site->allow_scatter   = allow_scatter;
-            site->declined_packed = prefer_packed;
-            site->resolved        = true;
+            site->key                = k;
+            site->plan               = p;
+            site->allow_scatter      = allow_scatter;
+            site->declined_packed    = prefer_packed;
+            site->options_generation = options_generation;
+            site->resolved           = true;
         }
     };
 

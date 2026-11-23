@@ -157,6 +157,9 @@ EINSUMS_EXPORT std::int64_t dynamic_int(std::string const &key, std::int64_t def
 EINSUMS_EXPORT double       dynamic_double(std::string const &key, double default_value) noexcept;
 EINSUMS_EXPORT std::string dynamic_string(std::string const &key, std::string const &default_value);
 
+/// The value behind @ref config::write_generation.
+EINSUMS_EXPORT std::uint64_t write_generation_value() noexcept;
+
 EINSUMS_EXPORT void set_dynamic_bool(std::string const &key, bool value);
 EINSUMS_EXPORT void set_dynamic_int(std::string const &key, std::int64_t value);
 EINSUMS_EXPORT void set_dynamic_double(std::string const &key, double value);
@@ -263,6 +266,21 @@ void set_dynamic(std::string const &key, T value) {
     } else {
         static_assert(cl::detail::always_false<T>, "config::set_dynamic supports bool, std::int64_t, double, and std::string.");
     }
+}
+
+/**
+ * @brief A count of every option write so far, from any source: a parse, ``set``, or ``set_dynamic``.
+ *
+ * Lets a cache of decisions made from options tell that one may have changed since: record the
+ * value with the decision and treat a different value as a miss. It moves on every write, not
+ * only on writes of the options a given decision reads, so it can only cause a re-decision, never
+ * hide one. A lock-free atomic read.
+ *
+ * @return The number of option writes made in this process.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline std::uint64_t write_generation() noexcept {
+    return detail::write_generation_value();
 }
 
 /**
