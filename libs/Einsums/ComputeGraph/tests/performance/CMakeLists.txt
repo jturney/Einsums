@@ -9,6 +9,7 @@ set(ComputeGraphPerfTests
     BenchmarkExecutors.cpp
     BenchmarkGraphOverhead.cpp
     BenchmarkOuterProduct.cpp
+    BenchmarkPackedGemmSmall.cpp
 )
 
 # The machinery around contractions; everything else here is the contraction suite.
