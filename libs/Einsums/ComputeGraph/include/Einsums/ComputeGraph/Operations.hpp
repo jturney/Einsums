@@ -48,6 +48,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -6245,13 +6246,44 @@ inline ParsedEinsumSpec parse_einsum_or_throw(std::string_view spec) {
     return std::move(parse_result.value());
 }
 
-/// The checks every cg::einsum runs on its index lists before it records or computes anything:
-/// operand ranks against the spec, conjugation spelled in the spec, and one size per index name.
-/// Shared by the single-type and the mixed-precision overloads and by a spec a pass hands over in
-/// lists, so all of them reject the same mistakes the same way. ORs the spec's conj(...) wrappers
-/// into @p conj_a and @p conj_b, and clears the flag of a real operand in both.
+/**
+ * @brief @p spec parsed, from a per-thread cache of recent specs.
+ *
+ * A parse depends on nothing but the string, so a loop that issues the same few contractions
+ * parses each once. Shared and immutable, so a holder keeps its spec alive while the cache
+ * recycles the entry; a spec that fails to parse is never cached and throws as the parser says.
+ *
+ * @param[in] spec The einsum spec.
+ * @return The parsed spec.
+ * @throws std::invalid_argument When @p spec does not parse.
+ */
+inline std::shared_ptr<ParsedEinsumSpec const> parse_einsum_cached(std::string_view spec) {
+    struct Entry {
+        std::string                             text;
+        std::shared_ptr<ParsedEinsumSpec const> parsed;
+    };
+    constexpr std::size_t                    kEntries = 16;
+    thread_local std::array<Entry, kEntries> entries{};
+    thread_local std::size_t                 next = 0;
+    for (auto const &entry : entries) {
+        if (entry.parsed != nullptr && entry.text == spec) {
+            return entry.parsed;
+        }
+    }
+    auto   parsed = std::make_shared<ParsedEinsumSpec const>(parse_einsum_or_throw(spec));
+    Entry &slot   = entries[next];
+    next          = (next + 1) % kEntries;
+    slot.text.assign(spec);
+    slot.parsed = parsed;
+    return parsed;
+}
+
+/// @brief The checks of @ref check_einsum, without writing the conjugation flags into @p parsed.
+///
+/// For a spec shared with a cache, which must not be modified. ORs the spec's conj(...) wrappers into
+/// @p conj_a and @p conj_b, and clears the flag of a real operand in both.
 template <typename AType, typename BType, typename CType>
-void check_einsum(ParsedEinsumSpec &parsed, AType const &A, BType const &B, CType const &C, bool &conj_a, bool &conj_b) {
+void check_einsum_shapes(ParsedEinsumSpec const &parsed, AType const &A, BType const &B, CType const &C, bool &conj_a, bool &conj_b) {
     // Each operand's rank has to match its index count. Checked for every spec, however it was built: a spec
     // that arrives as data (Python, a pass) is the common case, and a rank-3 A under "ij <- ik ; kj" otherwise
     // runs to completion reading the wrong elements.
@@ -6275,12 +6307,22 @@ void check_einsum(ParsedEinsumSpec &parsed, AType const &A, BType const &B, CTyp
     // A ``conj(...)`` wrapper in the spec ORs with the conj_a / conj_b kwargs. Conjugating a real operand
     // is the identity, so its flag is dropped here: the recorded node and every pass that declines a
     // conjugated contraction then see the plain contraction it is.
-    conj_a        = IsComplexV<typename AType::ValueType> && (conj_a || parsed.conj_a);
-    conj_b        = IsComplexV<typename BType::ValueType> && (conj_b || parsed.conj_b);
-    parsed.conj_a = conj_a;
-    parsed.conj_b = conj_b;
+    conj_a = IsComplexV<typename AType::ValueType> && (conj_a || parsed.conj_a);
+    conj_b = IsComplexV<typename BType::ValueType> && (conj_b || parsed.conj_b);
 
     validate_einsum_dims(parsed, A, B, C);
+}
+
+/// The checks every cg::einsum runs on its index lists before it records or computes anything:
+/// operand ranks against the spec, conjugation spelled in the spec, and one size per index name.
+/// Shared by the single-type and the mixed-precision overloads and by a spec a pass hands over in
+/// lists, so all of them reject the same mistakes the same way. ORs the spec's conj(...) wrappers
+/// into @p conj_a and @p conj_b, and clears the flag of a real operand in both.
+template <typename AType, typename BType, typename CType>
+void check_einsum(ParsedEinsumSpec &parsed, AType const &A, BType const &B, CType const &C, bool &conj_a, bool &conj_b) {
+    check_einsum_shapes(parsed, A, B, C, conj_a, conj_b);
+    parsed.conj_a = conj_a;
+    parsed.conj_b = conj_b;
 }
 
 /// @ref check_einsum on @p spec, parsed. Returns the parsed spec.
@@ -6295,11 +6337,20 @@ ParsedEinsumSpec prepare_einsum(EinsumFormatString const &spec, AType const &A, 
 /// cg::einsum of one element type on a spec already in index lists, for the reason
 /// @ref permute_parsed gives. The string form parses its spec and comes here.
 template <typename AType, typename BType, typename CType>
-void einsum_parsed(ParsedEinsumSpec parsed, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
+void einsum_parsed(ParsedEinsumSpec const &spec, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
                    BType const &B, bool conj_a = false, bool conj_b = false) {
     using T = typename AType::ValueType;
 
-    check_einsum(parsed, A, B, *C, conj_a, conj_b);
+    // The spec may be shared with the parse cache, so it is copied only when the effective
+    // conjugation differs from what it spells, which a real operand or a plain spec never does.
+    check_einsum_shapes(spec, A, B, *C, conj_a, conj_b);
+    std::optional<ParsedEinsumSpec> adjusted;
+    if (spec.conj_a != conj_a || spec.conj_b != conj_b) {
+        adjusted.emplace(spec);
+        adjusted->conj_a = conj_a;
+        adjusted->conj_b = conj_b;
+    }
+    ParsedEinsumSpec const &parsed = adjusted ? *adjusted : spec;
 
     auto &ctx = CaptureContext::current();
     if (detail::runs_eagerly(ctx, "cg::einsum", C, A, B)) {
@@ -6355,7 +6406,7 @@ template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept
              std::is_same_v<typename AType::ValueType, typename CType::ValueType> && (!detail::any_tiled_v<AType, BType, CType>)
 void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
             BType const &B, bool conj_a = false, bool conj_b = false) {
-    detail::einsum_parsed(detail::parse_einsum_or_throw(spec), c_pf, C, ab_pf, A, B, conj_a, conj_b);
+    detail::einsum_parsed(*detail::parse_einsum_cached(spec), c_pf, C, ab_pf, A, B, conj_a, conj_b);
 }
 
 /**

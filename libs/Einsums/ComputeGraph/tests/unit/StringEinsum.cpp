@@ -1153,3 +1153,45 @@ TEMPLATE_LIST_TEST_CASE("String einsum - the fused route reads views through the
     CHECK(std::string{cg::dispatch::last_dispatch_route()} == "gemm_fused_runtime");
     einsums::testing::require_tensors_close(C, expect, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
 }
+
+// ── The parse cache ───────────────────────────────────────────────────────────
+
+TEST_CASE("String einsum - a repeated spec is parsed once and a bad one is never cached", "[ComputeGraph][StringEinsum][ParseCache]") {
+    auto const first  = cg::detail::parse_einsum_cached("ij <- ik ; kj");
+    auto const second = cg::detail::parse_einsum_cached("ij <- ik ; kj");
+    CHECK(first.get() == second.get());
+    CHECK(first->c_indices == std::vector<std::string>{"i", "j"});
+
+    // A failure throws every time, with the parser's message, rather than answering from a cache.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        CHECK_THROWS_AS(cg::detail::parse_einsum_cached("ij <- ik ;"), std::invalid_argument);
+    }
+
+    // Recycling an entry leaves a holder's spec intact.
+    for (int i = 0; i < 40; ++i) {
+        char const letter = static_cast<char>('a' + (i % 10));
+        (void)cg::detail::parse_einsum_cached(fmt::format("{0} <- {0}z{1} ; z{1}", letter, i / 10 == 0 ? "" : "y"));
+    }
+    CHECK(first->c_indices == std::vector<std::string>{"i", "j"});
+}
+
+TEST_CASE("String einsum - a cached spec is never conjugated by the call that used it", "[ComputeGraph][StringEinsum][ParseCache]") {
+    // The checks fold conj_a / conj_b into the spec a node records. With the spec shared with the
+    // parse cache, a call that conjugated must not leave the next call conjugating too.
+    using T = std::complex<double>;
+    auto A  = create_random_tensor<T>("A", 3, 4);
+    auto B  = create_random_tensor<T>("B", 4, 2);
+    auto C  = create_zero_tensor<T>("C", 3, 2);
+
+    for (bool const conj : {true, false, true, false}) {
+        INFO("conj_a " << conj);
+        auto expected = create_zero_tensor<T>("expected", 3, 2);
+        reference_einsum("ij <- ik ; kj", T{0}, &expected, T{1}, A, B, conj, false);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ik ; kj", T{0}, &C, T{1}, A, B, conj, false);
+        einsums::testing::require_tensors_close(C, expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
+    }
+    auto const cached = cg::detail::parse_einsum_cached("ij <- ik ; kj");
+    CHECK_FALSE(cached->conj_a);
+    CHECK_FALSE(cached->conj_b);
+}
