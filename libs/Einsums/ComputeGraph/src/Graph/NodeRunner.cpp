@@ -21,9 +21,11 @@
 #include <Einsums/Profile/Profile.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <optional>
 #include <span>
@@ -478,6 +480,26 @@ void NodeRunner::host_current(TensorId id) {
     });
 }
 
+namespace {
+
+/// The annotation strings every node carries whatever it computes, interned once.
+struct ProcessAnnotationIds {
+    std::uint32_t                  op_kind_key{waggle::intern_string("op_kind")};
+    std::uint32_t                  device_key{waggle::intern_string("device")};
+    std::uint32_t                  cpu{waggle::intern_string("CPU")};
+    std::uint32_t                  gpu{waggle::intern_string("GPU")};
+    std::array<std::uint32_t, 256> op_kind_value{};
+
+    ProcessAnnotationIds() {
+        // Every value of the underlying type, so a kind added anywhere in the enumeration has an id.
+        for (unsigned value = 0; value < op_kind_value.size(); ++value) {
+            op_kind_value[value] = waggle::intern_string(op_kind_name(static_cast<OpKind>(value)));
+        }
+    }
+};
+
+} // namespace
+
 void NodeRunner::open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t idx, Place place) const {
     if (!_recording) {
         return;
@@ -498,9 +520,13 @@ void NodeRunner::open_zone(std::optional<waggle::ScopedZone> &zone, std::size_t 
         zone.emplace(node.label);
     }
 
-    // These two are static strings, interned once per process.
-    waggle::annotate("op_kind", op_kind_name(node.kind));
-    waggle::annotate("device", place.is_device() ? "GPU" : "CPU");
+    // Interned once per process and passed as ids. waggle::annotate interns its key and value on
+    // every call under the string table's lock, which Waggle's consumer thread takes for every
+    // annotation it drains; replaying a graph of tiny nodes spent two thirds of its time waiting
+    // on that lock here. Waggle's ids are stable for the life of the process.
+    static ProcessAnnotationIds const ids;
+    waggle::annotate_interned(ids.op_kind_key, ids.op_kind_value[static_cast<std::uint8_t>(node.kind)]);
+    waggle::annotate_interned(ids.device_key, place.is_device() ? ids.gpu : ids.cpu);
 
     for (auto const &[key, value] : ps.texts) {
         waggle::annotate_interned(key, value);
