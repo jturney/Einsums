@@ -311,6 +311,19 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("kept", to_array(desc.kept));
         return Value{std::move(out)};
     }
+    case OpKind::Compare: {
+        auto const &desc = node.op_data.get<CompareDescriptor>();
+        out.set("op", Value{std::string{cmp_op_name(desc.op)}});
+        // Written only by the scalar form, whose right-hand side it is; the tensor form's
+        // right-hand side is its second input. number_or_tag keeps a NaN or infinity exact.
+        if (desc.scalar.has_value()) {
+            out.set("scalar", number_or_tag(*desc.scalar));
+        }
+        return Value{std::move(out)};
+    }
+    case OpKind::Select:
+        (void)node.op_data.get<SelectDescriptor>();
+        return Value{std::move(out)};
     case OpKind::Einsum: {
         auto const &desc = node.op_data.get<EinsumDescriptor>();
         // ``ParsedEinsumSpec::raw`` is not written: it is a display string the

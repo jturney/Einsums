@@ -5,7 +5,7 @@
 
 Covers scale / axpy / axpby / direct_product / direct_division, the
 named elementary ops (exp, log, log1p, expm1, sign), and the real-only
-maximum / minimum / max_axes / min_axes with
+maximum / minimum / max_axes / min_axes / compare / where with
 non-contiguous view operands, degenerate (size-1) dims, all four dtypes,
 prefactors (incl. accumulation), and the optional default pass manager.
 
@@ -70,7 +70,8 @@ _ELEMENTARY = {"exp": np.exp, "log": np.log, "log1p": np.log1p, "expm1": np.expm
 _REAL_ONLY_ELEMENTARY = ("log1p", "expm1", "sign")
 
 
-_MAX_MIN_OPS = ("maximum", "minimum", "max_axes", "min_axes")
+_MAX_MIN_OPS = ("maximum", "minimum", "max_axes", "min_axes", "compare", "compare_scalar", "where")
+_COMPARISONS = {"gt": np.greater, "ge": np.greater_equal, "lt": np.less, "le": np.less_equal, "eq": np.equal, "ne": np.not_equal}
 
 
 @given(op=st.sampled_from(["scale", "axpy", "axpby", "direct_product", "direct_division", "element_op", *_MAX_MIN_OPS]),
@@ -78,14 +79,14 @@ _MAX_MIN_OPS = ("maximum", "minimum", "max_axes", "min_axes")
        shape=_shape(), alpha=st.sampled_from([1.0, -2.0, 0.5]), beta=st.sampled_from([0.0, 1.0, -1.5]),
        dt=DTYPES,
        va=st.booleans(), vb=st.booleans(), vc=st.booleans(), passes=st.booleans(),
-       axes_mask=st.integers(0, 7), special=st.booleans())
+       axes_mask=st.integers(0, 7), special=st.booleans(), cmp=st.sampled_from(sorted(_COMPARISONS)))
 @settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 @example(op="axpy", element_op="exp", shape=(1, 2, 1), alpha=1.0, beta=0.0, dt="float64", va=False, vb=True, vc=False,
-         passes=False, axes_mask=0, special=False)
+         passes=False, axes_mask=0, special=False, cmp="gt")
 @example(op="direct_product", element_op="exp", shape=(3, 3, 1), alpha=1.0, beta=0.0, dt="complex128", va=False, vb=False,
-         vc=True, passes=False, axes_mask=0, special=False)
-def test_hyp_elementwise_diff(op, element_op, shape, alpha, beta, dt, va, vb, vc, passes, axes_mask, special):
+         vc=True, passes=False, axes_mask=0, special=False, cmp="gt")
+def test_hyp_elementwise_diff(op, element_op, shape, alpha, beta, dt, va, vb, vc, passes, axes_mask, special, cmp):
     rng = np.random.default_rng(0)
     g = cg.Graph(_nm())
     if op in _MAX_MIN_OPS:
@@ -101,7 +102,30 @@ def test_hyp_elementwise_diff(op, element_op, shape, alpha, beta, dt, va, vb, vc
             flat_a[len(flat_a) // 2] = -0.0
             flat_b[len(flat_b) // 2] = 0.0
         At, Bt = _mkv(A0, va, dt, rng), _mkv(B0, vb, dt, rng)
-        if op in ("maximum", "minimum"):
+        if special:
+            # Ties too, so ge/le/eq see equality and not only random distinct values.
+            B0.reshape(-1)[0] = A0.reshape(-1)[-1] if A0.size > 1 else B0.reshape(-1)[0]
+            Bt = _mkv(B0, vb, dt, rng)
+        if op in ("compare", "compare_scalar"):
+            rhs = B0 if op == "compare" else 0.0
+            with np.errstate(invalid="ignore"):
+                oracle = _COMPARISONS[cmp](A0, rhs).astype(A0.dtype)
+            out = einsums.create_zero_tensor(_nm(), list(shape), dtype=dt)
+            with cg.capture(g):
+                einsums.linalg.compare(out, At, Bt if op == "compare" else 0.0, cmp)
+        elif op == "where":
+            mask0 = (rng.integers(0, 3, size=shape) - 1).astype(A0.dtype)  # -1, 0, 1: any nonzero is true
+            if special:
+                mask0.reshape(-1)[-1] = np.nan  # NaN is truthy
+                A0.reshape(-1)[-1] = np.inf
+                B0.reshape(-1)[-1] = np.nan  # the branch not taken must not leak
+                At, Bt = _mkv(A0, va, dt, rng), _mkv(B0, vb, dt, rng)
+            oracle = np.where(mask0.astype(bool), A0, B0)
+            Mt = _mkv(mask0, vc, dt, rng)
+            out = einsums.create_zero_tensor(_nm(), list(shape), dtype=dt)
+            with cg.capture(g):
+                einsums.linalg.where(out, Mt, At, Bt)
+        elif op in ("maximum", "minimum"):
             oracle = getattr(np, op)(A0, B0)
             out = einsums.create_zero_tensor(_nm(), list(shape), dtype=dt)
             with cg.capture(g):
@@ -118,7 +142,7 @@ def test_hyp_elementwise_diff(op, element_op, shape, alpha, beta, dt, va, vb, vc
         g.execute()  # an overwrite replays to the same answer
         # Selections, not arithmetic: the answer is one of the inputs, exactly, sign of zero included.
         got = np.asarray(out)
-        np.testing.assert_array_equal(got, oracle, err_msg=f"op={op} shape={shape} dt={dt} va={va} vb={vb} axes_mask={axes_mask}")
+        np.testing.assert_array_equal(got, oracle, err_msg=f"op={op} cmp={cmp} shape={shape} dt={dt} va={va} vb={vb} axes_mask={axes_mask}")
         np.testing.assert_array_equal(np.signbit(got), np.signbit(oracle), err_msg=f"op={op} signed zeros")
         return
     if op == "element_op":

@@ -157,6 +157,7 @@ set(ComputeGraphSources
     Operations/Extrema.cpp
     Operations/Grouped.cpp
     Operations/Lapack.cpp
+    Operations/Masks.cpp
     Operations/Permute.cpp
     Operations/Reductions.cpp
     Operations/Sandwich.cpp

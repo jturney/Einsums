@@ -15,6 +15,7 @@
 /// kernel dispatch nor the node recording, and cannot change them.
 
 #include <Einsums/ComputeGraph/LuPivots.hpp>
+#include <Einsums/ComputeGraph/PredExpr.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
@@ -371,6 +372,39 @@ EINSUMS_EXPORT void eager_reduce_axes(MaxMinOp op, einsums::detail::TensorImpl<T
 /// Record @ref OpKind::ReduceAxes, reading A and overwriting out (of rank @p out_rank).
 EINSUMS_EXPORT void capture_reduce_axes(CaptureContext &ctx, MaxMinOp op, TensorId a_id, TensorId out_id, packed_gemm::ScalarType dtype,
                                         std::size_t out_rank, std::vector<std::size_t> kept);
+
+// ── compare / where ───────────────────────────────────────────────────────────
+// The caller validates shapes and overlap; these take them as validated.
+
+/// @brief The comparison spelled @p name.
+/// @param[in] api  The calling op's name, for the message.
+/// @param[in] name One of gt, ge, lt, le, eq, ne.
+/// @return The comparison.
+/// @throws std::invalid_argument When @p name is none of them; the message lists them.
+EINSUMS_EXPORT CmpOp compare_op_from_name(char const *api, std::string_view name);
+
+/// ``out := (A op B) ? 1 : 0`` element by element, eagerly. Real types only.
+template <typename T>
+EINSUMS_EXPORT void eager_compare(CmpOp op, einsums::detail::TensorImpl<T> const &A, einsums::detail::TensorImpl<T> const &B,
+                                  einsums::detail::TensorImpl<T> &out);
+
+/// ``out := (A op s) ? 1 : 0`` element by element, eagerly. Real types only.
+template <typename T>
+EINSUMS_EXPORT void eager_compare_scalar(CmpOp op, einsums::detail::TensorImpl<T> const &A, double scalar,
+                                         einsums::detail::TensorImpl<T> &out);
+
+/// Record @ref OpKind::Compare: against tensor @p b_id, or against @p scalar when @p b_id is empty.
+EINSUMS_EXPORT void capture_compare(CaptureContext &ctx, CmpOp op, TensorId a_id, std::optional<TensorId> b_id,
+                                    std::optional<double> scalar, TensorId out_id, packed_gemm::ScalarType dtype, std::size_t rank);
+
+/// ``out := (mask != 0) ? A : B`` element by element, eagerly. Real types only.
+template <typename T>
+EINSUMS_EXPORT void eager_select(einsums::detail::TensorImpl<T> const &mask, einsums::detail::TensorImpl<T> const &A,
+                                 einsums::detail::TensorImpl<T> const &B, einsums::detail::TensorImpl<T> &out);
+
+/// Record @ref OpKind::Select, reading the mask, A and B and overwriting out.
+EINSUMS_EXPORT void capture_select(CaptureContext &ctx, TensorId mask_id, TensorId a_id, TensorId b_id, TensorId out_id,
+                                   packed_gemm::ScalarType dtype, std::size_t rank);
 
 // ── block copy / gather / scatter ─────────────────────────────────────────────
 // The caller validates the arguments; these take them as validated.

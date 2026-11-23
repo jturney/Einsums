@@ -1247,6 +1247,50 @@ TEST_CASE("SaveLoad - the kinds that joined at 1.20.0 write a golden and refuse 
     }
 }
 
+// Compare and Select became saveable at 1.21.0. The golden holds a comparison of two tensors, one
+// against a NaN scalar (written as a tag) and a select reading a mask.
+TEST_CASE("SaveLoad - the kinds that joined at 1.21.0 write a golden and refuse a missing key", "[ComputeGraph][SaveLoad]") {
+    RuntimeTensor<double> A("A", std::vector<size_t>{2, 3});
+    RuntimeTensor<double> B("B", std::vector<size_t>{2, 3});
+    RuntimeTensor<double> M("M", std::vector<size_t>{2, 3});
+    RuntimeTensor<double> N("N", std::vector<size_t>{2, 3});
+    RuntimeTensor<double> W("W", std::vector<size_t>{2, 3});
+    for (auto *t : {&A, &B, &M, &N, &W}) {
+        t->zero();
+    }
+
+    cg::Graph graph("compare_where_golden");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::compare(&M, A, B, "ge");
+        cg::compare(&N, A, std::numeric_limits<double>::quiet_NaN(), "ne");
+        cg::where(&W, M, A, B);
+    }
+    REQUIRE(graph.serializability_report().empty());
+
+    std::string const saved = must_save(graph);
+    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+        std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_21_0_compare_where.eig.json", std::ios::binary);
+        out << saved;
+    }
+    (void)must_load(saved);
+
+    SECTION("a comparison without its operator is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("op":"ge")", R"("opp":"ge")")), Catch::Matchers::ContainsSubstring("op"));
+    }
+    SECTION("a comparison naming an unknown operator is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("op":"ge")", R"("op":"gte")")), Catch::Matchers::ContainsSubstring("gte"));
+    }
+    SECTION("a scalar comparison that lost its scalar is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("scalar":)", R"("scalr":)")), Catch::Matchers::ContainsSubstring("input"));
+    }
+    SECTION("a complex select is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("kind":"Select","label":"where","inputs":[2,0,1],"outputs":[4],"dtype":"float64")",
+                                        R"("kind":"Select","label":"where","inputs":[2,0,1],"outputs":[4],"dtype":"complex128")")),
+                   Catch::Matchers::ContainsSubstring("must be real"));
+    }
+}
+
 TEMPLATE_LIST_TEST_CASE("SaveLoad - a named element transform round-trips", "[ComputeGraph][SaveLoad]", testing::AllScalarTypes) {
     using T = TestType;
     auto A  = create_random_tensor<T>("A", 3, 3);

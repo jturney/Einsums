@@ -25,7 +25,7 @@ namespace APIARY_MODULE("graph") compute_graph {
  * Categories:
  * - **TensorAlgebra**: Einsum, Permute, Transpose, ElementTransform
  * - **BLAS-level**: Gemm, Gemv, Ger, Dot, Scale, Axpby, DirectProduct
- * - **Element-wise and reductions**: ElementwiseMaxMin, ReduceAxes
+ * - **Element-wise and reductions**: ElementwiseMaxMin, ReduceAxes, Compare, Select
  * - **LAPACK-level**: Syev, Heev, Gesv, Getrf, Getrs, Invert, SymmGemm, Norm
  * - **Other**: Custom
  *
@@ -59,6 +59,8 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     GroupedDirectDivision, ///< Many independent element-wise quotients, one per member
     ElementwiseMaxMin,     ///< Element-wise maximum or minimum of two tensors
     ReduceAxes,            ///< Maximum or minimum of a tensor over some of its axes
+    Compare,               ///< Element-wise comparison into a 1/0 mask
+    Select,                ///< Element-wise choice between two tensors by a mask
 
     // LinearAlgebra - LAPACK level
     Syev,     ///< Symmetric eigendecomposition
@@ -219,6 +221,10 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "ElementwiseMaxMin";
     case OpKind::ReduceAxes:
         return "ReduceAxes";
+    case OpKind::Compare:
+        return "Compare";
+    case OpKind::Select:
+        return "Select";
     case OpKind::Syev:
         return "Syev";
     case OpKind::Heev:

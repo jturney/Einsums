@@ -2706,6 +2706,200 @@ void min_axes(ResultType *out, AType const &A, std::vector<size_t> axes) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// compare / where: 1/0 masks and the select that reads them
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Graph-aware element-wise comparison into a mask: ``out = (A op B) ? 1 : 0``.
+///
+/// A mask is an ordinary tensor of the operands' real type holding exactly 1 or 0; there is no
+/// bool dtype. That is the convention the ``is_zero`` element op already uses, so masks compose
+/// with what exists: @ref direct_product is AND, @ref maximum is OR, and ``1 - m`` is NOT.
+///
+/// @p op is one of ``gt``, ``ge``, ``lt``, ``le``, ``eq``, ``ne``, the spellings a loop or branch
+/// predicate's @ref CmpOp uses. NaN follows IEEE and NumPy: every comparison involving a NaN gives
+/// 0 except ``ne``, which gives 1. All three tensors have the same rank and extents; nothing
+/// broadcasts. @p out is overwritten, and may be A or B (the same tensor or view); any other
+/// overlap is refused. Real element types only: complex numbers have no order.
+///
+/// @param[out] out The mask.
+/// @param[in]  A   The left operand.
+/// @param[in]  B   The right operand.
+/// @param[in]  op  The comparison's name.
+/// @throws std::invalid_argument When @p op names no comparison (the message lists them), or
+///         @p out partly overlaps an operand.
+/// @throws RankError When the ranks differ.
+/// @throws DimensionError When an extent differs.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> &&
+             std::is_same_v<typename ResultType::ValueType, typename BType::ValueType> && !IsComplexV<typename ResultType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+// clang-format on
+void compare(ResultType *out, AType const &A, BType const &B, std::string_view op) {
+    using T         = typename ResultType::ValueType;
+    CmpOp const cmp = detail::compare_op_from_name("cg::compare", op);
+    detail::require_same_shape("cg::compare", "A", *out, A);
+    detail::require_same_shape("cg::compare", "B", *out, B);
+    detail::reject_partial_alias("cg::compare", "A", *out, A);
+    detail::reject_partial_alias("cg::compare", "B", *out, B);
+
+    auto &ctx = CaptureContext::current();
+    if (detail::runs_eagerly(ctx, "cg::compare", out, A, B)) {
+        detail::eager_compare<T>(cmp, A.impl(), B.impl(), out->impl());
+        return;
+    }
+    TensorId const a_id = ctx.get_slot(A).first;
+    TensorId const b_id = ctx.get_slot(B).first;
+    TensorId const o_id = ctx.get_slot(*out).first;
+    detail::capture_compare(ctx, cmp, a_id, b_id, std::nullopt, o_id, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*out));
+}
+
+/// @brief Graph-aware comparison against a number: ``out = (A op s) ? 1 : 0``.
+///
+/// The contract of the tensor form, with B replaced by @p scalar. The number is converted to the
+/// element type once, so a ``float`` tensor is compared against ``float(s)``, which is what NumPy
+/// does with a Python scalar. It is saved with the node, so a reloaded graph compares against the
+/// same value.
+///
+/// @param[out] out    The mask; may be A.
+/// @param[in]  A      The left operand.
+/// @param[in]  scalar The right-hand side.
+/// @param[in]  op     The comparison's name.
+/// @throws std::invalid_argument When @p op names no comparison, or @p out partly overlaps A.
+/// @throws RankError When the ranks differ.
+/// @throws DimensionError When an extent differs.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> && !IsComplexV<typename ResultType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("compare", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("compare", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+// clang-format on
+void compare(ResultType *out, AType const &A, double scalar, std::string_view op) {
+    using T         = typename ResultType::ValueType;
+    CmpOp const cmp = detail::compare_op_from_name("cg::compare", op);
+    detail::require_same_shape("cg::compare", "A", *out, A);
+    detail::reject_partial_alias("cg::compare", "A", *out, A);
+
+    auto &ctx = CaptureContext::current();
+    if (detail::runs_eagerly(ctx, "cg::compare", out, A)) {
+        detail::eager_compare_scalar<T>(cmp, A.impl(), scalar, out->impl());
+        return;
+    }
+    TensorId const a_id = ctx.get_slot(A).first;
+    TensorId const o_id = ctx.get_slot(*out).first;
+    detail::capture_compare(ctx, cmp, a_id, std::nullopt, scalar, o_id, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*out));
+}
+
+/// @brief Graph-aware select: ``out = (mask != 0) ? A : B``, as ``numpy.where``.
+///
+/// A true select, never ``mask*A + (1-mask)*B``: the element not chosen takes no part in the
+/// result, so an inf or NaN in the branch not taken (a division by zero there, say) cannot turn
+/// the answer into NaN the way ``0 * inf`` would.
+///
+/// Any nonzero mask value counts as true, so a mask that came through arithmetic still selects.
+/// A NaN mask entry is true as well, since NaN is not equal to zero; that is NumPy's truthiness.
+///
+/// All four tensors have the same rank and extents; nothing broadcasts, and a constant branch is
+/// a filled tensor. @p out is overwritten and may be any of the three operands (the same tensor
+/// or view); any other overlap is refused. Real element types only.
+///
+/// @param[out] out  The result.
+/// @param[in]  mask The selector.
+/// @param[in]  A    Chosen where the mask is nonzero.
+/// @param[in]  B    Chosen where it is zero.
+/// @throws std::invalid_argument When @p out partly overlaps an operand.
+/// @throws RankError When the ranks differ.
+/// @throws DimensionError When an extent differs.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept MaskType, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename MaskType::ValueType> &&
+             std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> &&
+             std::is_same_v<typename ResultType::ValueType, typename BType::ValueType> && !IsComplexV<typename ResultType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("where", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("where", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+// clang-format on
+void where(ResultType *out, MaskType const &mask, AType const &A, BType const &B) {
+    using T = typename ResultType::ValueType;
+    detail::require_same_shape("cg::where", "mask", *out, mask);
+    detail::require_same_shape("cg::where", "A", *out, A);
+    detail::require_same_shape("cg::where", "B", *out, B);
+    detail::reject_partial_alias("cg::where", "mask", *out, mask);
+    detail::reject_partial_alias("cg::where", "A", *out, A);
+    detail::reject_partial_alias("cg::where", "B", *out, B);
+
+    auto &ctx = CaptureContext::current();
+    if (detail::runs_eagerly(ctx, "cg::where", out, mask, A, B)) {
+        detail::eager_select<T>(mask.impl(), A.impl(), B.impl(), out->impl());
+        return;
+    }
+    TensorId const m_id = ctx.get_slot(mask).first;
+    TensorId const a_id = ctx.get_slot(A).first;
+    TensorId const b_id = ctx.get_slot(B).first;
+    TensorId const o_id = ctx.get_slot(*out).first;
+    detail::capture_select(ctx, m_id, a_id, b_id, o_id, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*out));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // direct_product: C = alpha * (A ⊙ B) + beta * C
 // ─────────────────────────────────────────────────────────────────────────────
 

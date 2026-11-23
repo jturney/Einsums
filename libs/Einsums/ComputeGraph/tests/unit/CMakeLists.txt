@@ -51,6 +51,7 @@ set(ComputeGraphTests
     EinsumLiveState.cpp
     EinsumSpec.cpp
     NaryEinsum.cpp
+    CompareWhere.cpp
     ElementOps.cpp
     MaxMin.cpp
     EscapeAnalysis.cpp
@@ -194,6 +195,7 @@ set(ComputeGraphTests
     test_einsum_conj_properties_python.py
     test_einsum_python.py
     test_einsum_views_python.py
+    test_compare_where_python.py
     test_element_transform_python.py
     test_max_min_python.py
     test_layout_assignment_python.py

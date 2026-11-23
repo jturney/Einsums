@@ -34,6 +34,8 @@ bool reads_destination(Node const &node) {
         return node.op_data.holds<GetrsDescriptor>();
     case OpKind::ElementwiseMaxMin:
     case OpKind::ReduceAxes:
+    case OpKind::Compare:
+    case OpKind::Select:
         // Overwrite in full. An in-place maximum(&A, A, B) lists A as an operand, so that read
         // is visible without the destination being listed again.
         return false;
@@ -95,6 +97,15 @@ std::optional<std::size_t> destination_operand_count(Node const &node) {
         return 2; // A, B
     case OpKind::ReduceAxes:
         return 1; // A
+    case OpKind::Compare: {
+        auto const *compare = node.op_data.get_if<CompareDescriptor>();
+        if (compare == nullptr) {
+            return std::nullopt;
+        }
+        return compare->scalar.has_value() ? 1 : 2; // A, or A and B
+    }
+    case OpKind::Select:
+        return 3; // mask, A, B
     default:
         break;
     }

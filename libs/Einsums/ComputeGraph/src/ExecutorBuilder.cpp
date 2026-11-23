@@ -52,6 +52,7 @@
 #include "BodyReplay.hpp"
 #include "LifecycleExecutors.hpp"
 #include "Operations/ExtremaKernels.hpp"
+#include "Operations/MaskKernels.hpp"
 #include "StridedBatchedEinsum.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -524,6 +525,42 @@ std::function<void()> build_reduce_axes(packed_gemm::ScalarType dtype, ReduceAxe
                 auto const *src = a.impl<T>();
                 WAGGLE_ANNOTATE("size", static_cast<std::int64_t>(src->size()));
                 detail::run_reduce_axes<T>(op, *src, kept, *out.impl<T>());
+            };
+        }
+    });
+}
+
+/// ``out = (A op B) ? 1 : 0``, or against the descriptor's scalar when it holds one. Real types only.
+std::function<void()> build_compare(packed_gemm::ScalarType dtype, CompareDescriptor const &desc, OperandAccessor const &a,
+                                    std::optional<OperandAccessor> const &b, OperandAccessor const &out) {
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        if constexpr (IsComplexV<T>) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Compare): {} has no order; the op is real-only", dtype);
+        } else {
+            if (desc.scalar.has_value()) {
+                return [op = desc.op, scalar = *desc.scalar, a, out]() {
+                    WAGGLE_ZONE("compare execute");
+                    detail::run_compare_scalar<T>(op, *a.impl<T>(), scalar, *out.impl<T>());
+                };
+            }
+            return [op = desc.op, a, b = *b, out]() {
+                WAGGLE_ZONE("compare execute");
+                detail::run_compare<T>(op, *a.impl<T>(), *b.impl<T>(), *out.impl<T>());
+            };
+        }
+    });
+}
+
+/// ``out = (mask != 0) ? A : B``. Real types only.
+std::function<void()> build_select(packed_gemm::ScalarType dtype, OperandAccessor const &mask, OperandAccessor const &a,
+                                   OperandAccessor const &b, OperandAccessor const &out) {
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        if constexpr (IsComplexV<T>) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Select): {} has no order; the op is real-only", dtype);
+        } else {
+            return [mask, a, b, out]() {
+                WAGGLE_ZONE("where execute");
+                detail::run_select<T>(*mask.impl<T>(), *a.impl<T>(), *b.impl<T>(), *out.impl<T>());
             };
         }
     });
@@ -1703,6 +1740,14 @@ std::string reconstruction_blocker(Node const &node) {
         return node.op_data.holds<ReduceAxesDescriptor>()
                    ? std::string{}
                    : fmt::format("ReduceAxes: expected a ReduceAxesDescriptor, found {}", descriptor_name(node.op_data));
+    case OpKind::Compare:
+        return node.op_data.holds<CompareDescriptor>()
+                   ? std::string{}
+                   : fmt::format("Compare: expected a CompareDescriptor, found {}", descriptor_name(node.op_data));
+    case OpKind::Select:
+        return node.op_data.holds<SelectDescriptor>()
+                   ? std::string{}
+                   : fmt::format("Select: expected a SelectDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::ElementTransform:
         // The lambda-taking capture overloads record no descriptor, which is
         // not an oversight: a closure has no name a file could carry. The
@@ -2027,6 +2072,24 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
         need(kind, "outputs", outputs, 1);
         auto const &d = expect<ReduceAxesDescriptor>(kind, desc, "ReduceAxesDescriptor");
         return build_reduce_axes(dtype, d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, outputs[0], kind, "out"));
+    }
+    case OpKind::Compare: {
+        auto const &d = expect<CompareDescriptor>(kind, desc, "CompareDescriptor");
+        // The scalar form names one operand; its right-hand side is the descriptor's number.
+        need(kind, "inputs", inputs, d.scalar.has_value() ? 1 : 2);
+        need(kind, "outputs", outputs, 1);
+        std::optional<OperandAccessor> b;
+        if (!d.scalar.has_value()) {
+            b = resolve_operand(graph, inputs[1], kind, "B");
+        }
+        return build_compare(dtype, d, resolve_operand(graph, inputs[0], kind, "A"), b, resolve_operand(graph, outputs[0], kind, "out"));
+    }
+    case OpKind::Select: {
+        need(kind, "inputs", inputs, 3);
+        need(kind, "outputs", outputs, 1);
+        (void)expect<SelectDescriptor>(kind, desc, "SelectDescriptor");
+        return build_select(dtype, resolve_operand(graph, inputs[0], kind, "mask"), resolve_operand(graph, inputs[1], kind, "A"),
+                            resolve_operand(graph, inputs[2], kind, "B"), resolve_operand(graph, outputs[0], kind, "out"));
     }
     case OpKind::ElementTransform: {
         auto const &d = expect<ElementTransformDescriptor>(kind, desc, "ElementTransformDescriptor");

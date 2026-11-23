@@ -1,0 +1,93 @@
+{
+  "einsums_graph_ir": "1.21.0",
+  "provenance": {"library_version":"2.0.0a3.dev0","config_fingerprint":"0x2fa3752f1dd24fcf","structural_passes":[]},
+  "name": "compare_where_golden",
+  "manifest": [
+    {
+      "id": 0,
+      "name": "A",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [2,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "init": "none",
+      "alloc": "materialized",
+      "aliases_input": null
+    },
+    {
+      "id": 1,
+      "name": "B",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [2,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "init": "none",
+      "alloc": "materialized",
+      "aliases_input": null
+    },
+    {
+      "id": 2,
+      "name": "M",
+      "direction": "inout",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [2,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "init": "none",
+      "alloc": "materialized",
+      "aliases_input": null
+    },
+    {
+      "id": 3,
+      "name": "N",
+      "direction": "output",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [2,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "init": "none",
+      "alloc": "materialized",
+      "aliases_input": null
+    },
+    {
+      "id": 4,
+      "name": "W",
+      "direction": "output",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [2,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "init": "none",
+      "alloc": "materialized",
+      "aliases_input": null
+    }
+  ],
+  "spaces": {"names":[],"symbol_ties":[]},
+  "approximations": [],
+  "params": [],
+  "gate_flags": [],
+  "tensors": [],
+  "slot_redirects": [],
+  "nodes": [
+    {"id":0,"kind":"Compare","label":"compare(ge)","inputs":[0,1],"outputs":[2],"dtype":"float64","rank":2,"descriptor":{"op":"ge"}},
+    {"id":1,"kind":"Compare","label":"compare(ne)","inputs":[0],"outputs":[3],"dtype":"float64","rank":2,"descriptor":{"op":"ne","scalar":"nan"}},
+    {"id":2,"kind":"Select","label":"where","inputs":[2,0,1],"outputs":[4],"dtype":"float64","rank":2,"descriptor":{}}
+  ]
+}

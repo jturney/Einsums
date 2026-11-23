@@ -826,6 +826,30 @@ void read_descriptor(IrNode &node, Fields const &fields, GateFlagTable const &ga
         node.descriptor = std::move(desc);
         return;
     }
+    case OpKind::Compare:
+    case OpKind::Select: {
+        if (node.dtype != packed_gemm::ScalarType::Float32 && node.dtype != packed_gemm::ScalarType::Float64) {
+            fields.note(fmt::format("{} orders its elements, so its dtype must be real, not {}", node.kind, node.dtype));
+        }
+        if (node.kind == OpKind::Select) {
+            node.descriptor = SelectDescriptor{};
+            return;
+        }
+        // No file before 1.21.0 could hold a Compare node, so op is required. scalar is present
+        // exactly for the scalar form, which lists one input instead of two.
+        CompareDescriptor desc;
+        desc.op = fields.named<CmpOp>("op", cmp_op_from_name, "comparison operator", CmpOp::Gt);
+        if (auto const scalar = fields.number("scalar", /*optional=*/true)) {
+            desc.scalar = *scalar;
+        }
+        std::size_t const operands = desc.scalar.has_value() ? 1 : 2;
+        if (node.inputs.size() != operands) {
+            fields.note(fmt::format("a Compare {} names {} input(s), not {}",
+                                    desc.scalar.has_value() ? "against a scalar" : "of two tensors", operands, node.inputs.size()));
+        }
+        node.descriptor = std::move(desc);
+        return;
+    }
     case OpKind::Einsum: {
         EinsumDescriptor desc;
         desc.spec.c_indices      = fields.strings("c_indices");

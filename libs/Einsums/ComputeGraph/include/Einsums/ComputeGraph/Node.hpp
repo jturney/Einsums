@@ -274,6 +274,40 @@ struct ElementwiseBinaryDescriptor {
     bool operator==(ElementwiseBinaryDescriptor const &) const = default; ///< Field-wise.
 };
 
+/**
+ * @brief Metadata for @ref OpKind::Compare: ``out = (A op B) ? 1 : 0`` element by element.
+ *
+ * The comparison is a @ref CmpOp, the one loop and branch predicates use, with the same
+ * spellings. IEEE semantics, as NumPy's operators have: every comparison involving a NaN is false
+ * except ``ne``. With @ref scalar empty the node's inputs are A and B; with it set the node's one
+ * input is A and B is that number, converted to the element type. The one output is the mask,
+ * overwritten with exactly 1 or 0. Real element types only.
+ * @versionadded{2.0.0}
+ */
+struct CompareDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "CompareDescriptor";
+    CmpOp                             op{CmpOp::Gt}; ///< Which comparison.
+    std::optional<double>             scalar;        ///< The right-hand side, for the scalar form.
+
+    bool operator==(CompareDescriptor const &) const = default; ///< Field-wise.
+};
+
+/**
+ * @brief Metadata for @ref OpKind::Select: ``out = (mask != 0) ? A : B`` element by element.
+ *
+ * Records nothing beyond the kind: the node's inputs are the mask, A and B, in that order, and its
+ * one output is overwritten. It is required anyway, so that a node holding the wrong descriptor is
+ * refused rather than run. Real element types only.
+ * @versionadded{2.0.0}
+ */
+struct SelectDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "SelectDescriptor";
+
+    bool operator==(SelectDescriptor const &) const = default; ///< Field-wise.
+};
+
 /// @brief An einsum's index lists and operators, gathered.
 ///
 /// References into the descriptor, valid while it is.

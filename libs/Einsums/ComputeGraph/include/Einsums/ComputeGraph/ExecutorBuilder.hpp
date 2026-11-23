@@ -425,6 +425,8 @@ EINSUMS_EXPORT void refresh_gemm_hint(Graph &graph, Node &node);
     case OpKind::DirectDivision:
     case OpKind::ElementwiseMaxMin:
     case OpKind::ReduceAxes:
+    case OpKind::Compare:
+    case OpKind::Select:
     case OpKind::Einsum:
     case OpKind::Dot:
     case OpKind::Trace:
