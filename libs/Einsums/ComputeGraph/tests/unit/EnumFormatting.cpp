@@ -13,6 +13,11 @@
 
 #include <fmt/format.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <string_view>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -32,4 +37,26 @@ TEST_CASE("EnumFormatting - the format spec applies to the name", "[ComputeGraph
 
 TEST_CASE("EnumFormatting - a value outside the enumeration names as the fallback", "[ComputeGraph][EnumFormatting]") {
     CHECK(fmt::format("{}", static_cast<RuntimeState>(250)) == "Unknown");
+}
+
+TEST_CASE("EnumFormatting - every op kind's name parses back to that kind", "[ComputeGraph][EnumFormatting]") {
+    // The parse once stopped at OpKind::Custom, so the tile kinds declared after it named
+    // themselves in a file and could not be read back. Every value of the underlying type is
+    // tried, so a kind added anywhere in the enumeration is covered without editing this case.
+    std::size_t named = 0;
+    for (unsigned value = 0; value <= std::numeric_limits<std::uint8_t>::max(); ++value) {
+        auto const             kind = static_cast<cg::OpKind>(value);
+        std::string_view const name = cg::op_kind_name(kind);
+        if (name == "Unknown") {
+            continue;
+        }
+        ++named;
+        INFO("kind " << name);
+        auto const parsed = cg::op_kind_from_name(name);
+        REQUIRE(parsed.has_value());
+        CHECK(*parsed == kind);
+    }
+    CHECK(cg::op_kind_from_name("TileElementwise") == cg::OpKind::TileElementwise);
+    CHECK(named > static_cast<std::size_t>(cg::OpKind::Custom));
+    CHECK_FALSE(cg::op_kind_from_name("NoSuchKind").has_value());
 }

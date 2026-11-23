@@ -9,6 +9,7 @@
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string_view>
 
@@ -293,7 +294,9 @@ inline std::string_view op_kind_name(OpKind kind) {
  * @versionadded{2.0.0}
  */
 [[nodiscard]] inline std::optional<OpKind> op_kind_from_name(std::string_view name) {
-    for (std::uint16_t value = 0; value <= static_cast<std::uint16_t>(OpKind::Custom); ++value) {
+    // Every value of the underlying type, not up to some last enumerator: kinds are declared after
+    // Custom too, and a bound written as an enumerator goes stale silently when one is added.
+    for (std::uint16_t value = 0; value <= std::numeric_limits<std::uint8_t>::max(); ++value) {
         auto const kind = static_cast<OpKind>(value);
         if (op_kind_name(kind) == name) {
             return kind;
