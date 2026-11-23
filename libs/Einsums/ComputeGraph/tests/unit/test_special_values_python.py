@@ -41,6 +41,9 @@ def test_max_propagates_nan():
     assert _emax([3.0, 1.0, 2.0]) == 3.0
     assert _emax([1.0, INF, 2.0]) == INF
     assert _emax([1.0, -INF]) == 1.0
+    # An all -inf input reduces to -inf. A lowest() seed once came back here as -1.8e308,
+    # since no element compares greater than it.
+    assert _emax([-INF, -INF]) == -INF
 
 
 def test_elementwise_ieee_passthrough():

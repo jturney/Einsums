@@ -63,10 +63,13 @@ T run_sum(Impl<T> const &A) {
 template <typename T>
 T run_max(Impl<T> const &A) {
     // Propagate NaN like numpy.max: a plain ``x > acc`` comparison is false for
-    // a NaN x, so NaN would be silently dropped, and an all-NaN reduction would
-    // leak the ``lowest()`` seed. Test ``isnan(x)`` so a NaN poisons the
-    // accumulator (and ``acc`` stays NaN thereafter, since ``x > NaN`` is false).
-    return reduce_elements(A, std::numeric_limits<T>::lowest(), [](T acc, T x) { return (std::isnan(x) || x > acc) ? x : acc; });
+    // a NaN x, so NaN would be silently dropped. Test ``isnan(x)`` so a NaN
+    // poisons the accumulator (and ``acc`` stays NaN thereafter, since
+    // ``x > NaN`` is false). The seed is -inf, not ``lowest()``: nothing compares
+    // greater than ``lowest()`` in an all -inf tensor, so that seed came back as
+    // the maximum instead of -inf. The API refuses an empty tensor, so the seed
+    // itself is never the answer.
+    return reduce_elements(A, -std::numeric_limits<T>::infinity(), [](T acc, T x) { return (std::isnan(x) || x > acc) ? x : acc; });
 }
 
 } // namespace
