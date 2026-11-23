@@ -1328,6 +1328,12 @@ void element_transform(CType *C, std::string_view op_name, std::optional<double>
 /// `LaplaceTransform` is one, so a caller who wants their denominator
 /// recognized needs this spelling rather than a lambda.
 ///
+/// The library registers ``recip``, ``square``, ``negate``, ``exp`` and ``log``
+/// for every dtype, and ``sqrt_or_zero``, ``is_zero``, ``log1p``, ``expm1`` and
+/// ``sign`` for real dtypes only. ``log`` is unguarded (a negative real gives NaN,
+/// zero gives ``-inf``), and ``sign`` follows NumPy: both zeros give +0 and NaN
+/// stays NaN.
+///
 /// Parameterized ops are not reachable here yet; nothing in the Python surface
 /// needs one, and adding the policy number is a second overload rather than a
 /// default argument.

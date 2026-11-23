@@ -3,7 +3,8 @@
 
 """Hypothesis differential: graph-captured element-wise family vs numpy.
 
-Covers scale / axpy / axpby / direct_product / direct_division with
+Covers scale / axpy / axpby / direct_product / direct_division and the
+named elementary ops (exp, log, log1p, expm1, sign) with
 non-contiguous view operands, degenerate (size-1) dims, all four dtypes,
 prefactors (incl. accumulation), and the optional default pass manager.
 
@@ -26,7 +27,7 @@ from hypothesis import strategies as st
 
 import einsums
 import einsums.graph as cg
-from _dtype_draws import DTYPES, assert_rounding_close, is_complex, random_array
+from _dtype_draws import DTYPES, assert_rounding_close, is_complex, random_array, rounded
 
 _ctr = itertools.count()
 
@@ -64,18 +65,40 @@ def _shape(draw):
     return tuple(draw(st.integers(1, 4)) for _ in range(r))
 
 
-@given(op=st.sampled_from(["scale", "axpy", "axpby", "direct_product", "direct_division"]),
+_ELEMENTARY = {"exp": np.exp, "log": np.log, "log1p": np.log1p, "expm1": np.expm1, "sign": np.sign}
+_REAL_ONLY_ELEMENTARY = ("log1p", "expm1", "sign")
+
+
+@given(op=st.sampled_from(["scale", "axpy", "axpby", "direct_product", "direct_division", "element_op"]),
+       element_op=st.sampled_from(sorted(_ELEMENTARY)),
        shape=_shape(), alpha=st.sampled_from([1.0, -2.0, 0.5]), beta=st.sampled_from([0.0, 1.0, -1.5]),
        dt=DTYPES,
        va=st.booleans(), vb=st.booleans(), vc=st.booleans(), passes=st.booleans())
 @settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
-@example(op="axpy", shape=(1, 2, 1), alpha=1.0, beta=0.0, dt="float64", va=False, vb=True, vc=False, passes=False)
-@example(op="direct_product", shape=(3, 3, 1), alpha=1.0, beta=0.0, dt="complex128", va=False, vb=False, vc=True, passes=False)
-def test_hyp_elementwise_diff(op, shape, alpha, beta, dt, va, vb, vc, passes):
+@example(op="axpy", element_op="exp", shape=(1, 2, 1), alpha=1.0, beta=0.0, dt="float64", va=False, vb=True, vc=False,
+         passes=False)
+@example(op="direct_product", element_op="exp", shape=(3, 3, 1), alpha=1.0, beta=0.0, dt="complex128", va=False, vb=False,
+         vc=True, passes=False)
+def test_hyp_elementwise_diff(op, element_op, shape, alpha, beta, dt, va, vb, vc, passes):
     rng = np.random.default_rng(0)
     g = cg.Graph(_nm())
-    if op == "scale":
+    if op == "element_op":
+        if is_complex(dt) and element_op in _REAL_ONLY_ELEMENTARY:
+            element_op = "log"
+        A0 = _rnd(shape, dt, rng)
+        if element_op in ("log", "log1p"):
+            # Stay inside the domain: |x| + 0.25 has a positive real part and keeps log1p finite.
+            A0 = rounded(np.abs(A0.real) + 0.25 + (1j * A0.imag if is_complex(dt) else 0), dt)
+        oracle = _ELEMENTARY[element_op](A0)
+        # Each map is applied to one rounded element, so its error is relative to the result,
+        # plus |x| for a log landing near zero, where the input's own rounding dominates.
+        scale = np.abs(oracle) + np.abs(A0)
+        At = _mkv(A0, va, dt, rng)
+        with cg.capture(g):
+            einsums.linalg.element_transform(At, element_op)
+        out = At
+    elif op == "scale":
         A0 = _rnd(shape, dt, rng)
         oracle = alpha * A0
         scale = np.abs(oracle)
@@ -127,5 +150,5 @@ def test_hyp_elementwise_diff(op, shape, alpha, beta, dt, va, vb, vc, passes):
     g.execute()
     assert_rounding_close(
         out, oracle, dt, scale,
-        err_msg=f"op={op} shape={shape} alpha={alpha} beta={beta} dt={dt} "
+        err_msg=f"op={op} element_op={element_op} shape={shape} alpha={alpha} beta={beta} dt={dt} "
                 f"va={va} vb={vb} vc={vc} passes={passes}")

@@ -527,7 +527,11 @@ class ElementOpRegistry {
  * Deliberately a tiny set, and deliberately obvious: it exists to prove the
  * mechanism and to serve the shapes that recur in the tree (a reciprocal for
  * MP2-style denominators, a guarded square root for a metric power, a square,
- * a negation). Hosts register their own; that is what the registry is for, and
+ * a negation) plus the elementary functions a time series needs: ``exp`` and
+ * ``log`` for every dtype, and the real-only ``log1p``, ``expm1`` and ``sign``.
+ * ``log`` is unguarded: a negative real gives NaN and zero gives ``-inf``, as
+ * ``std::log`` does. ``sign`` follows NumPy: both zeros give +0 and NaN stays
+ * NaN. Hosts register their own; that is what the registry is for, and
  * the library taking a position on which chemistry kernels are "standard" is
  * exactly the layering the design's non-goals rule out.
  */

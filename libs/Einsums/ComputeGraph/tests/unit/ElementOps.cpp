@@ -27,7 +27,9 @@
 #include <cmath>
 #include <complex>
 #include <concepts>
+#include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -251,13 +253,226 @@ TEMPLATE_TEST_CASE("ElementOps - inv_sqrt_or_zero drops at the threshold it is h
 
 TEST_CASE("ElementOps - the process registry ships the starter ops", "[ComputeGraph][ElementOps]") {
     auto const &registry = ops::global_element_op_registry();
-    for (auto const *name : {"recip", "square", "negate", "sqrt_or_zero", "inv_sqrt_or_zero", "is_zero"}) {
+    for (auto const *name :
+         {"recip", "square", "negate", "sqrt_or_zero", "inv_sqrt_or_zero", "is_zero", "exp", "log", "log1p", "expm1", "sign"}) {
         INFO("op: " << name);
         REQUIRE(registry.contains(name));
     }
     REQUIRE(registry.signature("sqrt_or_zero").domain == ops::ElementOpDomain::RealOnly);
     REQUIRE(registry.signature("recip").domain == ops::ElementOpDomain::AllDtypes);
     REQUIRE(registry.signature("recip").arity == 1);
+    REQUIRE(registry.signature("exp").domain == ops::ElementOpDomain::AllDtypes);
+    REQUIRE(registry.signature("log").domain == ops::ElementOpDomain::AllDtypes);
+    for (auto const *name : {"log1p", "expm1", "sign"}) {
+        INFO("op: " << name);
+        REQUIRE(registry.signature(name).domain == ops::ElementOpDomain::RealOnly);
+    }
+}
+
+namespace {
+
+/// The independent per-element reference for each elementary op: a direct standard-library
+/// call, never the registry's kernel.
+template <typename T>
+T elementary_reference(std::string_view name, T x) {
+    if (name == "exp") {
+        return std::exp(x);
+    }
+    if (name == "log") {
+        return std::log(x);
+    }
+    if constexpr (!IsComplexV<T>) {
+        if (name == "log1p") {
+            return std::log1p(x);
+        }
+        if (name == "expm1") {
+            return std::expm1(x);
+        }
+        if (name == "sign") {
+            return x > T{0} ? T{1} : (x < T{0} ? T{-1} : (x == T{0} ? T{0} : x));
+        }
+    }
+    FAIL("no reference for op " << name);
+    return x;
+}
+
+/// The elementary ops defined for @p T.
+template <typename T>
+std::vector<std::string> elementary_ops_for() {
+    if constexpr (IsComplexV<T>) {
+        return {"exp", "log"};
+    } else {
+        return {"exp", "log", "log1p", "expm1", "sign"};
+    }
+}
+
+/// Fill @p data with values inside every elementary op's domain: real parts in (0.1, 2.1) so log
+/// and log1p are finite, with mixed signs for sign. Complex values get an imaginary part too.
+template <typename T>
+void fill_elementary_inputs(T *data, size_t n, bool mixed_sign) {
+    for (size_t i = 0; i < n; ++i) {
+        double const magnitude = 0.1 + 2.0 * static_cast<double>((i * 37) % 101) / 101.0;
+        double const real      = mixed_sign && i % 3 == 1 ? -magnitude : magnitude;
+        if constexpr (IsComplexV<T>) {
+            data[i] = T(static_cast<RemoveComplexT<T>>(real), static_cast<RemoveComplexT<T>>(0.5 - magnitude));
+        } else {
+            data[i] = static_cast<T>(real);
+        }
+    }
+}
+
+} // namespace
+
+TEMPLATE_LIST_TEST_CASE("ElementOps - the elementary ops match the standard library, eagerly and captured", "[ComputeGraph][ElementOps]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+
+    for (auto const &name : elementary_ops_for<T>()) {
+        INFO("op: " << name);
+        // sign is the only op whose domain includes negatives; the logs need positive input.
+        bool const mixed = name == "sign";
+
+        RuntimeTensor<T> eager("eager", std::vector<size_t>{3, 4});
+        fill_elementary_inputs(eager.data(), eager.size(), mixed);
+        RuntimeTensor<T>       captured = eager;
+        RuntimeTensor<T> const input    = eager;
+
+        cg::element_transform(&eager, name);
+
+        cg::Graph graph("elementary_" + name);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::element_transform(&captured, name);
+        }
+        graph.execute();
+
+        for (size_t item = 0; item < input.size(); ++item) {
+            T const    expected = elementary_reference<T>(name, input.data()[item]);
+            auto const bound    = tol_for<T>() * (1 + std::abs(expected));
+            INFO("item " << item);
+            REQUIRE(std::abs(eager.data()[item] - expected) <= bound);
+            REQUIRE(std::abs(captured.data()[item] - expected) <= bound);
+        }
+    }
+}
+
+TEMPLATE_LIST_TEST_CASE("ElementOps - the elementary ops walk a strided view and leave the parent alone", "[ComputeGraph][ElementOps]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+
+    for (auto const &name : elementary_ops_for<T>()) {
+        INFO("op: " << name);
+        auto parent = create_zero_tensor<T>("parent", 4, 5);
+        fill_elementary_inputs(parent.data(), parent.size(), name == "sign");
+        auto const before = parent;
+
+        auto block = parent(Range{1, 3}, Range{0, 5}); // rows 1-2 of a column-major matrix: strided in both axes
+
+        cg::Graph graph("elementary_view_" + name);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::element_transform(&block, name);
+        }
+        graph.execute();
+
+        for (size_t i = 0; i < 4; ++i) {
+            for (size_t j = 0; j < 5; ++j) {
+                bool const inside   = i == 1 || i == 2;
+                T const    expected = inside ? elementary_reference<T>(name, T(before(i, j))) : T(before(i, j));
+                INFO("element (" << i << ", " << j << ")");
+                REQUIRE(std::abs(parent(i, j) - expected) <= tol_for<T>() * (1 + std::abs(expected)));
+            }
+        }
+    }
+}
+
+TEMPLATE_TEST_CASE("ElementOps - log and sign keep the non-finite values the standard library gives", "[ComputeGraph][ElementOps]", float,
+                   double) {
+    using T = TestType;
+
+    auto const &registry = ops::global_element_op_registry();
+    auto const  log      = registry.kernel<T>("log");
+    auto const  sign     = registry.kernel<T>("sign");
+    T const     nan      = std::numeric_limits<T>::quiet_NaN();
+    T const     inf      = std::numeric_limits<T>::infinity();
+
+    // Unguarded on purpose: no clamp to zero, unlike sqrt_or_zero.
+    REQUIRE(std::isnan(log(T{-1})));
+    REQUIRE(log(T{0}) == -inf);
+    REQUIRE(log(inf) == inf);
+
+    REQUIRE(sign(T{-3}) == T{-1});
+    REQUIRE(sign(T{0.25}) == T{1});
+    REQUIRE(sign(-inf) == T{-1});
+    REQUIRE(std::isnan(sign(nan)));
+    // NumPy's sign maps both zeros to +0.
+    REQUIRE(sign(T{0}) == T{0});
+    REQUIRE_FALSE(std::signbit(sign(-T{0})));
+
+    // The accurate forms keep the digits the composed forms lose.
+    T const tiny = T{1e-7};
+    REQUIRE(registry.kernel<T>("log1p")(tiny) == std::log1p(tiny));
+    REQUIRE(registry.kernel<T>("expm1")(tiny) == std::expm1(tiny));
+    REQUIRE(registry.kernel<T>("log1p")(T{-1}) == -inf);
+}
+
+TEST_CASE("ElementOps - the real-only elementary ops refuse a complex destination by name", "[ComputeGraph][ElementOps]") {
+    for (auto const *name : {"log1p", "expm1", "sign"}) {
+        INFO("op: " << name);
+        auto A = create_random_tensor<std::complex<float>>("A", 2, 2);
+        REQUIRE_THROWS_AS(cg::element_transform(&A, name), std::invalid_argument);
+
+        auto      B = create_random_tensor<std::complex<double>>("B", 2, 2);
+        cg::Graph graph("complex_refusal");
+        {
+            cg::CaptureGuard const guard(graph);
+            REQUIRE_THROWS_WITH(cg::element_transform(&B, name),
+                                Catch::Matchers::ContainsSubstring(name) && Catch::Matchers::ContainsSubstring("complex<double>"));
+        }
+        REQUIRE(graph.num_nodes() == 0);
+    }
+}
+
+TEMPLATE_LIST_TEST_CASE("ElementOps - an elementary op replays to the same answer under passes and in a loop body",
+                        "[ComputeGraph][ElementOps]", testing::AllScalarTypes) {
+    using T = TestType;
+
+    // exp then log is the identity on these inputs, so a replay that applied either op twice, or
+    // a pass that dropped or reordered one, shows up as a wrong value.
+    RuntimeTensor<T> A("A", std::vector<size_t>{3, 3});
+    fill_elementary_inputs(A.data(), A.size(), false);
+    RuntimeTensor<T> const input = A;
+
+    cg::Graph graph("exp_log");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::element_transform(&A, "log");
+        cg::element_transform(&A, "exp");
+    }
+    auto passes = cg::PassManager::create_default();
+    graph.apply(passes);
+    for (int replay = 0; replay < 2; ++replay) {
+        graph.execute();
+        for (size_t item = 0; item < A.size(); ++item) {
+            INFO("replay " << replay << " item " << item);
+            REQUIRE(std::abs(A.data()[item] - input.data()[item]) <= 4 * tol_for<T>() * (1 + std::abs(input.data()[item])));
+        }
+    }
+
+    // The same pair as a loop body: three iterations, each one log then exp, under the passes.
+    cg::Graph looped("exp_log_loop");
+    auto     &body = looped.add_loop("iter", 3, [](size_t iter) -> bool { return iter + 1 < 3; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::element_transform(&A, "log");
+        cg::element_transform(&A, "exp");
+    }
+    looped.apply(passes);
+    looped.execute();
+    for (size_t item = 0; item < A.size(); ++item) {
+        INFO("loop item " << item);
+        REQUIRE(std::abs(A.data()[item] - input.data()[item]) <= 16 * tol_for<T>() * (1 + std::abs(input.data()[item])));
+    }
 }
 
 TEMPLATE_TEST_CASE("ElementOps - the dtype-generic starter ops compute the right thing", "[ComputeGraph][ElementOps]", float, double,

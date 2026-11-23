@@ -145,3 +145,84 @@ def test_element_transform_rank1():
     before = np.asarray(A).copy()
     einsums.linalg.element_transform(A, lambda x: x + 10.0)
     np.testing.assert_allclose(np.asarray(A), before + 10.0, rtol=1e-12)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Named elementary ops: exp, log, log1p, expm1, sign against numpy
+# ──────────────────────────────────────────────────────────────────────────
+
+_ELEMENTARY = {
+    "exp": np.exp,
+    "log": np.log,
+    "log1p": np.log1p,
+    "expm1": np.expm1,
+    "sign": np.sign,
+}
+_REAL_ONLY = {"log1p", "expm1", "sign"}
+
+
+def _elementary_cases():
+    for name in _ELEMENTARY:
+        for dtype in ALL_DTYPES:
+            if name in _REAL_ONLY and dtype.startswith("complex"):
+                continue
+            yield name, dtype
+
+
+def _elementary_input(name, shape, dtype):
+    """Values inside the op's domain: the logs get positive real parts, sign gets both signs."""
+    rng = np.random.default_rng(7)
+    x = rng.uniform(0.1, 2.0, size=shape)
+    if name == "sign":
+        x = x * rng.choice([-1.0, 1.0], size=shape)
+    if dtype.startswith("complex"):
+        x = x + 1j * rng.uniform(-1.0, 1.0, size=shape)
+    return x.astype(dtype)
+
+
+@pytest.mark.parametrize("name,dtype", list(_elementary_cases()))
+@pytest.mark.parametrize("captured", [False, True])
+def test_named_elementary_op_matches_numpy(name, dtype, captured):
+    x = _elementary_input(name, (3, 4, 2), dtype)
+    A = einsums.asarray(x, dtype=dtype)
+    expected = _ELEMENTARY[name](x)
+    if captured:
+        g = cg.Graph(f"elementary_{name}")
+        with cg.capture(g):
+            einsums.linalg.element_transform(A, name)
+        g.execute()
+    else:
+        einsums.linalg.element_transform(A, name)
+    assert_close(A, expected)
+
+
+@pytest.mark.parametrize("name,dtype", list(_elementary_cases()))
+def test_named_elementary_op_on_a_transposed_view(name, dtype):
+    """A permuted view walks by stride; the parent's other layout must not leak in."""
+    x = _elementary_input(name, (4, 3), dtype)
+    parent = einsums.asarray(np.ascontiguousarray(x.T), dtype=dtype)
+    view = parent.permute_view([1, 0])
+    g = cg.Graph(f"elementary_view_{name}")
+    with cg.capture(g):
+        einsums.linalg.element_transform(view, name)
+    g.execute()
+    assert_close(view, _ELEMENTARY[name](x))
+
+
+@pytest.mark.parametrize("dtype", REAL_DTYPES)
+def test_named_log_and_sign_keep_non_finite_values(dtype):
+    """log is unguarded and sign follows numpy, NaN included."""
+    x = np.array([-1.0, 0.0, np.inf, np.nan, -0.0, 2.0], dtype=dtype)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        for name in ("log", "sign", "log1p"):
+            A = einsums.asarray(x.copy(), dtype=dtype)
+            einsums.linalg.element_transform(A, name)
+            np.testing.assert_array_equal(np.asarray(A), _ELEMENTARY[name](x))
+
+
+@pytest.mark.parametrize("name", sorted(_REAL_ONLY))
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_named_real_only_elementary_op_refuses_complex(name, dtype):
+    A = einsums.create_random_tensor("A", [2, 2], dtype=dtype)
+    with pytest.raises(ValueError, match=name):
+        einsums.linalg.element_transform(A, name)

@@ -65,6 +65,44 @@ void register_builtin_element_ops(ElementOpRegistry &registry) {
     registry.register_op(
         "is_zero", []<std::floating_point T>(T x) { return x == T{0} ? T{1} : T{0}; },
         ElementOpSignature{.arity = 1, .domain = ElementOpDomain::RealOnly, .description = "1 when x is exactly zero, else 0"});
+
+    // The exponential and logarithm, unguarded. A real log of a negative is NaN and of zero is
+    // -inf, exactly as std::log returns them: unlike sqrt_or_zero, nothing here has a reason to
+    // trade a non-finite value for a silent zero, and a caller who wants a guard can see the NaN.
+    // The complex arms take the standard library's principal branch, which is NumPy's.
+    registry.register_op(
+        "exp", []<typename T>(T x) { return std::exp(x); },
+        ElementOpSignature{.arity = 1, .domain = ElementOpDomain::AllDtypes, .description = "exp(x)"});
+
+    registry.register_op(
+        "log", []<typename T>(T x) { return std::log(x); },
+        ElementOpSignature{.arity = 1, .domain = ElementOpDomain::AllDtypes, .description = "natural log of x, principal branch"});
+
+    // log(1 + x) and exp(x) - 1 without the cancellation the composed forms suffer when |x| is
+    // small, which is where a per-step return lives. The standard library has no complex
+    // overloads, so the constraint makes them real-only.
+    registry.register_op(
+        "log1p", []<std::floating_point T>(T x) { return std::log1p(x); },
+        ElementOpSignature{.arity = 1, .domain = ElementOpDomain::RealOnly, .description = "log(1 + x), accurate for small x"});
+
+    registry.register_op(
+        "expm1", []<std::floating_point T>(T x) { return std::expm1(x); },
+        ElementOpSignature{.arity = 1, .domain = ElementOpDomain::RealOnly, .description = "exp(x) - 1, accurate for small x"});
+
+    // NumPy's sign: both zeros map to +0, and a NaN falls through every comparison and comes back
+    // as itself rather than as one of the three values.
+    registry.register_op(
+        "sign",
+        []<std::floating_point T>(T x) {
+            if (x > T{0}) {
+                return T{1};
+            }
+            if (x < T{0}) {
+                return T{-1};
+            }
+            return x == T{0} ? T{0} : x;
+        },
+        ElementOpSignature{.arity = 1, .domain = ElementOpDomain::RealOnly, .description = "-1, 0 or +1 by the sign of x; NaN stays NaN"});
 }
 
 ElementOpRegistry &global_element_op_registry() {

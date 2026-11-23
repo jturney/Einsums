@@ -1222,6 +1222,42 @@ TEMPLATE_LIST_TEST_CASE("SaveLoad - a named element transform round-trips", "[Co
     REQUIRE(bytes_of(A2) == expected);
 }
 
+TEMPLATE_LIST_TEST_CASE("SaveLoad - each elementary element op round-trips by name", "[ComputeGraph][SaveLoad]", testing::AllScalarTypes) {
+    using T = TestType;
+
+    std::vector<std::string> names{"exp", "log"};
+    if constexpr (!IsComplexV<T>) {
+        names.insert(names.end(), {"log1p", "expm1", "sign"});
+    }
+
+    for (auto const &name : names) {
+        INFO("op: " << name);
+        auto A = create_random_tensor<T>("A", 3, 2);
+        for (size_t i = 0; i < A.size(); ++i) {
+            A.data()[i] += T{1}; // inside every op's domain
+        }
+        auto const A0 = bytes_of(A);
+
+        cg::Graph graph("elementary_" + name);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::element_transform(&A, name);
+        }
+        graph.execute();
+        auto const expected = bytes_of(A);
+
+        std::string const text = must_save(graph);
+        REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring("\"" + name + "\""));
+
+        cg::Graph loaded = must_load(text);
+        auto      A2     = create_zero_tensor<T>("A2", 3, 2);
+        std::memcpy(A2.data(), A0.data(), A0.size());
+        loaded.bind("A", A2);
+        loaded.execute();
+        REQUIRE(bytes_of(A2) == expected);
+    }
+}
+
 TEST_CASE("SaveLoad - write_param and a parameter table round-trip", "[ComputeGraph][SaveLoad]") {
     auto A = create_random_tensor<double>("A", 2, 2);
     auto B = create_zero_tensor<double>("B", 2, 2);
