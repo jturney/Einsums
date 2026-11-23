@@ -53,6 +53,7 @@
 #include "LifecycleExecutors.hpp"
 #include "Operations/ExtremaKernels.hpp"
 #include "Operations/MaskKernels.hpp"
+#include "Operations/ScanKernels.hpp"
 #include "StridedBatchedEinsum.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -563,6 +564,25 @@ std::function<void()> build_select(packed_gemm::ScalarType dtype, OperandAccesso
                 detail::run_select<T>(*mask.impl<T>(), *a.impl<T>(), *b.impl<T>(), *out.impl<T>());
             };
         }
+    });
+}
+
+/// The prefix fold the descriptor describes, through the kernel the eager call runs.
+std::function<void()> build_scan(packed_gemm::ScalarType dtype, ScanDescriptor const &desc, OperandAccessor const &a,
+                                 OperandAccessor const &out) {
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        if constexpr (IsComplexV<T>) {
+            if (desc.op == ScanOp::Max || desc.op == ScanOp::Min) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Scan): a {} scan orders its elements and {} has no order",
+                                        kScanOpNames.name(desc.op), dtype);
+            }
+        }
+        return [desc, a, out]() {
+            WAGGLE_ZONE("scan execute");
+            auto const *src = a.impl<T>();
+            WAGGLE_ANNOTATE("size", static_cast<std::int64_t>(src->size()));
+            detail::run_scan<T>(desc, *src, *out.impl<T>());
+        };
     });
 }
 
@@ -1748,6 +1768,10 @@ std::string reconstruction_blocker(Node const &node) {
         return node.op_data.holds<SelectDescriptor>()
                    ? std::string{}
                    : fmt::format("Select: expected a SelectDescriptor, found {}", descriptor_name(node.op_data));
+    case OpKind::Scan:
+        return node.op_data.holds<ScanDescriptor>()
+                   ? std::string{}
+                   : fmt::format("Scan: expected a ScanDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::ElementTransform:
         // The lambda-taking capture overloads record no descriptor, which is
         // not an oversight: a closure has no name a file could carry. The
@@ -2090,6 +2114,16 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
         (void)expect<SelectDescriptor>(kind, desc, "SelectDescriptor");
         return build_select(dtype, resolve_operand(graph, inputs[0], kind, "mask"), resolve_operand(graph, inputs[1], kind, "A"),
                             resolve_operand(graph, inputs[2], kind, "B"), resolve_operand(graph, outputs[0], kind, "out"));
+    }
+    case OpKind::Scan: {
+        need(kind, "inputs", inputs, 1);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<ScanDescriptor>(kind, desc, "ScanDescriptor");
+        if (d.axis >= rank) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Scan): axis {} is out of range for a rank-{} node", d.axis,
+                                    rank);
+        }
+        return build_scan(dtype, d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, outputs[0], kind, "out"));
     }
     case OpKind::ElementTransform: {
         auto const &d = expect<ElementTransformDescriptor>(kind, desc, "ElementTransformDescriptor");

@@ -316,4 +316,47 @@ struct ReduceAxesDescriptor {
     bool operator==(ReduceAxesDescriptor const &) const = default; ///< Field-wise.
 };
 
+/**
+ * @brief The associative operator an @ref OpKind::Scan node folds with.
+ *
+ * @ref ScanOp::Max and @ref ScanOp::Min are real-only and follow NumPy's ``maximum.accumulate``
+ * and ``minimum.accumulate``: once a NaN is seen along the scan axis, every later element is NaN.
+ * @versionadded{2.0.0}
+ */
+enum class ScanOp : std::uint8_t {
+    Sum,  ///< Running sum; identity 0.
+    Prod, ///< Running product; identity 1.
+    Max,  ///< Running maximum; identity -inf.
+    Min,  ///< Running minimum; identity +inf.
+};
+
+/// The spellings of @ref ScanOp, as the API takes them and a saved graph writes them.
+inline constexpr EnumNames kScanOpNames{std::array<std::pair<ScanOp, std::string_view>, 4>{{
+                                            {ScanOp::Sum, "sum"},
+                                            {ScanOp::Prod, "prod"},
+                                            {ScanOp::Max, "max"},
+                                            {ScanOp::Min, "min"},
+                                        }},
+                                        "sum"};
+
+/**
+ * @brief Metadata for @ref OpKind::Scan: a prefix fold of A along one axis.
+ *
+ * The node's one input is A and its one output has A's shape, overwritten. Inclusive by default:
+ * element k of a line is the fold of elements 0 through k. @ref exclusive starts each line at the
+ * operator's identity and folds through k - 1; @ref reverse folds from the last element toward
+ * the first.
+ * @versionadded{2.0.0}
+ */
+struct ScanDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "ScanDescriptor";
+    ScanOp                            op{ScanOp::Sum}; ///< The operator.
+    std::size_t                       axis{0};         ///< The axis scanned along.
+    bool                              exclusive{};     ///< Shift by one, starting at the identity.
+    bool                              reverse{};       ///< Fold from the last element toward the first.
+
+    bool operator==(ScanDescriptor const &) const = default; ///< Field-wise.
+};
+
 EINSUMS_NAMESPACE_END(compute_graph)

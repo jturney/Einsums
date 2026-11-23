@@ -75,6 +75,7 @@ KindClass kind_class(OpKind kind) {
     case OpKind::ReduceAxes:
     case OpKind::Compare:
     case OpKind::Select:
+    case OpKind::Scan:
         return KindClass::Other;
 
     default:

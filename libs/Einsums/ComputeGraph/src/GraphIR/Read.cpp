@@ -826,6 +826,26 @@ void read_descriptor(IrNode &node, Fields const &fields, GateFlagTable const &ga
         node.descriptor = std::move(desc);
         return;
     }
+    case OpKind::Scan: {
+        // Every key is required: no file before 1.22.0 could hold a Scan node, so an absent one is
+        // a malformed document, and a guessed default would be a different scan.
+        ScanDescriptor desc;
+        desc.op =
+            fields.named<ScanOp>("op", [](std::string_view name) { return kScanOpNames.from_name(name); }, "scan operator", ScanOp::Sum);
+        desc.axis      = fields.count("axis").value_or(0);
+        desc.exclusive = fields.flag("exclusive");
+        desc.reverse   = fields.flag("reverse");
+        if (desc.axis >= node.rank && node.rank > 0) {
+            fields.note("axis", fields.position(), fmt::format("axis {} is out of range for a rank-{} node", desc.axis, node.rank));
+        }
+        bool const complex = node.dtype == packed_gemm::ScalarType::Complex64 || node.dtype == packed_gemm::ScalarType::Complex128;
+        if (complex && (desc.op == ScanOp::Max || desc.op == ScanOp::Min)) {
+            fields.note(
+                fmt::format("a {} scan orders its elements, so its dtype must be real, not {}", kScanOpNames.name(desc.op), node.dtype));
+        }
+        node.descriptor = desc;
+        return;
+    }
     case OpKind::Compare:
     case OpKind::Select: {
         if (node.dtype != packed_gemm::ScalarType::Float32 && node.dtype != packed_gemm::ScalarType::Float64) {

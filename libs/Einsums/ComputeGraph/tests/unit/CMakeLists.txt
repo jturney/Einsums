@@ -81,6 +81,7 @@ set(ComputeGraphTests
     ExecutionObserver.cpp
     RunMetrics.cpp
     SaveLoad.cpp
+    Scan.cpp
     SetupSubgraph.cpp
     CostModel.cpp
     LoopOptimizationCorrectness.cpp
@@ -299,6 +300,7 @@ set(ComputeGraphTests
     test_permute_python.py
     test_permute_views_python.py
     test_scalar_writers_python.py
+    test_scan_python.py
     test_scf_python.py
     test_scale_python.py
     test_spaces_python.py

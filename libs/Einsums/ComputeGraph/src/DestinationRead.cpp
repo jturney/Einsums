@@ -36,6 +36,7 @@ bool reads_destination(Node const &node) {
     case OpKind::ReduceAxes:
     case OpKind::Compare:
     case OpKind::Select:
+    case OpKind::Scan:
         // Overwrite in full. An in-place maximum(&A, A, B) lists A as an operand, so that read
         // is visible without the destination being listed again.
         return false;
@@ -106,6 +107,8 @@ std::optional<std::size_t> destination_operand_count(Node const &node) {
     }
     case OpKind::Select:
         return 3; // mask, A, B
+    case OpKind::Scan:
+        return 1; // A
     default:
         break;
     }

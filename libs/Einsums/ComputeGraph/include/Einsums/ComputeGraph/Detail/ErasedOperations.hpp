@@ -406,6 +406,24 @@ EINSUMS_EXPORT void eager_select(einsums::detail::TensorImpl<T> const &mask, ein
 EINSUMS_EXPORT void capture_select(CaptureContext &ctx, TensorId mask_id, TensorId a_id, TensorId b_id, TensorId out_id,
                                    packed_gemm::ScalarType dtype, std::size_t rank);
 
+// ── scan ──────────────────────────────────────────────────────────────────────
+// The caller validates the shape, axis, operator, dtype and overlap; these take them as validated.
+
+/// @brief The scan operator spelled @p name.
+/// @param[in] api  The calling op's name, for the message.
+/// @param[in] name One of sum, prod, max, min.
+/// @return The operator.
+/// @throws std::invalid_argument When @p name is none of them; the message lists them.
+EINSUMS_EXPORT ScanOp scan_op_from_name(char const *api, std::string_view name);
+
+/// ``out := `` the prefix fold of A the descriptor describes, eagerly.
+template <typename T>
+EINSUMS_EXPORT void eager_scan(ScanDescriptor const &desc, einsums::detail::TensorImpl<T> const &A, einsums::detail::TensorImpl<T> &out);
+
+/// Record @ref OpKind::Scan, reading A and overwriting out.
+EINSUMS_EXPORT void capture_scan(CaptureContext &ctx, ScanDescriptor desc, TensorId a_id, TensorId out_id, packed_gemm::ScalarType dtype,
+                                 std::size_t rank);
+
 // ── block copy / gather / scatter ─────────────────────────────────────────────
 // The caller validates the arguments; these take them as validated.
 

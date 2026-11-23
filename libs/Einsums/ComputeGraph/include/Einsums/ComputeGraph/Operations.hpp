@@ -2900,6 +2900,215 @@ void where(ResultType *out, MaskType const &mask, AType const &A, BType const &B
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// scan: prefix sums, products, maxima and minima along one axis
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Graph-aware prefix scan of @p A along @p axis, with an associative operator chosen by name.
+///
+/// @p op is ``sum``, ``prod``, ``max`` or ``min``. Inclusive by default: element k of each line
+/// is the fold of elements 0 through k, as ``numpy.cumsum`` computes it. With @p exclusive,
+/// element 0 is the operator's identity (0, 1, -inf, +inf) and element k folds through k - 1;
+/// with @p reverse the fold runs from the last element toward the first.
+///
+/// Every index tuple over the other axes is one independent line, walked by stride, so a view,
+/// slice or transpose scans as an owning tensor does. A line is folded sequentially, on one
+/// thread, and threads divide the lines among themselves, so a sum or product does not depend on
+/// the thread count. ``max`` and ``min`` propagate NaN as ``numpy.maximum.accumulate`` does:
+/// once a NaN is seen along a line, every later element of that line is NaN.
+///
+/// @p out has the rank and extents of @p A and is overwritten, never accumulated into, so a
+/// replay gives the answer the first execution gave. It may be @p A itself (the same tensor or
+/// view), and the scan then runs in place; any other overlap is refused. A zero extent anywhere
+/// makes the scan a no-op.
+///
+/// @param[out] out       The result.
+/// @param[in]  A         The tensor to scan.
+/// @param[in]  axis      The axis to scan along.
+/// @param[in]  op        The operator's name.
+/// @param[in]  exclusive Start each line at the identity, shifted by one.
+/// @param[in]  reverse   Fold from the last element toward the first.
+/// @throws std::out_of_range When @p axis is not an axis of @p A.
+/// @throws std::invalid_argument When @p op names no operator (the message lists them), when
+///         ``max`` or ``min`` is asked of a complex tensor, which has no order, or when @p out
+///         partly overlaps @p A.
+/// @throws RankError When the ranks differ.
+/// @throws DimensionError When an extent differs.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("scan", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("scan", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("scan", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("scan", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("scan", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("scan", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("scan", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("scan", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("scan", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("scan", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("scan", einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("scan", einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("scan", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("scan", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("scan", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("scan", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+// clang-format on
+void scan(ResultType *out, AType const &A, size_t axis, std::string_view op, bool exclusive = false, bool reverse = false) {
+    using T              = typename ResultType::ValueType;
+    ScanOp const scan_op = detail::scan_op_from_name("cg::scan", op);
+    size_t const rank    = detail::tensor_rank(A);
+    if (axis >= rank) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::scan: axis {} is out of range for a rank-{} tensor", axis, rank);
+    }
+    if constexpr (IsComplexV<T>) {
+        if (scan_op == ScanOp::Max || scan_op == ScanOp::Min) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::scan: '{}' orders its elements and complex numbers have no order; max and min scans are real-only",
+                                    op);
+        }
+    }
+    detail::require_same_shape("cg::scan", "out", A, *out);
+    detail::reject_partial_alias("cg::scan", "A", *out, A);
+
+    ScanDescriptor const desc{.op = scan_op, .axis = axis, .exclusive = exclusive, .reverse = reverse};
+    auto                &ctx = CaptureContext::current();
+    if (detail::runs_eagerly(ctx, "cg::scan", out, A)) {
+        detail::eager_scan<T>(desc, A.impl(), out->impl());
+        return;
+    }
+    TensorId const a_id = ctx.get_slot(A).first;
+    TensorId const o_id = ctx.get_slot(*out).first;
+    detail::capture_scan(ctx, desc, a_id, o_id, packed_gemm::get_scalar_type<T>(), rank);
+}
+
+/// @brief Graph-aware cumulative sum along @p axis, as ``numpy.cumsum``.
+///
+/// @ref scan with ``op = "sum"``, inclusive and forward: the same contract and the same
+/// refusals.
+///
+/// @param[out] out  The result, the shape of @p A; may be @p A itself.
+/// @param[in]  A    The tensor to scan.
+/// @param[in]  axis The axis to scan along.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("cumsum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("cumsum", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+// clang-format on
+void cumsum(ResultType *out, AType const &A, size_t axis) {
+    scan(out, A, axis, "sum");
+}
+
+/// @brief Graph-aware cumulative product along @p axis, as ``numpy.cumprod``.
+///
+/// @ref scan with ``op = "prod"``, inclusive and forward: the same contract and the same
+/// refusals.
+///
+/// @param[out] out  The result, the shape of @p A; may be @p A itself.
+/// @param[in]  A    The tensor to scan.
+/// @param[in]  axis The axis to scan along.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("cumprod", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::RuntimeTensorView<std::complex<float>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("cumprod", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+// clang-format on
+void cumprod(ResultType *out, AType const &A, size_t axis) {
+    scan(out, A, axis, "prod");
+}
+
+/// @brief Graph-aware running maximum along @p axis, as ``numpy.maximum.accumulate``.
+///
+/// @ref scan with ``op = "max"``, inclusive and forward: the same contract and the same
+/// refusals. Real element types only.
+///
+/// @param[out] out  The result, the shape of @p A; may be @p A itself.
+/// @param[in]  A    The tensor to scan.
+/// @param[in]  axis The axis to scan along.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> && !IsComplexV<typename AType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("cummax", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("cummax", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("cummax", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("cummax", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("cummax", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("cummax", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("cummax", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("cummax", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+// clang-format on
+void cummax(ResultType *out, AType const &A, size_t axis) {
+    scan(out, A, axis, "max");
+}
+
+/// @brief Graph-aware running minimum along @p axis, as ``numpy.minimum.accumulate``.
+///
+/// @ref scan with ``op = "min"``, inclusive and forward: the same contract and the same
+/// refusals. Real element types only.
+///
+/// @param[out] out  The result, the shape of @p A; may be @p A itself.
+/// @param[in]  A    The tensor to scan.
+/// @param[in]  axis The axis to scan along.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> && !IsComplexV<typename AType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("cummin", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("cummin", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("cummin", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("cummin", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("cummin", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("cummin", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("cummin", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("cummin", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+// clang-format on
+void cummin(ResultType *out, AType const &A, size_t axis) {
+    scan(out, A, axis, "min");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // direct_product: C = alpha * (A ⊙ B) + beta * C
 // ─────────────────────────────────────────────────────────────────────────────
 

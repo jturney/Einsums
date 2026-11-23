@@ -101,11 +101,13 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
     case OpKind::GroupedDirectDivision:
         return true;
 
-    // The max/min, comparison and select kernels are einsums' own strided walks, forking from the ICV.
+    // The max/min, comparison, select and scan kernels are einsums' own strided walks, forking
+    // from the ICV. A scan divides lines, never one line, among the threads it is given.
     case OpKind::ElementwiseMaxMin:
     case OpKind::ReduceAxes:
     case OpKind::Compare:
     case OpKind::Select:
+    case OpKind::Scan:
         return true;
 
     // Kernels that are a vendor call, or that lower to one often enough that

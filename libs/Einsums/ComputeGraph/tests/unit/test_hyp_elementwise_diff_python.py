@@ -5,7 +5,7 @@
 
 Covers scale / axpy / axpby / direct_product / direct_division, the
 named elementary ops (exp, log, log1p, expm1, sign), and the real-only
-maximum / minimum / max_axes / min_axes / compare / where with
+maximum / minimum / max_axes / min_axes / compare / where, and the scans, with
 non-contiguous view operands, degenerate (size-1) dims, all four dtypes,
 prefactors (incl. accumulation), and the optional default pass manager.
 
@@ -71,6 +71,25 @@ _REAL_ONLY_ELEMENTARY = ("log1p", "expm1", "sign")
 
 
 _MAX_MIN_OPS = ("maximum", "minimum", "max_axes", "min_axes", "compare", "compare_scalar", "where")
+_SCANS = {"sum": (np.cumsum, 0.0), "prod": (np.cumprod, 1.0), "max": (np.maximum.accumulate, -np.inf),
+          "min": (np.minimum.accumulate, np.inf)}
+
+
+def _scan_oracle(x, axis, op, exclusive, reverse):
+    fn, identity = _SCANS[op]
+    y = np.flip(x, axis) if reverse else x
+    out = fn(y, axis=axis)
+    if exclusive:
+        head = np.full_like(np.take(out, [0], axis=axis), identity)
+        out = np.concatenate([head, np.take(out, range(out.shape[axis] - 1), axis=axis)], axis=axis)
+    return np.flip(out, axis) if reverse else out
+
+
+def _scan_scale(x, axis, op, exclusive, reverse):
+    """The size of the terms behind each element of a sum or product scan, before cancellation."""
+    if op == "sum":
+        return _scan_oracle(np.abs(x), axis, "sum", exclusive, reverse)
+    return np.abs(_scan_oracle(x, axis, op, exclusive, reverse))
 _COMPARISONS = {"gt": np.greater, "ge": np.greater_equal, "lt": np.less, "le": np.less_equal, "eq": np.equal, "ne": np.not_equal}
 
 
@@ -214,3 +233,46 @@ def test_hyp_elementwise_diff(op, element_op, shape, alpha, beta, dt, va, vb, vc
         out, oracle, dt, scale,
         err_msg=f"op={op} element_op={element_op} shape={shape} alpha={alpha} beta={beta} dt={dt} "
                 f"va={va} vb={vb} vc={vc} passes={passes}")
+
+
+@given(scan_op=st.sampled_from(sorted(_SCANS)), shape=_shape(), dt=DTYPES, axes_mask=st.integers(0, 7),
+       va=st.booleans(), vc=st.booleans(), passes=st.booleans(), special=st.booleans())
+@settings(max_examples=sanitizer_examples(200), deadline=None,
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
+@example(scan_op="prod", shape=(3, 2), dt="complex128", axes_mask=3, va=True, vc=False, passes=True, special=False)
+@example(scan_op="sum", shape=(4,), dt="float32", axes_mask=1, va=False, vc=True, passes=False, special=True)
+def test_hyp_scan_diff(scan_op, shape, dt, axes_mask, va, vc, passes, special):
+    """scan against numpy over every operator, axis, flag pair, view and in-place destination."""
+    rng = np.random.default_rng(0)
+    g = cg.Graph(_nm())
+    if is_complex(dt) and scan_op in ("max", "min"):
+        scan_op = "sum"
+    axis = axes_mask % len(shape)
+    exclusive, reverse = bool(axes_mask & 1), bool(axes_mask & 2)
+    A0 = _rnd(shape, dt, rng)
+    if scan_op == "prod":
+        A0 = rounded(1.0 + 0.25 * A0, dt)  # near 1, so a product of a few stays well scaled
+    if special and not is_complex(dt):
+        A0.reshape(-1)[0] = np.nan
+        A0.reshape(-1)[-1] = -0.0
+    At = _mkv(A0, va, dt, rng)
+    in_place = vc and not va  # the very same tensor as input and output
+    out = At if in_place else einsums.create_zero_tensor(_nm(), list(shape), dtype=dt)
+    with cg.capture(g):
+        einsums.linalg.scan(out, At, axis, scan_op, exclusive=exclusive, reverse=reverse)
+    if passes:
+        g.apply(cg.default_pass_manager())
+    g.execute()
+    if not in_place:
+        g.execute()  # an overwrite replays to the same answer
+    oracle = _scan_oracle(A0, axis, scan_op, exclusive, reverse)
+    msg = f"scan op={scan_op} axis={axis} exclusive={exclusive} reverse={reverse} shape={shape} dt={dt} va={va} in_place={in_place}"
+    if scan_op in ("max", "min"):
+        np.testing.assert_array_equal(np.asarray(out), oracle, err_msg=msg)
+    else:
+        with np.errstate(invalid="ignore"):
+            scale = _scan_scale(A0, axis, scan_op, exclusive, reverse)
+        finite = np.isfinite(oracle)
+        assert np.array_equal(np.isnan(np.asarray(out)), np.isnan(oracle)), msg
+        assert_rounding_close(np.asarray(out)[finite], oracle[finite], dt, np.asarray(scale)[finite], err_msg=msg,
+                              factor=max(shape))

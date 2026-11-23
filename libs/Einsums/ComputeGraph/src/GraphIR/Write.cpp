@@ -311,6 +311,14 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("kept", to_array(desc.kept));
         return Value{std::move(out)};
     }
+    case OpKind::Scan: {
+        auto const &desc = node.op_data.get<ScanDescriptor>();
+        out.set("op", Value{std::string{kScanOpNames.name(desc.op)}});
+        out.set("axis", Value{desc.axis});
+        out.set("exclusive", Value{desc.exclusive});
+        out.set("reverse", Value{desc.reverse});
+        return Value{std::move(out)};
+    }
     case OpKind::Compare: {
         auto const &desc = node.op_data.get<CompareDescriptor>();
         out.set("op", Value{std::string{cmp_op_name(desc.op)}});

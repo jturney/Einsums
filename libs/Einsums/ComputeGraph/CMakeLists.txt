@@ -161,6 +161,7 @@ set(ComputeGraphSources
     Operations/Permute.cpp
     Operations/Reductions.cpp
     Operations/Sandwich.cpp
+    Operations/Scans.cpp
     Operations/Selection.cpp
     Operations/Shape.cpp
     Operations/Unary.cpp

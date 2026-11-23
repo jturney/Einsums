@@ -1291,6 +1291,57 @@ TEST_CASE("SaveLoad - the kinds that joined at 1.21.0 write a golden and refuse 
     }
 }
 
+// Scan became saveable at 1.22.0. The golden holds an inclusive forward sum and an exclusive
+// reverse max, so every key and both values of each flag are in it.
+TEST_CASE("SaveLoad - the kind that joined at 1.22.0 writes a golden and refuses a missing key", "[ComputeGraph][SaveLoad]") {
+    RuntimeTensor<double> A("A", std::vector<size_t>{3, 4});
+    RuntimeTensor<double> S("S", std::vector<size_t>{3, 4});
+    RuntimeTensor<double> M("M", std::vector<size_t>{3, 4});
+    for (auto *t : {&A, &S, &M}) {
+        t->zero();
+    }
+
+    cg::Graph graph("scan_golden");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scan(&S, A, 1, "sum");
+        cg::scan(&M, A, 0, "max", true, true);
+    }
+    REQUIRE(graph.serializability_report().empty());
+
+    std::string const saved = must_save(graph);
+    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+        std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_22_0_scan.eig.json", std::ios::binary);
+        out << saved;
+    }
+    (void)must_load(saved);
+
+    SECTION("a scan without its operator is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("op":"sum")", R"("opp":"sum")")), Catch::Matchers::ContainsSubstring("op"));
+    }
+    SECTION("a scan naming an unknown operator is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("op":"sum")", R"("op":"mean")")), Catch::Matchers::ContainsSubstring("mean"));
+    }
+    SECTION("a scan without its axis is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("axis":1)", R"("axes":1)")), Catch::Matchers::ContainsSubstring("axis"));
+    }
+    SECTION("a scan along an axis its rank lacks is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("axis":1)", R"("axis":2)")), Catch::Matchers::ContainsSubstring("out of range"));
+    }
+    SECTION("a scan without its flags is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("exclusive":true)", R"("exclusive_":true)")),
+                   Catch::Matchers::ContainsSubstring("exclusive"));
+        CHECK_THAT(load_refusal(patched(saved, R"("reverse":false)", R"("reversed":false)")),
+                   Catch::Matchers::ContainsSubstring("reverse"));
+    }
+    SECTION("a complex max scan is refused") {
+        // A node with a four-key descriptor is written one key per line.
+        CHECK_THAT(load_refusal(patched(saved, "\"outputs\": [1],\n      \"dtype\": \"float64\"",
+                                        "\"outputs\": [1],\n      \"dtype\": \"complex128\"")),
+                   Catch::Matchers::ContainsSubstring("must be real"));
+    }
+}
+
 TEMPLATE_LIST_TEST_CASE("SaveLoad - a named element transform round-trips", "[ComputeGraph][SaveLoad]", testing::AllScalarTypes) {
     using T = TestType;
     auto A  = create_random_tensor<T>("A", 3, 3);
