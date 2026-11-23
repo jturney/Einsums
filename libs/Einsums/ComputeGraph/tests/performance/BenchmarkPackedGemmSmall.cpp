@@ -4,15 +4,15 @@
 //----------------------------------------------------------------------------------------------
 
 /// @file BenchmarkPackedGemmSmall.cpp
-/// @brief What the packed-GEMM route costs on small contractions that are one GEMM in disguise.
+/// @brief What a small contraction that is one GEMM in disguise costs on its route.
 ///
-/// Every two-dimensional product goes straight to the vendor GEMM, but a contraction with a
-/// higher-rank operand routes through PackedGemm even when its index groups are adjacent in
-/// column-major storage, so the contraction IS a single GEMM over reshaped operands:
-/// ``ijk <- ijl ; lk`` is an (ij) x l times l x k product. Each case times three spellings of the
-/// same arithmetic on the same buffers:
+/// A contraction with a higher-rank operand whose index groups are adjacent in column-major storage
+/// is a single GEMM over reshaped operands: ``ijk <- ijl ; lk`` is an (ij) x l times l x k product.
+/// Such contractions used to route through PackedGemm, which reached the same vendor GEMM after a
+/// microsecond of analysis; they now take the merged-axis route. Each case times three spellings of
+/// the same arithmetic on the same buffers:
 ///
-///   packed - the einsum as written, on the higher-rank tensors (asserted to route packed_gemm)
+///   packed - the einsum as written, on the higher-rank tensors (asserted to route gemm_fused_runtime)
 ///   direct - the same einsum on two-dimensional views of those buffers (the vendor route)
 ///   vendor - the vendor GEMM or GEMV called directly, the floor
 ///
@@ -110,7 +110,7 @@ EINSUMS_TEST_CASE("Bench PackedGemmSmall: one-GEMM contractions, packed vs direc
             RuntimeTensorView<double> C2(C, std::vector<size_t>{n2, n});
             size_t const              flops = 2 * n2 * n * n;
             cg::einsum("ijk <- ijl ; lk", &C, A, B);
-            REQUIRE(cgd::last_dispatch_route() == std::string_view{"packed_gemm"});
+            REQUIRE(cgd::last_dispatch_route() == std::string_view{"gemm_fused_runtime"});
             double const packed = best_ns_per_call([&] { cg::einsum("ijk <- ijl ; lk", &C, A, B); }, flops);
             cg::einsum("ij <- ik ; kj", &C2, A2, B);
             REQUIRE(cgd::last_dispatch_route() == std::string_view{"gemm_direct_runtime"});
@@ -132,7 +132,7 @@ EINSUMS_TEST_CASE("Bench PackedGemmSmall: one-GEMM contractions, packed vs direc
             RuntimeTensorView<double> C2(C, std::vector<size_t>{n, n2});
             size_t const              flops = 2 * n * n * n2;
             cg::einsum("ijk <- il ; ljk", &C, A, B);
-            REQUIRE(cgd::last_dispatch_route() == std::string_view{"packed_gemm"});
+            REQUIRE(cgd::last_dispatch_route() == std::string_view{"gemm_fused_runtime"});
             double const packed = best_ns_per_call([&] { cg::einsum("ijk <- il ; ljk", &C, A, B); }, flops);
             cg::einsum("ij <- ik ; kj", &C2, A, B2);
             REQUIRE(cgd::last_dispatch_route() == std::string_view{"gemm_direct_runtime"});
@@ -154,7 +154,7 @@ EINSUMS_TEST_CASE("Bench PackedGemmSmall: one-GEMM contractions, packed vs direc
             RuntimeTensorView<double> B2(B, std::vector<size_t>{n2, n});
             size_t const              flops = 2 * n * n2 * n;
             cg::einsum("ij <- ikl ; klj", &C, A, B);
-            REQUIRE(cgd::last_dispatch_route() == std::string_view{"packed_gemm"});
+            REQUIRE(cgd::last_dispatch_route() == std::string_view{"gemm_fused_runtime"});
             double const packed = best_ns_per_call([&] { cg::einsum("ij <- ikl ; klj", &C, A, B); }, flops);
             cg::einsum("ij <- ik ; kj", &C, A2, B2);
             REQUIRE(cgd::last_dispatch_route() == std::string_view{"gemm_direct_runtime"});

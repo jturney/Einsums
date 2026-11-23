@@ -162,7 +162,7 @@ void build_Fock_2e_einsum(Tensor<double, 2> *F,
 }
 ```
 
-W intermediates in CCD, each of which PackedGemm contracts, including the last, whose indices interleave:
+W intermediates in CCD: the first two are each one GEMM over merged axes, and PackedGemm contracts the last, whose indices interleave:
 ```C++
 Wmnij = g_oooo;
 cg::einsum("mnij <- ijef ; mnef", 1.0, &Wmnij, 0.25, t_oovv, g_oovv);

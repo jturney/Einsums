@@ -34,9 +34,13 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
+#include <limits>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -395,6 +399,176 @@ bool einsum_empty_operands(typename CType::ValueType c_pf, CType *C, AType const
 /// Only provable overlap rejects (detail::provably_overlap): disjoint column-major slices of one
 /// parent interleave in memory without sharing an element. See the eager guard in TensorAlgebra's
 /// Backends/Dispatch.hpp for the full rationale.
+/// @brief One operand's axes for a group of index letters, merged into a single axis.
+///
+/// Held without allocating: the route it serves exists to be cheaper than PackedGemm's analysis.
+struct FusedAxis {
+    static constexpr std::size_t kMaxAxes = 16; ///< More axes than this in one group is left to PackedGemm.
+
+    std::size_t                            extent{1}; ///< The product of the group's extents.
+    std::size_t                            stride{0}; ///< The stride of the group's fastest axis; 0 when every extent is 1.
+    std::array<std::string_view, kMaxAxes> order{};   ///< The group's letters of extent above 1, fastest first.
+    std::size_t                            count{0};  ///< How many of @ref order are set.
+    bool                                   ok{false}; ///< Whether the axes merge: each stride is the last times its extent.
+
+    /// @brief Whether @p other names the same letters in the same order.
+    [[nodiscard]] bool same_order(FusedAxis const &other) const noexcept {
+        return count == other.count && std::equal(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(count), other.order.begin());
+    }
+};
+
+/// @brief Merge the axes of @p x whose letters @p in_group selects into one axis, if they form one.
+///
+/// Sorted by stride, the axes of extent above 1 must each start where the previous one ends, so the
+/// group's elements are one strided run and a single stride and extent address them. Axes of extent
+/// 1 take no part: their strides are arbitrary and they contribute no elements.
+template <typename X, typename InGroup>
+FusedAxis fuse_axes(std::vector<std::string> const &idx, X const &x, InGroup const &in_group) {
+    std::array<std::size_t, FusedAxis::kMaxAxes> strides{};
+    std::array<std::size_t, FusedAxis::kMaxAxes> extents{};
+    FusedAxis                                    out;
+    for (std::size_t d = 0; d < idx.size(); ++d) {
+        if (!in_group(idx[d])) {
+            continue;
+        }
+        std::size_t const extent = x.dim(d);
+        out.extent *= extent;
+        if (extent > 1) {
+            if (out.count == FusedAxis::kMaxAxes) {
+                return out;
+            }
+            // Insertion by stride, so the run reads fastest axis first.
+            std::size_t       at     = out.count++;
+            std::size_t const stride = static_cast<std::size_t>(x.stride(d));
+            while (at > 0 && strides[at - 1] > stride) {
+                strides[at]   = strides[at - 1];
+                extents[at]   = extents[at - 1];
+                out.order[at] = out.order[at - 1];
+                --at;
+            }
+            strides[at]   = stride;
+            extents[at]   = extent;
+            out.order[at] = idx[d];
+        }
+    }
+    for (std::size_t i = 1; i < out.count; ++i) {
+        if (strides[i] != strides[i - 1] * extents[i - 1]) {
+            return out;
+        }
+    }
+    out.stride = out.count == 0 ? 0 : strides[0];
+    out.ok     = true;
+    return out;
+}
+
+/// @brief How BLAS reads one merged two-axis operand: its transpose flag and leading dimension.
+struct BlasOperand {
+    char        trans{'n'}; ///< 'n' when the logical rows are contiguous, 't' when the columns are.
+    std::size_t ld{1};      ///< The leading dimension of the matrix as stored.
+};
+
+/// @brief The BLAS reading of a logical @p rows x @p cols operand, or nothing when no axis has unit stride.
+///
+/// A merged axis of extent 1 has no meaningful stride, so it reads as whichever layout the other
+/// axis allows, and the leading dimension is clamped to the stored rows, which BLAS checks.
+inline std::optional<BlasOperand> blas_operand(FusedAxis const &rows, FusedAxis const &cols) {
+    std::size_t const m = rows.extent, n = cols.extent;
+    bool const        rows_unit = m <= 1 || rows.stride == 1;
+    bool const        cols_unit = n <= 1 || cols.stride == 1;
+    if (rows_unit && (n <= 1 || cols.stride >= m)) {
+        return BlasOperand{'n', std::max<std::size_t>({n <= 1 ? m : cols.stride, m, 1})};
+    }
+    if (cols_unit && (m <= 1 || rows.stride >= n)) {
+        return BlasOperand{'t', std::max<std::size_t>({m <= 1 ? n : rows.stride, n, 1})};
+    }
+    return std::nullopt;
+}
+
+/**
+ * @brief Run a contraction that is one GEMM over merged axes, if it is one.
+ *
+ * Each index of C belongs to exactly one operand (no batch index), and in each operand the indices of
+ * each role (C's from that operand, and the contracted ones) occupy one strided run, in the same order
+ * in both operands that hold them: ``ijk <- ijl ; lk`` in column-major storage is an (ij) x l times
+ * l x k product. Such a contraction is then exactly one vendor GEMM on the operands' own storage, with
+ * no packing and no copy, which is what PackedGemm would reach after its own analysis of the shape.
+ * GEMV shapes, with no M or no N, are left to PackedGemm, which is faster on them at size.
+ *
+ * @return True when it ran; false, having touched nothing, when the contraction is not of that form.
+ */
+template <typename T, typename CType, typename AType, typename BType>
+bool try_fused_gemm(std::vector<std::string> const &c_idx, std::vector<std::string> const &a_idx, std::vector<std::string> const &b_idx,
+                    std::vector<std::string> const &links, T c_pf, CType *C, T ab_pf, AType const &A, BType const &B) {
+    if (links.empty()) {
+        return false; // an outer product: no K to contract
+    }
+    auto const has = [](std::vector<std::string> const &idx, std::string_view letter) {
+        return std::ranges::find(idx, letter) != idx.end();
+    };
+    for (auto const &letter : c_idx) {
+        if (has(a_idx, letter) == has(b_idx, letter)) {
+            return false; // a batch index, or one in neither operand
+        }
+    }
+    auto const in_m = [&](std::string_view l) { return has(c_idx, l) && has(a_idx, l); };
+    auto const in_n = [&](std::string_view l) { return has(c_idx, l) && has(b_idx, l); };
+    auto const in_k = [&](std::string_view l) { return has(links, l); };
+    for (auto const &letter : a_idx) {
+        if (!in_m(letter) && !in_k(letter)) {
+            return false;
+        }
+    }
+    for (auto const &letter : b_idx) {
+        if (!in_n(letter) && !in_k(letter)) {
+            return false;
+        }
+    }
+
+    // A GEMV shape (no M or no N index of extent above 1) stays with PackedGemm, which chooses
+    // between the vendor GEMV and its own loops: as a one-column vendor GEMM, the Coulomb build
+    // pq <- pqrs ; rs ran 1.3 to 1.9 times slower than PackedGemm from n = 48 up.
+    auto const extent_of = [&](std::vector<std::string> const &idx, auto const &t, auto const &in_group) {
+        std::size_t e = 1;
+        for (std::size_t d = 0; d < idx.size(); ++d) {
+            if (in_group(idx[d])) {
+                e *= t.dim(d);
+            }
+        }
+        return e;
+    };
+    if (extent_of(c_idx, *C, in_m) <= 1 || extent_of(c_idx, *C, in_n) <= 1) {
+        return false;
+    }
+
+    FusedAxis const am = fuse_axes(a_idx, A, in_m), ak = fuse_axes(a_idx, A, in_k);
+    FusedAxis const bk = fuse_axes(b_idx, B, in_k), bn = fuse_axes(b_idx, B, in_n);
+    FusedAxis const cm = fuse_axes(c_idx, *C, in_m), cn = fuse_axes(c_idx, *C, in_n);
+    if (!(am.ok && ak.ok && bk.ok && bn.ok && cm.ok && cn.ok) || !am.same_order(cm) || !bn.same_order(cn) || !ak.same_order(bk)) {
+        return false;
+    }
+    auto const        a = blas_operand(am, ak);
+    auto const        b = blas_operand(bk, bn);
+    auto const        c = blas_operand(cm, cn);
+    std::size_t const m = cm.extent, n = cn.extent, k = ak.extent;
+    constexpr auto    kIntMax = static_cast<std::size_t>(std::numeric_limits<blas::int_t>::max());
+    if (!a || !b || !c || m > kIntMax || n > kIntMax || k > kIntMax || a->ld > kIntMax || b->ld > kIntMax || c->ld > kIntMax) {
+        return false;
+    }
+
+    auto const as_int = [](std::size_t v) { return static_cast<blas::int_t>(v); };
+    auto const flip   = [](char t) { return t == 'n' ? 't' : 'n'; };
+    if (c->trans == 'n') {
+        // C stored column-major: C = op(A) op(B).
+        blas::gemm<T>(a->trans, b->trans, as_int(m), as_int(n), as_int(k), ab_pf, A.data(), as_int(a->ld), B.data(), as_int(b->ld), c_pf,
+                      C->data(), as_int(c->ld));
+    } else {
+        // C stored row-major is C^T column-major: C^T = op(B)^T op(A)^T.
+        blas::gemm<T>(flip(b->trans), flip(a->trans), as_int(n), as_int(m), as_int(k), ab_pf, B.data(), as_int(b->ld), A.data(),
+                      as_int(a->ld), c_pf, C->data(), as_int(c->ld));
+    }
+    return true;
+}
+
 template <typename CType, typename AType, typename BType>
 void reject_output_alias(ParsedEinsumSpec const &parsed, CType const &C, AType const &A, BType const &B) {
     auto const overlaps_c = [&](auto const &x) { return detail::provably_overlap(x, C); };
@@ -919,6 +1093,19 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                 }
                 return;
             }
+        }
+
+        // ── GEMM over merged axes: one GEMM at any rank ──────────────
+        // Higher-rank contractions whose index groups each occupy one strided run
+        // are a single GEMM on two-axis views of the same storage. Taking it here
+        // skips PackedGemm's analysis, which reaches the same vendor call by a
+        // longer road, and the K split it can choose instead for a long K, which
+        // does not compare itself against that call. Deferred to PackedGemm under
+        // a packed preference for the reason the rank-2 route above is.
+        if (!route_prefers_packed && try_fused_gemm(c_idx, a_idx, b_idx, links, c_pf, C, ab_pf, A, B)) {
+            WAGGLE_ANNOTATE("dispatch", "gemm_fused_runtime");
+            last_dispatch_route() = "gemm_fused_runtime";
+            return;
         }
 
         // ── Direct product at ANY rank ───────────────────────────────

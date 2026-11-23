@@ -99,6 +99,12 @@ the dispatcher:
      ``gemm``, or an elementwise product. It uses the transposition flags
      BLAS offers, and copies no operand, except that an elementwise product
      permutes an operand whose letters are the target's in another order.
+   * Vendor ``gemm`` on merged axes, when a higher-rank contraction is one
+     GEMM in disguise: no letter is in both operands and the output, and in
+     each operand the letters of each role occupy one strided run, in the
+     same order wherever they appear. ``ijl = ik * kjl`` in column-major
+     storage is an ``i`` by ``k`` matrix times a ``k`` by ``(jl)`` one, and
+     goes to ``gemm`` on the operands' own strides, with no copy.
    * :ref:`PackedGemm <modules_Einsums_PackedGemm>` for arbitrary-rank
      contractions that don't fit a stock BLAS call. It either hands the
      whole contraction to a vendor ``gemm`` whose strides happen to fit,
@@ -110,8 +116,9 @@ the dispatcher:
 For the example above the dispatcher sees ``ij = ik * kj`` and matches a
 pure ``dgemm``: one ``cblas_dgemm`` call on the operands' own strides.
 
-When the dispatcher can't match a stock BLAS shape, for example
-``ijl = ik * kjl``, it goes to PackedGemm, and what happens there is
+When the dispatcher can't match a BLAS shape, for example
+``ijk = ilj * lk``, where ``l`` separates the output letters ``i`` and ``j``
+in the first operand, it goes to PackedGemm, and what happens there is
 decided from the plan and the machine.
 
 Inside a :ref:`ComputeGraph <modules_Einsums_ComputeGraph>` the spec is

@@ -284,16 +284,19 @@ TEST_CASE("docs - performance: the dispatch reference table is accurate", "[Docs
 
     SECTION("packed-GEMM rungs") {
         auto multi_k = filled("multi_k", {N, N});
-        CHECK(route_of([&] { cg::einsum("ijk;jkl->il", &multi_k, A3, B3); }) == "packed_gemm");
+        CHECK(route_of([&] { cg::einsum("ijk;jkl->il", &multi_k, A3, B3); }) == "gemm_fused_runtime");
 
         auto multi_mn = filled("multi_mn", {N, N, N, N});
-        CHECK(route_of([&] { cg::einsum("ijk;klm->ijlm", &multi_mn, A3, B3); }) == "packed_gemm");
+        CHECK(route_of([&] { cg::einsum("ijk;klm->ijlm", &multi_mn, A3, B3); }) == "gemm_fused_runtime");
+
+        auto rank4 = filled("rank4", {N, N, N, N});
+        CHECK(route_of([&] { cg::einsum("ijkl;klmn->ijmn", &rank4, A4, B4); }) == "gemm_fused_runtime");
+
+        auto interleaved = filled("interleaved", {N, N, N});
+        CHECK(route_of([&] { cg::einsum("ilj;lk->ijk", &interleaved, A3, B2); }) == "packed_gemm");
 
         auto batch = filled("batch", {N, N, N});
         CHECK(route_of([&] { cg::einsum("bik;bkj->bij", &batch, A3, B3); }) == "packed_gemm");
-
-        auto rank4 = filled("rank4", {N, N, N, N});
-        CHECK(route_of([&] { cg::einsum("ijkl;klmn->ijmn", &rank4, A4, B4); }) == "packed_gemm");
 
         // Both of these were documented as generic-loop fallbacks and are not.
         auto no_n = filled("no_n", {N, N});
@@ -338,11 +341,18 @@ TEST_CASE("docs - front page and README: the routes their examples name", "[Docs
         CHECK(route_of([&] { cg::einsum("ik <- ji ; kj", &C, A, B); }) == "gemm_direct_runtime");
     }
 
-    SECTION("architecture: a contraction no stock BLAS call takes") {
+    SECTION("architecture: one GEMM over merged axes") {
         auto A = create_random_tensor("A", 6, 5);
         auto B = create_random_tensor("B", 5, 6, 4);
         auto C = create_tensor("C", 6, 6, 4);
-        CHECK(route_of([&] { cg::einsum("ijl <- ik ; kjl", &C, A, B); }) == "packed_gemm");
+        CHECK(route_of([&] { cg::einsum("ijl <- ik ; kjl", &C, A, B); }) == "gemm_fused_runtime");
+    }
+
+    SECTION("architecture: a contraction no BLAS shape takes") {
+        auto A = create_random_tensor("A", 6, 5, 4);
+        auto B = create_random_tensor("B", 5, 3);
+        auto C = create_tensor("C", 6, 4, 3);
+        CHECK(route_of([&] { cg::einsum("ijk <- ilj ; lk", &C, A, B); }) == "packed_gemm");
     }
 
     SECTION("README: the two-electron Fock build") {
@@ -361,8 +371,8 @@ TEST_CASE("docs - front page and README: the routes their examples name", "[Docs
         auto         Wmnij  = create_zero_tensor("Wmnij", o, o, o, o);
         auto         Wabef  = create_zero_tensor("Wabef", v, v, v, v);
         auto         Wmbej  = create_zero_tensor("Wmbej", o, v, v, o);
-        CHECK(route_of([&] { cg::einsum("mnij <- ijef ; mnef", 1.0, &Wmnij, 0.25, t_oovv, g_oovv); }) == "packed_gemm");
-        CHECK(route_of([&] { cg::einsum("abef <- mnef ; mnab", 1.0, &Wabef, 0.25, g_oovv, t_oovv); }) == "packed_gemm");
+        CHECK(route_of([&] { cg::einsum("mnij <- ijef ; mnef", 1.0, &Wmnij, 0.25, t_oovv, g_oovv); }) == "gemm_fused_runtime");
+        CHECK(route_of([&] { cg::einsum("abef <- mnef ; mnab", 1.0, &Wabef, 0.25, g_oovv, t_oovv); }) == "gemm_fused_runtime");
         CHECK(route_of([&] { cg::einsum("mbej <- jnfb ; mnef", 1.0, &Wmbej, -0.5, t_oovv, g_oovv); }) == "packed_gemm");
     }
 }

@@ -70,8 +70,10 @@ _CASCADE = [
     # The same product with operands in another letter order: permuted into C's order first.
     ("ij <- ij ; ji", "ij,ji->ij", {"i": 4, "j": 5}, "direct_product_permuted_runtime"),
     ("ijk <- kij ; jki", "kij,jki->ijk", {"i": 3, "j": 4, "k": 5}, "direct_product_permuted_runtime"),
-    # Two M and two N indices, so PackedGemm forms the contraction rather than deferring to a GEMM.
-    ("ijkl <- ijm ; mkl", "ijm,mkl->ijkl", {"i": 3, "j": 4, "k": 5, "l": 6, "m": 2}, "packed_gemm"),
+    # Two M and two N indices, each pair one strided run in every operand: one GEMM over merged axes.
+    ("ijkl <- ijm ; mkl", "ijm,mkl->ijkl", {"i": 3, "j": 4, "k": 5, "l": 6, "m": 2}, "gemm_fused_runtime"),
+    # The same with m between i and j in A, so no single stride walks A's M indices: PackedGemm.
+    ("ijkl <- imj ; mkl", "imj,mkl->ijkl", {"i": 3, "j": 4, "k": 5, "l": 6, "m": 2}, "packed_gemm"),
     # A small outer product: no link to contract, and too few elements for PackedGemm's setup to pay.
     ("ijk <- ij ; k", "ij,k->ijk", {"i": 2, "j": 3, "k": 4}, "generic_loop"),
     # A repeated letter folds into one strided axis, and the folded contraction takes the fast path it

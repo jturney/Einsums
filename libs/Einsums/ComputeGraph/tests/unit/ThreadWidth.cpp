@@ -12,6 +12,7 @@
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/Moldability.hpp>
+#include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
@@ -538,13 +539,13 @@ TEST_CASE("ThreadWidth - a pinned route decides the kernel, not the width", "[Co
     REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
     REQUIRE(packed_gemm::last_route_pin() == packed_gemm::KernelRoute::Packed);
 
-    // Unpinned, the same node at the same width takes the deferring fast path
-    // again - so the pin is what moved it, and removing the pin restores
-    // exactly what the node did before pins existed.
+    // Unpinned, the same node at the same width defers to the vendor GEMM again - so the pin is
+    // what moved it. The deferral now happens one level up, as it does for a rank-2 GEMM: the
+    // contraction is one GEMM over merged axes, which the string dispatch's own vendor route takes
+    // before PackedGemm is reached.
     REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Adaptive) == 1);
     graph.execute(seq);
-    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
-    REQUIRE(packed_gemm::last_route_pin() == packed_gemm::KernelRoute::Adaptive);
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_fused_runtime");
 }
 
 TEST_CASE("ThreadWidth - a pinned rank-2 GEMM leaves the string dispatch's vendor route",
@@ -590,40 +591,42 @@ TEST_CASE("ThreadWidth - a pinned rank-2 GEMM leaves the string dispatch's vendo
 }
 
 TEST_CASE("ThreadWidth - a pin survives the decline memo it contradicts", "[ComputeGraph][Executor][ThreadWidth][RoutePin]") {
-    // A plain single-M/N/K GEMM is the one shape the engine deliberately turns
-    // away, so the vendor can have it - and it MEMOIZES the refusal on the site.
-    // A memo that ignored the route would answer "declined" to a pinned-packed
-    // call and hand the shape straight back to the vendor, silently undoing the
-    // pin from the second replay onward.
+    // A single-K GEMM is a shape the engine deliberately hands to the vendor GEMM, and it MEMOIZES
+    // that on the site. A memo that ignored the route would answer "vendor" to a pinned-packed call
+    // and silently undo the pin from the second call onward.
+    //
+    // Driven through try_packed_gemm with an explicit site, as a planned caller drives it: through
+    // the string dispatch this shape is one GEMM over merged axes, which the dispatch's own vendor
+    // route takes before the engine is reached, so the engine never writes the memo unpinned.
     constexpr size_t n = 64;
     auto             A = create_random_tensor<double>("A", n, n, n);
     auto             B = create_random_tensor<double>("B", n, n);
     auto             C = create_zero_tensor<double>("C", n, n, n);
 
-    cg::Graph graph("route_pin_memo");
-    {
-        cg::CaptureGuard const guard(graph);
-        cg::einsum("abd;cd->abc", &C, A, B);
-    }
-    cg::SequentialExecutor seq;
+    packed_gemm::ContractionSpec spec;
+    spec.c_indices    = {"a", "b", "c"};
+    spec.a_indices    = {"a", "b", "d"};
+    spec.b_indices    = {"c", "d"};
+    spec.link_indices = {"d"};
+    packed_gemm::ContractionSite site;
+    auto const                   call = [&] { REQUIRE(packed_gemm::try_packed_gemm(spec, 0.0, &C, 1.0, A, B, true, &site)); };
 
-    // Two unpinned replays: the first records the decline, the second reads it.
-    REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Adaptive) == 1);
-    graph.execute(seq);
-    graph.execute(seq);
+    // Two unpinned calls: the first records the memo, the second reads it.
+    site.route = packed_gemm::KernelRoute::Adaptive;
+    call();
+    call();
     REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
 
-    // Now pin, with that decline sitting on the site.
-    REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Packed) == 1);
-    graph.execute(seq);
+    // Now pin, with that memo sitting on the site.
+    site.route = packed_gemm::KernelRoute::Packed;
+    call();
     REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
-    graph.execute(seq);
+    call();
     REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
 
-    // And back: the memo written under the pin must not answer for the
-    // unpinned regime either.
-    REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Adaptive) == 1);
-    graph.execute(seq);
+    // And back: the memo written under the pin must not answer for the unpinned regime either.
+    site.route = packed_gemm::KernelRoute::Adaptive;
+    call();
     REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
 }
 
@@ -735,12 +738,16 @@ TEST_CASE("ThreadWidth - the planner pins every contraction it may widen", "[Com
 TEST_CASE("ThreadWidth - an eager contraction is never pinned", "[ComputeGraph][Executor][ThreadWidth][RoutePin]") {
     // Eager callers pass no site, so there is nowhere for a pin to live and the
     // route comes from the thread regime exactly as it always did.
+    // The output interleaves c between a and b, so the contraction is not one GEMM over merged
+    // axes and reaches PackedGemm, which is where a pin would be read.
     constexpr size_t n = 48;
     auto             K = create_random_tensor<double>("K_xvvv", n, n, n);
     auto             t = create_random_tensor<double>("t_kj", n, n);
     auto             C = create_zero_tensor<double>("C", n, n, n);
 
-    cg::einsum("abd;cd->abc", &C, K, t);
+    cg::einsum("abd;cd->acb", &C, K, t);
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "packed_gemm");
     REQUIRE(packed_gemm::last_route_pin() == packed_gemm::KernelRoute::Adaptive);
-    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
+    INFO("contraction route " << packed_gemm::last_contraction_route());
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) != "none");
 }

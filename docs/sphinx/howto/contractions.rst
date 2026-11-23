@@ -262,6 +262,9 @@ These are the routes for the common shapes, as measured with :cpp:type:`einsums:
       - ``diagonal:direct_product_runtime``
       - the diagonal as a strided view, then elementwise
     * - ``ijkl;klmn->ijmn``
+      - ``gemm_fused_runtime``
+      - one GEMM over merged axes
+    * - ``ilj;lk->ijk``
       - ``packed_gemm``
       - cache-blocked packed contraction
 

@@ -699,15 +699,26 @@ TEMPLATE_LIST_TEST_CASE("cg dispatch route - every route in the cascade fires wh
         CHECK(route() == "direct_product_runtime");
     }
 
-    // ── PackedGemm and the floor beneath it ─────────────────────────────────
-    SECTION("packed_gemm") {
-        // Two M indices and two N indices, so the single-M/N/K deferral to a
-        // direct BLAS GEMM does not apply and PackedGemm forms the contraction.
+    SECTION("gemm_fused_runtime") {
+        // Two M and two N indices, each pair one strided run in every operand that holds it, so
+        // the contraction is one GEMM over merged axes.
         auto A = create_random_tensor<T>("A", 3, 4, 2);
         auto B = create_random_tensor<T>("B", 2, 5, 6);
         auto C = create_zero_tensor<T>("C", 3, 4, 5, 6);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ijkl <- ijm ; mkl", &C, A, B);
+        CHECK(route() == "gemm_fused_runtime");
+    }
+
+    // ── PackedGemm and the floor beneath it ─────────────────────────────────
+    SECTION("packed_gemm") {
+        // Two M and two N indices, with m between i and j in A, so no single stride walks A's M
+        // indices and PackedGemm forms the contraction.
+        auto A = create_random_tensor<T>("A", 3, 2, 4);
+        auto B = create_random_tensor<T>("B", 2, 5, 6);
+        auto C = create_zero_tensor<T>("C", 3, 4, 5, 6);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ijkl <- imj ; mkl", &C, A, B);
         CHECK(route() == "packed_gemm");
     }
 

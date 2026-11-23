@@ -617,17 +617,20 @@ Through the string form
       - ``direct_product_runtime``
       - elementwise
     * - ``ijk;jkl->il``
-      - ``packed_gemm``
-      - multi-K
+      - ``gemm_fused_runtime``
+      - multi-K: one ``GEMM`` over merged axes
     * - ``ijk;klm->ijlm``
+      - ``gemm_fused_runtime``
+      - multi-M and multi-N: one ``GEMM`` over merged axes
+    * - ``ijkl;klmn->ijmn``
+      - ``gemm_fused_runtime``
+      - rank-4 both sides: one ``GEMM`` over merged axes
+    * - ``ilj;lk->ijk``
       - ``packed_gemm``
-      - multi-M and multi-N
+      - interleaved: ``l`` separates the output indices in ``A``
     * - ``bik;bkj->bij``
       - ``packed_gemm``
       - batch
-    * - ``ijkl;klmn->ijmn``
-      - ``packed_gemm``
-      - rank-4 both sides
     * - ``ijk;k->ij``
       - ``packed_gemm``
       - all output indices from A

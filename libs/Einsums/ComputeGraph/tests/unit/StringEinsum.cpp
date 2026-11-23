@@ -1070,3 +1070,86 @@ TEMPLATE_LIST_TEST_CASE("String einsum - a repeated output letter over an aliase
         REQUIRE(std::abs(C.data()[e] - expected.data()[e]) < route_tolerance<T>());
     }
 }
+
+// ── One GEMM over merged axes ─────────────────────────────────────────────────
+
+namespace {
+
+template <typename T>
+RuntimeTensor<T> filled_runtime(std::string const &name, std::vector<size_t> const &dims, double seed) {
+    RuntimeTensor<T> t(name, dims);
+    for (size_t i = 0; i < t.size(); ++i) {
+        double const x = std::sin(seed + 0.37 * static_cast<double>(i));
+        if constexpr (IsComplexV<T>) {
+            t.data()[i] = T(static_cast<RemoveComplexT<T>>(x), static_cast<RemoveComplexT<T>>(0.5 * x));
+        } else {
+            t.data()[i] = static_cast<T>(x);
+        }
+    }
+    return t;
+}
+
+/// The contraction through cg::einsum against the reference, with prefactors that exercise both
+/// the accumulation and the scaling, and the route it took.
+template <typename T>
+std::string fused_case(std::string const &spec, std::vector<size_t> const &c_dims, std::vector<size_t> const &a_dims,
+                       std::vector<size_t> const &b_dims) {
+    auto A        = filled_runtime<T>("A", a_dims, 0.1);
+    auto B        = filled_runtime<T>("B", b_dims, 0.7);
+    auto C        = filled_runtime<T>("C", c_dims, 1.3);
+    auto expected = C;
+    reference_einsum(spec, T{0.5}, &expected, T{-2}, A, B);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum(cg::EinsumFormatString{std::string_view{spec}}, T{0.5}, &C, T{-2}, A, B);
+    std::string route{cg::dispatch::last_dispatch_route()};
+    INFO("spec " << spec << " route " << route);
+    einsums::testing::require_tensors_close(C, expected, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
+    return route;
+}
+
+} // namespace
+
+TEMPLATE_LIST_TEST_CASE("String einsum - a contraction that is one GEMM over merged axes takes the fused route",
+                        "[ComputeGraph][StringEinsum][FusedGemm]", testing::AllScalarTypes) {
+    // Each group of letters occupies one strided run in each operand that holds it, so the
+    // contraction is one vendor GEMM on two-axis views of the same storage, never PackedGemm.
+    using T = TestType;
+    CHECK(fused_case<T>("ijk <- ijl ; lk", {3, 4, 5}, {3, 4, 2}, {2, 5}) == "gemm_fused_runtime"); // M merged
+    CHECK(fused_case<T>("ijk <- il ; ljk", {3, 4, 5}, {3, 2}, {2, 4, 5}) == "gemm_fused_runtime"); // N merged
+    CHECK(fused_case<T>("ij <- ikl ; klj", {3, 4}, {3, 2, 5}, {2, 5, 4}) == "gemm_fused_runtime"); // K merged
+    CHECK(fused_case<T>("ijkl <- ijm ; mkl", {2, 3, 4, 5}, {2, 3, 6}, {6, 4, 5}) == "gemm_fused_runtime");
+    CHECK(fused_case<T>("kij <- ijl ; lk", {5, 3, 4}, {3, 4, 2}, {2, 5}) == "gemm_fused_runtime"); // C transposed
+    CHECK(fused_case<T>("ijk <- ijl ; lk", {3, 1, 5}, {3, 1, 2}, {2, 5}) == "gemm_fused_runtime"); // an extent-1 axis
+}
+
+TEMPLATE_LIST_TEST_CASE("String einsum - a contraction that is not one GEMM keeps its old route", "[ComputeGraph][StringEinsum][FusedGemm]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    // A's M letters i and j are split by l, so they are not one strided run.
+    CHECK(fused_case<T>("ijk <- ilj ; lk", {3, 4, 5}, {3, 2, 4}, {2, 5}) == "packed_gemm");
+    // A holds M as (j, i) and C as (i, j): no single stride walks both the same way.
+    CHECK(fused_case<T>("ijk <- jil ; lk", {3, 4, 5}, {4, 3, 2}, {2, 5}) == "packed_gemm");
+    // b is in A, B and C: a batch, which is PackedGemm's.
+    CHECK(fused_case<T>("bij <- bik ; bkj", {3, 4, 5}, {3, 4, 2}, {3, 2, 5}) == "packed_gemm");
+    // No N index: a GEMV, which PackedGemm runs faster than a one-column GEMM at size.
+    CHECK(fused_case<T>("ij <- ijk ; k", {3, 4}, {3, 4, 5}, {5}) == "packed_gemm");
+    // A matrix product keeps the rank-2 route.
+    CHECK(fused_case<T>("ij <- ik ; kj", {3, 4}, {3, 2}, {2, 4}) == "gemm_direct_runtime");
+}
+
+TEMPLATE_LIST_TEST_CASE("String einsum - the fused route reads views through their strides", "[ComputeGraph][StringEinsum][FusedGemm]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    // A permuted view whose merged group is still one run in memory: A(i, j, l) viewed from a
+    // tensor stored as (l, i, j).
+    auto stored = filled_runtime<T>("stored", {2, 3, 4}, 0.4);
+    auto A      = stored.permute_view({1, 2, 0});
+    auto B      = filled_runtime<T>("B", {2, 5}, 0.9);
+    auto C      = filled_runtime<T>("C", {3, 4, 5}, 1.1);
+    auto expect = C;
+    reference_einsum("ijk <- ijl ; lk", T{0}, &expect, T{1}, A, B);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("ijk <- ijl ; lk", &C, A, B);
+    CHECK(std::string{cg::dispatch::last_dispatch_route()} == "gemm_fused_runtime");
+    einsums::testing::require_tensors_close(C, expect, {.rtol = route_tolerance<T>(), .atol = route_tolerance<T>()});
+}

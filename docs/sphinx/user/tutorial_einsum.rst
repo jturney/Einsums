@@ -241,9 +241,11 @@ Rank is not special. :math:`C_{ijmn} = \sum_{kl} A_{ijkl} B_{klmn}`:
 
             einsums.einsum("ijkl;klmn->ijmn", W, T, U)
 
-This one does not map onto a plain ``GEMM``, so it runs on the packed contraction backend, which
-blocks and packs the operands for cache reuse rather than falling back to loops. You write the
-same call either way.
+This one is a plain ``GEMM`` in disguise: ``ij``, ``kl`` and ``mn`` each sit next to each other in
+memory, so it runs as one ``GEMM`` over merged axes, on the operands' own storage. A contraction
+whose indices interleave, such as ``"ilj;lk->ijk"``, has no such reading, and runs on the packed
+contraction backend, which blocks and packs the operands for cache reuse rather than falling back
+to loops. You write the same call either way.
 
 An index repeated **within one operand** is a diagonal rather than a contraction. Einsums reads
 the diagonal as a strided view of the operand, without copying it, so ``"iik;kj->ij"`` still runs
@@ -374,7 +376,8 @@ Dispatch and Performance
 ========================
 
 Einsums selects, in order: a vendor BLAS call when the contraction already is one (using the
-transpose flags BLAS offers), an elementwise product with an operand permuted into the output's
+transpose flags BLAS offers) or is one over merged axes (each group of indices adjacent in memory,
+as ``"ijkl;klmn->ijmn"`` is), an elementwise product with an operand permuted into the output's
 order, the packed contraction backend for patterns with a valid decomposition, and a generic loop
 for the rest.
 
