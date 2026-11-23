@@ -1168,6 +1168,9 @@ def _patch_memory_pool(core):
     _memory_pool_patched = True
 
 
+_bootstrapped = False
+
+
 def _bootstrap():
     """Start the runtime and install the Python-side patches.
 
@@ -1176,7 +1179,14 @@ def _bootstrap():
     real module attributes, so they bypass ``__getattr__`` and must bootstrap
     themselves to guarantee the runtime is up and the numpy-ergonomics
     layer, such as ``.shape`` and ``@``, is on the returned tensor's class.
+
+    Every call after the first that completes returns at once. The aliases and
+    ``einsum`` call this on every use, and the steps below, each idempotent,
+    cost 0.8 us together: more than a whole 4x4 contraction in C++.
     """
+    global _bootstrapped
+    if _bootstrapped:
+        return
     _ensure_initialized()
     _patch_runtime_tensor_getitem(_core)
     _patch_runtime_tensor_setitem(_core)
@@ -1186,6 +1196,7 @@ def _bootstrap():
     # Graph's conveniences live with the rest of the graph shell, and patch the class itself, so a
     # Graph reached through the compiled module has them too.
     _importlib.import_module("einsums.graph")._core()
+    _bootstrapped = True
 
 
 # ----------------------------------------------------------------------
@@ -1352,10 +1363,15 @@ def einsum(spec, C, *operands, **kwargs):
     product is a graph intermediate the passes may build a block at a time;
     outside, each is a temporary held to ``--einsums:max-memory``.
     """
+    _bootstrap()
+    # Two tensors, then at most the prefactors: the compiled binary einsum. Decided from the third
+    # positional argument alone, because the operands lead and every prefactor is a number; the
+    # full count is needed only for three or more tensors.
+    if len(operands) <= 2 or isinstance(operands[2], _numbers.Number):
+        return _core.einsum(spec, C, *operands, **kwargs)
     count = 0
     while count < len(operands) and not isinstance(operands[count], _numbers.Number):
         count += 1
-    _bootstrap()
     if count <= 2:
         return _core.einsum(spec, C, *operands, **kwargs)
     return _nary_einsum(spec, C, operands[:count], *operands[count:], **kwargs)
