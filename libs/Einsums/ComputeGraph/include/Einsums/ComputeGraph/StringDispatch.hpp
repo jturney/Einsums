@@ -417,26 +417,23 @@ struct FusedAxis {
     }
 };
 
-/// @brief Merge the axes of @p x whose letters @p in_group selects into one axis, if they form one.
+/// @brief Merge the axes of @p x whose role is @p role into one axis, if they form one.
 ///
 /// Sorted by stride, the axes of extent above 1 must each start where the previous one ends, so the
 /// group's elements are one strided run and a single stride and extent address them. Axes of extent
 /// 1 take no part: their strides are arbitrary and they contribute no elements.
-template <typename X, typename InGroup>
-FusedAxis fuse_axes(std::vector<std::string> const &idx, X const &x, InGroup const &in_group) {
+template <typename X>
+FusedAxis fuse_axes(std::vector<std::string> const &idx, X const &x, std::array<char, FusedAxis::kMaxAxes> const &roles, char role) {
     std::array<std::size_t, FusedAxis::kMaxAxes> strides{};
     std::array<std::size_t, FusedAxis::kMaxAxes> extents{};
     FusedAxis                                    out;
     for (std::size_t d = 0; d < idx.size(); ++d) {
-        if (!in_group(idx[d])) {
+        if (roles[d] != role) {
             continue;
         }
         std::size_t const extent = x.dim(d);
         out.extent *= extent;
         if (extent > 1) {
-            if (out.count == FusedAxis::kMaxAxes) {
-                return out;
-            }
             // Insertion by stride, so the run reads fastest axis first.
             std::size_t       at     = out.count++;
             std::size_t const stride = static_cast<std::size_t>(x.stride(d));
@@ -499,51 +496,66 @@ inline std::optional<BlasOperand> blas_operand(FusedAxis const &rows, FusedAxis 
 template <typename T, typename CType, typename AType, typename BType>
 bool try_fused_gemm(std::vector<std::string> const &c_idx, std::vector<std::string> const &a_idx, std::vector<std::string> const &b_idx,
                     std::vector<std::string> const &links, T c_pf, CType *C, T ab_pf, AType const &A, BType const &B) {
-    if (links.empty()) {
-        return false; // an outer product: no K to contract
+    // Every check here is paid by each contraction that goes on to PackedGemm, so each letter's role
+    // is classified once, and a single-letter index compares as a character rather than a string.
+    if (links.empty() || a_idx.size() > FusedAxis::kMaxAxes || b_idx.size() > FusedAxis::kMaxAxes || c_idx.size() > FusedAxis::kMaxAxes) {
+        return false; // an outer product, or more axes than the role tables hold
     }
-    auto const has = [](std::vector<std::string> const &idx, std::string_view letter) {
-        return std::ranges::find(idx, letter) != idx.end();
+    auto const same = [](std::string const &l, std::string const &r) {
+        return l.size() == r.size() && (l.size() == 1 ? l[0] == r[0] : l == r);
     };
-    for (auto const &letter : c_idx) {
-        if (has(a_idx, letter) == has(b_idx, letter)) {
+    auto const has = [&](std::vector<std::string> const &idx, std::string const &letter) {
+        return std::ranges::any_of(idx, [&](std::string const &x) { return same(x, letter); });
+    };
+    std::array<char, FusedAxis::kMaxAxes> c_roles{}, a_roles{}, b_roles{};
+    std::size_t                           c_m = 1, c_n = 1;
+    for (std::size_t d = 0; d < c_idx.size(); ++d) {
+        bool const in_a = has(a_idx, c_idx[d]), in_b = has(b_idx, c_idx[d]);
+        if (in_a == in_b) {
             return false; // a batch index, or one in neither operand
         }
+        c_roles[d] = in_a ? 'm' : 'n';
+        (in_a ? c_m : c_n) *= C->dim(d);
     }
-    auto const in_m = [&](std::string_view l) { return has(c_idx, l) && has(a_idx, l); };
-    auto const in_n = [&](std::string_view l) { return has(c_idx, l) && has(b_idx, l); };
-    auto const in_k = [&](std::string_view l) { return has(links, l); };
-    for (auto const &letter : a_idx) {
-        if (!in_m(letter) && !in_k(letter)) {
-            return false;
-        }
-    }
-    for (auto const &letter : b_idx) {
-        if (!in_n(letter) && !in_k(letter)) {
-            return false;
-        }
-    }
-
     // A GEMV shape (no M or no N index of extent above 1) stays with PackedGemm, which chooses
     // between the vendor GEMV and its own loops: as a one-column vendor GEMM, the Coulomb build
     // pq <- pqrs ; rs ran 1.3 to 1.9 times slower than PackedGemm from n = 48 up.
-    auto const extent_of = [&](std::vector<std::string> const &idx, auto const &t, auto const &in_group) {
-        std::size_t e = 1;
-        for (std::size_t d = 0; d < idx.size(); ++d) {
-            if (in_group(idx[d])) {
-                e *= t.dim(d);
-            }
-        }
-        return e;
-    };
-    if (extent_of(c_idx, *C, in_m) <= 1 || extent_of(c_idx, *C, in_n) <= 1) {
+    if (c_m <= 1 || c_n <= 1) {
         return false;
     }
+    for (std::size_t d = 0; d < a_idx.size(); ++d) {
+        if (has(c_idx, a_idx[d])) {
+            a_roles[d] = 'm';
+        } else if (has(links, a_idx[d])) {
+            a_roles[d] = 'k';
+        } else {
+            return false;
+        }
+    }
+    for (std::size_t d = 0; d < b_idx.size(); ++d) {
+        if (has(c_idx, b_idx[d])) {
+            b_roles[d] = 'n';
+        } else if (has(links, b_idx[d])) {
+            b_roles[d] = 'k';
+        } else {
+            return false;
+        }
+    }
 
-    FusedAxis const am = fuse_axes(a_idx, A, in_m), ak = fuse_axes(a_idx, A, in_k);
-    FusedAxis const bk = fuse_axes(b_idx, B, in_k), bn = fuse_axes(b_idx, B, in_n);
-    FusedAxis const cm = fuse_axes(c_idx, *C, in_m), cn = fuse_axes(c_idx, *C, in_n);
-    if (!(am.ok && ak.ok && bk.ok && bn.ok && cm.ok && cn.ok) || !am.same_order(cm) || !bn.same_order(cn) || !ak.same_order(bk)) {
+    // Cheapest rejection first: C's two groups, then A's, then B's.
+    FusedAxis const cm = fuse_axes(c_idx, *C, c_roles, 'm');
+    FusedAxis const cn = cm.ok ? fuse_axes(c_idx, *C, c_roles, 'n') : FusedAxis{};
+    if (!cm.ok || !cn.ok) {
+        return false;
+    }
+    FusedAxis const am = fuse_axes(a_idx, A, a_roles, 'm');
+    if (!am.ok || !am.same_order(cm)) {
+        return false;
+    }
+    FusedAxis const ak = fuse_axes(a_idx, A, a_roles, 'k');
+    FusedAxis const bk = ak.ok ? fuse_axes(b_idx, B, b_roles, 'k') : FusedAxis{};
+    FusedAxis const bn = bk.ok ? fuse_axes(b_idx, B, b_roles, 'n') : FusedAxis{};
+    if (!ak.ok || !bk.ok || !bn.ok || !ak.same_order(bk) || !bn.same_order(cn)) {
         return false;
     }
     auto const        a = blas_operand(am, ak);
