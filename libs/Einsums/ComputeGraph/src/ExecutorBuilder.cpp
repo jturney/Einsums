@@ -51,6 +51,7 @@
 #include "BackingIoExecutors.hpp"
 #include "BodyReplay.hpp"
 #include "LifecycleExecutors.hpp"
+#include "Operations/ExtremaKernels.hpp"
 #include "StridedBatchedEinsum.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -488,6 +489,43 @@ std::function<void()> build_element_transform(packed_gemm::ScalarType dtype, Ele
             WAGGLE_ZONE("element_transform execute");
             element_ops::detail::apply_element_op<T>(kernel, c.impl<T>());
         };
+    });
+}
+
+/// ``C = maximum(A, B)`` or ``minimum(A, B)``, element-wise, through the kernel the eager call
+/// runs. Real types only; a complex node can only come from a corrupt or hand-edited file.
+std::function<void()> build_elementwise_max_min(packed_gemm::ScalarType dtype, ElementwiseMaxMinDescriptor const &desc,
+                                                OperandAccessor const &a, OperandAccessor const &b, OperandAccessor const &c) {
+    MaxMinOp const op = desc.op;
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        if constexpr (IsComplexV<T>) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(ElementwiseMaxMin): {} has no order; the op is real-only",
+                                    dtype);
+        } else {
+            return [op, a, b, c]() {
+                WAGGLE_ZONE(op == MaxMinOp::Max ? "maximum execute" : "minimum execute");
+                auto *out = c.impl<T>();
+                WAGGLE_ANNOTATE("size", static_cast<std::int64_t>(out->size()));
+                detail::run_elementwise_max_min<T>(op, *a.impl<T>(), *b.impl<T>(), *out);
+            };
+        }
+    });
+}
+
+/// The maximum or minimum of A over every axis not in the descriptor's kept list. Real types only.
+std::function<void()> build_reduce_axes(packed_gemm::ScalarType dtype, ReduceAxesDescriptor const &desc, OperandAccessor const &a,
+                                        OperandAccessor const &out) {
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        if constexpr (IsComplexV<T>) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(ReduceAxes): {} has no order; the op is real-only", dtype);
+        } else {
+            return [op = desc.op, kept = desc.kept, a, out]() {
+                WAGGLE_ZONE(op == MaxMinOp::Max ? "max_axes execute" : "min_axes execute");
+                auto const *src = a.impl<T>();
+                WAGGLE_ANNOTATE("size", static_cast<std::int64_t>(src->size()));
+                detail::run_reduce_axes<T>(op, *src, kept, *out.impl<T>());
+            };
+        }
     });
 }
 
@@ -1657,6 +1695,14 @@ std::string reconstruction_blocker(Node const &node) {
         return node.op_data.holds<GemmDescriptor>()
                    ? std::string{}
                    : fmt::format("Gemm: expected a GemmDescriptor, found {}", descriptor_name(node.op_data));
+    case OpKind::ElementwiseMaxMin:
+        return node.op_data.holds<ElementwiseMaxMinDescriptor>()
+                   ? std::string{}
+                   : fmt::format("ElementwiseMaxMin: expected an ElementwiseMaxMinDescriptor, found {}", descriptor_name(node.op_data));
+    case OpKind::ReduceAxes:
+        return node.op_data.holds<ReduceAxesDescriptor>()
+                   ? std::string{}
+                   : fmt::format("ReduceAxes: expected a ReduceAxesDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::ElementTransform:
         // The lambda-taking capture overloads record no descriptor, which is
         // not an oversight: a closure has no name a file could carry. The
@@ -1854,14 +1900,15 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
 
     // Rank is keyed on the DESTINATION, and several kinds legitimately have a
     // rank-0 one: an einsum whose spec has no C indices ("<- i ; i"), a dot, a
-    // trace and a norm writing a registered scalar, a write_param, whose destination is a
+    // trace and a norm writing a registered scalar, a max_axes or min_axes over every axis, a
+    // write_param, whose destination is a
     // ParamTable entry that no tensor names at all, and the two control-flow
     // kinds, which have no tensor destination of any rank. Rank is not
     // dispatched on anyway; see the header. The lifecycle kinds name a tensor of any rank,
     // a registered scalar included, and do nothing that depends on it.
     bool const scalar_destination_ok = kind == OpKind::Einsum || kind == OpKind::Dot || kind == OpKind::Trace || kind == OpKind::Norm ||
-                                       kind == OpKind::WriteParam || is_control_flow(kind) || is_lifecycle(kind) ||
-                                       kind == OpKind::DiskRead || kind == OpKind::DiskWrite;
+                                       kind == OpKind::ReduceAxes || kind == OpKind::WriteParam || is_control_flow(kind) ||
+                                       is_lifecycle(kind) || kind == OpKind::DiskRead || kind == OpKind::DiskWrite;
     if (rank == 0 && !scalar_destination_ok) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): rank must be at least 1", kind);
     }
@@ -1967,6 +2014,19 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
         auto const &d = expect<GemmDescriptor>(kind, desc, "GemmDescriptor");
         return build_gemm(dtype, d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, inputs[1], kind, "B"),
                           resolve_operand(graph, outputs[0], kind, "C"));
+    }
+    case OpKind::ElementwiseMaxMin: {
+        need(kind, "inputs", inputs, 2);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<ElementwiseMaxMinDescriptor>(kind, desc, "ElementwiseMaxMinDescriptor");
+        return build_elementwise_max_min(dtype, d, resolve_operand(graph, inputs[0], kind, "A"),
+                                         resolve_operand(graph, inputs[1], kind, "B"), resolve_operand(graph, outputs[0], kind, "C"));
+    }
+    case OpKind::ReduceAxes: {
+        need(kind, "inputs", inputs, 1);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<ReduceAxesDescriptor>(kind, desc, "ReduceAxesDescriptor");
+        return build_reduce_axes(dtype, d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, outputs[0], kind, "out"));
     }
     case OpKind::ElementTransform: {
         auto const &d = expect<ElementTransformDescriptor>(kind, desc, "ElementTransformDescriptor");

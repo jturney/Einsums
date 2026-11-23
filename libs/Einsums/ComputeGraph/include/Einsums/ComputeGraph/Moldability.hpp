@@ -101,6 +101,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
     case OpKind::GroupedDirectDivision:
         return true;
 
+    // The max/min kernels are einsums' own strided walks, forking from the ICV.
+    case OpKind::ElementwiseMaxMin:
+    case OpKind::ReduceAxes:
+        return true;
+
     // Kernels that are a vendor call, or that lower to one often enough that
     // planning them as anything else would be guessing.
     case OpKind::Gemm:

@@ -1195,6 +1195,58 @@ TEST_CASE("SaveLoad - the kinds that joined at 1.15.0 write a golden and refuse 
     }
 }
 
+// ElementwiseMaxMin and ReduceAxes became saveable at 1.20.0. The golden holds one of each, both
+// extrema, a full reduction to rank 0 and a partial one, so every key either descriptor carries is
+// in it.
+TEST_CASE("SaveLoad - the kinds that joined at 1.20.0 write a golden and refuse a missing key", "[ComputeGraph][SaveLoad]") {
+    RuntimeTensor<double> A("A", std::vector<size_t>{3, 4});
+    RuntimeTensor<double> B("B", std::vector<size_t>{3, 4});
+    RuntimeTensor<double> C("C", std::vector<size_t>{3, 4});
+    RuntimeTensor<double> D("D", std::vector<size_t>{3, 4});
+    RuntimeTensor<double> R("R", std::vector<size_t>{4});
+    RuntimeTensor<double> S("S", std::vector<size_t>{});
+    for (auto *t : {&A, &B, &C, &D, &R, &S}) {
+        t->zero();
+    }
+
+    cg::Graph graph("max_min_golden");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::maximum(&C, A, B);
+        cg::minimum(&D, A, B);
+        cg::max_axes(&R, C, {0});
+        cg::min_axes(&S, D, {0, 1});
+    }
+    REQUIRE(graph.serializability_report().empty());
+
+    std::string const saved = must_save(graph);
+    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+        std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_20_0_max_min.eig.json", std::ios::binary);
+        out << saved;
+    }
+    (void)must_load(saved);
+
+    // No earlier file could hold these kinds, so an absent key is a malformed document, and a
+    // guessed default would be a different operation.
+    SECTION("an extremum without its op is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("op":"max")", R"("opp":"max")")), Catch::Matchers::ContainsSubstring("op"));
+    }
+    SECTION("an extremum naming an unknown op is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("op":"min")", R"("op":"median")")), Catch::Matchers::ContainsSubstring("median"));
+    }
+    SECTION("a reduction without its kept axes is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("kept":)", R"("keep":)")), Catch::Matchers::ContainsSubstring("kept"));
+    }
+    SECTION("a reduction whose kept axes are out of order is refused") {
+        CHECK_THAT(load_refusal(patched(saved, R"("kept":[1])", R"("kept":[1,0])")), Catch::Matchers::ContainsSubstring("ascending"));
+    }
+    SECTION("a complex extremum is refused") {
+        // Complex numbers have no order; only a hand-edited file could hold one.
+        CHECK_THAT(load_refusal(patched(saved, R"("outputs":[2],"dtype":"float64")", R"("outputs":[2],"dtype":"complex128")")),
+                   Catch::Matchers::ContainsSubstring("must be real"));
+    }
+}
+
 TEMPLATE_LIST_TEST_CASE("SaveLoad - a named element transform round-trips", "[ComputeGraph][SaveLoad]", testing::AllScalarTypes) {
     using T = TestType;
     auto A  = create_random_tensor<T>("A", 3, 3);

@@ -70,6 +70,11 @@ KindClass kind_class(OpKind kind) {
     case OpKind::Conditional:
         return KindClass::ControlFlow;
 
+    // Bandwidth-bound walks over their operands: one compare per element moved.
+    case OpKind::ElementwiseMaxMin:
+    case OpKind::ReduceAxes:
+        return KindClass::Other;
+
     default:
         return KindClass::Other;
     }

@@ -108,6 +108,11 @@ Array attributes
 
         Maximum element. Only defined for totally-ordered types, such as real types.
 
+    .. py:method:: min()
+
+        Minimum element. Only defined for totally-ordered types, such as real types.
+        Like ``max()``, a NaN anywhere makes the result NaN, as ``numpy.min`` does.
+
     Operators
     ~~~~~~~~~
 

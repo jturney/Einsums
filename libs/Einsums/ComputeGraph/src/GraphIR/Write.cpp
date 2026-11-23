@@ -302,6 +302,15 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         }
         return Value{std::move(out)};
     }
+    case OpKind::ElementwiseMaxMin:
+        out.set("op", Value{std::string{kMaxMinOpNames.name(node.op_data.get<ElementwiseMaxMinDescriptor>().op)}});
+        return Value{std::move(out)};
+    case OpKind::ReduceAxes: {
+        auto const &desc = node.op_data.get<ReduceAxesDescriptor>();
+        out.set("op", Value{std::string{kMaxMinOpNames.name(desc.op)}});
+        out.set("kept", to_array(desc.kept));
+        return Value{std::move(out)};
+    }
     case OpKind::Einsum: {
         auto const &desc = node.op_data.get<EinsumDescriptor>();
         // ``ParsedEinsumSpec::raw`` is not written: it is a display string the

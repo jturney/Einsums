@@ -5,10 +5,12 @@
 
 #pragma once
 
+#include <Einsums/ComputeGraphTypes/EnumNames.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <array>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -260,6 +263,57 @@ struct ElementTransformDescriptor {
     /// The parameter of a parameterized kernel (e.g. a drop threshold). Empty means the default its
     /// registration documents, so files without the field still read.
     std::optional<double> param;
+};
+
+/**
+ * @brief Which extremum an @ref OpKind::ElementwiseMaxMin or @ref OpKind::ReduceAxes node takes.
+ *
+ * Both follow NumPy: a NaN anywhere in what is compared is the result, and of the two signed
+ * zeros the maximum is +0 and the minimum -0.
+ * @versionadded{2.0.0}
+ */
+enum class MaxMinOp : std::uint8_t {
+    Max, ///< The larger: ``numpy.maximum``, ``numpy.max``.
+    Min, ///< The smaller: ``numpy.minimum``, ``numpy.min``.
+};
+
+/// The spellings of @ref MaxMinOp, as a saved graph writes them.
+inline constexpr EnumNames kMaxMinOpNames{std::array<std::pair<MaxMinOp, std::string_view>, 2>{{
+                                              {MaxMinOp::Max, "max"},
+                                              {MaxMinOp::Min, "min"},
+                                          }},
+                                          "max"};
+
+/**
+ * @brief Metadata for @ref OpKind::ElementwiseMaxMin: ``C = maximum(A, B)`` or ``minimum(A, B)``.
+ *
+ * The node's inputs are A and B and its one output is C, which it overwrites; C may be A or B
+ * with the same layout. Real element types only.
+ * @versionadded{2.0.0}
+ */
+struct ElementwiseMaxMinDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "ElementwiseMaxMinDescriptor";
+    MaxMinOp                          op{MaxMinOp::Max}; ///< Which extremum.
+
+    bool operator==(ElementwiseMaxMinDescriptor const &) const = default; ///< Field-wise.
+};
+
+/**
+ * @brief Metadata for @ref OpKind::ReduceAxes: the maximum or minimum of A over some of its axes.
+ *
+ * The node's one input is A and its one output is the reduction, which it overwrites. The
+ * output's axes are @ref kept, in that order; every other axis of A is folded away, and none of
+ * those may be empty. Real element types only.
+ * @versionadded{2.0.0}
+ */
+struct ReduceAxesDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "ReduceAxesDescriptor";
+    MaxMinOp                          op{MaxMinOp::Max}; ///< Which extremum.
+    std::vector<std::size_t>          kept;              ///< The axes of A that survive, ascending.
+
+    bool operator==(ReduceAxesDescriptor const &) const = default; ///< Field-wise.
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

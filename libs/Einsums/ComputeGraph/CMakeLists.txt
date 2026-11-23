@@ -49,6 +49,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/Detail/MaintainedViews.hpp
     Einsums/ComputeGraph/Detail/NodeList.hpp
+    Einsums/ComputeGraph/Detail/OperandOverlap.hpp
     Einsums/ComputeGraph/Detail/OptimizationRecord.hpp
     Einsums/ComputeGraph/Detail/ParamStore.hpp
     Einsums/ComputeGraph/Detail/StandIns.hpp
@@ -153,6 +154,7 @@ set(ComputeGraphSources
     Operations/Batched.cpp
     Operations/Blas.cpp
     Operations/Elementwise.cpp
+    Operations/Extrema.cpp
     Operations/Grouped.cpp
     Operations/Lapack.cpp
     Operations/Permute.cpp

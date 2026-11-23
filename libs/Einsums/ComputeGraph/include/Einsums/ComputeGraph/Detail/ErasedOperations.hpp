@@ -343,6 +343,35 @@ EINSUMS_EXPORT T eager_max(einsums::detail::TensorImpl<T> const &A);
 template <typename T>
 EINSUMS_EXPORT void capture_max(CaptureContext &ctx, SlotRef r, SlotRef a);
 
+/// The smallest element of a real tensor, NaN-propagating as @c numpy.min is, eagerly.
+template <typename T>
+EINSUMS_EXPORT T eager_min(einsums::detail::TensorImpl<T> const &A);
+
+/// Record the smallest element of A into the first element of @p r.
+template <typename T>
+EINSUMS_EXPORT void capture_min(CaptureContext &ctx, SlotRef r, SlotRef a);
+
+// ── maximum / minimum, element-wise and by axis ───────────────────────────────
+// The caller validates shapes, overlap and the axes; these take them as validated.
+
+/// ``C := maximum(A, B)`` or ``minimum(A, B)`` element by element, eagerly. Real types only.
+template <typename T>
+EINSUMS_EXPORT void eager_elementwise_max_min(MaxMinOp op, einsums::detail::TensorImpl<T> const &A, einsums::detail::TensorImpl<T> const &B,
+                                              einsums::detail::TensorImpl<T> &C);
+
+/// Record @ref OpKind::ElementwiseMaxMin, reading A and B and overwriting C.
+EINSUMS_EXPORT void capture_elementwise_max_min(CaptureContext &ctx, MaxMinOp op, TensorId a_id, TensorId b_id, TensorId c_id,
+                                                packed_gemm::ScalarType dtype, std::size_t rank);
+
+/// ``out := A`` reduced by maximum or minimum over every axis not in @p kept, eagerly.
+template <typename T>
+EINSUMS_EXPORT void eager_reduce_axes(MaxMinOp op, einsums::detail::TensorImpl<T> &out, einsums::detail::TensorImpl<T> const &A,
+                                      std::vector<std::size_t> const &kept);
+
+/// Record @ref OpKind::ReduceAxes, reading A and overwriting out (of rank @p out_rank).
+EINSUMS_EXPORT void capture_reduce_axes(CaptureContext &ctx, MaxMinOp op, TensorId a_id, TensorId out_id, packed_gemm::ScalarType dtype,
+                                        std::size_t out_rank, std::vector<std::size_t> kept);
+
 // ── block copy / gather / scatter ─────────────────────────────────────────────
 // The caller validates the arguments; these take them as validated.
 

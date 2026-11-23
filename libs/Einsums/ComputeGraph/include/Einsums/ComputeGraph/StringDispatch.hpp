@@ -20,6 +20,7 @@
 #include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/ImplLayout.hpp>
 #include <Einsums/ComputeGraph/Detail/MixedPrecision.hpp>
+#include <Einsums/ComputeGraph/Detail/OperandOverlap.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
@@ -391,35 +392,12 @@ bool einsum_empty_operands(typename CType::ValueType c_pf, CType *C, AType const
 /// e.g. "ij <- ij ; ij" with C aliasing A). A and B sharing a buffer is always fine - inputs are
 /// read-only. Must run after the zero-size check so the span arithmetic never sees a zero dimension.
 ///
-/// Interval overlap alone is NOT proof of element overlap: disjoint column-major slices of one parent
-/// interleave in memory. Only provable overlap rejects: both regions contiguous, or identical base
-/// pointers (see the eager guard in TensorAlgebra's Backends/Dispatch.hpp for the full rationale).
-/// Regions are compared in bytes, so operands of different element types are handled alike.
+/// Only provable overlap rejects (detail::provably_overlap): disjoint column-major slices of one
+/// parent interleave in memory without sharing an element. See the eager guard in TensorAlgebra's
+/// Backends/Dispatch.hpp for the full rationale.
 template <typename CType, typename AType, typename BType>
 void reject_output_alias(ParsedEinsumSpec const &parsed, CType const &C, AType const &A, BType const &B) {
-    struct Region {
-        unsigned char const *lo;
-        unsigned char const *hi;
-        bool                 contiguous;
-    };
-    auto const region_of = [](auto const &t) -> Region {
-        auto const *lo     = reinterpret_cast<unsigned char const *>(t.data());
-        size_t      last   = 0;
-        size_t      nelems = 1;
-        for (size_t d = 0; d < detail::tensor_rank(t); d++) {
-            last += (t.dim(d) - 1) * t.stride(d);
-            nelems *= t.dim(d);
-        }
-        return {lo, lo + (last + 1) * sizeof(*t.data()), last + 1 == nelems};
-    };
-    auto const c_region   = region_of(C);
-    auto const overlaps_c = [&](auto const &x) {
-        auto const r = region_of(x);
-        if (!(r.lo < c_region.hi && c_region.lo < r.hi)) {
-            return false;
-        }
-        return (r.contiguous && c_region.contiguous) || r.lo == c_region.lo;
-    };
+    auto const overlaps_c = [&](auto const &x) { return detail::provably_overlap(x, C); };
     if ((overlaps_c(A) && parsed.a_indices != parsed.c_indices) || (overlaps_c(B) && parsed.b_indices != parsed.c_indices)) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "einsum: output tensor overlaps an input operand. In-place einsum is only supported for pure "

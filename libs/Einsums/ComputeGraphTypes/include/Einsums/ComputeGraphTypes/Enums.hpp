@@ -25,6 +25,7 @@ namespace APIARY_MODULE("graph") compute_graph {
  * Categories:
  * - **TensorAlgebra**: Einsum, Permute, Transpose, ElementTransform
  * - **BLAS-level**: Gemm, Gemv, Ger, Dot, Scale, Axpby, DirectProduct
+ * - **Element-wise and reductions**: ElementwiseMaxMin, ReduceAxes
  * - **LAPACK-level**: Syev, Heev, Gesv, Getrf, Getrs, Invert, SymmGemm, Norm
  * - **Other**: Custom
  *
@@ -56,6 +57,8 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     DirectDivision,        ///< Element-wise (Hadamard) quotient
     GroupedDirectProduct,  ///< Many independent element-wise products, one per member
     GroupedDirectDivision, ///< Many independent element-wise quotients, one per member
+    ElementwiseMaxMin,     ///< Element-wise maximum or minimum of two tensors
+    ReduceAxes,            ///< Maximum or minimum of a tensor over some of its axes
 
     // LinearAlgebra - LAPACK level
     Syev,     ///< Symmetric eigendecomposition
@@ -212,6 +215,10 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "GroupedDirectProduct";
     case OpKind::GroupedDirectDivision:
         return "GroupedDirectDivision";
+    case OpKind::ElementwiseMaxMin:
+        return "ElementwiseMaxMin";
+    case OpKind::ReduceAxes:
+        return "ReduceAxes";
     case OpKind::Syev:
         return "Syev";
     case OpKind::Heev:

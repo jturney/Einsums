@@ -3,8 +3,9 @@
 
 """Hypothesis differential: graph-captured element-wise family vs numpy.
 
-Covers scale / axpy / axpby / direct_product / direct_division and the
-named elementary ops (exp, log, log1p, expm1, sign) with
+Covers scale / axpy / axpby / direct_product / direct_division, the
+named elementary ops (exp, log, log1p, expm1, sign), and the real-only
+maximum / minimum / max_axes / min_axes with
 non-contiguous view operands, degenerate (size-1) dims, all four dtypes,
 prefactors (incl. accumulation), and the optional default pass manager.
 
@@ -69,20 +70,57 @@ _ELEMENTARY = {"exp": np.exp, "log": np.log, "log1p": np.log1p, "expm1": np.expm
 _REAL_ONLY_ELEMENTARY = ("log1p", "expm1", "sign")
 
 
-@given(op=st.sampled_from(["scale", "axpy", "axpby", "direct_product", "direct_division", "element_op"]),
+_MAX_MIN_OPS = ("maximum", "minimum", "max_axes", "min_axes")
+
+
+@given(op=st.sampled_from(["scale", "axpy", "axpby", "direct_product", "direct_division", "element_op", *_MAX_MIN_OPS]),
        element_op=st.sampled_from(sorted(_ELEMENTARY)),
        shape=_shape(), alpha=st.sampled_from([1.0, -2.0, 0.5]), beta=st.sampled_from([0.0, 1.0, -1.5]),
        dt=DTYPES,
-       va=st.booleans(), vb=st.booleans(), vc=st.booleans(), passes=st.booleans())
+       va=st.booleans(), vb=st.booleans(), vc=st.booleans(), passes=st.booleans(),
+       axes_mask=st.integers(0, 7), special=st.booleans())
 @settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 @example(op="axpy", element_op="exp", shape=(1, 2, 1), alpha=1.0, beta=0.0, dt="float64", va=False, vb=True, vc=False,
-         passes=False)
+         passes=False, axes_mask=0, special=False)
 @example(op="direct_product", element_op="exp", shape=(3, 3, 1), alpha=1.0, beta=0.0, dt="complex128", va=False, vb=False,
-         vc=True, passes=False)
-def test_hyp_elementwise_diff(op, element_op, shape, alpha, beta, dt, va, vb, vc, passes):
+         vc=True, passes=False, axes_mask=0, special=False)
+def test_hyp_elementwise_diff(op, element_op, shape, alpha, beta, dt, va, vb, vc, passes, axes_mask, special):
     rng = np.random.default_rng(0)
     g = cg.Graph(_nm())
+    if op in _MAX_MIN_OPS:
+        if is_complex(dt):
+            dt = "float64" if dt == "complex128" else "float32"
+        A0 = _rnd(shape, dt, rng)
+        B0 = _rnd(shape, dt, rng)
+        if special:
+            # NaN, -inf and both zeros, where a naive comparison or a seeded fold goes wrong.
+            flat_a, flat_b = A0.reshape(-1), B0.reshape(-1)
+            flat_a[0] = np.nan
+            flat_b[-1] = -np.inf
+            flat_a[len(flat_a) // 2] = -0.0
+            flat_b[len(flat_b) // 2] = 0.0
+        At, Bt = _mkv(A0, va, dt, rng), _mkv(B0, vb, dt, rng)
+        if op in ("maximum", "minimum"):
+            oracle = getattr(np, op)(A0, B0)
+            out = einsums.create_zero_tensor(_nm(), list(shape), dtype=dt)
+            with cg.capture(g):
+                getattr(einsums.linalg, op)(out, At, Bt)
+        else:
+            axes = [a for a in range(len(shape)) if axes_mask & (1 << a)]
+            oracle = getattr(A0, op[:3])(axis=tuple(axes)) if axes else A0.copy()
+            out = einsums.create_zero_tensor(_nm(), list(np.shape(oracle)), dtype=dt)
+            with cg.capture(g):
+                getattr(einsums.linalg, op)(out, At, axes)
+        if passes:
+            g.apply(cg.default_pass_manager())
+        g.execute()
+        g.execute()  # an overwrite replays to the same answer
+        # Selections, not arithmetic: the answer is one of the inputs, exactly, sign of zero included.
+        got = np.asarray(out)
+        np.testing.assert_array_equal(got, oracle, err_msg=f"op={op} shape={shape} dt={dt} va={va} vb={vb} axes_mask={axes_mask}")
+        np.testing.assert_array_equal(np.signbit(got), np.signbit(oracle), err_msg=f"op={op} signed zeros")
+        return
     if op == "element_op":
         if is_complex(dt) and element_op in _REAL_ONLY_ELEMENTARY:
             element_op = "log"

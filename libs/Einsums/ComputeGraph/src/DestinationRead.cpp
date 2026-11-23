@@ -32,6 +32,11 @@ bool reads_destination(Node const &node) {
     case OpKind::Getrs:
         // The right-hand sides are solved in place, so the solve reads what it overwrites.
         return node.op_data.holds<GetrsDescriptor>();
+    case OpKind::ElementwiseMaxMin:
+    case OpKind::ReduceAxes:
+        // Overwrite in full. An in-place maximum(&A, A, B) lists A as an operand, so that read
+        // is visible without the destination being listed again.
+        return false;
     default:
         break;
     }
@@ -86,6 +91,10 @@ std::optional<std::size_t> destination_operand_count(Node const &node) {
         return 0; // in place: the destination is the only tensor it lists
     case OpKind::Axpby:
         return 1; // x
+    case OpKind::ElementwiseMaxMin:
+        return 2; // A, B
+    case OpKind::ReduceAxes:
+        return 1; // A
     default:
         break;
     }

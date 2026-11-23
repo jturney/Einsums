@@ -12,6 +12,7 @@
 #include <Einsums/ComputeGraph/Detail/DenseElementTransform.hpp>
 #include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/ErasedOperations.hpp>
+#include <Einsums/ComputeGraph/Detail/OperandOverlap.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeElementwise.hpp>
 #include <Einsums/ComputeGraph/Diis.hpp>
@@ -1038,6 +1039,92 @@ void sqrt(ResultType *out, AType const &A) {
 // sum_axes: reduction over a subset of axes
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace detail {
+
+/// @brief Validate an axis reduction and return the axes of @p A that survive it.
+///
+/// The one contract of sum_axes, max_axes and min_axes: the reduced axes may come in any order
+/// but not twice, each must exist, and @p out has the surviving axes' extents in their original
+/// order.
+///
+/// @param[in] op   The op's name, for the messages.
+/// @param[in] verb What the op does to an axis ("summing"), for the messages.
+/// @param[in] out  The destination.
+/// @param[in] A    The tensor being reduced.
+/// @param[in] axes The axes to reduce.
+/// @return The kept axes of @p A, ascending.
+/// @throws std::invalid_argument When an axis is listed twice.
+/// @throws std::out_of_range When an axis does not exist.
+/// @throws RankError When @p out 's rank is not the number of kept axes.
+/// @throws DimensionError When an axis of @p out does not match the kept axis of @p A.
+template <typename ResultType, typename AType>
+std::vector<size_t> kept_axes(char const *op, char const *verb, ResultType const &out, AType const &A, std::vector<size_t> axes) {
+    size_t const N = tensor_rank(A);
+    std::sort(axes.begin(), axes.end());
+    if (std::adjacent_find(axes.begin(), axes.end()) != axes.end()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: an axis is listed twice", op);
+    }
+    for (size_t ax : axes) {
+        if (ax >= N) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "{}: axis {} is out of range for a rank-{} tensor", op, ax, N);
+        }
+    }
+    std::vector<bool> reduced(N, false);
+    for (size_t const ax : axes)
+        reduced[ax] = true;
+    std::vector<size_t> kept;
+    for (size_t k = 0; k < N; ++k)
+        if (!reduced[k])
+            kept.push_back(k);
+    if (tensor_rank(out) != kept.size()) {
+        EINSUMS_THROW_EXCEPTION(RankError, "{}: out rank {} should be {} after {} {} of {} axes", op, tensor_rank(out), kept.size(), verb,
+                                axes.size(), N);
+    }
+    for (size_t k = 0; k < kept.size(); ++k) {
+        if (out.dim(k) != A.dim(kept[k])) {
+            EINSUMS_THROW_EXCEPTION(DimensionError, "{}: out axis {} has extent {}, expected {}", op, k, out.dim(k), A.dim(kept[k]));
+        }
+    }
+    return kept;
+}
+
+/// @brief Require @p other to have @p ref 's rank and extents.
+/// @param[in] op    The op's name, for the messages.
+/// @param[in] role  Which operand @p other is, for the messages.
+/// @param[in] ref   The operand whose shape is the contract.
+/// @param[in] other The operand being checked.
+/// @throws RankError When the ranks differ.
+/// @throws DimensionError When an extent differs.
+template <typename RefType, typename OtherType>
+void require_same_shape(char const *op, char const *role, RefType const &ref, OtherType const &other) {
+    if (tensor_rank(other) != tensor_rank(ref)) {
+        EINSUMS_THROW_EXCEPTION(RankError, "{}: {} has rank {}, expected {}", op, role, tensor_rank(other), tensor_rank(ref));
+    }
+    for (size_t d = 0; d < tensor_rank(ref); ++d) {
+        if (other.dim(d) != ref.dim(d)) {
+            EINSUMS_THROW_EXCEPTION(DimensionError, "{}: {} axis {} has extent {}, expected {}", op, role, d, other.dim(d), ref.dim(d));
+        }
+    }
+}
+
+/// @brief Refuse a destination that partly overlaps an operand.
+/// @param[in] op   The op's name, for the message.
+/// @param[in] role Which operand, for the message.
+/// @param[in] out  The destination.
+/// @param[in] in   The operand.
+/// @throws std::invalid_argument When they provably share elements without being the same layout.
+template <typename Out, typename In>
+void reject_partial_alias(char const *op, char const *role, Out const &out, In const &in) {
+    if (unsafe_elementwise_alias(out, in)) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "{}: the destination overlaps {} without being the same tensor; an in-place call must pass the very "
+                                "same tensor or view, and anything else needs a separate destination",
+                                op, role);
+    }
+}
+
+} // namespace detail
+
 /// Graph-aware reduction: sum @p A over @p axes, writing the surviving axes to
 /// @p out in their original order.
 ///
@@ -1060,33 +1147,8 @@ APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<dou
 APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 // clang-format on
 void sum_axes(ResultType *out, AType const &A, std::vector<size_t> axes) {
-    using T        = typename ResultType::ValueType;
-    size_t const N = detail::tensor_rank(A);
-    std::sort(axes.begin(), axes.end());
-    if (std::adjacent_find(axes.begin(), axes.end()) != axes.end()) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::sum_axes: an axis is listed twice");
-    }
-    for (size_t ax : axes) {
-        if (ax >= N) {
-            EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::sum_axes: axis {} is out of range for a rank-{} tensor", ax, N);
-        }
-    }
-    std::vector<bool> reduced(N, false);
-    for (size_t const ax : axes)
-        reduced[ax] = true;
-    std::vector<size_t> kept;
-    for (size_t k = 0; k < N; ++k)
-        if (!reduced[k])
-            kept.push_back(k);
-    if (detail::tensor_rank(*out) != kept.size()) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::sum_axes: out rank {} should be {} after summing {} of {} axes", detail::tensor_rank(*out),
-                                kept.size(), axes.size(), N);
-    }
-    for (size_t k = 0; k < kept.size(); ++k) {
-        if (out->dim(k) != A.dim(kept[k])) {
-            EINSUMS_THROW_EXCEPTION(DimensionError, "cg::sum_axes: out axis {} has extent {}, expected {}", k, out->dim(k), A.dim(kept[k]));
-        }
-    }
+    using T                  = typename ResultType::ValueType;
+    std::vector<size_t> kept = detail::kept_axes("cg::sum_axes", "summing", *out, A, std::move(axes));
 
     auto &ctx = CaptureContext::current();
     if (detail::runs_eagerly(ctx, "cg::sum_axes", out, A)) {
@@ -2374,7 +2436,7 @@ void sum_python(ResultType *result, AType const &A) {
 /// Backs the numpy-style ``A.max()``. Real dtypes only, since complex ordering
 /// is not meaningful; use ``norm(MAXABS)`` for the largest magnitude.
 template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
-    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>)
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> && !IsComplexV<typename AType::ValueType>)
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -2398,6 +2460,249 @@ void max_python(ResultType *result, AType const &A) {
     auto const a_ref = ctx.get_slot(A);
     auto const r_ref = ctx.get_slot(*result);
     detail::capture_max<T>(ctx, r_ref, a_ref);
+}
+
+/// Graph-aware scalar minimum (real dtypes), written into ``result->data()[0]``.
+///
+/// The partner of @ref max_python, and the same contract: NaN anywhere makes the result NaN,
+/// as ``numpy.min`` does, an empty tensor is refused, and the node is recorded the way the
+/// scalar ``max`` and ``sum`` record theirs. Backs the numpy-style ``A.min()``.
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> && !IsComplexV<typename AType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("min", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("min", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("min", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("min", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+// clang-format on
+void min_python(ResultType *result, AType const &A) {
+    using T = typename AType::ValueType;
+    if (result->size() < 1)
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::min: result tensor must have at least one element");
+    if (A.size() == 0)
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::min: cannot reduce an empty tensor");
+
+    auto &ctx = CaptureContext::current();
+    if (detail::runs_eagerly(ctx, "cg::min", result, A)) {
+        result->data()[0] = detail::eager_min<T>(A.impl());
+        return;
+    }
+    auto const a_ref = ctx.get_slot(A);
+    auto const r_ref = ctx.get_slot(*result);
+    detail::capture_min<T>(ctx, r_ref, a_ref);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// maximum / minimum: element-wise, and by axis
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+
+/// The shared body of @ref maximum and @ref minimum.
+template <typename CType, typename AType, typename BType>
+void elementwise_max_min(char const *op_name, MaxMinOp op, CType *C, AType const &A, BType const &B) {
+    using T = typename CType::ValueType;
+    require_same_shape(op_name, "A", *C, A);
+    require_same_shape(op_name, "B", *C, B);
+    reject_partial_alias(op_name, "A", *C, A);
+    reject_partial_alias(op_name, "B", *C, B);
+
+    auto &ctx = CaptureContext::current();
+    if (runs_eagerly(ctx, op_name, C, A, B)) {
+        eager_elementwise_max_min<T>(op, A.impl(), B.impl(), C->impl());
+        return;
+    }
+    TensorId const a_id = ctx.get_slot(A).first;
+    TensorId const b_id = ctx.get_slot(B).first;
+    TensorId const c_id = ctx.get_slot(*C).first;
+    capture_elementwise_max_min(ctx, op, a_id, b_id, c_id, packed_gemm::get_scalar_type<T>(), tensor_rank(*C));
+}
+
+/// The shared body of @ref max_axes and @ref min_axes.
+template <typename ResultType, typename AType>
+void reduce_axes_max_min(char const *op_name, MaxMinOp op, ResultType *out, AType const &A, std::vector<size_t> axes) {
+    using T                  = typename ResultType::ValueType;
+    std::vector<size_t> kept = kept_axes(op_name, "reducing", *out, A, axes);
+    for (size_t const ax : axes) {
+        if (A.dim(ax) == 0) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "{}: axis {} has extent 0, and a maximum or minimum of no elements has no value; numpy refuses "
+                                    "the same reduction",
+                                    op_name, ax);
+        }
+    }
+    if (provably_overlap(*out, A)) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: the destination overlaps the tensor being reduced", op_name);
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (runs_eagerly(ctx, op_name, out, A)) {
+        eager_reduce_axes<T>(op, out->impl(), A.impl(), kept);
+        return;
+    }
+    TensorId const a_id = ctx.get_slot(A).first;
+    TensorId const o_id = ctx.get_slot(*out).first;
+    capture_reduce_axes(ctx, op, a_id, o_id, packed_gemm::get_scalar_type<T>(), tensor_rank(*out), std::move(kept));
+}
+
+} // namespace detail
+
+/// @brief Graph-aware element-wise maximum: ``C = maximum(A, B)``, as ``numpy.maximum``.
+///
+/// A NaN in either operand is the result, so a NaN is never silently dropped, and of the two
+/// signed zeros the maximum is +0 whichever operand holds it. All three tensors have the same
+/// rank and extents; nothing broadcasts. C is overwritten, never accumulated into, so a replay
+/// gives the answer the first execution gave.
+///
+/// C may BE A or B (the same tensor or view), which is how a lower clip is written:
+/// ``maximum(&x, x, lo)``. Any other overlap between C and an operand is refused. Together with
+/// @ref minimum it clips, and on 1/0 masks it is the logical OR.
+///
+/// Real element types only: complex numbers have no order, and no complex overload exists.
+///
+/// @param[out] C The destination.
+/// @param[in]  A The first operand.
+/// @param[in]  B The second operand.
+/// @throws RankError When the ranks differ.
+/// @throws DimensionError When an extent differs.
+/// @throws std::invalid_argument When C partly overlaps A or B.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept CType, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
+    requires(std::is_same_v<typename CType::ValueType, typename AType::ValueType> &&
+             std::is_same_v<typename CType::ValueType, typename BType::ValueType> && !IsComplexV<typename CType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("maximum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("maximum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("maximum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("maximum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("maximum", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("maximum", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("maximum", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("maximum", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("maximum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("maximum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("maximum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("maximum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("maximum", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("maximum", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("maximum", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("maximum", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+// clang-format on
+void maximum(CType *C, AType const &A, BType const &B) {
+    detail::elementwise_max_min("cg::maximum", MaxMinOp::Max, C, A, B);
+}
+
+/// @brief Graph-aware element-wise minimum: ``C = minimum(A, B)``, as ``numpy.minimum``.
+///
+/// The mirror of @ref maximum, with the same contract: NaN in either operand is the result, the
+/// minimum of the two signed zeros is -0, shapes must match, and C may be A or B but may not
+/// otherwise overlap them. ``minimum(&x, x, hi)`` is an upper clip; on 1/0 masks it is the
+/// logical AND. Real element types only.
+///
+/// @param[out] C The destination.
+/// @param[in]  A The first operand.
+/// @param[in]  B The second operand.
+/// @throws RankError When the ranks differ.
+/// @throws DimensionError When an extent differs.
+/// @throws std::invalid_argument When C partly overlaps A or B.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept CType, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
+    requires(std::is_same_v<typename CType::ValueType, typename AType::ValueType> &&
+             std::is_same_v<typename CType::ValueType, typename BType::ValueType> && !IsComplexV<typename CType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("minimum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("minimum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("minimum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("minimum", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("minimum", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("minimum", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("minimum", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("minimum", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("minimum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("minimum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("minimum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("minimum", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("minimum", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("minimum", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("minimum", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("minimum", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+// clang-format on
+void minimum(CType *C, AType const &A, BType const &B) {
+    detail::elementwise_max_min("cg::minimum", MaxMinOp::Min, C, A, B);
+}
+
+/// @brief Graph-aware axis-wise maximum: @p A reduced by maximum over @p axes, as ``A.max(axis=...)``.
+///
+/// The same contract as @ref sum_axes: the axes may come in any order but not twice, each must
+/// exist, and @p out has rank ``rank(A) - axes.size()`` with the extents of the surviving axes
+/// in their original order. ``out`` is overwritten, never accumulated into.
+///
+/// NaN anywhere in a reduced line makes that output element NaN, as ``numpy.max`` does. An
+/// empty reduced axis is refused, since a maximum of no elements has no value; an empty KEPT
+/// axis is an empty result and is fine. Real element types only.
+///
+/// @param[out] out  The reduction.
+/// @param[in]  A    The tensor to reduce. Must not overlap @p out.
+/// @param[in]  axes The axes to fold away.
+/// @throws std::invalid_argument When an axis is listed twice, a reduced axis is empty, or
+///         @p out overlaps @p A.
+/// @throws std::out_of_range When an axis does not exist.
+/// @throws RankError When @p out has the wrong rank.
+/// @throws DimensionError When an extent of @p out is wrong.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> && !IsComplexV<typename AType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("max_axes", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("max_axes", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("max_axes", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("max_axes", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("max_axes", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("max_axes", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("max_axes", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("max_axes", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+// clang-format on
+void max_axes(ResultType *out, AType const &A, std::vector<size_t> axes) {
+    detail::reduce_axes_max_min("cg::max_axes", MaxMinOp::Max, out, A, std::move(axes));
+}
+
+/// @brief Graph-aware axis-wise minimum: @p A reduced by minimum over @p axes, as ``A.min(axis=...)``.
+///
+/// The mirror of @ref max_axes, with the same contract and the same refusals.
+///
+/// @param[out] out  The reduction.
+/// @param[in]  A    The tensor to reduce. Must not overlap @p out.
+/// @param[in]  axes The axes to fold away.
+/// @throws std::invalid_argument When an axis is listed twice, a reduced axis is empty, or
+///         @p out overlaps @p A.
+/// @throws std::out_of_range When an axis does not exist.
+/// @throws RankError When @p out has the wrong rank.
+/// @throws DimensionError When an extent of @p out is wrong.
+/// @versionadded{2.0.0}
+template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType>
+    requires(std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> && !IsComplexV<typename AType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("min_axes", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("min_axes", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("min_axes", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("min_axes", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("min_axes", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("min_axes", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("min_axes", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("min_axes", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+// clang-format on
+void min_axes(ResultType *out, AType const &A, std::vector<size_t> axes) {
+    detail::reduce_axes_max_min("cg::min_axes", MaxMinOp::Min, out, A, std::move(axes));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

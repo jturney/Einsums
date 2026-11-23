@@ -52,6 +52,7 @@ set(ComputeGraphTests
     EinsumSpec.cpp
     NaryEinsum.cpp
     ElementOps.cpp
+    MaxMin.cpp
     EscapeAnalysis.cpp
     DeviceCoherence.cpp
     Executor.cpp
@@ -194,6 +195,7 @@ set(ComputeGraphTests
     test_einsum_python.py
     test_einsum_views_python.py
     test_element_transform_python.py
+    test_max_min_python.py
     test_layout_assignment_python.py
     test_multi_term_factorization_python.py
     test_error_reporting_python.py

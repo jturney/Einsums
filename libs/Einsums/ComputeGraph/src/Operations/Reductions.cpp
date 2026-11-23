@@ -72,6 +72,13 @@ T run_max(Impl<T> const &A) {
     return reduce_elements(A, -std::numeric_limits<T>::infinity(), [](T acc, T x) { return (std::isnan(x) || x > acc) ? x : acc; });
 }
 
+template <typename T>
+T run_min(Impl<T> const &A) {
+    // The mirror of run_max: NaN poisons the fold, and the +inf seed is never the answer because
+    // the API refuses an empty tensor.
+    return reduce_elements(A, std::numeric_limits<T>::infinity(), [](T acc, T x) { return (std::isnan(x) || x < acc) ? x : acc; });
+}
+
 } // namespace
 
 // ── norm ──────────────────────────────────────────────────────────────────────
@@ -137,10 +144,24 @@ void capture_max(CaptureContext &ctx, SlotRef r, SlotRef a) {
 EINSUMS_CG_ELEMENT_TYPES(EINSUMS_REDUCTION_OPERATIONS)
 #undef EINSUMS_REDUCTION_OPERATIONS
 
-// max orders its elements, so it is real-only.
+// max and min order their elements, so they are real-only.
+template <typename T>
+T eager_min(Impl<T> const &A) {
+    WAGGLE_ZONE("min_python eager");
+    return run_min<T>(A);
+}
+
+template <typename T>
+void capture_min(CaptureContext &ctx, SlotRef r, SlotRef a) {
+    WAGGLE_ZONE("min_python capture");
+    record_reduction<T, T>(ctx, "min", "min_python execute", r, a, [](Impl<T> const &src) { return run_min<T>(src); });
+}
+
 #define EINSUMS_REAL_REDUCTION_OPERATIONS(T)                                                                                               \
     template EINSUMS_EXPORT T    eager_max<T>(Impl<T> const &);                                                                            \
-    template EINSUMS_EXPORT void capture_max<T>(CaptureContext &, SlotRef, SlotRef);
+    template EINSUMS_EXPORT void capture_max<T>(CaptureContext &, SlotRef, SlotRef);                                                       \
+    template EINSUMS_EXPORT T    eager_min<T>(Impl<T> const &);                                                                            \
+    template EINSUMS_EXPORT void capture_min<T>(CaptureContext &, SlotRef, SlotRef);
 
 EINSUMS_CG_REAL_ELEMENT_TYPES(EINSUMS_REAL_REDUCTION_OPERATIONS)
 #undef EINSUMS_REAL_REDUCTION_OPERATIONS

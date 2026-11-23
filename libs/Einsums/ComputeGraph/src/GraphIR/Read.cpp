@@ -806,6 +806,26 @@ void read_descriptor(IrNode &node, Fields const &fields, GateFlagTable const &ga
         }
         return;
     }
+    case OpKind::ElementwiseMaxMin:
+    case OpKind::ReduceAxes: {
+        // Every key is required: no file before 1.20.0 could hold these kinds, so an absent one is a
+        // malformed document, and a guessed default would be a different operation.
+        MaxMinOp const op =
+            fields.named<MaxMinOp>("op", [](std::string_view name) { return kMaxMinOpNames.from_name(name); }, "max/min op", MaxMinOp::Max);
+        if (node.dtype != packed_gemm::ScalarType::Float32 && node.dtype != packed_gemm::ScalarType::Float64) {
+            fields.note(fmt::format("{} orders its elements, so its dtype must be real, not {}", node.kind, node.dtype));
+        }
+        if (node.kind == OpKind::ElementwiseMaxMin) {
+            node.descriptor = ElementwiseMaxMinDescriptor{.op = op};
+            return;
+        }
+        ReduceAxesDescriptor desc{.op = op, .kept = fields.counts("kept", "a non-negative axis")};
+        if (!std::ranges::is_sorted(desc.kept) || std::ranges::adjacent_find(desc.kept) != desc.kept.end()) {
+            fields.note("kept", fields.position(), "the kept axes must be strictly ascending");
+        }
+        node.descriptor = std::move(desc);
+        return;
+    }
     case OpKind::Einsum: {
         EinsumDescriptor desc;
         desc.spec.c_indices      = fields.strings("c_indices");

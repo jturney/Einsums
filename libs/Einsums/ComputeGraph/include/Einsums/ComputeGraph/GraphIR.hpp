@@ -20,13 +20,13 @@
  * be, which is why it refuses a graph it cannot write instead of writing a
  * partial one.
  *
- * @par The schema: ``einsums_graph_ir``, semver, currently 1.15.0
+ * @par The schema: ``einsums_graph_ir``, semver, currently 1.20.0
  * One JSON object with a FIXED top-level key order, so a tool can validate the
  * interface before it parses a single node:
  *
  * @code{.json}
  * {
- *   "einsums_graph_ir": "1.15.0",
+ *   "einsums_graph_ir": "1.20.0",
  *   "provenance":       { ... },
  *   "name":             "ccsd_doubles",
  *   "manifest":         [ ... ],
@@ -158,6 +158,14 @@
  * matrix its getrf factors, and a graph whose pivots no getrf in it writes is refused at save,
  * because the interchanges of a factorization made outside the graph are not in the file. A record
  * without a ``kind`` is a tensor, which is every record any earlier file holds.
+ *
+ * Since 1.20.0 a file may hold @ref OpKind::ElementwiseMaxMin and @ref OpKind::ReduceAxes
+ * nodes. Both descriptors carry ``op``, ``"max"`` or ``"min"``; a ReduceAxes descriptor also
+ * carries ``kept``, the strictly ascending axes of its input that its output keeps. Both kinds
+ * are real-only, so a node of either with a complex dtype is refused. No earlier file could
+ * hold them, so nothing defaults. Versions 1.16.0 through 1.19.0 are skipped on purpose: a
+ * development line that has not merged already uses them, and a version number must never
+ * describe two formats.
  * Gesv and Invert descriptors are written empty, since a solve and an inversion are fully
  * described by their kind, dtype and operands. A Norm node's ``dtype`` is its destination's, so
  * the norm of a complex operand records the REAL type, and the operand's own record says what it
@@ -301,7 +309,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.15.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.20.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

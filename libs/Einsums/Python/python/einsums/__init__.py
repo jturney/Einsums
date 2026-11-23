@@ -726,6 +726,22 @@ def _tensor_max(self):
     return out if _is_capturing() else out[0]
 
 
+def _tensor_min(self):
+    """``A.min()`` -> minimum element (real dtypes; einsums.linalg.min).
+
+    The partner of ``A.max()``: NaN anywhere gives NaN, as ``numpy.min`` does.
+    Eager returns a scalar; capture returns a graph ``[1]``."""
+    dtype_name = _DTYPE_SUFFIX[type(self).__name__[-1]]
+    if dtype_name.startswith("complex"):
+        raise TypeError(
+            "einsums '.min()' is not defined for complex tensors; "
+            "complex numbers have no order"
+        )
+    out = _alloc_output(f"min({getattr(self, 'name', 'A')})", [1], dtype_name)
+    _core.linalg.min(out, self)
+    return out if _is_capturing() else out[0]
+
+
 def _tensor_len(self):
     rank = self.rank()
     if rank == 0:
@@ -1080,6 +1096,7 @@ def _patch_numpy_ergonomics(core):
         cls.sum = _tensor_sum
         cls.mean = _tensor_mean
         cls.max = _tensor_max
+        cls.min = _tensor_min
         cls.__matmul__ = _tensor_matmul
         # Tier-2 arithmetic operators (dispatch to einsums.linalg).
         cls.__add__ = _tensor_add
