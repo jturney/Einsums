@@ -21,10 +21,13 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/Hardware/Options.hpp>
+#include <Einsums/Options/Get.hpp>
 #include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <random>
@@ -193,9 +196,16 @@ TEST_CASE("Flatten path: an operand transpose forks a thread team only above the
 
 #ifdef _OPENMP
     if (omp_get_max_threads() > 1) {
-        // Every operand at least the threshold, whatever this machine's is.
-        auto const side = static_cast<size_t>(std::ceil(std::cbrt(static_cast<double>(hardware::omp_min_parallel_elements())))) + 1;
-        REQUIRE(run(side, side, side, side) == omp_get_max_threads());
+        // The threshold is pinned: calibrated, it follows the measured cost of a thread team, which a
+        // loaded machine inflates, and operands sized from an inflated one grew until the contraction
+        // left the flatten route altogether.
+        std::int64_t const previous = config::get(option::HardwareOmpMinParallelElements);
+        config::set(option::HardwareOmpMinParallelElements, std::int64_t{1000});
+        REQUIRE(hardware::omp_min_parallel_elements() == 1000);
+        // Every operand above the threshold: 11^3 = 1331 elements.
+        int const threads = run(11, 11, 11, 11);
+        config::set(option::HardwareOmpMinParallelElements, previous);
+        REQUIRE(threads == omp_get_max_threads());
     }
 #endif
 }
