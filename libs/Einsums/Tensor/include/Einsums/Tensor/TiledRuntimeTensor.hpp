@@ -264,7 +264,9 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     [[nodiscard]] map_type &tiles() noexcept { return _tiles; }
 
     /// True if a tile exists at the given grid coordinate.
-    [[nodiscard]] APIARY_EXPOSE bool has_tile(std::vector<int> const &coord) const { return _tiles.find(normalize(coord)) != _tiles.end(); }
+    [[nodiscard]] APIARY_EXPOSE bool has_tile(std::vector<int> const &coord) const {
+        return (coord_in_range(coord) ? _tiles.find(coord) : _tiles.find(normalize(coord))) != _tiles.end();
+    }
 
     /**
      * @brief Declare a tile at @p coord. The declaration is deferred, with no storage allocated.
@@ -303,6 +305,13 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
      * @return Reference to the tile.
      */
     StoredType &tile(std::vector<int> const &coord) {
+        if (coord_in_range(coord)) {
+            if (auto it = _tiles.find(coord); it != _tiles.end()) {
+                return it->second;
+            }
+            add_tile(coord);
+            return _tiles.find(coord)->second;
+        }
         std::vector<int> key = normalize(coord);
         if (_tiles.find(key) == _tiles.end()) {
             add_tile(key);
@@ -311,7 +320,9 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     }
 
     /// Access an existing tile; throws if it is not populated.
-    [[nodiscard]] StoredType const &tile(std::vector<int> const &coord) const { return _tiles.at(normalize(coord)); }
+    [[nodiscard]] StoredType const &tile(std::vector<int> const &coord) const {
+        return coord_in_range(coord) ? _tiles.at(coord) : _tiles.at(normalize(coord));
+    }
 
     /// Experimental zero-copy bridge.
     ///
@@ -392,6 +403,20 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     }
 
   protected:
+    /// True when @p coord is already a normalized key (one in-range index per axis), so a lookup
+    /// can use it as it is instead of copying it through @ref normalize.
+    [[nodiscard]] bool coord_in_range(std::vector<int> const &coord) const noexcept {
+        if (coord.size() != _tile_sizes.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < coord.size(); ++i) {
+            if (coord[i] < 0 || coord[i] >= static_cast<int>(_tile_sizes[i].size())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// Normalize a grid coordinate: validate length, resolve negative indices,
     /// bounds-check against the grid.
     [[nodiscard]] std::vector<int> normalize(std::vector<int> const &coord) const {

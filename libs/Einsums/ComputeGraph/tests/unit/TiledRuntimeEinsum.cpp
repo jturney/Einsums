@@ -12,9 +12,12 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cmath>
+#include <cstddef>
 #include <limits>
+#include <set>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -66,6 +69,120 @@ std::vector<std::vector<V>> gather(TiledRuntimeTensor<V> const &T, int R, int C)
 template <typename V>
 bool close_to(V got, V want) {
     return std::abs(got - want) <= 100.0 * std::numeric_limits<RemoveComplexT<V>>::epsilon() * (1.0 + std::abs(want));
+}
+
+/// The global coordinates of every element of a tile, visited in order: @p f(local, global).
+template <typename F>
+void for_each_tile_element(std::vector<int> const &coord, std::vector<std::vector<int>> const &sizes,
+                           std::vector<std::vector<int>> const &offsets, F &&f) {
+    size_t const        rank = coord.size();
+    std::vector<size_t> local(rank, 0);
+    std::vector<size_t> global(rank);
+    for (size_t ax = 0; ax < rank; ++ax) {
+        if (sizes[ax][coord[ax]] == 0) {
+            return;
+        }
+    }
+    while (true) {
+        for (size_t ax = 0; ax < rank; ++ax) {
+            global[ax] = static_cast<size_t>(offsets[ax][coord[ax]]) + local[ax];
+        }
+        f(local, global);
+        size_t ax = rank;
+        while (ax > 0) {
+            --ax;
+            if (++local[ax] < static_cast<size_t>(sizes[ax][coord[ax]])) {
+                break;
+            }
+            local[ax] = 0;
+            if (ax == 0) {
+                return;
+            }
+        }
+        if (rank == 0) {
+            return;
+        }
+    }
+}
+
+/// A tiled tensor of any rank as a dense one; absent tiles read zero.
+template <typename V>
+RuntimeTensor<V> densify(TiledRuntimeTensor<V> const &T) {
+    std::vector<size_t> dims;
+    for (auto const &part : T.tile_sizes()) {
+        size_t n = 0;
+        for (int const p : part) {
+            n += static_cast<size_t>(p);
+        }
+        dims.push_back(n);
+    }
+    RuntimeTensor<V> D("D", dims);
+    D.zero();
+    for (auto const &[coord, tile] : T.tiles()) {
+        for_each_tile_element(coord, T.tile_sizes(), T.tile_offsets(),
+                              [&](std::vector<size_t> const &local, std::vector<size_t> const &global) { D(global) = tile(local); });
+    }
+    return D;
+}
+
+/// Store every tile of @p T whose irreps (one per axis, irrep = tile index) multiply to the totally
+/// symmetric one (XOR, as in an abelian point group), filled from a deterministic global function.
+template <typename V>
+void fill_symmetric(TiledRuntimeTensor<V> &T, int nirrep, double seed) {
+    size_t const     rank = T.tile_sizes().size();
+    std::vector<int> coord(rank, 0);
+    while (true) {
+        int x = 0;
+        for (int const h : coord) {
+            x ^= h;
+        }
+        if (x == 0) {
+            auto &tile = T.tile(coord);
+            tile.materialize();
+            for_each_tile_element(coord, T.tile_sizes(), T.tile_offsets(),
+                                  [&](std::vector<size_t> const &local, std::vector<size_t> const &g) {
+                                      double v = seed;
+                                      for (size_t ax = 0; ax < g.size(); ++ax) {
+                                          v += (0.37 + 0.11 * static_cast<double>(ax)) * static_cast<double>(g[ax]);
+                                      }
+                                      tile(local) = testing::prefactor<V>(std::sin(v), std::cos(1.7 * v));
+                                  });
+        }
+        size_t ax = rank;
+        while (ax > 0) {
+            --ax;
+            if (++coord[ax] < nirrep) {
+                break;
+            }
+            coord[ax] = 0;
+            if (ax == 0) {
+                return;
+            }
+        }
+    }
+}
+
+/// The set of stored tile coordinates.
+template <typename V>
+std::set<std::vector<int>> tile_set(TiledRuntimeTensor<V> const &T) {
+    std::set<std::vector<int>> out;
+    for (auto const &[coord, tile] : T.tiles()) {
+        out.insert(coord);
+    }
+    return out;
+}
+
+/// Every element of @p got within tolerance of @p want.
+template <typename V>
+bool all_close(RuntimeTensor<V> const &got, RuntimeTensor<V> const &want) {
+    V const *g = got.data();
+    V const *w = want.data();
+    for (size_t e = 0; e < want.size(); ++e) {
+        if (!close_to<V>(g[e], w[e])) {
+            return false;
+        }
+    }
+    return got.size() == want.size();
 }
 
 } // namespace
@@ -252,4 +369,98 @@ TEST_CASE("TiledRuntimeTensor - accumulating tiled einsum in a loop is not hoist
             REQUIRE(std::abs(Ctg[i][j] - Cd(i, j)) < 1e-12);
         }
     }
+}
+
+// An irrep with no orbitals of a kind (water has no occupied A2) leaves tiles with zero extent. A pair
+// of stored tiles that touches one contributes nothing, and the contraction skips its dense call; but
+// it still decides the output's tile structure, which TiledExpansion reproduces, so the C tile it
+// reaches must exist all the same.
+TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - zero-extent tiles: output tiles still created, values match", "[ComputeGraph][TiledRuntime]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    TiledRuntimeTensor<T> A("A", Grid{{2, 0}, {1, 0, 2}}); // i: second block empty; k: middle block empty
+    TiledRuntimeTensor<T> B("B", Grid{{1, 0, 2}, {0, 2}}); // j: first block empty
+    TiledRuntimeTensor<T> C("C", Grid{{2, 0}, {0, 2}});
+    for (int i = 0; i < 2; ++i) {
+        for (int k = 0; k < 3; ++k) {
+            A.tile({i, k}).materialize();
+        }
+    }
+    for (int k = 0; k < 3; ++k) {
+        for (int j = 0; j < 2; ++j) {
+            B.tile({k, j}).materialize();
+        }
+    }
+    for (auto &[coord, tile] : A.tiles()) {
+        for (size_t e = 0; e < tile.size(); ++e) {
+            tile.data()[e] = testing::prefactor<T>(0.5 + static_cast<double>(e), -0.25 * static_cast<double>(e));
+        }
+    }
+    for (auto &[coord, tile] : B.tiles()) {
+        for (size_t e = 0; e < tile.size(); ++e) {
+            tile.data()[e] = testing::prefactor<T>(1.0 - 0.3 * static_cast<double>(e), 0.1 * static_cast<double>(e));
+        }
+    }
+
+    cg::einsum("ik;kj->ij", &C, A, B);
+
+    // Every (i, j) block is reached by some stored pair, the empty ones included.
+    REQUIRE(C.num_filled_tiles() == 4);
+    RuntimeTensor<T> want("want", std::vector<size_t>{2, 2});
+    testing::reference_einsum("ij <- ik ; kj", &want, densify(A), densify(B));
+    REQUIRE(all_close(densify(C), want));
+}
+
+// The CCSD ring term over symmetry-blocked operands, with an irrep that holds no occupied orbitals:
+// pairs of stored tiles meet on the letters A and B share (m and e), and each C tile accumulates its
+// contributions in the order the full grid walk gave them.
+TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - symmetry-blocked rank-4 contraction matches a dense reference",
+                        "[ComputeGraph][TiledRuntime]", testing::AllScalarTypes) {
+    using T = TestType;
+    std::vector<int> const occ{2, 0, 1, 1};
+    std::vector<int> const vir{3, 2, 1, 2};
+    TiledRuntimeTensor<T>  t2("t2", Grid{occ, occ, vir, vir}); // i m a e
+    TiledRuntimeTensor<T>  W("W", Grid{occ, vir, vir, occ});   // m b e j
+    TiledRuntimeTensor<T>  R("R", Grid{occ, occ, vir, vir});   // i j a b
+    fill_symmetric(t2, 4, 0.1);
+    fill_symmetric(W, 4, -0.4);
+    fill_symmetric(R, 4, 0.7);
+    RuntimeTensor<T> want = densify(R);
+
+    cg::einsum("ijab <- imae ; mbej", T{0.5}, &R, T{2.0}, t2, W);
+
+    testing::reference_einsum("ijab <- imae ; mbej", T{0.5}, &want, T{2.0}, densify(t2), densify(W));
+    REQUIRE(all_close(densify(R), want));
+    // R's stored tiles were all symmetry-allowed, and every contribution lands on one.
+    for (auto const &coord : tile_set(R)) {
+        REQUIRE((coord[0] ^ coord[1] ^ coord[2] ^ coord[3]) == 0);
+    }
+}
+
+// An outer product shares no letter between A and B, so every stored A tile meets every stored B tile.
+TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - tiled outer product pairs every stored tile", "[ComputeGraph][TiledRuntime]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    TiledRuntimeTensor<T> a("a", Grid{{2, 1, 3}});
+    TiledRuntimeTensor<T> b("b", Grid{{1, 2}});
+    TiledRuntimeTensor<T> C("C", Grid{{2, 1, 3}, {1, 2}});
+    for (int t : {0, 2}) { // block 1 of a absent
+        a.tile({t}).materialize();
+    }
+    b.tile({0}).materialize();
+    b.tile({1}).materialize();
+    for (auto *x : {&a, &b}) {
+        for (auto &[coord, tile] : x->tiles()) {
+            for (size_t e = 0; e < tile.size(); ++e) {
+                tile.data()[e] = testing::prefactor<T>(1.0 + static_cast<double>(e) + coord[0], 0.5 * coord[0]);
+            }
+        }
+    }
+
+    cg::einsum("ij <- i ; j", &C, a, b);
+
+    REQUIRE(tile_set(C) == std::set<std::vector<int>>{{0, 0}, {0, 1}, {2, 0}, {2, 1}});
+    RuntimeTensor<T> want("want", std::vector<size_t>{6, 3});
+    testing::reference_einsum("ij <- i ; j", &want, densify(a), densify(b));
+    REQUIRE(all_close(densify(C), want));
 }

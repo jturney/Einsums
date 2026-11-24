@@ -6431,11 +6431,8 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
                   "cg::einsum with a tiled operand currently requires all of A, B, C to be TiledRuntimeTensor "
                   "(mixed tiled/dense is not supported yet)");
 
-    auto parse_result = parse_einsum_spec(static_cast<std::string_view>(spec));
-    if (!parse_result) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parse_result.error().message);
-    }
-    auto &parsed = parse_result.value();
+    auto const  parsed_ptr = detail::parse_einsum_cached(static_cast<std::string_view>(spec));
+    auto const &parsed     = *parsed_ptr;
     if (parsed.conj_a || parsed.conj_b) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "cg::einsum: conjugation (conj(...) in the spec) is not yet supported for tiled operands");
