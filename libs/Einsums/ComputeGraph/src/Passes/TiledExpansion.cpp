@@ -7,6 +7,7 @@
 #include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledPricing.hpp>
+#include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -530,7 +531,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
     // planned. Deciding first and creating second keeps a rejected candidate from
     // leaving new tiles behind, which would change how the runtime applies c_pf.
     struct Plan {
-        enum class Kind : std::uint8_t { Einsum, Scale, Axpy, Divide, Permute, Dot, Producer };
+        enum class Kind : std::uint8_t { Einsum, Scale, Axpy, Divide, Permute, Dot, Producer, ViewCopy };
 
         size_t                  index{0};
         Kind                    kind{Kind::Scale};
@@ -558,6 +559,10 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
         PrefactorScalar               alpha{double{1}};
         PrefactorScalar               beta{double{0}}; ///< Divide / Permute
         std::vector<std::vector<int>> coords;
+        // ViewCopy: the view's per-irrep ranges along each axis, and the direction; the tiles to copy
+        // ride in `coords`, `src_a` is the source and `dst` the destination.
+        std::vector<std::vector<std::pair<int, int>>> view_ranges;
+        bool                                          into_parent{false};
         // Permute: the parsed spec for the per-tile dense permutes. Source and
         // target coordinates ride in a_coords / c_coords (bijective pairing).
         ParsedPermuteSpec pspec;
@@ -867,6 +872,70 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 // Y gains every tile X has: tiled_axpy creates the matching Y tile when
                 // it is absent.
                 tiles_of(y_id, yv).insert(coords.begin(), coords.end());
+                continue;
+            }
+
+            // ── Tiled view copy: a view's slices into a copy, or a copy into them ──
+            // The view sits on its parent's grid, so each stored source tile is copied to the same
+            // coordinate of the destination: one per-tile node each, reading the whole parent tile
+            // and copying the slice in its executor, so no view of a tile ever becomes a graph tensor.
+            if (auto const *vdesc = src.op_data.get_if<TiledViewCopyDescriptor>()) {
+                if (src.outputs.size() != 1 || src.inputs.empty()) {
+                    continue;
+                }
+                TensorId const src_id = src.inputs[0];
+                TensorId const dst_id = src.outputs[0];
+                auto const    &s_h    = graph.tensor(src_id);
+                auto const    &d_h    = graph.tensor(dst_id);
+                if (!s_h.is_tiled || !d_h.is_tiled || s_h.dtype != d_h.dtype) {
+                    continue;
+                }
+                TiledView sv, dv;
+                if (!bind_tiled(s_h, src_id, sv) || !bind_tiled(d_h, dst_id, dv)) {
+                    decline("an operand has no backing tiled object");
+                    continue;
+                }
+                // The copy's grid is the view's: each axis's range lengths, irrep for irrep.
+                TiledView const &parent  = vdesc->into_parent ? dv : sv;
+                TiledView const &copy    = vdesc->into_parent ? sv : dv;
+                bool             grid_ok = parent.rank == copy.rank && vdesc->ranges.size() == parent.rank && parent.rank <= kMaxWindowRank;
+                for (size_t ax = 0; grid_ok && ax < parent.rank; ++ax) {
+                    auto const &pr = (*parent.sizes)[ax];
+                    auto const &cr = (*copy.sizes)[ax];
+                    grid_ok        = pr.size() == cr.size() && vdesc->ranges[ax].size() == pr.size();
+                    for (size_t h = 0; grid_ok && h < pr.size(); ++h) {
+                        auto const [first, last] = vdesc->ranges[ax][h];
+                        grid_ok                  = first >= 0 && first <= last && last <= pr[h] && cr[h] == last - first;
+                    }
+                }
+                if (!grid_ok) {
+                    decline("the copy's tile grid is not the view's ranges of its parent's");
+                    continue;
+                }
+                auto const                   &stored = tiles_of(src_id, sv);
+                std::vector<std::vector<int>> coords(stored.begin(), stored.end());
+                if (coords.empty()) {
+                    continue;
+                }
+                if (coords.size() > _max_nodes) {
+                    decline(fmt::format("projected {} tiles exceeds the {}-node budget", coords.size(), _max_nodes));
+                    continue;
+                }
+                Plan p;
+                p.index       = ni;
+                p.kind        = Plan::Kind::ViewCopy;
+                p.touched     = {src_id, dst_id};
+                p.dtype       = d_h.dtype;
+                p.elem_size   = d_h.element_size;
+                p.src_a       = sv;
+                p.dst         = dv;
+                p.view_ranges = vdesc->ranges;
+                p.into_parent = vdesc->into_parent;
+                p.coords      = std::move(coords);
+                tiles_of(dst_id, dv).insert(p.coords.begin(), p.coords.end());
+                if (planning) {
+                    plans.push_back(std::move(p));
+                }
                 continue;
             }
 
@@ -1750,6 +1819,46 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                                                     pl.beta, pl.dtype, fmt::format("tile_permute({})", fmt::join(pl.c_coords[i], ","))));
             }
             append_scales(pl.dst, pl.leftover, pl.leftover_pf, pl.dtype, pl.elem_size, emitted);
+            break;
+        }
+        case Plan::Kind::ViewCopy: {
+            // One node per tile. Copying into the parent writes only the view's slice of the tile, so
+            // it reads the tile too: the destination, listed last.
+            emitted.reserve(pl.coords.size());
+            for (auto const &co : pl.coords) {
+                TensorId const                                   s_id = pl.src_a.tile_id(co);
+                TensorId const                                   d_id = pl.dst.tile_id(co);
+                std::vector<std::pair<std::size_t, std::size_t>> slice;
+                for (size_t ax = 0; ax < pl.view_ranges.size(); ++ax) {
+                    auto const [first, last] = pl.view_ranges[ax][static_cast<size_t>(co[ax])];
+                    slice.emplace_back(static_cast<std::size_t>(first), static_cast<std::size_t>(last));
+                }
+                Node n;
+                n.id                  = graph.reserve_node_id();
+                n.kind                = OpKind::Custom;
+                n.label               = fmt::format("tile_view_copy{}({})", pl.into_parent ? "_out" : "_in", fmt::join(co, ","));
+                n.inputs              = pl.into_parent ? std::vector<TensorId>{s_id, d_id} : std::vector<TensorId>{s_id};
+                n.outputs             = {d_id};
+                auto const anchor_ref = graph.anchor();
+                detail::dispatch_scalar_type(pl.dtype, [&]<typename T>(T /*tag*/) {
+                    using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
+                    use_custom_executor(n, [anchor_ref, s_id, d_id, slice, into_parent = pl.into_parent]() {
+                        auto const *source = static_cast<Dense const *>(anchor_ref->graph().live_tensor_ptr(s_id));
+                        auto       *dest   = static_cast<Dense *>(anchor_ref->graph().live_tensor_ptr(d_id));
+                        auto const  cut    = [&slice](std::size_t ax, std::size_t) { return slice[ax]; };
+                        auto const  whole  = [](std::size_t, std::size_t n) { return std::pair<std::size_t, std::size_t>{0, n}; };
+                        auto const  rank   = slice.size();
+                        if (into_parent) {
+                            detail::block_copy<false, T>(detail::block_of<T const>(source->impl(), rank, whole),
+                                                         detail::block_of<T>(dest->impl(), rank, cut));
+                        } else {
+                            detail::block_copy<false, T>(detail::block_of<T const>(source->impl(), rank, cut),
+                                                         detail::block_of<T>(dest->impl(), rank, whole));
+                        }
+                    });
+                });
+                emitted.push_back(std::move(n));
+            }
             break;
         }
         case Plan::Kind::Dot: {

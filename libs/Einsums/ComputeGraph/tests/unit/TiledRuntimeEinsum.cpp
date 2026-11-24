@@ -10,6 +10,7 @@
 // output tiles, and the tile-partition alignment guard.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/Passes/TiledExpansion.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
@@ -904,5 +905,70 @@ TEST_CASE("TiledRuntimeTensor - views sharing a plan read their own slices", "[C
         }
         testing::reference_einsum("ij <- ik ; kj", &want, densify(X), dense_slice);
         REQUIRE(all_close(densify(C), want));
+    }
+}
+
+// TiledExpansion lowers a view copy to one node per tile, reading the whole parent tile and copying
+// its slice, so a parent touched only through views expands like any tiled tensor instead of
+// stranding every contraction on it. Both lowerings of the contraction must then reproduce the eager
+// calls, replay after replay.
+TEST_CASE("TiledRuntimeTensor - TiledExpansion lowers view copies per tile", "[ComputeGraph][TiledRuntime]") {
+    std::vector<int> const nmo{5, 2, 3, 4};
+    std::vector<int> const nocc{2, 0, 1, 1};
+    std::vector<int>       vir;
+    for (size_t h = 0; h < nmo.size(); ++h) {
+        vir.push_back(nmo[h] - nocc[h]);
+    }
+    auto const [o, v] = occ_vir(nmo, nocc);
+
+    for (auto const mode : {cg::passes::Densify::Never, cg::passes::Densify::Always}) {
+        TiledRuntimeTensor<double> ERI("ERI", Grid{nmo, nmo, nmo, nmo}), t2("t2", Grid{nocc, nocc, vir, vir}),
+            R2("R2", Grid{nocc, nocc, vir, vir}), F("F", Grid{nmo, nmo}), A("A", Grid{nocc, vir}), B("B", Grid{vir, vir});
+        TiledRuntimeTensor<double> R2_ref("R2r", Grid{nocc, nocc, vir, vir}), F_ref("Fr", Grid{nmo, nmo});
+        fill_symmetric(ERI, 4, 0.3);
+        fill_symmetric(t2, 4, -0.2);
+        fill_symmetric(A, 4, 0.4);
+        fill_symmetric(B, 4, -0.6);
+        fill_symmetric(R2, 4, 0.6);
+        fill_symmetric(R2_ref, 4, 0.6);
+        fill_symmetric(F, 4, 0.9);
+        fill_symmetric(F_ref, 4, 0.9);
+
+        for (int replay = 0; replay < 2; ++replay) {
+            auto vvvv = ERI.view({v, v, v, v});
+            auto ov   = F_ref.view({o, v});
+            cg::einsum("ijab <- ijef ; abef", 0.5, &R2_ref, 1.0, t2, vvvv);
+            cg::einsum("ia <- ie ; ea", 0.5, &ov, 1.0, A, B);
+        }
+
+        cg::Graph graph("views_expand");
+        {
+            cg::CaptureGuard const guard(graph);
+            auto                   vvvv = ERI.view({v, v, v, v});
+            auto                   ov   = F.view({o, v});
+            cg::einsum("ijab <- ijef ; abef", 0.5, &R2, 1.0, t2, vvvv);
+            cg::einsum("ia <- ie ; ea", 0.5, &ov, 1.0, A, B);
+        }
+        cg::PassManager pm;
+        pm.add(std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, mode, cg::passes::FuseTiles::Never));
+        REQUIRE(graph.apply(pm));
+
+        size_t copies_in = 0, copies_out = 0;
+        for (auto const &nd : graph.nodes()) {
+            INFO("node: " << nd.label);
+            REQUIRE_FALSE(nd.label.starts_with("tiled view copy"));
+            REQUIRE_FALSE(nd.label.starts_with("tiled einsum"));
+            copies_in += nd.label.starts_with("tile_view_copy_in") ? 1 : 0;
+            copies_out += nd.label.starts_with("tile_view_copy_out") ? 1 : 0;
+        }
+        CHECK(copies_in > 0);
+        CHECK(copies_out > 0);
+
+        graph.execute();
+        graph.execute();
+        INFO("densify: " << (mode == cg::passes::Densify::Always));
+        REQUIRE(all_close(densify(R2), densify(R2_ref)));
+        REQUIRE(all_close(densify(F), densify(F_ref)));
+        REQUIRE(tile_set(F) == tile_set(F_ref));
     }
 }
