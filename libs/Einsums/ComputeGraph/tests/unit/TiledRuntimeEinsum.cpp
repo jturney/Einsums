@@ -751,3 +751,91 @@ TEST_CASE("TiledRuntimeTensor - automatic lowering densifies tiny tiles and keep
         REQUIRE(C.tile({2, 2})(std::vector<size_t>{3, 5}) == Catch::Approx(64.0));
     }
 }
+
+// A repeated eager contraction replays a remembered plan: the pairs, the output tiles they reach and
+// the dense buffers, keyed on the spec, the partitions and which tiles A and B store. Nothing the plan
+// keeps may go stale: new values on the same tiles, a tile added between calls, and a NaN in one call
+// followed by finite data must each give exactly what a first call would.
+TEST_CASE("TiledRuntimeTensor - a remembered densified plan never serves stale data", "[ComputeGraph][TiledRuntime]") {
+    std::vector<int> const     occ{3, 0, 1, 1};
+    std::vector<int> const     vir{8, 2, 3, 6};
+    TiledRuntimeTensor<double> t2("t2", Grid{occ, occ, vir, vir});
+    TiledRuntimeTensor<double> W("W", Grid{occ, vir, vir, occ});
+    fill_symmetric(t2, 4, 0.1);
+    fill_symmetric(W, 4, -0.4);
+
+    auto const run = [&](double c_pf) {
+        TiledRuntimeTensor<double> R("R", Grid{occ, occ, vir, vir});
+        fill_symmetric(R, 4, 0.7);
+        RuntimeTensor<double> want = densify(R);
+        cg::einsum("ijab <- imae ; mbej", c_pf, &R, 1.0, t2, W);
+        REQUIRE(std::string(cg::detail::last_tiled_lowering()) == "densified");
+        testing::reference_einsum("ijab <- imae ; mbej", c_pf, &want, 1.0, densify(t2), densify(W));
+        return all_close(densify(R), want);
+    };
+
+    REQUIRE(run(0.5)); // plans
+    REQUIRE(run(0.5)); // replays
+
+    SECTION("new values on the same tiles") {
+        fill_symmetric(t2, 4, 0.9);
+        fill_symmetric(W, 4, 0.3);
+        REQUIRE(run(1.0));
+    }
+    SECTION("a tile added to A") {
+        // A symmetry-forbidden block: it changes which pairs contribute, so the plan must too.
+        auto &extra = t2.tile({0, 0, 0, 1});
+        extra.materialize();
+        extra.set_all(0.25);
+        REQUIRE(run(0.5));
+    }
+    SECTION("a NaN in one call does not reach the next") {
+        auto        &tile                     = t2.tile({0, 0, 0, 0});
+        double const kept                     = tile(std::vector<size_t>{0, 0, 0, 0});
+        tile(std::vector<size_t>{0, 0, 0, 0}) = std::numeric_limits<double>::quiet_NaN();
+        TiledRuntimeTensor<double> R("R", Grid{occ, occ, vir, vir});
+        cg::einsum("ijab <- imae ; mbej", &R, t2, W);
+        tile(std::vector<size_t>{0, 0, 0, 0}) = kept;
+        REQUIRE(run(0.0));
+    }
+}
+
+// Two views of one parent with the same extents select different elements; they share a plan's key,
+// so the plan must read through whichever view the call passes.
+TEST_CASE("TiledRuntimeTensor - views sharing a plan read their own slices", "[ComputeGraph][TiledRuntime]") {
+    std::vector<int> const nmo{6, 2, 4, 4};
+    std::vector<int> const nocc{3, 1, 2, 2}; // occupied and virtual extents equal in every irrep
+    auto const [o, v] = occ_vir(nmo, nocc);
+    TiledRuntimeTensor<double> M("M", Grid{nmo, nmo});
+    fill_symmetric(M, 4, 0.2);
+    TiledRuntimeTensor<double> X("X", Grid{nocc, nocc});
+    fill_symmetric(X, 4, -0.3);
+
+    for (auto const &[first, second] : {std::pair{o, v}, std::pair{v, o}, std::pair{o, v}}) {
+        auto                       slice = M.view({first, second});
+        TiledRuntimeTensor<double> C("C", Grid{nocc, nocc});
+        cg::einsum("ij <- ik ; kj", &C, X, slice);
+        RuntimeTensor<double> want("want", std::vector<size_t>{8, 8});
+        want.zero();
+        // The slice as a dense matrix, read element by element through the view.
+        RuntimeTensor<double> dense_slice("slice", std::vector<size_t>{8, 8});
+        dense_slice.zero();
+        std::vector<int> off{0};
+        for (int const n : nocc) {
+            off.push_back(off.back() + n);
+        }
+        for (int h = 0; h < 4; ++h) {
+            if (!slice.has_tile({h, h})) {
+                continue;
+            }
+            RuntimeTensorView<double> b = slice.tile_view({h, h});
+            for (size_t r = 0; r < b.dim(0); ++r) {
+                for (size_t c = 0; c < b.dim(1); ++c) {
+                    dense_slice(std::vector<size_t>{off[h] + r, off[h] + c}) = b(std::vector<size_t>{r, c});
+                }
+            }
+        }
+        testing::reference_einsum("ij <- ik ; kj", &want, densify(X), dense_slice);
+        REQUIRE(all_close(densify(C), want));
+    }
+}
