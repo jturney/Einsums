@@ -1073,3 +1073,42 @@ TEST_CASE("TiledRuntimeTensor - densified view reads leave no copy behind", "[Co
     REQUIRE(all_close(densify(F1), densify(F1_ref)));
     REQUIRE(all_close(densify(F2), densify(F2_ref)));
 }
+
+// In a captured CC loop the integrals do not change, so the copies of their view slices are loop
+// invariant: LoopInvariantHoisting lifts them out of the loop body and they run once, not once per
+// iteration. The accumulation itself stays in the loop.
+TEST_CASE("TiledRuntimeTensor - copies of a constant view are hoisted out of a captured loop", "[ComputeGraph][TiledRuntime]") {
+    std::vector<int> const nmo{5, 2, 3, 4};
+    std::vector<int> const nocc{2, 0, 1, 1};
+    std::vector<int>       vir;
+    for (size_t h = 0; h < nmo.size(); ++h) {
+        vir.push_back(nmo[h] - nocc[h]);
+    }
+    auto const [o, v] = occ_vir(nmo, nocc);
+    TiledRuntimeTensor<double> ERI("ERI", Grid{nmo, nmo, nmo, nmo}), t2("t2", Grid{nocc, nocc, vir, vir});
+    TiledRuntimeTensor<double> R2("R2", Grid{nocc, nocc, vir, vir}), R2_ref("R2r", Grid{nocc, nocc, vir, vir});
+    fill_symmetric(ERI, 4, 0.3);
+    fill_symmetric(t2, 4, -0.2);
+    fill_symmetric(R2, 4, 0.6);
+    fill_symmetric(R2_ref, 4, 0.6);
+    for (int iter = 0; iter < 3; ++iter) {
+        auto vvvv = ERI.view({v, v, v, v});
+        cg::einsum("ijab <- ijef ; abef", 1.0, &R2_ref, 0.5, t2, vvvv);
+    }
+
+    cg::Graph graph("hoisted_views");
+    {
+        auto                  &body = graph.add_loop("cc", 3, [](size_t iter) { return iter < 3; });
+        cg::CaptureGuard const guard(body);
+        auto                   vvvv = ERI.view({v, v, v, v});
+        cg::einsum("ijab <- ijef ; abef", 1.0, &R2, 0.5, t2, vvvv);
+    }
+    graph.optimize();
+    size_t hoisted = 0;
+    for (auto const &nd : graph.nodes()) {
+        hoisted += nd.label.starts_with("tile_view_copy") || nd.label.starts_with("tile_gather") ? 1 : 0;
+    }
+    CHECK(hoisted > 0);
+    graph.execute();
+    REQUIRE(all_close(densify(R2), densify(R2_ref)));
+}
