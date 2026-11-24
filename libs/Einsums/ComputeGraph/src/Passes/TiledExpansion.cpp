@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/DescriptorHooks.hpp>
 #include <Einsums/ComputeGraph/DestinationRead.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
+#include <Einsums/ComputeGraph/Detail/TiledPricing.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -1223,7 +1224,8 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
             for (auto const &nm : aidx) {
                 in_a[pos(nm)] = true;
             }
-            size_t const elem_size = c_h.element_size;
+            size_t const                        elem_size = c_h.element_size;
+            detail::TiledContractionShape const shape{.part = &part, .in_c = in_c, .in_a = in_a, .element_size = elem_size};
 
             Plan                             plan;
             std::map<std::vector<int>, bool> written; // output coord -> already written once
@@ -1268,19 +1270,8 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 PrefactorScalar const node_c_pf = first ? (pc.contains(ccoord) ? c_pf : PrefactorScalar{double{0}}) //
                                                         : PrefactorScalar{double{1}};
 
-                // This tile contraction's GEMM shape, so the cost model can price it:
-                // M over output indices from A, N over output indices from B, K over the
-                // contracted ones.
-                size_t tM = 1, tN = 1, tK = 1;
-                for (size_t u = 0; u < nu; ++u) {
-                    auto const ext = static_cast<size_t>(part[u][static_cast<size_t>(ucoord[u])]);
-                    if (in_c[u]) {
-                        (in_a[u] ? tM : tN) *= ext;
-                    } else {
-                        tK *= ext;
-                    }
-                }
-                plan.est_tiled_us += _cost_model.estimate_total_gemm_time_us(tM, tN, tK, elem_size, Target::CPU);
+                // This tile contraction priced as the GEMM its index roles make it.
+                plan.est_tiled_us += detail::tile_pair_cost_us(_cost_model, shape, ucoord);
 
                 plan.a_coords.push_back(acoord);
                 plan.b_coords.push_back(bcoord);
@@ -1290,27 +1281,8 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
             }
 
             // The densified alternative: one contraction over the FULL extents, plus the
-            // cost of marshalling every operand in and the result back out. The gather
-            // and scatter are pure memory traffic, so they are priced at bandwidth.
-            {
-                size_t dM = 1, dN = 1, dK = 1;
-                for (size_t u = 0; u < nu; ++u) {
-                    size_t extent = 0;
-                    for (int const sz : part[u]) {
-                        extent += static_cast<size_t>(sz);
-                    }
-                    if (in_c[u]) {
-                        (in_a[u] ? dM : dN) *= extent;
-                    } else {
-                        dK *= extent;
-                    }
-                }
-                // A is M x K, B is K x N, C is M x N; C is touched twice, read out of the
-                // dense buffer and accumulated into its tiles.
-                size_t const bytes = elem_size * (dM * dK + dK * dN + 2 * dM * dN);
-                plan.est_dense_us  = _cost_model.estimate_total_gemm_time_us(dM, dN, dK, elem_size, Target::CPU) +
-                                     _cost_model.estimate_memory_time_us(bytes, Target::CPU);
-            }
+            // cost of marshalling every operand in and the result back out.
+            plan.est_dense_us = detail::densified_cost_us(_cost_model, shape);
 
             // Pre-existing output tiles that received NO contribution are still scaled by
             // c_pf in the runtime. Emitting only the contributing nodes would leave them

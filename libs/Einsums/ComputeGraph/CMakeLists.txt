@@ -44,6 +44,8 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Detail/DeviceCoherence.hpp
     Einsums/ComputeGraph/Detail/ErasedEinsum.hpp
     Einsums/ComputeGraph/Detail/ErasedOperations.hpp
+    Einsums/ComputeGraph/Detail/TiledPricing.hpp
+    Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp
     Einsums/ComputeGraph/Detail/BackedWrites.hpp
     Einsums/ComputeGraph/Detail/RunContext.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
@@ -210,6 +212,7 @@ set(ComputeGraphSources
     TensorExpr.cpp
     BisectDriver.cpp
     CostModel.cpp
+    TiledPricing.cpp
     SymbolicCost.cpp
     Node.cpp
     Optimizer.cpp

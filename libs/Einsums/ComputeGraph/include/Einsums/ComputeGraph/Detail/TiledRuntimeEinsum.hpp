@@ -8,12 +8,20 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp> // ParsedEinsumSpec + dispatch::erased_string_einsum
+#include <Einsums/ComputeGraph/Detail/TiledPricing.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 #include <Einsums/TensorBase/HashFunctions.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <numeric>
+#include <set>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -79,6 +87,163 @@ decltype(auto) write(TiledRuntimeTensorView<T> &x, std::vector<int> const &coord
 
 } // namespace tiled_access
 
+/// Highest rank the densified lowering copies tiles at directly; a rank above it takes the slower
+/// copy through tensor views. A tiled tensor of rank 12 is far outside anything the library sees.
+inline constexpr std::size_t kMaxBlockRank = 12;
+
+/// A strided block of elements: a tile, a view's slice of one, or a tile's place in a dense buffer.
+/// Built from the tile's own extents and strides with no allocation, since the densified lowering
+/// copies every stored tile on every call.
+template <typename P>
+struct TileBlock {
+    P                                     *data{nullptr};
+    std::size_t                            rank{0};
+    std::array<std::size_t, kMaxBlockRank> dims{};
+    std::array<std::size_t, kMaxBlockRank> strides{};
+
+    [[nodiscard]] bool empty() const noexcept {
+        for (std::size_t ax = 0; ax < rank; ++ax) {
+            if (dims[ax] == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+/// The block of @p impl, cut to @p range(axis) on each axis when @p range is given.
+template <typename P, typename Impl, typename Range>
+TileBlock<P> block_of(Impl &impl, std::size_t rank, Range &&range) {
+    TileBlock<P> b;
+    b.data = impl.data();
+    b.rank = rank;
+    for (std::size_t ax = 0; ax < rank; ++ax) {
+        auto const [first, last] = range(ax, impl.dim(ax));
+        b.dims[ax]               = static_cast<std::size_t>(last - first);
+        b.strides[ax]            = impl.stride(ax);
+        b.data += static_cast<std::ptrdiff_t>(first) * static_cast<std::ptrdiff_t>(b.strides[ax]);
+    }
+    return b;
+}
+
+/// Copy @p src into @p dst, or add it when @p Add, element by element in order: no thread team and
+/// no temporaries, since a tile here is a few hundred elements and a region's entry outweighs it.
+template <bool Add, typename T>
+void block_copy(TileBlock<T const> const &src, TileBlock<T> const &dst) {
+    if (src.empty()) {
+        return;
+    }
+    std::size_t const rank = src.rank;
+    if (rank == 0) {
+        Add ? (*dst.data += *src.data) : (*dst.data = *src.data);
+        return;
+    }
+    std::size_t const                      inner = src.dims[rank - 1];
+    std::size_t const                      is    = src.strides[rank - 1];
+    std::size_t const                      ds    = dst.strides[rank - 1];
+    std::array<std::size_t, kMaxBlockRank> idx{};
+    while (true) {
+        std::ptrdiff_t so = 0, d_o = 0;
+        for (std::size_t ax = 0; ax + 1 < rank; ++ax) {
+            so += static_cast<std::ptrdiff_t>(idx[ax] * src.strides[ax]);
+            d_o += static_cast<std::ptrdiff_t>(idx[ax] * dst.strides[ax]);
+        }
+        T const *s = src.data + so;
+        T       *d = dst.data + d_o;
+        for (std::size_t i = 0; i < inner; ++i) {
+            if constexpr (Add) {
+                d[i * ds] += s[i * is];
+            } else {
+                d[i * ds] = s[i * is];
+            }
+        }
+        std::size_t ax = rank - 1;
+        while (ax > 0) {
+            --ax;
+            if (++idx[ax] < src.dims[ax]) {
+                break;
+            }
+            idx[ax] = 0;
+            if (ax == 0) {
+                return;
+            }
+        }
+        if (rank == 1) {
+            return;
+        }
+    }
+}
+
+namespace tiled_access {
+
+/// The block an operand reads at @p coord from its stored tile @p tile: the whole tile, or the view's slice.
+template <typename T>
+TileBlock<T const> read_block(TiledRuntimeTensor<T> const &, std::vector<int> const &, RuntimeTensor<T> const &tile) {
+    return block_of<T const>(tile.impl(), tile.impl().rank(),
+                             [](std::size_t, std::size_t n) { return std::pair<std::size_t, std::size_t>{0, n}; });
+}
+template <typename T>
+TileBlock<T const> read_block(TiledRuntimeTensorView<T> const &x, std::vector<int> const &coord, RuntimeTensor<T> const &tile) {
+    return block_of<T const>(tile.impl(), tile.impl().rank(), [&](std::size_t ax, std::size_t) {
+        auto const &r = x.space_range(ax, coord[ax]);
+        return std::pair<std::size_t, std::size_t>{static_cast<std::size_t>(r.first), static_cast<std::size_t>(r.second)};
+    });
+}
+
+/// The block the output writes at @p coord, creating and materializing the tile when absent.
+template <typename T>
+TileBlock<T> write_block(TiledRuntimeTensor<T> &x, std::vector<int> const &coord) {
+    auto &tile = x.tile(coord);
+    tile.materialize();
+    return block_of<T>(tile.impl(), tile.impl().rank(),
+                       [](std::size_t, std::size_t n) { return std::pair<std::size_t, std::size_t>{0, n}; });
+}
+template <typename T>
+TileBlock<T> write_block(TiledRuntimeTensorView<T> &x, std::vector<int> const &coord) {
+    auto &tile = x.parent().tile(coord);
+    tile.materialize();
+    return block_of<T>(tile.impl(), tile.impl().rank(), [&](std::size_t ax, std::size_t) {
+        auto const &r = x.space_range(ax, coord[ax]);
+        return std::pair<std::size_t, std::size_t>{static_cast<std::size_t>(r.first), static_cast<std::size_t>(r.second)};
+    });
+}
+
+} // namespace tiled_access
+
+/// How an eager tiled einsum runs its pairs of tiles. @c Auto prices both with the machine's cost
+/// model, as TiledExpansion does for a captured one; the others force a lowering, for tests.
+enum class TiledLowering : std::uint8_t {
+    Auto,
+    PerTile, ///< One dense contraction per pair of stored tiles.
+    Densify, ///< Gather A and B into dense buffers, contract once, add the result into C's tiles.
+};
+
+/// Densified buffers above this many bytes in all are never allocated for an eager call: the dense
+/// buffers are built per call, and a contraction that large prices per tile anyway.
+inline constexpr std::size_t kMaxEagerDenseBytes = std::size_t{64} << 20;
+
+/**
+ * @brief Whether an eager tiled contraction densifies, remembered per thread.
+ *
+ * Pricing a contraction asks the cost model about every pair of tiles, which in a CCD iteration over
+ * irrep blocks is a thousand questions a call. The answer depends only on the spec, the operands'
+ * partitions and which pairs contribute, so a loop that issues the same contractions asks once.
+ */
+struct TiledLoweringMemo {
+    std::string                   spec;
+    std::vector<std::vector<int>> a_sizes, b_sizes, c_sizes;
+    std::uint64_t                 pairs_hash{0};
+    std::size_t                   num_pairs{0};
+    bool                          densify{false};
+};
+
+/// One set of memos per element type, since the element size is part of the price.
+template <typename T>
+std::array<TiledLoweringMemo, 16> &tiled_lowering_memos() {
+    thread_local std::array<TiledLoweringMemo, 16> memos{};
+    return memos;
+}
+
 /**
  * @brief Tiled einsum: compose dense per-tile contractions over a tile grid.
  *
@@ -109,7 +274,8 @@ decltype(auto) write(TiledRuntimeTensorView<T> &x, std::vector<int> const &coord
  *   is itself BLAS/threaded).
  */
 template <typename T, typename CType, typename AType, typename BType>
-void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, CType *C, T ab_pf, AType const &A, BType const &B) {
+void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, CType *C, T ab_pf, AType const &A, BType const &B,
+                          TiledLowering lowering = TiledLowering::Auto) {
     auto const &cidx = parsed.c_indices;
     auto const &aidx = parsed.a_indices;
     auto const &bidx = parsed.b_indices;
@@ -252,6 +418,7 @@ void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, CType *C, T ab
                 contribute(ucoord, acoord, a_it->second, bcoord, b_it->second);
             }
         }
+        last_tiled_lowering() = "grid_walk";
         return;
     }
 
@@ -344,14 +511,133 @@ void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, CType *C, T ab
     }
     std::ranges::sort(pairs, {}, &Pair::sentinel);
 
-    for (auto const &pair : pairs) {
-        size_t rem = pair.sentinel;
+    auto const decode = [&](size_t sentinel) {
         for (size_t u = 0; u < nu; ++u) {
-            ucoord[u] = static_cast<int>(rem / stride[u]);
-            rem %= stride[u];
+            ucoord[u] = static_cast<int>(sentinel / stride[u]);
+            sentinel %= stride[u];
         }
-        contribute(ucoord, *pair.a_coord, *pair.a, *pair.b_coord, *pair.b);
+    };
+
+    // The dense extent of each operand axis, and where each of its tiles starts within it.
+    auto const dense_layout = [](std::vector<std::vector<int>> const &sizes, std::vector<size_t> &dims,
+                                 std::vector<std::vector<int>> &offsets) {
+        dims.assign(sizes.size(), 0);
+        offsets.assign(sizes.size(), {});
+        for (size_t ax = 0; ax < sizes.size(); ++ax) {
+            for (int const n : sizes[ax]) {
+                offsets[ax].push_back(static_cast<int>(dims[ax]));
+                dims[ax] += static_cast<size_t>(n);
+            }
+        }
+    };
+    std::vector<size_t>           da, db, dc;
+    std::vector<std::vector<int>> oa, ob, oc;
+    dense_layout(tiled_access::sizes(A), da, oa);
+    dense_layout(tiled_access::sizes(B), db, ob);
+    dense_layout(tiled_access::sizes(*C), dc, oc);
+
+    bool       densify    = false;
+    bool const blocks_fit = aidx.size() <= kMaxBlockRank && bidx.size() <= kMaxBlockRank && cidx.size() <= kMaxBlockRank;
+    if (lowering != TiledLowering::PerTile && !pairs.empty() && blocks_fit) {
+        auto const volume = [](std::vector<size_t> const &d) {
+            return std::accumulate(d.begin(), d.end(), size_t{1}, std::multiplies<>{});
+        };
+        size_t const bytes = sizeof(T) * (volume(da) + volume(db) + volume(dc));
+        if (lowering == TiledLowering::Densify) {
+            densify = true;
+        } else if (bytes <= kMaxEagerDenseBytes) {
+            std::uint64_t hash = 1469598103934665603ULL; // FNV-1a over the pairs' grid positions
+            for (auto const &pair : pairs) {
+                hash = (hash ^ static_cast<std::uint64_t>(pair.sentinel)) * 1099511628211ULL;
+            }
+            auto      &memos = tiled_lowering_memos<T>();
+            auto const found = std::ranges::find_if(memos, [&](TiledLoweringMemo const &m) {
+                return m.num_pairs == pairs.size() && m.pairs_hash == hash && m.spec == parsed.raw && m.a_sizes == tiled_access::sizes(A) &&
+                       m.b_sizes == tiled_access::sizes(B) && m.c_sizes == tiled_access::sizes(*C);
+            });
+            if (found != memos.end()) {
+                densify = found->densify;
+            } else {
+                std::vector<bool> in_c(nu, false), in_a(nu, false);
+                for (int const u : c_tab) {
+                    in_c[u] = true;
+                }
+                for (int const u : a_tab) {
+                    in_a[u] = true;
+                }
+                TiledContractionShape const shape{.part = &part, .in_c = in_c, .in_a = in_a, .element_size = sizeof(T)};
+                CostModel const            &model    = eager_tiled_cost_model();
+                double                      by_tiles = 0.0;
+                for (auto const &pair : pairs) {
+                    decode(pair.sentinel);
+                    by_tiles += tile_pair_cost_us(model, shape, ucoord);
+                }
+                densify = densified_cost_us(model, shape) < by_tiles;
+                std::ranges::move_backward(memos.begin(), memos.end() - 1, memos.end());
+                memos.front() = {.spec       = parsed.raw,
+                                 .a_sizes    = tiled_access::sizes(A),
+                                 .b_sizes    = tiled_access::sizes(B),
+                                 .c_sizes    = tiled_access::sizes(*C),
+                                 .pairs_hash = hash,
+                                 .num_pairs  = pairs.size(),
+                                 .densify    = densify};
+            }
+        }
     }
+
+    if (!densify) {
+        for (auto const &pair : pairs) {
+            decode(pair.sentinel);
+            contribute(ucoord, *pair.a_coord, *pair.a, *pair.b_coord, *pair.b);
+        }
+        last_tiled_lowering() = "per_tile";
+        return;
+    }
+
+    // Densified, as TiledExpansion lowers a captured contraction: every stored tile of A and B is
+    // copied into place in a zeroed dense buffer, the contraction runs once over the full extents, and
+    // its result is added into exactly the C tiles the per-tile path would reach, which this creates
+    // as that path would. C's existing tiles were scaled by c_pf above, so adding is the whole update.
+    // The sums run in another order than tile by tile, so the result agrees with it to rounding.
+    // Where a tile of an operand sits in its dense buffer: the buffer's strides, offset to the tile's
+    // first element, over the tile's extents.
+    auto const dense_block = [](auto &dense, std::vector<std::vector<int>> const &offsets, std::vector<std::vector<int>> const &sizes,
+                                std::vector<int> const &coord) {
+        using P = std::remove_reference_t<decltype(*dense.impl().data())>;
+        return block_of<P>(dense.impl(), coord.size(), [&](std::size_t ax, std::size_t) {
+            auto const first = static_cast<std::size_t>(offsets[ax][static_cast<std::size_t>(coord[ax])]);
+            return std::pair<std::size_t, std::size_t>{first,
+                                                       first + static_cast<std::size_t>(sizes[ax][static_cast<std::size_t>(coord[ax])])};
+        });
+    };
+    auto const gather = [&](auto const &X, std::vector<size_t> const &dims, std::vector<std::vector<int>> const &offsets,
+                            char const *name) {
+        RuntimeTensor<T> dense(name, dims);
+        dense.zero();
+        for (auto const &[coord, tile] : tiled_access::stored(X)) {
+            block_copy<false, T>(tiled_access::read_block(X, coord, tile), dense_block(dense, offsets, tiled_access::sizes(X), coord));
+        }
+        return dense;
+    };
+    RuntimeTensor<T> const a_dense = gather(A, da, oa, "tiled_dense_a");
+    RuntimeTensor<T> const b_dense = gather(B, db, ob, "tiled_dense_b");
+    RuntimeTensor<T>       c_dense("tiled_dense_c", dc);
+    c_dense.zero();
+    dispatch::erased_string_einsum<T>(parsed, T{0}, c_dense.impl(), ab_pf, a_dense.impl(), b_dense.impl(), false, false);
+
+    std::set<std::vector<int>> reached;
+    for (auto const &pair : pairs) {
+        decode(pair.sentinel);
+        for (size_t ax = 0; ax < cidx.size(); ++ax) {
+            ccoord[ax] = ucoord[c_tab[ax]];
+        }
+        reached.insert(ccoord);
+    }
+    RuntimeTensor<T> const &c_result = c_dense;
+    for (auto const &coord : reached) {
+        block_copy<true, T>(dense_block(c_result, oc, tiled_access::sizes(*C), coord), tiled_access::write_block(*C, coord));
+    }
+    last_tiled_lowering() = "densified";
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

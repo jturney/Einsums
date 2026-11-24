@@ -604,6 +604,11 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorViewZ", TiledRuntimeTensorView<std::com
     [[nodiscard]] TiledRuntimeTensor<T>       &parent() noexcept { return *_parent; }
     [[nodiscard]] TiledRuntimeTensor<T> const &parent() const noexcept { return *_parent; }
 
+    /// The half-open range of irrep @p irrep's block this view selects along @p axis.
+    [[nodiscard]] std::pair<int, int> const &space_range(std::size_t axis, int irrep) const {
+        return _spaces[axis].ranges[static_cast<std::size_t>(irrep)];
+    }
+
     /// The per-axis ranges that cut the parent's tile at @p coord down to this view's sub-block.
     /// Applying them to a tile (``tile.at_view(slice_specs(coord))``) reads it without creating or
     /// materializing anything, which @ref tile_view does for an absent tile.

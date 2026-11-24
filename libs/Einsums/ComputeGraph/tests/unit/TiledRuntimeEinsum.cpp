@@ -613,3 +613,141 @@ TEST_CASE("TiledRuntimeTensor - a view operand inside a capture throws", "[Compu
     cg::CaptureGuard const guard(g);
     REQUIRE_THROWS_AS(cg::einsum("ij <- ia ; ja", &C, ov, ov), std::invalid_argument);
 }
+
+// An eager tiled einsum chooses between running each pair of stored tiles and densifying (gather A
+// and B, contract once, add the result into C's tiles), priced by the shared cost model as
+// TiledExpansion prices a captured one. Both lowerings must create the same output tiles and agree
+// to rounding, whatever the operands' sparsity and C's prior tiles.
+TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - per-tile and densified lowerings agree", "[ComputeGraph][TiledRuntime]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    std::vector<int> const occ{2, 0, 1, 1};
+    std::vector<int> const vir{3, 2, 1, 2};
+    TiledRuntimeTensor<T>  t2("t2", Grid{occ, occ, vir, vir});
+    TiledRuntimeTensor<T>  W("W", Grid{occ, vir, vir, occ});
+    fill_symmetric(t2, 4, 0.1);
+    fill_symmetric(W, 4, -0.4);
+    auto const parsed = cg::detail::parse_einsum_cached("ijab <- imae ; mbej");
+
+    std::set<std::vector<int>> tiles_by[2];
+    RuntimeTensor<T>           result_by[2];
+    for (int mode = 0; mode < 2; ++mode) {
+        TiledRuntimeTensor<T> R("R", Grid{occ, occ, vir, vir});
+        // A prior tile the contraction reaches, and one it does not (absent occupied block on i).
+        R.tile({0, 0, 0, 0}).materialize();
+        R.tile({0, 0, 0, 0}).set_all(T{2});
+        R.tile({1, 1, 0, 0}).materialize();
+        R.tile({1, 1, 0, 0}).set_all(T{5});
+        RuntimeTensor<T> want     = densify(R);
+        auto const       lowering = mode == 0 ? cg::detail::TiledLowering::PerTile : cg::detail::TiledLowering::Densify;
+        cg::detail::tiled_runtime_einsum<T>(*parsed, T{0.5}, &R, T{2.0}, t2, W, lowering);
+        REQUIRE(std::string(cg::detail::last_tiled_lowering()) == (mode == 0 ? "per_tile" : "densified"));
+
+        testing::reference_einsum("ijab <- imae ; mbej", T{0.5}, &want, T{2.0}, densify(t2), densify(W));
+        REQUIRE(all_close(densify(R), want));
+        tiles_by[mode]  = tile_set(R);
+        result_by[mode] = densify(R);
+    }
+    REQUIRE(tiles_by[0] == tiles_by[1]);
+    REQUIRE(all_close(result_by[1], result_by[0]));
+}
+
+// A view operand and a view output take the densified lowering too: A reads through the view's
+// slices, and the result is added only into the view's sub-blocks of C's parent.
+TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - densified lowering reads and writes through views", "[ComputeGraph][TiledRuntime]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    std::vector<int> const nmo{5, 2, 3, 4};
+    std::vector<int> const nocc{2, 0, 1, 1};
+    std::vector<int>       vir;
+    for (size_t h = 0; h < nmo.size(); ++h) {
+        vir.push_back(nmo[h] - nocc[h]);
+    }
+    auto const [o, v] = occ_vir(nmo, nocc);
+    TiledRuntimeTensor<T> ERI("ERI", Grid{nmo, nmo, nmo, nmo});
+    fill_symmetric(ERI, 4, 0.3);
+    TiledRuntimeTensor<T> t2("t2", Grid{nocc, nocc, vir, vir});
+    fill_symmetric(t2, 4, -0.2);
+    auto       vvvv   = ERI.view({v, v, v, v});
+    auto const parsed = cg::detail::parse_einsum_cached("ijab <- ijef ; abef");
+
+    TiledRuntimeTensor<T> per_tile("per_tile", Grid{nocc, nocc, vir, vir});
+    TiledRuntimeTensor<T> dense("dense", Grid{nocc, nocc, vir, vir});
+    cg::detail::tiled_runtime_einsum<T>(*parsed, T{0}, &per_tile, T{0.5}, t2, vvvv, cg::detail::TiledLowering::PerTile);
+    cg::detail::tiled_runtime_einsum<T>(*parsed, T{0}, &dense, T{0.5}, t2, vvvv, cg::detail::TiledLowering::Densify);
+    REQUIRE(tile_set(per_tile) == tile_set(dense));
+    REQUIRE(all_close(densify(dense), densify(per_tile)));
+
+    // Writing through F[o, v] densified leaves F's other elements untouched.
+    TiledRuntimeTensor<T> F("F", Grid{nmo, nmo});
+    fill_symmetric(F, 4, 0.9);
+    RuntimeTensor<T> const before = densify(F);
+    TiledRuntimeTensor<T>  A("A", Grid{nocc, vir});
+    TiledRuntimeTensor<T>  B("B", Grid{vir, vir});
+    fill_symmetric(A, 4, 0.4);
+    fill_symmetric(B, 4, -0.6);
+    auto       ov = F.view({o, v});
+    auto const p2 = cg::detail::parse_einsum_cached("ia <- ie ; ea");
+    cg::detail::tiled_runtime_einsum<T>(*p2, T{1}, &ov, T{1}, A, B, cg::detail::TiledLowering::Densify);
+    RuntimeTensor<T> const after = densify(F);
+    // Rows are the MO index; an occupied row of irrep h is offset(h) + [0, nocc[h]), a virtual column
+    // offset(h) + [nocc[h], nmo[h]).
+    std::vector<int> off{0};
+    for (int const n : nmo) {
+        off.push_back(off.back() + n);
+    }
+    auto const in_ov = [&](size_t r, size_t c) {
+        for (size_t h = 0; h < nmo.size(); ++h) {
+            if (static_cast<int>(r) >= off[h] && static_cast<int>(r) < off[h] + nocc[h]) {
+                for (size_t g = 0; g < nmo.size(); ++g) {
+                    if (static_cast<int>(c) >= off[g] + nocc[g] && static_cast<int>(c) < off[g + 1]) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+    size_t const n = static_cast<size_t>(off.back());
+    for (size_t r = 0; r < n; ++r) {
+        for (size_t c = 0; c < n; ++c) {
+            if (!in_ov(r, c)) {
+                REQUIRE(after(std::vector<size_t>{r, c}) == before(std::vector<size_t>{r, c}));
+            }
+        }
+    }
+}
+
+// Auto prices both lowerings with the machine's cost model, so only choices with a margin no machine
+// closes are pinned: a CCD-style contraction over many tiny irrep tiles makes hundreds of calls that
+// one small dense contraction replaces, and four large block-diagonal tiles would densify into 64
+// times their arithmetic.
+TEST_CASE("TiledRuntimeTensor - automatic lowering densifies tiny tiles and keeps large sparse ones", "[ComputeGraph][TiledRuntime]") {
+    {
+        std::vector<int> const     occ{3, 0, 1, 1};
+        std::vector<int> const     vir{8, 2, 3, 6};
+        TiledRuntimeTensor<double> t2("t2", Grid{occ, occ, vir, vir});
+        TiledRuntimeTensor<double> W("W", Grid{occ, vir, vir, occ});
+        TiledRuntimeTensor<double> R("R", Grid{occ, occ, vir, vir});
+        fill_symmetric(t2, 4, 0.1);
+        fill_symmetric(W, 4, -0.4);
+        cg::einsum("ijab <- imae ; mbej", &R, t2, W);
+        REQUIRE(std::string(cg::detail::last_tiled_lowering()) == "densified");
+    }
+    {
+        std::vector<int> const     blocks{128, 128, 128, 128};
+        TiledRuntimeTensor<double> A("A", Grid{blocks, blocks});
+        TiledRuntimeTensor<double> B("B", Grid{blocks, blocks});
+        TiledRuntimeTensor<double> C("C", Grid{blocks, blocks});
+        for (int h = 0; h < 4; ++h) {
+            A.tile({h, h}).materialize();
+            A.tile({h, h}).set_all(1.0);
+            B.tile({h, h}).materialize();
+            B.tile({h, h}).set_all(0.5);
+        }
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+        REQUIRE(std::string(cg::detail::last_tiled_lowering()) == "per_tile");
+        REQUIRE(C.num_filled_tiles() == 4);
+        REQUIRE(C.tile({2, 2})(std::vector<size_t>{3, 5}) == Catch::Approx(64.0));
+    }
+}

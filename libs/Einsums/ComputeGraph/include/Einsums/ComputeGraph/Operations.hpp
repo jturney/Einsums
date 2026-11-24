@@ -6477,10 +6477,13 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
         auto label = fmt::format("tiled einsum: C[{}] = A[{}] * B[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
                                  fmt::join(parsed.b_indices, ","));
 
+        // Per tile, not priced: in a graph the lowering is TiledExpansion's to choose, and this opaque
+        // node is what runs when it declines, the reference its lowerings reproduce exactly.
         auto executor = [indices, params, a_slot, b_slot, c_slot]() {
             WAGGLE_ZONE("einsum execute");
             detail::tiled_runtime_einsum<T>(indices.spec, as<T>(params.c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params.ab_pf),
-                                            *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
+                                            *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
+                                            detail::TiledLowering::PerTile);
         };
 
         // OpKind::Custom on purpose: the node participates in dependency ordering and
