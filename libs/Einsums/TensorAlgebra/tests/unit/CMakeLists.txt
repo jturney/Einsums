@@ -25,6 +25,7 @@ set(TensorAlgebraTests
     MixedPrecision.cpp
     OuterProduct.cpp
     Sort.cpp
+    TileAlgebra.cpp
     SortGemmExpanded.cpp
     Transpose.cpp
     UniquePointer.cpp
