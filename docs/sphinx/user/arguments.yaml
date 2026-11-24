@@ -857,6 +857,17 @@
     hardware profile. :option:`--einsums:hardware:omp-min-parallel-flops` pins the threshold itself
     instead.
 
+"einsums:hardware:performance-cores":
+  added: "2.0.0"
+  body: |
+    The performance cores a contraction that divides its output among threads uses at most.
+    Negative, the default, detects them, from the performance level sysctls on macOS, and finds
+    none elsewhere. Zero leaves the team uncapped.
+
+    On a hybrid CPU the efficiency cores are slower and, on Apple silicon, share each cluster's
+    matrix unit, so adding them to such a contraction only slows it. A contraction that splits its
+    contracted extent among threads keeps the whole team.
+
 "einsums:simd:arch":
   added: "2.0.0"
   body: |

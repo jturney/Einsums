@@ -345,6 +345,26 @@ std::size_t omp_min_parallel_elements() {
     return static_cast<std::size_t>(omp_region_cost_ns());
 }
 
+int performance_core_count() {
+    if (auto const pinned = config::get(option::HardwarePerformanceCores); pinned >= 0) {
+        return static_cast<int>(pinned);
+    }
+    static int const detected = []() {
+#if defined(__APPLE__)
+        // hw.nperflevels counts the core types; level 0 is the performance cores.
+        auto read = [](char const *name) -> int {
+            int    val = 0;
+            size_t len = sizeof(val);
+            return sysctlbyname(name, &val, &len, nullptr, 0) == 0 ? val : 0;
+        };
+        return read("hw.nperflevels") > 1 ? read("hw.perflevel0.physicalcpu") : 0;
+#else
+        return 0;
+#endif
+    }();
+    return detected;
+}
+
 std::int64_t omp_min_parallel_flops() {
     // A pin beats the derivation below, so the threshold can be swept from ONE
     // binary: zero always parallelizes, a huge value never does.

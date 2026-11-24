@@ -84,6 +84,21 @@ APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::size_t omp_min_paral
 APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::int64_t omp_min_parallel_flops();
 
 /**
+ * @brief The performance cores of a hybrid CPU, or 0 when the CPU is not hybrid or its count is unknown.
+ *
+ * A contraction that divides its output among threads runs no faster on a hybrid CPU's efficiency
+ * cores, which are slower and, on Apple silicon, share the cluster's matrix unit: on an M4 with four
+ * performance and six efficiency cores, a rank-4 ring contraction was slowest on ten threads at every
+ * size from 1.7 Mflop to 1 Gflop. Such a contraction caps its team at this count.
+ * @c --einsums:hardware:performance-cores pins it, zero meaning no cap.
+ *
+ * Detected on macOS from the performance level sysctls; elsewhere 0 until a detector exists.
+ *
+ * @versionadded{2.0.0}
+ */
+APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT int performance_core_count();
+
+/**
  * @brief Whether @ref omp_region_cost_ns came from the hardware profile, not an in-process measurement.
  *        Also true single-threaded (the cost is zero) and when pinned.
  */

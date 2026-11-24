@@ -209,3 +209,46 @@ TEST_CASE("Flatten path: an operand transpose forks a thread team only above the
     }
 #endif
 }
+
+// A contraction whose threads divide its output caps its team at the performance cores of a hybrid
+// CPU: the efficiency cores only slowed it, sharing the matrix unit (an M4's rank-4 ring ran slowest
+// on ten threads at every size measured). The cap is pinned here both ways so the check holds on any
+// machine, and the result must not depend on it.
+TEST_CASE("Packed contraction: dividing the output caps the team at the performance cores", "[PackedGemm][FlattenLayouts]") {
+#ifdef _OPENMP
+    if (omp_get_max_threads() < 3) {
+        SKIP("needs at least three threads to tell a cap of two from the whole team");
+    }
+    std::int64_t const flops_before = config::get(option::HardwareOmpMinParallelFlops);
+    std::int64_t const cores_before = config::get(option::HardwarePerformanceCores);
+    config::set(option::HardwareOmpMinParallelFlops, std::int64_t{0}); // every contraction threads
+
+    size_t const          o = 10, v = 40;
+    RuntimeTensor<double> A(std::string("A"), std::vector<size_t>{o, o, v, v}, /*row_major=*/false);
+    RuntimeTensor<double> B(std::string("B"), std::vector<size_t>{o, o, v, v}, /*row_major=*/false);
+    for (size_t e = 0; e < A.size(); ++e) {
+        A.data()[e] = std::sin(0.1 * static_cast<double>(e));
+        B.data()[e] = std::cos(0.07 * static_cast<double>(e));
+    }
+    auto const run = [&](std::int64_t cores) {
+        config::set(option::HardwarePerformanceCores, cores);
+        RuntimeTensor<double> C(std::string("C"), std::vector<size_t>{o, v, v, o}, /*row_major=*/false);
+        cg::einsum("mbej <- jnfb ; mnef", &C, A, B);
+        REQUIRE(packed_gemm::last_k_split() == 1); // the output was divided, not the contracted extent
+        return std::pair{packed_gemm::last_output_threads(), std::vector<double>(C.data(), C.data() + C.size())};
+    };
+    auto const [capped, capped_result]     = run(2);
+    auto const [uncapped, uncapped_result] = run(0);
+    config::set(option::HardwarePerformanceCores, cores_before);
+    config::set(option::HardwareOmpMinParallelFlops, flops_before);
+
+    CHECK(capped == 2);
+    CHECK(uncapped == omp_get_max_threads());
+    for (size_t e = 0; e < capped_result.size(); ++e) {
+        REQUIRE_THAT(capped_result[e],
+                     Catch::Matchers::WithinRel(uncapped_result[e], 1e-12) || Catch::Matchers::WithinAbs(uncapped_result[e], 1e-12));
+    }
+#else
+    SKIP("built without OpenMP");
+#endif
+}

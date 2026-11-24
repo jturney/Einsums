@@ -319,6 +319,11 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 /// packing step's gate). Test introspection only, like @ref last_k_split.
 [[nodiscard]] EINSUMS_EXPORT int &last_packing_transpose_threads();
 
+/// Threads the most recent packed contraction on this thread asked for when its threads divided the
+/// output, after the performance-core cap (see @ref output_division_threads); 1 when it ran on one.
+/// Test introspection only, like @ref last_team_size.
+[[nodiscard]] EINSUMS_EXPORT int &last_output_threads();
+
 /// The cache blocks a packed contraction ran with: MC rows of A, NC columns of B, KC of the
 /// contracted extent, after the C-temporary budget and the thread grid have had their say.
 struct PackedBlocking {
@@ -419,6 +424,26 @@ inline bool mn_roles_should_swap(PackingPlan const &plan, MicroKernelShape const
 /// @brief Whether a parallel region opened here would run on more than one thread: false inside a
 /// region already at the deepest active level the runtime allows, where a nested one runs serially
 /// and a thread grid planned for it would only cut the work finer for one thread.
+/**
+ * @brief The team a contraction dividing its output among threads runs on.
+ *
+ * The whole team, capped on a hybrid CPU at its performance cores (@ref hardware::performance_core_count).
+ * Dividing the output gives every thread its rows and columns to pack and multiply, and an efficiency
+ * core does that slower while, on Apple silicon, sharing its cluster's matrix unit: on an M4 with four
+ * performance and six efficiency cores, a rank-4 ring contraction ran slowest on ten threads at every
+ * size from 1.7 Mflop to 1 Gflop, and fastest on two to four. Splitting the contracted extent is
+ * another matter, and keeps the whole team.
+ */
+inline int output_division_threads() {
+#ifdef _OPENMP
+    int const team   = omp_get_max_threads();
+    int const pcores = ::einsums::hardware::performance_core_count();
+    return pcores > 0 ? std::min(team, pcores) : team;
+#else
+    return 1;
+#endif
+}
+
 inline bool can_fork_threads() {
 #ifdef _OPENMP
     return omp_get_active_level() < omp_get_max_active_levels();
@@ -1470,7 +1495,7 @@ void blis_contraction_body(PackingPlan const &plan, CType &C, AType const &A, BT
         int n_threads = 1;
         int team_size = 1;
 #ifdef _OPENMP
-        n_threads = omp_get_max_threads();
+        n_threads = output_division_threads();
         if (n_threads > 1 && !omp_in_parallel() && !parallel_batch && !(scatter_c && shape.block_gemm) && !(is_complex && shape.use_1m) &&
             2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K) >= static_cast<double>(min_parallel_flops())) {
             int const per_l3 = cpu_config().cores_per_l3;
@@ -1720,7 +1745,7 @@ void blis_contraction_body(PackingPlan const &plan, CType &C, AType const &A, BT
         ThreadGrid    grid;
 #ifdef _OPENMP
         if (parallel_nc) {
-            int const nthreads = omp_get_max_threads();
+            int const nthreads = output_division_threads();
             if (nthreads > 1 && use_teams) {
                 // The grid's units are teams, and a team's N block is its shared panel, sized to
                 // the panel budget at this KC. Members split each team's rows among themselves.
@@ -1770,11 +1795,12 @@ void blis_contraction_body(PackingPlan const &plan, CType &C, AType const &A, BT
             // into the thread-local panel. A larger team's panel lives in a buffer the calling
             // thread owns, one stretch per team, first touched by the members that pack it, on
             // their own node.
-            int const    run_threads = parallel_nc ? n_threads : 1;
-            int const    members     = (parallel_nc && use_teams) ? team_size : 1;
-            int const    n_teams     = run_threads / members;
-            size_t const stride      = (bp_buf_elems + 15) & ~size_t{15};
-            last_team_size()         = members;
+            int const run_threads = parallel_nc ? n_threads : 1;
+            last_output_threads() = run_threads;
+            int const    members  = (parallel_nc && use_teams) ? team_size : 1;
+            int const    n_teams  = run_threads / members;
+            size_t const stride   = (bp_buf_elems + 15) & ~size_t{15};
+            last_team_size()      = members;
             static thread_local std::vector<ValueType> team_panels;
             std::vector<TeamState>                     states;
             if (members > 1) {

@@ -12,6 +12,7 @@
 // moves the beta prescale, the scatter and every engine's M loop onto a group's range, which is
 // what the correctness cases below exercise at thread counts that do and do not divide the work.
 
+#include <Einsums/Hardware/Options.hpp>
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/PackedGemm/Options.hpp>
 #include <Einsums/PackedGemm/PackedGemm.hpp>
@@ -22,6 +23,7 @@
 
 #include <cmath>
 #include <complex>
+#include <cstdint>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -119,17 +121,26 @@ TEST_CASE("thread grid: never more groups than blocks", "[PackedGemm][ThreadGrid
 
 namespace {
 
-/// Runs one scope at @p threads OpenMP threads and restores the previous count after.
+/// Runs one scope at @p threads OpenMP threads and restores the previous count after. The
+/// performance-core cap is off for the scope: these tests ask for a width and check what the engine
+/// does with it, which on a hybrid CPU the cap would quietly bring down to the performance cores.
 class ThreadCount {
   public:
-    explicit ThreadCount(int threads) : _previous{omp_get_max_threads()} { omp_set_num_threads(threads); }
-    ~ThreadCount() { omp_set_num_threads(_previous); }
+    explicit ThreadCount(int threads) : _previous{omp_get_max_threads()}, _previous_cap{config::get(option::HardwarePerformanceCores)} {
+        omp_set_num_threads(threads);
+        config::set(option::HardwarePerformanceCores, std::int64_t{0});
+    }
+    ~ThreadCount() {
+        omp_set_num_threads(_previous);
+        config::set(option::HardwarePerformanceCores, _previous_cap);
+    }
 
     ThreadCount(ThreadCount const &)            = delete;
     ThreadCount &operator=(ThreadCount const &) = delete;
 
   private:
-    int _previous;
+    int          _previous;
+    std::int64_t _previous_cap;
 };
 
 /// Sets the complex-1m flag for one scope and restores it after.

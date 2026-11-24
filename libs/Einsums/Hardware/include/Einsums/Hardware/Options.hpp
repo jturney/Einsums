@@ -88,6 +88,13 @@ inline constinit cl::ConfigOption<std::int64_t> HardwareOmpMinParallelFlops = cl
     "einsums:hardware:omp-min-parallel-flops", "Flops at which a contraction goes parallel (-1 = derive from the region cost)", "Hardware",
     -1, "N", cl::RangeBetween<std::int64_t>(-1, (std::numeric_limits<std::int64_t>::max)()));
 
+/// Pin the performance-core count a contraction dividing its output caps its team at. Negative
+/// detects it; zero leaves the team uncapped.
+inline constinit cl::ConfigOption<std::int64_t> HardwarePerformanceCores =
+    cl::config_opt<std::int64_t>("einsums:hardware:performance-cores",
+                                 "Performance cores a contraction dividing its output among threads uses at most (-1 = detect, 0 = no cap)",
+                                 "Hardware", -1, "N", cl::RangeBetween<std::int64_t>(-1, 4096));
+
 EINSUMS_NAMESPACE_END(option)
 
 EINSUMS_NAMESPACE_BEGIN()

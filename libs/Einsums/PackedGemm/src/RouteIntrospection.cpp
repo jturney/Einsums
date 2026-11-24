@@ -40,6 +40,11 @@ int &last_packing_transpose_threads() {
     return threads;
 }
 
+int &last_output_threads() {
+    thread_local int threads = 1;
+    return threads;
+}
+
 PackedBlocking &last_packed_blocking() {
     thread_local PackedBlocking blocking{};
     return blocking;
