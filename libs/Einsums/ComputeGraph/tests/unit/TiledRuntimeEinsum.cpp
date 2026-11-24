@@ -10,6 +10,7 @@
 // output tiles, and the tile-partition alignment guard.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/Passes/DeadNodeElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/TiledExpansion.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
@@ -971,4 +972,104 @@ TEST_CASE("TiledRuntimeTensor - TiledExpansion lowers view copies per tile", "[C
         REQUIRE(all_close(densify(F), densify(F_ref)));
         REQUIRE(tile_set(F) == tile_set(F_ref));
     }
+}
+
+// Two contractions read the same slices of P, and P is scaled between them. The second must see the
+// scaled values: capture may share one copy of a slice only while nothing writes the parent, and a
+// densified gather may read the parent in place of a copy only when nothing writes it between the
+// copy and the gather. Checked raw and fully optimized, replayed twice, against the eager calls.
+TEST_CASE("TiledRuntimeTensor - a write to the parent between two view reads is seen by the second", "[ComputeGraph][TiledRuntime]") {
+    std::vector<int> const nmo{5, 2, 3, 4};
+    std::vector<int> const nocc{2, 0, 1, 1};
+    std::vector<int>       vir;
+    for (size_t h = 0; h < nmo.size(); ++h) {
+        vir.push_back(nmo[h] - nocc[h]);
+    }
+    auto const [o, v] = occ_vir(nmo, nocc);
+
+    auto const run = [&](cg::Graph *graph, bool optimize) {
+        TiledRuntimeTensor<double> P("P", Grid{nmo, nmo}), X("X", Grid{nocc, nocc}), C1("C1", Grid{nocc, vir}), C2("C2", Grid{nocc, vir});
+        fill_symmetric(P, 4, 0.5);
+        fill_symmetric(X, 4, -0.3);
+        auto const body = [&] {
+            auto ov = P.view({o, v});
+            cg::einsum("ia <- ij ; ja", &C1, X, ov);
+            cg::scale(2.0, &P);
+            auto ov2 = P.view({o, v});
+            cg::einsum("ia <- ij ; ja", &C2, X, ov2);
+        };
+        if (graph == nullptr) {
+            body();
+            body();
+        } else {
+            {
+                cg::CaptureGuard const guard(*graph);
+                body();
+            }
+            if (optimize) {
+                graph->optimize();
+            }
+            graph->execute();
+            graph->execute();
+        }
+        return std::pair{densify(C1), densify(C2)};
+    };
+
+    auto const [want1, want2] = run(nullptr, false);
+    for (bool const optimize : {false, true}) {
+        cg::Graph graph(optimize ? "parent_write_opt" : "parent_write_raw");
+        auto const [got1, got2] = run(&graph, optimize);
+        INFO("optimized: " << optimize);
+        REQUIRE(all_close(got1, want1));
+        REQUIRE(all_close(got2, want2));
+    }
+}
+
+// A densified contraction reading a view gathers the parent's slices directly, so the view's copy
+// has no reader left and dead-node elimination removes it; ERI[o, o, v, v] read under two names is
+// one copy, not two, wherever a copy survives.
+TEST_CASE("TiledRuntimeTensor - densified view reads leave no copy behind", "[ComputeGraph][TiledRuntime]") {
+    std::vector<int> const nmo{5, 2, 3, 4};
+    std::vector<int> const nocc{2, 0, 1, 1};
+    std::vector<int>       vir;
+    for (size_t h = 0; h < nmo.size(); ++h) {
+        vir.push_back(nmo[h] - nocc[h]);
+    }
+    auto const [o, v] = occ_vir(nmo, nocc);
+    TiledRuntimeTensor<double> ERI("ERI", Grid{nmo, nmo, nmo, nmo}), t2("t2", Grid{nocc, nocc, vir, vir});
+    TiledRuntimeTensor<double> F1("F1", Grid{vir, vir}), F2("F2", Grid{vir, vir});
+    TiledRuntimeTensor<double> F1_ref("F1r", Grid{vir, vir}), F2_ref("F2r", Grid{vir, vir});
+    fill_symmetric(ERI, 4, 0.3);
+    fill_symmetric(t2, 4, -0.2);
+    {
+        auto oovv = ERI.view({o, o, v, v});
+        cg::einsum("ae <- mnaf ; mnef", &F1_ref, t2, oovv);
+        cg::einsum("ae <- mnaf ; mnef", 2.0, &F2_ref, 1.0, t2, oovv);
+    }
+
+    cg::Graph graph("dead_copies");
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                   oovv_a = ERI.view({o, o, v, v});
+        auto                   oovv_b = ERI.view({o, o, v, v}); // the same block under a second name
+        cg::einsum("ae <- mnaf ; mnef", &F1, t2, oovv_a);
+        cg::einsum("ae <- mnaf ; mnef", 2.0, &F2, 1.0, t2, oovv_b);
+    }
+    size_t captured_copies = 0;
+    for (auto const &nd : graph.nodes()) {
+        captured_copies += nd.label.starts_with("tiled view copy") ? 1 : 0;
+    }
+    CHECK(captured_copies == 1);
+
+    cg::PassManager pm;
+    pm.add(std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, cg::passes::Densify::Always, cg::passes::FuseTiles::Never));
+    pm.add(std::make_shared<cg::passes::DeadNodeElimination>());
+    REQUIRE(graph.apply(pm));
+    for (auto const &nd : graph.nodes()) {
+        INFO("node: " << nd.label);
+        CHECK_FALSE(nd.label.starts_with("tile_view_copy"));
+    }
+    graph.execute();
+    REQUIRE(all_close(densify(F1), densify(F1_ref)));
+    REQUIRE(all_close(densify(F2), densify(F2_ref)));
 }

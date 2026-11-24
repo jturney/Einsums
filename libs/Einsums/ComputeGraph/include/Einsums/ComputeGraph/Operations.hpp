@@ -6442,6 +6442,45 @@ void capture_tiled_view_copy(CaptureContext &ctx, TiledRuntimeTensorView<T> cons
     ctx.record(OpKind::Custom, std::move(label), std::move(inputs), std::move(outputs), std::move(executor), std::move(desc));
 }
 
+/// The tensor a captured contraction reads for the input view @p view: the copy an earlier node of
+/// this graph made of the same slices, when neither the parent nor that copy has been written since,
+/// or else a new copy. Two views naming one block, as ERI[o, o, v, v] read under two names does, then
+/// cost one copy per replay instead of two. "Written" is judged by buffer, through each node's
+/// effective outputs, so a write inside a loop or through an alias counts.
+template <typename T>
+TiledRuntimeTensor<T> const &capture_tiled_view_input(CaptureContext &ctx, Graph &graph, TiledRuntimeTensorView<T> const &view,
+                                                      char const *role) {
+    TensorId const parent_id  = ctx.get_slot(view.parent()).first;
+    TensorId const parent_buf = graph.buffer_of(parent_id);
+    auto const     ranges     = ranges_of(view);
+    auto const    &nodes      = graph.nodes();
+    for (size_t i = nodes.size(); i-- > 0;) {
+        auto const &node = nodes[i];
+        auto const *copy = node.op_data.get_if<TiledViewCopyDescriptor>();
+        if (copy == nullptr || copy->into_parent || node.inputs.size() != 1 || node.inputs[0] != parent_id || node.outputs.size() != 1 ||
+            copy->ranges != ranges) {
+            continue;
+        }
+        TensorId const copy_id  = node.outputs[0];
+        TensorId const copy_buf = graph.buffer_of(copy_id);
+        bool           written  = false;
+        for (size_t j = i + 1; j < nodes.size() && !written; ++j) {
+            for (TensorId const out : graph.effective_io(nodes[j]).second) {
+                TensorId const buf = graph.buffer_of(out);
+                written            = written || buf == parent_buf || buf == copy_buf;
+            }
+        }
+        if (!written) {
+            return *static_cast<TiledRuntimeTensor<T> const *>(graph.live_tensor_ptr(copy_id));
+        }
+        break; // the latest copy of these slices is stale, and any earlier one is older still
+    }
+    auto &copy = graph.declare_zero_tiled_tensor<T>(fmt::format("{} [view copy, {}]", view.parent().name(), role), view.tile_sizes(),
+                                                    /*intermediate=*/true);
+    capture_tiled_view_copy<T>(ctx, view, copy, /*into_parent=*/false);
+    return copy;
+}
+
 } // namespace detail
 
 /**
@@ -6502,9 +6541,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
         };
         auto as_tensor = [&](auto const &X, char const *role) -> TiledRuntimeTensor<T> const & {
             if constexpr (std::is_same_v<std::remove_cvref_t<decltype(X)>, TiledRuntimeTensorView<T>>) {
-                auto &copy = copy_of(X, role);
-                detail::capture_tiled_view_copy<T>(ctx, X, copy, /*into_parent=*/false);
-                return copy;
+                return detail::capture_tiled_view_input<T>(ctx, graph, X, role);
             } else {
                 return X;
             }

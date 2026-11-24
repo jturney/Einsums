@@ -79,6 +79,11 @@ struct TileWindow {
     size_t              runs{1}; ///< how many runs
     std::vector<size_t> extent;  ///< tile extents of axes 1.., outermost last
     std::vector<size_t> step;    ///< what one step along each of those moves in the buffer
+    /// A window that reads a slice of a larger tile (a view's sub-block of its parent's tile): where
+    /// the slice starts in the tile, and what one step along each of axes 1.. moves there. Empty
+    /// for a whole tile, which is contiguous, so its run r starts at `r * run`.
+    size_t              tile_base{0};
+    std::vector<size_t> tile_step;
 };
 
 /// Call `body(buffer_offset, tile_offset)` once per contiguous run.
@@ -86,15 +91,23 @@ template <typename Body>
 void for_each_run(TileWindow const &w, Body &&body) {
     std::array<size_t, kMaxWindowRank> index{};
     size_t                             buffer_offset = w.base;
+    size_t                             tile_offset   = w.tile_base;
     size_t const                       axes          = w.extent.size();
+    bool const                         sliced        = !w.tile_step.empty();
     for (size_t r = 0; r < w.runs; ++r) {
-        body(buffer_offset, r * w.run);
+        body(buffer_offset, sliced ? tile_offset : r * w.run);
         for (size_t k = 0; k < axes; ++k) {
             buffer_offset += w.step[k];
+            if (sliced) {
+                tile_offset += w.tile_step[k];
+            }
             if (++index[k] < w.extent[k]) {
                 break;
             }
             buffer_offset -= w.step[k] * w.extent[k]; // wrapped; carry outward
+            if (sliced) {
+                tile_offset -= w.tile_step[k] * w.extent[k];
+            }
             index[k] = 0;
         }
     }
@@ -221,8 +234,24 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
     // will actually use.
     graph.topological_sort();
 
-    auto        &nodes = graph.nodes();
-    size_t const n     = nodes.size();
+    auto &nodes = graph.nodes();
+
+    // Each tiled view copy of a parent's slices into scratch, by the copy's id: what a densified
+    // contraction reading that copy can gather from the parent's tiles directly, so the copy needs
+    // no readers and its nodes die.
+    struct ViewCopySource {
+        size_t                                        node;
+        TensorId                                      parent;
+        std::vector<std::vector<std::pair<int, int>>> ranges;
+    };
+    std::unordered_map<TensorId, ViewCopySource> view_copies;
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        auto const *copy = nodes[i].op_data.get_if<TiledViewCopyDescriptor>();
+        if (copy != nullptr && !copy->into_parent && nodes[i].inputs.size() == 1 && nodes[i].outputs.size() == 1) {
+            view_copies[nodes[i].outputs[0]] = {.node = i, .parent = nodes[i].inputs[0], .ranges = copy->ranges};
+        }
+    }
+    size_t const n = nodes.size();
     if (n == 0) {
         return false;
     }
@@ -328,7 +357,7 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 }
                 return static_cast<double>(linear_algebra::norm(linear_algebra::Norm::FROBENIUS, tile));
             };
-            out.tile_id = [t, owner, &tile_ids, &graph](std::vector<int> const &co) {
+            out.tile_id = [t, owner, intermediate = h.is_intermediate, &tile_ids, &graph](std::vector<int> const &co) {
                 auto key = std::make_pair(owner, co);
                 auto it  = tile_ids.find(key);
                 if (it != tile_ids.end()) {
@@ -336,7 +365,10 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
                 }
                 auto &tile = t->tile(co); // infer-and-create, matching the runtime
                 tile.materialize();
-                TensorId const id = graph.register_tensor(make_handle(tile, 0));
+                // A tile of graph-owned scratch is scratch too, so a write no node reads can die.
+                auto handle            = make_handle(tile, 0);
+                handle.is_intermediate = intermediate;
+                TensorId const id      = graph.register_tensor(std::move(handle));
                 tile_ids.emplace(std::move(key), id);
                 return id;
             };
@@ -1528,15 +1560,77 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
     // zeroed buffer already holds). Reuses a buffer already holding this exact
     // tile set if one is still valid, in which case no node is emitted at all.
     // Shared by the densified einsum and densified permute lowerings.
+    // The parent a view copy can be gathered from in place of the copy, for a consumer at node
+    // @p consumer: only when nothing between the copy and the consumer writes the parent, since the
+    // gather reads it at the consumer's position and the copy was taken at its own.
+    auto view_copy_source = [&](TensorId copy_id, size_t consumer, TiledView &parent) -> ViewCopySource const * {
+        auto const it = view_copies.find(copy_id);
+        if (it == view_copies.end() || it->second.node >= consumer) {
+            return nullptr;
+        }
+        TensorId const parent_buf = graph.buffer_of(it->second.parent);
+        for (size_t j = it->second.node + 1; j < consumer; ++j) {
+            for (TensorId const out : graph.effective_io(nodes[j]).second) {
+                if (graph.buffer_of(out) == parent_buf) {
+                    return nullptr;
+                }
+            }
+        }
+        if (!bind_tiled(graph.tensor(it->second.parent), it->second.parent, parent)) {
+            return nullptr;
+        }
+        return &it->second;
+    };
+
+    // The window of a view's slice of the parent tile at @p co, placed where the view's tile sits in
+    // a dense buffer over the view's extents (@p v's grid). The parent tile is column-major, so the
+    // slice's runs are contiguous along axis 0 and stepped by the tile's strides along the rest.
+    auto sliced_window_of = [](TiledView const &v, TiledView const &parent, std::vector<std::vector<std::pair<int, int>>> const &ranges,
+                               std::vector<int> const &co, std::vector<size_t> const &dims) {
+        std::vector<size_t> stride(v.rank, 1), tile_stride(v.rank, 1);
+        for (size_t ax = 1; ax < v.rank; ++ax) {
+            stride[ax]      = stride[ax - 1] * dims[ax - 1];
+            tile_stride[ax] = tile_stride[ax - 1] * static_cast<size_t>((*parent.sizes)[ax - 1][static_cast<size_t>(co[ax - 1])]);
+        }
+        auto extent_at = [&](size_t ax) { return static_cast<size_t>((*v.sizes)[ax][static_cast<size_t>(co[ax])]); };
+
+        TileWindow w;
+        w.id = parent.tile_id(co);
+        for (size_t ax = 0; ax < v.rank; ++ax) {
+            size_t offset = 0;
+            for (int k = 0; k < co[ax]; ++k) {
+                offset += static_cast<size_t>((*v.sizes)[ax][static_cast<size_t>(k)]);
+            }
+            w.base += offset * stride[ax];
+            w.tile_base += static_cast<size_t>(ranges[ax][static_cast<size_t>(co[ax])].first) * tile_stride[ax];
+        }
+        w.run = extent_at(0);
+        for (size_t ax = 1; ax < v.rank; ++ax) {
+            w.extent.push_back(extent_at(ax));
+            w.step.push_back(stride[ax]);
+            w.tile_step.push_back(tile_stride[ax]);
+            w.runs *= extent_at(ax);
+        }
+        return w;
+    };
+
     auto make_dense_gather = [&]<typename T>(T /*tag*/, TiledView const &v, std::vector<size_t> const &dims, char const *what,
-                                             std::vector<Node> &out) -> TensorId {
+                                             std::vector<Node> &out, TensorId source_id = 0, size_t consumer = 0) -> TensorId {
         using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
 
         std::vector<TileWindow> windows;
         std::vector<TensorId>   ins;
-        for (auto const &co : v.coords()) {
-            windows.push_back(window_of(v, co, dims));
-            ins.push_back(windows.back().id);
+        TiledView               parent;
+        if (auto const *src = source_id != 0 ? view_copy_source(source_id, consumer, parent) : nullptr) {
+            for (auto const &co : parent.coords()) {
+                windows.push_back(sliced_window_of(v, parent, src->ranges, co, dims));
+                ins.push_back(windows.back().id);
+            }
+        } else {
+            for (auto const &co : v.coords()) {
+                windows.push_back(window_of(v, co, dims));
+                ins.push_back(windows.back().id);
+            }
         }
         for (auto const &have : gathered) {
             if (have.dims == dims && have.sources == ins) {
@@ -1670,8 +1764,8 @@ bool TiledExpansion::run_on_graph(Graph &graph) {
             graph.adopt([bc]() { delete bc; });
             TensorId const idc = graph.register_tensor(make_handle(*bc, 0));
 
-            TensorId const ida = make_dense_gather(tag, pl.src_a, da, "a", out);
-            TensorId const idb = make_dense_gather(tag, pl.src_b, db, "b", out);
+            TensorId const ida = make_dense_gather(tag, pl.src_a, da, "a", out, pl.touched[0], pl.index);
+            TensorId const idb = make_dense_gather(tag, pl.src_b, db, "b", out, pl.touched[1], pl.index);
 
             // One dense contraction. c_pf is 0 because the scatter applies the real
             // one per output tile; ab_pf rides along here as it would per tile.
