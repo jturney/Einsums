@@ -30,7 +30,7 @@ set(TensorAlgebraTests
     Transpose.cpp
     UniquePointer.cpp
     SharedPointer.cpp
-    # QChemTests.cpp  # Disabled: pre-existing crash in TiledTensor permute path
+    QChemTests.cpp
     TensorAlgebraTasks.cpp
 )
 

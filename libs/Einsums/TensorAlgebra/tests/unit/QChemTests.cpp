@@ -38,6 +38,11 @@ class ScaleFunctionTensor : public einsums::tensor_base::FunctionTensor<double, 
 template <size_t Rank>
 static void read_tensor(std::string fname, einsums::Tensor<double, Rank> *out) {
     std::FILE *input = std::fopen(fname.c_str(), "r");
+    // Relative to the test's build directory, where CMake copies the data; run from anywhere else,
+    // fopen fails, and reading a null stream crashed the test instead of saying why.
+    if (input == nullptr) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "cannot open {} (run the test from its build directory)", fname);
+    }
 
     char buffer[1024] = {0};
     int  line_num     = 0;
