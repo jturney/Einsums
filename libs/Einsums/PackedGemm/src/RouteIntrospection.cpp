@@ -35,6 +35,11 @@ int &last_k_split() {
     return shares;
 }
 
+int &last_packing_transpose_threads() {
+    thread_local int threads = 1;
+    return threads;
+}
+
 PackedBlocking &last_packed_blocking() {
     thread_local PackedBlocking blocking{};
     return blocking;

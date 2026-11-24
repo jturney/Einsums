@@ -10,6 +10,7 @@
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
@@ -312,6 +313,11 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 /// its own and the shares were added into C (see @ref choose_k_split). Test introspection only, like
 /// @ref last_team_size.
 [[nodiscard]] EINSUMS_EXPORT int &last_k_split();
+
+/// Threads the most recent flatten-route contraction on this thread gave its operand transposes, the
+/// most either operand used: 1 when every transpose was too small to be worth a thread team (see the
+/// packing step's gate). Test introspection only, like @ref last_k_split.
+[[nodiscard]] EINSUMS_EXPORT int &last_packing_transpose_threads();
 
 /// The cache blocks a packed contraction ran with: MC rows of A, NC columns of B, KC of the
 /// contracted extent, after the C-temporary budget and the thread grid have had their say.
@@ -1232,10 +1238,24 @@ void blis_contraction_body(PackingPlan const &plan, CType &C, AType const &A, BT
 
             if (use_hptt) {
                 last_contraction_route() = k_len == K ? "flatten_gemm_hptt" : "flatten_gemm_hptt_chunked";
-                int num_threads          = 1;
+                // A transpose is bandwidth-bound element work, gated as the permute module gates its
+                // plans: a small one runs on one thread, since a team fork costs tens of microseconds
+                // and a tiled contraction packs a few hundred elements per tile pair.
+                last_packing_transpose_threads() = 1;
+                auto const threads_for           = [](std::vector<size_t> const &dims) {
+                    size_t elements = 1;
+                    for (size_t const d : dims) {
+                        elements *= d;
+                    }
+                    int threads = 1;
 #ifdef _OPENMP
-                num_threads = omp_get_max_threads();
+                    if (elements >= ::einsums::hardware::omp_min_parallel_elements()) {
+                        threads = omp_get_max_threads();
+                    }
 #endif
+                    last_packing_transpose_threads() = std::max(last_packing_transpose_threads(), threads);
+                    return threads;
+                };
                 // HPTT reads the chunk's extent along the outermost K dim, inside the whole
                 // enclosing extents (the outer sizes). A chunked axis that is not the operand's
                 // slowest leaves gaps between rows, and the outer sizes are how those are
@@ -1286,14 +1306,14 @@ void blis_contraction_body(PackingPlan const &plan, CType &C, AType const &A, BT
                             chunk_a[static_cast<size_t>(axpos_a)] = static_cast<size_t>(kc_len / k_inner);
                         }
                         hptt_transpose(perm_a.data(), static_cast<int>(chunk_a.size()), A_data + k_out * stride_a, chunk_a.data(),
-                                       kc_len == K ? nullptr : sizes_a.data(), A_flat, num_threads, conj_a);
+                                       kc_len == K ? nullptr : sizes_a.data(), A_flat, threads_for(chunk_a), conj_a);
                     }
                     if (!b_zero_copy) {
                         if (axpos_b >= 0) {
                             chunk_b[static_cast<size_t>(axpos_b)] = static_cast<size_t>(kc_len / k_inner);
                         }
                         hptt_transpose(perm_b.data(), static_cast<int>(chunk_b.size()), B_data + k_out * stride_b, chunk_b.data(),
-                                       kc_len == K ? nullptr : sizes_b.data(), B_flat, num_threads, conj_b);
+                                       kc_len == K ? nullptr : sizes_b.data(), B_flat, threads_for(chunk_b), conj_b);
                     }
 
                     // A_flat is col-major M x kc_len and B_flat row-major kc_len x N. A zero-copy

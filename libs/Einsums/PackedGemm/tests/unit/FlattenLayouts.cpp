@@ -20,6 +20,7 @@
 // a single K and the contraction stays on the multi-K flatten path.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
@@ -29,6 +30,10 @@
 #include <random>
 #include <string>
 #include <vector>
+
+#ifdef _OPENMP
+#    include <omp.h>
+#endif
 
 #include <Einsums/Testing.hpp>
 
@@ -163,4 +168,34 @@ TEST_CASE("Flatten path: a non-dense view still gathers", "[PackedGemm][FlattenL
 
     REQUIRE(std::string(packed_gemm::last_contraction_route()) == "flatten_gemm_gather");
     check_against(ref, C.data());
+}
+
+// The flatten route transposes each operand with HPTT before its GEMM. Each transpose used to get the
+// whole thread team whatever its size, so a tiled contraction, which packs a few hundred elements per
+// tile pair, paid a team fork per tile: a symmetry-blocked CCD intermediate ran 5.4 times slower with
+// ten threads than with one. A transpose below the element threshold now runs on one thread, and one
+// above it keeps the team.
+TEST_CASE("Flatten path: an operand transpose forks a thread team only above the element threshold", "[PackedGemm][FlattenLayouts]") {
+    auto const run = [](size_t na, size_t nb, size_t nc, size_t nd) {
+        RuntimeTensor<double> A(std::string("A"), std::vector<size_t>{na, nc, nd}, /*row_major=*/false);
+        RuntimeTensor<double> B(std::string("B"), std::vector<size_t>{nd, nb, nc}, /*row_major=*/false);
+        RuntimeTensor<double> C(std::string("C"), std::vector<size_t>{na, nb}, /*row_major=*/false);
+        A.set_all(1.0);
+        B.set_all(0.5);
+        cg::einsum("acd;dbc->ab", &C, A, B);
+        REQUIRE(std::string(packed_gemm::last_contraction_route()).starts_with("flatten_gemm_hptt"));
+        REQUIRE_THAT(C(std::vector<size_t>{0, 0}), Catch::Matchers::WithinRel(0.5 * static_cast<double>(nc * nd), 1e-12));
+        return packed_gemm::last_packing_transpose_threads();
+    };
+
+    // Eight elements per operand: below any threshold worth having.
+    REQUIRE(run(2, 2, 2, 2) == 1);
+
+#ifdef _OPENMP
+    if (omp_get_max_threads() > 1) {
+        // Every operand at least the threshold, whatever this machine's is.
+        auto const side = static_cast<size_t>(std::ceil(std::cbrt(static_cast<double>(hardware::omp_min_parallel_elements())))) + 1;
+        REQUIRE(run(side, side, side, side) == omp_get_max_threads());
+    }
+#endif
 }
