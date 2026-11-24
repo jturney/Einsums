@@ -1342,6 +1342,10 @@ def full_like(t, fill_value, dtype=None, name=None):
     return full(_tensor_shape(t), fill_value, dtype=_dtype_str_of(t, dtype), name=name or "full_like")
 
 
+# The compiled binary einsum's keyword arguments, in the order its binding takes them positionally.
+_BINARY_EINSUM_KEYWORDS = frozenset(("c_pf", "ab_pf", "conj_a", "conj_b"))
+
+
 def einsum(spec, C, *operands, **kwargs):
     """Graph-aware einsum over two or more operands.
 
@@ -1364,6 +1368,12 @@ def einsum(spec, C, *operands, **kwargs):
     outside, each is a temporary held to ``--einsums:max-memory``.
     """
     _bootstrap()
+    # Two tensors and only the binary einsum's keywords: pass them positionally. pybind11 matches
+    # keywords against each overload it tries, and a call it reaches late in the overload set (a
+    # tiled one comes after every dense one) spent about half its dispatch doing that.
+    if len(operands) == 2 and kwargs and kwargs.keys() <= _BINARY_EINSUM_KEYWORDS:
+        return _core.einsum(spec, C, operands[0], operands[1], kwargs.get("c_pf", 0.0), kwargs.get("ab_pf", 1.0),
+                            kwargs.get("conj_a", False), kwargs.get("conj_b", False))
     # Two tensors, then at most the prefactors: the compiled binary einsum. Decided from the third
     # positional argument alone, because the operands lead and every prefactor is a number; the
     # full count is needed only for three or more tensors.
