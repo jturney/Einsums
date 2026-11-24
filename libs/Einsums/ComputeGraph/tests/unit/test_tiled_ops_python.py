@@ -860,3 +860,102 @@ def test_many_tile_permute_densifies(dtype):
         g.execute()
         einsums.permute("j,i <- i,j", te["C"], te["A"], c_pf=0.5, a_pf=2.0)  # eager oracle
         assert_close(_gather(tg["C"], 16, 16), _gather(te["C"], 16, 16))
+
+
+# --------------------------------------------------------------------------
+# Tiled views as einsum operands: a pycc port slices irrep-blocked integrals
+# by orbital space, ERI[v, v, v, v], and contracts the slice directly.
+# --------------------------------------------------------------------------
+
+_NMO = [5, 2, 3, 4]
+_NOCC = [2, 0, 1, 1]
+
+
+def _irrep_spaces():
+    o = einsums.IndexSpace([(0, _NOCC[h]) for h in range(4)])
+    v = einsums.IndexSpace([(_NOCC[h], _NMO[h]) for h in range(4)])
+    return o, v
+
+
+def _symmetric_tiled(dtype, name, parts, rng):
+    """Every XOR-allowed tile of a tiled tensor over ``parts``, filled from ``rng``."""
+    t = DTYPE_TO_TRT[np.dtype(dtype).type](name, parts)
+    for coord in itertools.product(*[range(len(p)) for p in parts]):
+        x = 0
+        for h in coord:
+            x ^= h
+        if x == 0:
+            t.add_tile(list(coord))
+    t.materialize()
+    for coord in itertools.product(*[range(len(p)) for p in parts]):
+        if t.has_tile(list(coord)):
+            a = np.asarray(t.tile_view(list(coord)))
+            a[...] = _normal(rng, a.shape, dtype)
+    return t
+
+
+def _dense_of(t, sizes):
+    """A tiled tensor or tiled view with tile ``sizes`` as one dense numpy array; absent tiles read 0."""
+    offs = [np.concatenate([[0], np.cumsum(s)[:-1]]).astype(int) for s in sizes]
+    out = None
+    for coord in itertools.product(*[range(len(p)) for p in sizes]):
+        if not t.has_tile(list(coord)):
+            continue
+        block = np.asarray(t.tile_view(list(coord)))
+        if out is None:
+            out = np.zeros([sum(s) for s in sizes], dtype=block.dtype)
+        idx = tuple(slice(offs[ax][h], offs[ax][h] + sizes[ax][h]) for ax, h in enumerate(coord))
+        out[idx] = block
+    return out
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_einsum_takes_a_tiled_view_operand(dtype):
+    """``einsum("ijab <- ijef ; abef", R2, t2, ERI[v, v, v, v])`` against numpy on the gathered blocks."""
+    rng = np.random.default_rng(11)
+    o, v = _irrep_spaces()
+    vir = [_NMO[h] - _NOCC[h] for h in range(4)]
+    ERI = _symmetric_tiled(dtype, "ERI", [_NMO] * 4, rng)
+    t2 = _symmetric_tiled(dtype, "t2", [_NOCC, _NOCC, vir, vir], rng)
+    R2 = DTYPE_TO_TRT[np.dtype(dtype).type]("R2", [_NOCC, _NOCC, vir, vir])
+
+    vvvv = ERI[v, v, v, v]
+    assert type(vvvv).__name__.startswith("TiledRuntimeTensorView")
+    einsums.einsum("ijab <- ijef ; abef", R2, t2, vvvv, c_pf=0.0, ab_pf=0.5)
+
+    want = 0.5 * np.einsum("ijef,abef->ijab", _dense_of(t2, [_NOCC, _NOCC, vir, vir]),
+                           _dense_of(vvvv, [vir] * 4))
+    assert_close(_dense_of(R2, [_NOCC, _NOCC, vir, vir]), want, dtype=dtype)
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_einsum_writes_through_a_tiled_view_output(dtype):
+    """C as F[o, v]: only the view's sub-blocks are scaled and written; the rest of F keeps its values."""
+    rng = np.random.default_rng(12)
+    o, v = _irrep_spaces()
+    vir = [_NMO[h] - _NOCC[h] for h in range(4)]
+    F = _symmetric_tiled(dtype, "F", [_NMO, _NMO], rng)
+    before = _dense_of(F, [_NMO, _NMO]).copy()
+    A = _symmetric_tiled(dtype, "A", [_NOCC, vir], rng)
+    B = _symmetric_tiled(dtype, "B", [vir, vir], rng)
+
+    einsums.einsum("ia <- ie ; ea", F[o, v], A, B, c_pf=0.5, ab_pf=1.0)
+
+    after = _dense_of(F, [_NMO, _NMO])
+    occ_rows = np.concatenate([np.arange(sum(_NMO[:h]), sum(_NMO[:h]) + _NOCC[h]) for h in range(4)])
+    vir_cols = np.concatenate([np.arange(sum(_NMO[:h]) + _NOCC[h], sum(_NMO[:h + 1])) for h in range(4)])
+    want_ov = 0.5 * before[np.ix_(occ_rows, vir_cols)] + _dense_of(A, [_NOCC, vir]) @ _dense_of(B, [vir, vir])
+    assert_close(after[np.ix_(occ_rows, vir_cols)], want_ov, dtype=dtype)
+    outside = np.ones(after.shape, dtype=bool)
+    outside[np.ix_(occ_rows, vir_cols)] = False
+    np.testing.assert_array_equal(after[outside], before[outside])
+
+
+def test_tiled_view_operand_inside_a_capture_raises():
+    o, v = _irrep_spaces()
+    M = _symmetric_tiled(np.float64, "M", [_NMO, _NMO], np.random.default_rng(13))
+    C = DTYPE_TO_TRT[np.float64]("C", [_NOCC, _NOCC])
+    g = cg.Graph("view_capture")
+    with pytest.raises(ValueError, match="tiled view operand is not yet supported inside a captured graph"):
+        with cg.capture(g):
+            einsums.einsum("ij <- ia ; ja", C, M[o, v], M[o, v])

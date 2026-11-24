@@ -6410,13 +6410,15 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
 }
 
 /**
- * @brief Tiled einsum (Tier B1): einsum over TiledRuntimeTensor operands.
+ * @brief Tiled einsum (Tier B1): einsum over TiledRuntimeTensor operands, or views of them.
  *
- * Selected when any operand is tiled. Walks the tile grid and composes dense
- * per-tile contractions (see detail::tiled_runtime_einsum). All three operands
- * must be tiled; the contraction is recorded as a single opaque ``Custom`` node
- * so the einsum-rewriting passes don't try to synthesize dense intermediates
- * for it.
+ * Selected when any operand is tiled. Composes dense per-tile contractions over the
+ * stored tile pairs (see detail::tiled_runtime_einsum). All three operands must be
+ * tiled. Each may be a TiledRuntimeTensorView, such as ``ERI[v, v, v, v]`` over
+ * irrep-blocked integrals, in an eager call; inside a capture a view is not yet
+ * supported and throws. A captured contraction is recorded as a single opaque
+ * ``Custom`` node so the einsum-rewriting passes don't try to synthesize dense
+ * intermediates for it.
  */
 template <TiledTensorConcept AType, TiledTensorConcept BType, TiledTensorConcept CType>
     requires std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
@@ -6428,8 +6430,10 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: conjugation (conj_a/conj_b) is not yet supported for tiled operands");
     }
     static_assert(TiledTensorConcept<AType> && TiledTensorConcept<BType> && TiledTensorConcept<CType>,
-                  "cg::einsum with a tiled operand currently requires all of A, B, C to be TiledRuntimeTensor "
-                  "(mixed tiled/dense is not supported yet)");
+                  "cg::einsum with a tiled operand currently requires all of A, B, C to be TiledRuntimeTensor or "
+                  "TiledRuntimeTensorView (mixed tiled/dense is not supported yet)");
+    constexpr bool any_view = std::is_same_v<AType, TiledRuntimeTensorView<T>> || std::is_same_v<BType, TiledRuntimeTensorView<T>> ||
+                              std::is_same_v<CType, TiledRuntimeTensorView<T>>;
 
     auto const  parsed_ptr = detail::parse_einsum_cached(static_cast<std::string_view>(spec));
     auto const &parsed     = *parsed_ptr;
@@ -6445,43 +6449,55 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     }
 
     auto &ctx = CaptureContext::current();
-    if (detail::runs_eagerly(ctx, "cg::einsum", C, A, B)) {
+    if constexpr (any_view) {
+        if (ctx.is_capturing()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::einsum: a tiled view operand is not yet supported inside a captured graph (spec '{}'); "
+                                    "run it eagerly, or capture a TiledRuntimeTensor holding the block",
+                                    parsed.raw);
+        }
         WAGGLE_ZONE("einsum eager");
         detail::tiled_runtime_einsum<T>(parsed, c_pf, C, ab_pf, A, B);
         return;
+    } else {
+        if (detail::runs_eagerly(ctx, "cg::einsum", C, A, B)) {
+            WAGGLE_ZONE("einsum eager");
+            detail::tiled_runtime_einsum<T>(parsed, c_pf, C, ab_pf, A, B);
+            return;
+        }
+
+        WAGGLE_ZONE("einsum capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [b_id, b_slot] = ctx.get_slot(B);
+        auto [c_id, c_slot] = ctx.get_slot(*C);
+
+        EinsumParams const  params{.c_pf = c_pf, .ab_pf = ab_pf};
+        EinsumIndices const indices{.spec = parsed, .link_indices = {}};
+
+        auto label = fmt::format("tiled einsum: C[{}] = A[{}] * B[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
+                                 fmt::join(parsed.b_indices, ","));
+
+        auto executor = [indices, params, a_slot, b_slot, c_slot]() {
+            WAGGLE_ZONE("einsum execute");
+            detail::tiled_runtime_einsum<T>(indices.spec, as<T>(params.c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params.ab_pf),
+                                            *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
+        };
+
+        // OpKind::Custom on purpose: the node participates in dependency ordering and
+        // lifecycle, but stays invisible to the einsum-rewriting passes (contraction
+        // planning, GEMM batching, stream fusion), which would otherwise synthesize
+        // *dense* intermediates for operands that have no single buffer.
+        //
+        // It DOES carry a TiledEinsumDescriptor holding the indices and prefactors
+        // the executor runs with, so a pass that explicitly asks for a tiled einsum
+        // can inspect it -- the tile-expansion pass needs the spec and the
+        // prefactors, and a bare closure hides both. The descriptor type is distinct
+        // from EinsumDescriptor precisely so that no dense-einsum pass picks it up.
+        TiledEinsumDescriptor tdesc;
+        tdesc.indices = indices;
+        tdesc.params  = params;
+        ctx.record(OpKind::Custom, std::move(label), {a_id, b_id}, {c_id}, std::move(executor), std::move(tdesc));
     }
-
-    WAGGLE_ZONE("einsum capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    auto [c_id, c_slot] = ctx.get_slot(*C);
-
-    EinsumParams const  params{.c_pf = c_pf, .ab_pf = ab_pf};
-    EinsumIndices const indices{.spec = parsed, .link_indices = {}};
-
-    auto label = fmt::format("tiled einsum: C[{}] = A[{}] * B[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
-                             fmt::join(parsed.b_indices, ","));
-
-    auto executor = [indices, params, a_slot, b_slot, c_slot]() {
-        WAGGLE_ZONE("einsum execute");
-        detail::tiled_runtime_einsum<T>(indices.spec, as<T>(params.c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params.ab_pf),
-                                        *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
-    };
-
-    // OpKind::Custom on purpose: the node participates in dependency ordering and
-    // lifecycle, but stays invisible to the einsum-rewriting passes (contraction
-    // planning, GEMM batching, stream fusion), which would otherwise synthesize
-    // *dense* intermediates for operands that have no single buffer.
-    //
-    // It DOES carry a TiledEinsumDescriptor holding the indices and prefactors
-    // the executor runs with, so a pass that explicitly asks for a tiled einsum
-    // can inspect it -- the tile-expansion pass needs the spec and the
-    // prefactors, and a bare closure hides both. The descriptor type is distinct
-    // from EinsumDescriptor precisely so that no dense-einsum pass picks it up.
-    TiledEinsumDescriptor tdesc;
-    tdesc.indices = indices;
-    tdesc.params  = params;
-    ctx.record(OpKind::Custom, std::move(label), {a_id, b_id}, {c_id}, std::move(executor), std::move(tdesc));
 }
 
 /**
@@ -6670,6 +6686,36 @@ APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<float>, einsums::Til
 APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
+// tiled with views (TiledRuntimeTensorView, e.g. ERI[v, v, v, v]): the other 7 of the 8
+// (C, A, B) x (tensor, view) combinations, per dtype. Eager only for now.
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensorView<float>, einsums::TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensorView<float>, einsums::TiledRuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<float>, einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<float>, einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<float>, einsums::TiledRuntimeTensorView<float>, einsums::TiledRuntimeTensor<float>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<float>, einsums::TiledRuntimeTensorView<float>, einsums::TiledRuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensorView<double>, einsums::TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensorView<double>, einsums::TiledRuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<double>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<double>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<double>, einsums::TiledRuntimeTensorView<double>, einsums::TiledRuntimeTensor<double>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<double>, einsums::TiledRuntimeTensorView<double>, einsums::TiledRuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensorView<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensorView<std::complex<float>>, einsums::TiledRuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<std::complex<float>>, einsums::TiledRuntimeTensorView<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<std::complex<float>>, einsums::TiledRuntimeTensorView<std::complex<float>>, einsums::TiledRuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensorView<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensorView<std::complex<double>>, einsums::TiledRuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<std::complex<double>>, einsums::TiledRuntimeTensorView<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
+APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensorView<std::complex<double>>, einsums::TiledRuntimeTensorView<std::complex<double>>, einsums::TiledRuntimeTensorView<std::complex<double>>)
 // clang-format on
 void einsum_python(std::string const &spec, CType *C, AType const &A, BType const &B,
                    typename CType::ValueType c_pf  = typename CType::ValueType{0},

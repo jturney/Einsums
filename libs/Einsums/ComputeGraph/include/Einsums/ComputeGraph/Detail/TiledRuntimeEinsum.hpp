@@ -24,6 +24,61 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 template <typename AType, typename BType, typename CType>
 inline constexpr bool any_tiled_v = TiledTensorConcept<AType> || TiledTensorConcept<BType> || TiledTensorConcept<CType>;
 
+/// Uniform access to a tiled operand, a @ref TiledRuntimeTensor or a @ref TiledRuntimeTensorView of
+/// one. A view sits on its parent's tile grid with each tile cut to its index spaces, so it stores
+/// exactly the parent's tiles, and a tile of the view is a slice of the parent's tile.
+namespace tiled_access {
+
+template <typename T>
+std::vector<std::vector<int>> const &sizes(TiledRuntimeTensor<T> const &x) noexcept {
+    return x.tile_sizes();
+}
+template <typename T>
+std::vector<std::vector<int>> const &sizes(TiledRuntimeTensorView<T> const &x) noexcept {
+    return x.tile_sizes();
+}
+
+/// The stored tiles, keyed by grid coordinate; for a view, its parent's, uncut.
+template <typename T>
+auto const &stored(TiledRuntimeTensor<T> const &x) noexcept {
+    return x.tiles();
+}
+template <typename T>
+auto const &stored(TiledRuntimeTensorView<T> const &x) noexcept {
+    return x.parent().tiles();
+}
+
+/// Call @p f with the operand's tile at @p coord, given its stored tile @p tile: the tile itself, or
+/// the view's slice of it. Nothing is created or materialized.
+template <typename T, typename F>
+decltype(auto) read(TiledRuntimeTensor<T> const &, std::vector<int> const &, RuntimeTensor<T> const &tile, F &&f) {
+    return f(tile);
+}
+template <typename T, typename F>
+decltype(auto) read(TiledRuntimeTensorView<T> const &x, std::vector<int> const &coord, RuntimeTensor<T> const &tile, F &&f) {
+    RuntimeTensorView<T> const slice = tile.at_view(x.slice_specs(coord));
+    return f(slice);
+}
+
+/// Call @p f with the output's tile at @p coord, creating and materializing it when absent: the tile
+/// itself, or the view's slice of the parent's tile, so a write through a view touches only its
+/// sub-block.
+template <typename T, typename F>
+decltype(auto) write(TiledRuntimeTensor<T> &x, std::vector<int> const &coord, F &&f) {
+    auto &tile = x.tile(coord);
+    tile.materialize();
+    return f(tile);
+}
+template <typename T, typename F>
+decltype(auto) write(TiledRuntimeTensorView<T> &x, std::vector<int> const &coord, F &&f) {
+    auto &tile = x.parent().tile(coord);
+    tile.materialize();
+    RuntimeTensorView<T> slice = tile.at_view(x.slice_specs(coord));
+    return f(slice);
+}
+
+} // namespace tiled_access
+
 /**
  * @brief Tiled einsum: compose dense per-tile contractions over a tile grid.
  *
@@ -42,8 +97,10 @@ inline constexpr bool any_tiled_v = TiledTensorConcept<AType> || TiledTensorConc
  * accumulates with `beta == 1` (a freshly created tile starts zeroed).
  *
  * @par Requirements / limitations
- * - All three operands are `TiledRuntimeTensor<T>`; mixed tiled/dense is rejected
- *   by the caller's overload constraint.
+ * - Each operand is a `TiledRuntimeTensor<T>` or a `TiledRuntimeTensorView<T>` of one;
+ *   mixed tiled/dense is rejected by the caller's overload constraint. Through a view,
+ *   C's existing tiles are scaled and written only within the view's sub-blocks, and an
+ *   absent C tile is created whole in the parent.
  * - Indices shared across operands must share an identical tile partition; a
  *   mismatch throws (general re-tiling is out of scope).
  * - Scalar (full-reduction) output is not yet supported.
@@ -51,9 +108,8 @@ inline constexpr bool any_tiled_v = TiledTensorConcept<AType> || TiledTensorConc
  *   materialized here on demand. Serial over tiles (each dense tile contraction
  *   is itself BLAS/threaded).
  */
-template <typename T>
-void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, TiledRuntimeTensor<T> *C, T ab_pf, TiledRuntimeTensor<T> const &A,
-                          TiledRuntimeTensor<T> const &B) {
+template <typename T, typename CType, typename AType, typename BType>
+void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, CType *C, T ab_pf, AType const &A, BType const &B) {
     auto const &cidx = parsed.c_indices;
     auto const &aidx = parsed.a_indices;
     auto const &bidx = parsed.b_indices;
@@ -98,18 +154,26 @@ void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, TiledRuntimeTe
             }
         }
     };
-    absorb(aidx, A.tile_sizes(), "A");
-    absorb(bidx, B.tile_sizes(), "B");
-    absorb(cidx, C->tile_sizes(), "C");
+    absorb(aidx, tiled_access::sizes(A), "A");
+    absorb(bidx, tiled_access::sizes(B), "B");
+    absorb(cidx, tiled_access::sizes(*C), "C");
 
     // Up-front output scaling on existing tiles only (created tiles start zeroed). A prefactor of one
     // leaves the tile as it is, but the tile is still materialized, as every existing tile always was.
-    for (auto &[coord, tile] : C->tiles()) {
-        tile.materialize();
-        if (c_pf == T{0}) {
-            tile.zero();
-        } else if (c_pf != T{1}) {
-            tile *= c_pf;
+    {
+        std::vector<std::vector<int>> existing;
+        existing.reserve(tiled_access::stored(*C).size());
+        for (auto const &[coord, tile] : tiled_access::stored(*C)) {
+            existing.push_back(coord);
+        }
+        for (auto const &coord : existing) {
+            tiled_access::write(*C, coord, [&](auto &tile) {
+                if (c_pf == T{0}) {
+                    tile.zero();
+                } else if (c_pf != T{1}) {
+                    tile *= c_pf;
+                }
+            });
         }
     }
 
@@ -137,17 +201,22 @@ void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, TiledRuntimeTe
     // tile is created whenever the pair exists, which is what decides the output's tile structure;
     // the dense call is skipped when an operand tile has no elements, since it would add nothing.
     std::vector<int> ccoord(cidx.size());
-    auto const       contribute = [&](std::vector<int> const &ucoord, RuntimeTensor<T> const &a_tile, RuntimeTensor<T> const &b_tile) {
+    auto const       contribute = [&](std::vector<int> const &ucoord, std::vector<int> const &a_coord, RuntimeTensor<T> const &a_stored,
+                                      std::vector<int> const &b_coord, RuntimeTensor<T> const &b_stored) {
         for (size_t ax = 0; ax < cidx.size(); ++ax) {
             ccoord[ax] = ucoord[c_tab[ax]];
         }
-        auto &ctile = C->tile(ccoord); // infer-and-create
-        ctile.materialize();
-        if (a_tile.size() == 0 || b_tile.size() == 0 || ctile.size() == 0) {
-            return;
-        }
-        // beta == 1: existing C tiles were pre-scaled, created tiles start zeroed.
-        dispatch::erased_string_einsum<T>(parsed, T{1}, ctile.impl(), ab_pf, a_tile.impl(), b_tile.impl(), false, false);
+        tiled_access::read(A, a_coord, a_stored, [&](auto const &a_tile) {
+            tiled_access::read(B, b_coord, b_stored, [&](auto const &b_tile) {
+                tiled_access::write(*C, ccoord, [&](auto &c_tile) { // infer-and-create
+                    if (a_tile.size() == 0 || b_tile.size() == 0 || c_tile.size() == 0) {
+                        return;
+                    }
+                    // beta == 1: existing C tiles were pre-scaled, created tiles start zeroed.
+                    dispatch::erased_string_einsum<T>(parsed, T{1}, c_tile.impl(), ab_pf, a_tile.impl(), b_tile.impl(), false, false);
+                });
+            });
+        });
     };
 
     // Every C letter must come from A or B for the pairs of stored tiles to cover the grid; the
@@ -177,8 +246,10 @@ void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, TiledRuntimeTe
             for (size_t ax = 0; ax < bidx.size(); ++ax) {
                 bcoord[ax] = ucoord[b_tab[ax]];
             }
-            if (A.has_tile(acoord) && B.has_tile(bcoord)) {
-                contribute(ucoord, A.tile(acoord), B.tile(bcoord));
+            auto const a_it = tiled_access::stored(A).find(acoord);
+            auto const b_it = tiled_access::stored(B).find(bcoord);
+            if (a_it != tiled_access::stored(A).end() && b_it != tiled_access::stored(B).end()) {
+                contribute(ucoord, acoord, a_it->second, bcoord, b_it->second);
             }
         }
         return;
@@ -220,7 +291,7 @@ void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, TiledRuntimeTe
         std::vector<int>  uc(nu);
         std::vector<bool> set(nu);
         std::vector<int>  key(shared.size());
-        for (auto const &[coord, tile] : B.tiles()) {
+        for (auto const &[coord, tile] : tiled_access::stored(B)) {
             std::fill(set.begin(), set.end(), false);
             if (!assign(b_tab, coord, uc, set)) {
                 continue;
@@ -234,14 +305,16 @@ void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, TiledRuntimeTe
 
     struct Pair {
         size_t                  sentinel;
+        std::vector<int> const *a_coord;
         RuntimeTensor<T> const *a;
+        std::vector<int> const *b_coord;
         RuntimeTensor<T> const *b;
     };
     std::vector<Pair> pairs;
     {
         std::vector<bool> set(nu);
         std::vector<int>  key(shared.size());
-        for (auto const &[a_coord, a_tile] : A.tiles()) {
+        for (auto const &[a_coord, a_tile] : tiled_access::stored(A)) {
             std::fill(set.begin(), set.end(), false);
             if (!assign(a_tab, a_coord, ucoord, set)) {
                 continue;
@@ -265,7 +338,7 @@ void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, TiledRuntimeTe
                 for (size_t u = 0; u < nu; ++u) {
                     sentinel += static_cast<size_t>(ucoord[u]) * stride[u];
                 }
-                pairs.push_back({sentinel, &a_tile, b_tile});
+                pairs.push_back({sentinel, &a_coord, &a_tile, b_coord, b_tile});
             }
         }
     }
@@ -277,7 +350,7 @@ void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, TiledRuntimeTe
             ucoord[u] = static_cast<int>(rem / stride[u]);
             rem %= stride[u];
         }
-        contribute(ucoord, *pair.a, *pair.b);
+        contribute(ucoord, *pair.a_coord, *pair.a, *pair.b_coord, *pair.b);
     }
 }
 

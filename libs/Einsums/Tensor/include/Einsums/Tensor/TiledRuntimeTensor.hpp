@@ -594,12 +594,26 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorViewZ", TiledRuntimeTensorView<std::com
     APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> tile_view(std::vector<int> const &coord) {
         auto &t = _parent->tile(coord);
         t.materialize();
+        return t.at_view(slice_specs(coord));
+    }
+
+    /// False: the view selects index spaces of its parent's tiles, not all of them.
+    [[nodiscard]] bool full_view_of_underlying() const noexcept { return false; }
+
+    /// The tensor this view slices; its tiles are the view's tiles, uncut.
+    [[nodiscard]] TiledRuntimeTensor<T>       &parent() noexcept { return *_parent; }
+    [[nodiscard]] TiledRuntimeTensor<T> const &parent() const noexcept { return *_parent; }
+
+    /// The per-axis ranges that cut the parent's tile at @p coord down to this view's sub-block.
+    /// Applying them to a tile (``tile.at_view(slice_specs(coord))``) reads it without creating or
+    /// materializing anything, which @ref tile_view does for an absent tile.
+    [[nodiscard]] std::vector<SliceSpec> slice_specs(std::vector<int> const &coord) const {
         std::vector<SliceSpec> specs(_spaces.size());
         for (std::size_t k = 0; k < _spaces.size(); ++k) {
             auto const &rng = _spaces[k].ranges.at(static_cast<std::size_t>(coord[k]));
             specs[k]        = SliceSpec{SliceSpec::Kind::Range, 0, rng.first, rng.second, 1};
         }
-        return t.at_view(specs);
+        return specs;
     }
 
   private:

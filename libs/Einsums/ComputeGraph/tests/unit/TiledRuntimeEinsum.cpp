@@ -464,3 +464,152 @@ TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - tiled outer product pairs every st
     testing::reference_einsum("ij <- i ; j", &want, densify(a), densify(b));
     REQUIRE(all_close(densify(C), want));
 }
+
+namespace {
+
+/// Occupied and virtual spaces over the irreps of an MO axis with @p nmo orbitals and @p nocc
+/// occupied per irrep.
+std::pair<IndexSpace, IndexSpace> occ_vir(std::vector<int> const &nmo, std::vector<int> const &nocc) {
+    std::vector<std::pair<int, int>> o, v;
+    for (size_t h = 0; h < nmo.size(); ++h) {
+        o.emplace_back(0, nocc[h]);
+        v.emplace_back(nocc[h], nmo[h]);
+    }
+    return {IndexSpace(o), IndexSpace(v)};
+}
+
+/// The view's blocks, copied into a tiled tensor of their own on the same grid.
+template <typename V>
+TiledRuntimeTensor<V> copy_of(TiledRuntimeTensorView<V> &view) {
+    TiledRuntimeTensor<V>         out("copy", view.tile_sizes());
+    std::vector<std::vector<int>> offsets(view.tile_sizes().size());
+    for (size_t ax = 0; ax < offsets.size(); ++ax) {
+        int at = 0;
+        for (int const n : view.tile_sizes()[ax]) {
+            offsets[ax].push_back(at);
+            at += n;
+        }
+    }
+    for (auto const &[coord, parent_tile] : view.parent().tiles()) {
+        RuntimeTensorView<V> src  = view.tile_view(coord);
+        auto                &tile = out.tile(coord);
+        tile.materialize();
+        for_each_tile_element(coord, view.tile_sizes(), offsets,
+                              [&](std::vector<size_t> const &local, std::vector<size_t> const &) { tile(local) = src(local); });
+    }
+    return out;
+}
+
+} // namespace
+
+// A pycc port slices irrep-blocked integrals by orbital space, as pycc slices ERI[v, v, v, v]. A view
+// operand reads the parent's tiles cut to its spaces, on the parent's grid, so the contraction pairs
+// the same tiles a copy of those blocks would. Not bit for bit: a view's tile is a strided slice of
+// the parent's, and the dense kernel it takes may sum in another order than a contiguous copy's.
+TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - a view operand contracts as a copy of its blocks", "[ComputeGraph][TiledRuntime]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    std::vector<int> const nmo{5, 2, 3, 4};
+    std::vector<int> const nocc{2, 0, 1, 1};
+    std::vector<int>       vir;
+    for (size_t h = 0; h < nmo.size(); ++h) {
+        vir.push_back(nmo[h] - nocc[h]);
+    }
+    auto const [o, v] = occ_vir(nmo, nocc);
+
+    TiledRuntimeTensor<T> ERI("ERI", Grid{nmo, nmo, nmo, nmo});
+    fill_symmetric(ERI, 4, 0.3);
+    TiledRuntimeTensor<T> t2("t2", Grid{nocc, nocc, vir, vir});
+    fill_symmetric(t2, 4, -0.2);
+
+    auto                  vvvv     = ERI.view({v, v, v, v});
+    TiledRuntimeTensor<T> eri_vvvv = copy_of(vvvv);
+
+    TiledRuntimeTensor<T> by_view("by_view", Grid{nocc, nocc, vir, vir});
+    TiledRuntimeTensor<T> by_copy("by_copy", Grid{nocc, nocc, vir, vir});
+    cg::einsum("ijab <- ijef ; abef", T{0}, &by_view, T{0.5}, t2, vvvv);
+    cg::einsum("ijab <- ijef ; abef", T{0}, &by_copy, T{0.5}, t2, eri_vvvv);
+
+    REQUIRE(tile_set(by_view) == tile_set(by_copy));
+    REQUIRE(all_close(densify(by_view), densify(by_copy)));
+    RuntimeTensor<T> want = densify(by_copy);
+    want.zero();
+    testing::reference_einsum("ijab <- ijef ; abef", T{0}, &want, T{0.5}, densify(t2), densify(eri_vvvv));
+    REQUIRE(all_close(densify(by_view), want));
+}
+
+// Through a view, C is scaled and written only within the view's sub-blocks: the parent's other
+// elements keep their values, and an absent parent tile the contraction reaches is created whole,
+// zero outside the view's slice.
+TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - a view output touches only its sub-blocks", "[ComputeGraph][TiledRuntime]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    std::vector<int> const nmo{3, 2};
+    std::vector<int> const nocc{1, 1};
+    auto const [o, v] = occ_vir(nmo, nocc);
+
+    TiledRuntimeTensor<T> A("A", Grid{{1, 1}, {2, 1}}); // i (occ), e (vir)
+    TiledRuntimeTensor<T> B("B", Grid{{2, 1}, {2, 1}}); // e (vir), a (vir)
+    fill_symmetric(A, 2, 0.4);
+    fill_symmetric(B, 2, -0.6);
+
+    // The MO-span output stores only its (0, 0) tile, filled everywhere with 3.
+    TiledRuntimeTensor<T> F("F", Grid{nmo, nmo});
+    auto                 &f00 = F.tile({0, 0});
+    f00.materialize();
+    f00.set_all(T{3});
+    auto ov = F.view({o, v});
+
+    cg::einsum("ia <- ie ; ea", T{0.5}, &ov, T{1}, A, B);
+
+    // Both diagonal blocks are reached; (1, 1) did not exist and is created.
+    REQUIRE(tile_set(F) == std::set<std::vector<int>>{{0, 0}, {1, 1}});
+    RuntimeTensor<T> want("want", std::vector<size_t>{2, 3});
+    want.set_all(T{0});
+    {
+        RuntimeTensor<T> prior("prior", std::vector<size_t>{2, 3});
+        prior.zero();
+        prior(std::vector<size_t>{0, 0}) = T{3}; // F(0, 1) and F(0, 2): irrep 0's o x v block, filled with 3
+        prior(std::vector<size_t>{0, 1}) = T{3};
+        testing::reference_einsum("ia <- ie ; ea", T{0}, &want, T{1}, densify(A), densify(B));
+        for (size_t e = 0; e < want.size(); ++e) {
+            want.data()[e] += T{0.5} * prior.data()[e];
+        }
+    }
+    // The view's sub-blocks hold the result.
+    RuntimeTensor<T> got("got", std::vector<size_t>{2, 3});
+    got.zero();
+    for (int h = 0; h < 2; ++h) {
+        RuntimeTensorView<T> slice = ov.tile_view({h, h});
+        for (size_t r = 0; r < slice.dim(0); ++r) {
+            for (size_t c = 0; c < slice.dim(1); ++c) {
+                got(std::vector<size_t>{static_cast<size_t>(h) + r, (h == 0 ? 0 : 2) + c}) = slice(std::vector<size_t>{r, c});
+            }
+        }
+    }
+    REQUIRE(all_close(got, want));
+    // Outside them, F(0, 0) of irrep 0 and the o x o, v x o, v x v elements keep their 3.
+    REQUIRE(f00(std::vector<size_t>{0, 0}) == T{3});
+    REQUIRE(f00(std::vector<size_t>{1, 1}) == T{3});
+    REQUIRE(f00(std::vector<size_t>{2, 2}) == T{3});
+    REQUIRE(f00(std::vector<size_t>{1, 0}) == T{3});
+    // The created tile is zero outside its o x v slice.
+    auto const &f11 = F.tile({1, 1});
+    REQUIRE(f11(std::vector<size_t>{0, 0}) == T{0});
+    REQUIRE(f11(std::vector<size_t>{1, 0}) == T{0});
+    REQUIRE(f11(std::vector<size_t>{1, 1}) == T{0});
+}
+
+TEST_CASE("TiledRuntimeTensor - a view operand inside a capture throws", "[ComputeGraph][TiledRuntime]") {
+    std::vector<int> const nmo{3, 2};
+    std::vector<int> const nocc{1, 1};
+    auto const [o, v] = occ_vir(nmo, nocc);
+    TiledRuntimeTensor<double> M("M", Grid{nmo, nmo});
+    fill_symmetric(M, 2, 0.1);
+    TiledRuntimeTensor<double> C("C", Grid{nocc, nocc});
+    auto                       ov = M.view({o, v});
+
+    cg::Graph              g("view_capture");
+    cg::CaptureGuard const guard(g);
+    REQUIRE_THROWS_AS(cg::einsum("ij <- ia ; ja", &C, ov, ov), std::invalid_argument);
+}

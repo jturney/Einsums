@@ -123,7 +123,15 @@ and ``heev``.
 
 Mixing tiled and dense operands in one call is rejected at compile time: a
 tiled ``einsum``, ``permute``, ``axpy`` or ``axpby`` requires **every** operand
-to be a ``TiledRuntimeTensor``.
+to be tiled.
+For ``einsum`` each operand may be a ``TiledRuntimeTensor`` or a
+``TiledRuntimeTensorView`` of one, such as ``ERI[v, v, v, v]`` over irrep-blocked
+integrals, in an eager call.
+A view reads its parent's tiles cut to its index spaces; as the output, it scales
+and writes only those sub-blocks, and a tile it reaches that the parent lacks is
+created whole, zero outside the view.
+Inside a capture a view operand is not yet supported and raises.
+For the other tiled operations every operand is a ``TiledRuntimeTensor``.
 
 Semantics
 ---------
