@@ -222,6 +222,53 @@ enum class TiledLowering : std::uint8_t {
 /// buffers are built per call, and a contraction that large prices per tile anyway.
 inline constexpr std::size_t kMaxEagerDenseBytes = std::size_t{64} << 20;
 
+/// The view's slices of every tile its parent stores, copied into @p copy, a tiled tensor over the
+/// view's extents: a captured contraction's stand-in for a view operand. Tiles @p copy lacks are
+/// created, as an output's are.
+template <typename T>
+void tiled_view_copy_in(TiledRuntimeTensorView<T> const &view, TiledRuntimeTensor<T> &copy) {
+    if (view.rank() > kMaxBlockRank) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "tiled view copy: rank {} is above the supported {}", view.rank(), kMaxBlockRank);
+    }
+    for (auto const &[coord, tile] : view.parent().tiles()) {
+        block_copy<false, T>(tiled_access::read_block(view, coord, tile), tiled_access::write_block(copy, coord));
+    }
+}
+
+/// Every tile of @p copy written into the view's slices of its parent, creating a parent tile it
+/// lacks whole, zero outside the slice. The parent's other elements are untouched.
+template <typename T>
+void tiled_view_copy_out(TiledRuntimeTensor<T> const &copy, TiledRuntimeTensorView<T> &view) {
+    if (view.rank() > kMaxBlockRank) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "tiled view copy: rank {} is above the supported {}", view.rank(), kMaxBlockRank);
+    }
+    for (auto const &[coord, tile] : copy.tiles()) {
+        block_copy<false, T>(tiled_access::read_block(copy, coord, tile), tiled_access::write_block(view, coord));
+    }
+}
+
+/// The index spaces a view's recorded per-irrep ranges describe, one per axis.
+inline std::vector<::einsums::IndexSpace> index_spaces_of(std::vector<std::vector<std::pair<int, int>>> const &ranges) {
+    std::vector<::einsums::IndexSpace> spaces;
+    spaces.reserve(ranges.size());
+    for (auto const &axis : ranges) {
+        spaces.emplace_back(axis);
+    }
+    return spaces;
+}
+
+/// The per-irrep ranges a view selects, one list per axis: what a captured copy records to rebuild it.
+template <typename T>
+std::vector<std::vector<std::pair<int, int>>> ranges_of(TiledRuntimeTensorView<T> const &view) {
+    std::vector<std::vector<std::pair<int, int>>> ranges(view.rank());
+    for (std::size_t ax = 0; ax < view.rank(); ++ax) {
+        for (std::size_t h = 0; h < view.tile_sizes()[ax].size(); ++h) {
+            ranges[ax].push_back(view.space_range(ax, static_cast<int>(h)));
+        }
+    }
+    return ranges;
+}
+
 /// Which tiles a tiled operand stores, as an order-independent fingerprint: their count and two
 /// independent 64-bit sums of a hash of each coordinate. Two different sets of tiles on the same
 /// grid share one only by a 128-bit collision, and nothing chooses tile sets to cause one.

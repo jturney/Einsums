@@ -600,18 +600,85 @@ TEMPLATE_LIST_TEST_CASE("TiledRuntimeTensor - a view output touches only its sub
     REQUIRE(f11(std::vector<size_t>{1, 1}) == T{0});
 }
 
-TEST_CASE("TiledRuntimeTensor - a view operand inside a capture throws", "[ComputeGraph][TiledRuntime]") {
+// Captured, a view is a copy: a view operand's slices are copied into a graph-owned tiled tensor,
+// and a view output is contracted into one and copied back into its parent's slices, so the graph
+// holds only whole tiled tensors. Replayed, raw or optimized, it must give what the eager calls give,
+// accumulation included: c_pf scales the view's sub-blocks on every replay and nothing else.
+TEST_CASE("TiledRuntimeTensor - view operands inside a captured graph match the eager calls", "[ComputeGraph][TiledRuntime]") {
+    std::vector<int> const nmo{5, 2, 3, 4};
+    std::vector<int> const nocc{2, 0, 1, 1};
+    std::vector<int>       vir;
+    for (size_t h = 0; h < nmo.size(); ++h) {
+        vir.push_back(nmo[h] - nocc[h]);
+    }
+    auto const [o, v] = occ_vir(nmo, nocc);
+
+    auto const build = [&](char const *tag) {
+        struct Operands {
+            TiledRuntimeTensor<double> ERI, t2, R2, F, A, B;
+        };
+        Operands ops{TiledRuntimeTensor<double>(std::string("ERI") + tag, Grid{nmo, nmo, nmo, nmo}),
+                     TiledRuntimeTensor<double>(std::string("t2") + tag, Grid{nocc, nocc, vir, vir}),
+                     TiledRuntimeTensor<double>(std::string("R2") + tag, Grid{nocc, nocc, vir, vir}),
+                     TiledRuntimeTensor<double>(std::string("F") + tag, Grid{nmo, nmo}),
+                     TiledRuntimeTensor<double>(std::string("A") + tag, Grid{nocc, vir}),
+                     TiledRuntimeTensor<double>(std::string("B") + tag, Grid{vir, vir})};
+        fill_symmetric(ops.ERI, 4, 0.3);
+        fill_symmetric(ops.t2, 4, -0.2);
+        fill_symmetric(ops.R2, 4, 0.6);
+        fill_symmetric(ops.F, 4, 0.9);
+        fill_symmetric(ops.A, 4, 0.4);
+        fill_symmetric(ops.B, 4, -0.6);
+        return ops;
+    };
+
+    // The eager reference: both contractions, twice.
+    auto ref = build("_ref");
+    for (int replay = 0; replay < 2; ++replay) {
+        auto vvvv = ref.ERI.view({v, v, v, v});
+        auto ov   = ref.F.view({o, v});
+        cg::einsum("ijab <- ijef ; abef", 0.5, &ref.R2, 1.0, ref.t2, vvvv);
+        cg::einsum("ia <- ie ; ea", 0.5, &ov, 1.0, ref.A, ref.B);
+    }
+
+    for (bool const optimize : {false, true}) {
+        auto      ops = build(optimize ? "_opt" : "_raw");
+        cg::Graph graph(optimize ? "views_opt" : "views_raw");
+        {
+            cg::CaptureGuard const guard(graph);
+            auto                   vvvv = ops.ERI.view({v, v, v, v});
+            auto                   ov   = ops.F.view({o, v});
+            cg::einsum("ijab <- ijef ; abef", 0.5, &ops.R2, 1.0, ops.t2, vvvv);
+            cg::einsum("ia <- ie ; ea", 0.5, &ov, 1.0, ops.A, ops.B);
+        }
+        if (optimize) {
+            graph.optimize();
+        }
+        graph.execute();
+        graph.execute();
+        INFO("optimized: " << optimize);
+        REQUIRE(all_close(densify(ops.R2), densify(ref.R2)));
+        REQUIRE(all_close(densify(ops.F), densify(ref.F))); // the view's slices and everything outside them
+        REQUIRE(tile_set(ops.F) == tile_set(ref.F));
+    }
+}
+
+// A captured view copy is a tiled node, and a tiled node records no descriptor a saved graph can
+// rebuild, so saving refuses it as it refuses every tiled node.
+TEST_CASE("TiledRuntimeTensor - a graph holding a tiled view copy refuses to save", "[ComputeGraph][TiledRuntime]") {
     std::vector<int> const nmo{3, 2};
     std::vector<int> const nocc{1, 1};
     auto const [o, v] = occ_vir(nmo, nocc);
     TiledRuntimeTensor<double> M("M", Grid{nmo, nmo});
     fill_symmetric(M, 2, 0.1);
     TiledRuntimeTensor<double> C("C", Grid{nocc, nocc});
-    auto                       ov = M.view({o, v});
-
-    cg::Graph              g("view_capture");
-    cg::CaptureGuard const guard(g);
-    REQUIRE_THROWS_AS(cg::einsum("ij <- ia ; ja", &C, ov, ov), std::invalid_argument);
+    cg::Graph                  graph("view_save");
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                   ov = M.view({o, v});
+        cg::einsum("ij <- ia ; ja", &C, ov, ov);
+    }
+    REQUIRE_FALSE(graph.serializability_report().empty());
 }
 
 // An eager tiled einsum chooses between running each pair of stored tiles and densifying (gather A

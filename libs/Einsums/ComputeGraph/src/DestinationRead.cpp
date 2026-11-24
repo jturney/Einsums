@@ -59,6 +59,9 @@ bool reads_destination(Node const &node) {
     if (auto const *p = node.op_data.get_if<TiledPermuteDescriptor>()) {
         return !is_zero(p->beta);
     }
+    if (auto const *v = node.op_data.get_if<TiledViewCopyDescriptor>()) {
+        return v->into_parent; // only the view's sub-blocks of the parent are written
+    }
     if (auto const *b = node.op_data.get_if<BatchedGemmDescriptor>()) {
         return b->beta != std::complex<double>{0.0, 0.0};
     }
@@ -131,8 +134,9 @@ std::optional<std::size_t> destination_operand_count(Node const &node) {
         node.op_data.holds<ElementwiseBinaryDescriptor>() || node.op_data.holds<GemmDescriptor>()) {
         return 2; // A, B
     }
-    if (node.op_data.holds<PermuteDescriptor>() || node.op_data.holds<TiledPermuteDescriptor>()) {
-        return 1; // A
+    if (node.op_data.holds<PermuteDescriptor>() || node.op_data.holds<TiledPermuteDescriptor>() ||
+        node.op_data.holds<TiledViewCopyDescriptor>()) {
+        return 1; // A, or the copy's source
     }
     if (auto const *t = node.op_data.get_if<TiledElementwiseDescriptor>()) {
         switch (t->op) {

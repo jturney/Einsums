@@ -6409,14 +6409,51 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     detail::einsum_parsed(*detail::parse_einsum_cached(spec), c_pf, C, ab_pf, A, B, conj_a, conj_b);
 }
 
+namespace detail {
+
+/// Record a copy between a tiled view and @p copy, a tiled tensor over its extents: into the copy,
+/// or, when @p into_parent, from it into the view's slices of the parent. The node reads and writes
+/// whole tiled tensors and rebuilds the view from the parent and the recorded ranges at replay.
+template <typename T>
+void capture_tiled_view_copy(CaptureContext &ctx, TiledRuntimeTensorView<T> const &view, TiledRuntimeTensor<T> &copy, bool into_parent) {
+    auto [parent_id, parent_slot] = ctx.get_slot(view.parent());
+    auto [copy_id, copy_slot]     = ctx.get_slot(copy);
+
+    TiledViewCopyDescriptor desc;
+    desc.ranges      = ranges_of(view);
+    desc.into_parent = into_parent;
+
+    auto executor = [ranges = desc.ranges, into_parent, parent_slot, copy_slot]() {
+        WAGGLE_ZONE("tiled view copy");
+        auto                     &parent = *static_cast<TiledRuntimeTensor<T> *>(parent_slot->ptr);
+        auto                     &copy   = *static_cast<TiledRuntimeTensor<T> *>(copy_slot->ptr);
+        TiledRuntimeTensorView<T> view(parent, index_spaces_of(ranges), parent.name() + " (view)");
+        if (into_parent) {
+            tiled_view_copy_out(copy, view);
+        } else {
+            tiled_view_copy_in(view, copy);
+        }
+    };
+    auto label = fmt::format("tiled view copy: {} {} {}", view.parent().name(), into_parent ? "<-" : "->", copy.name());
+    // Copying out writes only the view's sub-blocks of the parent, so it reads it: the destination,
+    // listed last.
+    std::vector<TensorId> inputs  = into_parent ? std::vector<TensorId>{copy_id, parent_id} : std::vector<TensorId>{parent_id};
+    std::vector<TensorId> outputs = {into_parent ? parent_id : copy_id};
+    ctx.record(OpKind::Custom, std::move(label), std::move(inputs), std::move(outputs), std::move(executor), std::move(desc));
+}
+
+} // namespace detail
+
 /**
  * @brief Tiled einsum (Tier B1): einsum over TiledRuntimeTensor operands, or views of them.
  *
  * Selected when any operand is tiled. Composes dense per-tile contractions over the
  * stored tile pairs (see detail::tiled_runtime_einsum). All three operands must be
  * tiled. Each may be a TiledRuntimeTensorView, such as ``ERI[v, v, v, v]`` over
- * irrep-blocked integrals, in an eager call; inside a capture a view is not yet
- * supported and throws. A captured contraction is recorded as a single opaque
+ * irrep-blocked integrals. Captured, a view operand is recorded as a copy of its
+ * slices into a graph-owned tiled tensor and a view output as a contraction into
+ * one copied back into its parent (see TiledViewCopyDescriptor). A captured
+ * contraction is recorded as a single opaque
  * ``Custom`` node so the einsum-rewriting passes don't try to synthesize dense
  * intermediates for it.
  */
@@ -6450,14 +6487,40 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
 
     auto &ctx = CaptureContext::current();
     if constexpr (any_view) {
-        if (ctx.is_capturing()) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                    "cg::einsum: a tiled view operand is not yet supported inside a captured graph (spec '{}'); "
-                                    "run it eagerly, or capture a TiledRuntimeTensor holding the block",
-                                    parsed.raw);
+        if (!ctx.is_capturing()) {
+            WAGGLE_ZONE("einsum eager");
+            detail::tiled_runtime_einsum<T>(parsed, c_pf, C, ab_pf, A, B);
+            return;
         }
-        WAGGLE_ZONE("einsum eager");
-        detail::tiled_runtime_einsum<T>(parsed, c_pf, C, ab_pf, A, B);
+        // Captured, a view becomes a copy: an input's slices are copied into a graph-owned tiled
+        // tensor of its extents, and an output is contracted into one and copied back into its
+        // parent's slices. The graph then sees only whole tiled tensors (see TiledViewCopyDescriptor).
+        Graph &graph   = *ctx.graph();
+        auto   copy_of = [&](TiledRuntimeTensorView<T> const &view, char const *role) -> TiledRuntimeTensor<T>   &{
+            return graph.declare_zero_tiled_tensor<T>(fmt::format("{} [view copy, {}]", view.parent().name(), role), view.tile_sizes(),
+                                                      /*intermediate=*/true);
+        };
+        auto as_tensor = [&](auto const &X, char const *role) -> TiledRuntimeTensor<T> const & {
+            if constexpr (std::is_same_v<std::remove_cvref_t<decltype(X)>, TiledRuntimeTensorView<T>>) {
+                auto &copy = copy_of(X, role);
+                detail::capture_tiled_view_copy<T>(ctx, X, copy, /*into_parent=*/false);
+                return copy;
+            } else {
+                return X;
+            }
+        };
+        TiledRuntimeTensor<T> const &a = as_tensor(A, "A");
+        TiledRuntimeTensor<T> const &b = as_tensor(B, "B");
+        if constexpr (std::is_same_v<CType, TiledRuntimeTensorView<T>>) {
+            auto &c = copy_of(*C, "C");
+            if (c_pf != T{0}) {
+                detail::capture_tiled_view_copy<T>(ctx, *C, c, /*into_parent=*/false);
+            }
+            einsum(spec, c_pf, &c, ab_pf, a, b);
+            detail::capture_tiled_view_copy<T>(ctx, *C, c, /*into_parent=*/true);
+        } else {
+            einsum(spec, c_pf, C, ab_pf, a, b);
+        }
         return;
     } else {
         if (detail::runs_eagerly(ctx, "cg::einsum", C, A, B)) {

@@ -823,6 +823,29 @@ struct TiledEinsumDescriptor {
 };
 
 /**
+ * @brief Metadata for a copy between a tiled view and a tiled tensor of its extents (``OpKind::Custom``).
+ *
+ * A captured contraction cannot take a TiledRuntimeTensorView as an operand: a view of a tile is an
+ * alias the graph would have to resolve, and a tile's storage may move. So a view operand is
+ * captured as a copy of its slices into a graph-owned tiled tensor, and a view output as a
+ * contraction into such a tensor followed by a copy back into the parent's slices. Each copy reads
+ * and writes whole tiled tensors, so the graph sees only ordinary tensors.
+ *
+ * The node's first input is the source. Copying into the parent writes only the view's sub-blocks,
+ * so it reads its destination, which is its trailing input.
+ */
+struct TiledViewCopyDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "TiledViewCopyDescriptor";
+    /// Per axis, per irrep: the half-open range of the parent's tile the view selects.
+    std::vector<std::vector<std::pair<int, int>>> ranges;
+    /// False: the parent's slices into the copy. True: the copy into the parent's slices.
+    bool into_parent{false};
+
+    bool operator==(TiledViewCopyDescriptor const &) const = default; ///< Field-wise.
+};
+
+/**
  * @brief Metadata for a TILED permute node (``OpKind::Custom``).
  *
  * A tiled ``C = beta*C + alpha*P(A)`` records as Custom and executes through

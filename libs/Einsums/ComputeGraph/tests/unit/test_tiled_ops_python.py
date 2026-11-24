@@ -951,11 +951,36 @@ def test_einsum_writes_through_a_tiled_view_output(dtype):
     np.testing.assert_array_equal(after[outside], before[outside])
 
 
-def test_tiled_view_operand_inside_a_capture_raises():
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_tiled_view_operands_inside_a_capture_match_eager(dtype):
+    """Captured, a view is copied in or out; replays of the raw and optimized graph match eager calls."""
     o, v = _irrep_spaces()
-    M = _symmetric_tiled(np.float64, "M", [_NMO, _NMO], np.random.default_rng(13))
-    C = DTYPE_TO_TRT[np.float64]("C", [_NOCC, _NOCC])
-    g = cg.Graph("view_capture")
-    with pytest.raises(ValueError, match="tiled view operand is not yet supported inside a captured graph"):
+    vir = [_NMO[h] - _NOCC[h] for h in range(4)]
+
+    def build(seed):
+        rng = np.random.default_rng(seed)
+        return dict(ERI=_symmetric_tiled(dtype, "ERI", [_NMO] * 4, rng),
+                    t2=_symmetric_tiled(dtype, "t2", [_NOCC, _NOCC, vir, vir], rng),
+                    R2=_symmetric_tiled(dtype, "R2", [_NOCC, _NOCC, vir, vir], rng),
+                    F=_symmetric_tiled(dtype, "F", [_NMO, _NMO], rng),
+                    A=_symmetric_tiled(dtype, "A", [_NOCC, vir], rng),
+                    B=_symmetric_tiled(dtype, "B", [vir, vir], rng))
+
+    def step(t):
+        einsums.einsum("ijab <- ijef ; abef", t["R2"], t["t2"], t["ERI"][v, v, v, v], c_pf=0.5, ab_pf=1.0)
+        einsums.einsum("ia <- ie ; ea", t["F"][o, v], t["A"], t["B"], c_pf=0.5, ab_pf=1.0)
+
+    ref = build(14)
+    step(ref)
+    step(ref)
+    for optimize in (False, True):
+        t = build(14)
+        g = cg.Graph("views")
         with cg.capture(g):
-            einsums.einsum("ij <- ia ; ja", C, M[o, v], M[o, v])
+            step(t)
+        if optimize:
+            g.apply(cg.default_pass_manager())
+        g.execute()
+        g.execute()
+        assert_close(_dense_of(t["R2"], [_NOCC, _NOCC, vir, vir]), _dense_of(ref["R2"], [_NOCC, _NOCC, vir, vir]), dtype=dtype)
+        assert_close(_dense_of(t["F"], [_NMO, _NMO]), _dense_of(ref["F"], [_NMO, _NMO]), dtype=dtype)

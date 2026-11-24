@@ -126,11 +126,13 @@ tiled ``einsum``, ``permute``, ``axpy`` or ``axpby`` requires **every** operand
 to be tiled.
 For ``einsum`` each operand may be a ``TiledRuntimeTensor`` or a
 ``TiledRuntimeTensorView`` of one, such as ``ERI[v, v, v, v]`` over irrep-blocked
-integrals, in an eager call.
+integrals.
 A view reads its parent's tiles cut to its index spaces; as the output, it scales
 and writes only those sub-blocks, and a tile it reaches that the parent lacks is
 created whole, zero outside the view.
-Inside a capture a view operand is not yet supported and raises.
+Captured, a view operand is recorded as a copy of its slices into a graph-owned
+tiled tensor, and a view output as a contraction into one copied back into the
+parent's slices, so the graph holds only whole tiled tensors.
 For the other tiled operations every operand is a ``TiledRuntimeTensor``.
 
 Semantics
