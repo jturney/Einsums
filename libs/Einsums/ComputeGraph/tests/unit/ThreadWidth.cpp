@@ -419,9 +419,10 @@ TEMPLATE_LIST_TEST_CASE("ThreadWidth - a node width sends a contraction to the p
     auto             eager = create_zero_tensor<T>("eager", n, n, n);
     auto             wide  = create_zero_tensor<T>("wide", n, n, n);
 
+    // Unfenced, the shape is one GEMM over merged axes, which the string dispatch hands to the
+    // vendor itself before PackedGemm is reached.
     cg::einsum("abd;cd->abc", &eager, K, t);
-    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "packed_gemm");
-    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_fused_runtime");
 
     {
         // What WidthGuard does around a wide node, minus the executor. The
@@ -444,7 +445,7 @@ TEMPLATE_LIST_TEST_CASE("ThreadWidth - a node width sends a contraction to the p
     // Leaving the scope restores the route, so nothing about the eager path is
     // conditional on a wide call having happened earlier.
     cg::einsum("abd;cd->abc", &eager, K, t);
-    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_fused_runtime");
 }
 
 TEMPLATE_LIST_TEST_CASE("ThreadWidth - a rank-2 GEMM under a width leaves the vendor route", "[ComputeGraph][Executor][ThreadWidth]",
