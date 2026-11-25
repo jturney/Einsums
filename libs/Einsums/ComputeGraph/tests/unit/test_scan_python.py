@@ -20,7 +20,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close
+from einsums.testing import ALL_DTYPES, REAL_DTYPES, assert_close, ordered_extremum_accumulate
 
 _ctr = itertools.count()
 NAN = np.nan
@@ -29,8 +29,9 @@ INF = np.inf
 _NUMPY = {
     "sum": (np.cumsum, 0.0),
     "prod": (np.cumprod, 1.0),
-    "max": (np.maximum.accumulate, -INF),
-    "min": (np.minimum.accumulate, INF),
+    # Not numpy.maximum.accumulate: it leaves a zero tie to the platform, and einsums orders them.
+    "max": (lambda x, axis: ordered_extremum_accumulate("max", x, axis), -INF),
+    "min": (lambda x, axis: ordered_extremum_accumulate("min", x, axis), INF),
 }
 
 
@@ -108,7 +109,7 @@ def test_extremum_scans_propagate_nan_and_order_signed_zeros(op):
     x = np.array([-0.0, 0.0, 2.0, NAN, 5.0, -1.0])
     out = einsums.create_zero_tensor(_nm("n"), [6])
     einsums.linalg.scan(out, einsums.asarray(x), 0, op)
-    expected = _NUMPY[op][0](x)
+    expected = _NUMPY[op][0](x, axis=0)
     got = np.asarray(out)
     np.testing.assert_array_equal(got, expected)
     np.testing.assert_array_equal(np.signbit(got[:3]), np.signbit(expected[:3]))

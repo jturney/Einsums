@@ -20,7 +20,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import REAL_DTYPES
+from einsums.testing import REAL_DTYPES, ordered_extremum
 
 _ctr = itertools.count()
 NAN = np.nan
@@ -71,7 +71,8 @@ def test_elementwise_extremum_propagates_nan_and_orders_signed_zeros(name):
     b = np.array([-0.0, 0.0, 1.0, NAN, NAN, 2.0, 2.0])
     C = einsums.create_zero_tensor(_nm("C"), [a.size], dtype="float64")
     getattr(einsums.linalg, name)(C, einsums.asarray(a), einsums.asarray(b))
-    expected = getattr(np, name)(a, b)
+    # Not numpy.maximum: it leaves a zero tie to the platform, and the first two pairs are ties.
+    expected = ordered_extremum(name[:3], a, b)
     got = np.asarray(C)
     np.testing.assert_array_equal(got, expected)
     np.testing.assert_array_equal(np.signbit(got), np.signbit(expected))

@@ -217,7 +217,13 @@ def test_named_log_and_sign_keep_non_finite_values(dtype):
         for name in ("log", "sign", "log1p"):
             A = einsums.asarray(x.copy(), dtype=dtype)
             einsums.linalg.element_transform(A, name)
-            np.testing.assert_array_equal(np.asarray(A), _ELEMENTARY[name](x))
+            got, expected = np.asarray(A), _ELEMENTARY[name](x)
+            # The non-finite results and the zeros are exact. The other finite ones come from the
+            # platform's libm, which need not round as numpy's does: log1p(2) is 1 ulp apart on
+            # x86-64 Linux.
+            special = ~np.isfinite(expected) | (expected == 0)
+            np.testing.assert_array_equal(got[special], expected[special], err_msg=name)
+            assert_close(got[~special], expected[~special])
 
 
 @pytest.mark.parametrize("name", sorted(_REAL_ONLY))

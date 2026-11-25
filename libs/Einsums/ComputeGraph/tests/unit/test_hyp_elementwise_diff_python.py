@@ -28,6 +28,7 @@ from hypothesis import strategies as st
 
 import einsums
 import einsums.graph as cg
+from einsums.testing import ordered_extremum, ordered_extremum_accumulate, ordered_extremum_reduce
 from _dtype_draws import DTYPES, assert_rounding_close, is_complex, random_array, rounded
 
 _ctr = itertools.count()
@@ -71,8 +72,10 @@ _REAL_ONLY_ELEMENTARY = ("log1p", "expm1", "sign")
 
 
 _MAX_MIN_OPS = ("maximum", "minimum", "max_axes", "min_axes", "compare", "compare_scalar", "where")
-_SCANS = {"sum": (np.cumsum, 0.0), "prod": (np.cumprod, 1.0), "max": (np.maximum.accumulate, -np.inf),
-          "min": (np.minimum.accumulate, np.inf)}
+# The max/min oracles order the signed zeros, as einsums does; numpy leaves a zero tie to the platform.
+_SCANS = {"sum": (np.cumsum, 0.0), "prod": (np.cumprod, 1.0),
+          "max": (lambda x, axis: ordered_extremum_accumulate("max", x, axis), -np.inf),
+          "min": (lambda x, axis: ordered_extremum_accumulate("min", x, axis), np.inf)}
 
 
 def _scan_oracle(x, axis, op, exclusive, reverse):
@@ -145,13 +148,13 @@ def test_hyp_elementwise_diff(op, element_op, shape, alpha, beta, dt, va, vb, vc
             with cg.capture(g):
                 einsums.linalg.where(out, Mt, At, Bt)
         elif op in ("maximum", "minimum"):
-            oracle = getattr(np, op)(A0, B0)
+            oracle = ordered_extremum(op[:3], A0, B0)
             out = einsums.create_zero_tensor(_nm(), list(shape), dtype=dt)
             with cg.capture(g):
                 getattr(einsums.linalg, op)(out, At, Bt)
         else:
             axes = [a for a in range(len(shape)) if axes_mask & (1 << a)]
-            oracle = getattr(A0, op[:3])(axis=tuple(axes)) if axes else A0.copy()
+            oracle = ordered_extremum_reduce(op[:3], A0, axes)
             out = einsums.create_zero_tensor(_nm(), list(np.shape(oracle)), dtype=dt)
             with cg.capture(g):
                 getattr(einsums.linalg, op)(out, At, axes)

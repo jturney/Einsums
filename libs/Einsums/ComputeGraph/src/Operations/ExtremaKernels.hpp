@@ -26,13 +26,14 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 /**
- * @brief NumPy's ``maximum`` or ``minimum`` of two reals.
+ * @brief The ``maximum`` or ``minimum`` of two reals, with NaN propagated and signed zeros ordered.
  *
- * A NaN in either operand is the result, so a NaN propagates through every fold built on this
- * (``numpy.max``, ``numpy.maximum.accumulate``). Equal operands are told apart by sign, so the
- * signed zeros are ordered: the maximum of +0 and -0 is +0 and the minimum is -0, in either
- * operand order. A plain ``a > b ? a : b`` gets both wrong: it drops a NaN in @p a and returns
- * whichever zero came second.
+ * A NaN in either operand is the result, as in ``numpy.maximum``, so a NaN propagates through
+ * every fold built on this (``numpy.max``, ``numpy.maximum.accumulate``). Equal operands are told
+ * apart by sign, so the signed zeros are ordered: the maximum of +0 and -0 is +0 and the minimum
+ * is -0, in either operand order. NumPy does not promise that; it leaves a zero tie to the
+ * platform, so its result is no oracle for the sign. A plain ``a > b ? a : b`` gets both wrong: it
+ * drops a NaN in @p a and returns whichever zero came second.
  *
  * @param[in] op Which of the two.
  * @param[in] a  The first operand, or a fold's accumulator.

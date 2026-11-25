@@ -287,6 +287,74 @@ def assert_exact(actual: Any, expected: Any) -> None:
     np.testing.assert_array_equal(a, e)
 
 
+def ordered_extremum(op: str, a: Any, b: Any) -> np.ndarray:
+    """Elementwise maximum or minimum with NaN propagated and the signed zeros ordered.
+
+    This is einsums' contract for ``maximum``, ``minimum`` and every fold built
+    on them: a NaN in either operand is the result, and of +0 and -0 the maximum
+    is +0 and the minimum is -0, in either operand order. ``numpy.maximum``
+    agrees on the NaN rule but leaves a zero tie to the platform (on x86-64 Linux
+    it returns the second operand, on Apple silicon the ordered zero), so it
+    cannot be the oracle for the sign of a zero.
+
+    :param op: ``"max"`` or ``"min"``.
+    :param a: First operand (array-like).
+    :param b: Second operand, the same shape as ``a`` or broadcastable to it.
+    :return: The extremum, in ``numpy.result_type(a, b)``.
+    """
+    a = np.asarray(a)
+    b = np.asarray(b)
+    if op not in ("max", "min"):
+        raise ValueError(f"ordered_extremum: op must be 'max' or 'min', not {op!r}")
+    with np.errstate(invalid="ignore"):
+        out = np.maximum(a, b) if op == "max" else np.minimum(a, b)
+    tie = (a == 0) & (b == 0)
+    if np.any(tie):
+        both_negative = np.signbit(a) & np.signbit(b)
+        either_negative = np.signbit(a) | np.signbit(b)
+        negative = both_negative if op == "max" else either_negative
+        out = np.where(tie, np.where(negative, -0.0, 0.0).astype(out.dtype), out)
+    return out
+
+
+def ordered_extremum_accumulate(op: str, x: Any, axis: int) -> np.ndarray:
+    """Running maximum or minimum along ``axis``, folded with :func:`ordered_extremum`.
+
+    The oracle for an inclusive, forward ``max``/``min`` scan; build exclusive or
+    reversed scans from it by shifting and flipping, as for ``numpy.cumsum``.
+
+    :param op: ``"max"`` or ``"min"``.
+    :param x: The array to scan.
+    :param axis: The axis to scan along.
+    :return: An array of ``x``'s shape and dtype.
+    """
+    y = np.moveaxis(np.array(x, copy=True), axis, 0)
+    for i in range(1, y.shape[0]):
+        y[i] = ordered_extremum(op, y[i - 1], y[i])
+    return np.moveaxis(y, 0, axis)
+
+
+def ordered_extremum_reduce(op: str, x: Any, axes: Any) -> np.ndarray:
+    """Maximum or minimum over ``axes``, folded with :func:`ordered_extremum`.
+
+    :param op: ``"max"`` or ``"min"``.
+    :param x: The array to reduce. Every reduced axis must have a nonzero extent.
+    :param axes: The axes to reduce, as an int or a sequence; empty reduces nothing.
+    :return: ``x`` with the reduced axes removed, in ``x``'s dtype.
+    """
+    x = np.asarray(x)
+    axes = (axes,) if isinstance(axes, (int, np.integer)) else tuple(axes)
+    axes = tuple(sorted(a % x.ndim for a in axes))
+    if not axes:
+        return x.copy()
+    kept = [a for a in range(x.ndim) if a not in axes]
+    y = np.transpose(x, axes + tuple(kept)).reshape((-1,) + tuple(x.shape[a] for a in kept))
+    out = y[0].copy()
+    for i in range(1, y.shape[0]):
+        out = ordered_extremum(op, out, y[i])
+    return np.asarray(out, dtype=x.dtype)
+
+
 __all__ = [
     "REAL_DTYPES",
     "COMPLEX_DTYPES",
@@ -297,4 +365,7 @@ __all__ = [
     "assert_close",
     "integer_data",
     "assert_exact",
+    "ordered_extremum",
+    "ordered_extremum_accumulate",
+    "ordered_extremum_reduce",
 ]
