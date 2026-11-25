@@ -33,11 +33,11 @@ dependencies:
   # cmake/Einsums_SetupApiary.cmake builds it from source when it is absent,
   # which drags in the whole Clang/LLVM dev stack - so the entry is what keeps
   # a plain build cheap. Bounded on both sides: apiary's emitted C++ and its
-  # CMake helper API are 1.x contracts. 1.4 is the floor, as in
-  # cmake/Einsums_SetupApiary.cmake: it finds the Python-binding library
-  # (apiary_find_backend) and provides <apiary/Python.hpp>, which the Python
-  # build relies on; an older apiary is passed over for a source build.
-  - apiary >=1.4,<2
+  # CMake helper API are 1.x contracts. 1.5 is the floor, as in
+  # cmake/Einsums_SetupApiary.cmake: it dispatches a many-instantiation name
+  # through one exact-type entry, which keeps a small einsum from Python cheap;
+  # an older apiary is passed over for a source build.
+  - apiary >=1.5,<2
   - catch2
   - fftw
   - fmt >=12,<13  # clang 22 / macOS libc++ needs fmt 12 (11.0.x fails consteval, 11.1+ fails the malloc allocator)
