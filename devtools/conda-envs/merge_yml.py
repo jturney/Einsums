@@ -184,10 +184,11 @@ def free_threaded_pin(dependencies):
     the existing entry rather than appending a second one keeps the solver from
     seeing two conflicting python specs.
 
-    conda-forge ships matching ``*_cp314t`` builds of everything the env needs on
-    linux-64, so no package has to be dropped. That is not true everywhere: the
-    osx-arm64 solve currently has no free-threaded scipy/textual/rich, so a macOS
-    free-threaded env needs those removed by hand.
+    conda-forge ships ``*_cp314t`` builds of everything a build-and-test env needs
+    on linux-64; the tools in ``NO_FREE_THREADED_BUILD`` are the exception and are
+    dropped by ``drop_free_threaded_gaps``. The osx-arm64 solve also has no
+    free-threaded scipy/textual/rich, so a macOS free-threaded env needs those
+    removed by hand.
     """
     for i, dep in enumerate(dependencies):
         if isinstance(dep, str) and dep.startswith("python ") and dep.endswith("_cp314"):
@@ -197,6 +198,28 @@ def free_threaded_pin(dependencies):
         "Could not find the regular-ABI python pin to convert. Expected an entry "
         "like 'python 3.14.* *_cp314' in snippets/common.yml."
     )
+
+
+# Developer tools with no free-threaded build in their dependency chain, left out
+# of a free-threaded env. None of them is used by a build or a test.
+#
+# pre-commit: every identify 2.x depends on ukkonen, a compiled extension with
+# cp313/cp314/cp315 builds and no cp314t one. pre-commit 4.7.0 build 1
+# (2026-11-23) requires identify >=2, and the solver then falls back to
+# pre-commit builds for Python 2.7/3.6 and reports a zlib conflict instead.
+# The hooks run in their own workflow (.github/workflows/pre-commit.yml) on
+# the regular interpreter.
+NO_FREE_THREADED_BUILD = ("pre-commit",)
+
+
+def drop_free_threaded_gaps(dependencies):
+    """Remove the ``NO_FREE_THREADED_BUILD`` tools from ``dependencies``, in place.
+
+    Returns the names removed, so the summary line can say what the env lacks.
+    """
+    dropped = [dep for dep in dependencies if dep in NO_FREE_THREADED_BUILD]
+    dependencies[:] = [dep for dep in dependencies if dep not in NO_FREE_THREADED_BUILD]
+    return dropped
 
 
 def gpu_snippet(gpu, system):
@@ -275,8 +298,10 @@ def merge_environment(output_file, system, compiler, blas, docs, free_threaded=F
     merged["dependencies"] = list(dict.fromkeys(merged["dependencies"]))
 
     python_pin = None
+    dropped = []
     if free_threaded:
         python_pin = free_threaded_pin(merged["dependencies"])
+        dropped = drop_free_threaded_gaps(merged["dependencies"])
 
     with open(output_file, "w") as f:
         yaml.dump(merged, f)
@@ -290,6 +315,8 @@ def merge_environment(output_file, system, compiler, blas, docs, free_threaded=F
         print(f"  gpu backend: {gpu} (from {gpu_rel})")
     if python_pin:
         print(f"  interpreter: {python_pin} (free-threaded)")
+    if dropped:
+        print("  left out (no free-threaded build): " + ", ".join(dropped))
 
 
 if __name__ == "__main__":
