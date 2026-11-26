@@ -12,13 +12,8 @@
 
 include(FetchContent)
 
-# For a Waggle built here. Its tests run with Einsums' unit tests, named to sit beside them.
-set(WAGGLE_BUILD_TESTS ${EINSUMS_WITH_TESTS_UNIT})
-set(WAGGLE_TEST_PREFIX "Tests.Unit.Waggle.")
-if(Python_EXECUTABLE)
-  # The interpreter Einsums found, for Waggle's viewer tests.
-  set(Python3_EXECUTABLE "${Python_EXECUTABLE}")
-endif()
+# A Waggle built here leaves out its own tests, which Waggle's CI runs on every platform; Einsums'
+# profiler tests exercise it through Einsums.
 if(EINSUMS_BUILD_PYTHON)
   # The waggle package beside the einsums package, in the build tree and in the install:
   # `einsums profiler` runs its viewer, and einsums.profile is its waggle._core.
