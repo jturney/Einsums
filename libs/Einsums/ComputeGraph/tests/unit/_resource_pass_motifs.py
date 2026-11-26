@@ -170,6 +170,10 @@ def _tensor(name, array):
     return t
 
 
+#: The type each oracle array is computed in; see ``Motif.expected``.
+_WIDE = {np.dtype(np.float32): np.dtype(np.float64), np.dtype(np.complex64): np.dtype(np.complex128)}
+
+
 def _scalar(rng):
     return float(rng.choice([-1.5, -1.0, -0.5, 0.5, 1.0, 2.0]))
 
@@ -202,10 +206,15 @@ class Motif:
         return {name: np.asarray(t).copy() for name, t in self.t.items()}
 
     def expected(self, runs):
-        a = {k: v.copy() for k, v in self.np.items()}
+        # The oracle runs in double precision and is rounded to each array's own
+        # type at the end. A float32 numpy oracle on the macOS arm64 runners once
+        # returned a NaN from finite inputs (a GEMV over the big motif's scratch)
+        # and gave finite values on five recomputes in the same process, failing a
+        # trial whose einsums result was correct.
+        a = {k: v.astype(_WIDE.get(v.dtype, v.dtype)) for k, v in self.np.items()}
         for _ in range(runs * max(1, self.loop)):
             self.step(a)
-        return a
+        return {k: v.astype(self.np[k].dtype) if k in self.np else v for k, v in a.items()}
 
     def cleanup(self):
         pass
